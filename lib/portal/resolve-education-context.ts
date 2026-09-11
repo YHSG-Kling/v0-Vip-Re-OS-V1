@@ -19,7 +19,7 @@ import {
   type SellerSignalEducationContext,
 } from "@/lib/education/seller-signal-education-context"
 import type { ProtectedClassBasis } from "@/lib/lead-governance/protected-class-signals"
-import type { Persona } from "@/lib/kernel/types"
+import type { Persona, JourneyPhase } from "@/lib/kernel/types"
 
 // ─── MILESTONE LABEL MAPS ─────────────────────────────────────────────────────
 
@@ -136,7 +136,24 @@ export const MILESTONE_LESSON_MAP: Record<string, string> = {
 export interface EducationContext {
   portalView: PortalView
   buyerStage: string | null
+  /** contacts.contact_type — read here so the LIFETIME view (which loses the
+   *  buyer/seller distinction determinePortalView otherwise carries) can still
+   *  tell which post-journey catalog (BUYER_POST_LESSONS vs SELLER_POST_LESSONS,
+   *  lib/kernel/education.ts) a closed contact should see. MOUNTED wave 55 —
+   *  this column was already selected below and never read by anything. */
+  contactType: string | null
   currentMilestone: string | null
+  /**
+   * MOUNTED, orphan doctrine §1.2, wave 55: the third JourneyPhase value.
+   * "post" — the contact's portal view is "lifetime" (closed, no active
+   * transaction: determinePortalView already decided this). "active" — an
+   * active transaction has an incomplete client-visible milestone. "pre" —
+   * neither. Computed ONCE here so callers (getLessonFeed) never re-derive
+   * a phase without also knowing about "post", which is exactly how a
+   * lifetime contact used to be served "pre" forever — see
+   * lib/kernel/education.ts's BUYER_POST_LESSONS/SELLER_POST_LESSONS header.
+   */
+  journeyPhase: JourneyPhase
   ageSeg: AgeSegment
   /**
    * WHERE `ageSeg` CAME FROM. Published beside the value because a DEFAULT and
@@ -205,6 +222,7 @@ export async function resolveEducationContext(
     .single()
 
   const buyerStage = contact?.buyer_stage ?? null
+  const contactType = (contact as { contact_type?: string | null } | null)?.contact_type ?? null
 
   // Age band + generational cohort. Bands come from lib/kernel/education.ts —
   // ONE definition, derived here rather than re-spelled (CLAUDE.md §6); the
@@ -292,6 +310,14 @@ export async function resolveEducationContext(
     }
   }
 
+  // MOUNTED, wave 55 — see the EducationContext.journeyPhase doc above.
+  // portalView === "lifetime" is already determinePortalView's own verdict
+  // that this contact has no active transaction (closed-with-no-active, or
+  // buyer_stage BUYER_LIFETIME); a fresh lifetime contact with no lifecycle
+  // history at all still correctly falls through to "pre".
+  const journeyPhase: JourneyPhase =
+    portalView === "lifetime" ? "post" : currentMilestone ? "active" : "pre"
+
   // Post-1043: completed customer modules come from learning_assignments.
   // The field name is kept as `completedLessonKeys` for API stability but
   // now returns module_id values (uuids).
@@ -311,7 +337,9 @@ export async function resolveEducationContext(
   return {
     portalView,
     buyerStage,
+    contactType,
     currentMilestone,
+    journeyPhase,
     ageSeg,
     ageSegSource,
     generationalCohort,

@@ -22,7 +22,11 @@ export type { CheckBrandComplianceParams, BrandComplianceResult } from "./brand-
 export { applyBrandVoice } from "./brand-voice"
 export { resolveProvider } from "./providers"
 export { getEducationDelivery, getEducationPlan } from "./education"
-export { getPortalMilestones, getLifetimeTrack } from "./portal"
+// TOMBSTONE (orphan doctrine §1.2, wave 55): getLifetimeTrack removed from
+// this export list — deleted at lib/kernel/portal.ts (see the tombstone
+// there). SURVIVOR: lib/kernel/education.ts getEducationPlan (BUYER_POST_LESSONS
+// / SELLER_POST_LESSONS), via app/actions/portal-education.ts getLessonFeed.
+export { getPortalMilestones } from "./portal"
 export {
   canAccessFeature,
   incrementFeatureUsage,
@@ -398,13 +402,16 @@ export type {
 // Counter history lives in the offers table (parent_offer_id + offer_type='counter').
 // offer_counters and offer_analysis tables do NOT exist.
 
+// TOMBSTONE (orphan doctrine §1.1, wave 55): compareOffersForListing removed
+// from this export list — deleted at lib/kernel/offers.ts (see the tombstone
+// there). SURVIVOR: lib/offers/offer-analyzer.ts analyzeAndCompareOffers, via
+// app/actions/seller-offers.ts:triggerOfferComparison.
 export {
   loadOfferWorkspace,
   loadOffersForListing,
   loadOffersForBuyer,
   recordOfferSubmitted,
   recordOfferAiAnalysis,
-  compareOffersForListing,
   issueCounterOffer,
   respondToCounter,
   acceptOffer,

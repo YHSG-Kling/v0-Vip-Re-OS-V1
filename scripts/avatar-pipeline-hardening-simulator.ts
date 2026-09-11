@@ -61,7 +61,14 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
-import { avatarDurationOverrunSeconds } from "../lib/video/script-structure"
+import { avatarDurationOverrunSeconds, avatarFadeOutFrame } from "../lib/video/script-structure"
+import {
+  scanForAiTells,
+  AI_TELL_POSITIVE_CONTROLS,
+  AI_TELL_NEGATIVE_CONTROL,
+  DID_TALK_REALISM_CONFIG,
+  ELEVENLABS_REALISM_VOICE_SETTINGS,
+} from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const readStripped = (rel: string): string => stripComments(readFileSync(join(root, rel), "utf8"))
@@ -425,8 +432,8 @@ function languageSection() {
 
   check("intro-video-reactor.ts's draft prompt gets a language directive that is EMPTY for English (byte-identical prior prompt)",
     /languageLine\s*=\s*args\.language\s*&&\s*args\.language\s*!==\s*["']en["']/.test(reactor))
-  check("the language directive actually reaches the model call (concatenated into the prompt, not computed and discarded)",
-    /basePrompt\s*\+\s*languageLine\s*\+\s*violationLine/.test(reactor))
+  check("the language directive actually reaches the model call (concatenated into the prompt, not computed and discarded — wave 55 spliced SPOKEN_REALISM_DIRECTIVE in ahead of it, so this matches the prompt's TAIL rather than pinning the whole literal, §2 no waypoint)",
+    /languageLine\s*\+\s*violationLine/.test(reactor) && /prompt:\s*\n?\s*basePrompt/.test(reactor))
   check("ai_video_projects.locale is stamped with the resolved language (mirrors commissionMultilingualReel's own column, §6)",
     /locale:\s*language/.test(reactor))
 
@@ -678,6 +685,86 @@ function durationOverrunSection() {
     avatarDurationOverrunSeconds(null, 11.2) === 0)
 }
 
+function realismSection() {
+  console.log("\n── §realism — the video product must not look/sound like a fake AI creation (wave 55) ──")
+  const reactor = readStripped("lib/video/intro-video-reactor.ts")
+  const promo = readStripped("lib/video/listing-promo-reactor.ts")
+  const chapter = readStripped("lib/video/chapter-video-generator.ts")
+  const wizard = readStripped("app/actions/video/generate-script.ts")
+  const aiCopy = readStripped("lib/kernel/ai-copy.ts")
+  const dispatch = readStripped("lib/providers/dispatch.ts")
+  const elevenTts = readStripped("lib/voice/elevenlabs-tts.ts")
+  const orchestrator = readStripped("lib/video/avatar-render-orchestrator.ts")
+  const talkingHead = readStripped("remotion/AgentTalkingHeadReel.tsx")
+
+  // ── the directive reaches every SPOKEN-delivery script prompt ─────────────
+  check("intro-video-reactor (the welcome/anniversary avatar spine) imports and splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
+    /import \{ SPOKEN_REALISM_DIRECTIVE, scanForAiTells \} from "@\/lib\/video\/realism-profile"/.test(reactor) &&
+    /SPOKEN_REALISM_DIRECTIVE \+ languageLine \+ violationLine/.test(reactor))
+  check("listing-promo-reactor splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
+    /SPOKEN_REALISM_DIRECTIVE\}\$\{violationLine\}/.test(promo))
+  check("chapter-video-generator splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
+    /\$\{SPOKEN_REALISM_DIRECTIVE\}`/.test(chapter))
+  check("the video wizard (generate-script.ts) includes SPOKEN_REALISM_DIRECTIVE in its system prompt array",
+    /SPOKEN_REALISM_DIRECTIVE,\s*\n\s*`Write ONLY the script content/.test(wizard))
+  check("ai-copy.ts's generic copy engine carries the directive too, gated to spoken/video channels (§1 — built ahead of a caller rather than skipped)",
+    /SPOKEN_COPY_CHANNELS\.has\(req\.channel\)/.test(aiCopy) && /SPOKEN_REALISM_DIRECTIVE/.test(aiCopy))
+
+  // ── the AI-tell scan reaches the SAME one-redraft gate as compliance, on
+  //    every producer that HAS a redraft loop (§6 — not a second retry loop) ──
+  check("intro-video-reactor folds scanForAiTells into the SAME evaluateOutbound gate (one redraft, not two)",
+    /const tells = scanForAiTells\(s\)/.test(reactor) &&
+    /allowed: r\.allowed && tells\.length === 0, violations: \[\.\.\.r\.violations, \.\.\.tells\]/.test(reactor))
+  check("listing-promo-reactor folds scanForAiTells into the SAME evaluateOutbound gate",
+    /const tells = scanForAiTells\(s\)/.test(promo) &&
+    /allowed: r\.allowed && tells\.length === 0, violations: \[\.\.\.r\.violations, \.\.\.tells\]/.test(promo))
+  check("chapter-video-generator (no redraft loop — advisory only) records AI-tell findings on the SAME needs_review row as the compliance postcheck, not a silent second scan",
+    /const aiTellFindings = scanForAiTells\(script\)/.test(chapter) &&
+    /aiTellFindings\.length \? "needs_review" : "passed"/.test(chapter))
+  check("the wizard records AI-tell findings as ADVISORY alongside the quality lint (never a red flag, never a hold — the owner's 'advisory passes' ruling)",
+    /const aiTellHits = scanForAiTells\(script\)/.test(wizard) && /\.\.\.aiTellHits,/.test(wizard))
+
+  // ── the settings constant reaches BOTH provider egresses, no stray literal ──
+  check("dispatch.ts's D-ID submission spreads the ONE realism config into BOTH source branches (photo AND video-driven), not one",
+    (dispatch.match(/\.\.\.DID_TALK_REALISM_CONFIG,/g) ?? []).length >= 2)
+  check("dispatch.ts's D-ID ElevenLabs TTS leg sends the ONE tuned voice_settings constant (it sent NONE before wave 55)",
+    /voice_settings: ELEVENLABS_REALISM_VOICE_SETTINGS/.test(dispatch))
+  check("lib/voice/elevenlabs-tts.ts's DEFAULT_VOICE_SETTINGS now DERIVES from the same constant rather than repeating ElevenLabs' raw API defaults (stability 0.5/similarity 0.75/style 0) a second time",
+    /const DEFAULT_VOICE_SETTINGS: Required<VoiceSettings> = ELEVENLABS_REALISM_VOICE_SETTINGS/.test(elevenTts))
+  check("no stray hardcoded ElevenLabs voice_settings literal remains at either call site (a `{ stability: 0.5` object would be a second, drifting answer)",
+    !/stability:\s*0\.5,\s*\n?\s*similarity_boost:\s*0\.75/.test(dispatch) &&
+    !/stability:\s*0\.5,\s*\n?\s*similarity_boost:\s*0\.75/.test(elevenTts))
+
+  // ── the avatar-freeze guard is wired end to end ───────────────────────────
+  check("avatar-render-orchestrator SELECTs duration_seconds and merges it into input_props as avatarDurationSeconds on BOTH the merge-into-staged-row path and the fresh-row path",
+    /duration_seconds"\)/.test(orchestrator) &&
+    (orchestrator.match(/avatarDurationSeconds/g) ?? []).length >= 3)
+  check("AgentTalkingHeadReel imports avatarFadeOutFrame and applies it as the avatar <Video>'s opacity (fade, not freeze)",
+    /import \{ avatarFadeOutFrame \} from "\.\.\/lib\/video\/script-structure"/.test(talkingHead) &&
+    /opacity: avatarOpacity,/.test(talkingHead))
+  check("the fade is ADDITIVE — a null fade start (no measurement, or the clip fills the window) yields full opacity, unchanged behavior",
+    /const avatarOpacity = avatarFadeStart != null[\s\S]{0,250}?: 1/.test(talkingHead))
+
+  // POSITIVE CONTROLS (§2) — the AI-tell scanner
+  for (const c of AI_TELL_POSITIVE_CONTROLS) {
+    check(`CONTROL: scanForAiTells still recognises the "${c.label}" AI-tell (a broken/no-op regex would report 0 findings here)`,
+      scanForAiTells(c.text).length > 0)
+  }
+  // NEGATIVE CONTROL — a script written the way the directive asks for must
+  // NOT be flagged (a detector that fires on everything is as useless as one
+  // that fires on nothing).
+  check("CONTROL: a script that follows SPOKEN_REALISM_DIRECTIVE (contractions, short sentences, no self-reference) produces ZERO findings",
+    scanForAiTells(AI_TELL_NEGATIVE_CONTROL).length === 0)
+
+  // POSITIVE CONTROLS (§2) — the avatar-freeze guard
+  check("CONTROL: a clip that fills its whole window returns null (no fade — nothing to fix)",
+    avatarFadeOutFrame(10, 300, 30) === null)
+  check("CONTROL: a clip that renders 2s SHORT of a 10s/300-frame window fades starting 12 frames before its own real end (frame 228), not at the window's end",
+    avatarFadeOutFrame(8, 300, 30) === 228)
+  check("CONTROL: no measurement (null/undefined duration) returns null — additive/opt-in, never a spurious fade on an older render row",
+    avatarFadeOutFrame(null, 300, 30) === null && avatarFadeOutFrame(undefined, 300, 30) === null)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
@@ -696,6 +783,7 @@ async function main() {
   reelProducersSection()
   anniversarySection()
   durationOverrunSection()
+  realismSection()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -703,6 +791,6 @@ async function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ All twelve avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53), each with a positive control.")
+  console.log(" ✅ All thirteen avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53 + §realism from wave 55), each with a positive control.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

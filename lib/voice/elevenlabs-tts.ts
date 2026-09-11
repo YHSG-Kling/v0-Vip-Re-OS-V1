@@ -44,6 +44,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { ELEVENLABS_REALISM_VOICE_SETTINGS, ELEVENLABS_TEXT_NORMALIZATION } from "@/lib/video/realism-profile"
 
 const ELEVENLABS_BASE = "https://api.elevenlabs.io"
 
@@ -71,12 +72,15 @@ export interface VoiceSettings {
   use_speaker_boost?: boolean
 }
 
-const DEFAULT_VOICE_SETTINGS: Required<VoiceSettings> = {
-  stability: 0.5,
-  similarity_boost: 0.75,
-  style: 0.0,
-  use_speaker_boost: true,
-}
+// REALISM (wave 55): these three were ElevenLabs' own bare API defaults
+// (stability 0.5 / similarity_boost 0.75 / style 0) — nobody had ever chosen
+// them for realism. ELEVENLABS_REALISM_VOICE_SETTINGS (lib/video/
+// realism-profile.ts, see its header for the 2026-09-11 research) is the ONE
+// tuned constant every avatar/voice call site now shares (§6) — including
+// lib/providers/dispatch.ts's D-ID avatar-video TTS leg, which sent NO
+// voice_settings at all before this wave. `apply_text_normalization` is added
+// alongside it below so numbers/dates in a script are spelled out correctly.
+const DEFAULT_VOICE_SETTINGS: Required<VoiceSettings> = ELEVENLABS_REALISM_VOICE_SETTINGS
 
 /** ElevenLabs default professional voice (Rachel) — fallback when no clone */
 export const FALLBACK_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
@@ -152,6 +156,7 @@ export async function synthesizeSpeech(
         text: input.text,
         model_id: input.modelId ?? "eleven_monolingual_v1",
         voice_settings: settings,
+        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
         // language_code is sent ONLY to models ElevenLabs actually enforces it
         // on (see the file header's research finding) — never to multilingual_v2,
         // which either 400s or ignores it depending on endpoint.
@@ -276,6 +281,7 @@ export async function synthesizeSpeechWithTimestamps(
         text: input.text,
         model_id: input.modelId ?? "eleven_monolingual_v1",
         voice_settings: settings,
+        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
         // language_code is sent ONLY to models ElevenLabs actually enforces it
         // on (see the file header's research finding) — never to multilingual_v2.
         ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),
@@ -375,6 +381,7 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
           text: input.text,
           model_id: input.modelId ?? "eleven_monolingual_v1",
           voice_settings: settings,
+        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
           // language_code is sent ONLY to models ElevenLabs actually enforces it
           // on (see the file header's research finding) — never to multilingual_v2.
           ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),

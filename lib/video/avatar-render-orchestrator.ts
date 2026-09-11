@@ -70,6 +70,17 @@ export interface AvatarRenderRowParams {
   entityType?:      string | null
   entityId?:        string | null
   /**
+   * D-ID's OWN measured render duration (poll-did-videos `data.duration`,
+   * `ai_video_projects.duration_seconds`) — wave 55, the realism ruling.
+   * Merged into input_props as `avatarDurationSeconds` so a composition that
+   * knows how to use it (AgentTalkingHeadReel) can fade the avatar out at its
+   * REAL end instead of Remotion's `<Video>` holding a frozen last frame for
+   * the rest of a fixed window. Optional and additive: a composition that
+   * does not read this prop, or a caller with no measurement, renders exactly
+   * as before — see lib/video/script-structure.ts::avatarFadeOutFrame.
+   */
+  avatarDurationSeconds?: number | null
+  /**
    * THE LIVING IDENTITY of the row this one REPLACES — m312's three columns,
    * exactly as lib/remotion/registry.ts recordRenderQueued stamps them.
    *
@@ -130,6 +141,9 @@ export function buildAvatarRenderRow(p: AvatarRenderRowParams): Record<string, u
       ...(p.extraInputProps ?? {}),
       avatarVideoUrl: p.avatarVideoUrl,
       voiceoverUrl:   voiceover,
+      // Additive — undefined when the caller has no measurement, which a
+      // JSONB column stores as an absent key, same as never having passed it.
+      ...(typeof p.avatarDurationSeconds === "number" ? { avatarDurationSeconds: p.avatarDurationSeconds } : {}),
     },
     scope_type:    "agent",
     scope_id:      p.agentId,
@@ -190,7 +204,7 @@ export async function enqueueAvatarCompositionForProject(
 
   const { data: project, error: projectErr } = await supabase
     .from("ai_video_projects")
-    .select("id, brokerage_id, agent_id, video_url, provider_metadata")
+    .select("id, brokerage_id, agent_id, video_url, provider_metadata, duration_seconds")
     .eq("id", projectId)
     .maybeSingle()
   // supabase-js RESOLVES a refused read (§3) — a refusal is NOT "project not
@@ -277,6 +291,8 @@ export async function enqueueAvatarCompositionForProject(
         // Never blank a voiceover the staging lane already synthesized onto
         // the row — merge ours only when the request actually carried one.
         ...(voiceover ? { voiceoverUrl: voiceover } : {}),
+        // Wave 55 realism — see AvatarRenderRowParams.avatarDurationSeconds.
+        ...(typeof project.duration_seconds === "number" ? { avatarDurationSeconds: project.duration_seconds } : {}),
       }
       const { data: updated, error: updErr } = await supabase
         .from("remotion_composition_renders")
@@ -324,6 +340,8 @@ export async function enqueueAvatarCompositionForProject(
     // staged row — prefer the request's, then the staged row's own.
     voiceoverUrl:    (meta.voiceover_url as string | null)
       ?? ((staged?.input_props?.voiceoverUrl as string | undefined) ?? null),
+    // Wave 55 realism — see AvatarRenderRowParams.avatarDurationSeconds.
+    avatarDurationSeconds: typeof project.duration_seconds === "number" ? project.duration_seconds : null,
     // The staged render's own props win over meta.input_props: they are the
     // slide as it was actually staged (title/body/brand/…), which the
     // replacement row must carry or the content contract cancels it.

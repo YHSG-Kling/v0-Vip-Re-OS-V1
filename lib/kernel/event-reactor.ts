@@ -4514,26 +4514,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         } catch { /* best-effort */ }
       }
 
-      // 24 — an AI net-sheet comparison finished ranking multiple pending offers on a listing
-      // (lib/kernel/offers.ts compareOffersForListing, entityType "offer" though entityId is the
-      // listings.id — a SEPARATE writer of the same offer_comparison table the already-HANDLED
-      // offer_comparison_generated / lib/offers/offer-analyzer.ts analyzeAndCompareOffers covers;
-      // this is that writer's own visibility line, same FROM/TO shape, feed_only rather than a
-      // second gated-message proposal so the two writers never double-propose). Listing
-      // Concierge hands the comparison to Campaign Orchestrator, mirroring cma_generated.
-      if (params.event === KernelEvent.OFFER_OS_AI_COMPARED) {
-        try {
-          await publishManagerSignal({
-            brokerageId: params.brokerageId,
-            fromManager: "listing_concierge",
-            toManager:   "campaign_orchestrator",
-            signalType:  "offer_os_ai_compared",
-            message:     "An AI offer comparison finished ranking multiple offers.",
-            entityType:  params.entityType,
-            entityId:    params.entityId,
-          }, svc)
-        } catch { /* best-effort */ }
-      }
+      // TOMBSTONE (orphan doctrine §1.1, wave 55) — reader #24 for
+      // KernelEvent.OFFER_OS_AI_COMPARED ("an AI net-sheet comparison finished
+      // ranking multiple pending offers on a listing") lived here. Its sole
+      // emitter, lib/kernel/offers.ts compareOffersForListing, was a
+      // duplicate, callerless offer_comparison writer and is deleted (tombstone
+      // there); the enum member and its signal-registry/signal-routing entries
+      // are retired alongside it. SURVIVOR: the HANDLED
+      // KernelEvent.OFFER_COMPARISON_GENERATED reader above (#1 in this
+      // function, listing_concierge -> campaign_orchestrator), fed by
+      // lib/offers/offer-analyzer.ts analyzeAndCompareOffers.
 
       // 25-28 — the offer negotiation lifecycle: countered, the buyer responded to a counter,
       // rejected, withdrawn (lib/kernel/offers.ts issueCounterOffer:432, respondToCounter:467,

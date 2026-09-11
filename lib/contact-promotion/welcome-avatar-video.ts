@@ -44,7 +44,12 @@
  * the `video_opt_out` gate, the voice/avatar profile gate, the
  * `agent_intro_videos` idempotency ledger, the compliance-first draft, the
  * pre-flight `evaluateOutbound` + one redraft, the `ai_video_projects` row, the
- * D-ID submission and the poller link. Its output is what
+ * D-ID submission and the poller link. THE REALISM PASS ALSO LIVES THERE
+ * (wave 55 — SPOKEN_REALISM_DIRECTIVE on the draft prompt + scanForAiTells
+ * folded into that same one-redraft gate, lib/video/realism-profile.ts): this
+ * module does not draft or write ANY spoken text, so the directive is NOT
+ * duplicated here (§6) — every welcome video this function commissions
+ * already inherits it through the spine it delegates to. Its output is what
  * lib/kernel/welcome-personal-video.ts `resolveWelcomePersonalVideo` reads
  * FIRST (scope 'contact_personal'), which is what puts the clip in the welcome
  * email and on the portal card. Building a second commissioning path here

@@ -159,9 +159,22 @@ export async function getLessonFeed(contactId: string): Promise<LessonFeedResult
   // verified access, which we just did above)
   const context = await resolveEducationContext(supabase, contactId)
 
-  // Map portal view to journey type
-  const journeyType = context.portalView === "seller" ? "seller" : "buyer"
-  const journeyPhase = context.currentMilestone ? "active" : "pre"
+  // Map portal view to journey type. "lifetime" (MOUNTED wave 55) loses the
+  // buyer/seller distinction determinePortalView otherwise carries — a closed
+  // contact's own contact_type (read by resolveEducationContext, previously
+  // unused) is the fallback so a past SELLER in the lifetime view gets
+  // SELLER_POST_LESSONS, not buyer content by default.
+  const journeyType =
+    context.portalView === "seller" ? "seller"
+    : context.portalView === "lifetime" ? (context.contactType === "seller" ? "seller" : "buyer")
+    : "buyer"
+  // journeyPhase now comes from the context (MOUNTED wave 55 — see
+  // EducationContext.journeyPhase) instead of being re-derived here, which is
+  // exactly how "post" was lost before: this line used to be
+  // `context.currentMilestone ? "active" : "pre"`, so a lifetime contact
+  // (who by definition has no active-transaction milestone) always landed on
+  // "pre" and never saw post-journey content at all.
+  const journeyPhase = context.journeyPhase
 
   // Get education plan from kernel
   const plan = await getEducationPlan({

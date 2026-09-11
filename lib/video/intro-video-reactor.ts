@@ -103,6 +103,7 @@ import {
   verifyEquityClaims,
 } from "@/lib/video/anniversary-script"
 import type { Persona, JourneyType } from "@/lib/kernel/types"
+import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells } from "@/lib/video/realism-profile"
 
 /**
  * THE WORD BUDGET THE SPOKEN SCRIPT HAS, DERIVED FROM THE COMPOSITION THAT
@@ -622,7 +623,19 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         content:      s,
         // contact: undefined — broadcast-shape gating
       })
-      return { allowed: r.allowed, violations: r.violations }
+      // REALISM (wave 55): the owner ruling is "the video must not look like
+      // a fake ai creation" — folded into this SAME gate rather than a second
+      // redraft loop (§6). runWithComplianceRedraft already gives exactly one
+      // redraft, feeding back whatever `violations` this gate returns; a
+      // model-shipped AI-tell (self-reference, a canned self-intro, a formal
+      // written-register transition) is exactly as disqualifying as a
+      // compliance finding for THIS purpose — both are "do not ship this
+      // sentence" — so both ride the one retry rather than each buying its
+      // own. scanForAiTells is pure/advisory by design (lib/video/
+      // realism-profile.ts) and never runs before the redraft has a chance to
+      // fix it.
+      const tells = scanForAiTells(s)
+      return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
     },
     })
   } catch (err) {
@@ -1176,7 +1189,13 @@ Avoid any reference to protected characteristics. Return ONLY the script text th
 
   const { text } = await generateTextRouted({
     feature:     "intro_video_script",
-    prompt:      basePrompt + languageLine + violationLine,
+    // REALISM (wave 55): SPOKEN_REALISM_DIRECTIVE (lib/video/realism-profile.ts)
+    // appended for BOTH triggers — contractions, one idea per sentence, no
+    // AI self-reference, no stock phrases, specific facts, a natural
+    // sign-off. Placed AFTER the trigger-specific ask (so an exact
+    // word-for-word greeting instruction is not overridden) and BEFORE the
+    // language/violation lines, matching this prompt's existing ordering.
+    prompt:      basePrompt + "\n\n" + SPOKEN_REALISM_DIRECTIVE + languageLine + violationLine,
     // BOTH lanes pay for the words the composition can actually speak — the
     // ONE token budget sized from the ONE word budget. The assignment lane's
     // prior flat 300 bought ~3× the text the 14s reel can carry, and the

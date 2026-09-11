@@ -46,6 +46,7 @@ import {
   spokenWords,
   targetWordCount,
 } from "@/lib/video/script-structure"
+import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells } from "@/lib/video/realism-profile"
 
 /**
  * The declared runtime of one presentation chapter clip. Drip-ready content:
@@ -206,6 +207,12 @@ export async function generatePropertyChapterVideos(
         // names "the cron-reached chapter generator" as the reason the seam exists).
         { client: svc },
       )
+      // REALISM (wave 55) — advisory, same posture as the compliance postcheck
+      // above: this generator has no redraft loop (a caller-supplied
+      // chapter.script skips the steered prompt entirely, so a hard block here
+      // would refuse content the prompt never even wrote), so AI-tell findings
+      // ride the SAME needs_review row rather than a second silent scan.
+      const aiTellFindings = scanForAiTells(script)
 
       // Insert into the canonical ai_video_projects table. 'queued' is the
       // honest state for the few lines it lasts — staged, not yet handed to a
@@ -229,8 +236,14 @@ export async function generatePropertyChapterVideos(
           // 'needs_review', not 'failed': the postcheck is advisory and the
           // render proceeds. ai_video_projects_compliance_status_check admits
           // exactly not_evaluated | passed | failed | needs_review.
-          compliance_status:       complianceWarnings?.length ? "needs_review" : "passed",
-          compliance_violations:   complianceWarnings?.length ? complianceWarnings : null,
+          // AI-tell findings ride the same column — a script that "sounds like
+          // AI" is exactly the thing the owner ruling asks a human to catch.
+          compliance_status:
+            complianceWarnings?.length || aiTellFindings.length ? "needs_review" : "passed",
+          compliance_violations:
+            complianceWarnings?.length || aiTellFindings.length
+              ? [...(complianceWarnings ?? []), ...aiTellFindings]
+              : null,
           compliance_evaluated_at: new Date().toISOString(),
           video_metadata: {
             chapter_index:   i,
@@ -444,7 +457,9 @@ Style:
 
 ${presentationContent ? `Source material from the listing presentation:\n${presentationContent.slice(0, 2000)}\n` : ""}
 
-Return only the script text — no scene directions, no headers, just what the agent will say on camera.`
+Return only the script text — no scene directions, no headers, just what the agent will say on camera.
+
+${SPOKEN_REALISM_DIRECTIVE}`
 
   const { text } = await generateTextRouted({
     feature: "listing_presentation",

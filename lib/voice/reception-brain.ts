@@ -76,6 +76,20 @@ export type VoiceTurnAction =
   | { kind: "book"; dateTime: string }                  // book appointment/showing
   | { kind: "rsvp"; address: string }                   // RSVP the caller to an open house
   | { kind: "seller_lead"; address: string | null }     // "what's my home worth" → gated CMA
+  // Owner ruling (wave 55): "the ai assistant or receptionist needs to be able
+  // to make a task to call a person back and then do the call back when it is
+  // time." The prompt already instructs the AI to capture a callback number
+  // (rule 1 above); this is the ACTION that turns "I'll have someone call you
+  // back at 3pm" into a real tasks row. `whenPhrase` is the caller's own words
+  // for the time ("3pm", "tomorrow morning") — kept as spoken text because the
+  // model already has to fabricate an ISO timestamp for `book` without knowing
+  // the tenant's timezone; resolveCallbackDueDate (lib/ai-isa/callback-task.ts)
+  // does the real parsing downstream (regex first, the AI gateway as fallback)
+  // against the calendar day the call was PLACED on, which this turn-planner
+  // does not know either. `phone` is set ONLY when the caller gave a DIFFERENT
+  // number than the one they're calling from ("call me back at 555-..."); null
+  // means "this number, the one on this call".
+  | { kind: "callback"; phone: string | null; whenPhrase: string; reason: string | null }
   | { kind: "hangup" }                                  // caller done
 
 export interface VoiceTurnPlan {
@@ -87,13 +101,17 @@ export interface VoiceTurnPlan {
 export const TURN_INSTRUCTIONS = [
   "Respond with JSON ONLY, no prose around it:",
   '{ "say": "<what you speak next — one to three short sentences>",',
-  '  "action": "continue" | "transfer" | "book" | "rsvp" | "seller_lead" | "hangup",',
+  '  "action": "continue" | "transfer" | "book" | "rsvp" | "seller_lead" | "callback" | "hangup",',
   '  "date_time": "<ISO 8601, ONLY when action is book>",',
-  '  "address": "<the property address, ONLY when action is rsvp or seller_lead>" }',
+  '  "address": "<the property address, ONLY when action is rsvp or seller_lead>",',
+  '  "callback_phone": "<a DIFFERENT callback number the caller gave, ONLY when action is callback and they gave one other than the number they are calling from — otherwise omit>",',
+  '  "callback_when": "<the caller\'s OWN words for when, ONLY when action is callback — e.g. \\"3pm today\\", \\"tomorrow morning\\", \\"in an hour\\". Never convert it yourself.>",',
+  '  "callback_reason": "<one short phrase for why they want a call back, ONLY when action is callback>" }',
   "Rules: action 'transfer' when the caller asks for the agent / is urgent / office-hours rule says so.",
   "action 'book' ONLY after the caller has confirmed a specific date and time out loud.",
   "action 'rsvp' ONLY after the caller says yes to attending an open house from the LIVE INVENTORY list — include that listing's address.",
   "action 'seller_lead' when the caller asks what their home is worth or mentions selling — include their property address if they gave it. Never quote a value yourself; say the team will prepare a real valuation.",
+  "action 'callback' when you have told the caller someone will call them back, OR they asked for a call back at a specific time — capture callback_when in their own words (never compute a date yourself) and confirm it back to them out loud in your 'say'.",
   "action 'hangup' when the caller says goodbye or the call is complete — say a warm close first.",
   "Otherwise action 'continue'.",
 ].join("\n")
@@ -104,7 +122,10 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
   try {
     const match = raw.match(/\{[\s\S]*\}/)
     if (!match) throw new Error("no json")
-    const p = JSON.parse(match[0]) as { say?: string; action?: string; date_time?: string; address?: string }
+    const p = JSON.parse(match[0]) as {
+      say?: string; action?: string; date_time?: string; address?: string
+      callback_phone?: string; callback_when?: string; callback_reason?: string
+    }
     const say = (p.say ?? "").trim().slice(0, 600)
     if (!say) throw new Error("empty say")
     const a = (p.action ?? "continue").toLowerCase()
@@ -120,6 +141,21 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
     }
     if (a === "seller_lead") {
       return { say, action: { kind: "seller_lead", address: (p.address ?? "").trim().slice(0, 200) || null } }
+    }
+    // callback needs a real WHEN — a caller-back promise with no time to act on
+    // it is not a callback, it degrades to continue (never a task with no due
+    // time; garbage never books a call the ISA will actually place).
+    const whenPhrase = (p.callback_when ?? "").trim().slice(0, 120)
+    if (a === "callback" && whenPhrase.length >= 2) {
+      return {
+        say,
+        action: {
+          kind: "callback",
+          phone: (p.callback_phone ?? "").trim().slice(0, 30) || null,
+          whenPhrase,
+          reason: (p.callback_reason ?? "").trim().slice(0, 200) || null,
+        },
+      }
     }
     return { say, action: { kind: "say" } }
   } catch {

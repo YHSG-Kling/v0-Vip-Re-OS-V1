@@ -20,8 +20,6 @@ import { createClient }          from "@/lib/supabase/server"
 import { createServiceClient }   from "@/lib/supabase/service"
 import { KernelEvent }           from "@/lib/kernel/events"
 import { isValidUUID }           from "@/lib/validations"
-import { calcNetToSeller }       from "@/lib/offers/offer-analyzer"
-import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { recordOutcomeForOfferSafe } from "@/lib/negotiation/auto-trigger"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
@@ -274,94 +272,31 @@ export async function recordOfferAiAnalysis(params: {
 }
 
 // ─── 6. COMPARE OFFERS (seller-side AI) ──────────────────────────────────────
-// Delegates to offer-analyzer, saves to offer_comparison. Emits OFFER_OS_AI_COMPARED.
-
-export async function compareOffersForListing(params: {
-  listingId:    string
-  agentId:      string
-  brokerageId:  string
-}): Promise<KernelOfferResult<{
-  comparisonId: string | null
-  offerCount:   number
-  netByOffer:   Record<string, number>
-}>> {
-  const { listingId, agentId, brokerageId } = params
-  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
-
-  const supabase = await createClient()
-
-  const { data: listing } = await supabase
-    .from("listings")
-    .select("id, address, list_price")
-    .eq("id", listingId)
-    .single()
-
-  if (!listing) return { success: false, error: "Listing not found" }
-
-  const { data: offers } = await supabase
-    .from("offers")
-    .select("*")
-    .eq("listing_id", listingId)
-    .in("status", ["pending", "countered"])
-
-  if (!offers || offers.length < 2) {
-    return { success: false, error: "At least 2 pending offers required for comparison" }
-  }
-
-  const commissionStructure = await getDefaultCommissionStructure(brokerageId, agentId)
-  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
-
-  const netByOffer: Record<string, number> = {}
-  const matrix = offers.map(o => {
-    const net = calcNetToSeller({
-      offer_price: (o as any).offer_price,
-      closing_cost_contribution: (o as any).closing_cost_contribution ?? null,
-      commission_rate: totalRate,
-    })
-    netByOffer[o.id] = net
-    return {
-      offer_id:             o.id,
-      offer_price:          (o as any).offer_price,
-      net_to_seller:        net,
-      financing_type:       (o as any).financing_type,
-      down_payment_percent: (o as any).down_payment_percent,
-      closing_date:         (o as any).closing_date,
-    }
-  })
-
-  // Persist comparison record
-  const { data: compRow } = await supabase
-    .from("offer_comparison")
-    .insert({
-      listing_id:              listingId,
-      brokerage_id:            brokerageId,
-      agent_id:                agentId,
-      created_by:              agentId,
-      offer_ids:               offers.map(o => o.id),
-      net_to_seller_by_offer:  netByOffer,
-      comparison_matrix:       matrix,
-      recommended_offer_id:    matrix.sort((a, b) => b.net_to_seller - a.net_to_seller)[0]?.offer_id ?? null,
-    })
-    .select("id")
-    .single()
-
-  await emitOfferEvent({
-    event:       KernelEvent.OFFER_OS_AI_COMPARED,
-    brokerageId,
-    entityId:    listingId,
-    actorUserId: agentId,
-    metadata:    { offer_count: offers.length, comparison_id: compRow?.id ?? null },
-  }).catch(() => {})
-
-  return {
-    success: true,
-    data: {
-      comparisonId: compRow?.id ?? null,
-      offerCount:   offers.length,
-      netByOffer,
-    },
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1, wave 55): compareOffersForListing deleted —
+// SURVIVOR: lib/offers/offer-analyzer.ts:60 (analyzeAndCompareOffers), called
+// from app/actions/seller-offers.ts:triggerOfferComparison. Two writers of
+// `offer_comparison` for the SAME feature (rank a listing's pending offers by
+// net-to-seller) had grown up side by side: this one did the net-sheet math
+// only and emitted OFFER_OS_AI_COMPARED (signal_registry disposition
+// "feed_only", zero consumers); the survivor additionally calls the model for
+// a real recommendation/ranking rationale and emits OFFER_COMPARISON_GENERATED,
+// which IS handled (listing_concierge -> campaign_orchestrator, a gated seller
+// message — lib/kernel/event-reactor.ts, lib/kernel/signal-routing.ts). This
+// one also had no live caller anywhere outside its own re-export from
+// lib/kernel/index.ts — an orphan, not a second entry point. Merged onto the
+// survivor FIRST (this file's only real advantage): the insert now
+// `.select("id").single()`s its own row and returns `comparisonId`, and the
+// kernel-event metadata now carries `comparison_id` — both now at
+// lib/offers/offer-analyzer.ts:206-228. NOT carried over: `agent_id: agentId`
+// here was a raw users.id written into a column that FKs agents(id)
+// (agents.id and users.id are DISJOINT, CLAUDE.md §3) — the survivor already
+// resolves this correctly via resolveAgentIdInBrokerage — and the insert's
+// `{ data }` was destructured without `error` (CLAUDE.md §3: a swallowed
+// refusal degrades silently), which the survivor already reads and logs.
+// The OFFER_OS_AI_COMPARED signal is retired with it — tombstoned at
+// lib/kernel/events.ts, lib/kernel/signal-registry.ts,
+// lib/kernel/signal-routing.ts and lib/kernel/event-reactor.ts (no other
+// emitter existed).
 
 // ─── 7. COUNTER OFFER ────────────────────────────────────────────────────────
 // Creates a new offers row with offer_type='counter' + parent_offer_id.

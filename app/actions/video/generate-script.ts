@@ -221,11 +221,17 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   // ── Claude script generation ─────────────────────────────────────────────────
   const typeSystemContext = buildTypeSystemContext()
   const { SCRIPT_QUALITY_CHARTER } = await import("@/lib/ai/script-standards")
+  // REALISM (wave 55) — every script this wizard produces is spoken on camera
+  // by a D-ID avatar (buildTypeSystemContext's own system lines say so:
+  // "avatar video", "digital twin"), so SPOKEN_REALISM_DIRECTIVE applies
+  // unconditionally here, not per-videoType.
+  const { SPOKEN_REALISM_DIRECTIVE } = await import("@/lib/video/realism-profile")
   const systemPrompt = [
     typeSystemContext[params.videoType] ?? typeSystemContext.custom,
     TONE_INSTRUCTIONS[params.tone] ?? TONE_INSTRUCTIONS.professional,
     ...complianceBlocks,
     SCRIPT_QUALITY_CHARTER,
+    SPOKEN_REALISM_DIRECTIVE,
     `Write ONLY the script content — no stage directions, no [pause] markers, no speaker labels.`,
     `Target approximately ${wordTarget} words (for a ${duration}-second video at a natural speaking pace).`,
     `Do NOT include any greeting before the script or explanation after it. Output the script only.`,
@@ -303,11 +309,17 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   // "advisory passes" ruling). Wired 2026-09-03; it had no runtime caller.
   const { lintScriptQuality } = await import("@/lib/ai/script-standards")
   const qualityHits = lintScriptQuality(script).map((rule) => `Script quality: ${rule.replace(/_/g, " ")} — see the Script Quality Charter.`)
+  // REALISM (wave 55) — same advisory posture as qualityHits: the deterministic
+  // backstop for what a model ships despite SPOKEN_REALISM_DIRECTIVE above.
+  // Never a red flag, never a hold — the owner's "advisory passes" ruling.
+  const { scanForAiTells } = await import("@/lib/video/realism-profile")
+  const aiTellHits = scanForAiTells(script)
   const advisory = [
     ...(complianceWarnings ?? []).filter(
       (w) => !redFlags.includes(w) && !w.startsWith(COMPLIANCE_UNKNOWN_PREFIX),
     ),
     ...qualityHits,
+    ...aiTellHits,
   ]
 
   // ── FAIL CLOSED: "we could not check" is a reason to summon a human ─────────

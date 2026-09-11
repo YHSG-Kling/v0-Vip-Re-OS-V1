@@ -491,6 +491,118 @@ const SELLER_ACTIVE_LESSONS: Omit<EducationLesson, "format">[] = [
   },
 ]
 
+// ── POST-JOURNEY (lifetime) CATALOG ──────────────────────────────────────────
+// MOUNTED, orphan doctrine §1.2, wave 55: getEducationPlan had NO "post" branch
+// at all — journeyPhase's third value existed on the type (lib/kernel/types.ts
+// JourneyPhase) and portal-education.ts's LIFETIME_CATEGORIES/
+// LIFETIME_CATEGORY_ORDER were built to receive it, but nothing between them
+// ever produced post-journey content: a closed/lifetime contact fell through
+// to the "else" branch below and was served the ACTIVE-journey catalog
+// (or, before this wave, resolveEducationContext never computed "post" at
+// all and passed "pre" — see lib/portal/resolve-education-context.ts). The
+// ONLY real post-journey lesson content anywhere in the tree was hardcoded
+// inside lib/kernel/portal.ts's getLifetimeTrack/buildLessonsForSegment,
+// itself unreachable (zero callers — nothing invoked it). Promoted here, into
+// the SAME catalog + tags + persona-supplement + delivery-format pipeline
+// every other phase already uses, so a lifetime contact gets real, DB-tracked
+// (learning_assignments), theme-consistent lessons instead of either stale
+// pre-journey content or an unreachable duplicate.
+const BUYER_POST_LESSONS: Omit<EducationLesson, "format">[] = [
+  {
+    key: "buyer_post_first_year",
+    title: "Your First Year as a Homeowner",
+    description: "What to expect in your first 12 months of ownership — taxes, insurance renewal, and routine upkeep.",
+    milestoneKey: null,
+    order: 1,
+    estimatedMinutes: 6,
+    isGated: false,
+    tags: ["overview"],
+  },
+  {
+    key: "buyer_post_maintenance",
+    title: "Home Maintenance Checklist",
+    description: "Seasonal maintenance tasks that protect your home's value and catch small issues early.",
+    milestoneKey: null,
+    order: 2,
+    estimatedMinutes: 5,
+    isGated: false,
+    tags: ["maintenance"],
+  },
+  {
+    key: "buyer_post_equity",
+    title: "Building Equity Over Time",
+    description: "How principal paydown and appreciation grow your equity, and how to track it.",
+    milestoneKey: null,
+    order: 3,
+    estimatedMinutes: 7,
+    isGated: false,
+    tags: ["equity"],
+  },
+  {
+    key: "buyer_post_refinance",
+    title: "When to Refinance",
+    description: "The rate-and-timeline math that decides whether refinancing is worth it.",
+    milestoneKey: null,
+    order: 4,
+    estimatedMinutes: 6,
+    isGated: false,
+    tags: ["refinance"],
+  },
+  {
+    key: "buyer_post_referrals",
+    title: "Referring Friends and Family",
+    description: "How your agent can help the people in your life who are buying or selling next.",
+    milestoneKey: null,
+    order: 5,
+    estimatedMinutes: 3,
+    isGated: false,
+    tags: ["overview"],
+  },
+]
+
+const SELLER_POST_LESSONS: Omit<EducationLesson, "format">[] = [
+  {
+    key: "seller_post_tax",
+    title: "Capital Gains Tax Overview",
+    description: "The primary-residence exclusion, what counts as gain, and when to talk to a CPA.",
+    milestoneKey: null,
+    order: 1,
+    estimatedMinutes: 6,
+    isGated: false,
+    tags: ["tax"],
+  },
+  {
+    key: "seller_post_proceeds",
+    title: "What to Do With Proceeds",
+    description: "Common next steps for sale proceeds — a down payment, paying down debt, or investing.",
+    milestoneKey: null,
+    order: 2,
+    estimatedMinutes: 6,
+    isGated: false,
+    tags: ["overview"],
+  },
+  {
+    key: "seller_post_next_home",
+    title: "Buying Your Next Home",
+    description: "How your agent can carry you straight into the buy side of your move.",
+    milestoneKey: null,
+    order: 3,
+    estimatedMinutes: 5,
+    isGated: false,
+    tags: ["overview"],
+  },
+  {
+    key: "seller_post_staying_in_touch",
+    title: "Staying in Touch With Your Agent",
+    description: "Market updates, home-value check-ins, and how to reach your agent after closing.",
+    milestoneKey: null,
+    order: 4,
+    estimatedMinutes: 3,
+    isGated: false,
+    tags: ["overview"],
+  },
+]
+
 // Persona-specific supplemental lessons injected into any plan
 const PERSONA_SUPPLEMENTS: Partial<Record<string, Omit<EducationLesson, "format">[]>> = {
   first_time: [
@@ -696,6 +808,9 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
   if (params.journeyType === "buyer") {
     if (params.journeyPhase === "pre") {
       rawLessons = [...BUYER_PRE_LESSONS]
+    } else if (params.journeyPhase === "post") {
+      // MOUNTED, wave 55 — see the catalog's header comment above.
+      rawLessons = [...BUYER_POST_LESSONS]
     } else {
       rawLessons = resolvedMilestoneKey
         ? filterToMilestone(BUYER_ACTIVE_LESSONS, resolvedMilestoneKey)
@@ -704,6 +819,9 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
   } else {
     if (params.journeyPhase === "pre") {
       rawLessons = [...SELLER_PRE_LESSONS]
+    } else if (params.journeyPhase === "post") {
+      // MOUNTED, wave 55 — see the catalog's header comment above.
+      rawLessons = [...SELLER_POST_LESSONS]
     } else {
       rawLessons = resolvedMilestoneKey
         ? filterToMilestone(SELLER_ACTIVE_LESSONS, resolvedMilestoneKey)

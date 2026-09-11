@@ -245,6 +245,58 @@ export async function proposeSellerLeadFromCall(
   } catch { return false }
 }
 
+/** Callback task from a live call — the WRITER half of the owner's ruling
+ *  (wave 55: "make a task to call a person back"). Both transports call this
+ *  with whatever the caller's OWN number is (voice_calls.phone_from) as the
+ *  fallback when they didn't give a different one. Best-effort by design, same
+ *  as bookShowingFromCall/rsvpOpenHouseFromCall above: the spoken confirmation
+ *  already stands; a write failure is reported to the console, not the caller. */
+export async function createCallbackTaskFromCall(
+  svc: any,
+  ctx: InboundCallContext,
+  call: { id: string; contact_id: string | null; lead_id?: string | null; phone_from?: string | null },
+  phone: string | null,
+  whenPhrase: string,
+  reason: string | null,
+): Promise<{ ok: boolean; taskId?: string; dueIso?: string; error?: string }> {
+  try {
+    // The caller's own ANI when they didn't name a different number — read off
+    // the ledger row when the caller passed a bare row (turn route always has
+    // it; the relay route's `call` select below is extended to carry it too).
+    let callerAni = call.phone_from ?? null
+    if (!callerAni) {
+      const { data: row } = await svc.from("voice_calls").select("phone_from").eq("id", call.id).maybeSingle()
+      callerAni = (row as any)?.phone_from ?? null
+    }
+    const { createCallbackTask } = await import("@/lib/ai-isa/callback-task")
+    const result = await createCallbackTask(svc, {
+      brokerageId: ctx.brokerageId,
+      contactId: call.contact_id,
+      leadId: call.lead_id ?? null,
+      phone: (phone ?? callerAni ?? "").trim(),
+      whenPhrase,
+      reason,
+      voiceCallId: call.id,
+      assigneeType: "ai_isa",
+    })
+    if (!result.ok) {
+      console.error("[twilio-voice] callback task NOT created — the spoken promise stands with nothing behind it:", result.error)
+      return result
+    }
+    if (ctx.agentUserId) {
+      await svc.from("notifications").insert({
+        user_id: ctx.agentUserId, brokerage_id: ctx.brokerageId, type: "callback_requested",
+        title: "The AI receptionist booked a callback",
+        body: `A caller asked to be called back${reason ? ` about: ${reason}` : ""} — the ISA will place the call around ${new Date(result.dueIso!).toLocaleString()}. Transcript on the call record.`,
+        entity_type: "voice_call", entity_id: call.id, priority: "medium", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+    }
+    return result
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "createCallbackTaskFromCall threw" }
+  }
+}
+
 /** One turn against ANY system prompt (reception or outbound brief) — the
  *  shared engine both directions ride. */
 export async function planTurnWithPrompt(

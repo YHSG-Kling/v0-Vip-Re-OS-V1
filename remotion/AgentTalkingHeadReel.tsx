@@ -46,6 +46,7 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { BrollLayer } from "./_BrollLayer"
+import { avatarFadeOutFrame } from "../lib/video/script-structure"
 
 export interface AgentTalkingHeadReelProps {
   /** Top hook label — short eyebrow (e.g. "MARKET UPDATE", "JUST LISTED",
@@ -80,6 +81,17 @@ export interface AgentTalkingHeadReelProps {
    *  for caption legibility) and the avatar shrinks to a floating card —
    *  the scroll-stopping pattern. Absent → the original solid-brand layout. */
   brollClips?: Array<{ url: string; caption?: string }>
+  /**
+   * D-ID's OWN measured render duration in seconds (lib/video/
+   * avatar-render-orchestrator.ts, wave 55 realism ruling). When the avatar
+   * clip is SHORTER than the BODY window — the common case, since
+   * NARRATION_HEADROOM deliberately under-claims the window — the avatar
+   * fades out at its real end instead of Remotion holding a frozen last
+   * frame for the remainder. Optional + additive: absent renders EXACTLY as
+   * before (the raw hold), so an older render row with no measurement is
+   * unaffected.
+   */
+  avatarDurationSeconds?: number | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -99,11 +111,22 @@ const OUTRO  = 2  * FPS
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
-  voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips,
+  voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips, avatarDurationSeconds,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
   const hasBroll = (brollClips?.length ?? 0) > 0
+  // REALISM (wave 55) — null when no measurement or the clip fills the
+  // window; a real frame otherwise. `frame` is GLOBAL (called at the
+  // composition root, not inside the BODY <Sequence>), and BODY starts at
+  // COVER, so the local frame within BODY is `frame - COVER`.
+  const avatarFadeStart = avatarFadeOutFrame(avatarDurationSeconds, BODY, FPS)
+  const avatarOpacity = avatarFadeStart != null
+    ? interpolate(frame - COVER, [avatarFadeStart, avatarFadeStart + 12], [1, 0], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      })
+    : 1
   // With B-roll behind, the avatar floats as a card (bottom-left) so the
   // footage reads; without it, the original near-full-bleed layout stands.
   const avatarBox: React.CSSProperties = hasBroll
@@ -178,6 +201,9 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
                 ...avatarBox,
                 borderRadius: 12,
                 boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
+                // Wave 55 — fades to the branded/broll background at the
+                // avatar's REAL end instead of holding a frozen last frame.
+                opacity: avatarOpacity,
               }}
             />
           ) : agentPhotoUrl ? (

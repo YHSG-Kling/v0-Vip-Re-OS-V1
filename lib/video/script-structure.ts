@@ -358,6 +358,40 @@ export function avatarDurationOverrunSeconds(
   return over > 0 ? Number(over.toFixed(1)) : 0
 }
 
+/**
+ * The UNDERRUN twin of `avatarDurationOverrunSeconds` (wave 55 — owner ruling:
+ * "the video product needs to look and appear real... the person viewing the
+ * video must not think it was made with ai"). `avatarDurationOverrunSeconds`
+ * measures D-ID rendering LONGER than the narration budget assumed; nothing
+ * measured the opposite case, which NARRATION_HEADROOM (20% by design, see
+ * above) makes the COMMON one — a script that fits comfortably under budget
+ * leaves the composition's avatar window unclaimed. AgentTalkingHeadReel's
+ * `<Video trimBefore={0} trimAfter={BODY}>` has no tpad on that lane (only
+ * the separate voiceover_url/snake mux does): a `<Video>` played past its own
+ * source duration holds the LAST rendered frame — a visibly frozen face —
+ * for every remaining frame in the window, which is exactly the "looks like
+ * a fake AI creation" tell the ruling names.
+ *
+ * PURE. Returns the frame at which the avatar visual should start fading OUT
+ * so playback never sits on a frozen last frame; null when no fade is needed
+ * (the source fills or exceeds the window, or the actual duration is not
+ * known — a caller with no measurement renders EXACTLY as before, additive/
+ * opt-in). See lib/video/realism-profile.ts (re-exported there as the one
+ * realism front door) for the Remotion-side wiring.
+ */
+export function avatarFadeOutFrame(
+  actualDurationSeconds: number | null | undefined,
+  windowFrames: number,
+  fps: number,
+  fadeFrames = 12,
+): number | null {
+  if (typeof actualDurationSeconds !== "number" || !Number.isFinite(actualDurationSeconds) || actualDurationSeconds <= 0) return null
+  if (!Number.isFinite(windowFrames) || windowFrames <= 0 || !Number.isFinite(fps) || fps <= 0) return null
+  const actualFrames = Math.round(actualDurationSeconds * fps)
+  if (actualFrames >= windowFrames) return null
+  return Math.max(0, actualFrames - Math.max(0, fadeFrames))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // THE READER FOR `stillOverBudget` (§1 — build the missing half)
 // ═══════════════════════════════════════════════════════════════════════════

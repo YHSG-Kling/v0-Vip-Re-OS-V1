@@ -625,7 +625,14 @@ export enum KernelEvent {
   OFFER_OS_ESIGN_COMPLETED           = 'offer_os_esign_completed',
   OFFER_OS_SUBMITTED                 = 'offer_os_submitted',
   OFFER_OS_AI_ANALYZED               = 'offer_os_ai_analyzed',
-  OFFER_OS_AI_COMPARED               = 'offer_os_ai_compared',
+  // TOMBSTONE (orphan doctrine §1.1, wave 55) — OFFER_OS_AI_COMPARED
+  // ('offer_os_ai_compared') lived here. SURVIVOR: OFFER_COMPARISON_GENERATED
+  // above (lib/kernel/events.ts:55), emitted by
+  // lib/offers/offer-analyzer.ts:analyzeAndCompareOffers. Its sole emitter,
+  // lib/kernel/offers.ts:compareOffersForListing, was itself a duplicate
+  // offer_comparison writer with no live caller and is tombstoned there; no
+  // other emitter of this event ever existed, so the enum member goes with it
+  // rather than be kept as a dead value nothing can reach.
   OFFER_OS_COUNTERED                 = 'offer_os_countered',
   OFFER_OS_COUNTER_RESPONDED         = 'offer_os_counter_responded',
   OFFER_OS_ACCEPTED                  = 'offer_os_accepted',

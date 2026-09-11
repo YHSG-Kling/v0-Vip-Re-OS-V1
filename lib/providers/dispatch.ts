@@ -47,6 +47,12 @@ import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib
 import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
 import { contentSafetyBackstop } from "@/lib/providers/content-safety"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
+import {
+  DID_TALK_REALISM_CONFIG,
+  DID_NATURAL_DRIVER_URL,
+  ELEVENLABS_REALISM_VOICE_SETTINGS,
+  ELEVENLABS_TEXT_NORMALIZATION,
+} from "@/lib/video/realism-profile"
 
 /** True when a governed manager is sending unattended (arms the Fair-Housing content backstop's
  *  hard-block; human-approved sends are flagged-but-allowed). */
@@ -1267,6 +1273,16 @@ async function dispatchVideoViaDID({
   ) || JSON.stringify(params.scriptVars ?? {})
 
   // ─── 1. Generate audio via ElevenLabs TTS ───────────────────────────────────
+  // REALISM (wave 55): `voice_settings` was never sent on this call — every
+  // avatar video's voice rode ElevenLabs' bare API default (stability 0.5,
+  // similarity_boost 0.75, style 0), not a value anyone chose for a cloned
+  // agent voice speaking to camera. ELEVENLABS_REALISM_VOICE_SETTINGS is the
+  // ONE tuned constant (lib/video/realism-profile.ts — see its header for the
+  // 2026-09-11 research), the same one lib/voice/elevenlabs-tts.ts's default
+  // now uses, so this is not a second, differently-tuned answer to "what
+  // sounds real" (§6). `apply_text_normalization: "auto"` is ElevenLabs'
+  // documented middle ground for spelling out prices/dates correctly without
+  // paying the latency cost on every short avatar-video line.
   const ttsRes = await callConnector<Buffer>({
     connector: "elevenlabs",
     baseUrl: "https://api.elevenlabs.io",
@@ -1278,6 +1294,8 @@ async function dispatchVideoViaDID({
     body: {
       text: renderedScript,
       model_id: "eleven_multilingual_v2",
+      voice_settings: ELEVENLABS_REALISM_VOICE_SETTINGS,
+      apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
       // `language_code` is DELIBERATELY NEVER sent here (wave 52 research
       // finding, DispatchVideoParams.ttsLanguageCode doc above): ElevenLabs
       // only enforces language_code on eleven_turbo_v2_5 / eleven_flash_v2_5;
@@ -1315,17 +1333,29 @@ async function dispatchVideoViaDID({
     expressions: [{ start_frame: 0, expression, intensity }],
   }
 
+  // REALISM (wave 55): DID_TALK_REALISM_CONFIG is the ONE tuned `config` base
+  // (lib/video/realism-profile.ts — stitch/fluent/pad_audio/result_format,
+  // see its header for the 2026-09-11 D-ID docs research) spread into BOTH
+  // branches. Before this fix the two branches disagreed on the same realism
+  // concern (§6): the video-driven `/clips` branch had neither `fluent` nor
+  // `pad_audio`, so a video-sourced avatar rendered with a visible jump-cut at
+  // the loop point and a mid-viseme freeze on its last frame while the
+  // photo-driven `/talks` branch already asked for one of the two (fluent)
+  // but padded 0 seconds — no settling time before the cut either. Both now
+  // get the SAME base config; `driver_url` and `driver_expressions` stay
+  // per-branch/per-agent, which is a genuine difference (a custom driver video
+  // needs no driver bank pick) and not a realism-setting drift.
   const didPayload = isVideoSource
     ? {
         source_url: sourceUrl,
         script: { type: "audio", audio_url: audioUrl },
-        config: { stitch: true, result_format: "mp4", driver_expressions: driverExpressions },
+        config: { ...DID_TALK_REALISM_CONFIG, driver_expressions: driverExpressions },
       }
     : {
         source_url: sourceUrl,
         script: { type: "audio", audio_url: audioUrl },
-        driver_url: "bank://natural",
-        config: { stitch: true, result_format: "mp4", fluent: true, pad_audio: 0.0, driver_expressions: driverExpressions },
+        driver_url: DID_NATURAL_DRIVER_URL,
+        config: { ...DID_TALK_REALISM_CONFIG, driver_expressions: driverExpressions },
       }
 
   const didRes = await callConnector<{ id?: string }>({

@@ -70,6 +70,7 @@ import {
   narrationLengthDirective,
   narrationMaxTokens,
 } from "@/lib/video/script-structure"
+import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells } from "@/lib/video/realism-profile"
 
 // Wave 27 — extended from 3 event types to the full 7-moment listing
 // lifecycle. The reactor remains the single dispatcher; per-event branches
@@ -259,7 +260,12 @@ export async function dispatchListingPromoVideo(
           content:      s,
           // broadcast shape — no per-contact gates
         })
-        return { allowed: r.allowed, violations: r.violations }
+        // REALISM (wave 55): folded into the SAME one-redraft gate as
+        // intro-video-reactor.ts, for the same reason (§6 — one retry
+        // mechanism, not a second loop for realism) — see that file's gate
+        // for the full rationale.
+        const tells = scanForAiTells(s)
+        return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
       },
     })
     if (!result.ok) {
@@ -425,7 +431,9 @@ Style:
 - AVOID guaranteed-return / value-promise / market-direction claims ("prices are going up", "you'll make money", "tight inventory will push prices")
 - Skip any fact that's "(omitted)"
 ${tmpl.extraConstraints ? `- ${tmpl.extraConstraints}\n` : ""}
-Return ONLY the script text the agent will speak on camera.${violationLine}`
+Return ONLY the script text the agent will speak on camera.
+
+${SPOKEN_REALISM_DIRECTIVE}${violationLine}`
 
   const { text } = await generateTextRouted({
     brokerageId: args.brokerageId ?? null,

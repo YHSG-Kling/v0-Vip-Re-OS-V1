@@ -1,0 +1,38 @@
+-- m621-drop-provision-ai-isa-system-row-superseded.sql
+-- APPLIED to hrvaqgvukzxfskkcrwbt on 2026-09-11 by the integrator (measured
+-- first: the function existed with zero pg_depend dependents).
+--
+-- Orphan doctrine §1.3 (wave 55, hidden-wire-census category (d) — RPC
+-- functions the migrations define that no application code ever calls via
+-- `.rpc()`): public.provision_ai_isa_system_row(uuid, uuid, text)
+-- (supabase/migrations/037-ai-isa-system-actor.sql:52) is SUPERSEDED —
+-- the functionality already lives elsewhere.
+--
+-- SURVIVOR: lib/auth/provision-isa-actor.ts::provisionIsaActorForBrokerage,
+-- called from app/actions/auth/signup-brokerage.ts on brokerage signup.
+--
+-- Why the RPC was never adopted rather than merely forgotten: it only does
+-- HALF the job. It INSERTs the public.users row for a p_user_id the caller
+-- must already have created in auth.users — but creating that auth.users
+-- row requires the Supabase Admin API (`auth.admin.createUser`), which is
+-- not reachable from SQL at all. So a real caller was always going to need
+-- an application-layer function that calls `auth.admin.createUser` FIRST;
+-- once that function exists, doing the public.users insert/update and the
+-- brokerages.ai_isa_system_user_id cache in the same request (as
+-- provisionIsaActorForBrokerage does, in the SAME idempotency check that
+-- already reads brokerages.ai_isa_system_user_id) is strictly simpler than
+-- creating the auth user, then making a SECOND round trip into this RPC.
+-- The application-layer path is also MORE complete: it sets
+-- brokerages.ai_isa_system_user_id (this RPC never touches that column at
+-- all, leaving the cache the runtime helper lib/auth/isa-actor.ts depends on
+-- unset) and it relies on the handle_new_auth_user trigger to seed the
+-- public.users mirror rather than hand-inserting a second copy of that
+-- shape. Nothing to merge onto the survivor: it already does everything this
+-- function did, plus the two steps this function structurally cannot do.
+--
+-- Not applied here — the integrator runs this after confirming (per §1)
+-- that no other lane or in-flight code path still names this function.
+-- rg 'provision_ai_isa_system_row' across app/ + lib/ turns up nothing but
+-- comments describing this same supersession.
+
+DROP FUNCTION IF EXISTS public.provision_ai_isa_system_row(UUID, UUID, TEXT);

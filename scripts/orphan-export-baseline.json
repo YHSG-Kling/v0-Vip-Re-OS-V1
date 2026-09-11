@@ -17,7 +17,6 @@
     "app/components/command-palette-items.ts": 2,
     "app/components/portal/FitBadge.tsx": 1,
     "app/components/shared/ManagerChip.tsx": 2,
-    "hooks/use-click-outside.ts": 1,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
@@ -54,6 +53,7 @@
     "lib/ai/web-search.ts": 1,
     "lib/ai-isa/adaptive-reengagement.ts": 2,
     "lib/ai-isa/appointment-form.ts": 1,
+    "lib/ai-isa/callback-task.ts": 2,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
     "lib/ai-isa/ghost-reengagement.ts": 1,
@@ -435,7 +435,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9422,
+  "census": 9435,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -729,7 +729,7 @@
     "app/actions/leads.ts": 11,
     "app/actions/learning-modules-approvals.ts": 4,
     "app/actions/learning-modules.ts": 6,
-    "app/actions/lender-portal-actions.ts": 5,
+    "app/actions/lender-portal-actions.ts": 6,
     "app/actions/lender-status-request.ts": 1,
     "app/actions/lifecycle-promo-policy.ts": 4,
     "app/actions/lifetime-customer-touchpoints.ts": 5,
@@ -955,7 +955,7 @@
     "app/actions/tenant-sso.ts": 5,
     "app/actions/tenant-webhooks.ts": 11,
     "app/actions/time-to-value.ts": 1,
-    "app/actions/title-portal.ts": 6,
+    "app/actions/title-portal.ts": 9,
     "app/actions/tour-planner.ts": 12,
     "app/actions/transaction-compliance.ts": 6,
     "app/actions/transaction-document-signatures.ts": 4,
@@ -1074,6 +1074,7 @@
     "app/api/cron/affiliate-commissions/route.ts": 1,
     "app/api/cron/agent-coaching/route.ts": 1,
     "app/api/cron/agent-health-check/route.ts": 1,
+    "app/api/cron/ai-callback-dispatch/route.ts": 1,
     "app/api/cron/ai-overage-billing/route.ts": 1,
     "app/api/cron/anniversary-equity/route.ts": 1,
     "app/api/cron/annual-home-value-reports/route.ts": 1,
@@ -2678,6 +2679,7 @@
     "lib/ai-isa/brand-voice-prompt.ts": 1,
     "lib/ai-isa/build-call-context.ts": 1,
     "lib/ai-isa/buyer-intent-router.ts": 1,
+    "lib/ai-isa/callback-task.ts": 7,
     "lib/ai-isa/cold-contact-escalation.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 2,
     "lib/ai-isa/contact-reel-situation.ts": 9,
@@ -3432,7 +3434,7 @@
     "lib/kernel/objection-library.ts": 4,
     "lib/kernel/observability.ts": 3,
     "lib/kernel/offer-net-sheet.ts": 1,
-    "lib/kernel/offers.ts": 12,
+    "lib/kernel/offers.ts": 11,
     "lib/kernel/office-hours.ts": 2,
     "lib/kernel/onboarding-fallbehind.ts": 2,
     "lib/kernel/onboarding-journey.ts": 5,
@@ -3449,7 +3451,7 @@
     "lib/kernel/portal-contracts.ts": 2,
     "lib/kernel/portal-template-render.ts": 1,
     "lib/kernel/portal-value.ts": 2,
-    "lib/kernel/portal.ts": 11,
+    "lib/kernel/portal.ts": 10,
     "lib/kernel/postclose-concierge.ts": 4,
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
@@ -4131,11 +4133,12 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
+    "lib/video/realism-profile.ts": 1,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
     "lib/video/script-compliance.ts": 9,
-    "lib/video/script-structure.ts": 12,
+    "lib/video/script-structure.ts": 13,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 10,
     "lib/video/video-identity.ts": 1,
@@ -4179,7 +4182,7 @@
     "lib/voice/tool-registry.ts": 3,
     "lib/voice/twilio-outbound.ts": 5,
     "lib/voice/twilio-tenancy.ts": 4,
-    "lib/voice/twilio-voice.ts": 9,
+    "lib/voice/twilio-voice.ts": 10,
     "lib/voice/voice-bus.ts": 3,
     "lib/voice/voice-coverage.ts": 2,
     "lib/voice/voice-report-format.ts": 2,
@@ -6164,7 +6167,8 @@
       "uploadLenderDocument",
       "issueClearToClose",
       "flagLenderIssue",
-      "updateLenderLoanStatus"
+      "updateLenderLoanStatus",
+      "sendLenderMessageToAgent"
     ],
     "app/actions/lender-status-request.ts": [
       "requestLenderStatusUpdateAction"
@@ -7637,7 +7641,10 @@
       "uploadTitleDocument",
       "updateTitleStatus",
       "updateClosingPrepItem",
-      "sendTitleMessageToAgent"
+      "sendTitleMessageToAgent",
+      "batchConfirmTitleMilestones",
+      "batchSendTitleMilestonesToSettlement",
+      "batchUpdateTitleMilestoneStatus"
     ],
     "app/actions/tour-planner.ts": [
       "getSavedPropertiesForTour",
@@ -8279,6 +8286,9 @@
       "GET"
     ],
     "app/api/cron/agent-health-check/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/ai-callback-dispatch/route.ts": [
       "GET"
     ],
     "app/api/cron/ai-overage-billing/route.ts": [
@@ -13389,6 +13399,15 @@
     "lib/ai-isa/buyer-intent-router.ts": [
       "buyerIntentToMilestone"
     ],
+    "lib/ai-isa/callback-task.ts": [
+      "encodeCallbackNote",
+      "decodeCallbackNote",
+      "bumpCallbackAttempt",
+      "regexParseCallbackPhrase",
+      "resolveCallbackDueDate",
+      "createCallbackTask",
+      "detectCallbackRequest"
+    ],
     "lib/ai-isa/cold-contact-escalation.ts": [
       "escalateColdContact"
     ],
@@ -17267,7 +17286,6 @@
       "loadOffersForBuyer",
       "recordOfferSubmitted",
       "recordOfferAiAnalysis",
-      "compareOffersForListing",
       "issueCounterOffer",
       "respondToCounter",
       "acceptOffer",
@@ -17365,8 +17383,7 @@
       "getPortalMilestones",
       "isClientVisibleMilestone",
       "selectClientMilestones",
-      "getPortalJourneyMilestones",
-      "getLifetimeTrack"
+      "getPortalJourneyMilestones"
     ],
     "lib/kernel/postclose-concierge.ts": [
       "dueFrontiers",
@@ -20756,6 +20773,9 @@
       "buildComingSoonTeaser",
       "computeDaysOnMarket"
     ],
+    "lib/video/realism-profile.ts": [
+      "scanForAiTells"
+    ],
     "lib/video/reel-brand.ts": [
       "resolveReelBrand",
       "deliverCompletedReels"
@@ -20788,6 +20808,7 @@
       "spokenSentences",
       "fitNarrationToBudget",
       "avatarDurationOverrunSeconds",
+      "avatarFadeOutFrame",
       "fitNarrationWithOneRedraft",
       "narrationOverrunRedraftDirective",
       "narrationMaxTokens",
@@ -21024,6 +21045,7 @@
       "bindNumberToTwilioLane",
       "rsvpOpenHouseFromCall",
       "proposeSellerLeadFromCall",
+      "createCallbackTaskFromCall",
       "planTurnWithPrompt",
       "bookShowingFromCall",
       "planReceptionTurn"
@@ -21361,5 +21383,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }

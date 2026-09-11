@@ -37,6 +37,21 @@ export interface OfferAnalysisResult {
   comparison_summary: string
 }
 
+export interface OfferComparisonReturn {
+  success: boolean
+  error?: string
+  result?: OfferAnalysisResult
+  // The persisted offer_comparison.id — MERGED FROM the retired
+  // lib/kernel/offers.ts compareOffersForListing (tombstoned there) onto this
+  // survivor. That writer's insert always `.select("id").single()`'d the row
+  // it just created so its own caller could reference the specific comparison
+  // rather than assume "latest for this listing" — this one didn't, so a
+  // caller wanting the row this exact run produced (vs. loadLatestOfferComparison's
+  // separate re-query) had no way to get it. null when the insert itself was
+  // refused (comparisonError below — logged, not thrown).
+  comparisonId?: string | null
+}
+
 // ── Net-to-seller calculation ─────────────────────────────────────────────────
 // calcNetToSeller is imported + re-exported from lib/offers/offer-math (the pure
 // single source of truth). See the import at the top of this file.
@@ -49,7 +64,7 @@ export async function analyzeAndCompareOffers(params: {
   listPrice: number
   offers: OfferForAnalysis[]
   commissionRate: number
-}): Promise<{ success: boolean; error?: string; result?: OfferAnalysisResult }> {
+}): Promise<OfferComparisonReturn> {
   const { listingId, brokerageId, agentUserId, listPrice, offers, commissionRate } = params
 
   if (offers.length < 2) {
@@ -188,7 +203,11 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
     .join("\n")
   const analysisNotes = [result.comparison_summary, perOfferNotes].filter(Boolean).join("\n\n") || null
 
-  const { error: comparisonError } = await supabase.from("offer_comparison").insert({
+  // `.select("id").single()` MERGED FROM the retired lib/kernel/offers.ts
+  // compareOffersForListing (tombstoned there, orphan doctrine §1) — this
+  // insert used to discard the new row's id entirely, so a caller had no way
+  // to reference the comparison THIS run produced.
+  const { data: compRow, error: comparisonError } = await supabase.from("offer_comparison").insert({
     listing_id: listingId,
     brokerage_id: brokerageId,
     agent_id: comparisonAgentId,
@@ -199,13 +218,14 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
     ai_recommendation: result.recommendation ?? null,
     ai_analysis_notes: analysisNotes,
     recommended_offer_id: recommendedOfferId,
-  })
+  }).select("id").single()
   // Reported, not thrown: the analysis itself succeeded and the caller's own
   // return still carries it. A silent failure here is what produced the
   // permanently-null columns in the first place, so it is never swallowed.
   if (comparisonError) {
     console.error("[offer-analyzer] offer_comparison insert refused — this comparison will not survive a refresh:", comparisonError.message)
   }
+  const comparisonId = (compRow as { id: string } | null)?.id ?? null
 
   // lifecycle_events + kernel event
   await supabase.from("lifecycle_events").insert({
@@ -217,6 +237,10 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
     metadata: {
       offer_count: offers.length,
       ranked_offer_ids: result.ranked_offer_ids,
+      // comparison_id MERGED FROM compareOffersForListing's own metadata shape
+      // (lib/kernel/offers.ts, tombstoned) so a feed reader can jump straight
+      // to the row instead of re-deriving "latest for this listing".
+      comparison_id: comparisonId,
     },
   })
 
@@ -227,5 +251,5 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
     entityId: listingId,
   }).catch(() => {})
 
-  return { success: true, result }
+  return { success: true, result, comparisonId }
 }

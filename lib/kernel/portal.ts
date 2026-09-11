@@ -1,13 +1,14 @@
 // lib/kernel/portal.ts
 // LAYER 0 — Portal-facing display functions.
-// Reads milestone timeline and lifetime education track for contact portal.
-// Source of truth: lifecycle_events only. Does NOT query activities.
+// Reads milestone timeline for contact portal. Source of truth:
+// lifecycle_events only. Does NOT query activities. The lifetime education
+// track lived here (getLifetimeTrack) and is now tombstoned below — MOUNTED
+// onto lib/kernel/education.ts's getEducationPlan pipeline (see the tombstone
+// for the wave-55 detail).
 
 import { createClient } from "@/lib/supabase/server"
-import { getEducationDelivery } from "./education"
 import { processKernelEvent } from "./notification-engine"
 import { KernelEvent } from "./events"
-import type { AgeSegment } from "./education"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 // EIGHT of this block's twelve names were imported and never used. They split
@@ -900,199 +901,49 @@ export async function getPortalJourneyMilestones(
   return selectClientMilestones(milestonesResult.data as PortalJourneyMilestone[], overrides)
 }
 
-// ─── FUNCTION 2: getLifetimeTrack ─────────────────────────────────────────────
-
-export interface LifetimeTrackSegment {
-  segment: "pre-journey" | "active-journey" | "post-journey"
-  completed: boolean
-  lessons: Array<{ title: string; format: string }>
-}
-
-type JourneyPhase = "pre" | "active" | "post"
-
-// Determine the contact's current phase by inspecting their lifecycle_events
-async function resolveJourneyPhase(
-  contactId: string,
-): Promise<{ phase: JourneyPhase; journeyType: "buyer" | "seller" }> {
-  const supabase = await createClient()
-
-  const { data: events } = await supabase
-    .from("lifecycle_events")
-    .select("event_type")
-    .eq("entity_id", contactId)
-    .or("event_type.like.buyer.%,event_type.like.seller.%")
-    .order("created_at", { ascending: false })
-
-  if (!events || events.length === 0) {
-    return { phase: "pre", journeyType: "buyer" }
-  }
-
-  const types = events.map((e) => e.event_type)
-
-  // Determine journey type from first event prefix
-  const journeyType: "buyer" | "seller" = types.some((t) => t.startsWith("seller."))
-    ? "seller"
-    : "buyer"
-
-  // Check for closed event — post phase
-  const closedEvent = journeyType === "buyer" ? "buyer.closed" : "seller.closed"
-  if (types.includes(closedEvent)) {
-    return { phase: "post", journeyType }
-  }
-
-  // buyer./seller. events exist but not closed — active phase
-  return { phase: "active", journeyType }
-}
-
-/**
- * Returns the full lifetime education track for a contact.
- * Derives the current journey phase from lifecycle_events, then builds
- * all three segments (pre / active / post) with lessons from getEducationDelivery.
- * Segments prior to the current phase are marked completed = true.
- */
-export async function getLifetimeTrack(params: {
-  contactId: string
-  persona: string
-}): Promise<LifetimeTrackSegment[]> {
-  const { phase, journeyType } = await resolveJourneyPhase(params.contactId)
-
-  // Default age segment — actual preference read by getEducationPlan per contact;
-  // getEducationDelivery is a static lookup so we pass a neutral default here
-  const ageSegment: AgeSegment = "30-50"
-
-  const segments: Array<{ id: "pre-journey" | "active-journey" | "post-journey"; journeyPhase: "pre" | "active" | "post" }> = [
-    { id: "pre-journey",    journeyPhase: "pre" },
-    { id: "active-journey", journeyPhase: "active" },
-    { id: "post-journey",   journeyPhase: "post" },
-  ]
-
-  const phaseOrder: Record<JourneyPhase, number> = { pre: 0, active: 1, post: 2 }
-  const currentOrder = phaseOrder[phase]
-
-  const track: LifetimeTrackSegment[] = []
-
-  for (const seg of segments) {
-    // Delivery config drives which formats are used for this age segment
-    const delivery = getEducationDelivery({ ageSegment })
-    const segOrder = phaseOrder[seg.journeyPhase]
-
-    // Lessons per segment — sourced from the canonical lesson map in education.ts
-    // using the delivery config's primary and secondary formats
-    const lessons = buildLessonsForSegment({
-      journeyType,
-      journeyPhase: seg.journeyPhase,
-      persona: params.persona,
-      primaryFormat: delivery.primaryFormat,
-      secondaryFormat: delivery.secondaryFormat,
-    })
-
-    track.push({
-      segment: seg.id,
-      completed: segOrder < currentOrder,
-      lessons,
-    })
-  }
-
-  return track
-}
-
-// ─── LESSON MAP ──────────────────────────────────────────────────────────────
-
-/**
- * Returns a flat list of lesson stubs for a given segment.
- * Titles and formats are derived from the canonical plan; these are not DB rows.
- */
-function buildLessonsForSegment(params: {
-  journeyType: "buyer" | "seller"
-  journeyPhase: "pre" | "active" | "post"
-  persona: string
-  primaryFormat: string
-  secondaryFormat: string
-}): Array<{ title: string; format: string }> {
-  const { journeyType, journeyPhase, persona, primaryFormat, secondaryFormat } = params
-
-  if (journeyType === "buyer") {
-    if (journeyPhase === "pre") {
-      return [
-        { title: "Are You Ready to Buy?",            format: primaryFormat },
-        { title: "Understanding Your Credit Score",  format: secondaryFormat },
-        { title: "How Much Home Can You Afford?",    format: primaryFormat },
-        { title: "The Pre-Approval Process",         format: primaryFormat },
-        { title: "Finding the Right Neighborhood",   format: secondaryFormat },
-        ...(persona === "first_time_buyer"
-          ? [{ title: "First-Time Buyer Programs",   format: primaryFormat }]
-          : []),
-        ...(persona === "military"
-          ? [{ title: "VA Loan Benefits",            format: primaryFormat }]
-          : []),
-        ...(persona === "foreclosure"
-          ? [{ title: "Buying After Foreclosure",    format: primaryFormat }]
-          : []),
-      ]
-    }
-
-    if (journeyPhase === "active") {
-      return [
-        { title: "Making a Competitive Offer",       format: primaryFormat },
-        { title: "What Happens After Offer Accepted", format: secondaryFormat },
-        { title: "Home Inspection Walkthrough",       format: primaryFormat },
-        { title: "Appraisal Explained",               format: secondaryFormat },
-        { title: "Final Walk-Through Checklist",      format: "checklist" },
-        { title: "Closing Day — What to Expect",      format: primaryFormat },
-        { title: "Understanding Closing Costs",       format: secondaryFormat },
-      ]
-    }
-
-    if (journeyPhase === "post") {
-      return [
-        { title: "Your First Year as a Homeowner",   format: primaryFormat },
-        { title: "Home Maintenance Checklist",        format: "checklist" },
-        { title: "Building Equity Over Time",         format: secondaryFormat },
-        { title: "When to Refinance",                 format: primaryFormat },
-        { title: "Referring Friends and Family",      format: primaryFormat },
-      ]
-    }
-  }
-
-  if (journeyType === "seller") {
-    if (journeyPhase === "pre") {
-      return [
-        { title: "Is Now a Good Time to Sell?",       format: primaryFormat },
-        { title: "How Your Home is Priced",           format: secondaryFormat },
-        { title: "Preparing Your Home for Market",    format: "checklist" },
-        { title: "What to Expect from Showings",      format: primaryFormat },
-        ...(persona === "divorce"
-          ? [{ title: "Selling During a Divorce",     format: primaryFormat }]
-          : []),
-        ...(persona === "probate"
-          ? [{ title: "Probate Sale Overview",        format: primaryFormat }]
-          : []),
-        ...(persona === "foreclosure"
-          ? [{ title: "Avoiding Foreclosure",         format: primaryFormat }]
-          : []),
-      ]
-    }
-
-    if (journeyPhase === "active") {
-      return [
-        { title: "Reviewing an Offer",                format: primaryFormat },
-        { title: "Negotiation Basics",                format: secondaryFormat },
-        { title: "Seller Disclosures Explained",      format: primaryFormat },
-        { title: "Inspection Response Strategies",    format: secondaryFormat },
-        { title: "Timeline to Closing",               format: "checklist" },
-        { title: "Moving-Out Checklist",              format: "checklist" },
-      ]
-    }
-
-    if (journeyPhase === "post") {
-      return [
-        { title: "Capital Gains Tax Overview",        format: primaryFormat },
-        { title: "What to Do With Proceeds",          format: secondaryFormat },
-        { title: "Buying Your Next Home",             format: primaryFormat },
-        { title: "Staying in Touch With Your Agent",  format: primaryFormat },
-      ]
-    }
-  }
-
-  return []
-}
+// TOMBSTONE (orphan doctrine §1.2, wave 55): getLifetimeTrack, its private
+// resolveJourneyPhase and buildLessonsForSegment helpers, and the
+// LifetimeTrackSegment interface deleted — MOUNTED, not discarded (owner
+// ruling, wave 55: "just because the capability is not mounted correctly
+// doesn't mean you just delete it, you create it to complete another way").
+//
+// getLifetimeTrack had ZERO callers anywhere in the tree — only re-exported,
+// unused, through lib/kernel/index.ts — but it was NOT dead weight: it held
+// the ONLY post-journey (lifetime) lesson content that existed anywhere.
+// getEducationPlan (lib/kernel/education.ts, the pipeline the REAL "Learn"
+// page — app/portal/[contactId]/learn/page.tsx via getLessonFeed,
+// app/actions/portal-education.ts — actually calls) had no "post" branch at
+// all: journeyPhase's third value existed on the type
+// (lib/kernel/types.ts JourneyPhase) and portal-education.ts's
+// LIFETIME_CATEGORIES/LIFETIME_CATEGORY_ORDER were already built to receive
+// it, but resolveEducationContext (lib/portal/resolve-education-context.ts)
+// never computed "post" — a closed/lifetime contact had no active-transaction
+// milestone, so it always resolved to "pre" and every lifetime client's Learn
+// page showed PRE-JOURNEY content ("Are You Ready to Buy?") forever, no
+// matter how long they had owned the home.
+//
+// resolveJourneyPhase's correct logic (lifecycle_events buyer.closed /
+// seller.closed → "post") is now expressed the cheaper way: determinePortalView
+// (lib/kernel/portal.ts, already called by every portal page including this
+// one) already resolves "lifetime" for exactly this contact — no second
+// lifecycle_events scan needed. resolveEducationContext computes
+// `journeyPhase: portalView === "lifetime" ? "post" : ...` (its own header
+// comment carries the detail) and getLessonFeed reads it instead of
+// re-deriving "active"/"pre" on its own, which is exactly how "post" was
+// dropped in the first place.
+//
+// buildLessonsForSegment's five hardcoded post-journey titles per journey
+// type are promoted VERBATIM into BUYER_POST_LESSONS / SELLER_POST_LESSONS
+// (lib/kernel/education.ts, beside BUYER_ACTIVE_LESSONS), so nothing in the
+// content itself was lost — it now flows through the SAME catalog, tags,
+// persona-supplement and delivery-format pipeline every other phase uses,
+// with REAL per-contact completion tracking (learning_assignments) instead
+// of a stub `{ title, format }` shape nothing ever rendered. The persona
+// branches (first_time_buyer / military / foreclosure / divorce / probate)
+// applied only to pre-journey in the original and were not part of the
+// post-journey block being promoted, so nothing there needed carrying.
+//
+// SURVIVORS: lib/kernel/education.ts BUYER_POST_LESSONS / SELLER_POST_LESSONS
+// + the getEducationPlan "post" branch; lib/portal/resolve-education-context.ts
+// EducationContext.journeyPhase / .contactType; app/actions/portal-education.ts
+// getLessonFeed.

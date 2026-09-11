@@ -32,6 +32,7 @@ import { voiceSignalFor, signalScore, signalTemperature } from "./qualification-
 import { detectOptOutIntent } from "./opt-out-utils"
 import { isAnalyzableCall, analyzeVoiceCallRow } from "@/lib/voice/call-analysis"
 import { bestEffort } from "@/lib/db/best-effort"
+import { detectCallbackRequest } from "./callback-task"
 
 const POS_INTENT = /(appointment|schedul|book|ready to (buy|list|sell)|pre-?approv|tour|showing|see the (home|house|property)|make an offer)/i
 const APPT_INTENT = /(appointment|schedul|book|tour|showing)/i
@@ -89,6 +90,40 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
       .eq("id", voiceCallId).maybeSingle()
     if (!call) return { ok: false, processed: false, error: "call not found" }
     const transcription: string = (call as any).transcription ?? ""
+
+    // 0. CALLBACK BACKSTOP — owner ruling (wave 55): the AI ISA must be able to
+    //    create a callback task. The LIVE path is the turn model choosing the
+    //    'callback' action mid-call (lib/voice/reception-brain.ts, wired in the
+    //    turn/relay routes); this is best-effort insurance for a call where the
+    //    model heard "call me back" and answered 'continue' instead — never the
+    //    primary path, and it never overrides what the live turn already did.
+    //    Runs BEFORE the branch split below because a callback ask is orthogonal
+    //    to lead-vs-contact and positive-vs-negative — any caller can ask for one.
+    try {
+      const ask = detectCallbackRequest(callerTurns(transcription))
+      if (ask.requested) {
+        const { data: already } = await svc.from("tasks").select("id")
+          .eq("source", "ai_callback").ilike("description", `%"voiceCallId":"${call.id}"%`).limit(1).maybeSingle()
+        if (!already) {
+          const { data: phoneRow } = await svc.from("voice_calls").select("phone_from").eq("id", call.id).maybeSingle()
+          const phone = (phoneRow as any)?.phone_from ?? null
+          if (phone) {
+            const { createCallbackTask } = await import("./callback-task")
+            const created = await createCallbackTask(svc, {
+              brokerageId: call.brokerage_id,
+              contactId: call.contact_id ?? null,
+              leadId: call.lead_id ?? null,
+              phone,
+              whenPhrase: ask.phrase ?? "as soon as possible",
+              reason: "caller asked for a callback during the call",
+              voiceCallId: call.id,
+              assigneeType: "ai_isa",
+            })
+            if (!created.ok) console.error("[post-call-outcome] callback backstop task NOT created:", created.error)
+          }
+        }
+      }
+    } catch { /* best-effort backstop — never blocks the outcome routing below */ }
 
     // 1. Ensure analysis exists (idempotent: reuse the row if the sweep/Zoom lane
     //    already wrote it; else analyze now so routing has sentiment + urgency).

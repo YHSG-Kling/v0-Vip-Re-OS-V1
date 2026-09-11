@@ -335,11 +335,11 @@ export const STATIC_ROUTES: Record<string, { from: ManagerKey; to: ManagerKey }>
   // a single offer finished AI analysis — FROM Data Steward (same family as
   // offer_ai_extracted) TO Listing Concierge.
   offer_os_ai_analyzed:              { from: "data_steward",       to: "listing_concierge" },
-  // a second offer-comparison writer's own visibility line (lib/kernel/offers.ts
-  // compareOffersForListing) — same FROM/TO shape as the already-HANDLED
-  // offer_comparison_generated (lib/offers/offer-analyzer.ts), feed_only so the two writers
-  // never double-propose a gated message.
-  offer_os_ai_compared:              { from: "listing_concierge",  to: "campaign_orchestrator" },
+  // TOMBSTONE (orphan doctrine §1.1, wave 55): offer_os_ai_compared removed —
+  // its sole emitter, lib/kernel/offers.ts compareOffersForListing, was a
+  // duplicate, callerless offer_comparison writer and is deleted (tombstone
+  // there). SURVIVOR: offer_comparison_generated (lib/offers/offer-analyzer.ts),
+  // already routed above via STATIC_ROUTES / event-reactor.ts as HANDLED.
   // offer negotiation lifecycle — FROM Deal Coordinator (owns negotiation,
   // negotiation_strategy_drafted's own domain) TO Compliance Officer's audit trail, the SAME
   // FROM/TO shape negotiation_strategy_drafted already uses.
@@ -361,6 +361,7 @@ export const BRANCHING_EVENTS: Record<string, { from: ManagerKey; candidates: Ma
   isa_appointment_scheduled: { from: "ai_isa", candidates: ["shopping_agent", "listing_concierge"], reason: "branches on the contact's contact_type" },
   ai_isa_handoff_to_agent:   { from: "ai_isa", candidates: ["listing_concierge", "shopping_agent", "data_steward"], reason: "branches on the contact's contact_type; unresolved routes to data_steward (the field gap is its stewardship domain) rather than guessing or self-routing to ai_isa" },
   isa_outreach_paused:       { from: "ai_isa", candidates: ["listing_concierge", "shopping_agent"], reason: "branches on the contact's contact_type; unresolved/lead-side publishes nothing" },
+  ai_callback_dispatched:    { from: "ai_isa", candidates: ["shopping_agent", "listing_concierge"], reason: "owner ruling (wave 55): a promised call-back was placed by the autonomous executor; branches on the contact's contact_type; an unmatched raw caller publishes nothing" },
   form_submission_received:  { from: "campaign_orchestrator", candidates: ["listing_concierge", "shopping_agent"], reason: "owner ruling (wave 51): a submitted form goes through the ONE welcome path (deliverConversionWelcome); the visibility trail goes from the form's owner to whichever welcome manager resolveWelcomeManagers picked for the contact's contact_type (seller/buyer); an untyped contact publishes nothing" },
   isa_qualified_lead:        { from: "ai_isa", candidates: ["listing_concierge", "shopping_agent", "data_steward"], reason: "branches on motivationToContactType(leads.motivation_type ?? lead_type)" },
   business_card_approved:    { from: "data_steward", candidates: ["sphere_of_influence", "ai_isa", "recruiting_manager", "asset_manager"], reason: "branches on metadata.card_subject_type" },

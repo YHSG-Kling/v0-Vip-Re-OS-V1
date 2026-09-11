@@ -18,6 +18,24 @@ import { createServiceClient } from "@/lib/supabase/service"
 // dynamic-imports its own server-only deps internally), so a static import
 // here is safe and is the ONE name→language-label map (§6).
 import { languageName as languageNameForCopy } from "@/lib/video/multilingual-reel"
+// PURE (no server-only) — see its header. §1: BUILT ahead of a real caller
+// rather than waited on, per the wave-55 ruling that an unmounted capability
+// gets mounted, not skipped — no channel here is spoken/video TODAY (every
+// avatar/video script is drafted by the dedicated writers in lib/video/*
+// instead), but this generic copy engine is the one place a future spoken
+// channel (a video caption, an avatar-video CTA line) would reach, and it
+// must not silently miss the ONE realism directive every other writer carries.
+import { SPOKEN_REALISM_DIRECTIVE } from "@/lib/video/realism-profile"
+
+/**
+ * Channels whose copy is SPOKEN aloud rather than only read — the set
+ * SPOKEN_REALISM_DIRECTIVE applies to. Every channel any caller uses today
+ * (landing, portal, blog, farm postcards, …) is written-only, so this set is
+ * currently empty in practice; it exists so a future avatar/video caller of
+ * generatePersonaCopy is realism-directed automatically instead of silently
+ * missing the directive every dedicated video-script writer already carries.
+ */
+const SPOKEN_COPY_CHANNELS = new Set(["video", "avatar_video", "reel", "reel_caption", "video_script"])
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -98,6 +116,9 @@ export const realCopyGenerator: CopyGenerator = async (req) => {
     ...(req.language && req.language !== "en"
       ? [`6. Write the ENTIRE piece in ${languageNameForCopy(req.language)} — subject and body both, no English mixed in.`]
       : []),
+    // ADDITIVE — every existing (written-only) channel is byte-for-byte
+    // unaffected; only a future spoken/video channel gains this line.
+    ...(SPOKEN_COPY_CHANNELS.has(req.channel) ? [SPOKEN_REALISM_DIRECTIVE] : []),
     SCRIPT_QUALITY_CHARTER,
     `Return STRICT JSON: {"subject": "<short subject or empty>", "body": "<the copy>"}.`,
   ].join("\n")

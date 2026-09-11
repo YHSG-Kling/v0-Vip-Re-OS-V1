@@ -191,6 +191,10 @@ export async function POST(request: NextRequest) {
     const { proposeSellerLeadFromCall } = await import("@/lib/voice/twilio-voice")
     await proposeSellerLeadFromCall(svc, ctx, call as any, plan.action.address)
   }
+  if (plan.action.kind === "callback" && call) {
+    const { createCallbackTaskFromCall } = await import("@/lib/voice/twilio-voice")
+    await createCallbackTaskFromCall(svc, ctx, call as any, plan.action.phone, plan.action.whenPhrase, plan.action.reason)
+  }
   if (plan.action.kind === "hangup") {
     if (call) {
       await finishCall(svc, (call as any).id, newTranscript)
