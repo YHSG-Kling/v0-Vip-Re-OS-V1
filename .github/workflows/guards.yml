@@ -29,7 +29,16 @@ concurrency:
 jobs:
   egress-guards:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 2026-09-11: 20 minutes was the cap while `npm run guard` ran ~16 min on
+    # this runner (run 34548154361 at 844546ce: 16m12s, green). Waves 55-56 added
+    # test:ai-callback-loop, test:dead-imports, test:anchor-census,
+    # test:children-census and test:import-export-parity plus the simulator
+    # sweep's growth, and runs 34562243590 / 34562249006 / 34622268553 /
+    # 34622276787 were all CANCELLED by this timeout at 19m30s-20m20s inside
+    # "Run egress integrity guards" — not a red proof (the same chain is green
+    # locally, GUARD_EXIT=0, at 26c2c9e4). 40 leaves headroom for the chain to
+    # keep growing without turning a slow runner into a false red.
+    timeout-minutes: 40
     env:
       # tsc + the simulators need more than Node's default ~4GB heap on this large
       # codebase. 8192 was enough until the program outgrew it: `tsc --noEmit
