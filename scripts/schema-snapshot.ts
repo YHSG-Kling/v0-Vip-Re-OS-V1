@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-12
  * source: public.live_schema_json()
- * body-sha256: 214f55a453337a768e1c4b2a8bbb3e0a7686c0f6235ce2c09541d2d756aac93f
+ * body-sha256: 7fee7dd1e777ce0ed0886721a9e46a382148468c7e2cd7e19028b1c3d6b819e9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -71,7 +71,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_quiz_attempts: ["agent_id", "answers", "attempt_number", "brokerage_id", "created_at", "id", "passed", "quiz_id", "score"],
   agent_relationships: ["agent_id", "brokerage_id", "created_at", "depth_level", "effective_from", "effective_to", "id", "is_active", "relationship_type", "revenue_share_flat_cents", "revenue_share_percent", "source_of_funds", "sponsor_agent_id"],
   agent_retention_scores: ["agent_id", "brokerage_id", "composite_score", "created_at", "driving_signals", "id", "previous_score", "score_date", "score_trend", "signal_breakdown", "tier"],
-  agent_reviews: ["agent_id", "brokerage_id", "contact_id", "created_at", "id", "is_published", "kind", "platform", "rating", "response_at", "response_text", "review_text", "reviewer_name", "source_url", "transaction_id", "updated_at", "video_url"],
+  agent_reviews: ["agent_id", "auto_publish_at", "brokerage_id", "contact_id", "created_at", "id", "is_published", "kind", "platform", "rating", "response_at", "response_text", "review_text", "reviewer_name", "source_url", "transaction_id", "updated_at", "video_url"],
   agent_social_shares: ["agent_user_id", "brokerage_id", "external_share_id", "id", "share_platform", "share_variant_text", "shared_at", "social_post_id"],
   agent_state_machine: ["agent_type", "assigned_agent_id", "brokerage_id", "context", "created_at", "current_state", "ended_at", "entity_id", "entity_type", "escalation_reason", "escalation_urgency", "handoff_reason", "handoff_to", "human_override", "id", "outcome_summary", "priority", "session_id", "started_at", "status", "updated_at"],
   agent_step_completions: ["agent_id", "brokerage_id", "completed", "completed_at", "created_at", "id", "notes", "quiz_score", "step_id", "time_spent_minutes", "updated_at"],

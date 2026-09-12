@@ -631,33 +631,30 @@ export async function getAgentCommissions(agentId: string, year?: number, opts?:
 // keeps all four of its checks, and gains the single-writer assertion this
 // retirement establishes.
 
-export async function updateCommissionStatus(
-  commissionId: string,
-  status: "pending" | "paid" | "cancelled",
-  paidDate?: string,
-) {
-  const supabase = await createClient()
-
-  const updates: Record<string, unknown> = { status }
-  if (paidDate) {
-    updates.paid_date = paidDate
-  }
-
-  const { data, error } = await supabase
-    .from("agent_commissions")
-    .update(updates)
-    .eq("id", commissionId)
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Error updating commission status:", error)
-    return { error: error.message }
-  }
-
-  revalidatePath("/dashboard/admin/users")
-  return { data }
-}
+// TOMBSTONE (orphan doctrine §1.1 — duplicates round 7, wave 61C)
+// `updateCommissionStatus` deleted. SURVIVOR: app/actions/financials.ts:
+// updateCommissionStatus.
+//
+// Neither had a live caller (both sat in scripts/orphan-export-baseline.json),
+// but this twin was the WORSE of the two and there was nothing on it worth
+// merging onto the survivor:
+//   · NO GATE — no session check at all (not even `auth.getUser()`), where the
+//     survivor requires isFinanceAdmin(context.userType).
+//   · NO TENANT SCOPE — `.eq("id", commissionId)` alone, so any caller who knew
+//     or guessed an id could flip another brokerage's commission row (CLAUDE.md
+//     §4); the survivor pins `.eq("brokerage_id", context.brokerageId!)`.
+//   · WRONG COLUMN — `paid_date` does not exist on agent_commissions (verified
+//     against scripts/schema-snapshot.ts: agent_commissions has `paid_at`, not
+//     `paid_date`), so any call passing paidDate was refused ENTIRELY (§3
+//     PGRST204), never partially. The survivor stamps the real column,
+//     `paid_at`, from a KEEP-ONE (m283) comment already on it.
+//   · "cancelled" is not a storable status either — verified against
+//     scripts/check-vocabularies.ts, agent_commissions.status admits exactly
+//     approved | disputed | paid | pending. (The survivor's own "deferred"
+//     value is ALSO outside that vocabulary — a pre-existing defect on the
+//     survivor, not fixed here; flagged, not silently carried forward.)
+// So this twin could never have run a real status change without the schema
+// refusing it outright; deleting it loses no working capability.
 
 // TOMBSTONE (§1, wave 56 dead-code sweep): `updateAgentYTDStats` stood here,
 // never called by anything (not exported, no in-file caller) — agents.ytd_gci

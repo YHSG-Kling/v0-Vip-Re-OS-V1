@@ -509,6 +509,15 @@ export async function respondToReview(
     // OFF the public profile (app/p/[agentSlug] and multi-persona.ts:
     // getAgentReviews both filter is_published = true). Answering a review is
     // not a request to retract it.
+    // ── m625 (WRITTEN, NOT APPLIED) — auto_publish_at is the "review"-mode
+    // approval-hours window (aiGenerateReviewResponse sets it on a fresh
+    // draft; the review-response-auto-publish cron consumes it). ANY response
+    // through this command — an agent editing/re-saving a draft, an agent
+    // manually publishing, or the cron's own auto-publish once the window
+    // elapses — clears it unconditionally: a human (or the cron acting FOR
+    // the agent, tenant-checked the same way) has now acted on this review,
+    // so there is nothing left to auto-publish later. This is the reject/edit
+    // path: editing a draft before the window elapses stops the clock.
     const updatePayload: Record<string, unknown> = {
       response_text: input.responseText.trim(),
       response_at:   new Date().toISOString(),
@@ -516,12 +525,31 @@ export async function respondToReview(
     }
     if (input.publishNow) updatePayload.is_published = true
 
-    const { error } = await supabase
+    // §3 PGRST204: naming a column the live schema does not have refuses the
+    // WHOLE update, not just that field. Until m625 is applied, adding
+    // auto_publish_at unconditionally would have broken every response —
+    // draft-save AND publish — not merely left the window unset. Attempt with
+    // it first (the steady state once m625 lands); on an unknown-column
+    // refusal specifically, retry without it so the response itself still
+    // lands. Anything else (ownership, network, a different constraint) is a
+    // real refusal and is returned as one, not swallowed into a retry.
+    const withWindow = { ...updatePayload, auto_publish_at: null }
+    let { error } = await supabase
       .from("agent_reviews")
-      .update(updatePayload)
+      .update(withWindow)
       .eq("id",           input.reviewId)
       .eq("agent_id",     input.agentId)
       .eq("brokerage_id", input.brokerageId)
+
+    if (error && /PGRST204|does not exist|auto_publish_at/i.test(error.message)) {
+      console.error("[kernel/reputation] auto_publish_at not yet live (m625 applied?), responding without it:", error.message)
+      ;({ error } = await supabase
+        .from("agent_reviews")
+        .update(updatePayload)
+        .eq("id",           input.reviewId)
+        .eq("agent_id",     input.agentId)
+        .eq("brokerage_id", input.brokerageId))
+    }
 
     if (error) {
       return { success: false, error: error.message }

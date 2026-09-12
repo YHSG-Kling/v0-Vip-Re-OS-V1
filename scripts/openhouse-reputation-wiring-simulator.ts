@@ -239,6 +239,10 @@ const F = {
   reviewWriterB: "app/actions/portal-lifetime.ts",
   ohLegacy: "app/actions/open-house.ts",
   ohKiosk: "app/api/open-house/attend/route.ts",
+  reviewAutomation: "app/actions/ai-review-automation.ts",
+  autoPublishCron: "app/api/cron/review-response-auto-publish/route.ts",
+  cronRegistry: "lib/kernel/cron-dispatch.ts",
+  cronManager: "lib/kernel/manager-registry.ts",
 }
 
 const S: Record<keyof typeof F, string> = Object.fromEntries(
@@ -470,6 +474,67 @@ function staticLayer(): void {
     check("REP-WORKSPACE-SURFACE", "a refused reputation workspace read is surfaced on the page",
       /!result\.success/.test(loadReviews) && /setReviewsLoadError\(\s*\(\s*result/.test(loadReviews) &&
       /reviewsLoadError\s*&&/.test(S.lifetimeSurface))
+  }
+
+  console.log("\n[reputation · review-mode auto-publish (m625, applied live 2026-09-12)]")
+  {
+    // NOT via functionBody(S.reviewAutomation, "aiGenerateReviewResponse"): that
+    // function's generateObject `prompt` is a NESTED template literal
+    // (`${isPositive ? `...` : `...`}`), which this file's own braceBlockAt —
+    // a plain quote-skipper, unlike scripts/strip-comments.ts's tracked
+    // interpolation depth — cannot brace-match through (returns ""). Anchoring
+    // directly on the branch condition (unique text, after the prompt closes)
+    // sidesteps that rather than papering over an empty slice satisfying nothing.
+    const anchorReview = S.reviewAutomation.indexOf('prefs.autoRespondMode === "review" && brokerageId')
+    const reviewBranch = anchorReview >= 0 ? braceBlockAt(S.reviewAutomation, anchorReview) : ""
+    check("AUTOPUB-DRAFT-SETS-WINDOW", "the review-mode draft stamps auto_publish_at from the agent's approval-hours setting",
+      /auto_publish_at:\s*autoPublishAt\.toISOString\(\)/.test(reviewBranch) &&
+      /approvalHours/.test(reviewBranch) && /prefs\.autoRespondApprovalHours/.test(reviewBranch))
+    check("AUTOPUB-DRAFT-DEGRADES", "a schema without the column yet degrades to a plain draft, it does not throw",
+      /draftErr/.test(reviewBranch) && /response_text:\s*response\.publicResponse/.test(reviewBranch))
+    // Negative control: the "off"/"auto" branches must NOT also stamp the window —
+    // otherwise every draft would auto-publish regardless of the chosen mode.
+    const anchorAuto = S.reviewAutomation.indexOf('prefs.autoRespondMode === "auto" && brokerageId')
+    const autoBranch = anchorAuto >= 0 ? braceBlockAt(S.reviewAutomation, anchorAuto) : ""
+    check("AUTOPUB-AUTO-MODE-NO-WINDOW", "the \"auto\" branch never sets auto_publish_at (it publishes immediately instead)",
+      autoBranch.length > 0 && !/auto_publish_at/.test(autoBranch))
+
+    const respond = functionBody(S.repKernel, "respondToReview")
+    check("AUTOPUB-CLEAR-ON-RESPOND", "respondToReview clears auto_publish_at on every response (edit, manual publish, or the cron's own auto-publish)",
+      /auto_publish_at:\s*null/.test(respond))
+    check("AUTOPUB-CLEAR-RESILIENT", "the clearing write degrades to a plain response, not a total refusal, when the column is not live yet",
+      /PGRST204|does not exist/i.test(respond) && (respond.match(/\.update\(/g) ?? []).length >= 2)
+    // [control] a hand-rolled version that named the column unconditionally with
+    // no fallback would PGRST204-refuse the WHOLE response pre-migration (§3) —
+    // prove the retry path actually exists rather than merely mentioning PGRST204
+    // in a comment (a tombstone is not a call site, same rule as §2).
+    check("AUTOPUB-CLEAR-RETRY-CALL", "the fallback actually re-issues the update, not just a log line",
+      /error\s*\}\s*=\s*await\s+supabase\s*\n?\s*\.from\(\s*"agent_reviews"\s*\)\s*\n?\s*\.update\(\s*updatePayload\s*\)/.test(respond))
+
+    check("AUTOPUB-CRON-USES-KERNEL", "the cron publishes through respondToReview, not a raw agent_reviews UPDATE",
+      /respondToReview\s*\(/.test(S.autoPublishCron) &&
+      !/from\(\s*"agent_reviews"\s*\)[\s\S]{0,80}\.update\(/.test(S.autoPublishCron))
+    check("AUTOPUB-CRON-PUBLISHES-NOW", "the cron sets publishNow so a due draft actually publishes, not just re-saves",
+      /publishNow:\s*true/.test(S.autoPublishCron))
+    check("AUTOPUB-CRON-SCOPES-QUERY", "the cron only selects unpublished, windowed, answered drafts",
+      /is_published",\s*false/.test(S.autoPublishCron) &&
+      /auto_publish_at/.test(S.autoPublishCron) &&
+      /response_text/.test(S.autoPublishCron))
+    check("AUTOPUB-CRON-DEGRADES", "a schema without the column yet reports zero-due, not a cron failure",
+      /PGRST204|does not exist|42703/i.test(S.autoPublishCron) && /recordCronSuccessAction/.test(S.autoPublishCron))
+    check("AUTOPUB-CRON-ERRORS-LOGGED", "a per-row publish failure goes through collectError, never a hand-rolled automation_errors insert",
+      /collectError\s*\(/.test(S.autoPublishCron) && !/from\(\s*"automation_errors"\s*\)\.insert/.test(S.autoPublishCron))
+
+    check("AUTOPUB-REGISTERED-CRON", "the cron path is registered in CRON_REGISTRY",
+      /\/api\/cron\/review-response-auto-publish/.test(S.cronRegistry))
+    check("AUTOPUB-REGISTERED-OWNER", "the cron path has a CRON_MANAGER owner aligned with agent_reviews' TABLE_MANAGER owner",
+      /"\/api\/cron\/review-response-auto-publish":\s*"recruiting_manager"/.test(S.cronManager) &&
+      /agent_reviews:\s*"recruiting_manager"/.test(S.cronManager))
+
+    // [control] prove this block's own predicate can fail: a body with no
+    // `auto_publish_at: null` must NOT satisfy the AUTOPUB-CLEAR-ON-RESPOND check.
+    check("AUTOPUB-CLEAR-CONTROL", "[control] the clear-on-respond predicate correctly rejects a body that never clears the window",
+      !/auto_publish_at:\s*null/.test("const updatePayload = { response_text: x }"))
   }
 
   console.log("\n[the second writer was MERGED ONTO THE SURVIVOR, then removed]")

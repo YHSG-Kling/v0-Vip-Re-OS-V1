@@ -263,6 +263,12 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // A NEW entry is legitimate work — a lane writing a migration the integrator has
 // not run — so this is a ratchet with a written-down number, not a zero-forever
 // invariant.
+//
+// 0 → 1 (wave 61, lane 61C): m625-review-response-auto-publish.sql, WRITTEN NOT
+// APPLIED — adds agent_reviews.auto_publish_at for the reputation "review"-mode
+// approval-hours auto-publish. Deliberate bump, named per this guard's own
+// instruction ("raise the baseline deliberately and say which"); drops back to 0
+// once the integrator applies it and flips the header.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

@@ -437,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9440,
+  "census": 9457,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -489,7 +489,7 @@
     "app/actions/agent-reviews.ts": 1,
     "app/actions/agent-settings.ts": 2,
     "app/actions/agentic-tokens.ts": 3,
-    "app/actions/agents.ts": 10,
+    "app/actions/agents.ts": 9,
     "app/actions/ai-agent-goals.ts": 6,
     "app/actions/ai-agent-onboarding.ts": 3,
     "app/actions/ai-auto-response.ts": 6,
@@ -690,7 +690,7 @@
     "app/actions/external-services.ts": 2,
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/financial-kernel.ts": 19,
-    "app/actions/financials.ts": 8,
+    "app/actions/financials.ts": 7,
     "app/actions/forms-kernel.ts": 10,
     "app/actions/gamification.ts": 7,
     "app/actions/generate-marketing-image.ts": 1,
@@ -1030,6 +1030,7 @@
     "app/api/admin/audit-events/route.ts": 1,
     "app/api/admin/billing/dashboard/route.ts": 1,
     "app/api/admin/billing/entitlements/[brokerageId]/route.ts": 2,
+    "app/api/admin/billing/live-agent-sessions/[brokerageId]/route.ts": 1,
     "app/api/admin/billing/subscriptions/[brokerageId]/route.ts": 2,
     "app/api/admin/compliance/ai-disclosures/export/route.ts": 1,
     "app/api/admin/forms/[id]/route.ts": 1,
@@ -1172,6 +1173,7 @@
     "app/api/cron/listing-promo-social-publish/route.ts": 1,
     "app/api/cron/listing-propensity/route.ts": 1,
     "app/api/cron/listing-seller-update-video/route.ts": 1,
+    "app/api/cron/live-agent-session-sweep/route.ts": 1,
     "app/api/cron/long-term-nurture/route.ts": 1,
     "app/api/cron/lookalike-audience/route.ts": 1,
     "app/api/cron/manager-eval/route.ts": 1,
@@ -1234,6 +1236,7 @@
     "app/api/cron/revenue-protection-rollup/route.ts": 2,
     "app/api/cron/reverse-prospecting/route.ts": 1,
     "app/api/cron/review-request-on-close/route.ts": 1,
+    "app/api/cron/review-response-auto-publish/route.ts": 1,
     "app/api/cron/seller-updates/route.ts": 1,
     "app/api/cron/send-email-campaigns/route.ts": 1,
     "app/api/cron/showing-lifecycle/route.ts": 1,
@@ -1277,6 +1280,7 @@
     "app/api/dashboard/reporting/route.ts": 1,
     "app/api/deal-health/cron/route.ts": 1,
     "app/api/did/agents/session/end/route.ts": 1,
+    "app/api/did/agents/session/heartbeat/route.ts": 1,
     "app/api/did/agents/session/route.ts": 1,
     "app/api/did/consent/route.ts": 2,
     "app/api/did/consent/verify/route.ts": 1,
@@ -1289,6 +1293,8 @@
     "app/api/elevenlabs/voice-clone/route.ts": 1,
     "app/api/embed/capture/route.ts": 1,
     "app/api/embed/script/route.ts": 1,
+    "app/api/embed/session/end/route.ts": 1,
+    "app/api/embed/session/heartbeat/route.ts": 1,
     "app/api/embed/session/route.ts": 1,
     "app/api/errors/collect/route.ts": 1,
     "app/api/errors/escalate/route.ts": 1,
@@ -1512,6 +1518,7 @@
     "app/components/deal-health/DealHealthRing.tsx": 1,
     "app/components/external-portal/lender-transaction-list.tsx": 1,
     "app/components/features/admin/billing-dashboard.tsx": 1,
+    "app/components/features/admin/billing-diagnostics-panel.tsx": 1,
     "app/components/features/admin/domain-coherence/DomainCoherenceWorkspace.tsx": 1,
     "app/components/features/admin/feature-entitlement-list.tsx": 1,
     "app/components/features/admin/overage-calculator.tsx": 1,
@@ -2681,7 +2688,7 @@
     "lib/ai-isa/appointment-form.ts": 4,
     "lib/ai-isa/appointment-scheduler.ts": 1,
     "lib/ai-isa/book-seller-appointment.ts": 1,
-    "lib/ai-isa/brand-voice-prompt.ts": 1,
+    "lib/ai-isa/brand-voice-prompt.ts": 2,
     "lib/ai-isa/build-call-context.ts": 1,
     "lib/ai-isa/buyer-intent-router.ts": 1,
     "lib/ai-isa/callback-task.ts": 7,
@@ -3010,6 +3017,7 @@
     "lib/did/contract.ts": 8,
     "lib/did/gateway.ts": 2,
     "lib/did/index.ts": 1,
+    "lib/did/live-session-metering.ts": 6,
     "lib/did/webhook.ts": 3,
     "lib/direct-mail/address-suppression.ts": 4,
     "lib/direct-mail/campaign-drain.ts": 1,
@@ -4141,7 +4149,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 9,
+    "lib/video/realism-profile.ts": 14,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -4520,7 +4528,6 @@
       "getAgents",
       "createAgent",
       "getAgentCommissions",
-      "updateCommissionStatus",
       "getAgentExpenses",
       "getExpenseSummary",
       "getAgentGoals",
@@ -5900,7 +5907,6 @@
       "exportExpensesCSV",
       "deleteExpense",
       "attachExpenseReceipt",
-      "updateCommissionStatus",
       "logScopedExpense"
     ],
     "app/actions/forms-kernel.ts": [
@@ -8142,6 +8148,9 @@
       "GET",
       "POST"
     ],
+    "app/api/admin/billing/live-agent-sessions/[brokerageId]/route.ts": [
+      "GET"
+    ],
     "app/api/admin/billing/subscriptions/[brokerageId]/route.ts": [
       "GET",
       "POST"
@@ -8583,6 +8592,9 @@
     "app/api/cron/listing-seller-update-video/route.ts": [
       "GET"
     ],
+    "app/api/cron/live-agent-session-sweep/route.ts": [
+      "GET"
+    ],
     "app/api/cron/long-term-nurture/route.ts": [
       "GET"
     ],
@@ -8775,6 +8787,9 @@
     "app/api/cron/review-request-on-close/route.ts": [
       "GET"
     ],
+    "app/api/cron/review-response-auto-publish/route.ts": [
+      "GET"
+    ],
     "app/api/cron/seller-updates/route.ts": [
       "GET"
     ],
@@ -8905,6 +8920,9 @@
     "app/api/did/agents/session/end/route.ts": [
       "POST"
     ],
+    "app/api/did/agents/session/heartbeat/route.ts": [
+      "POST"
+    ],
     "app/api/did/agents/session/route.ts": [
       "POST"
     ],
@@ -8941,6 +8959,12 @@
     ],
     "app/api/embed/script/route.ts": [
       "GET"
+    ],
+    "app/api/embed/session/end/route.ts": [
+      "POST"
+    ],
+    "app/api/embed/session/heartbeat/route.ts": [
+      "POST"
     ],
     "app/api/embed/session/route.ts": [
       "POST"
@@ -9626,6 +9650,9 @@
     ],
     "app/components/features/admin/billing-dashboard.tsx": [
       "BillingDashboard"
+    ],
+    "app/components/features/admin/billing-diagnostics-panel.tsx": [
+      "BillingDiagnosticsPanel"
     ],
     "app/components/features/admin/domain-coherence/DomainCoherenceWorkspace.tsx": [
       "DomainCoherenceWorkspace"
@@ -13394,6 +13421,7 @@
       "bookSellerListingAppointment"
     ],
     "lib/ai-isa/brand-voice-prompt.ts": [
+      "brandVoiceContextForVideo",
       "loadBrandVoicePrompt"
     ],
     "lib/ai-isa/build-call-context.ts": [
@@ -15129,6 +15157,14 @@
     ],
     "lib/did/index.ts": [
       "generateVideo"
+    ],
+    "lib/did/live-session-metering.ts": [
+      "recordLiveAgentInitFailure",
+      "startLiveAgentSession",
+      "heartbeatLiveAgentSession",
+      "endLiveAgentSession",
+      "sweepStaleLiveAgentSessions",
+      "listLiveAgentSessionsForBrokerage"
     ],
     "lib/did/webhook.ts": [
       "didWebhookUrl",
@@ -20796,6 +20832,11 @@
       "scanForAiTells",
       "avatarPipWindowFade",
       "estimateAvatarRenderCostUsd",
+      "roundUpToNearest15Seconds",
+      "estimateStreamingMinutesCostUsd",
+      "inferScriptSentiment",
+      "varyingSceneWeights",
+      "handheldDriftOffset",
       "PAUSE_MARKUP_ALIGNMENT_FIXTURE",
       "PLAIN_ALIGNMENT_FIXTURE"
     ],

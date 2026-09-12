@@ -2169,6 +2169,9 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/did-agent-sync": "cron_manager",
   // wave 60: live_agent_sessions heartbeat-stale close (lib/did/live-session-metering.ts sweepStaleLiveAgentSessions) — cron_manager owns the loop health, same as did-agent-sync above.
   "/api/cron/live-agent-session-sweep": "cron_manager",
+  // wave 61: "review"-mode auto-publish clock — writes agent_reviews (TABLE_MANAGER:
+  // agent_reviews → recruiting_manager), through respondToReview, same owner as the table.
+  "/api/cron/review-response-auto-publish": "recruiting_manager",
   // ── Shopping Agent — the buyer side ──
   "/api/cron/buyer-market-watch": "shopping_agent",
   "/api/cron/buyer-reel-deliver": "shopping_agent",

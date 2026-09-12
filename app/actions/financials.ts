@@ -731,39 +731,28 @@ export async function attachExpenseReceipt(input: {
   return { success: true, receiptUrl: upload.url }
 }
 
-// ─── UPDATE COMMISSION STATUS (broker only) ───────────────────────────────────
-
-export async function updateCommissionStatus(
-  commissionId: string,
-  status: "pending" | "paid" | "deferred"
-) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
-
-  const context = await getAgentContext()
-  // Marking a commission PAID is the brokerage's money moving. Found by the shape
-  // scan in scripts/finance-authority-simulator.ts, which fails a module that asks
-  // the shared finance predicate while ALSO keeping a role array of its own — this
-  // one had been left behind, and it refused broker_owner from their own ledger.
-  if (!isFinanceAdmin(context.userType)) {
-    return { success: false, error: "Insufficient permissions" }
-  }
-
-  const { error } = await supabase
-    // KEEP-ONE (m283): agent_commissions is the canonical ledger.
-    // Column translation: commissions.paid_date (date) -> paid_at (timestamptz).
-    .from("agent_commissions")
-    .update({ status, paid_at: status === "paid" ? new Date().toISOString() : null })
-    .eq("id", commissionId)
-    .eq("brokerage_id", context.brokerageId!)
-
-  if (error) return { success: false, error: error.message }
-
-  revalidatePath("/dashboard/financials/commissions")
-  revalidatePath("/dashboard/financials/payouts")
-  return { success: true }
-}
+// TOMBSTONE (orphan doctrine §1.3 — duplicates round 7, wave 61C)
+// `updateCommissionStatus` deleted. FUNCTIONALITY ALREADY LIVES ELSEWHERE:
+// app/actions/financial-kernel.ts:markCommissionPaidAction →
+// lib/kernel/financial.ts:markCommissionPaid — the live UI's actual "mark
+// paid" path (app/components/features/financial/PayoutButton.tsx imports
+// markCommissionPaidAction, not this function; nothing in the tree ever
+// called this one — the wired-surface-guard orphan-action scan could not see
+// that until app/actions/agents.ts's OWN duplicate `updateCommissionStatus`
+// (deleted alongside this one, tombstoned there) was removed, because two
+// same-named functions made both attributions ambiguous and the scan skips
+// what it cannot attribute).
+//
+// The kernel survivor is STRICTLY MORE COMPLETE, so nothing needed merging
+// onto it first: it enforces the real state graph (COMMISSION_STATUS_
+// TRANSITIONS — pending→approved/disputed, approved→paid/disputed, paid
+// terminal, disputed→approved/pending) against agent_commissions.status's
+// live CHECK vocabulary (approved | disputed | paid | pending — verified
+// against scripts/check-vocabularies.ts), where this twin allowed
+// "pending"/"paid"/"deferred" — "deferred" is NOT a storable value and could
+// never have landed a real transition through this path. The survivor also
+// takes its actor from getFinancialActorContext() the same way this twin took
+// it from getAgentContext(), so the isFinanceAdmin gate carries over exactly.
 
 // ─── SCOPED EXPENSE ENTRY (agent / team / brokerage) ──────────────────────────
 // Owner spec: every principal level logs expenses in financials. Scope semantics

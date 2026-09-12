@@ -488,10 +488,15 @@ Generate:
     // wire, wave 60 audit) — an agent who chose "auto-respond, no approval needed" got the SAME
     // draft-and-wait behavior as "off". Wired here: "auto" publishes immediately through the same
     // tenant-checked respondToReview kernel command the manual Publish button uses (ownership +
-    // brokerage verified, is_published only ever raised, lifecycle event emitted); "review" and "off"
-    // keep the prior draft-only write unchanged. The "review" mode's approval-hours auto-publish-after-
-    // N-hours-unless-rejected half is NOT built here — there is no drafted-at timestamp column on
-    // agent_reviews to compute elapsed hours against and no cron reads it yet; left unresolved.
+    // brokerage verified, is_published only ever raised, lifecycle event emitted).
+    //
+    // "review" (m625, WRITTEN NOT APPLIED — the integrator applies it) is the other half of the same
+    // hidden wire: the draft now stamps agent_reviews.auto_publish_at at
+    // now() + reputation-preferences.autoRespondApprovalHours, and the review-response-auto-publish
+    // cron (every 30 min, CRON_REGISTRY) publishes it through respondToReview once that window elapses
+    // — UNLESS the agent edits or manually publishes the draft first, which (lib/kernel/reputation.ts
+    // respondToReview) clears auto_publish_at on every human response and stops the clock. "off" keeps
+    // the prior plain draft-only write (no window is ever set, so nothing can auto-publish it).
     if (params.reviewId) {
       const brokerageId = (agent as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
       const prefs = await getReputationPreferences(params.agentId)
@@ -509,6 +514,32 @@ Generate:
           await supabase
             .from("agent_reviews")
             .update({ response_text: response.publicResponse, updated_at: new Date().toISOString() })
+            .eq("id",       params.reviewId)
+            .eq("agent_id", params.agentId)
+        }
+      } else if (prefs.autoRespondMode === "review" && brokerageId) {
+        const draftedAt = new Date()
+        const approvalHours = Number.isFinite(prefs.autoRespondApprovalHours) && prefs.autoRespondApprovalHours > 0
+          ? prefs.autoRespondApprovalHours
+          : 24
+        const autoPublishAt = new Date(draftedAt.getTime() + approvalHours * 60 * 60 * 1000)
+        const { error: draftErr } = await supabase
+          .from("agent_reviews")
+          .update({
+            response_text:   response.publicResponse,
+            updated_at:      draftedAt.toISOString(),
+            auto_publish_at: autoPublishAt.toISOString(),
+          })
+          .eq("id",       params.reviewId)
+          .eq("agent_id", params.agentId)
+        if (draftErr) {
+          // PGRST204 until m625 is applied — auto_publish_at does not exist in the live
+          // schema yet. Fall back to the plain draft so the response is not lost; the
+          // approval-hours window simply cannot start until the column is live.
+          console.error("[ai-review-automation] review-mode draft window not stamped (m625 applied?):", draftErr.message)
+          await supabase
+            .from("agent_reviews")
+            .update({ response_text: response.publicResponse, updated_at: draftedAt.toISOString() })
             .eq("id",       params.reviewId)
             .eq("agent_id", params.agentId)
         }
