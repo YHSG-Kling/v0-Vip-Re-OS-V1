@@ -104,7 +104,7 @@ export function computeTeamPnl(input: TeamPnlInput): TeamPnl {
   }
 }
 
-/** Year-month bucket (UTC) — the period_label the writer keys on, matching agent_pl_snapshot.month_year. */
-export function monthLabel(now: Date): string {
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`
-}
+// monthLabel DELETED (duplicates round 5, lane 59C) — byte-identical to
+// lib/format/dates.ts:monthLabel. Survivor: lib/format/dates.ts. (Still the
+// period_label the writer keys on, matching agent_pl_snapshot.month_year.)
+export { monthLabel } from "@/lib/format/dates"

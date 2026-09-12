@@ -73,15 +73,12 @@ export interface ProspectSourceResult {
   errors: string[]
 }
 
-/** ISO week label (matches the podcast auto-run convention). */
-export function isoWeekOf(d: Date): string {
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-  const dayNum = date.getUTCDay() || 7
-  date.setUTCDate(date.getUTCDate() + 4 - dayNum)
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
-  const week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7)
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
+// isoWeekOf DELETED (duplicates round 5, lane 59C) — byte-identical to
+// lib/format/dates.ts:isoWeekOf. Survivor: lib/format/dates.ts. Re-exported
+// (not folded into a bare `export … from`) because
+// scripts/orphan-export-guard.ts is blind to re-export specifiers.
+export { isoWeekOf } from "@/lib/format/dates"
+import { isoWeekOf } from "@/lib/format/dates"
 
 /**
  * The weekly platform hunt. Idempotent per ISO week (digest-notification

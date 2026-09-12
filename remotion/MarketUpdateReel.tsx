@@ -319,9 +319,11 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
       </Sequence>
 
       {/* NO CAPTION OVER BRANDING (wave 57): clip the track before the CTA
-          tile's EHO mark + QR code — see CaptionLayer.hiddenFromFrame. */}
+          tile's EHO mark + QR code — see CaptionLayer.hiddenFromFrame.
+          NO CAPTION OVER SILENCE (wave 59): the avatar's own baked-in audio
+          does not start until the COVER tile ends — see visibleFromFrame. */}
       <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
-        hiddenFromFrame={COVER + STAT * 3} />
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + STAT * 3} />
     </AbsoluteFill>
   )
 }

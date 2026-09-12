@@ -4,6 +4,7 @@ import { convertToModelMessages } from 'ai'
 import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import type { UIMessage } from 'ai'
 import { NextResponse } from 'next/server'
+import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 
 // Portal AI chat — authenticated contacts only.
 // Business rules enforced here:
@@ -191,59 +192,32 @@ export async function POST(request: Request) {
       if (spine?.summary) contextSpine = String(spine.summary).slice(0, 1200)
     } catch { /* continuity is additive */ }
 
-    // ── Load AI identity profile (agent-scope → brokerage-scope → defaults) ─────
-    let aiIdentity: {
+    // ── Load AI identity profile ────────────────────────────────────────────────
+    // ONE brand-voice cascade (CLAUDE.md §1/§6) — survivor
+    // lib/ai-isa/brand-voice-prompt.ts loadBrandVoicePrompt. This route used to
+    // hand-roll its own agent-scope → brokerage-scope read straight off
+    // ai_identity_profiles, duplicating the cascade's first two tiers while
+    // never reaching its team tier, its brand_voice_profile blend (tone/
+    // formality/prohibited-preferred words/tagline), its FAQ knowledge or
+    // objection library, or its chartered-AI-teammate naming — this route had
+    // NO FAQ/objection support at all (the missing half, built below).
+    // `welcome_message` was read but never rendered anywhere in this file
+    // (grepped: no other reference) — dropped rather than carried forward as a
+    // second unused copy.
+    const brand = await loadBrandVoicePrompt({
+      brokerageId: contact.brokerage_id,
+      agentId: contact.agent_id ?? null,
+    })
+    const aiIdentity: {
       assistant_name: string
       persona_label: string
       tone: string
       formality_level: string
-      welcome_message: string | null
     } = {
-      assistant_name: 'Your AI Assistant',
-      persona_label: 'Real Estate Assistant',
-      tone: 'warm',
-      formality_level: 'conversational',
-      welcome_message: null,
-    }
-
-    if (contact.agent_id) {
-      // Try agent-scope first
-      const { data: agentProfile } = await serviceClient
-        .from('ai_identity_profiles')
-        .select('assistant_name, persona_label, tone, formality_level, welcome_message')
-        .eq('scope_type', 'agent')
-        .eq('scope_id', contact.agent_id)
-        .eq('active', true)
-        .maybeSingle()
-
-      if (agentProfile) {
-        aiIdentity = {
-          assistant_name: agentProfile.assistant_name ?? aiIdentity.assistant_name,
-          persona_label: agentProfile.persona_label ?? aiIdentity.persona_label,
-          tone: agentProfile.tone ?? aiIdentity.tone,
-          formality_level: agentProfile.formality_level ?? aiIdentity.formality_level,
-          welcome_message: agentProfile.welcome_message ?? null,
-        }
-      } else if (contact.brokerage_id) {
-        // Fall back to brokerage-scope
-        const { data: brokerageProfile } = await serviceClient
-          .from('ai_identity_profiles')
-          .select('assistant_name, persona_label, tone, formality_level, welcome_message')
-          .eq('scope_type', 'brokerage')
-          .eq('scope_id', contact.brokerage_id)
-          .eq('active', true)
-          .maybeSingle()
-
-        if (brokerageProfile) {
-          aiIdentity = {
-            assistant_name: brokerageProfile.assistant_name ?? aiIdentity.assistant_name,
-            persona_label: brokerageProfile.persona_label ?? aiIdentity.persona_label,
-            tone: brokerageProfile.tone ?? aiIdentity.tone,
-            formality_level: brokerageProfile.formality_level ?? aiIdentity.formality_level,
-            welcome_message: brokerageProfile.welcome_message ?? null,
-          }
-        }
-      }
+      assistant_name: brand.assistantName,
+      persona_label: brand.personaLabel ?? 'Real Estate Assistant',
+      tone: brand.tone ?? 'warm',
+      formality_level: brand.formalityLevel ?? 'conversational',
     }
 
     // ── Build system prompt ────────────────────────────────────────────────────
@@ -334,6 +308,16 @@ export async function POST(request: Request) {
       // tone guidance only; never a fact invented about this specific client.
       contact.contact_persona ? `Client persona: ${String(contact.contact_persona).replace(/_/g, ' ')}. Let this inform tone and the kinds of examples you reach for, without assuming facts about them you have not been given.` : '',
       contextSpine ? `\nWHAT THE TEAM ALREADY KNOWS (shared memory across calls, videos, and chat — reference naturally, NEVER contradict, never invent beyond it):\n${contextSpine}\n` : '',
+      // Brand-voice cascade fields the old hand-rolled identity lookup never
+      // reached (the built missing half — see the loadBrandVoicePrompt note above).
+      brand.preferredWords.length ? `Preferred vocabulary: ${brand.preferredWords.join(', ')}.` : '',
+      brand.prohibitedWords.length ? `NEVER use these words or phrases: ${brand.prohibitedWords.join(', ')}.` : '',
+      brand.faqKnowledge.length
+        ? `When relevant, use these FAQ answers:\n${brand.faqKnowledge.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n')}`
+        : '',
+      brand.objectionLibrary.length
+        ? `Handle these objections with the prepared responses:\n${brand.objectionLibrary.map(o => `Objection (${o.category}): "${o.objection}" → Response: "${o.response}"`).join('\n')}`
+        : '',
       '',
       'YOUR RULES:',
       '- You may ONLY discuss information from the context below.',

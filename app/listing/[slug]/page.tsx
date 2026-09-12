@@ -8,7 +8,8 @@ import {
   getSimilarListings,
   logLandingSession,
 } from "@/app/actions/listing-landing"
-import { calculateDaysOnMarket, formatPrice } from "@/app/lib/listing-utils"
+import { calculateDaysOnMarket } from "@/app/lib/listing-utils"
+import { usd as formatPrice } from "@/lib/format/money"
 import { buildRealEstateListingJsonLd, buildBreadcrumbJsonLd, serializeJsonLd } from "@/lib/geo/video-landing"
 import { siteUrl } from "@/lib/platform/site-url"
 import { loadProductBrand } from "@/lib/platform/product-brand"

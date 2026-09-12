@@ -1,85 +1,117 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
-export type AIModel = 
-  | "claude-sonnet" 
-  | "claude-opus" 
-  | "claude-haiku" 
-  | "gpt-4o" 
-  | "gpt-4-turbo" 
-  | "gpt-4o-mini" 
-  | "gemini-pro" 
-  | "gemini-flash" 
-  | "perplexity-sonar" 
+export type AIModel =
+  | "claude-sonnet"
+  | "claude-opus"
+  | "claude-haiku"
+  | "gpt-4o"
+  | "gpt-4-turbo"
+  | "gpt-4o-mini"
+  | "gpt-5-mini"
+  | "gemini-pro"
+  | "gemini-flash"
+  | "perplexity-sonar"
   | "perplexity-sonar-pro"
 
 /**
  * Get current pricing for all AI models
  * Pricing is per 1 MILLION tokens in USD
- * Links to provider pricing pages included for verification
+ *
+ * VERIFIED 2026-09-12 against the Vercel AI Gateway catalog
+ * (docs/ai-agent-surfaces-2026-09.md §2 — Exa research against
+ * vercel.com/ai-gateway/models). Each row's `source` is that model's own
+ * gateway catalog page. This replaced a stale table that priced claude-sonnet
+ * / claude-haiku / gemini-flash at OLDER model generations' rates — a wrong
+ * number here is a wrong invoice (CLAUDE.md §5).
  */
 export function getModelPricing(): Record<AIModel, {
   input: number      // Price per 1M tokens in USD
   output: number     // Price per 1M tokens in USD
   lastUpdated: string // ISO date when pricing was verified
+  source: string      // Gateway catalog page this row was verified against
 }> {
   return {
-    // Anthropic pricing: https://www.anthropic.com/pricing
+    // anthropic/claude-sonnet-4.6
     "claude-sonnet": {
       input: 3.00,   // $3 per 1M input tokens
       output: 15.00, // $15 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/claude-sonnet-4.6"
     },
+    // anthropic/claude-opus-4.6 — price unchanged this wave (out of scope:
+    // no chat surface routes to opus), but re-verified present in the
+    // gateway's GatewayModelId union on 2026-09-12 (@ai-sdk/gateway).
     "claude-opus": {
       input: 15.00,  // $15 per 1M input tokens
       output: 75.00, // $75 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/claude-opus-4.6"
     },
+    // anthropic/claude-haiku-4.5
     "claude-haiku": {
-      input: 0.25,   // $0.25 per 1M input tokens
-      output: 1.25,  // $1.25 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      input: 1.00,   // $1 per 1M input tokens
+      output: 5.00,  // $5 per 1M output tokens
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/claude-haiku-4.5"
     },
-    
-    // OpenAI pricing: https://openai.com/pricing
+
+    // openai/gpt-4o
     "gpt-4o": {
       input: 2.50,   // $2.50 per 1M input tokens
       output: 10.00, // $10 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/gpt-4o"
     },
     "gpt-4-turbo": {
       input: 10.00,  // $10 per 1M input tokens
       output: 30.00, // $30 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/gpt-4-turbo"
     },
+    // openai/gpt-4o-mini
     "gpt-4o-mini": {
       input: 0.15,   // $0.15 per 1M input tokens
       output: 0.60,  // $0.60 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/gpt-4o-mini"
     },
-    
-    // Google AI pricing: https://ai.google.dev/pricing
+    // openai/gpt-5-mini — new key this wave (docs/ai-agent-surfaces-2026-09.md §2)
+    "gpt-5-mini": {
+      input: 0.25,   // $0.25 per 1M input tokens
+      output: 2.00,  // $2.00 per 1M output tokens
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/gpt-5-mini"
+    },
+
+    // google/gemini-2.5-pro
     "gemini-pro": {
       input: 1.25,   // $1.25 per 1M input tokens
       output: 5.00,  // $5 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/gemini-2.5-pro"
     },
+    // google/gemini-2.5-flash
     "gemini-flash": {
-      input: 0.075,  // $0.075 per 1M input tokens
-      output: 0.30,  // $0.30 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      input: 0.30,   // $0.30 per 1M input tokens
+      output: 2.50,  // $2.50 per 1M output tokens
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/gemini-2.5-flash"
     },
-    
-    // Perplexity pricing: https://docs.perplexity.ai/docs/pricing
+
+    // perplexity/sonar
     "perplexity-sonar": {
       input: 1.00,   // $1 per 1M input tokens
       output: 1.00,  // $1 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/perplexity-sonar"
     },
+    // perplexity/sonar-pro
     "perplexity-sonar-pro": {
       input: 3.00,   // $3 per 1M input tokens
       output: 15.00, // $15 per 1M output tokens
-      lastUpdated: "2026-02-20"
+      lastUpdated: "2026-09-12",
+      source: "https://vercel.com/ai-gateway/models/perplexity-sonar-pro"
     }
   }
 }

@@ -81,6 +81,12 @@ export async function POST(request: Request) {
       actorUserId: auth.userId,
     })
 
+    // DOCUMENTED REASON THIS DOES NOT CALL loadBrandVoicePrompt
+    // (docs/ai-agent-surfaces-2026-09.md §3): this assistant onboards a NEW
+    // AGENT onto the PLATFORM itself (accounts, features, setup steps) — there
+    // is no brokerage/tenant brand voice to speak in yet at this point in the
+    // agent's lifecycle, and its knowledge is the platform's own KB
+    // (searchKB), not a tenant's brand_voice_profile / ai_identity_profiles.
     const systemPrompt = `You are a helpful setup assistant for this real-estate platform. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
 
 Context:

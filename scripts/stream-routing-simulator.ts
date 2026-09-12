@@ -195,8 +195,15 @@ console.log("\n[(d) #187 closures — anonymous turns metered, history estimated
     codeHits(incBody, "createServiceClient(") === 1 && codeHits(incBody, "await createClient(") === 0)
 
   const widget = read("app/api/widget/message/route.ts")
+  // Wave 59 (docs/ai-agent-surfaces-2026-09.md) added a SECOND legitimate
+  // brokerageId: site — the loadBrandVoicePrompt() call this route now uses
+  // instead of a hand-rolled ai_identity_profiles read (§1/§6) — so "exactly
+  // one mention" is no longer the right shape of this assertion. What must
+  // still hold: EVERY mention, however many, is the session row's value and
+  // never a second, differently-sourced one (the body-trusted IDOR shape).
   check("widget/message: the ONLY brokerageId handed to the stream is the session row's — never the body's",
-    codeHits(widget, "brokerageId:") === 1 && codeHits(widget, "brokerageId: session.brokerage_id") === 1)
+    codeHits(widget, "brokerageId:") > 0 &&
+    codeHits(widget, "brokerageId:") === codeHits(widget, "brokerageId: session.brokerage_id"))
 
   // GAP 2 — the pre-flight estimate must see the whole conversation, through
   // the ONE estimator, before checkAIFairUse decides.

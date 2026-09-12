@@ -90,7 +90,7 @@ import {
   KEN_BURNS_REALISM_AUDIT_NOTE,
   COVER_CTA_CONTENT_BEAT_RULING,
 } from "../lib/video/realism-profile"
-import { clipCaptionCuesBeforeFrame, type CaptionCue } from "../lib/video/caption-plan"
+import { clipCaptionCuesBeforeFrame, clipCaptionCuesFromFrame, shiftCaptionCues, buildCaptionPlan, type CaptionCue } from "../lib/video/caption-plan"
 import { shouldAutoRequeueFailedRender, MAX_AUTO_REQUEUE_ATTEMPTS } from "../lib/remotion/render-decision"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -924,13 +924,98 @@ function avatarSection() {
       !!start && !!end && Number(start[1]) < Number(end[1]))
   }
 
-  // Captions align to the composition's own duration/fps via
-  // buildCaptionPlan(script, durationInFrames, fps) — never a second,
-  // independently-timed estimate. Source-checked once, fleet-wide, since
-  // CaptionLayer is the ONE shared reader every voiced composition uses.
-  const captionLayerSrc = readStripped("remotion/components/CaptionLayer.tsx")
-  check("CaptionLayer derives caption timing from THIS composition's own durationInFrames + fps (useVideoConfig), never a hardcoded estimate",
-    /buildCaptionPlan\([^)]*durationInFrames[^)]*fps/.test(captionLayerSrc.replace(/\s+/g, " ")))
+  // Captions align to the composition's own duration/fps via useVideoConfig()
+  // — never a second, independently-timed estimate. Source-checked once,
+  // fleet-wide, since CaptionLayer is the ONE shared reader every voiced
+  // composition uses. Wave 59: the plan is built against the NARRATION
+  // WINDOW (hiddenFrom - visibleFrom, both DERIVED from durationInFrames when
+  // unset) rather than always durationInFrames itself — so the check now
+  // looks for that derivation rather than the literal token pair.
+  const captionLayerSrc = readStripped("remotion/components/CaptionLayer.tsx").replace(/\s+/g, " ")
+  check("CaptionLayer's narration window still derives from THIS composition's own durationInFrames + fps (useVideoConfig), never a hardcoded estimate",
+    /props\.hiddenFromFrame\)\s*\)\s*:\s*durationInFrames/.test(captionLayerSrc) && /buildCaptionPlan\(props\.script,\s*windowFrames,\s*fps/.test(captionLayerSrc))
+  check("CaptionLayer's fallback plan is re-anchored onto absolute frames with shiftCaptionCues, never left assuming frame 0",
+    /shiftCaptionCues\(planned,\s*visibleFrom\)/.test(captionLayerSrc))
+
+  // §captionWindow (wave 59) — NO CAPTION OVER SILENCE. Four avatar-fronted
+  // reels open on a COVER/INTRO tile with NO audio at all before the avatar
+  // clip (which carries its own baked-in narration) mounts at an absolute
+  // frame > 0. The even-distribution fallback used to plan against the WHOLE
+  // composition starting at frame 0, so its first cue's words landed over
+  // that silent tile — a caption with nothing audible behind it, exactly the
+  // "doesn't look real" tell the owner's ruling names. Fixed via
+  // CaptionLayer's new `visibleFromFrame` prop; proven here two ways —
+  // (1) every affected composition actually PASSES it, (2) the underlying
+  // pure functions genuinely keep a fixture's cues out of the cover window
+  // across the task's own 20/45/90s fixture range.
+  const COVER_GATED_REELS: Array<{ file: string; coverVar: string }> = [
+    { file: "remotion/MarketUpdateReel.tsx", coverVar: "COVER" },
+    { file: "remotion/AgentExplainerReel.tsx", coverVar: "COVER" },
+    { file: "remotion/ExplainerAnimReel.tsx", coverVar: "COVER" },
+    { file: "remotion/TeammateExplainerReel.tsx", coverVar: "INTRO" },
+  ]
+  for (const { file, coverVar } of COVER_GATED_REELS) {
+    const src = readStripped(file).replace(/\s+/g, " ")
+    check(`${file}: CaptionLayer is passed visibleFromFrame={${coverVar}} — no cue over the silent cover tile`,
+      new RegExp(`<CaptionLayer[^>]*visibleFromFrame=\\{${coverVar}\\}`).test(src))
+  }
+
+  // PURE fixture proof — a long, multi-sentence script planned as if it were
+  // the fallback estimate for a 480-frame/16s composition (MarketUpdateReel's
+  // own geometry) with a 60-frame (2s) silent COVER, at all three of the
+  // task's fixture durations (20s/45s/90s scripts, i.e. narration LONGER than,
+  // equal to, and shorter than the window — the overrun/underrun sweep). Every
+  // resulting cue must start at/after COVER: the defect this closes put cues
+  // at frame 0.
+  {
+    const COVER_TEST = 60 // 2s @ 30fps
+    const WINDOW = COMPOSITION_GEOMETRY.MarketUpdateReel.duration_frames - COVER_TEST // matches CaptionLayer's own hiddenFrom-visibleFrom math when hiddenFromFrame is unset
+    const fixtureScripts: Record<string, string> = {
+      "20s": "Three days on market, two offers already. The kitchen's been redone. Quartz counters, new appliances.",
+      "45s": "Three days on market, two offers already. The kitchen's been redone, quartz counters, new appliances. " +
+        "It opens right onto the deck. Buyers are responding fast this week. If you want a private showing, text me back.",
+      "90s": "Three days on market, two offers already. The kitchen's been redone, quartz counters, new appliances. " +
+        "It opens right onto the deck. Buyers are responding fast this week. The roof was replaced last year too. " +
+        "Schools nearby scored well this season. Walkable to two parks and a coffee shop. If you want a private showing, text me back. " +
+        "We can move quickly once you decide. This won't last through the weekend.",
+    }
+    for (const [label, script] of Object.entries(fixtureScripts)) {
+      const planned = buildCaptionPlan(script, WINDOW, 30).cues
+      const shifted = shiftCaptionCues(planned, COVER_TEST)
+      check(`fixture ${label}: every cue starts at/after COVER (${COVER_TEST}) once shifted — no caption over the silent cover tile`,
+        shifted.every((c) => c.fromFrame >= COVER_TEST))
+      check(`fixture ${label}: shifting preserves cue COUNT (re-anchoring never drops/adds cues)`,
+        shifted.length === planned.length)
+      check(`fixture ${label}: the last cue still ends at/before the narration window's own end (COVER + WINDOW) — never overruns into the CTA tile`,
+        shifted.length === 0 || shifted[shifted.length - 1].fromFrame + shifted[shifted.length - 1].durationFrames <= COVER_TEST + WINDOW)
+    }
+    // POSITIVE CONTROL — the pre-fix behavior (planning straight off frame 0,
+    // no shift) DOES put a cue before COVER. Proves the checks above can
+    // actually see the defect they exist to catch, not merely pass vacuously.
+    const unfixed = buildCaptionPlan(fixtureScripts["45s"], COMPOSITION_GEOMETRY.MarketUpdateReel.duration_frames, 30).cues
+    check("[control] the PRE-FIX plan (no shift, full durationInFrames) DOES place its first cue before COVER — proves the fixture is a real regression test",
+      unfixed.length > 0 && unfixed[0].fromFrame < COVER_TEST)
+  }
+
+  // clipCaptionCuesFromFrame — the start-side twin of clipCaptionCuesBeforeFrame,
+  // used defensively on PRECOMPUTED (Path A) cues. Same straddle/drop rules,
+  // mirror-imaged.
+  {
+    const cues: CaptionCue[] = [
+      { text: "before", fromFrame: 0, durationFrames: 10 },   // wholly before cutoff → dropped
+      { text: "straddle", fromFrame: 15, durationFrames: 15 }, // straddles 20 → shortened to start at 20
+      { text: "after", fromFrame: 40, durationFrames: 10 },    // wholly after → untouched
+    ]
+    const clipped = clipCaptionCuesFromFrame(cues, 20)
+    check("CONTROL: clipCaptionCuesFromFrame drops a cue entirely before the boundary",
+      !clipped.some((c) => c.text === "before"))
+    check("clipCaptionCuesFromFrame shortens a straddling cue to start exactly AT the boundary, never before it",
+      clipped.find((c) => c.text === "straddle")?.fromFrame === 20 && clipped.find((c) => c.text === "straddle")?.durationFrames === 10)
+    check("clipCaptionCuesFromFrame leaves a cue entirely after the boundary untouched",
+      clipped.find((c) => c.text === "after")?.fromFrame === 40 && clipped.find((c) => c.text === "after")?.durationFrames === 10)
+    check("clipCaptionCuesFromFrame is a no-op when visibleFromFrame is absent/undefined (additive/opt-in)",
+      clipCaptionCuesFromFrame(cues, undefined).length === cues.length)
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

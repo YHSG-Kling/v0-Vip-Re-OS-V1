@@ -15,7 +15,7 @@ import {
   MapPin,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { formatPrice } from "@/lib/portal/seller-context-presentation"
+import { usdOrNAOnNullish as formatPrice } from "@/lib/format/money"
 
 interface NeighborhoodReport {
   id: string

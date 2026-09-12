@@ -212,3 +212,31 @@ export function agoMinutesFloor(dateString: string): string {
   const diffDays = Math.floor(diffHours / 24)
   return `${diffDays}d ago`
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DUPLICATES ROUND 5 (2026-09-12, lane 59C). Byte-identical ISO-8601 week-label
+// arithmetic lived in lib/platform/prospect-sourcer.ts:isoWeekOf and
+// lib/kernel/week-in-review.ts:isoWeekOf, plus a THIRD unnamed copy of the
+// same formula inline in lib/gamification/leaderboard-vocabulary.ts (just
+// above its own monthLabel). Byte-identical `monthLabel` lived in
+// lib/gamification/leaderboard-vocabulary.ts and lib/finance/team-pl.ts. Both
+// PURE LEAFs, no imports — same bundling-wall reasoning as daysBetween above.
+
+/** ISO-8601 week label, e.g. "2026-W37" (UTC, Thursday-anchored per the ISO
+ *  week-numbering rule). Survivor for lib/platform/prospect-sourcer.ts,
+ *  lib/kernel/week-in-review.ts, and the inline copy in
+ *  lib/gamification/leaderboard-vocabulary.ts. */
+export function isoWeekOf(d: Date): string {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+  const dayNum = date.getUTCDay() || 7
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum)
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
+  const week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7)
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
+}
+
+/** Year-month bucket (UTC), e.g. "2026-07". Survivor for
+ *  lib/gamification/leaderboard-vocabulary.ts and lib/finance/team-pl.ts. */
+export function monthLabel(now: Date): string {
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`
+}

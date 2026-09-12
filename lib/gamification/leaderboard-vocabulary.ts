@@ -60,19 +60,17 @@ export function isLeaderboardMetric(v: unknown): v is LeaderboardMetric {
   return typeof v === "string" && (LEADERBOARD_METRICS as readonly string[]).includes(v)
 }
 
-/** PURE: ISO-week label like "2026-W27". */
+// isoWeekLabel / monthLabel bodies DELETED (duplicates round 5, lane 59C) —
+// byte-identical to lib/format/dates.ts:isoWeekOf / :monthLabel. Kept as
+// named re-exports (not folded into a bare `export … from`) because
+// scripts/orphan-export-guard.ts is blind to re-export specifiers — same
+// delegating-declaration convention as lib/marketing/vendor-ranking.ts's
+// isVendorCategory.
+export { monthLabel } from "@/lib/format/dates"
+import { monthLabel, isoWeekOf as _isoWeekOf } from "@/lib/format/dates"
+/** PURE: ISO-week label like "2026-W27". Survivor: lib/format/dates.ts:isoWeekOf. */
 export function isoWeekLabel(now: Date): string {
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-  const day = d.getUTCDay() || 7
-  d.setUTCDate(d.getUTCDate() + 4 - day)
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
-  const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7)
-  return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
-
-/** PURE: month label like "2026-07". */
-export function monthLabel(now: Date): string {
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`
+  return _isoWeekOf(now)
 }
 
 export interface PeriodWindow {

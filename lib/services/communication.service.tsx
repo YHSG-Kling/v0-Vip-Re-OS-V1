@@ -22,31 +22,63 @@ import {
  * Replaces scattered TODO: Send email/SMS comments throughout codebase
  */
 
-export interface SendEmailParams {
+interface SendEmailParams {
   to: string
   subject: string
   htmlBody: string
   textBody?: string
   from?: string
-  replyTo?: string
   metadata?: any
-  /** Optional audit context. Required to land a row in
-   *  message_provider_logs (brokerage_id is NOT NULL there). If neither
-   *  is supplied, the email still sends — the audit log is just skipped. */
-  brokerageId?: string
-  contactId?: string
-  /** agents.id — recorded but not strictly required. */
-  agentId?: string
 }
 
-export interface SendSMSParams {
+interface SendSMSParams {
   to: string
   message: string
-  from?: string
   metadata?: any
-  brokerageId?: string
-  contactId?: string
-  agentId?: string
+}
+
+// TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 5, lane 59C, 2026-09-12):
+// sendEmail / sendSMS NO LONGER PUBLIC — the previous exported versions plus
+// their message_provider_logs synchronous audit write (and the
+// resolveAuditBrokerageId helper it used) are deleted. SURVIVOR for the send
+// itself: lib/providers/messaging/index.ts's sendEmail (:268) / sendSMS (:51)
+// — the actually-called send path (9 live callers; see that file's own
+// header). What these thin, now-PRIVATE wrappers keep is exactly the field
+// translation sendCalculatorResults / sendCollaborativeSearchInvite /
+// sendAnniversaryMessage below need (htmlBody/textBody → html/text) — they
+// have no callers outside this file, so nothing needed the public export
+// (the lib/services barrel's re-export of these two names was removed as
+// part of this same tombstone; it had zero importers). The audit-log
+// capability these used to add is not carried forward: message_provider_logs
+// already has live writers with STRONGER data (the SendGrid/Twilio status
+// webhooks record the provider's ACTUAL delivery status, not an immediate
+// "sent" guess), so no reader of that table loses a row class that only this
+// path produced.
+async function sendEmail(params: SendEmailParams) {
+  try {
+    return await providerSendEmail({
+      to: params.to,
+      subject: params.subject,
+      html: params.htmlBody,
+      text: params.textBody,
+      from: params.from,
+    })
+  } catch (error) {
+    console.error("[CommunicationService] Send email error:", error)
+    return handleError(error, "sendEmail")
+  }
+}
+
+async function sendSMS(params: SendSMSParams) {
+  try {
+    return await providerSendSMS({
+      to: params.to,
+      message: params.message,
+    })
+  } catch (error) {
+    console.error("[CommunicationService] Send SMS error:", error)
+    return handleError(error, "sendSMS")
+  }
 }
 
 export interface LogCommunicationParams {
@@ -74,107 +106,22 @@ export interface LogCommunicationParams {
   approvedContentId?: string
 }
 
-// Resolve brokerage_id from explicit param, falling back to a contact lookup.
-// Returns null when neither path yields a brokerage; callers MUST skip the
-// audit-log INSERT in that case (message_provider_logs.brokerage_id NOT NULL).
-async function resolveAuditBrokerageId(
-  supabase: any,
-  brokerageId?: string,
-  contactId?: string,
-): Promise<string | null> {
-  if (brokerageId) return brokerageId
-  if (!contactId) return null
-  const { data } = await supabase
-    .from("contacts")
-    .select("brokerage_id")
-    .eq("id", contactId)
-    .maybeSingle()
-  return data?.brokerage_id ?? null
-}
-
-/**
- * Send email through the configured provider chain (personal email →
- * SendGrid) and append a message_provider_logs row when brokerage context
- * is supplied. The send itself runs regardless; audit is best-effort.
- */
-export async function sendEmail(params: SendEmailParams) {
-  try {
-    const result = await providerSendEmail({
-      to: params.to,
-      subject: params.subject,
-      html: params.htmlBody,
-      text: params.textBody,
-      from: params.from,
-    })
-
-    // Audit. Skip entirely if we can't resolve a brokerage — the table's
-    // brokerage_id is NOT NULL and fabricating a value would corrupt
-    // tenancy. The provider send already happened above.
-    const supabase = createServiceClient()
-    const brokerageId = await resolveAuditBrokerageId(
-      supabase, params.brokerageId, params.contactId,
-    )
-    if (brokerageId) {
-      const { error: auditError } = await supabase.from("message_provider_logs").insert({
-        brokerage_id: brokerageId,
-        channel: "email",
-        direction: "outbound",
-        provider_key: result.provider ?? "sendgrid",
-        provider_status: result.success ? "sent" : "failed",
-        error_message: result.success ? null : (result.error ?? null),
-        sent_at: result.success ? new Date().toISOString() : null,
-        provider_response: { recipient: params.to, subject: params.subject, ...(params.metadata ?? {}) },
-      })
-      if (auditError) {
-        console.error("[CommunicationService] message_provider_logs (email) audit row refused:", auditError.message)
-      }
-    }
-
-    return result
-  } catch (error) {
-    console.error("[CommunicationService] Send email error:", error)
-    return handleError(error, "sendEmail")
-  }
-}
-
-/**
- * Send SMS through the configured provider chain. Audit-logs to
- * message_provider_logs when brokerage context can be resolved.
- */
-export async function sendSMS(params: SendSMSParams) {
-  try {
-    const result = await providerSendSMS({
-      to: params.to,
-      message: params.message,
-    })
-
-    const supabase = createServiceClient()
-    const brokerageId = await resolveAuditBrokerageId(
-      supabase, params.brokerageId, params.contactId,
-    )
-    if (brokerageId) {
-      const providerKey = ((result as any)?.provider as string | undefined) ?? "twilio"
-      const { error: auditError } = await supabase.from("message_provider_logs").insert({
-        brokerage_id: brokerageId,
-        channel: "sms",
-        direction: "outbound",
-        provider_key: providerKey,
-        provider_status: result.success ? "sent" : "failed",
-        error_message: result.success ? null : (result.error ?? null),
-        sent_at: result.success ? new Date().toISOString() : null,
-        provider_response: { recipient: params.to, message_excerpt: params.message.slice(0, 200), ...(params.metadata ?? {}) },
-      })
-      if (auditError) {
-        console.error("[CommunicationService] message_provider_logs (sms) audit row refused:", auditError.message)
-      }
-    }
-
-    return result
-  } catch (error) {
-    console.error("[CommunicationService] Send SMS error:", error)
-    return handleError(error, "sendSMS")
-  }
-}
+// TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 5, lane 59C, 2026-09-12):
+// sendEmail / sendSMS / resolveAuditBrokerageId DELETED — zero in-tree
+// callers (neither directly nor through the lib/services barrel re-export,
+// also removed below). SURVIVOR: lib/providers/messaging/index.ts's
+// sendEmail (:268) / sendSMS (:51) — the actually-called send path (9 live
+// callers: app/actions/lender-status-request.ts, instant-property-alerts.ts,
+// voice-call-bridge.ts, the weekly-income-digest cron, lib/contact-validation.ts,
+// lib/transactions/deal-vendor-notify.ts, lib/kernel/vendors.ts, and
+// lib/providers/dispatch.ts's dispatchEmail/dispatchSms, which these dead
+// wrappers were NOT part of). The one thing these wrappers added over the
+// survivor — a synchronous message_provider_logs audit row right after the
+// send call — is not carried forward: message_provider_logs already has live
+// writers with STRONGER data (app/api/webhooks/sendgrid-events/route.ts,
+// app/api/webhooks/twilio-sms-status/route.ts record the provider's actual
+// delivery status via webhook, not an immediate "sent" guess), so no reader
+// of that table loses a row class that only this dead path produced.
 
 // sendViaGHL was removed. GoHighLevel is NOT a message-send channel in
 // this product — it's a one-way contact-data sync target (push). Outbound

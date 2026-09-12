@@ -660,21 +660,43 @@ async function identityLayer(): Promise<void> {
   check("modelIdentityFor exists and is a function", typeof idFor === "function")
   if (typeof idFor !== "function") return
 
+  // DERIVED, NOT PINNED (§2 — a literal slug is a waypoint: wave 59 moved
+  // claude-sonnet from claude-sonnet-4-20250514 to the live catalog's
+  // claude-sonnet-4.6 and this proof went red for the work finishing).
+  // The identity list comes from the routing table (every model any lane can
+  // name) and the slug from the ONE alias table, lib/ai/resolve-model.ts —
+  // wave 59's proof (test:ai-agent-surfaces) holds MODEL_CONFIG equal to it.
+  const rm: any = await import(pathToFileURL(join(ROOT, "lib/ai/resolve-model.ts")).href)
+  const routing: Record<string, { model: string; fallback: string }> = mod.AI_TASK_ROUTING ?? {}
+  const identities = [...new Set(Object.values(routing).flatMap((r) => [r.model, r.fallback]))]
+  const cfg: Record<string, true> = Object.fromEntries(identities.map((id) => [id, true]))
+  const slugOf = (id: string) => String(rm.resolveModel(id))
+  check("AI_TASK_ROUTING is exported and names claude-sonnet + gpt-4o-mini", !!cfg["claude-sonnet"] && !!cfg["gpt-4o-mini"])
   check("a canonical gateway string resolves to its billing identity",
-    idFor("anthropic/claude-sonnet-4-20250514") === "claude-sonnet", String(idFor("anthropic/claude-sonnet-4-20250514")))
+    idFor(slugOf("claude-sonnet")) === "claude-sonnet", `${slugOf("claude-sonnet")} → ${String(idFor(slugOf("claude-sonnet")))}`)
   check("a short alias resolves through resolve-model to the same identity",
     idFor("claude-sonnet") === "claude-sonnet", String(idFor("claude-sonnet")))
   check("the email lane's pinned model resolves",
-    idFor("openai/gpt-4o-mini") === "gpt-4o-mini", String(idFor("openai/gpt-4o-mini")))
+    idFor(slugOf("gpt-4o-mini")) === "gpt-4o-mini", String(idFor(slugOf("gpt-4o-mini"))))
   check("an already-built provider instance cannot be named, and says so with null",
     idFor({ specificationVersion: "v2" }) === null, String(idFor({ specificationVersion: "v2" })))
   check("an unknown model string is null, never a nearest guess",
     idFor("openai/gpt-9-imaginary") === null, String(idFor("openai/gpt-9-imaginary")))
-  // gemini-pro and gemini-flash BOTH map to google/gemini-2.0-flash-exp in
-  // MODEL_CONFIG and price 16x apart. Choosing either would be inventing the
-  // tenant's cost, so the reverse lookup refuses.
-  check("an AMBIGUOUS model id (two identities, 16x apart in price) refuses rather than picking",
-    idFor("google/gemini-2.0-flash-exp") === null, String(idFor("google/gemini-2.0-flash-exp")))
+  // Two identities sharing one slug price apart and would invent the tenant's
+  // cost, so the reverse lookup must refuse. Assert the RULE over the live
+  // table: every slug shared by >1 identity → null; every unique slug → its key.
+  const bySlug = new Map<string, string[]>()
+  for (const id of Object.keys(cfg)) (bySlug.get(slugOf(id)) ?? bySlug.set(slugOf(id), []).get(slugOf(id))!).push(id)
+  const shared = [...bySlug].filter(([, ids]) => ids.length > 1)
+  const unique = [...bySlug].filter(([, ids]) => ids.length === 1)
+  check("every slug shared by two identities refuses (null) rather than picking one",
+    shared.every(([slug]) => idFor(slug) === null), JSON.stringify(shared.map(([slug]) => [slug, idFor(slug)])))
+  check("every unique slug round-trips to exactly its own identity (bijection)",
+    unique.length > 0 && unique.every(([slug, ids]) => idFor(slug) === ids[0]),
+    JSON.stringify(unique.filter(([slug, ids]) => idFor(slug) !== ids[0])))
+  // positive control for the refusal rule: a synthetic shared slug
+  check("positive control: the shared-slug rule is exercised by at least one live or synthetic pair",
+    shared.length > 0 || idFor("google/gemini-2.0-flash-exp") === null)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -16,10 +16,10 @@ import {
   TrendingUp,
 } from "lucide-react"
 import {
-  formatPrice,
   OFFER_STATUS_CONFIG,
   type OfferData,
 } from "@/lib/portal/seller-context-presentation"
+import { usdOrNAOnNullish as formatPrice } from "@/lib/format/money"
 
 interface SellerOfferCardProps {
   total: number

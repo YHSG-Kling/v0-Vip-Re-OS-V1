@@ -155,15 +155,7 @@ export function calculateDOM(listingDate: string | null): number {
   return computeDaysOnMarket(listingDate) ?? 0
 }
 
-/**
- * Formats price for display.
- */
-export function formatPrice(price: number | null): string {
-  if (price === null || price === undefined) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(price)
-}
+// formatPrice DELETED (duplicates round 5, lane 59C) — byte-identical to
+// lib/format/money.ts:148 `usdOrNAOnNullish()`. Survivor: lib/format/money.ts:148.
+// Callers repointed to `import { usdOrNAOnNullish as formatPrice } from "@/lib/format/money"`.
 

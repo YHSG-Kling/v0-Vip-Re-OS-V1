@@ -165,7 +165,17 @@ Lead Context:
       }
     }
 
-    // Create AI prompt with Them-First compliance
+    // Create AI prompt with Them-First compliance.
+    //
+    // DOCUMENTED REASON THIS DOES NOT CALL loadBrandVoicePrompt
+    // (docs/ai-agent-surfaces-2026-09.md §3 "one brand-voice prompt cascade"):
+    // this route drafts a Them-First-scored REPLY SUGGESTION for the agent to
+    // review and send in their own voice — it never itself talks to a client
+    // under a named persona the way the widget/portal/internal-copilot/D-ID
+    // lanes do, so there is no assistant identity here to brand. The sibling
+    // route this doc's "in-app agent copilot" row also names,
+    // app/api/internal/ai-chat, DOES speak as a persona to staff and calls
+    // loadBrandVoicePrompt.
     const systemPrompt = `You are a real estate AI assistant helping agents communicate with leads using the "Them-First" approach.
 
 Them-First Rules:

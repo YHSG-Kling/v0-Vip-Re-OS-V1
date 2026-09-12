@@ -164,3 +164,7 @@ export function axisCompactDollars(val: number): string {
   if (val >= 1000) return `$${(val / 1000).toFixed(0)}K`
   return `$${val}`
 }
+
+// TOMBSTONES (duplicates round 5, lane 59C — CLAUDE.md §1, ambiguous-name rule):
+//   app/lib/listing-utils.ts:formatPrice DELETED → survivor usd() above (this file).
+//   lib/portal/seller-context-presentation.ts:formatPrice DELETED → survivor usdOrNAOnNullish() above (this file).

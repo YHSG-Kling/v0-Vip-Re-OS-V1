@@ -22,9 +22,9 @@ import {
   LISTING_STATUS_CONFIG,
   type ListingData,
   type ListingMetrics,
-  formatPrice,
   calculateDOM,
 } from "@/lib/portal/seller-context-presentation"
+import { usdOrNAOnNullish as formatPrice } from "@/lib/format/money"
 
 interface ListingStatsCardProps {
   listing: ListingData | null

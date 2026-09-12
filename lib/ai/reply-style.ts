@@ -40,7 +40,8 @@ export const DEFAULT_REPLY_TONE: ReplyTone = "professional"
 export const REPLY_MODELS = [
   { value: "openai/gpt-4o-mini",                 label: "Fast",     description: "Quickest drafts, lowest cost — the default" },
   { value: "openai/gpt-4o",                      label: "Balanced", description: "Better reasoning on complex threads" },
-  { value: "anthropic/claude-sonnet-4-20250514", label: "Careful",  description: "Most attentive to nuance and compliance wording" },
+  // Slug must match lib/ai/resolve-model.ts ALIASES["claude-sonnet"] (wave 59: the dated -20250514 snapshot never existed in the gateway catalog).
+  { value: "anthropic/claude-sonnet-4.6",        label: "Careful",  description: "Most attentive to nuance and compliance wording" },
 ] as const satisfies readonly ReplyStyleOption<string>[]
 
 export type ReplyModel = (typeof REPLY_MODELS)[number]["value"]

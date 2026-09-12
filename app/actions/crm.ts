@@ -4,7 +4,6 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import {
   deleteContact as deleteContactService,
-  getContact,
   mergeContacts as mergeContactsService
 } from "@/lib/services/contact-management.service"
 import { isValidUUID } from "@/lib/validations"
@@ -138,11 +137,17 @@ export async function deleteContact(contactId: string, agentId: string) {
 // app/credit-pipeline/page.tsx, app/dashboard/forms/FormsLibraryClient.tsx).
 // This file's other service delegates (getContactById, mergeContacts) are
 // untouched — only the exact-duplicate name/purpose pair is resolved here.
-export async function getContactById(contactId: string) {
-  const { agentId } = await getAgentContext()
-  if (!agentId) return { success: false, error: "Not authenticated" }
-  return getContact(contactId, agentId)
-}
+// TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 5, lane 59C, 2026-09-12):
+// getContactById DELETED — zero in-tree callers (a thin "use server" wrapper
+// over lib/services/contact-management.service.ts's getContact). SURVIVOR:
+// app/actions/contacts.ts:170's getContactById (session-derived brokerage_id
+// + agent scoping per CLAUDE.md §4, the getContactById every live page
+// imports). The rich derived enrichment `getContact` computed — transaction
+// rollup, referral_count, vendor rating/service_areas — was itself orphaned
+// by this deletion (its only caller was this wrapper), so it was BUILT into
+// the survivor rather than lost: app/actions/contacts.ts:170 now calls
+// lib/services/contact-management.service.ts's getContact keyed on the
+// contact's own agent_id after its own tenant check passes.
 
 export async function searchContacts(params: { agentId: string; query: string }) {
   try {

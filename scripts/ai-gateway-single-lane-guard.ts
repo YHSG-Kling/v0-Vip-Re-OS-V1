@@ -488,7 +488,7 @@ async function assertResolverProducesCanonicalStrings(): Promise<boolean> {
     if (!isCanonical(r)) bad.push(`bare "${bare}" → ${JSON.stringify(r)}`)
   }
   // Already-canonical strings pass through unchanged (double resolution is safe).
-  for (const c of ["openai/gpt-4o", "anthropic/claude-opus-4-5", "perplexity/sonar-pro"]) {
+  for (const c of ["openai/gpt-4o", "anthropic/claude-opus-4.6", "perplexity/sonar-pro"]) {
     const r = resolveModel(c)
     if (r !== c) bad.push(`canonical "${c}" mutated → ${JSON.stringify(r)}`)
   }
@@ -850,8 +850,14 @@ async function main(): Promise<void> {
       "an alias resolves to a nested path instead of a gateway provider/model id",
       {
         file: RESOLVER,
-        find: '  "claude-opus":       "anthropic/claude-opus-4-5",',
-        replace: '  "claude-opus":       "anthropic/claude/opus-4-5",',
+        // Wave 59 (docs/ai-agent-surfaces-2026-09.md) repointed "claude-opus" from
+        // the hyphen-form "anthropic/claude-opus-4-5" to the dot-form
+        // "anthropic/claude-opus-4.6" — the slug that actually appears in the
+        // installed @ai-sdk/gateway's GatewayModelId union. Only the find/replace
+        // literals below track that; the control's INTENT (patch a valid alias
+        // into a nested path) is unchanged.
+        find: '  "claude-opus":       "anthropic/claude-opus-4.6",',
+        replace: '  "claude-opus":       "anthropic/claude/opus-4.6",',
       },
       assertResolverProducesCanonicalStrings,
     )

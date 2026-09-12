@@ -2,6 +2,7 @@
 // claude-sonnet, the model this call site already passed. Only the ledger changes.
 import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 export type SellerPersona =
   | "motivated"
@@ -154,7 +155,7 @@ async function generateSellerCoachingWithAI(
     success_signals:          [],
     risk_signals:             [],
     ai_generated:             true,
-    generated_by:             "anthropic/claude-sonnet-4-20250514",
+    generated_by:             resolveModel("claude-sonnet") as string,
   }
 
   // UPSERT — ON CONFLICT (listing_stage, persona, brokerage_id) DO UPDATE

@@ -303,6 +303,62 @@ export function activeCueIndex(cues: CaptionCue[], frame: number): number {
 }
 
 /**
+ * shiftCaptionCues — PURE, additive helper (wave 59 realism audit).
+ *
+ * THE DEFECT THIS CLOSES. Several avatar-fronted reels (MarketUpdateReel,
+ * AgentExplainerReel, ExplainerAnimReel, TeammateExplainerReel) open on a
+ * SILENT COVER/INTRO tile (a title card with no `<Audio>`/`<Video>` mounted at
+ * all) before the avatar clip — which carries its OWN baked-in narration
+ * audio — starts, at an absolute frame > 0 (`COVER`/`INTRO`). `CaptionLayer`'s
+ * even-distribution fallback (Path B, `buildCaptionPlan` off raw script text)
+ * used to be planned against the WHOLE composition's `durationInFrames`
+ * starting at frame 0, so its first cue's words were placed over that silent
+ * cover tile — a caption with no audio behind it at all, exactly the kind of
+ * mismatch a real, professionally-edited video never has (the owner's realism
+ * ruling this file's header already cites).
+ *
+ * THE FIX. Plan the fallback estimate against the narration window's OWN
+ * length (`hiddenFromFrame - visibleFromFrame`), then re-anchor every cue back
+ * onto absolute frames with this function. Pure re-indexing — the plan's
+ * relative pacing (which `buildCaptionPlan` already computed correctly for a
+ * window of that length) is untouched. See remotion/components/CaptionLayer.tsx
+ * `visibleFromFrame`.
+ */
+export function shiftCaptionCues(cues: CaptionCue[], offsetFrames: number): CaptionCue[] {
+  if (!Number.isFinite(offsetFrames) || offsetFrames === 0) return cues
+  const shift = Math.floor(offsetFrames)
+  return cues.map((c) => ({ ...c, fromFrame: Math.max(0, c.fromFrame + shift) }))
+}
+
+/**
+ * clipCaptionCuesFromFrame — the START-side twin of clipCaptionCuesBeforeFrame
+ * (below), for PRECOMPUTED cues (Path A) that might still reach into a silent
+ * cover tile. Drops any cue that ends at/before `visibleFromFrame` entirely,
+ * and shortens a straddling cue to start exactly AT the boundary (mirrors
+ * clipCaptionCuesBeforeFrame's own straddle rule — never cut a cue's TEXT
+ * short, only its dead-air lead-in). Null/undefined/non-finite/<=0
+ * `visibleFromFrame` is a no-op (additive/opt-in, same posture as every other
+ * prop on this layer).
+ */
+export function clipCaptionCuesFromFrame(
+  cues: CaptionCue[],
+  visibleFromFrame: number | null | undefined,
+): CaptionCue[] {
+  if (typeof visibleFromFrame !== "number" || !Number.isFinite(visibleFromFrame) || visibleFromFrame <= 0) return cues
+  const from = Math.floor(visibleFromFrame)
+  const out: CaptionCue[] = []
+  for (const c of cues) {
+    const end = c.fromFrame + c.durationFrames
+    if (end <= from) continue
+    const fromFrame = Math.max(c.fromFrame, from)
+    const durationFrames = end - fromFrame
+    if (durationFrames <= 0) continue
+    out.push({ text: c.text, fromFrame, durationFrames })
+  }
+  return out
+}
+
+/**
  * clipCaptionCuesBeforeFrame — wave 57 realism audit ("this includes ai
  * created videos" — b-roll/imagery, music, CAPTIONS, intro/outro/branding).
  *

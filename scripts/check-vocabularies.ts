@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 436 tables, 771 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-10
+ * generated: 2026-09-12
  * source: public.live_check_constraints_json()
- * body-sha256: 6176e9a9a6010d98f9ed7094f034db85ce54c9e62727a87fddda70a51606c686
+ * body-sha256: 367abfaa167afdc3e063bd0bd4ff01e01148b1b4109c5c821039b62ae5413976
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -229,7 +229,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     platform: ["bing_copilot", "chatgpt", "gemini", "google_ai_overviews", "perplexity"],
   },
   ai_tool_usage: {
-    model_used: ["claude-haiku", "claude-opus", "claude-sonnet", "gemini-flash", "gemini-pro", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "perplexity-sonar", "perplexity-sonar-pro"],
+    model_used: ["claude-haiku", "claude-opus", "claude-sonnet", "gemini-flash", "gemini-pro", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-5-mini", "perplexity-sonar", "perplexity-sonar-pro"],
   },
   ai_video_projects: {
     approval_status: ["approved", "draft", "pending_review", "published", "rejected"],

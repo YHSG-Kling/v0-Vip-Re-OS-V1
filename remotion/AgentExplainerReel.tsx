@@ -235,9 +235,11 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
         <AbsoluteFill />
       </Sequence>
 
-      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile.
+          NO CAPTION OVER SILENCE (wave 59) — the avatar's baked-in audio
+          starts at COVER, not frame 0; see CaptionLayer.visibleFromFrame. */}
       <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
-        hiddenFromFrame={COVER + B1 + B2 + B3} />
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + B1 + B2 + B3} />
     </AbsoluteFill>
   )
 }

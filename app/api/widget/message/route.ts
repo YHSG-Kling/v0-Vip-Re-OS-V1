@@ -9,6 +9,7 @@ import { convertToModelMessages, UIMessage } from 'ai'
 import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
+import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
 
@@ -73,52 +74,28 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Load identity ─────────────────────────────────────────────────────
-    let profile: any = null
-    if (session.agent_id) {
-      const { data } = await supabase
-        .from('ai_identity_profiles')
-        .select('assistant_name, persona_label, tone, faq_knowledge, objection_library, followup_style')
-        .eq('scope_type', 'agent')
-        .eq('scope_id', session.agent_id)
-        .eq('active', true)
-        .maybeSingle()
-      if (data) profile = data
-    }
-    if (!profile) {
-      const { data } = await supabase
-        .from('ai_identity_profiles')
-        .select('assistant_name, persona_label, tone, faq_knowledge, objection_library, followup_style')
-        .eq('scope_type', 'brokerage')
-        .eq('scope_id', session.brokerage_id)
-        .eq('active', true)
-        .maybeSingle()
-      if (data) profile = data
-    }
-
-    const assistantName = profile?.assistant_name ?? 'Your Real Estate Assistant'
-    const personaLabel = profile?.persona_label ?? 'AI Real Estate Specialist'
-    const tone = profile?.tone ?? 'conversational'
-    const faqKnowledge: Array<{ question: string; answer: string }> = profile?.faq_knowledge ?? []
-    const objectionLibrary: Array<{ objection: string; response: string }> = profile?.objection_library ?? []
+    // ONE brand-voice cascade (CLAUDE.md §1/§6) — was a hand-rolled two-tier
+    // (agent → brokerage) read straight off ai_identity_profiles, duplicating
+    // lib/ai-isa/brand-voice-prompt.ts's loadBrandVoicePrompt cascade
+    // (brand_voice_profile → brokerage/team/agent ai_identity_profiles →
+    // chartered AI teammates) while missing its tone/formality/prohibited-word
+    // rules and team tier entirely. Survivor: loadBrandVoicePrompt. This is
+    // the anonymous-widget lane the doc's §3 cascade note calls out — no
+    // contactId exists pre-capture, so it runs the brokerage/agent cascade
+    // without contact coverage.
+    const brand = await loadBrandVoicePrompt({
+      brokerageId: session.brokerage_id,
+      agentId: session.agent_id ?? null,
+    })
 
     // ── Build system prompt ───────────────────────────────────────────────
-    const faqBlock = faqKnowledge.length
-      ? `\n\nFREQUENTLY ASKED QUESTIONS (answer these from memory):\n` +
-        faqKnowledge.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n')
-      : ''
+    const system = `${brand.systemBlock}
 
-    const objectionBlock = objectionLibrary.length
-      ? `\n\nOBJECTION HANDLING:\n` +
-        objectionLibrary.map((o) => `Objection: ${o.objection}\nResponse: ${o.response}`).join('\n\n')
-      : ''
-
-    const system = `You are ${assistantName}, a ${personaLabel} for a real estate brokerage.
-Tone: ${tone}. Be helpful, concise, and focused on real estate.
 Your job is to help prospects with their questions, qualify their intent (buying or selling),
 and naturally collect their name, email, and phone number when appropriate — never pushy.
 If you have collected enough to identify them (name + email OR phone), say:
 "I have your info and someone from the team will follow up shortly!"
-Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBlock}${objectionBlock}`
+Do NOT make up property listings. Do NOT discuss competitor brokerages.`
 
     // ── Persist user message ──────────────────────────────────────────────
     const lastMsg = messages[messages.length - 1]
@@ -175,7 +152,7 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBloc
             session_id: session.id,
             role: 'assistant',
             content: text,
-            metadata: { widget: true, assistant_name: assistantName },
+            metadata: { widget: true, assistant_name: brand.assistantName },
           })
 
           // Detect lead capture keywords in assistant reply

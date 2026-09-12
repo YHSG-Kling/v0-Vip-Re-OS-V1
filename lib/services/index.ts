@@ -69,10 +69,13 @@ export {
 } from "./transaction-management.service"
 
 // ─── COMMUNICATION ────────────────────────────────────────────────────────────
-export type { SendEmailParams, SendSMSParams, LogCommunicationParams } from "./communication.service"
+// sendEmail / sendSMS re-exports REMOVED (duplicates round 5, lane 59C,
+// 2026-09-12) — this barrel had zero importers of either name (the barrel
+// itself has zero importers, full stop), and the underlying
+// communication.service.tsx wrappers were deleted; see the tombstone there
+// naming lib/providers/messaging/index.ts as survivor.
+export type { LogCommunicationParams } from "./communication.service"
 export {
-  sendEmail,
-  sendSMS,
   logCommunication,
   sendCalculatorResults,
   sendCollaborativeSearchInvite,

@@ -88,6 +88,7 @@ import {
   updateContactRecord,
   archiveContactRecord,
 } from "@/lib/kernel/crm"
+import { getContact as getContactEnriched } from "@/lib/services/contact-management.service"
 
 // ─── getContacts ──────────────────────────────────────────────────────────────
 
@@ -194,6 +195,22 @@ export async function getContactById(contactId: string) {
     }
     if (!data) {
       return { success: false, error: "Contact not found", contact: null }
+    }
+
+    // Tenant already verified above (brokerage_id + agent scoping when the
+    // caller is an agent). Enrich with the derived fields (transaction_count,
+    // referral_count, vendor rating/service_areas) computed by
+    // lib/services/contact-management.service.ts::getContact — the survivor
+    // of the app/actions/crm.ts:getContactById duplicate (duplicates round 5,
+    // lane 59C; tombstone at app/actions/crm.ts). Keyed on the CONTACT's OWN
+    // agent_id (not the caller's), so it works for both agent and admin/broker
+    // callers without re-deriving the tenant check. Best-effort: any failure
+    // falls back to the plain tenant-scoped row rather than losing the read.
+    if (typeof data.agent_id === "string" && data.agent_id) {
+      const enriched = await getContactEnriched(contactId, data.agent_id)
+      if (enriched.success && enriched.contact) {
+        return { success: true, contact: enriched.contact }
+      }
     }
 
     return { success: true, contact: data }
@@ -581,3 +598,7 @@ export async function addContactNote(contactId: string, noteText: string, isPriv
     return { success: false, error: error.message }
   }
 }
+
+// TOMBSTONE (duplicates round 5, lane 59C — CLAUDE.md §1, ambiguous-name rule):
+//   app/actions/crm.ts:getContactById DELETED → survivor getContactById in this file,
+//   which absorbed lib/services/contact-management.service.ts::getContact's rollups.

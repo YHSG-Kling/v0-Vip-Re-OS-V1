@@ -4,6 +4,7 @@ import { readRoleGrants, allRoles, selectPrimaryRole, selectTenantBrokerageId, s
 import { createServiceClient } from "@/lib/supabase/service"
 import { convertToModelMessages, tool } from "ai"
 import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
+import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -421,37 +422,32 @@ export async function POST(req: NextRequest) {
       else if (role === "superadmin") return loadSuperadminContext(service)
       return {}
     })(),
-    // scope_id at scope_type 'agent' is an agents.id (the editor writes it, and the
-    // widget / voice / video / ISA readers all resolve it that way) — filtering by
-    // the raw auth user id, as this did, could never match a saved persona.
+    // ONE brand-voice cascade (CLAUDE.md §1/§6) — survivor
+    // lib/ai-isa/brand-voice-prompt.ts loadBrandVoicePrompt. This used to be a
+    // hand-rolled agent-scope → brokerage-scope read straight off
+    // ai_identity_profiles, duplicating the cascade's first two tiers while
+    // never reaching its team tier or its brand_voice_profile blend. scope_id
+    // at scope_type 'agent' is an agents.id (the editor writes it, and the
+    // widget / voice / video / ISA readers all resolve it that way) — filtering
+    // by the raw auth user id, as the old read did, could never match a saved
+    // persona; loadBrandVoicePrompt takes the resolved agentId directly.
     (async () => {
       const scopeAgentId = await resolveAgentId(service as any, user.id)
-      if (!scopeAgentId) return { data: null }
-      return service
-        .from("ai_identity_profiles")
-        .select("assistant_name, persona_label, tone, formality_level")
-        .eq("scope_type", "agent")
-        .eq("scope_id", scopeAgentId)
-        .eq("active", true)
-        .maybeSingle()
+      const brand = await loadBrandVoicePrompt({
+        brokerageId,
+        agentId: scopeAgentId ?? null,
+      })
+      return {
+        assistant_name: brand.assistantName,
+        persona_label: brand.personaLabel ?? "internal assistant",
+        tone: brand.tone ?? "professional",
+        formality_level: brand.formalityLevel ?? "formal",
+      } satisfies AIIdentity
     })(),
   ])
 
   if (contextResult.status === "fulfilled") ctx = contextResult.value ?? {}
-
-  if (agentIdentityResult.status === "fulfilled" && agentIdentityResult.value.data) {
-    identity = agentIdentityResult.value.data as AIIdentity
-  } else if (brokerageId) {
-    // Fall back to brokerage-scope identity
-    const { data: brokerageProfile } = await service
-      .from("ai_identity_profiles")
-      .select("assistant_name, persona_label, tone, formality_level")
-      .eq("scope_type", "brokerage")
-      .eq("scope_id", brokerageId)
-      .eq("active", true)
-      .maybeSingle()
-    if (brokerageProfile) identity = brokerageProfile as AIIdentity
-  }
+  if (agentIdentityResult.status === "fulfilled") identity = agentIdentityResult.value
 
   const systemPrompt = buildSystemPrompt(role, ctx, identity)
 

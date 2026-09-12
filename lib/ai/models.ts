@@ -23,17 +23,41 @@ function toGatewayModel(modelStr: string) {
   return createGateway({ apiKey: key })(modelStr)
 }
 
+// MODEL_CONFIG is KEPT IN LOCKSTEP with lib/ai/resolve-model.ts's ALIASES
+// table (CLAUDE.md §6 — two spellings of the same idea is a defect) rather
+// than computed from it at runtime. This used to be a second, independently
+// hand-maintained alias table that had ALREADY drifted — it pointed at a
+// retired preview id (`gemini-2.0-flash-exp`) and two nonexistent dated
+// Anthropic snapshots (`claude-sonnet-4-20250514`, `claude-haiku-4-20250514`)
+// while resolve-model.ts's own ALIASES disagreed with it for the same two
+// identities (a real but OLDER, cheaper Haiku generation) — every Haiku turn
+// was billed at the wrong price.
+//
+// WHY THIS STAYS A LITERAL (not `Object.fromEntries(keys.map(resolveModel))`):
+// scripts/ai-gateway-single-lane-guard.ts's A5b assertion parses this object
+// STATICALLY via regex (`modelConfigPairs()`) — it cannot import
+// lib/ai/models.ts, which is server-only — and two of its own negative
+// controls patch literal `provider: "...", modelId: "..."` text to prove the
+// guard can still catch a bad slug. A computed object reads as ZERO
+// providers to that regex and its controls stop applying, which is a
+// different and worse defect than the one being fixed here. So instead the
+// "one vocabulary" rule (§6) is enforced by EQUALITY, not by a single
+// source of truth: scripts/ai-agent-surfaces-simulator.ts (check a) asserts
+// every entry below equals `resolveModel()` of the same key read from
+// resolve-model.ts's ALIASES, so editing one without the other fails that
+// proof rather than silently drifting a second time.
 const MODEL_CONFIG: Record<AIModel, { provider: string; modelId: string }> = {
-  "claude-sonnet": { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
-  "claude-opus": { provider: "anthropic", modelId: "claude-opus-4-20250514" },
-  "claude-haiku": { provider: "anthropic", modelId: "claude-haiku-4-20250514" },
+  "claude-sonnet": { provider: "anthropic", modelId: "claude-sonnet-4.6" },
+  "claude-opus": { provider: "anthropic", modelId: "claude-opus-4.6" },
+  "claude-haiku": { provider: "anthropic", modelId: "claude-haiku-4.5" },
   "gpt-4o": { provider: "openai", modelId: "gpt-4o" },
   "gpt-4-turbo": { provider: "openai", modelId: "gpt-4-turbo" },
   "gpt-4o-mini": { provider: "openai", modelId: "gpt-4o-mini" },
-  "gemini-pro": { provider: "google", modelId: "gemini-2.0-flash-exp" },
-  "gemini-flash": { provider: "google", modelId: "gemini-2.0-flash-exp" },
+  "gpt-5-mini": { provider: "openai", modelId: "gpt-5-mini" },
+  "gemini-pro": { provider: "google", modelId: "gemini-2.5-pro" },
+  "gemini-flash": { provider: "google", modelId: "gemini-2.5-flash" },
   "perplexity-sonar": { provider: "perplexity", modelId: "sonar" },
-  "perplexity-sonar-pro": { provider: "perplexity", modelId: "sonar-pro" }
+  "perplexity-sonar-pro": { provider: "perplexity", modelId: "sonar-pro" },
 }
 
 /**
@@ -107,16 +131,16 @@ export const AI_TASK_ROUTING: Record<string, {
   ai_isa_response:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "ISA conversation replies — empathy + conversion critical" },
   home_assistant_qa:         { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Lifetime portal 'ask your home anything' — scoped, compliance-safe, client-facing" },
   sequence_step_content:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Drip sequence email/SMS — must pass compliance pipeline" },
-  live_avatar_conversation:  { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "D-ID Agents real-time conversational turns — latency-critical, short replies" },
+  live_avatar_conversation:  { model: "gemini-flash",  fallback: "gpt-5-mini",  reason: "D-ID Agents real-time conversational turns — latency-critical, short replies (docs/ai-agent-surfaces-2026-09.md §3)" },
 
   // ── STREAMING CHAT LANES (streamTextRouted call sites) ────────────────────
   // Each row pins the model its route was already shipping with when the lane
   // moved onto streamTextRouted — routing + caps + ledger arrived WITHOUT a
   // silent model change. Re-route deliberately here, never at the call site.
-  agent_chat_stream:            { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Agent coaching chat SSE stream — latency-critical, high volume" },
-  widget_visitor_chat:          { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Public website widget chat — anonymous visitors, cheap + fast" },
-  portal_chat_stream:           { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Client portal live chat — conversational turns, latency-critical" },
-  internal_assistant_chat:      { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Role-scoped internal assistant with staging tools — fast multi-step" },
+  agent_chat_stream:            { model: "claude-haiku",  fallback: "gpt-5-mini",  reason: "Agent coaching chat SSE stream — tool-call accuracy over anonymous-chat cost (docs/ai-agent-surfaces-2026-09.md §3)" },
+  widget_visitor_chat:          { model: "gpt-5-mini",    fallback: "gemini-flash", reason: "Public website widget chat — anonymous visitors, cheapest-per-token lane (docs/ai-agent-surfaces-2026-09.md §3)" },
+  portal_chat_stream:           { model: "claude-haiku",  fallback: "gpt-5-mini",  reason: "Client portal live chat — relationship-critical, tool turns; system prompt cached (docs/ai-agent-surfaces-2026-09.md §3)" },
+  internal_assistant_chat:      { model: "claude-haiku",  fallback: "gpt-5-mini",  reason: "Role-scoped internal assistant with staging tools — best tool-call accuracy (docs/ai-agent-surfaces-2026-09.md §3)" },
   onboarding_setup_assistant:   { model: "claude-sonnet", fallback: "gpt-4o",       reason: "KB-grounded setup Q&A for new agents — quality over latency" },
   onboarding_performance_report:{ model: "claude-sonnet", fallback: "gpt-4o",       reason: "Onboarding coaching report — long-form, encouraging-but-honest narrative" },
   brand_voice_sample:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Brand-voice sample email during setup — brand quality showcase" },
@@ -212,10 +236,11 @@ export const AI_TASK_ROUTING: Record<string, {
  * RETURNS NULL RATHER THAN GUESSING, in two cases:
  *   · the argument is not a string (an already-constructed provider instance
  *     carries no id this side of the SDK), and
- *   · the string is ambiguous — MODEL_CONFIG maps BOTH "gemini-pro" and
- *     "gemini-flash" onto google/gemini-2.0-flash-exp, and those two price 16x
- *     apart ($1.25 vs $0.075 per 1M input). Picking either would be inventing
- *     the tenant's cost.
+ *   · the string is ambiguous — two AIModel keys resolve to the same gateway
+ *     string (none do as of the 2026-09-12 catalog refresh; kept as a guard
+ *     because the pre-refresh table DID collide here — "gemini-pro" and
+ *     "gemini-flash" both pointed at google/gemini-2.0-flash-exp, 16x apart in
+ *     price). Picking either would be inventing the tenant's cost.
  * A null answer means the call cannot be attributed, and m508 says what that
  * costs: a row claiming tokens must name the model that produced them, so the
  * caller must book ZERO with a named reason rather than a figure with no model.
@@ -715,6 +740,46 @@ export interface RoutedUsage {
 }
 
 /**
+ * GATEWAY-SIDE FALLBACK + ANTHROPIC PROMPT CACHING (docs/ai-agent-surfaces-2026-09.md
+ * §4.4). Additive to the existing JS-level try/catch fallback below — the
+ * gateway now ALSO carries the routing table's fallback model in
+ * `providerOptions.gateway.models`, so a transient provider error can be
+ * retried gateway-side before ever reaching our catch block. Shape verified
+ * against @ai-sdk/gateway's gatewayProviderOptions schema
+ * (node_modules/@ai-sdk/gateway/dist/index.d.ts: `models?: string[]`).
+ */
+function gatewayProviderOptions(fallback: AIModel): { gateway: { models: string[] } } {
+  const cfg = MODEL_CONFIG[fallback] ?? MODEL_CONFIG["gpt-4o"]
+  return { gateway: { models: [`${cfg.provider}/${cfg.modelId}`] } }
+}
+
+/**
+ * Wraps a plain system-prompt string into a `SystemModelMessage` carrying
+ * Anthropic's ephemeral prompt-cache breakpoint when the routed model is
+ * Anthropic — shape is @ai-sdk/provider's own documented example
+ * (node_modules/@ai-sdk/provider/dist/index.d.ts: `providerOptions.anthropic.cacheControl`).
+ * Caches the brand-voice / tool system prompt so repeat chat turns
+ * (portal/in-app/agent lanes) read the cached prefix at ~10% of input price
+ * instead of paying full price every turn. Non-Anthropic lanes (gpt-5-mini,
+ * gemini-flash, perplexity) get the plain string back unchanged — the
+ * `cacheControl` key is Anthropic-specific and other providers ignore an
+ * unrecognised providerOptions namespace, but there is nothing to cache there
+ * without an Anthropic-shaped model anyway.
+ */
+function withAnthropicCaching(
+  system: string | undefined,
+  provider: string
+): AIRequest["system"] | { role: "system"; content: string; providerOptions: Record<string, unknown> } {
+  if (!system) return undefined
+  if (provider !== "anthropic") return system
+  return {
+    role: "system" as const,
+    content: system,
+    providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+  }
+}
+
+/**
  * Structured-output variant of generateTextRouted — same routing, fallback,
  * and gateway wrapping as the text version, but returns a typed object via
  * the AI SDK's experimental_output schema.
@@ -838,12 +903,13 @@ export async function generateTextRouted(
     const result = await generateText({
       model: primaryInstance,
       prompt: request.prompt,
-      system: request.system,
+      system: withAnthropicCaching(request.system, primaryConfig.provider) as any,
       maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
       tools: request.tools as any,
       stopWhen,
+      providerOptions: gatewayProviderOptions(fallback) as any,
     })
     inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
     outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text)
@@ -856,7 +922,7 @@ export async function generateTextRouted(
     const result = await generateText({
       model: fallbackInstance,
       prompt: request.prompt,
-      system: request.system,
+      system: withAnthropicCaching(request.system, fallbackConfig.provider) as any,
       maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
@@ -987,7 +1053,13 @@ export async function streamTextRouted(
   request: RoutedStreamRequest
 ): Promise<ReturnType<typeof streamText>> {
   const feature = request.feature ?? "unspecified"
-  const { model: routedModel } = selectModelForTask(feature)
+  // Routing table's model AND fallback column, resolved together — the
+  // fallback also feeds gatewayProviderOptions below (gateway-side fallback).
+  // streamTextRouted deliberately carries no JS-level retry of its own (a
+  // stream may have already flushed headers/bytes before a provider error
+  // surfaces), so the gateway-side fallback is the ONLY fallback path this
+  // function has.
+  const { model: routedModel, fallback: routedFallback } = selectModelForTask(feature)
 
   // Fair-use PRE-FLIGHT (skipped for background jobs without brokerageId).
   // prompt + system + EVERY carried message + the output budget — the chat
@@ -1023,12 +1095,13 @@ export async function streamTextRouted(
   return streamText({
     model: primaryInstance,
     prompt: request.prompt,
-    system: request.system,
+    system: withAnthropicCaching(request.system, primaryConfig.provider) as any,
     maxOutputTokens: request.maxTokens,
     temperature: request.temperature,
     messages: request.messages as any,
     tools: request.tools as any,
     stopWhen,
+    providerOptions: gatewayProviderOptions(routedFallback) as any,
     onFinish: async (event) => {
       // THE LEDGER — first, so a throwing caller callback can never lose the
       // usage row. Keyed on the TENANT alone: AI cost always belongs to the

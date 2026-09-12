@@ -21,6 +21,47 @@ import { resolveSMSProviderForActor } from "./resolve-sms-provider"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { SMS_ADAPTERS } from "./sms-adapters"
 import { isUsableSender, NO_SENDER_ERROR } from "@/lib/providers/outbound-sender"
+import { createServiceClient } from "@/lib/supabase/service"
+
+// ─── PROVIDER LOG (merged onto the survivor, duplicates round 5) ───────────────
+//
+// lib/services/communication.service.tsx's sendEmail/sendSMS wrappers were the
+// ONLY explicit writers of message_provider_logs.provider_response / sent_at
+// for the direct (non-sequence) send lanes. Deleting them without first merging
+// that half onto this survivor left provider-event-fanout.ts's sent_at window
+// and system-health's provider_response audit reading columns nobody wrote
+// (opposite-missing census 1b) — the exact §1 order-of-operations mistake
+// CLAUDE.md warns about. brokerage_id is NOT NULL on that table, so the row is
+// written only when the caller passes the tenant; a tenant-less internal send
+// (2FA, platform notices) leaves no row, exactly as the deleted wrapper behaved.
+async function recordProviderLog(row: {
+  brokerageId?: string | null
+  channel: "sms" | "email"
+  providerKey: string
+  providerMessageId?: string | null
+  success: boolean
+  error?: string | null
+  providerResponse: Record<string, unknown>
+}): Promise<void> {
+  if (!row.brokerageId) return
+  try {
+    const svc = createServiceClient()
+    const { error } = await svc.from("message_provider_logs").insert({
+      brokerage_id: row.brokerageId,
+      channel: row.channel,
+      direction: "outbound",
+      provider_key: row.providerKey,
+      provider_message_id: row.providerMessageId ?? null,
+      provider_status: row.success ? "sent" : "failed",
+      error_message: row.success ? null : (row.error ?? null),
+      sent_at: row.success ? new Date().toISOString() : null,
+      provider_response: row.providerResponse,
+    })
+    if (error) console.error(`[messaging] message_provider_logs (${row.channel}) audit row refused:`, error.message)
+  } catch (err: any) {
+    console.error(`[messaging] message_provider_logs (${row.channel}) audit row threw:`, err?.message ?? err)
+  }
+}
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
 
@@ -89,6 +130,15 @@ export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
     resolved.credentials,
   )
 
+  await recordProviderLog({
+    brokerageId: params.brokerageId ?? null,
+    channel: "sms",
+    providerKey: resolved.providerName,
+    providerMessageId: result.messageId ?? null,
+    success: result.success,
+    error: result.error ?? null,
+    providerResponse: { recipient: params.to, message_excerpt: params.message.slice(0, 200), contact_id: params.contactId ?? null },
+  })
   if (!result.success) {
     throw new Error(result.error ?? `${result.provider} send failed`)
   }
@@ -245,6 +295,8 @@ export interface SendEmailParams {
   text?: string
   from?: string
   contactId?: string
+  /** Tenant for the message_provider_logs audit row (brokerage_id NOT NULL there); no tenant → no row. */
+  brokerageId?: string
   /**
    * When set, attempt to send through THIS agent's personal Gmail/Outlook
    * mailbox via their OAuth token. Falls back to SendGrid if no personal
@@ -280,6 +332,14 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         textBody: params.text,
       })
       if (result.success) {
+        await recordProviderLog({
+          brokerageId: params.brokerageId ?? null,
+          channel: "email",
+          providerKey: result.provider ?? "personal_email",
+          providerMessageId: result.messageId ?? null,
+          success: true,
+          providerResponse: { recipient: params.to, subject: params.subject, contact_id: params.contactId ?? null },
+        })
         // The provider's OWN reference travels back. It was being dropped here,
         // so an agent-mailbox send was the one lane that produced no evidence at
         // all — a caller could record "sent" and hold nothing it could take to
@@ -349,12 +409,25 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     },
   })
 
+  // The provider id enables EXACT delivered/read correlation in the event
+  // webhook (messages writers store it in metadata.sg_message_id).
+  const sgMessageId = response.ok ? ((response as any).headers?.["x-message-id"] ?? null) : null
+  await recordProviderLog({
+    brokerageId: params.brokerageId ?? null,
+    channel: "email",
+    providerKey: "sendgrid",
+    providerMessageId: sgMessageId,
+    success: response.ok,
+    error: response.ok ? null : (response.error || "SendGrid API error"),
+    providerResponse: { recipient: params.to, subject: params.subject, contact_id: params.contactId ?? null },
+  })
   if (!response.ok) {
     throw new Error(response.error || "SendGrid API error")
   }
-
-  // The provider id enables EXACT delivered/read correlation in the event
-  // webhook (messages writers store it in metadata.sg_message_id).
-  const sgMessageId = (response as any).headers?.["x-message-id"] ?? null
   return { success: true, status: "sent", provider: "sendgrid", providerMessageId: sgMessageId }
 }
+
+// TOMBSTONES (duplicates round 5, lane 59C — CLAUDE.md §1, ambiguous-name rule):
+//   lib/services/communication.service.tsx:sendEmail DELETED → survivor sendEmail in this file.
+//   lib/services/communication.service.tsx:sendSMS DELETED → survivor sendSMS in this file.
+//   Their message_provider_logs audit row was MERGED onto both survivors first (recordProviderLog above), per §1 order.

@@ -388,9 +388,13 @@ function captionsSection() {
   // video-assembly-simulator.ts's §avatar section) is re-asserted here by name
   // so a regression on THIS specific property is unambiguous in this guard's
   // own failure output too, not only buried in the other file's larger run.
+  // Wave 59: the assertion's own wording changed (visibleFromFrame/windowFrames
+  // — see caption-plan.ts shiftCaptionCues) when the cover-tile caption fix
+  // landed; this re-check follows the rename rather than pinning stale text
+  // (CLAUDE.md §2 — never pin an assertion to a waypoint).
   const caption = readStripped("scripts/video-assembly-simulator.ts")
   check("video-assembly-simulator's own §avatar section asserts CaptionLayer derives timing from useVideoConfig",
-    /CaptionLayer derives caption timing from THIS composition's own durationInFrames/.test(caption))
+    /CaptionLayer's narration window still derives from THIS composition's own durationInFrames/.test(caption))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

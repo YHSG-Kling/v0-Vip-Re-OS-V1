@@ -437,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9445,
+  "census": 9441,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -655,7 +655,7 @@
     "app/actions/credit-copilot.ts": 8,
     "app/actions/critical-setup.ts": 1,
     "app/actions/crm-connect.ts": 4,
-    "app/actions/crm.ts": 7,
+    "app/actions/crm.ts": 6,
     "app/actions/cron-kernel.ts": 5,
     "app/actions/ctv-ads.ts": 3,
     "app/actions/custom-domains.ts": 4,
@@ -2400,7 +2400,7 @@
     "app/lender/components/os/lender-command-strip.tsx": 1,
     "app/lender/components/os/lender-pipeline-panel.tsx": 1,
     "app/lib/gamification/award-on-action.ts": 1,
-    "app/lib/listing-utils.ts": 2,
+    "app/lib/listing-utils.ts": 1,
     "app/lifetime-customers/components/campaigns-gifting-panel.tsx": 1,
     "app/lifetime-customers/components/gift-vendor-rolodex.tsx": 1,
     "app/listing/[slug]/page.tsx": 1,
@@ -3131,14 +3131,14 @@
     "lib/finance/tax-assistance.ts": 1,
     "lib/finance/tax-planning.ts": 6,
     "lib/finance/team-pl-writer.ts": 2,
-    "lib/finance/team-pl.ts": 2,
+    "lib/finance/team-pl.ts": 1,
     "lib/finance/usage-metering.ts": 1,
     "lib/financials/revenue-projection.ts": 3,
     "lib/financing/letter-strength.ts": 1,
     "lib/financing/rate-lock-watch-runner.ts": 1,
     "lib/financing/rate-lock-watch.ts": 1,
     "lib/format/collections.ts": 1,
-    "lib/format/dates.ts": 13,
+    "lib/format/dates.ts": 15,
     "lib/format/html.ts": 3,
     "lib/format/math.ts": 1,
     "lib/format/money.ts": 12,
@@ -3154,7 +3154,7 @@
     "lib/forms/pdf-form-fill.ts": 2,
     "lib/forms/prefill-property-into-pdf.ts": 1,
     "lib/gamification/award-points.ts": 1,
-    "lib/gamification/leaderboard-vocabulary.ts": 7,
+    "lib/gamification/leaderboard-vocabulary.ts": 6,
     "lib/gamification/tiers.ts": 4,
     "lib/geo/citation-scope.ts": 4,
     "lib/geo/citation-share.ts": 3,
@@ -3535,7 +3535,7 @@
     "lib/kernel/voice-delegation.ts": 18,
     "lib/kernel/warm-handoff-runner.ts": 1,
     "lib/kernel/warm-handoff.ts": 3,
-    "lib/kernel/week-in-review.ts": 4,
+    "lib/kernel/week-in-review.ts": 3,
     "lib/kernel/welcome-personal-video.ts": 1,
     "lib/kernel/write-sentinel.ts": 4,
     "lib/knowledge/embedding-service.ts": 10,
@@ -3806,7 +3806,7 @@
     "lib/platform/product-content.ts": 6,
     "lib/platform/prospect-conversion.ts": 1,
     "lib/platform/prospect-followup.ts": 1,
-    "lib/platform/prospect-sourcer.ts": 4,
+    "lib/platform/prospect-sourcer.ts": 3,
     "lib/platform/provider-posture.ts": 7,
     "lib/platform/public-tiers.ts": 2,
     "lib/platform/referral-payouts.ts": 7,
@@ -3850,7 +3850,7 @@
     "lib/portal/require-contact-access.ts": 2,
     "lib/portal/resolve-education-context.ts": 1,
     "lib/portal/resolve-seller-context.ts": 4,
-    "lib/portal/seller-context-presentation.ts": 3,
+    "lib/portal/seller-context-presentation.ts": 2,
     "lib/portal/seller-journey-copy.ts": 2,
     "lib/portal/static-lesson-bridge.ts": 3,
     "lib/portal-stream/event-to-stage-tags.ts": 1,
@@ -3974,7 +3974,7 @@
     "lib/seller-equity/equity-estimate.ts": 2,
     "lib/seller-equity/move-readiness.ts": 1,
     "lib/seller-equity/scenarios.ts": 2,
-    "lib/services/communication.service.tsx": 6,
+    "lib/services/communication.service.tsx": 4,
     "lib/services/contact-management.service.ts": 6,
     "lib/services/content-generation.service.ts": 2,
     "lib/services/lead-management.service.ts": 6,
@@ -4115,7 +4115,7 @@
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
     "lib/video/broll-url.ts": 1,
-    "lib/video/caption-plan.ts": 3,
+    "lib/video/caption-plan.ts": 5,
     "lib/video/chapter-video-generator.ts": 1,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
@@ -4141,7 +4141,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 8,
+    "lib/video/realism-profile.ts": 9,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -5673,7 +5673,6 @@
     ],
     "app/actions/crm.ts": [
       "deleteContact",
-      "getContactById",
       "searchContacts",
       "mergeContacts",
       "findDuplicateContacts",
@@ -12368,8 +12367,7 @@
       "awardPointsForAction"
     ],
     "app/lib/listing-utils.ts": [
-      "calculateDaysOnMarket",
-      "formatPrice"
+      "calculateDaysOnMarket"
     ],
     "app/lifetime-customers/components/campaigns-gifting-panel.tsx": [
       "CampaignsGiftingPanel"
@@ -15731,8 +15729,7 @@
       "runTeamPnlAll"
     ],
     "lib/finance/team-pl.ts": [
-      "computeTeamPnl",
-      "monthLabel"
+      "computeTeamPnl"
     ],
     "lib/finance/usage-metering.ts": [
       "runUsageMeteringRollup"
@@ -15767,7 +15764,9 @@
       "agoOrDash",
       "agoShort",
       "agoFloorOrEmpty",
-      "agoMinutesFloor"
+      "agoMinutesFloor",
+      "isoWeekOf",
+      "monthLabel"
     ],
     "lib/format/html.ts": [
       "escapeHtmlFull",
@@ -15841,7 +15840,6 @@
       "isLeaderboardScope",
       "isLeaderboardMetric",
       "isoWeekLabel",
-      "monthLabel",
       "periodWindows",
       "isCanonicalPeriodLabel",
       "defaultPeriodLabel"
@@ -17881,7 +17879,6 @@
     "lib/kernel/week-in-review.ts": [
       "composeWeekInReviewScript",
       "weekReviewTag",
-      "isoWeekOf",
       "runWeekInReview"
     ],
     "lib/kernel/welcome-personal-video.ts": [
@@ -19220,7 +19217,6 @@
     "lib/platform/prospect-sourcer.ts": [
       "inferProspectRole",
       "prospectDedupeKey",
-      "isoWeekOf",
       "sourcePlatformProspects"
     ],
     "lib/platform/provider-posture.ts": [
@@ -19449,8 +19445,7 @@
     ],
     "lib/portal/seller-context-presentation.ts": [
       "deriveOverallSentiment",
-      "calculateDOM",
-      "formatPrice"
+      "calculateDOM"
     ],
     "lib/portal/seller-journey-copy.ts": [
       "deriveSellerStage",
@@ -20051,8 +20046,6 @@
       "bestNetScenario"
     ],
     "lib/services/communication.service.tsx": [
-      "sendEmail",
-      "sendSMS",
       "logCommunication",
       "sendCalculatorResults",
       "sendCollaborativeSearchInvite",
@@ -20662,6 +20655,8 @@
     "lib/video/caption-plan.ts": [
       "buildCaptionPlan",
       "activeCueIndex",
+      "shiftCaptionCues",
+      "clipCaptionCuesFromFrame",
       "clipCaptionCuesBeforeFrame"
     ],
     "lib/video/chapter-video-generator.ts": [
@@ -20801,6 +20796,7 @@
       "alignmentWithoutPauseMarkup",
       "scanForAiTells",
       "avatarPipWindowFade",
+      "estimateAvatarRenderCostUsd",
       "PAUSE_MARKUP_ALIGNMENT_FIXTURE",
       "PLAIN_ALIGNMENT_FIXTURE"
     ],

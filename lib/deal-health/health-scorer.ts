@@ -45,6 +45,7 @@ import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 export type { HealthCategory } from "./category-weights"
 import { CATEGORY_WEIGHTS, type HealthCategory } from "./category-weights"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 export interface ComponentScore {
   category:    HealthCategory
@@ -1075,7 +1076,7 @@ Write a concise, actionable summary for the agent/broker. Focus on what needs at
 
   try {
     const response = await gatewayChat({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("claude-sonnet") as string, // one alias table (lib/ai/resolve-model.ts), never a dated literal
       maxTokens: 200,
       temperature: 0.3,
       messages: [{ role: "user", content: prompt }],

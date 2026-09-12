@@ -296,9 +296,12 @@ export const TeammateExplainerReel: React.FC<TeammateExplainerReelProps> = ({
       </Sequence>
 
       {/* Sound-off captions across the whole reel (default-off when absent). */}
-      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the outro/QR tile. */}
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the outro/QR tile.
+          NO CAPTION OVER SILENCE (wave 59) — AvatarBody's clip starts at
+          INTRO, not frame 0 (no trimBefore — single-window, source frame 0 ==
+          absolute frame INTRO); see CaptionLayer.visibleFromFrame. */}
       <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
-        hiddenFromFrame={INTRO + BODY} />
+        visibleFromFrame={INTRO} hiddenFromFrame={INTRO + BODY} />
     </AbsoluteFill>
   )
 }
