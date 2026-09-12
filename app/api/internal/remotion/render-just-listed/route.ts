@@ -61,7 +61,7 @@ import { mintVideoQr, type VideoQrKind } from "@/lib/video/video-qr"
 import {
   compositionForPromoEvent,
   buildPromoProps,
-  computeDaysOnMarket,
+  daysOnMarketAtSale,
   promoNarrationBudget,
   promoEventLabel,
 } from "@/lib/video/promo-composition"
@@ -444,7 +444,7 @@ async function loadListingFacts(svc: ReturnType<typeof createServiceClient>, lis
     property_type: lr.property_type ?? "",
     images:        (media ?? []).map((m: { file_url: string }) => m.file_url).filter(Boolean),
     soldPrice:     usd(lr.sold_price),
-    daysOnMarket:  computeDaysOnMarket(lr.created_at, lr.sold_date),
+    daysOnMarket:  daysOnMarketAtSale(lr.created_at, lr.sold_date),
     // The render path has no open-house schedule source (eventContext is not
     // threaded here), so these stay empty and open_house promos fall back to
     // the legacy reel — honest, never a broken event headline.

@@ -437,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9441,
+  "census": 9440,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3975,7 +3975,7 @@
     "lib/seller-equity/move-readiness.ts": 1,
     "lib/seller-equity/scenarios.ts": 2,
     "lib/services/communication.service.tsx": 4,
-    "lib/services/contact-management.service.ts": 6,
+    "lib/services/contact-management.service.ts": 5,
     "lib/services/content-generation.service.ts": 2,
     "lib/services/lead-management.service.ts": 6,
     "lib/services/social-publishing.service.ts": 5,
@@ -20054,7 +20054,6 @@
     "lib/services/contact-management.service.ts": [
       "deleteContact",
       "getContact",
-      "getContacts",
       "addContactTags",
       "removeContactTags",
       "mergeContacts"
@@ -20787,7 +20786,7 @@
       "promoEventLabel",
       "buildPromoProps",
       "buildComingSoonTeaser",
-      "computeDaysOnMarket"
+      "daysOnMarketAtSale"
     ],
     "lib/video/realism-profile.ts": [
       "elevenLabsModelForLane",

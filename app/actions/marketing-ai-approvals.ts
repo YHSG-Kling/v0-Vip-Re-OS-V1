@@ -55,6 +55,21 @@ export interface PendingAssetRow {
   compliance_notes?: string[] | null
   /** True when this row is a compliance HOLD rather than an ordinary draft. */
   is_compliance_hold?: boolean
+  /**
+   * Only set for video kinds. The brand-voice cascade context the row was
+   * ACTUALLY written with (lib/ai-isa/brand-voice-prompt.ts:73
+   * loadBrandVoicePrompt via brandVoiceContextForVideo) — built (§1, wave
+   * 60E) so the reviewer can see the voice a queued video carries instead of
+   * `ai_video_projects.brand_voice_context` sitting write-only. `source` is
+   * absent/undefined for a row written before this wave (`{}`) or by
+   * lib/kernel/marketing.ts's distinct brokerage-about/bio shape.
+   */
+  brand_voice?: {
+    tone: string | null
+    tagline: string | null
+    assistantName: string | null
+    source?: string
+  } | null
 }
 
 export async function listPendingMarketingAssetsAction(): Promise<
@@ -84,7 +99,7 @@ export async function listPendingMarketingAssetsAction(): Promise<
     // and video_provider so admin sees compliance-gate level + provider
     // at-a-glance.
     svc.from("ai_video_projects")
-      .select("id, title, video_metadata, script_content, created_at, is_ai_generated, audience_type, video_provider, compliance_status, compliance_violations")
+      .select("id, title, video_metadata, script_content, created_at, is_ai_generated, audience_type, video_provider, compliance_status, compliance_violations, brand_voice_context")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
     // Sprint 9 cont. v2: video scripts library
     // compliance_review_notes carries the HOLD REASON — the red flags, or the
@@ -159,6 +174,21 @@ export async function listPendingMarketingAssetsAction(): Promise<
       is_ai_generated: !!r.is_ai_generated,
       audience_type:  (r.audience_type  as "in_house" | "customer_facing" | null) ?? null,
       video_provider: (r.video_provider as "did" | "upload" | null) ?? null,
+      brand_voice: (() => {
+        const bvc = r.brand_voice_context
+        if (!bvc || typeof bvc !== "object") return null
+        const b = bvc as Record<string, unknown>
+        // Old `{}` writes and lib/kernel/marketing.ts's distinct
+        // brokerage-about/bio shape both lack `tone`+`assistantName` together —
+        // show nothing rather than a misleading half-row.
+        if (!("assistantName" in b) && !("tone" in b)) return null
+        return {
+          tone: (b.tone as string | null) ?? null,
+          tagline: (b.tagline as string | null) ?? null,
+          assistantName: (b.assistantName as string | null) ?? null,
+          source: typeof b.source === "string" ? b.source : undefined,
+        }
+      })(),
     })
   }
   for (const r of (vs.data ?? []) as Array<Record<string, unknown>>) {

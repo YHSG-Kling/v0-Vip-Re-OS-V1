@@ -281,6 +281,11 @@ export const CRON_REGISTRY: CronEntry[] = [
   // idempotent and cheap, this is eventual-consistency maintenance, not a
   // latency-sensitive loop.
   { path: "/api/cron/did-agent-sync"                      , schedule: "0 */4 * * *" },
+  // Wave 60 — closes any live_agent_sessions row (m624, WRITTEN NOT APPLIED)
+  // whose heartbeat has gone silent for >10min (crashed/killed tab that never
+  // reached its own beacon), billing the heartbeat-derived duration. 5min
+  // cadence keeps the worst-case unbilled/unclosed window under 15min.
+  { path: "/api/cron/live-agent-session-sweep"            , schedule: "*/5 * * * *" },
   { path: "/api/cron/message-needs-response"               , schedule: "35 * * * *" }, // MESSAGE_NEEDS_RESPONSE had live notification_rules and no emitter (lane CB, 2026-09-08)
   // ── Wave 26: five runners that existed, were proved, and had NO trigger ────
   // Each was reachable only from its own simulator; the capability had never run

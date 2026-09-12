@@ -18,6 +18,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ensureDIDAgent, issueClientKey } from "@/lib/did/agents"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
+import { startLiveAgentSession, recordLiveAgentInitFailure, type LiveAgentSurface } from "@/lib/did/live-session-metering"
 
 export const runtime = "nodejs"
 
@@ -28,6 +29,29 @@ interface Body {
   referrer?: string | null
   pageUrl?: string | null
 }
+
+/**
+ * SITE vs WIDGET (wave 60, m624's `surface` CHECK). Both doors mint through
+ * this same route (§6 — one session-mint path, never a second per surface).
+ * SiteChatLauncher's iframe is served from OUR OWN app origin
+ * (app/embed/[publicId] under NEXT_PUBLIC_APP_URL/SITE_URL); a third-party
+ * embed's iframe is same-origin with the visitor's OWN page, so `body.origin`
+ * (the visitor's page, stamped by the embed loader script) is a foreign host.
+ * A visitor page with no stated origin (rare, non-browser caller) defaults to
+ * 'widget' — the more common real-world case for an anonymous public door.
+ */
+function deriveEmbedSurface(origin: string | null | undefined): LiveAgentSurface {
+  if (!origin) return "widget"
+  let host: string
+  try { host = new URL(origin).host } catch { return "widget" }
+  for (const raw of [process.env.NEXT_PUBLIC_APP_URL, process.env.NEXT_PUBLIC_SITE_URL]) {
+    if (!raw) continue
+    try { if (new URL(raw).host === host) return "site" } catch { /* malformed env */ }
+  }
+  return "widget"
+}
+
+// recordLiveAgentInitFailure MERGED onto lib/did/live-session-metering.ts (one helper for both session doors, routed through lib/errors/collect-error.ts) — wave 60.
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null) as Body | null
@@ -54,6 +78,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Origin not allowed" }, { status: 403 })
   }
 
+  const surface = deriveEmbedSurface(body.origin)
+
+  // ── Text-chat FAILOVER handle (wave 60 §3.3) ────────────────────────────
+  // The brokerage's public slug, so the client can mint a /api/widget/session
+  // token and fall back to the EXISTING text chat (/api/widget/message) the
+  // moment the D-ID leg fails — never a dead avatar bubble. Best-effort: a
+  // brokerage row that can't be read still lets the D-ID attempt proceed,
+  // it just has no text door to fall back to if D-ID fails too.
+  const { data: brokerageRow } = await supabase
+    .from("brokerages").select("slug").eq("id", widget.brokerage_id).maybeSingle()
+  const fallback = { brokerageSlug: brokerageRow?.slug ?? null, agentId: widget.agent_id ?? null }
+
   // ── Cap check ───────────────────────────────────────────────────────────
   const cap = await checkUsageCap({
     brokerageId: widget.brokerage_id,
@@ -62,7 +98,7 @@ export async function POST(request: NextRequest) {
   })
   if (!cap.allowed) {
     return NextResponse.json(
-      { error: "This chat is temporarily unavailable. Please try again later." },
+      { error: "This chat is temporarily unavailable. Please try again later.", fallback },
       { status: 429 },
     )
   }
@@ -133,15 +169,18 @@ export async function POST(request: NextRequest) {
   }
   if (twin.status !== "ready" || twin.approval_status !== "approved") {
     return NextResponse.json(
-      { error: "Twin is still being prepared — try again in a moment" },
+      { error: "Twin is still being prepared — try again in a moment", fallback },
       { status: 409 },
     )
   }
   if (!twin.did_avatar_id) {
-    return NextResponse.json({ error: "Twin avatar not ready" }, { status: 409 })
+    return NextResponse.json({ error: "Twin avatar not ready", fallback }, { status: 409 })
   }
 
   // ── Ensure D-ID Agent + issue client key ────────────────────────────────
+  // WALL-CLOCK + OUTCOME (wave 60 §3.2) — same instrumentation as the portal
+  // session route, so both live-agent doors feed the same measurement.
+  const initStartedAt = Date.now()
   const ensured = await ensureDIDAgent({
     agentId: twin.agent_id,
     twinId,
@@ -152,7 +191,10 @@ export async function POST(request: NextRequest) {
     agentName: twin.label ?? "Agent",
   })
   if (!ensured.ok) {
-    return NextResponse.json({ error: ensured.error }, { status: 502 })
+    void recordLiveAgentInitFailure({
+      brokerageId: widget.brokerage_id, surface, reason: ensured.error, latencyMs: Date.now() - initStartedAt,
+    })
+    return NextResponse.json({ error: ensured.error, fallback }, { status: 502 })
   }
   if (ensured.realismWarnings?.length) {
     console.warn(`[embed/session] AI-tell findings on twin ${twinId} greeting:`, ensured.realismWarnings)
@@ -162,7 +204,7 @@ export async function POST(request: NextRequest) {
   // the visitor's site origin so the SDK can connect.
   const appUrl = process.env.NEXT_PUBLIC_APP_URL
   if (!appUrl) {
-    return NextResponse.json({ error: "App URL not configured" }, { status: 503 })
+    return NextResponse.json({ error: "App URL not configured", fallback }, { status: 503 })
   }
   // Allowed origins on the D-ID side: our app (where the iframe is hosted)
   // is the only origin the SDK contacts D-ID from (the iframe is same-origin
@@ -174,7 +216,10 @@ export async function POST(request: NextRequest) {
     allowedOrigins: Array.from(new Set(allowedOrigins)),
   })
   if (!keyResult.ok) {
-    return NextResponse.json({ error: keyResult.error }, { status: 502 })
+    void recordLiveAgentInitFailure({
+      brokerageId: widget.brokerage_id, surface, reason: keyResult.error, latencyMs: Date.now() - initStartedAt,
+    })
+    return NextResponse.json({ error: keyResult.error, fallback }, { status: 502 })
   }
 
   // ── Create / refresh the visitor session row ────────────────────────────
@@ -204,8 +249,20 @@ export async function POST(request: NextRequest) {
     agentId: twin.agent_id,
     sessionRef: session?.id ?? ensured.didAgentId,
     feature: "embed_widget",
-    metadata: { public_id: body.publicId, visitor_id: body.visitorId },
+    metadata: { public_id: body.publicId, visitor_id: body.visitorId, init_success: true, init_latency_ms: Date.now() - initStartedAt },
   }).catch(() => {})
+
+  // THE METERING ROW (m624) — embed had NO minute-level metering at all
+  // before this pass (only the per-session counter above). Opened here so
+  // the client's heartbeat/end beacons (app/embed/[publicId]/embed-widget.tsx)
+  // and the sweeper have a row to keep alive / close.
+  const liveSession = await startLiveAgentSession({
+    brokerageId: widget.brokerage_id,
+    agentId: twin.agent_id,
+    contactId: null, // no contact yet at mint — /api/embed/capture links one later on embed_sessions, not here
+    surface,
+    didAgentId: ensured.didAgentId,
+  }, supabase).catch((e) => { console.warn("[embed/session] live_agent_sessions insert threw", e); return { ok: false as const, error: String(e) } })
 
   return NextResponse.json({
     didAgentId: ensured.didAgentId,
@@ -216,5 +273,10 @@ export async function POST(request: NextRequest) {
     // it cannot use is how a dead button gets shipped.
     presenterType: ensured.presenterType,
     sessionId: session?.id ?? null,
+    liveSessionId: liveSession.ok ? liveSession.id : null,
+    // Text-failover handle — present on SUCCESS too, so a later mid-session
+    // drop (onConnectionStateChange Fail/Closed, onError) can still fall back
+    // without a second round-trip.
+    fallback,
   })
 }

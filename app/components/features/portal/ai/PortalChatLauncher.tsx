@@ -40,6 +40,11 @@ export default function PortalChatLauncher({
   const [liveAgentOpen, setLiveAgentOpen] = useState(false)
   const [callbackSent, setCallbackSent] = useState(false)
   const [callbackSending, setCallbackSending] = useState(false)
+  // wave 60 (§3.3 "fail over to text") — bumped when AgentsWidget's D-ID
+  // session fails to mint or drops; PortalAIAssistant opens itself and shows
+  // fallbackNotice once. Never a dead closed overlay.
+  const [textFailoverSignal, setTextFailoverSignal] = useState<number | undefined>(undefined)
+  const [textFailoverNotice, setTextFailoverNotice] = useState<string | null>(null)
 
   async function sendCallback() {
     setCallbackSending(true)
@@ -60,13 +65,17 @@ export default function PortalChatLauncher({
 
   return (
     <>
-      {/* Text AI chat — existing autonomous widget */}
+      {/* Text AI chat — existing autonomous widget. Also the D-ID failover
+          surface (wave 60 §3.3): the SAME brain, so a visitor who never
+          notices the Live Agent failed still gets a full conversation. */}
       <PortalAIAssistant
         contact={contact}
         contactId={contactId}
         isBuyer={isBuyer}
         isSeller={isSeller}
         persona={persona}
+        openSignal={textFailoverSignal}
+        fallbackNotice={textFailoverNotice}
       />
 
       {/* Extra action buttons above the chat FAB */}
@@ -117,7 +126,11 @@ export default function PortalChatLauncher({
               <AgentsWidget
                 contactId={contactId}
                 agentFirstName={agentFirstName}
-                onFallbackToText={() => setLiveAgentOpen(false)}
+                onFallbackToText={() => {
+                  setLiveAgentOpen(false)
+                  setTextFailoverNotice(`Live video isn't available right now — you're still talking to ${agentFirstName}'s AI assistant here in chat.`)
+                  setTextFailoverSignal(Date.now())
+                }}
               />
             </CardContent>
           </Card>

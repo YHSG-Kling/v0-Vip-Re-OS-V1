@@ -87,7 +87,14 @@ export interface ExplainerContent {
 }
 
 export type AuthorExplainerResult =
-  | { ok: true; content: ExplainerContent }
+  | {
+      ok: true
+      content: ExplainerContent
+      /** The cascade's compact context (§1, wave 60E) — carried through so
+       *  commissionAvatarExplainer can stamp the REAL value onto the queued
+       *  row's `brand_voice_context` instead of `{}`. */
+      brandVoiceContext: import("@/lib/ai-isa/brand-voice-prompt").BrandVoiceVideoContext
+    }
   | { ok: false; reason: string; violations?: string[] }
 
 export interface AvatarExplainerReadiness {
@@ -278,28 +285,34 @@ export async function authorExplainerContent(args: {
     }).catch(() => null)
     const agentName = sanitizeProperNoun(brand?.agentName ?? brand?.displayName, 60) ?? "Your Agent"
 
-    // Brand voice guidelines — the same brand_voice_profile block the video
-    // script generator injects (loadBrandVoicePrompt idiom).
+    // TOMBSTONE (§1/§6, wave 60E — survivor lib/ai-isa/brand-voice-prompt.ts:73
+    // loadBrandVoicePrompt): a private brand_voice_profile read used to live
+    // here — its own tone/formality/prohibited-words prompt block, missing the
+    // agent/team override, ai_identity_profiles and chartered-AI-teammate
+    // layers every other AI-agent surface (live avatar, phone receptionist,
+    // widget, portal, in-app copilot) already runs. `resolveBrandContext`
+    // above is NOT this duplicate — it is the distinct VISUAL identity
+    // resolver (logo/colors/license/phone cascade for print pieces); it stays.
+    const { loadBrandVoicePrompt, brandVoiceContextForVideo } = await import("@/lib/ai-isa/brand-voice-prompt")
+    const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
     let brandVoiceBlock = ""
+    let brandVoiceContext: import("@/lib/ai-isa/brand-voice-prompt").BrandVoiceVideoContext
     try {
       const svc = createServiceClient()
-      const { data: bvp } = await svc
-        .from("brand_voice_profile")
-        .select("tone, formality_level, key_brand_messages, preferred_words, prohibited_words, tagline")
-        .eq("brokerage_id", args.brokerageId)
-        .eq("is_active", true)
-        .maybeSingle()
-      if (bvp) {
-        brandVoiceBlock = `
-Brand voice guidelines (follow strictly):
-- Tone: ${(bvp as any).tone ?? "professional"}
-- Formality: ${(bvp as any).formality_level ?? "moderate"}
-${(bvp as any).key_brand_messages?.length ? `- Key messages to reinforce: ${(bvp as any).key_brand_messages.join("; ")}` : ""}
-${(bvp as any).preferred_words?.length ? `- Preferred words/phrases: ${(bvp as any).preferred_words.join(", ")}` : ""}
-${(bvp as any).prohibited_words?.length ? `- NEVER use these words/phrases: ${(bvp as any).prohibited_words.join(", ")}` : ""}
-${(bvp as any).tagline ? `- Brand tagline (may reference): ${(bvp as any).tagline}` : ""}`
+      const brandAgentId = args.agentUserId
+        ? await resolveAgentIdInBrokerage(svc, args.agentUserId, args.brokerageId)
+        : null
+      const voice = await loadBrandVoicePrompt({ brokerageId: args.brokerageId, agentId: brandAgentId })
+      brandVoiceBlock = voice.systemBlock ? `\n${voice.systemBlock}` : ""
+      brandVoiceContext = brandVoiceContextForVideo(voice)
+    } catch {
+      // best-effort — brand context still applies; the row still gets an
+      // honestly-empty cascade shape rather than the old silent `{}`.
+      brandVoiceContext = {
+        tone: null, formalityLevel: null, prohibitedWords: [], preferredWords: [],
+        tagline: null, assistantName: "Your AI Assistant", source: "loadBrandVoicePrompt",
       }
-    } catch { /* best-effort — brand context still applies */ }
+    }
 
     const basePrompt = `You are ${agentName}, a real estate professional, creating a short explainer video for ${args.audience}.
 
@@ -385,7 +398,7 @@ Return the JSON now.`
     // no new copy is authored here.
     const fit = fitNarrationToBudget(content.narration, budget)
     if (fit.note) console.warn(`[avatar-explainer] ${args.compositionId} — ${fit.note}`)
-    return { ok: true, content: { ...content, narration: fit.script } }
+    return { ok: true, content: { ...content, narration: fit.script }, brandVoiceContext }
   } catch (e) {
     return { ok: false, reason: `AI authoring unavailable: ${(e as Error).message}` }
   }
@@ -575,7 +588,10 @@ export async function commissionAvatarExplainer(
     compliance_status: "passed",       // the redraft gate above pre-cleared the copy
     compliance_violations: [],
     compliance_evaluated_at: now,
-    brand_voice_context: {},
+    // The cascade's compact context this narration was actually authored
+    // with (§1, wave 60E) — the render-queue reviewer reads it (see the
+    // tombstone at lib/ai-isa/brand-voice-prompt.ts:73).
+    brand_voice_context: authored.brandVoiceContext,
     video_metadata: {
       // director_key + needs_avatar are what the EXISTING director-reel-render
       // cron keys on — this row rides that rail, not a parallel one.

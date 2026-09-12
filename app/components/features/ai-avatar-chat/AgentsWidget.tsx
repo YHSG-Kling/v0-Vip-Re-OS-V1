@@ -102,6 +102,11 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   const liveSecondsRef = useRef(0)
   const didAgentIdRef = useRef<string | null>(null)
   const usageReportedRef = useRef(false)
+  // wave 60 (m624 live_agent_sessions): the metering row this boot opened, so
+  // the beacon can close the SAME row a heartbeat interval is keeping alive.
+  // Null when the insert failed server-side — the widget still works, only
+  // the vendor-ledger row is missing (logged there, not fatal here).
+  const liveSessionIdRef = useRef<string | null>(null)
 
   const [status, setStatus] = useState<Status>("connecting")
   const [mode, setMode] = useState<Mode>("text")
@@ -128,14 +133,16 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
           return
         }
 
-        const { didAgentId, clientKey, presenterType, greeting, greetingSentiment } =
+        const { didAgentId, clientKey, presenterType, greeting, greetingSentiment, liveSessionId } =
           (await res.json()) as {
             didAgentId: string
             clientKey: string
             presenterType?: DidPresenterType
             greeting?: string | null
             greetingSentiment?: string | null
+            liveSessionId?: string | null
           }
+        liveSessionIdRef.current = liveSessionId ?? null
         greetingRef.current = (greeting ?? "").trim() || null
         greetingSentimentRef.current = isDidSentiment(greetingSentiment) ? greetingSentiment : null
 
@@ -276,7 +283,7 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
     if (seconds <= 0 || usageReportedRef.current) return
     usageReportedRef.current = true
     const payload = new Blob(
-      [JSON.stringify({ contactId, didAgentId: didAgentIdRef.current, seconds })],
+      [JSON.stringify({ contactId, didAgentId: didAgentIdRef.current, seconds, liveSessionId: liveSessionIdRef.current })],
       { type: "application/json" },
     )
     try {
@@ -284,7 +291,7 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
         void fetch("/api/did/agents/session/end", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contactId, didAgentId: didAgentIdRef.current, seconds }),
+          body: JSON.stringify({ contactId, didAgentId: didAgentIdRef.current, seconds, liveSessionId: liveSessionIdRef.current }),
           keepalive: true,
         }).catch(() => {})
       }
@@ -292,6 +299,24 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
       /* metering must never break the widget */
     }
   }
+
+  // ── Heartbeat — proof of life for the cron sweeper ──────────────────────
+  // (lib/did/live-session-metering.ts sweepStaleLiveAgentSessions closes any
+  // live_agent_sessions row whose last_seen_at goes >10min stale). 2min
+  // cadence comfortably clears that bar even under a slow network.
+  useEffect(() => {
+    const HEARTBEAT_MS = 2 * 60 * 1000
+    const id = setInterval(() => {
+      const sid = liveSessionIdRef.current
+      if (!sid) return
+      void fetch("/api/did/agents/session/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactId, liveSessionId: sid }),
+      }).catch(() => {})
+    }, HEARTBEAT_MS)
+    return () => clearInterval(id)
+  }, [contactId])
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 

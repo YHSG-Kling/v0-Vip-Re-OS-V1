@@ -16,7 +16,7 @@
 // the person viewing the video must not think it was made with ai") — the
 // FREEZE-RISK SHAPE. EquityReportReel, MarketUpdateReel, and AgentExplainerReel
 // each cut THREE separate Sequence windows into ONE continuous avatar clip,
-// passing ABSOLUTE `startFrame`/`endFrame` offsets as `trimBefore`/`trimAfter`.
+// passing `startFrame`/`endFrame` offsets as `trimBefore`/`trimAfter`.
 // A clip measuring shorter than the composition's fixed geometry does not just
 // freeze once — every LATER window whose startFrame is already past the clip's
 // real end asks `<Video>` to play a slice that does not exist, holding
@@ -29,6 +29,19 @@
 // rendered frame. avatarPipWindowFade (lib/video/realism-profile.ts) is the
 // pure decision; additive/opt-in — a caller with no measurement (prop absent)
 // renders EXACTLY as before.
+//
+// WAVE 60 REALISM FIX — LEAD-IN, NOT ABSOLUTE. `startFrame`/`endFrame` are
+// this window's offsets into the clip's OWN timeline, RELATIVE TO WHEN THE
+// AVATAR TRACK ITSELF FIRST BECOMES VISIBLE (0 for the first AvatarPIP
+// window, not the composition-absolute frame it happens to mount at). Every
+// caller here opens on a silent cover/intro tile with no AvatarPIP mounted
+// at all, and D-ID is never asked to pad that tile's length as lead-in
+// silence (DID_TALK_REALISM_CONFIG.pad_audio, lib/video/realism-profile.ts,
+// is 0.3s of TRAILING silence only) — so passing the composition-absolute
+// frame here (the pre-fix shape) fed `<Video trimBefore>` that same value
+// and silently skipped that many seconds of REAL narration from the front
+// of the clip before it was ever heard. See each caller's own "AVATAR
+// LEAD-IN FIX" comment.
 
 import React from "react"
 import { Video } from "@remotion/media"

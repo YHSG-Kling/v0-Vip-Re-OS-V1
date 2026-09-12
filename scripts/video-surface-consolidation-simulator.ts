@@ -57,10 +57,17 @@ console.log("\n── the dead 'Video Generation Hub' + its orphaned children ar
   for (const c of ["DistributionControls", "GenerationSettings", "ScriptEditor", "VideoPreview", "VideoProjectList"]) {
     check(`orphaned ${c} is deleted`, gone(`app/components/features/video/${c}.tsx`))
   }
-  // The still-used video components survive and are still re-exported.
-  const idx = src("app/components/features/video/index.ts")
-  check("index still re-exports the live components (VideosDashboard, VideoGenerationButtons)",
-    idx.includes("VideosDashboard") && idx.includes("VideoGenerationButtons"))
+  // WAVE 60 (lane 60B): the barrel app/components/features/video/index.ts and
+  // the VideoGenerationButtons re-export shim were themselves dead (the barrel
+  // had zero importers), so the live components are now reached DIRECTLY —
+  // VideosDashboard from the library page, VideoGenerationButtons from its
+  // canonical app/components/video path. Pinning the barrel was a waypoint (§2).
+  check("the dead video barrel is gone", gone("app/components/features/video/index.ts"))
+  check("the VideoGenerationButtons re-export shim is gone", gone("app/components/features/video/VideoGenerationButtons.tsx"))
+  check("VideosDashboard survives at its direct path", existsSync(join(process.cwd(), "app/components/features/video/VideosDashboard.tsx")))
+  check("the video library page mounts VideosDashboard directly (the built reader)",
+    src("app/dashboard/videos/library/page.tsx").includes('@/app/components/features/video/VideosDashboard'))
+  check("VideoGenerationButtons survives at its canonical path", existsSync(join(process.cwd(), "app/components/video/VideoGenerationButtons.tsx")))
 }
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

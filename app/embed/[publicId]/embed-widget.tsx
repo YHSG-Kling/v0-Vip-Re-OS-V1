@@ -14,12 +14,24 @@
  */
 
 import { useEffect, useRef, useState, useCallback, FormEvent } from "react"
+import { useChat } from "@ai-sdk/react"
+import { DefaultChatTransport } from "ai"
 import * as didSdk from "@d-id/client-sdk"
 import { Loader2, Send, Video, MessageSquare, X, Mic, MicOff } from "lucide-react"
 import {
   usableModes, initialMode, MODE_COPY, type EmbedMode, type UsableMode,
 } from "@/lib/embed/widget-modes"
 import type { DidPresenterType } from "@/lib/did/agent-presenter"
+
+/** The brokerage-slug/agent handle app/api/embed/session returns on every
+ *  response (success AND failure) — everything /api/widget/session needs to
+ *  mint the EXISTING text-chat door (§3.3 fail-over). Null brokerageSlug
+ *  means no fallback could be resolved (brokerage row unreadable) — see
+ *  EmbedTextFallback's own guard. */
+interface FailoverHandle {
+  brokerageSlug: string | null
+  agentId: string | null
+}
 
 interface Props {
   publicId: string
@@ -65,6 +77,18 @@ export function EmbedWidget(props: Props) {
   type Phase = "boot" | "ready" | "capturing" | "closed"
   const [phase, setPhase] = useState<Phase>("boot")
   const [bootError, setBootError] = useState<string | null>(null)
+  // wave 60 §3.3 — the text-chat door to fall back to when D-ID never comes
+  // up at all. Set from EVERY /api/embed/session response (success or
+  // failure) so a MID-session drop (onConnectionStateChange/onError, after a
+  // successful mint) still has a fallback ready.
+  const [failoverHandle, setFailoverHandle] = useState<FailoverHandle | null>(null)
+  // wave 60 §3.1 — this session's live_agent_sessions row id (m624), for the
+  // heartbeat/end beacons below. Embed had NO minute-level metering at all
+  // before this pass.
+  const liveSessionIdRef = useRef<string | null>(null)
+  const liveSinceRef = useRef<number | null>(null)
+  const liveSecondsRef = useRef(0)
+  const usageReportedRef = useRef(false)
   const [mode, setMode] = useState<EmbedMode>("text")
   // The presenter FAMILY the session actually minted. Voice is Expressive (V4)
   // only, so this decides what the visitor may be offered — the server already
@@ -95,15 +119,20 @@ export function EmbedWidget(props: Props) {
           body: JSON.stringify({ publicId, visitorId, origin, referrer, pageUrl }),
         })
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
+          const err = await res.json().catch(() => ({})) as { error?: string; fallback?: FailoverHandle }
+          if (!cancelled) setFailoverHandle(err.fallback ?? null)
           setBootError(err.error ?? "Couldn't start the chat")
           return
         }
-        const { didAgentId, clientKey, sessionId, presenterType } = await res.json() as {
+        const { didAgentId, clientKey, sessionId, presenterType, liveSessionId, fallback } = await res.json() as {
           didAgentId: string; clientKey: string; sessionId: string
           presenterType?: DidPresenterType
+          liveSessionId?: string | null
+          fallback?: FailoverHandle
         }
         sessionIdRef.current = sessionId
+        liveSessionIdRef.current = liveSessionId ?? null
+        if (!cancelled) setFailoverHandle(fallback ?? null)
 
         // WHAT THIS VISITOR CAN ACTUALLY DO. The broker's enabled_modes says what
         // was turned on; the minted presenter family says what can run. A mode
@@ -118,7 +147,9 @@ export function EmbedWidget(props: Props) {
         })
         if (!cancelled) {
           setModes(resolved)
-          setMode(initialMode(resolved))
+          const startMode = initialMode(resolved)
+          setMode(startMode)
+          if (startMode !== "text") liveSinceRef.current = Date.now()
         }
 
         if (cancelled) return
@@ -175,12 +206,59 @@ export function EmbedWidget(props: Props) {
     })()
     return () => {
       cancelled = true
+      reportLiveUsage()
       micStreamRef.current?.getTracks().forEach((t) => t.stop())
       micStreamRef.current = null
       managerRef.current?.disconnect().catch(() => {})
       managerRef.current = null
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicId, visitorId, origin, referrer, pageUrl, welcomeMessage, leadCaptureMode])
+
+  // Flush the live-minute report if the tab/iframe closes mid-session — the
+  // SAME pattern AgentsWidget.tsx uses for the portal door.
+  useEffect(() => {
+    const flush = () => reportLiveUsage()
+    window.addEventListener("pagehide", flush)
+    return () => window.removeEventListener("pagehide", flush)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** Accumulate any open voice/live window and beacon total seconds once. */
+  function reportLiveUsage() {
+    if (liveSinceRef.current !== null) {
+      liveSecondsRef.current += (Date.now() - liveSinceRef.current) / 1000
+      liveSinceRef.current = null
+    }
+    const seconds = Math.round(liveSecondsRef.current)
+    const sid = liveSessionIdRef.current
+    if (seconds <= 0 || usageReportedRef.current || !sid) return
+    usageReportedRef.current = true
+    const payload = new Blob([JSON.stringify({ liveSessionId: sid, seconds })], { type: "application/json" })
+    try {
+      if (!navigator.sendBeacon("/api/embed/session/end", payload)) {
+        void fetch("/api/embed/session/end", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ liveSessionId: sid, seconds }), keepalive: true,
+        }).catch(() => {})
+      }
+    } catch { /* metering must never break the widget */ }
+  }
+
+  // Heartbeat — proof of life for the cron sweeper (lib/did/live-session-
+  // metering.ts sweepStaleLiveAgentSessions). Same 2min cadence as the portal
+  // door.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const sid = liveSessionIdRef.current
+      if (!sid) return
+      void fetch("/api/embed/session/heartbeat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ liveSessionId: sid }),
+      }).catch(() => {})
+    }, 2 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [])
 
   // ── Microphone ───────────────────────────────────────────────────────────
   // Released explicitly. A public widget that keeps a visitor's mic open after
@@ -245,8 +323,15 @@ export function EmbedWidget(props: Props) {
     if (next === "text") {
       await stopMic()
       m.changeMode(didSdk.ChatMode.TextOnly)
+      // Leaving the burning window — the SAME accumulate-on-exit shape
+      // AgentsWidget.tsx uses for the portal's live/text toggle.
+      if (liveSinceRef.current !== null) {
+        liveSecondsRef.current += (Date.now() - liveSinceRef.current) / 1000
+        liveSinceRef.current = null
+      }
     } else {
       m.changeMode(didSdk.ChatMode.Functional)
+      if (liveSinceRef.current === null) liveSinceRef.current = Date.now()
       if (next === "voice") await startMic()
       else await stopMic()
     }
@@ -335,6 +420,28 @@ export function EmbedWidget(props: Props) {
     : micState === "no-device" ? "No microphone found. Switch to Type and we'll answer there."
     : micState === "unsupported" ? "This agent can't take voice yet — switch to Type."
     : "Tap Talk to start speaking."
+
+  // ── D-ID FAILOVER (wave 60 §3.3) — never a dead button ──────────────────
+  // The D-ID leg never came up (or dropped) AND we have a real text-chat
+  // handle to fall back to: mount the EXISTING widget text-chat surface
+  // (/api/widget/message, the same one app/widget/[brokerageSlug] uses) in
+  // place of the broken avatar UI, with a one-line notice. When brokerageSlug
+  // could not be resolved either (brokerage row unreadable), there is
+  // nothing to fall back to — the composer stays disabled with bootError's
+  // message, an honest "unresolved" rather than a fabricated door.
+  if (bootError && failoverHandle?.brokerageSlug) {
+    return (
+      <EmbedTextFallback
+        brokerageSlug={failoverHandle.brokerageSlug}
+        agentId={failoverHandle.agentId}
+        label={label}
+        colorBg={colorBg}
+        colorFg={colorFg}
+        notice={`${bootError} — you can still chat with us here.`}
+        onClose={close}
+      />
+    )
+  }
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -519,6 +626,112 @@ function CaptureForm({
         )}
       </div>
     </form>
+  )
+}
+
+// ─── D-ID failover: the SAME text-chat door as /widget/[brokerageSlug] ─────
+
+/**
+ * EmbedTextFallback — wave 60 §3.3 ("the UI must open the existing text chat
+ * for the same brain … automatically … never a dead button"). Mounted ONLY
+ * when the D-ID leg never came up. Mints its own widget_session_token via
+ * /api/widget/session (the SAME public-tenant resolver
+ * lib/widget/resolve-widget-tenant.ts every /widget/[brokerageSlug] visitor
+ * goes through) and streams through /api/widget/message — not a second,
+ * hand-rolled brain: the identical text surface a visitor would get by
+ * loading the plain-text widget directly, just mounted inline here instead
+ * of making them notice anything broke.
+ */
+function EmbedTextFallback(props: {
+  brokerageSlug: string
+  agentId: string | null
+  label: string
+  colorBg: string
+  colorFg: string
+  notice: string
+  onClose: () => void
+}) {
+  const { brokerageSlug, agentId, label, colorBg, colorFg, notice, onClose } = props
+  const [sessionToken, setSessionToken] = useState<string | null>(null)
+  const [input, setInput] = useState("")
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/widget/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brokerage_slug: brokerageSlug, agent_id: agentId, source: "embed_did_failover" }),
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data) => { if (!cancelled) setSessionToken(data.session_token) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [brokerageSlug, agentId])
+
+  const { messages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      api: "/api/widget/message",
+      prepareSendMessagesRequest: ({ messages: msgs }) => ({
+        body: { messages: msgs, session_token: sessionToken },
+      }),
+    }),
+  })
+
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
+
+  const send = useCallback(() => {
+    const t = input.trim()
+    if (!t || !sessionToken || status === "streaming" || status === "submitted") return
+    sendMessage({ text: t })
+    setInput("")
+  }, [input, sessionToken, status, sendMessage])
+
+  return (
+    <div className="flex flex-col h-screen bg-white">
+      <div className="flex items-center justify-between px-4 py-3" style={{ background: colorBg, color: colorFg }}>
+        <div className="font-semibold text-sm truncate">{label}</div>
+        <button onClick={onClose} aria-label="Close" className="hover:opacity-80">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800">{notice}</div>
+      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+        {messages.map((m) => {
+          const text = m.parts?.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("") ?? ""
+          if (!text) return null
+          return (
+            <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              <p
+                className={`text-sm rounded-lg px-3 py-2 max-w-[80%] ${m.role === "user" ? "text-white" : "bg-gray-100 text-gray-900"}`}
+                style={m.role === "user" ? { background: colorBg } : undefined}
+              >
+                {text}
+              </p>
+            </div>
+          )
+        })}
+        <div ref={messagesEndRef} />
+      </div>
+      <form onSubmit={(e) => { e.preventDefault(); send() }} className="border-t flex items-center gap-2 p-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Type a message…"
+          className="flex-1 px-3 py-2 rounded-md border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
+          disabled={!sessionToken}
+        />
+        <button
+          type="submit"
+          disabled={!input.trim() || !sessionToken}
+          className="rounded-md p-2 disabled:opacity-50"
+          style={{ background: colorBg, color: colorFg }}
+          aria-label="Send"
+        >
+          <Send className="h-4 w-4" />
+        </button>
+      </form>
+    </div>
   )
 }
 

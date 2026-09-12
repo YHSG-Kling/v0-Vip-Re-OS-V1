@@ -1,5 +1,13 @@
 "use client"
 
+// TOMBSTONE (orphan doctrine §1.3, wave 60B): app/components/features/video/
+// VideoGenerationButtons.tsx (a pure `export {VideoGenerationButtons} from
+// here` re-export shim) and its sibling app/components/features/video/index.ts
+// barrel are deleted — this file is the canonical implementation and every
+// real caller (app/dashboard/videos/library/page.tsx, app/video-assistant/
+// page.tsx, app/social-planner/social-planner-content.tsx) already imports it
+// directly, never through either deleted door.
+
 import { useState } from "react"
 import { Video, Mic, ShieldCheck, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"

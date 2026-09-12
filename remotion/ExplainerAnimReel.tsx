@@ -362,12 +362,19 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* DIAGRAM — 3-15s */}
+      {/* DIAGRAM — 3-15s.
+          AVATAR LEAD-IN FIX (wave 60 realism audit — same defect + fix as
+          MarketUpdateReel/EquityReportReel/AgentExplainerReel). This is the
+          avatar's ONLY window, but it still opens after the silent COVER
+          tile; passing the composition-absolute COVER frame as `<Video
+          trimBefore>` skipped the clip's first COVER seconds of REAL
+          narration. `startFrame: 0` plays the clip from its own beginning
+          the moment it first becomes visible. */}
       <Sequence from={COVER} durationInFrames={DIAGRAM}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER, endFrame: COVER + DIAGRAM }} />
+            startFrame: 0, endFrame: DIAGRAM }} />
           {/* Title strip (right of PIP) */}
           <div style={{ position: "absolute", top: 90, left: 380, right: 60 }}>
             <div style={{ width: 56, height: 6, background: brand.accentColor, borderRadius: 3, marginBottom: 14 }} />

@@ -251,40 +251,58 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* STAT 1 — 2-6s */}
+      {/* STAT 1 — 2-6s.
+          AVATAR LEAD-IN FIX (wave 60 realism audit). The D-ID clip is ONE
+          continuous render for the whole reel; AvatarPIP is not mounted at
+          all during the COVER tile (0..COVER) and D-ID is never asked to pad
+          COVER seconds of silence at the head (DID_TALK_REALISM_CONFIG.pad_audio
+          is 0.3s of TRAILING silence only — lib/video/realism-profile.ts).
+          Passing the composition-ABSOLUTE frame (COVER) as `<Video trimBefore>`
+          (the pre-fix shape) skipped the clip's first COVER seconds of REAL
+          narration outright — for the single short compliance-gated hook line
+          this narration actually is, that can be most of what the avatar says.
+          The clip's own timeline must start at 0 the moment it first becomes
+          visible, so each window is fed frames RELATIVE to the avatar track's
+          own start (0, STAT, STAT*2) rather than absolute composition frames —
+          no real narration is discarded, and avatarPipWindowFade's
+          `localActualSeconds` math now measures against the correct
+          remaining length instead of over-penalizing every later window by
+          COVER seconds it never actually lost. */}
       <Sequence from={COVER} durationInFrames={STAT}>
         <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
           <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
             avatarDurationSeconds, fps: FPS,
-            startFrame: COVER, endFrame: COVER + STAT }} />
+            startFrame: 0, endFrame: STAT }} />
           <StatCard stat={stats[0]} index={1} accentColor={brand.accentColor}
             upColor={upColor} downColor={downColor} />
         </AbsoluteFill>
       </Sequence>
 
-      {/* STAT 2 — 6-10s */}
+      {/* STAT 2 — 6-10s. See the AVATAR LEAD-IN FIX note on STAT 1 above:
+          `startFrame`/`endFrame` are relative to the avatar track's own
+          start, not the composition's. */}
       <Sequence from={COVER + STAT} durationInFrames={STAT}>
         <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
           <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
             avatarDurationSeconds, fps: FPS,
-            startFrame: COVER + STAT, endFrame: COVER + STAT * 2 }} />
+            startFrame: STAT, endFrame: STAT * 2 }} />
           <StatCard stat={stats[1]} index={2} accentColor={brand.accentColor}
             upColor={upColor} downColor={downColor} />
         </AbsoluteFill>
       </Sequence>
 
-      {/* STAT 3 — 10-14s */}
+      {/* STAT 3 — 10-14s. See the AVATAR LEAD-IN FIX note on STAT 1 above. */}
       <Sequence from={COVER + STAT * 2} durationInFrames={STAT}>
         <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
           <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
             avatarDurationSeconds, fps: FPS,
-            startFrame: COVER + STAT * 2, endFrame: COVER + STAT * 3 }} />
+            startFrame: STAT * 2, endFrame: STAT * 3 }} />
           <StatCard stat={stats[2]} index={3} accentColor={brand.accentColor}
             upColor={upColor} downColor={downColor} />
         </AbsoluteFill>

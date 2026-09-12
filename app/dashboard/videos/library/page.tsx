@@ -53,6 +53,7 @@ import {
   recordVideoEngagementEvent,
 } from "@/app/actions/video-generation"
 import { VideoGenerationButtons } from "@/app/components/video/VideoGenerationButtons"
+import { VideosDashboard } from "@/app/components/features/video/VideosDashboard"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 //
@@ -542,6 +543,18 @@ function VideoLibraryContent() {
               </div>
             </CardContent>
           </Card>
+        </div>
+
+        {/* Snapshot: in-progress, recently completed, and weekly view count —
+            BUILT (orphan doctrine §1.2, wave 60B): app/components/features/
+            video/VideosDashboard.tsx had no duplicate and no caller anywhere
+            in the tree even though its queries were real (ai_video_projects
+            in-progress/finished, video_performance_tracking weekly views).
+            This is the page the /dashboard/video redirect chain actually
+            lands on, and the natural place for an at-a-glance summary above
+            the full script grid below. */}
+        <div className="mb-6 max-w-md">
+          <VideosDashboard />
         </div>
 
         {/* Filters */}

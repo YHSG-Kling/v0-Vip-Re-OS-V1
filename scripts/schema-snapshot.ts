@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 701 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 702 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-11
+ * generated: 2026-09-12
  * source: public.live_schema_json()
- * body-sha256: 55d65f2a793ec8e19ef999a5c216aa932d0bbd1bb417d61fcc14d913e44e9b1e
+ * body-sha256: 214f55a453337a768e1c4b2a8bbb3e0a7686c0f6235ce2c09541d2d756aac93f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -394,6 +394,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   listing_syndication_tracking: ["brokerage_id", "created_at", "id", "last_synced_at", "listing_url", "platform_category", "platform_name", "syndication_status", "transaction_id", "updated_at"],
   listing_task_templates: ["brokerage_id", "created_at", "description", "due_offset_days", "id", "is_active", "is_required", "owner_role", "priority", "stage", "title", "updated_at"],
   listings: ["address", "agent_id", "appointment_at", "appointment_event_id", "appointment_notes", "bathrooms", "bedrooms", "brokerage_id", "city", "commission_rate", "contact_id", "created_at", "created_via", "deleted_at", "dotloop_loop_id", "estimated_close_date", "expiration_date", "external_provider_source", "external_provider_transaction_id", "flood_zone", "go_live_confirmed_at", "go_live_date", "has_pool", "has_septic", "has_solar", "hoa_dues", "id", "last_price_change_at", "last_provider_sync_at", "lifecycle_stage", "list_price", "listing_agent_email", "listing_agent_name", "listing_date", "location_id", "lot_size", "marketing_budget", "marketing_tier_id", "metadata", "mls_link", "mls_number", "open_house_event_date", "open_house_marketing_date", "photos", "primary_photo_url", "property_type", "public_remarks", "seller_contact_id", "seller_walkaway_price", "showing_count", "showing_instructions", "slug", "sold_date", "sold_price", "sqft", "stage_entered_at", "stage_updated_at", "state", "status", "sub_category", "team_id", "transaction_provider_ref", "updated_at", "year_built", "zip"],
+  live_agent_sessions: ["agent_id", "brokerage_id", "contact_id", "created_at", "did_agent_id", "ended_at", "id", "last_seen_at", "metadata", "minutes_billed", "provider", "started_at", "status", "surface"],
   local_news_sources: ["brokerage_id", "category", "created_at", "enabled", "id", "is_active", "market_name", "market_zip_codes", "name", "refresh_frequency", "updated_at", "url"],
   locations: ["address", "brokerage_id", "city", "created_at", "id", "name", "state"],
   mail_response_tracking: ["brokerage_id", "campaign_id", "contact_id", "created_at", "id", "lead_id", "response_metadata", "response_type"],

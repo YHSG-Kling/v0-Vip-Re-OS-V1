@@ -1018,6 +1018,12 @@ export interface RoutedStreamRequest {
   tools?: Record<string, unknown>
   /** Multi-step tool calling: stop after N steps (default 5 when tools set). */
   maxSteps?: number
+  /** The governed AI manager (agent_kind) responsible for this call — same
+   *  column generateTextRouted/logAIUsage already carry (lib/platform/manager-ops.ts
+   *  per-manager cost/latency/SLO). Additive; unset rolls up under 'unassigned'.
+   *  wave 60: threaded through so a per-turn caller (e.g. /api/did/custom-llm)
+   *  can attribute its ai_tool_usage row without a second ledger write. */
+  manager?: string | null
   /** Runs AFTER the cost ledger write, with the SDK's finish event
    *  (event.text is the full generated reply). */
   onFinish?: (event: { text: string }) => void | PromiseLike<void>
@@ -1090,7 +1096,12 @@ export async function streamTextRouted(
   const stopWhen = request.tools ? stepCountIs(request.maxSteps ?? 5) : undefined
 
   const callerOnFinish = request.onFinish
-  const { userId, brokerageId, agentId } = request
+  const { userId, brokerageId, agentId, manager } = request
+  // WALL-CLOCK PER TURN (wave 60, live-agent-provider-recommendation-2026-09.md
+  // §3.2 "instrument the turn"): started here, read in onFinish below, so every
+  // streamTextRouted caller gets latency on its ai_tool_usage row for free —
+  // one measurement point rather than each route timing its own call.
+  const turnStartedAt = Date.now()
 
   return streamText({
     model: primaryInstance,
@@ -1122,6 +1133,8 @@ export async function streamTextRouted(
           inputTokens,
           outputTokens,
           feature,
+          manager: manager ?? null,
+          executionTimeMs: Date.now() - turnStartedAt,
         })
       }
       await callerOnFinish?.(event)

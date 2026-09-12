@@ -51,6 +51,7 @@ import { requireCaller } from "@/lib/auth/require-caller"
 import { generateAIResponse } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import {
   buildComplianceSystemBlocks,
   precheckBriefForFairHousing,
@@ -199,9 +200,29 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   // Session-derived, never the caller-supplied ids — see requireCaller above.
   const actor = { userId, brokerageId }
   const journeyType = contactType === "seller" ? ("seller" as const) : ("buyer" as const)
+
+  // TOMBSTONE (§1/§6, wave 60E, survivor lib/ai-isa/brand-voice-prompt.ts:73
+  // loadBrandVoicePrompt): this wizard resolved its tone from
+  // buildComplianceSystemBlocks → script-compliance.ts's OWN brand_voice_profile
+  // read alone — the brokerage-only first rung of the cascade every other
+  // AI-agent surface (live avatar, phone receptionist, widget, portal,
+  // in-app copilot) runs the FULL cascade on (agent/team overrides,
+  // ai_identity_profiles, chartered AI teammate). buildComplianceSystemBlocks
+  // itself is NOT deleted here — it is shared, unchanged, by four other script
+  // generators (app/actions/video-generation.ts, create-video-project.ts,
+  // link-to-video.ts, content-generation-engine.ts) and by the session-less
+  // cron chapter/section-narration path (script-compliance.ts:305-320's
+  // documented reason a second, service-client copy of that read would be
+  // WRONG — it would union every tenant's prohibited words). Only the WIZARD's
+  // own tone default and system-prompt block now come from the cascade.
+  const brandVoice = await loadBrandVoicePrompt({ brokerageId, managerKey: "asset_manager" })
+  // A caller-supplied tone (params.brandVoiceTone) still wins outright; absent
+  // that, the cascade's resolved tone — not a bare brokerage-only lookup —
+  // is the default fed to the compliance system prompt below.
+  const effectiveBrandVoiceTone = params.brandVoiceTone ?? brandVoice.tone ?? undefined
   const complianceBlocks = await buildComplianceSystemBlocks(
     brokerageId,
-    params.brandVoiceTone,
+    effectiveBrandVoiceTone,
   )
 
   // ── Pre-generation compliance check: Fair Housing only on description ─────────
@@ -241,6 +262,10 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   const systemPrompt = [
     typeSystemContext[params.videoType] ?? typeSystemContext.custom,
     TONE_INSTRUCTIONS[params.tone] ?? TONE_INSTRUCTIONS.professional,
+    // The ONE brand-voice cascade's system block (identity, agent/team
+    // overrides, chartered AI teammate charter) — consistent with every
+    // other AI-agent surface, not only the compliance-gate's tone line above.
+    brandVoice.systemBlock,
     ...complianceBlocks,
     SCRIPT_QUALITY_CHARTER,
     SPOKEN_REALISM_DIRECTIVE,

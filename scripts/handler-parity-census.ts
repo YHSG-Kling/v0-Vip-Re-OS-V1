@@ -208,34 +208,20 @@ const routeHasAnyHit = new Map<string, boolean>()
 for (const h of hits) routeHasAnyHit.set(h.route.file, true)
 
 /**
- * UNRESOLVED BY NAME (§1 — "when you cannot prove it either way, write
- * unresolved rather than guessing"), investigated 2026-09-11, not excluded by
- * guess:
- *
- *   app/api/admin/billing/entitlements/[brokerageId]/route.ts GET
- *   app/api/admin/billing/subscriptions/[brokerageId]/route.ts GET
- *
- * Both are superadmin-session-gated (requireSuperadminAuth) per-brokerage
- * DETAIL resolvers (lib/kernel/billing.ts::resolveFeatureEntitlement /
- * resolveSubscriptionTier) with NO caller anywhere in the tree, on either
- * side: not this GET, not a server action, not a direct query. Their sibling
- * POSTs (trial override / status change) DO have real callers
- * (feature-entitlement-list.tsx, subscription-tier-card.tsx), and those same
- * components' PARENT (app/dashboard/admin/billing/page.tsx) already renders
- * tier/status/feature data through ITS OWN query rather than through these
- * resolvers — so the GETs are not proven external doors (session-gated, not
- * a webhook/cron/OAuth shape) and not proven dead either (a superadmin
- * drill-down view that calls them one brokerage at a time has simply not
- * been built). Neither §1.2 (build a caller) nor §1.3 (delete, functionality
- * lives elsewhere) has evidence strong enough to act on without guessing, so
- * both stay on the wire list rather than in the ratcheted ✅/❌ count below —
- * exactly the posture opposite-missing-census's own 6d bucket already uses
- * for the identical shape of doubt.
+ * RESOLVED (wave 60B, §1.2 — no duplicate existed and the capability was
+ * wanted, so the missing caller was BUILT): both GETs below were investigated
+ * 2026-09-11 and left unresolved because "a superadmin drill-down view that
+ * calls them one brokerage at a time has simply not been built" — see the
+ * git history of this comment for the original doubt. That view now exists:
+ * app/components/features/admin/billing-diagnostics-panel.tsx, mounted
+ * superadmin-only in app/dashboard/admin/billing/page.tsx (BillingDiagnosticsPanel),
+ * calls exactly these two routes for an arbitrary brokerage id typed in by
+ * support — independent of the page's own ?brokerageId= tenant. Both routes
+ * now have real in-tree callers and fall out of UNRESOLVED_METHODS entirely;
+ * the set stays declared (empty) as the documented seam for the next lane
+ * that finds a genuinely undecidable route/method pair.
  */
-const UNRESOLVED_METHODS = new Set<string>([
-  "app/api/admin/billing/entitlements/[brokerageId]/route.ts::GET",
-  "app/api/admin/billing/subscriptions/[brokerageId]/route.ts::GET",
-])
+const UNRESOLVED_METHODS = new Set<string>([])
 
 const uncalledMethods: Array<{ route: RouteDef; method: Method }> = []
 const unresolvedMethods: Array<{ route: RouteDef; method: Method }> = []

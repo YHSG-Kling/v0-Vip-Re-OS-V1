@@ -27,6 +27,14 @@
  * PURE: whole days from `now` until `expiry`. NULL when there is no expiry or
  * the value cannot be parsed — the callers treat NULL as "we do not know",
  * never as "fine", so an unreadable date can never read as compliant.
+ *
+ * KEPT DISTINCT (§1.1, duplicates round 6, wave 60) from
+ * lib/kernel/financing-pit-stop.ts:87's `daysUntil`, same name, different
+ * precision: this one is ms-precision against `now.getTime()` directly (a
+ * certificate does not become non-compliant until the actual expiry instant
+ * passes), the financing one is calendar-day precision anchored to UTC
+ * midnight (a financing window opens/closes on a DATE). See that file's
+ * tombstone for the full reasoning.
  */
 export function daysUntil(expiry: string | null | undefined, now: Date): number | null {
   if (!expiry) return null

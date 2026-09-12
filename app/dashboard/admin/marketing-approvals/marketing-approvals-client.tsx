@@ -141,6 +141,18 @@ export function MarketingApprovalsClient({ initialRows }: Props) {
                   </div>
                 )}
                 {r.summary && <p className="text-sm text-muted-foreground">{r.summary}</p>}
+                {/* THE CASCADE'S CONTEXT (§1, wave 60E) — the brand voice this
+                    video was ACTUALLY written with (loadBrandVoicePrompt via
+                    brandVoiceContextForVideo), so the reviewer can tell a
+                    generic draft from an on-brand one instead of
+                    ai_video_projects.brand_voice_context sitting write-only. */}
+                {r.brand_voice && (r.brand_voice.tone || r.brand_voice.tagline) && (
+                  <p className="text-xs text-muted-foreground border-l-2 pl-2">
+                    Brand voice — {r.brand_voice.assistantName ?? "Your AI Assistant"}
+                    {r.brand_voice.tone ? `, ${r.brand_voice.tone} tone` : ""}
+                    {r.brand_voice.tagline ? ` · "${r.brand_voice.tagline}"` : ""}
+                  </p>
+                )}
                 {r.body_preview && (
                   <details className="rounded-md border bg-muted/30 p-2">
                     <summary className="cursor-pointer text-xs font-medium">View body preview</summary>

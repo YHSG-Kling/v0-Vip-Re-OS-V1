@@ -323,59 +323,21 @@ export async function getContact(contactId: string, agentId: string) {
   }
 }
 
-/**
- * Get all contacts for an agent
- */
-export async function getContacts(agentId: string, filters?: { status?: string; temperature?: string; search?: string }) {
-  try {
-    if (!isValidUUID(agentId)) {
-      return { success: true, contacts: [] }
-    }
-
-    const supabase = await createClient()
-
-    // `buyer_persona(*)` named a relation that DOES NOT EXIST (no public.buyer_persona
-    // table, no such column on contacts), and `lead_intelligence` is keyed on lead_id
-    // with NO foreign key to contacts. Either one refuses the WHOLE query (PGRST200),
-    // so this list has never returned a contact — the caller rendered the refusal as an
-    // empty CRM. Nothing read either embed off this result, so both are dropped rather
-    // than repointed; the real per-contact persona is client_detailed_personas
-    // (contact_id -> contacts.id) and can be embedded if a consumer ever needs it.
-    let query = supabase
-      .from("contacts")
-      .select("*")
-      .eq("agent_id", agentId)
-      .is("deleted_at", null)
-
-    // Apply filters
-    if (filters?.status) {
-      query = query.eq("status", filters.status)
-    }
-
-    if (filters?.temperature) {
-      query = query.eq("lead_temperature", filters.temperature)
-    }
-
-    if (filters?.search) {
-      // `full_name` is NOT a column on contacts (the live table carries first_name /
-      // last_name separately). A bad column in a filter refuses the query exactly the
-      // way a bad embed does, so every searched list came back as "no matches". Matched
-      // the way crm.ts:searchContacts already does it, against columns that exist.
-      const term = filters.search
-      query = query.or(`first_name.ilike.%${term}%,last_name.ilike.%${term}%,email.ilike.%${term}%`)
-    }
-
-    const { data: contacts, error } = await query.order("lead_score", { ascending: false })
-
-    if (error) {
-      throw new DatabaseError("Failed to fetch contacts", error)
-    }
-
-    return { success: true, contacts: contacts || [] }
-  } catch (error) {
-    return handleError(error, "getContacts")
-  }
-}
+// DELETED: getContacts(agentId, filters) (wave 60, duplicates round 6, lane
+// 60C). SURVIVOR: app/actions/contacts.ts:95 getContacts(params) — session-
+// derived brokerageId + agent scoping (this copy took `agentId` as a plain
+// param, the same body-supplied-identity IDOR shape §4 flags and the one
+// this file's sibling createContact/updateContact tombstones already record
+// deleting), pagination, richer filters (contact_type, limit/offset,
+// multi-column search including phone), and a fail-closed no-brokerage
+// branch this copy lacked. Read-only (SELECT), no side effects to carry
+// over. Unreachable: only importer was this file's own barrel
+// (lib/services/index.ts), which itself has zero importers anywhere in
+// app/, lib/ or components/ (verified 2026-09-12) — the same "barrel with
+// zero importers" state already documented for sendEmail/sendSMS just below
+// in this barrel. The one filter this copy had that the survivor doesn't
+// (`temperature` → lead_temperature) had no live caller passing it — nothing
+// to port forward.
 
 /**
  * Add tags to a contact

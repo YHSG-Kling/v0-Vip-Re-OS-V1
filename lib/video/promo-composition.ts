@@ -388,9 +388,16 @@ export function buildComingSoonTeaser(facts: PromoListingFacts): string | null {
   return parts.length > 0 ? parts.join(" · ") : null
 }
 
-/** Compute whole days between a listing's created_at and its sold_date.
+/** Compute whole days between a listing's created_at and its sold_date —
+ *  the SOLD-RECAP reading of "days on market" (at the moment of sale), a
+ *  different quantity from the LIVE-LISTING reading in
+ *  `lib/listings/compute-dom.ts::computeDaysOnMarket` (go_live_date→now,
+ *  keeps counting while a listing is still active). Renamed from
+ *  `computeDaysOnMarket` (wave 60, carried from wave 59) — same name, two
+ *  meanings, flagged in LANE_RULES.md wave 59 carry note. Tombstone: the
+ *  live-listing DOM lives at lib/listings/compute-dom.ts:19.
  *  Returns null when either is missing or the math is non-finite/negative. */
-export function computeDaysOnMarket(createdAt: string | null, soldDate: string | null): number | null {
+export function daysOnMarketAtSale(createdAt: string | null, soldDate: string | null): number | null {
   if (!createdAt || !soldDate) return null
   const start = Date.parse(createdAt)
   const end   = Date.parse(soldDate)

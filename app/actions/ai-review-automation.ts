@@ -7,6 +7,8 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
+import { getReputationPreferences } from "@/app/actions/settings/reputation-preferences"
+import { respondToReview } from "@/lib/kernel/reputation"
 
 /**
  * AI Review & Testimonial Automation System
@@ -421,7 +423,7 @@ export async function aiGenerateReviewResponse(params: {
   try {
     const { data: agent } = await supabase
       .from("agents")
-      .select("users(first_name, last_name)")
+      .select("brokerage_id, users(first_name, last_name)")
       .eq("id", params.agentId)
       .single()
 
@@ -479,16 +481,47 @@ Generate:
 
     // review_responses table does not exist in live schema.
     // Save AI-generated draft response_text directly on agent_reviews.
-    // is_published stays false until the agent explicitly publishes via respondToReview kernel command.
+    // is_published stays false until the agent explicitly publishes via respondToReview kernel command —
+    // UNLESS the agent's own reputation preference (app/actions/settings/reputation-preferences.ts,
+    // set from app/components/reputation/ReputationPanel.tsx) is "auto". That setting was written and
+    // read back for its own settings-page display only; nothing downstream ever consulted it (hidden
+    // wire, wave 60 audit) — an agent who chose "auto-respond, no approval needed" got the SAME
+    // draft-and-wait behavior as "off". Wired here: "auto" publishes immediately through the same
+    // tenant-checked respondToReview kernel command the manual Publish button uses (ownership +
+    // brokerage verified, is_published only ever raised, lifecycle event emitted); "review" and "off"
+    // keep the prior draft-only write unchanged. The "review" mode's approval-hours auto-publish-after-
+    // N-hours-unless-rejected half is NOT built here — there is no drafted-at timestamp column on
+    // agent_reviews to compute elapsed hours against and no cron reads it yet; left unresolved.
     if (params.reviewId) {
-      await supabase
-        .from("agent_reviews")
-        .update({
-          response_text: response.publicResponse,
-          updated_at:    new Date().toISOString(),
+      const brokerageId = (agent as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+      const prefs = await getReputationPreferences(params.agentId)
+
+      if (prefs.autoRespondMode === "auto" && brokerageId) {
+        const published = await respondToReview({
+          reviewId:     params.reviewId,
+          agentId:      params.agentId,
+          brokerageId,
+          responseText: response.publicResponse,
+          publishNow:   true,
         })
-        .eq("id",       params.reviewId)
-        .eq("agent_id", params.agentId)
+        if (!published.success) {
+          console.error("[ai-review-automation] auto-respond publish failed, left as draft:", published.error)
+          await supabase
+            .from("agent_reviews")
+            .update({ response_text: response.publicResponse, updated_at: new Date().toISOString() })
+            .eq("id",       params.reviewId)
+            .eq("agent_id", params.agentId)
+        }
+      } else {
+        await supabase
+          .from("agent_reviews")
+          .update({
+            response_text: response.publicResponse,
+            updated_at:    new Date().toISOString(),
+          })
+          .eq("id",       params.reviewId)
+          .eq("agent_id", params.agentId)
+      }
     }
 
     revalidatePath("/reviews")

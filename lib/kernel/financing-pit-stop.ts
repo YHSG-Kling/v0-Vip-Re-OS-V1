@@ -43,6 +43,7 @@ import type { createServiceClient } from "@/lib/supabase/service"
 import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 import { rankVendors, type BenchVendor } from "@/lib/kernel/vendor-orchestration"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -79,14 +80,22 @@ export interface FinancingWindow {
 export const FINANCING_DEADLINE_WINDOW_DAYS = 21
 export const PREAPPROVAL_STALE_WINDOW_DAYS = 14
 
-function utcDay(iso: string): number {
-  return Math.floor(Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) / 86_400_000)
-}
-
+// TOMBSTONE (§1.1, duplicates round 6, wave 60): the calendar-day arithmetic
+// (utcDay helper + subtraction) lived here; survivor lib/format/dates.ts:39
+// daysBetween — equivalent for date-only YYYY-MM-DD input, since both sides
+// parse to UTC midnight and the ms/86.4M division is already an integer,
+// making floor a no-op (same reasoning as lib/kernel/title-closing-watchtower.ts's
+// tombstone for the same pattern). KEPT DISTINCT from
+// lib/vendors/insurance-posture.ts:31's `daysUntil` (not merged onto it):
+// that one is ms-precision against `now.getTime()` directly (a certificate
+// expiring at 11:59pm today still reads "expiring", not "expired", until the
+// actual moment passes) — this one is calendar-day precision anchored to UTC
+// midnight (the financing window opens/closes on a DATE, not a timestamp).
+// Forcing one signature over both would trade a real precision difference for
+// a thinner abstraction, which §1.1 forbids.
 /** Whole calendar days from `now` to `iso` (positive = iso is in the future). */
 export function daysUntil(iso: string, now: Date): number {
-  const today = Math.floor(Date.parse(`${now.toISOString().slice(0, 10)}T00:00:00Z`) / 86_400_000)
-  return utcDay(iso) - today
+  return dateDaysBetween(`${now.toISOString().slice(0, 10)}T00:00:00Z`, `${iso.slice(0, 10)}T00:00:00Z`, { round: "floor" })
 }
 
 /**

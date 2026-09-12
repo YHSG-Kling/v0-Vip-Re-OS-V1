@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 233 agents(id) columns across 224 tables, 38 agent-ish users(id) columns across 36 tables, 169 contact_id tables.
+ * MEASURED AT GENERATION: 234 agents(id) columns across 225 tables, 38 agent-ish users(id) columns across 36 tables, 170 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-10
+ * generated: 2026-09-12
  * source: public.live_foreign_keys_json()
- * body-sha256: 2b44ea1ced1f58d19c0fe09a1be0c43ee68ae77bdcc5d27d02da0ccf4d1b4375
+ * body-sha256: 55ef6bc00d5a02c43607a185c36fabcbe4680181aac6cf4de927e7f945f281a3
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -183,6 +183,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   listing_price_changes: ["agent_id"],
   listing_promo_videos: ["agent_id"],
   listings: ["agent_id"],
+  live_agent_sessions: ["agent_id"],
   market_insights: ["agent_id"],
   meeting_briefs: ["agent_id"],
   messages: ["agent_id"],
@@ -406,6 +407,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "listing_landing_pages",
   "listing_presentations",
   "listings",
+  "live_agent_sessions",
   "mail_response_tracking",
   "manager_signals",
   "marketing_attribution_credits",

@@ -416,6 +416,12 @@ export async function POST(request: NextRequest) {
       userId: agentUserId,
       brokerageId,
       agentId,
+      // wave 60 §3.2 ("instrument the turn") — same managerKey brand-voice
+      // resolution above already uses, so this ai_tool_usage row and the
+      // brand-voice load it prices both attribute to the manager that owns
+      // the live-avatar moment. streamTextRouted stamps wall-clock latency
+      // (execution_time_ms) on the row automatically.
+      manager: "ai_isa",
     })
   } catch (err) {
     if (err instanceof AIFairUseError) {

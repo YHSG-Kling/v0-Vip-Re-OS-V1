@@ -14,6 +14,7 @@ import { toPlanTier } from "@/lib/billing/plan-tier"
 import { TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 import { OverageCalculator } from "@/app/components/features/admin/overage-calculator"
 import { FeatureEntitlementList } from "@/app/components/features/admin/feature-entitlement-list"
+import { BillingDiagnosticsPanel } from "@/app/components/features/admin/billing-diagnostics-panel"
 import { ManageBillingButton } from "./manage-billing-button"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { SubscriptionAgreementCard } from "./subscription-agreement-card"
@@ -211,6 +212,11 @@ export default async function BillingAdminPage({
                 at login), so the card is not rendered for them at all — and the
                 action behind it enforces the same gate server-side. */}
             {isSuper && <RevenueSummaryCard />}
+            {/* Superadmin-only support drill-down (handler-parity wave 60B): calls
+                the per-brokerage subscription/entitlement GET routes for an
+                ARBITRARY brokerage id, independent of the page's own ?brokerageId=.
+                Gated the same way RevenueSummaryCard is — platform staff only. */}
+            {isSuper && <BillingDiagnosticsPanel defaultBrokerageId={brokerageId} />}
           </div>
         </div>
       </div>

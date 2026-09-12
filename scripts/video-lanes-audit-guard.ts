@@ -77,6 +77,11 @@ const VIRAL    = src("app/actions/video-generation.ts")
 const DIRECTOR = src("lib/video/video-director.ts")
 const ROOT     = readFileSync("remotion/Root.tsx", "utf8")
 const VOICEOVER = src("app/api/videos/listing-voiceover/route.ts")
+const GENSCRIPT  = src("app/actions/video/generate-script.ts")
+const EXPLAINER  = src("lib/video/avatar-explainer.ts")
+const BVPROMPT   = src("lib/ai-isa/brand-voice-prompt.ts")
+const APPROVALS_ACTION = src("app/actions/marketing-ai-approvals.ts")
+const APPROVALS_CLIENT = src("app/dashboard/admin/marketing-approvals/marketing-approvals-client.tsx")
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Video lanes — every engine, both halves")
@@ -151,7 +156,41 @@ check("…while the saved-home path can still note it (a portal message, never a
   /NO_VIDEO_NUDGE_KINDS[^=]*=\s*\["under_contract"\]/.test(NUDGE) && /NO_VIDEO_NUDGE_KINDS as readonly string\[\]\)\.includes\(nudge\.kind\)\) return \{ \.\.\.nudge, avatarWorthy: false \}/.test(NUDGE))
 check("…and routeSavedHomeNudge picks the bus from that flag alone", /const toManager = nudge\.avatarWorthy \? "asset_manager" : "campaign_orchestrator"/.test(SIGNALS))
 
+console.log("\n── 10 · brand-voice cascade: one vocabulary across the video lane (§6, wave 60E) ──")
+// BEFORE this lane: generate-script.ts's tone came only from
+// buildComplianceSystemBlocks → script-compliance.ts's OWN brand_voice_profile
+// read; avatar-explainer.ts had a second, private brand_voice_profile read;
+// video-director.ts's hook drafted with no brand-voice input at all and both
+// insert sites wrote brand_voice_context: {}. AFTER: all three call the ONE
+// cascade (lib/ai-isa/brand-voice-prompt.ts:73 loadBrandVoicePrompt).
+const emptyContextWrites =
+  (GENSCRIPT.match(/brand_voice_context:\s*\{\}/g) ?? []).length +
+  (EXPLAINER.match(/brand_voice_context:\s*\{\}/g) ?? []).length +
+  (DIRECTOR.match(/brand_voice_context:\s*\{\}/g) ?? []).length
+console.log(`  (before this wave: 3 empty brand_voice_context: {} writes across avatar-explainer.ts + video-director.ts x2 — after: ${emptyContextWrites})`)
+check("generate-script.ts calls the ONE cascade for its tone/system-block", /loadBrandVoicePrompt\(\{\s*brokerageId/.test(GENSCRIPT))
+check("…and no longer reads brand_voice_profile directly (script-compliance.ts's shared compliance-tone read is untouched, out of this lane's scope)",
+  !/\.from\(\s*["']brand_voice_profile["']\s*\)/.test(GENSCRIPT))
+check("avatar-explainer.ts calls the cascade instead of its own private brand_voice_profile read", /loadBrandVoicePrompt\(\{\s*brokerageId/.test(EXPLAINER))
+check("…and no longer reads brand_voice_profile directly", !/\.from\(\s*["']brand_voice_profile["']\s*\)/.test(EXPLAINER))
+check("video-director.ts loads the cascade before drafting a hook (both commission paths)",
+  (DIRECTOR.match(/loadBrandVoicePrompt\(\{/g) ?? []).length >= 2)
+check("NEITHER remaining video writer stamps an empty brand_voice_context (avatar-explainer + video-director x2)", emptyContextWrites === 0, `${emptyContextWrites} empty writes remain`)
+check("the survivor exports the ONE video-context shaper both writers call", /export function brandVoiceContextForVideo/.test(BVPROMPT))
+check("…called by all three writers (generate-script has no brand_voice_context column, so 2 is correct: avatar-explainer + video-director)",
+  (EXPLAINER.match(/brandVoiceContextForVideo\(/g) ?? []).length >= 1 && (DIRECTOR.match(/brandVoiceContextForVideo\(/g) ?? []).length >= 2)
+console.log("\n── 11 · the reader: brand_voice_context is now READ, not write-only ──")
+check("the marketing-approvals queue selects brand_voice_context off ai_video_projects",
+  /\.from\("ai_video_projects"\)[\s\S]{0,300}brand_voice_context/.test(APPROVALS_ACTION))
+check("…and maps it onto the row the client renders (PendingAssetRow.brand_voice)", /brand_voice:\s*\(\(\)\s*=>/.test(APPROVALS_ACTION))
+check("…and the review card actually displays tone/tagline to the human approver", /r\.brand_voice\.tone/.test(APPROVALS_CLIENT) && /r\.brand_voice\.tagline/.test(APPROVALS_CLIENT))
+
 console.log("\n── CONTROLS ──")
+check("POSITIVE CONTROL: the brand_voice_profile scanner still catches a direct read (a tombstone naming it must not un-catch it)",
+  /\.from\(\s*["']brand_voice_profile["']\s*\)/.test('  const { data } = await supabase\n    .from("brand_voice_profile")\n    .select("tone")')
+  && !/\.from\(\s*["']brand_voice_profile["']\s*\)/.test(stripComments('  // .from("brand_voice_profile") — TOMBSTONE, merged onto loadBrandVoicePrompt\n')))
+check("POSITIVE CONTROL: the empty-context scanner still catches the old defect shape",
+  (("brand_voice_context: {},".match(/brand_voice_context:\s*\{\}/g) ?? []).length === 1))
 check("POSITIVE CONTROL: the emitter finder catches a literal publish, a same-line ternary, and ignores a comment",
   emitterRegex("x_reel_handoff").test('publishManagerSignal({ signalType: "x_reel_handoff" })')
   && emitterRegex("x_reel_handoff").test('const signalType = nudge.avatarWorthy ? "x_reel_handoff" : "x_message"')

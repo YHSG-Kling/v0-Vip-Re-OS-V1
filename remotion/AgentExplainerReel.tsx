@@ -177,34 +177,42 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* BULLET 1 — 3-6s */}
+      {/* BULLET 1 — 3-6s.
+          AVATAR LEAD-IN FIX (wave 60 realism audit — same defect + fix as
+          MarketUpdateReel/EquityReportReel). AvatarPIP never mounts during
+          COVER and D-ID is never asked to pad COVER seconds of lead-in
+          silence (pad_audio is 0.3s TRAILING only — realism-profile.ts), so
+          passing the composition-absolute frame as `<Video trimBefore>`
+          skipped the clip's first COVER seconds of REAL narration. Each
+          window now gets frames relative to the avatar track's own start
+          (0, B1, B1+B2) instead. */}
       <Sequence from={COVER} durationInFrames={B1}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER, endFrame: COVER + B1,
+            startFrame: 0, endFrame: B1,
             avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
           <BulletPanel index={1} text={bullets[0]} accentColor={brand.accentColor} />
         </AbsoluteFill>
       </Sequence>
 
-      {/* BULLET 2 — 6-10s */}
+      {/* BULLET 2 — 6-10s. See the AVATAR LEAD-IN FIX note on BULLET 1. */}
       <Sequence from={COVER + B1} durationInFrames={B2}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER + B1, endFrame: COVER + B1 + B2,
+            startFrame: B1, endFrame: B1 + B2,
             avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
           <BulletPanel index={2} text={bullets[1]} accentColor={brand.accentColor} />
         </AbsoluteFill>
       </Sequence>
 
-      {/* BULLET 3 — 10-15s */}
+      {/* BULLET 3 — 10-15s. See the AVATAR LEAD-IN FIX note on BULLET 1. */}
       <Sequence from={COVER + B1 + B2} durationInFrames={B3}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER + B1 + B2, endFrame: COVER + B1 + B2 + B3,
+            startFrame: B1 + B2, endFrame: B1 + B2 + B3,
             avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
           <BulletPanel index={3} text={bullets[2]} accentColor={brand.accentColor} />
         </AbsoluteFill>

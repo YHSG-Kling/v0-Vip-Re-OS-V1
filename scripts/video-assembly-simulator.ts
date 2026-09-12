@@ -894,6 +894,7 @@ function avatarSection() {
   const pipCallers: Array<{ id: string; file: string }> = [
     { id: "MarketUpdateReel", file: "remotion/MarketUpdateReel.tsx" },
     { id: "EquityReportReel", file: "remotion/EquityReportReel.tsx" },
+    { id: "ExplainerAnimReel", file: "remotion/ExplainerAnimReel.tsx" },
   ]
   for (const { id, file } of pipCallers) {
     const geometry = COMPOSITION_GEOMETRY[id]
@@ -911,6 +912,40 @@ function avatarSection() {
     }
     check(`${id}: every AvatarPIP startFrame/endFrame window is increasing and within [0, duration_frames]`,
       allOk && windows.length > 0, detail || (windows.length === 0 ? "no resolvable AvatarPIP call sites found" : undefined))
+
+    // WAVE 60 AVATAR LEAD-IN FIX — the blind spot the historical `wrongTrimBefore`
+    // regex above could never see: these four compositions never write
+    // `trimBefore=` themselves — they pass `startFrame`/`endFrame` THROUGH to
+    // AvatarPIP (or ExplainerAnimReel's own private copy), which applies them
+    // to `<Video trimBefore trimAfter>` internally. The pre-fix shape passed
+    // the composition-ABSOLUTE cover/intro-tile frame (COVER/INTRO) as the
+    // FIRST window's startFrame — silently skipping that many seconds of REAL
+    // narration from the front of the D-ID clip before AvatarPIP ever mounts
+    // (nothing pads that much lead-in silence at render time — D-ID's own
+    // pad_audio, DID_TALK_REALISM_CONFIG in lib/video/realism-profile.ts, is
+    // 0.3s of TRAILING silence only). The FIRST window resolved above must
+    // start the clip's own timeline at frame 0 — the moment it first becomes
+    // visible — never at the composition's cover/intro offset.
+    check(`${id}: the FIRST AvatarPIP window starts the clip at its own frame 0 — no lead-in seconds of real narration skipped before the avatar first appears`,
+      windows.length > 0 && windows[0].start === 0,
+      windows.length > 0 ? `first window starts at ${windows[0].start}, not 0` : undefined)
+  }
+
+  // AgentExplainerReel's three AvatarPIP call sites place startFrame/endFrame
+  // mid-object (more props follow), which defeats resolveAvatarPipWindows'
+  // generic single-`}`-lookahead parser (it returns [] rather than misparse)
+  // — so it is proven here directly instead of through the shared scope
+  // engine. Same WAVE 60 AVATAR LEAD-IN FIX as the pipCallers loop above:
+  // the first window must start the clip's own timeline at frame 0, never
+  // at the composition-absolute COVER frame (which would skip that many
+  // seconds of real narration — see the file's own comment on BULLET 1).
+  {
+    const src = readStripped("remotion/AgentExplainerReel.tsx").replace(/\s+/g, " ")
+    const firstCall = /startFrame:\s*([^,]+),\s*endFrame:\s*([^,]+),/.exec(src)
+    check("AgentExplainerReel: the FIRST AvatarPIP window starts the clip at its own frame 0 — no lead-in seconds of real narration skipped before the avatar first appears",
+      !!firstCall && firstCall[1].trim() === "0", firstCall ? `first call site: startFrame: ${firstCall[1].trim()}` : "no AvatarPIP call site found")
+    check("CONTROL: the AgentExplainerReel startFrame/endFrame regex still recognises a call site shape",
+      /startFrame:\s*([^,]+),\s*endFrame:\s*([^,]+),/.test('<AvatarPIP {...{ startFrame: COVER, endFrame: COVER + B1, avatarDurationSeconds }} />'))
   }
 
   // Single continuous-body slides: avatarStartFrame < avatarEndFrame in

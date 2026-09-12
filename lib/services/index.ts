@@ -1,11 +1,11 @@
 // ─── CONTACT MANAGEMENT ───────────────────────────────────────────────────────
 // createContact / updateContact DELETED (wave 57, Task B duplicates round 2)
 // — see the tombstones in ./contact-management.service.ts naming their
-// survivors in app/actions/contacts.ts.
+// survivors in app/actions/contacts.ts. getContacts DELETED (wave 60,
+// duplicates round 6, lane 60C) — survivor app/actions/contacts.ts:95.
 export {
   deleteContact,
   getContact,
-  getContacts,
   addContactTags,
   removeContactTags,
   mergeContacts,

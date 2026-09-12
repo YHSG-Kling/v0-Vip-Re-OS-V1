@@ -70,6 +70,43 @@ export interface BrandVoicePromptResult {
   teammate: { name: string; roleTitle: string; baseManagerKey: string } | null
 }
 
+/**
+ * Compact `brand_voice_context` jsonb shape for a queued VIDEO row
+ * (`ai_video_projects.brand_voice_context`).
+ *
+ * Wave 60E: the async video lane (generate-script / avatar-explainer /
+ * video-director) wrote `brand_voice_context: {}` — a column with a writer
+ * carrying no information — because none of them ran the ONE brand-voice
+ * cascade this file is. This is the ONE shape every video writer now stamps,
+ * so the render-queue reviewer (app/dashboard/videos review card) can show
+ * the voice a queued video was actually written with. `source` is always
+ * `"loadBrandVoicePrompt"` — a fixed literal, not a second spelling to drift
+ * from this one — so a reader can tell the value came from the cascade
+ * rather than the older `lib/kernel/marketing.ts:1057` shape (brokerage
+ * name/about/bio — a distinct, pre-existing writer left as-is).
+ */
+export interface BrandVoiceVideoContext {
+  tone: string | null
+  formalityLevel: string | null
+  prohibitedWords: string[]
+  preferredWords: string[]
+  tagline: string | null
+  assistantName: string
+  source: "loadBrandVoicePrompt"
+}
+
+export function brandVoiceContextForVideo(result: BrandVoicePromptResult): BrandVoiceVideoContext {
+  return {
+    tone: result.tone,
+    formalityLevel: result.formalityLevel,
+    prohibitedWords: result.prohibitedWords,
+    preferredWords: result.preferredWords,
+    tagline: result.tagline,
+    assistantName: result.assistantName,
+    source: "loadBrandVoicePrompt",
+  }
+}
+
 export async function loadBrandVoicePrompt(
   ctx: BrandVoicePromptContext
 ): Promise<BrandVoicePromptResult> {

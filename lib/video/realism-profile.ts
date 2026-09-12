@@ -877,8 +877,23 @@ export interface AvatarPipWindowFade {
  * lib/video/avatar-render-orchestrator.ts into every composition's input_props
  * — not composition-specific, so this reads the same number
  * AgentTalkingHeadReel's single-window fade already reads).
- * `startFrame`/`endFrame` are this window's ABSOLUTE frame offsets into that
- * same clip (what the caller already passes to `<Video trimBefore trimAfter>`).
+ * `startFrame`/`endFrame` are this window's frame offsets into that same
+ * clip's OWN timeline — RELATIVE TO WHEN THE AVATAR TRACK ITSELF BEGINS
+ * (0 for the first window an AvatarPIP mounts, `STAT`/`B1`/etc. for the
+ * next), the same values the caller passes to `<Video trimBefore
+ * trimAfter>`.
+ *
+ * WAVE 60 REALISM FIX: these were previously the composition-ABSOLUTE frame
+ * (e.g. `COVER` for the first window, because the composition doesn't mount
+ * AvatarPIP at all during its silent cover tile) — which fed `<Video
+ * trimBefore>` the same absolute value, silently skipping the clip's first
+ * `COVER` seconds of REAL narration before anyone ever heard it (D-ID is
+ * never asked to pad that much lead-in silence; DID_TALK_REALISM_CONFIG's
+ * `pad_audio` is 0.3s of TRAILING silence only). It also meant this
+ * function's own `localActualSeconds` subtracted `COVER` seconds the clip
+ * never actually spent, over-penalizing every later window's fade budget.
+ * remotion/MarketUpdateReel.tsx, EquityReportReel.tsx and
+ * AgentExplainerReel.tsx now pass the corrected relative offsets.
  */
 export function avatarPipWindowFade(
   avatarDurationSeconds: number | null | undefined,
@@ -1216,4 +1231,38 @@ export function estimateAvatarRenderCostUsd(script: string): number {
   const seconds = Math.max(1, estimateDurationSeconds(spokenWords(script).length))
   const usd = (chars / 1000) * ELEVENLABS_USD_PER_1K_CHARS + seconds * DID_USD_PER_VIDEO_SECOND
   return Math.round(usd * 10000) / 10000
+}
+
+// ─── Live D-ID Agents streaming minutes (wave 60, live-agent-provider- ───────
+// recommendation-2026-09.md §3.1/§5) ────────────────────────────────────────
+//
+// DIFFERENT LEG FROM THE RENDER ABOVE. `estimateAvatarRenderCostUsd` prices a
+// one-shot /talks or /clips or /expressives RENDER (async avatar video).
+// D-ID's Agents/streams product — the LIVE conversational avatar this OS runs
+// on portal/embed/site (lib/did/agents.ts, app/api/did/agents/session,
+// app/api/embed/session) — is a WebRTC session billed per STREAMING MINUTE,
+// a separate D-ID product line with its own rate. Blended 2026 third-party
+// estimate (docs/live-agent-provider-recommendation-2026-09.md §2/§5 — D-ID's
+// own per-plan streaming-minute rate is not published anywhere
+// machine-readable, so this is explicitly NOT a contract rate): ~$0.35/min.
+// ONE constant (§6) — never re-guess this inline; the vocabulary of "what a
+// live D-ID minute costs" lives here, next to the render-second rate above.
+export const DID_USD_PER_STREAMING_MINUTE = 0.35
+
+/**
+ * PURE: seconds rounded UP to the nearest 15s, the increment D-ID's own
+ * billing rounds live-session minutes to (docs, §2). Used by
+ * lib/did/live-session-metering.ts so a 61s call books 75s (1.25 min), not
+ * 60s — matching what D-ID itself would invoice, not undercounting the tail.
+ */
+export function roundUpToNearest15Seconds(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0
+  return Math.ceil(seconds / 15) * 15
+}
+
+/** PURE: USD for `seconds` of live D-ID Agents streaming, at the list-rate
+ *  blended estimate above. Seconds are rounded up to the nearest 15s first. */
+export function estimateStreamingMinutesCostUsd(seconds: number): number {
+  const minutes = roundUpToNearest15Seconds(seconds) / 60
+  return Math.round(minutes * DID_USD_PER_STREAMING_MINUTE * 10000) / 10000
 }

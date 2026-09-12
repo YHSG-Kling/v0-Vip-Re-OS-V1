@@ -16,10 +16,7 @@ import {
   CheckCircle,
   AlertCircle,
   AlertTriangle,
-  Sparkles,
-  ArrowRight,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
@@ -35,19 +32,20 @@ interface VideoProject {
   created_at: string
 }
 
-interface VideoRecommendation {
-  type: string
-  title: string
-  description: string
-  priority: "high" | "medium" | "low"
-}
+// TOMBSTONE (orphan doctrine §1.3): this file used to carry its own
+// "AI Recommendations" section (a local `VideoRecommendation{type,title,
+// description,priority}` shape whose state was only ever set to `[]` — a
+// structurally dead feature, since nothing ever populated it). That capability
+// already lives, wired and real, at
+// app/dashboard/videos/board/video-recommendations-card.tsx::VideoRecommendationsCard
+// (GET /api/ai/video-recommendations, agent-scoped, five real branches) —
+// deleted here rather than duplicated. See that file for the survivor.
 
 export function VideosDashboard() {
   const router = useRouter()
   const { user } = useAuth()
   const [inProgressVideos, setInProgressVideos] = useState<VideoProject[]>([])
   const [recentVideos, setRecentVideos] = useState<VideoProject[]>([])
-  const [recommendations, setRecommendations] = useState<VideoRecommendation[]>([])
   const [weeklyViews, setWeeklyViews] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
@@ -116,7 +114,6 @@ export function VideosDashboard() {
       console.error("Error loading video dashboard:", error)
       setInProgressVideos([])
       setRecentVideos([])
-      setRecommendations([])
       setWeeklyViews(0)
       setLoadError(true)
     } finally {
@@ -308,37 +305,6 @@ export function VideosDashboard() {
                       <Play className="h-4 w-4" />
                     </Button>
                   )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* AI Recommendations */}
-        {recommendations.length > 0 && (
-          <div>
-            <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-amber-500" />
-              Recommended
-            </h4>
-            <div className="space-y-2">
-              {recommendations.slice(0, 2).map((rec, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-center gap-3 p-2 rounded-lg border border-dashed hover:bg-muted/50 cursor-pointer"
-                  onClick={() => router.push(`/dashboard/videos/create?type=${rec.type}`)}
-                >
-                  <div
-                    className={cn(
-                      "h-2 w-2 rounded-full",
-                      rec.priority === "high" ? "bg-red-500" : "bg-amber-500"
-                    )}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">{rec.title}</p>
-                    <p className="text-xs text-muted-foreground">{rec.description}</p>
-                  </div>
-                  <ArrowRight className="h-4 w-4 text-muted-foreground" />
                 </div>
               ))}
             </div>

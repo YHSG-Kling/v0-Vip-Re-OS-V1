@@ -21,6 +21,15 @@ interface PortalAIAssistantProps {
   isBuyer: boolean
   isSeller: boolean
   persona: string
+  /** wave 60 (§3.3 "fail over to text") — a NEW value (any change, including
+   *  Date.now()) opens this panel programmatically. Set by PortalChatLauncher
+   *  when the Live Agent's D-ID session fails so the visitor lands in a real,
+   *  working conversation instead of a closed overlay. */
+  openSignal?: number
+  /** One-line banner shown once at the top of the chat when openSignal fires
+   *  it open — "why am I suddenly looking at text chat". Cleared on the
+   *  visitor's next send so it never lingers into an unrelated conversation. */
+  fallbackNotice?: string | null
 }
 
 // ── Suggested questions per portal view ──────────────────────────────────────
@@ -69,6 +78,8 @@ export default function PortalAIAssistant({
   isBuyer,
   isSeller,
   persona,
+  openSignal,
+  fallbackNotice,
 }: PortalAIAssistantProps) {
   const portalView: 'buyer' | 'seller' | 'lifetime' = isSeller
     ? 'seller'
@@ -191,6 +202,19 @@ export default function PortalAIAssistant({
     setIsMinimized(false)
   }, [])
 
+  // ── D-ID FAILOVER (wave 60 §3.3) — never a dead button ─────────────────────
+  // A caller (PortalChatLauncher) bumps openSignal when the Live Agent's D-ID
+  // session fails to mint or drops mid-conversation; this panel opens itself
+  // rather than leaving the visitor looking at a closed overlay with nowhere
+  // to go. Skips the initial mount (openSignal starts undefined).
+  const [notice, setNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (openSignal === undefined) return
+    handleOpen()
+    setNotice(fallbackNotice ?? null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal])
+
   const handleMinimize = useCallback(() => {
     setIsMinimized(true)
   }, [])
@@ -200,6 +224,7 @@ export default function PortalAIAssistant({
     const text = input.trim()
     if (!text || status === 'streaming' || status === 'submitted') return
     setError(null)
+    setNotice(null)
     sendMessage({ text })
     setInput('')
   }, [input, status, sendMessage])
@@ -274,6 +299,14 @@ export default function PortalAIAssistant({
               </button>
             </div>
           </div>
+
+          {/* Failover notice (wave 60 §3.3) — the one-line "why text now" */}
+          {notice && (
+            <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800 flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>{notice}</span>
+            </div>
+          )}
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">

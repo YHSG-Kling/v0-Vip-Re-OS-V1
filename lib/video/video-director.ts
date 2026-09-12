@@ -834,6 +834,23 @@ export async function commissionVideo(
     return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
   }
 
+  // BRAND VOICE (§1/§6, wave 60E — survivor lib/ai-isa/brand-voice-prompt.ts:73
+  // loadBrandVoicePrompt). The hook line drafted below ran with NO brand-voice
+  // input at all — generatePersonaCopy's persona carried a tone only when a
+  // caller happened to pass opts.persona.tone — and the row always wrote
+  // brand_voice_context: {}, a column with a writer but no real value. Loaded
+  // once here, best-effort: a cascade outage never blocks a commission, the
+  // hook simply falls back to the untuned tone it always used.
+  const { loadBrandVoicePrompt, brandVoiceContextForVideo } = await import("@/lib/ai-isa/brand-voice-prompt")
+  const brandVoice = await loadBrandVoicePrompt({
+    brokerageId: opts.brokerageId,
+    agentId: directorAgentId,
+    managerKey: "asset_manager",
+  }).catch(() => null)
+  const brandVoiceContext = brandVoice
+    ? brandVoiceContextForVideo(brandVoice)
+    : { tone: null, formalityLevel: null, prohibitedWords: [], preferredWords: [], tagline: null, assistantName: "Your AI Assistant", source: "loadBrandVoicePrompt" as const }
+
   // 1. Resolve the format + assembly structure (pure).
   //    Learning is ON BY DEFAULT: we consult the SELF-IMPROVING layer, which still
   //    returns the expert default unless REAL per-brokerage outcomes clear the
@@ -977,7 +994,10 @@ export async function commissionVideo(
             goal: `a ${situation.kind.replace(/_/g, " ")} video hook headline${priorViolations.length ? ` (rewrite to clear: ${priorViolations.join("; ")})` : ""}`,
             facts,
             channel: situation.targetChannel,
-            persona: opts.persona ?? { audience: "audience" },
+            // Cascade tone is the default; an explicit opts.persona.tone still wins.
+            persona: opts.persona
+              ? { ...opts.persona, tone: opts.persona.tone ?? brandVoice?.tone ?? undefined }
+              : { audience: "audience", tone: brandVoice?.tone ?? undefined },
             words: 8,
           },
           { body: fallbackHook },
@@ -1228,7 +1248,10 @@ export async function commissionVideo(
       compliance_status: "passed",       // hook pre-cleared the gate above
       compliance_violations: [],
       compliance_evaluated_at: now,
-      brand_voice_context: {},
+      // The cascade's compact context the hook was actually drafted with (§1,
+      // wave 60E) — the render-queue reviewer reads it (see the tombstone at
+      // lib/ai-isa/brand-voice-prompt.ts:73).
+      brand_voice_context: brandVoiceContext,
       intro_video_url: null,             // assembled by the render coordinator's bookend pass
       outro_video_url: null,
       b_roll_urls: format.needsBroll ? brollClips.map((c) => c.url) : null,
@@ -1276,7 +1299,15 @@ function factStrings(situation: VideoSituation, fallbackHook: string): string[] 
  */
 async function draftAndGateHook(
   situation: VideoSituation,
-  opts: { brokerageId: string; agentUserId: string; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator },
+  opts: {
+    brokerageId: string
+    agentUserId: string
+    copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator
+    /** Cascade-resolved tone (§1/§6, wave 60E) — the A/B hook variants used to
+     *  draft with NO tone at all (persona was hardcoded { audience: "audience" }
+     *  below). Optional so a caller that hasn't loaded the cascade is unchanged. */
+    brandVoiceTone?: string | null
+  },
   fallbackHook: string,
   goalSuffix = "",
 ): Promise<{ ok: true; hook: string } | { ok: false; violations: string[] }> {
@@ -1293,7 +1324,7 @@ async function draftAndGateHook(
             goal: `a ${situation.kind.replace(/_/g, " ")} video hook headline${goalSuffix}${priorViolations.length ? ` (rewrite to clear: ${priorViolations.join("; ")})` : ""}`,
             facts,
             channel: situation.targetChannel,
-            persona: { audience: "audience" },
+            persona: { audience: "audience", tone: opts.brandVoiceTone ?? undefined },
             words: 8,
           },
           { body: fallbackHook },
@@ -1388,6 +1419,18 @@ export async function commissionVideoExperiment(
     return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
   }
 
+  // BRAND VOICE — same cascade + reason as commissionVideo above (§1/§6, wave
+  // 60E, survivor lib/ai-isa/brand-voice-prompt.ts:73 loadBrandVoicePrompt).
+  const { loadBrandVoicePrompt, brandVoiceContextForVideo } = await import("@/lib/ai-isa/brand-voice-prompt")
+  const brandVoice = await loadBrandVoicePrompt({
+    brokerageId: opts.brokerageId,
+    agentId: directorAgentId,
+    managerKey: "asset_manager",
+  }).catch(() => null)
+  const brandVoiceContext = brandVoice
+    ? brandVoiceContextForVideo(brandVoice)
+    : { tone: null, formalityLevel: null, prohibitedWords: [], preferredWords: [], tagline: null, assistantName: "Your AI Assistant", source: "loadBrandVoicePrompt" as const }
+
   const variantCount = Math.max(2, Math.min(HOOK_ANGLE_ORDER.length, Math.floor(cfg.variants ?? 3) || 3))
 
   // 1. Resolve the format + assembly structure (pure expert default — the A/B is
@@ -1478,7 +1521,12 @@ export async function commissionVideoExperiment(
   for (const v of variantDefs) {
     const gated = await draftAndGateHook(
       situation,
-      { brokerageId: opts.brokerageId, agentUserId: opts.agentUserId, copyGenerator: opts.copyGenerator },
+      {
+        brokerageId: opts.brokerageId,
+        agentUserId: opts.agentUserId,
+        copyGenerator: opts.copyGenerator,
+        brandVoiceTone: brandVoice?.tone,
+      },
       v.hook,
       ` with a ${v.angle.replace(/_/g, " ")} angle`,
     )
@@ -1578,7 +1626,9 @@ export async function commissionVideoExperiment(
         compliance_status: "passed",
         compliance_violations: [],
         compliance_evaluated_at: now,
-        brand_voice_context: {},
+        // Same cascade context as commissionVideo (§1, wave 60E) — shared
+        // across every variant since the experiment holds one brokerage/agent.
+        brand_voice_context: brandVoiceContext,
         intro_video_url: null,
         outro_video_url: null,
         b_roll_urls: null,
