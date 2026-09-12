@@ -33,6 +33,8 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface ComingSoonReelProps {
   /** Property address line. NULL when the brokerage wants a
@@ -72,6 +74,15 @@ export interface ComingSoonReelProps {
   qrCodeDataUrl?:  string | null
   qrCaption?:      string
   mlsClean?:       boolean
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. render-just-listed already
+   *  stages both of these into input_props for every promo composition it selects
+   *  (buildCaptionPlan against voiceoverAlignment/script); this composition simply
+   *  had nowhere to draw them until now. See CaptionLayer. */
+  captionsCues?:   CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?:  string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -92,6 +103,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   address, cityState, teaser, heroImageUrl, whenString, ctaLabel,
   brollClips, contextCues, avatarVideoUrl, agentPhotoUrl, agentName,
   voiceoverUrl, brand, qrCodeDataUrl, qrCaption, mlsClean,
+  captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -253,6 +265,15 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA tile at COVER + BODY. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

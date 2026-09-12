@@ -30,6 +30,8 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface TestimonialReelProps {
   /** The testimonial quote — 12-40 words. The composition truncates
@@ -62,6 +64,14 @@ export interface TestimonialReelProps {
   mlsClean?:       boolean
   /** Optional context cues from the content bank. */
   contextCues?:    string[]
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. director-content.ts stages
+   *  captionScript from the SAME `quote` this composition already displays as the
+   *  pull-quote (§6 — one text, not two). See CaptionLayer. */
+  captionsCues?:   CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?:  string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -101,7 +111,7 @@ const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, acce
 export const TestimonialReel: React.FC<TestimonialReelProps> = ({
   quote, clientName, clientRole, closingLabel, stars, ctaLabel,
   agentName, avatarVideoUrl, agentPhotoUrl, voiceoverUrl, contextCues, brand,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -255,6 +265,17 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          the COVER tile is a silent 2s brand intro; clip before the CTA tile
+          at COVER + QUOTE + REACT. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        visibleFromFrame={COVER}
+        hiddenFromFrame={COVER + QUOTE + REACT}
+      />
     </AbsoluteFill>
   )
 }

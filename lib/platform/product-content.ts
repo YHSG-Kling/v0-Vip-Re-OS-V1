@@ -163,7 +163,7 @@ export interface ProductVideoSpec {
   height: number
   fps: 30
   durationInFrames: 450
-  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string; name?: string; tagline?: string }; ctaDomain?: string; imageUrls?: string[] }
+  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string; name?: string; tagline?: string }; ctaDomain?: string; imageUrls?: string[]; captionScript?: string }
   /** The voiceover/caption script — hook + beats + CTA, honest, no invented stats. */
   script: string
   /** The social caption that ships WITH the video (same composer as text posts). */
@@ -208,6 +208,11 @@ export function composeProductVideoSpec(
       brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, name: brand.name, tagline: brand.tagline },
       ctaDomain: brand.ctaUrl.replace(/^https?:\/\//, "") + "/get-started",
       imageUrls,
+      // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
+      // string as `script` below (§6, one text): product-content-autopilot.ts
+      // staged `script` onto the draft row but never into inputProps, so the
+      // composition (which has no other way to receive it) rendered caption-less.
+      captionScript: [a.hook, ...beats, cta].join("\n"),
     },
     script: [a.hook, ...beats, cta].join("\n"),
     caption: post.content,

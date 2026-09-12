@@ -89,7 +89,17 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   // coordinator QR pass; music stays off so nothing fights the avatar's voice.
   TeammateExplainerReel: { ...AVATAR_LED, bookends: false, broll: "none", music: false, qr: false },
   AgentExplainerReel: { ...AVATAR_LED, presenter: "circle_pip" },
-  ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false }, // music fights the voice
+  // captions: false override (wave 61 caption-consolidation audit) — AVATAR_LED's
+  // captions:true is aspirational here: no producer stages a render naming
+  // compositionId="ListingPresentationSlide" today (grep app/+lib/ for the id
+  // finds only the content-contract schema, composition-geometry entry, and a
+  // comment naming it — never a caller). The composition is REUSED as a React
+  // component by the live ListingSectionReel producer (section-render.ts), which
+  // now carries its own CaptionLayer/captionScript directly (see
+  // remotion/ListingSectionReel.tsx). Never delete — CLAUDE.md §1 "unreferenced
+  // is not dead"; wave 60/104 carried this as "ListingPresentationSlide no cron
+  // (KEPT)" pending the presentation-video-composer (header comment, W40+).
+  ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false, captions: false }, // music fights the voice
   BuyerConsultationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false },
   ListingSectionReel: { ...CHART_REEL, broll: "none" },
   // ── Report shows (PartnersMeetingReel serves 4 uses; see REEL_USE_FINISH) ──

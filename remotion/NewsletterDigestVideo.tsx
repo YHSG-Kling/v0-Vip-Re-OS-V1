@@ -26,7 +26,9 @@ import { Audio } from "@remotion/media"
 import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
 import { evenShotSlots } from "../lib/video/assembly-timeline"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface NewsletterDigestVideoProps {
   subject:        string
@@ -53,6 +55,12 @@ export interface NewsletterDigestVideoProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to read". */
   qrCaption?:     string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL ElevenLabs alignment — preferred. See CaptionLayer. */
+  captionsCues?:  CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 const FRAMES = {
@@ -85,6 +93,15 @@ export const NewsletterDigestVideo: React.FC<NewsletterDigestVideoProps> = (prop
       <Sequence from={FRAMES.OUTRO_START} durationInFrames={FRAMES.OUTRO_END - FRAMES.OUTRO_START}>
         <OutroCta {...props} />
       </Sequence>
+
+      {/* NO CAPTION OVER THE OUTRO CTA/QR TILE (wave 61, mirrors JustListedReel.tsx) —
+          clip before FRAMES.OUTRO_START. */}
+      <CaptionLayer
+        cues={props.captionsCues}
+        script={props.captionScript}
+        accentColor={props.brand.accentColor}
+        hiddenFromFrame={FRAMES.OUTRO_START}
+      />
     </AbsoluteFill>
   )
 }

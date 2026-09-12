@@ -389,6 +389,11 @@ export async function renderBuyerConsultationSlides(
       title:           r.section.title ?? "Your Home-Buying Plan",
       body:            r.narration.body,
       narrationScript: r.narration.script,
+      // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
+      // narration.script the avatar/voice-clone speaks (narrationScript above),
+      // never a second text (§6): CaptionLayer estimates timing from it when no
+      // real alignment cues are staged.
+      captionScript:   r.narration.script,
       agentName:       ctx.agentName,
       agentPhotoUrl:   ctx.agentPhotoUrl,
       avatarVideoUrl:  null,

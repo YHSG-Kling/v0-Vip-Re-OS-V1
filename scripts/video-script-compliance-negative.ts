@@ -50,14 +50,32 @@ const mutations: Mutation[] = [
   {
     id: "GATE-CARRIES-ALL-THREE-BLOCKS",
     file: "lib/video/script-compliance.ts",
-    // Repoint the table. A substring-presence check survives this; asserting
-    // the .from() construct does not.
-    apply: sub('.from("brand_voice_profile")', '.from("brand_voice_profile_GUTTED")'),
+    // WAVE 61: the gate no longer runs its own brand_voice_profile read (merged
+    // onto loadBrandVoicePrompt), so the old ".from(...)" repoint has no anchor.
+    // Gut the Fair Housing block DECLARATION instead — the guard asserts the
+    // construct (`const FAIR_HOUSING_BLOCK =`), so a renamed declaration must
+    // trip it while a bare substring test would not.
+    apply: sub("const FAIR_HOUSING_BLOCK =", "const FAIR_HOUSING_BLOCK_GUTTED ="),
   },
   {
-    id: "GATE-BRAND-VOICE-CHECKS-ERROR",
+    // Successor of GATE-BRAND-VOICE-CHECKS-ERROR (the private read's `error`
+    // destructure is gone): the cascade call must stay inside a try so an
+    // outage degrades to "no brand-voice block", never a thrown gate.
+    id: "GATE-BRAND-VOICE-CASCADE-FAILS-SAFE",
     file: "lib/video/script-compliance.ts",
-    apply: sub("const { data: bvp, error } = await supabase", "const { data: bvp } = await supabase"),
+    apply: sub(
+      '  try {\n    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")\n    result = await loadBrandVoicePrompt({ brokerageId })\n  } catch {\n    return ""\n  }',
+      '  {\n    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")\n    result = await loadBrandVoicePrompt({ brokerageId })\n  }',
+    ),
+  },
+  {
+    // A private brand_voice_profile read creeping back must trip the merge rule.
+    id: "GATE-NO-PRIVATE-BRAND-VOICE-READ",
+    file: "lib/video/script-compliance.ts",
+    apply: sub(
+      "    result = await loadBrandVoicePrompt({ brokerageId })",
+      '    result = await loadBrandVoicePrompt({ brokerageId })\n    await (globalThis as any).svc.from("brand_voice_profile").select("tone")',
+    ),
   },
   {
     id: "GATE-PRECHECK-FAIR-HOUSING-ONLY",

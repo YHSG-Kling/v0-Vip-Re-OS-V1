@@ -15,6 +15,8 @@
 import React from "react"
 import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface ProductPromoReelProps {
   hook: string
@@ -25,6 +27,15 @@ export interface ProductPromoReelProps {
   imageUrls?: string[]
   brand?: { primaryColor?: string; accentColor?: string; name?: string; tagline?: string }
   ctaDomain?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61 caption-consolidation
+   *  audit). Precomputed word-accurate cues built upstream from REAL alignment —
+   *  preferred. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text (composeProductVideoSpec's
+   *  own `script` — hook + beats + CTA, the SAME text this composition already
+   *  renders on screen, §6); CaptionLayer estimates timing in-composition when no
+   *  cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 /** Staggered word-by-word reveal — the "system thinking out loud" feel. */
@@ -105,7 +116,9 @@ const KenBurnsShot: React.FC<{ src: string; primary: string }> = ({ src, primary
   )
 }
 
-export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs, cta, brand, ctaDomain, imageUrls }) => {
+export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
+  hook, proofs, cta, brand, ctaDomain, imageUrls, captionsCues, captionScript,
+}) => {
   const primary = brand?.primaryColor ?? "#0F172A"
   const accent = brand?.accentColor ?? "#F59E0B"
   const name = (brand?.name ?? "VIP Agents").toUpperCase()
@@ -195,6 +208,15 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
           </div>
         </AbsoluteFill>
       </Sequence>
+
+      {/* NO CAPTION OVER THE CTA/DOMAIN TILE (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA scene at frame 330. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={accent}
+        hiddenFromFrame={330}
+      />
     </AbsoluteFill>
   )
 }

@@ -37,6 +37,8 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AffordabilityExample {
   /** Property address line — terse. */
@@ -75,6 +77,12 @@ export interface AffordabilitySnapshotReelProps {
   qrCaption?:     string
   mlsClean?:      boolean
   contextCues?: string[]
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from real narration alignment — preferred. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -158,7 +166,7 @@ const ExampleCard: React.FC<{
 export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps> = ({
   monthlyHeadline, areaName, period, examples, ratesAssumption,
   ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues, brand,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
 }) => {
   const frame     = useCurrentFrame()
   const showEho   = brand.showEhoMark ?? true
@@ -259,6 +267,15 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA/QR tile at COVER + PER * 3. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + PER * 3}
+      />
     </AbsoluteFill>
   )
 }

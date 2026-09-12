@@ -1096,6 +1096,15 @@ function aiVideoRealismSection() {
     // caption-cover-tile guarantee this list exists to enforce was silently
     // blind to it. Added, not a new build.
     "EquityReportReel",
+    // WAVE 61 CAPTION-CONSOLIDATION — the 8 of the owner's 11 flagged
+    // compositions that clip captions with hiddenFromFrame (the other 3 —
+    // BuyerConsultationSlide, ListingSectionReel, ListingPresentationSlide —
+    // use a conditional-render gate instead, since their branding tile is a
+    // separate "closing"/QR slide kind rather than a late Sequence; ListingPresentationSlide
+    // itself stays OUT of this host list — no live producer targets that
+    // compositionId, see finish-spec.ts's captions:false override).
+    "AffordabilitySnapshotReel", "AgentTalkingHeadReel", "CMAReel", "ComingSoonReel",
+    "JustListedReelHorizontal", "NewsletterDigestVideo", "OpenHouseAnnounceReel", "TestimonialReel",
   ]
   for (const id of CAPTION_HOSTS) {
     const file = VIDEO_COMPOSITION_FILES[id]
@@ -1103,6 +1112,94 @@ function aiVideoRealismSection() {
     const src = readStripped(file)
     check(`${id}: <CaptionLayer> passes hiddenFromFrame so captions never draw over the branding/CTA tile`,
       /<CaptionLayer[\s\S]{0,400}hiddenFromFrame=/.test(src))
+  }
+
+  // ── WAVE 61 CAPTION-CONSOLIDATION AUDIT ───────────────────────────────────
+  // finish-spec.ts's `captions: true` is a CLAIM about the composition; the
+  // only proof is the composition's own source actually carrying a caption
+  // reader. A scanner that cannot see stripped source would count the
+  // JSDoc/comment naming CaptionLayer as a hit (CLAUDE.md §2's tombstone
+  // trap) — readStripped() is used throughout, never raw text.
+  const hasCaptionSupport = (src: string): boolean =>
+    /<CaptionLayer[\s>]|buildCaptionPlan\(|\bcaptionScript\b|\bcaptionsCues\b|\bcaptionCues\b/.test(src)
+
+  // POSITIVE CONTROL — a specimen claiming captions with no caption reader at
+  // all MUST be caught by the same predicate the real loop below uses; a
+  // specimen that genuinely mounts CaptionLayer must NOT be caught.
+  check("CONTROL: hasCaptionSupport flags a specimen with no CaptionLayer/captionScript/captionsCues token",
+    !hasCaptionSupport(`export const FakeReel = () => <AbsoluteFill style={{ color: "red" }}>hi</AbsoluteFill>`))
+  check("CONTROL: hasCaptionSupport passes a specimen that genuinely mounts <CaptionLayer>",
+    hasCaptionSupport(`<CaptionLayer cues={c} script={s} accentColor={brand.accentColor} />`))
+
+  for (const [id, finish] of Object.entries(VIDEO_FINISH_SPEC)) {
+    if (!finish.captions) continue
+    const file = VIDEO_COMPOSITION_FILES[id]
+    if (!file) { check(`${id}: VIDEO_FINISH_SPEC declares captions:true but has no composition file registered to verify it against`, false); continue }
+    check(`${id}: VIDEO_FINISH_SPEC declares captions:true and the composition source actually carries CaptionLayer/buildCaptionPlan/captionScript/captionsCues`,
+      hasCaptionSupport(readStripped(file)))
+  }
+
+  // ── director-content.ts: every case this wave wired stages captionScript ──
+  // (never buildCaptionPlan/captionsCues here — this resolver has no TTS
+  // alignment at staging time, only the honest fallback script; see the
+  // per-case tombstone comments in lib/video/director-content.ts). Scoped to
+  // the cases this wave actually touched (not every case in the switch) so
+  // this proof does not newly accuse a pre-existing, out-of-scope gap
+  // (e.g. EquityReportReel/MarketUpdateReel/NeighborhoodSpotlightReel, carried
+  // unresolved from earlier waves) of a defect this lane was not asked to fix.
+  //
+  // Most of these cases stage captionScript INSIDE the shared pure builder
+  // (listingReelProps / comingSoonProps / openHouseProps / testimonialProps),
+  // not as inline case-body text (§6 — one place, reused by every case that
+  // calls it) — AgentTalkingHeadReel is the one case that sets it inline. So
+  // this checks each fact in the place it actually lives: the builder's own
+  // function body for captionScript, and the switch for still routing that
+  // case through the builder that owns it.
+  const directorSrc = readRaw("lib/video/director-content.ts")
+  const directorSrcStripped = readStripped("lib/video/director-content.ts")
+  // `function NAME(` … up to the next top-level `export function` — a bounded,
+  // unambiguous slice since every builder here is declared that way in file order.
+  const functionBody = (src: string, fnName: string): string | null => {
+    const m = new RegExp(`function ${fnName}\\([\\s\\S]*?\\n\\}`, "m").exec(src)
+    return m ? m[0] : null
+  }
+  // POSITIVE CONTROL — a specimen function with no captionScript token must be
+  // caught by the same extractor + predicate the real loop below uses.
+  const specimenFn = `function fakeProps(x) {\n  const out = {}\n  out.hook = x\n  return out\n}`
+  const specimenBody = functionBody(specimenFn, "fakeProps")
+  check("CONTROL: functionBody extracts the specimen's function body", !!specimenBody)
+  check("CONTROL: a specimen director builder with no captionScript token IS caught",
+    !!specimenBody && !/captionScript/.test(specimenBody))
+
+  // id → the builder function that resolves it, and whether captionScript is
+  // set INLINE in the switch case itself (AgentTalkingHeadReel) rather than
+  // inside a named builder.
+  const DIRECTOR_CAPTION_CASES: Array<{ id: string; builder: string | null }> = [
+    { id: "JustListedReel", builder: "listingReelProps" },
+    { id: "JustListedReelSquare", builder: "listingReelProps" },
+    { id: "JustListedReelHorizontal", builder: "listingReelProps" },
+    { id: "PhotoWalkthroughReel", builder: "listingReelProps" },
+    { id: "ComingSoonReel", builder: "comingSoonProps" },
+    { id: "OpenHouseAnnounceReel", builder: "openHouseProps" },
+    { id: "TestimonialReel", builder: "testimonialProps" },
+    { id: "AgentTalkingHeadReel", builder: null }, // inline in the case itself
+  ]
+  for (const { id, builder } of DIRECTOR_CAPTION_CASES) {
+    const file = VIDEO_COMPOSITION_FILES[id]
+    const mountsCaptionLayer = !!file && /<CaptionLayer[\s>]/.test(readStripped(file))
+    check(`${id}: composition mounts <CaptionLayer> (director-content.ts case is expected to feed it)`, mountsCaptionLayer)
+    check(`${id}: director-content.ts's case "${id}" is still wired to a captionScript-staging source`,
+      new RegExp(`case "${id}":`).test(directorSrcStripped))
+    if (builder) {
+      const body = functionBody(directorSrc, builder) ?? functionBody(directorSrcStripped, builder)
+      check(`${id}: its builder ${builder}() stages captionScript`, !!body && /captionScript/.test(body))
+      check(`${id}: its switch case actually calls ${builder}(`,
+        new RegExp(`case "${id}":[\\s\\S]{0,400}?${builder}\\(`).test(directorSrcStripped))
+    } else {
+      const inlineIdx = directorSrcStripped.indexOf(`case "${id}":`)
+      const window = inlineIdx === -1 ? "" : directorSrcStripped.slice(inlineIdx, inlineIdx + 400)
+      check(`${id}: its switch case stages captionScript inline`, /captionScript/.test(window))
+    }
   }
 
   // PURE — clipCaptionCuesBeforeFrame itself. POSITIVE CONTROL: a cue that

@@ -46,7 +46,9 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { BrollLayer } from "./_BrollLayer"
+import { CaptionLayer } from "./components/CaptionLayer"
 import { avatarFadeOutFrame } from "../lib/video/script-structure"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentTalkingHeadReelProps {
   /** Top hook label — short eyebrow (e.g. "MARKET UPDATE", "JUST LISTED",
@@ -92,6 +94,14 @@ export interface AgentTalkingHeadReelProps {
    * unaffected.
    */
   avatarDurationSeconds?: number | null
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. Distinct from the
+   *  static `caption` strip above (a single hand-picked line); these sync to the
+   *  FULL spoken narration across the BODY window. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw narration script text; CaptionLayer
+   *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -112,6 +122,7 @@ const OUTRO  = 2  * FPS
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
   voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips, avatarDurationSeconds,
+  captionsCues, captionScript,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -297,6 +308,19 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER SILENCE/BRANDING (wave 61, mirrors MarketUpdateReel.tsx):
+          the COVER tile is silent (no avatar/voiceover audio plays until BODY),
+          and the OUTRO CTA/QR tile must stay clean. Distinct from the static
+          `caption` strip above, which shows one hand-picked line for the whole
+          BODY — this syncs the FULL spoken narration when a script/cues are supplied. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        visibleFromFrame={COVER}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

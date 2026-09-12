@@ -357,6 +357,12 @@ Return ONLY the spoken text.${fix}`
         brokerageName: br?.name                ?? "Your Brokerage",
       },
       voiceoverUrl: voiceoverUrlStored,
+      // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
+      // compliance-gated `script` this route just synthesized into
+      // voiceoverUrlStored above (never a second text, §6). synthesizeSpeech
+      // here has no timestamped-alignment variant, so this is the honest
+      // fallback CaptionLayer estimates timing from.
+      captionScript: script,
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption:     "Scan to read",
     }

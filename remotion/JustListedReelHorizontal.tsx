@@ -30,6 +30,8 @@ import { Audio } from "@remotion/media"
 import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelHorizontalProps {
   hook:      string
@@ -56,6 +58,13 @@ export interface JustListedReelHorizontalProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to tour". */
   qrCaption?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. Same prop shape as the
+   *  sibling JustListedReel/JustListedReelSquare. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 const FPS    = 30
@@ -97,6 +106,7 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
 export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
+  captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const images   = imageUrls.slice(0, 2)
@@ -234,6 +244,15 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA tile at COVER + PHOTOS + FACTS. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + PHOTOS + FACTS}
+      />
     </AbsoluteFill>
   )
 }

@@ -23,6 +23,8 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface OpenHouseAnnounceReelProps {
   /** Property address line. */
@@ -54,6 +56,15 @@ export interface OpenHouseAnnounceReelProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to RSVP". */
   qrCaption?:    string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. render-just-listed already
+   *  stages both into input_props for every promo composition it selects
+   *  (buildCaptionPlan against voiceoverAlignment/script); this composition simply
+   *  had nowhere to draw them until now. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -73,7 +84,7 @@ const TOTAL  = COVER + BODY + CTA  // 360 frames = 12s
 export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   address, cityState, dateLabel, timeLabel, imageUrls, bodyLine,
   ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues,
-  qrCodeDataUrl, qrCaption, brand,
+  qrCodeDataUrl, qrCaption, brand, captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -219,6 +230,15 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA tile at COVER + BODY. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

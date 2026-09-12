@@ -32,6 +32,8 @@ import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { AvatarPIP } from "./components/AvatarPIP"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export type BuyerSlideKind =
   | "title"
@@ -85,6 +87,13 @@ export interface BuyerConsultationSlideProps {
   qrCodeDataUrl?: string | null
   qrCaption?:     string
   mlsClean?:      boolean
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL narration alignment — preferred. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw narration script text (the same text
+   *  the avatar speaks); CaptionLayer estimates timing in-composition when no
+   *  cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 const SURFACE_DEFAULT = "#FFFFFF"
@@ -93,7 +102,7 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
   kind, slideNumber, totalSlides, title, body, searchExamples,
   timelineLabels, heroImageUrl, bodyContent, avatarVideoUrl,
   avatarStartFrame, avatarEndFrame, agentPhotoUrl, agentName, brand,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
 }) => {
   const surface = brand.surfaceColor ?? SURFACE_DEFAULT
   const showEho = brand.showEhoMark ?? true
@@ -187,6 +196,13 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
       {kind === "closing" && (
         <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to get started"}
           primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
+      )}
+
+      {/* NO CAPTION OVER THE CLOSING SLIDE'S QR (wave 61, mirrors JustListedReel.tsx) —
+          every other slide kind speaks for its full duration with no late branding
+          reveal, so the caption runs the whole slide there. */}
+      {kind !== "closing" && (
+        <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
       )}
     </AbsoluteFill>
   )

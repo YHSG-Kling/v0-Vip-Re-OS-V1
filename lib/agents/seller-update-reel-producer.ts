@@ -317,6 +317,12 @@ export async function requestSellerUpdateReel(
     ...buildSellerUpdateReelProps(gathered.stats, { agentName, brokerageName, agentPhone, agentPhotoUrl }),
     listing_id: listingId,
     seller_contact_id: gathered.sellerContactId,
+    // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit): the SAME
+    // sellerScript the avatar is about to speak (below), so the burned-in
+    // caption cannot say something different from what is actually narrated —
+    // distinct from the short static `caption` line buildSellerUpdateReelProps
+    // sets above, which is a hand-picked headline for the whole BODY window.
+    captionScript: sellerScript,
   }
 
   // ── THE COMPANION SHARE CARD (§1.2) ────────────────────────────────────────

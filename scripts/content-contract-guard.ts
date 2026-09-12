@@ -424,6 +424,19 @@ console.log("\n═══ 8. Both enforcement points are wired ═══")
     gateAt > 0 && probeAt > gateAt)
 
   const director = code("lib/video/video-director.ts")
+  // WAVE 61 (integrator): BOTH Director doors run the resolver + the refusal.
+  // commissionVideoExperiment (hook A/B) staged chrome only until 2026-09-12 —
+  // every A/B variant of a real reel would have rendered Studio sample data as
+  // the client's facts, with the render-side backstop as the only defence.
+  // Assert the RULE (§2): the resolver call, the spread and the refusal each
+  // appear at least twice in the stripped Director source (main + experiment).
+  const countOf = (re: RegExp) => (director.match(re) ?? []).length
+  ok("BOTH Director doors (commissionVideo + commissionVideoExperiment) resolve real content props",
+    countOf(/resolveDirectorContentProps\(/g) >= 2)
+  ok("...and BOTH spread them into input_props", countOf(/input_props:\s*\{\s*\.\.\.contentProps/g) >= 2)
+  ok("...and BOTH refuse on missing content props", countOf(/missingContentProps\(format\.compositionId,\s*contentProps\)/g) >= 2)
+  ok("[positive control] a single-door specimen fails the two-door rule",
+    ((("input_props: { ...contentProps, intro }").match(/input_props:\s*\{\s*\.\.\.contentProps/g) ?? []).length) < 2)
   ok("commissionVideo resolves real content props", director.includes("resolveDirectorContentProps("))
   ok("...stages them into input_props", /input_props:\s*\{\s*\.\.\.contentProps/.test(director))
   ok("...and BLOCKS the commission when they could not be established",

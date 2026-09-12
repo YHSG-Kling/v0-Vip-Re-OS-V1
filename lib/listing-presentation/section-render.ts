@@ -250,6 +250,11 @@ export async function renderSectionsForPresentation(
       title:           s.title ?? "Your Listing Plan",
       bullets:         narration.bullets,
       narrationScript: narration.script,
+      // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
+      // script the avatar/voice-clone narrates (never a second text, §6), gated
+      // the same way seoHint below is: a held-for-review script is withheld from
+      // the caption too, not just the on-screen bullets a human hasn't cleared.
+      captionScript:   narration.heldForReview ? null : narration.script,
       agentName,
       avatarVideoUrl: null,
       voiceoverUrl:   null,

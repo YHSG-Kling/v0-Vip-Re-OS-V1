@@ -247,6 +247,14 @@ export function listingReelProps(l: ListingRow, hook: string): Record<string, un
   if (l.bathrooms != null) out.bathrooms = String(l.bathrooms)
   if (l.sqft != null && Number(l.sqft) > 0) out.sqft = Number(l.sqft).toLocaleString("en-US")
   const photos = photoUrlsOf(l); if (photos.length) out.imageUrls = photos
+  // SOUND-OFF CAPTIONS FALLBACK (wave 61 caption-consolidation audit): this
+  // resolver has no ElevenLabs alignment to build real captionsCues from (that
+  // is built at render time by the promo-composition/render-just-listed path,
+  // from real TTS alignment — see lib/video/caption-plan.ts buildCaptionPlan).
+  // Never invents new copy (this module's own rule, header above): the gated
+  // hook line is the one sentence already established for this commission, so
+  // it is the honest fallback script CaptionLayer estimates timing from.
+  if (out.hook) out.captionScript = out.hook
   return out
 }
 
@@ -286,6 +294,11 @@ export function comingSoonProps(l: ListingRow, id: DirectorIdentity): Record<str
     }
   }
   const photos = photoUrlsOf(l, 1); if (photos[0]) out.heroImageUrl = photos[0]
+  // SOUND-OFF CAPTIONS FALLBACK (wave 61) — the teaser IS the one sentence this
+  // builder already assembled from the listing's own facts; falls back to the
+  // agent's display name only when even that could not be built, so a caption
+  // is never fabricated from nothing.
+  out.captionScript = typeof out.teaser === "string" ? out.teaser : id.agentName
   return out
 }
 
@@ -324,6 +337,12 @@ export function openHouseProps(
   const body = (oh.description ?? l?.public_remarks ?? "").trim()
   if (body) out.bodyLine = body.split(/[.\n]/)[0].trim().slice(0, 120)
   if (l) { const photos = photoUrlsOf(l); if (photos.length) out.imageUrls = photos }
+  // SOUND-OFF CAPTIONS FALLBACK (wave 61) — bodyLine is the same on-screen
+  // sentence this builder already cut from the row's own description/remarks;
+  // falls back to the date+time headline (also real) when there is no body line.
+  out.captionScript = typeof out.bodyLine === "string"
+    ? out.bodyLine
+    : [out.dateLabel, out.timeLabel].filter((v): v is string => typeof v === "string").join(" · ") || id.agentName
   return out
 }
 
@@ -492,6 +511,10 @@ export function testimonialProps(r: ReviewRow, id: DirectorIdentity): Record<str
     }
   }
   if (r.rating != null && Number(r.rating) > 0) out.stars = Math.round(Number(r.rating))
+  // SOUND-OFF CAPTIONS FALLBACK (wave 61) — the quote IS the narration: this
+  // reel's entire premise is the client's own words on screen, so captioning
+  // anything else would caption a different sentence than the one displayed.
+  if (typeof out.quote === "string") out.captionScript = out.quote
   return out
 }
 
@@ -652,7 +675,11 @@ export async function resolveDirectorContentProps(
       }
 
       case "AgentTalkingHeadReel":
-        return { ...base, agentName: id.agentName, hook: args.hookLine, caption: args.hookLine }
+        // captionScript reuses the SAME gated hookLine as the static `caption`
+        // strip (§6 — one line, not two) — the honest fallback until this
+        // situational path has a fuller narration script to build real
+        // alignment-backed captionsCues from.
+        return { ...base, agentName: id.agentName, hook: args.hookLine, caption: args.hookLine, captionScript: args.hookLine }
 
       case "ExplainerAnimReel": {
         // The DRAWN explainer (concept_animation). Its entire fact set is the

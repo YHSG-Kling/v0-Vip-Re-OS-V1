@@ -1616,6 +1616,36 @@ export async function commissionVideoExperiment(
     }
     const hookLine = gated.hook
 
+    // 5b (wave 61, integrator). CONTENT FOR THIS VARIANT — the same resolver and
+    //    the same refusal the main commissionVideo path runs (its steps 6b/6c).
+    //    The experiment path staged CHROME ONLY (intro/outro/QR/mlsClean/music)
+    //    into input_props, so every A/B variant of a real listing, market update
+    //    or equity reel would have reached Remotion without one fact about its
+    //    subject and rendered the Studio sample data as the client's own. The
+    //    render-side contract (render-composition) would have cancelled the
+    //    render, but the manager would never have learned WHICH fact was
+    //    missing, and the QR + queue rows would already exist. One resolver
+    //    (lib/video/director-content.ts) and one contract (§6) for both doors.
+    const { resolveDirectorContentProps } = await import("@/lib/video/director-content")
+    const contentProps = await resolveDirectorContentProps(svc, situation, format.compositionId, {
+      brokerageId: opts.brokerageId,
+      agentUserId: opts.agentUserId,
+      listingId: opts.listingId ?? null,
+      contactId: opts.contactId ?? null,
+      hookLine,
+    })
+    const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+    const missingContent = missingContentProps(format.compositionId, contentProps)
+    if (missingContent.length > 0) {
+      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      return {
+        ok: false, status: "blocked",
+        experimentId, compositionId: format.compositionId,
+        reason: describeMissingContent(format.compositionId, missingContent),
+        violations: missingContent.map((m) => `content_prop_missing:${m}`),
+      }
+    }
+
     // Mint this variant's OWN tracked QR (idempotent per (entity, kind, variant) via
     // a variant-suffixed campaignId-free label — distinct QR so scans attribute per variant).
     let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
@@ -1673,6 +1703,7 @@ export async function commissionVideoExperiment(
     const providerMetadata = {
       composition_id: format.compositionId,
       input_props: {
+        ...contentProps,
         intro: introProps, outro: outroProps,
         // Flat outro-QR props (see the main path) — each A/B variant carries its OWN tracked QR.
         qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
