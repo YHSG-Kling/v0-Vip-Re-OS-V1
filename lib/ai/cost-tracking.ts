@@ -43,8 +43,8 @@ export function getModelPricing(): Record<AIModel, {
     // no chat surface routes to opus), but re-verified present in the
     // gateway's GatewayModelId union on 2026-09-12 (@ai-sdk/gateway).
     "claude-opus": {
-      input: 15.00,  // $15 per 1M input tokens
-      output: 75.00, // $75 per 1M output tokens
+      input: 5.00,   // $5 per 1M input tokens (Opus 4.6 — the $15/$75 rows were Opus 3/4 list)
+      output: 25.00, // $25 per 1M output tokens
       lastUpdated: "2026-09-12",
       source: "https://vercel.com/ai-gateway/models/claude-opus-4.6"
     },
@@ -86,8 +86,8 @@ export function getModelPricing(): Record<AIModel, {
 
     // google/gemini-2.5-pro
     "gemini-pro": {
-      input: 1.25,   // $1.25 per 1M input tokens
-      output: 5.00,  // $5 per 1M output tokens
+      input: 1.25,   // $1.25 per 1M input tokens (≤200K prompt tier)
+      output: 10.00, // $10 per 1M output tokens (Gemini 2.5 Pro — the $5 row was 1.5 Pro list)
       lastUpdated: "2026-09-12",
       source: "https://vercel.com/ai-gateway/models/gemini-2.5-pro"
     },
@@ -104,14 +104,14 @@ export function getModelPricing(): Record<AIModel, {
       input: 1.00,   // $1 per 1M input tokens
       output: 1.00,  // $1 per 1M output tokens
       lastUpdated: "2026-09-12",
-      source: "https://vercel.com/ai-gateway/models/perplexity-sonar"
+      source: "https://vercel.com/ai-gateway/models/sonar (provider rate: docs.perplexity.ai/docs/pricing)"
     },
     // perplexity/sonar-pro
     "perplexity-sonar-pro": {
       input: 3.00,   // $3 per 1M input tokens
       output: 15.00, // $15 per 1M output tokens
       lastUpdated: "2026-09-12",
-      source: "https://vercel.com/ai-gateway/models/perplexity-sonar-pro"
+      source: "https://vercel.com/ai-gateway/models/sonar-pro (provider rate: docs.perplexity.ai/docs/pricing)"
     }
   }
 }
