@@ -118,7 +118,8 @@ export function platformReservedHosts(): string[] {
 }
 
 /** PURE: apex = exactly two labels (foo.com). Multi-label hosts get CNAME advice. */
-export function isApexDomain(domain: string): boolean {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isApexDomain(domain: string): boolean {
   return domain.split(".").length === 2
 }
 
@@ -343,7 +344,7 @@ export async function reportCustomDomainOutcome(params: {
       await publishManagerSignal({
         brokerageId: params.brokerageId,
         fromManager: "data_steward",
-        toManager: "marketing_agent",
+        toManager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
         signalType: params.outcome === "verified" ? "custom_domain_verified" : "custom_domain_error",
         message: params.outcome === "verified"
           ? `Custom domain ${params.domain} is verified and LIVE — the white-label site now serves on it.`

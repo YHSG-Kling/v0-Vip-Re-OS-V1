@@ -4,7 +4,7 @@ import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Sparkles, Route, Clock, AlertTriangle, CheckCircle2 } from "lucide-react"
+import { Sparkles, Route, AlertTriangle, CheckCircle2 } from "lucide-react"
 import { optimizeDailySchedule } from "@/app/actions/ai-calendar-management"
 import type { UnifiedCalendarEvent } from "./calendar-shell"
 

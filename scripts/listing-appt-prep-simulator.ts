@@ -31,9 +31,17 @@
  *     executors (NO D-ID / AVM / CMA spend); run the chain via the real engine;
  *   - assert: steps execute in order and the run COMPLETES; the human-gate branch
  *     pauses then resumes on approval; run-dedupe returns the SAME run (deduped) for
- *     a second start with the same (chain, entity, trigger); the drip-enrollment
- *     activities rows are created; the seller portal card is pushed exactly once;
+ *     a second start with the same (chain, entity, trigger); EVERY CHAPTER REEL IS
+ *     LINKED TO A SECTION OF THE SELLER DRIP (and no scheduled_video_touchpoint
+ *     activity is written any more); the seller portal card is pushed exactly once;
  *   - then reverse-delete every seeded row and verify cleanup count == 0.
+ *
+ * WHY THE FAKE LEAVES RETURN REAL IDs. enroll_drip is REAL orchestration — it
+ * attaches the chapter reels to presentation_sections, which requires a real
+ * listing_presentations row and real ai_video_projects rows. The leaves are
+ * still fake (nothing is rendered and no provider is called); the rows they
+ * return are seeded by this harness so the drip enrollment under test operates
+ * on the same shapes production gives it.
  *
  * Run:  npx tsx scripts/listing-appt-prep-simulator.ts   (npm run test:listing-appt-prep)
  */
@@ -155,7 +163,18 @@ async function testLive() {
   const TAG = `__lappt_${Date.now()}__`
   const cleanup: Array<{ table: string; column: string; value: string }> = []
   let contactId: string | null = null
-  const fakeVideoIds = ["vid-fake-1", "vid-fake-2", "vid-fake-3"]
+
+  // The leaves are fake (no D-ID / AVM / CMA spend) but the rows they hand back
+  // are REAL, because enroll_drip — the orchestration under test — links each
+  // chapter reel to a section of a real listing presentation. Filled in below,
+  // before the first startRun; the closures read them at call time.
+  const FAKE_CHAPTERS = [
+    { title: "Why Me",    focus: "credibility" },
+    { title: "Pricing",   focus: "pricing_strategy" },
+    { title: "Marketing", focus: "marketing" },
+  ]
+  let seededPresentationId: string | null = null
+  let seededVideoIds: string[] = []
 
   // Inject the three money-spending leaves. The orchestration around them is REAL.
   let cmaCalls = 0, presCalls = 0, videoCalls = 0
@@ -165,14 +184,14 @@ async function testLive() {
       presCalls++
       return {
         success: true,
-        presentationId: `${TAG}-pres`,
-        chapters: [{ title: "Why Me" }, { title: "Pricing" }, { title: "Marketing" }],
+        presentationId: seededPresentationId,
+        chapters: FAKE_CHAPTERS,
         content: "fake presentation content",
       }
     },
     generateChapterVideos: async () => {
       videoCalls++
-      return { success: true, videoIds: fakeVideoIds, chapterTitles: ["Why Me", "Pricing", "Marketing"] }
+      return { success: true, videoIds: seededVideoIds, chapterTitles: FAKE_CHAPTERS.map((c) => c.title) }
     },
   })
 
@@ -214,6 +233,40 @@ async function testLive() {
       },
     }
 
+    // Seed the presentation the fake generatePresentation "produced". Real row:
+    // enroll_drip materializes its seller-safe sections and links the reels to
+    // them. Deleting it cascades presentation_sections (m179 FK).
+    const { data: presRow, error: presErr } = await svc.from("listing_presentations").insert({
+      brokerage_id: brokerageId, agent_user_id: agentUserId, contact_id: contactId,
+      state: "FL", property_address: `${TAG} 742 Evergreen Ter`,
+      appointment_at: apptDate, status: "ready",
+    }).select("id").single()
+    check("seed listing_presentations for the drip", !presErr && !!presRow, presErr?.message)
+    if (!presRow) throw new Error("presentation seed failed")
+    seededPresentationId = (presRow as any).id as string
+    cleanup.push({ table: "listing_presentations", column: "id", value: seededPresentationId })
+    // Materializing the sections also queues their Remotion section reels
+    // (entity_type='listing_presentation', entity_id=the presentation). Those do
+    // not cascade — pushed AFTER the presentation so the reverse-delete removes
+    // them FIRST (presentation_sections.render_id is ON DELETE SET NULL).
+    cleanup.push({ table: "remotion_composition_renders", column: "entity_id", value: seededPresentationId })
+
+    // Seed the chapter reels the fake generator "queued". Real ai_video_projects
+    // rows: the drip stores their ids and resolves the playable URL at DELIVERY
+    // time, so 'queued' here is exactly the state production is in at this point.
+    // agent_id is agents-class (m366) — the agents row resolved above.
+    const { data: vidRows, error: vidErr } = await svc.from("ai_video_projects").insert(
+      FAKE_CHAPTERS.map((ch, i) => ({
+        brokerage_id: brokerageId, agent_id: (agent as any).id, contact_id: contactId,
+        title: `${TAG} ${ch.title}`, video_type: "presentation_chapter", status: "queued",
+        usage_intent: "public_marketing", audience_type: "customer_facing",
+        video_metadata: { chapter_index: i, chapter_title: ch.title, presentation_id: seededPresentationId },
+      })),
+    ).select("id")
+    check("seed chapter reel rows", !vidErr && (vidRows ?? []).length === FAKE_CHAPTERS.length, vidErr?.message)
+    seededVideoIds = ((vidRows ?? []) as Array<{ id: string }>).map((v) => v.id)
+    for (const vid of seededVideoIds) cleanup.push({ table: "ai_video_projects", column: "id", value: vid })
+
     // (A) Run the REAL chain (auto-completes; default executors are injected fakes).
     const r1 = await startRun({
       chainKey: listingApptPrepChain.key,
@@ -235,15 +288,38 @@ async function testLive() {
     check("every step reached status=done", stepList.every((s) => s.status === "done"),
       stepList.map((s) => `${s.step_key}:${s.status}`).join(","))
 
-    // (B) Drip enrollment — one activity per chapter video.
-    const { data: drips } = await svc.from("activities")
-      .select("id, activity_type, metadata, scheduled_for")
+    // (B) Drip enrollment — every chapter reel is linked to a SECTION of the
+    //     seller drip, so each one goes out as its own email on the timetable
+    //     that ends before the appointment. There is one scheduler and one
+    //     delivery path; the writer-less activities touchpoints are gone.
+    const { data: sections } = await svc.from("presentation_sections")
+      .select("id, section_key, section_order, status, channel, price_withheld, scheduled_for, body")
+      .eq("presentation_id", seededPresentationId).order("section_order")
+    const secList = (sections ?? []) as Array<{ section_key: string; status: string; channel: string; price_withheld: boolean; scheduled_for: string; body: any }>
+    check("drip sections materialized for the presentation", secList.length >= 3, `got ${secList.length}`)
+    check("every section is scheduled + seller-safe",
+      secList.every((s) => s.status === "scheduled" && s.price_withheld === true))
+    check("every section is scheduled BEFORE the appointment",
+      secList.every((s) => new Date(s.scheduled_for).getTime() <= new Date(apptDate).getTime()))
+    check("every section asks for the email channel", secList.every((s) => s.channel === "both" || s.channel === "email"))
+
+    const linked = secList.filter((s) => !!s.body?.chapter_video?.ai_video_project_id)
+    check("one chapter reel linked per seeded video", linked.length === seededVideoIds.length, `got ${linked.length}`)
+    check("each reel is linked to a DISTINCT section (one reel per email)",
+      new Set(linked.map((s) => s.body.chapter_video.ai_video_project_id)).size === seededVideoIds.length)
+    check("the links point at the real ai_video_projects rows",
+      linked.every((s) => seededVideoIds.includes(s.body.chapter_video.ai_video_project_id)))
+    check("known chapter focuses landed on their matching sections",
+      linked.some((s) => s.section_key === "credibility") &&
+      linked.some((s) => s.section_key === "cma") &&
+      linked.some((s) => s.section_key === "marketing"),
+      linked.map((s) => s.section_key).join(","))
+
+    // The dead end is gone: nothing writes scheduled_video_touchpoint any more.
+    const { count: deadTouchpoints } = await svc.from("activities")
+      .select("id", { count: "exact", head: true })
       .eq("contact_id", contactId).eq("activity_type", "scheduled_video_touchpoint")
-    const dripList = (drips ?? []) as Array<{ metadata: any; scheduled_for: string }>
-    check("drip enrolled one touchpoint per chapter video", dripList.length === fakeVideoIds.length, `got ${dripList.length}`)
-    check("drip touchpoints carry the chain_run_id + video_id", dripList.every((d) => d.metadata?.chain_run_id === runId && !!d.metadata?.video_id))
-    check("drip touchpoints scheduled before the appointment",
-      dripList.every((d) => new Date(d.scheduled_for).getTime() <= new Date(apptDate).getTime()))
+    check("NO writer-less scheduled_video_touchpoint activities are written", (deadTouchpoints ?? 0) === 0, `got ${deadTouchpoints}`)
 
     // (C) Seller portal value card pushed exactly once (the flywheel).
     const { data: cards } = await svc.from("transparency_updates")
@@ -301,9 +377,17 @@ async function testLive() {
 
         const g2 = await approveStep({ runId: g1.runId!, stepKey: "generate_cma" })
         check("approving the gate resumes the chain to completion", g2.success && g2.status === "completed", `${g2.status} ${g2.error ?? ""}`)
-        const { data: gdrips } = await svc.from("activities")
-          .select("id").eq("contact_id", gateContactId).eq("activity_type", "scheduled_video_touchpoint")
-        check("resumed run completed the drip enrollment", (gdrips ?? []).length === fakeVideoIds.length)
+        // The resumed run re-enrolls against the SAME presentation. Attachment is
+        // idempotent: each reel keeps the section it already has — a re-run must
+        // never duplicate or reshuffle a touch the seller may have received.
+        const { data: gsections } = await svc.from("presentation_sections")
+          .select("section_key, body").eq("presentation_id", seededPresentationId!)
+        const gLinked = ((gsections ?? []) as Array<{ section_key: string; body: any }>)
+          .filter((s) => !!s.body?.chapter_video?.ai_video_project_id)
+        check("resumed run completed the drip enrollment without duplicating reels",
+          gLinked.length === seededVideoIds.length &&
+          new Set(gLinked.map((s) => s.body.chapter_video.ai_video_project_id)).size === seededVideoIds.length,
+          `linked=${gLinked.length}`)
       } finally {
         cmaStep.requiresApproval = original
       }

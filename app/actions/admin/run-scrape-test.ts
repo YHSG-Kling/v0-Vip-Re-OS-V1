@@ -7,6 +7,30 @@
  * CRON_SECRET is a server-only env var — never expose it client-side via
  * NEXT_PUBLIC_. This action keeps the secret on the server and returns
  * the same JSON shape as /api/admin/scrape-test.
+ *
+ * ─── /api/admin/scrape-test WAS NOT RETIRED (wave 14) ────────────────────────
+ * A route census paired that route with this action and marked it for deletion.
+ * Left in place, for two independent reasons:
+ *   1. OWNER FENCE — "any lead scrapping needs to be left alone." The route is a
+ *      DIAGNOSTIC (dry_run: true; it writes nothing to raw_scraped_leads and no
+ *      file under lib/lead-pipeline/** changes either way), so collapsing it
+ *      would not alter scraper behaviour — but it is inside the fenced surface
+ *      and the fence is the owner's, not a lane's, to move.
+ *   2. DIFFERENT DOORS, NOT DUPLICATE DOORS. The route authorizes on
+ *      `Bearer CRON_SECRET`; this action authorizes on an admin/broker SESSION.
+ *      A secret-bearer door is by definition addressable from outside this repo
+ *      (a runbook curl, an ops check, the cron's own operator). Nothing here can
+ *      prove no such caller exists. UNRESOLVED (CLAUDE.md §1).
+ *
+ * Both halves are currently unwired — this action has no caller either. The
+ * doctrine's answer to that is BUILD the missing half (an admin surface that
+ * calls this action), not delete one of the two doors.
+ *
+ * FOUND, NOT FIXED: the gate below admits any tenant admin/broker and then reads
+ * `lead_scraping_markets` by id with NO brokerage predicate (line ~45), even
+ * though the select pulls `brokerage_id`. A brokerage admin can preview another
+ * tenant's market, its territory phrases and its budget burn. Fenced surface —
+ * reported rather than changed.
  */
 
 import { ZenrowsClient, BatchDataClient } from '@/lib/external'
@@ -16,6 +40,7 @@ import {
   isViableRecord,
 } from '@/lib/lead-pipeline/raw-record-types'
 import { createClient } from '@/lib/supabase/server'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function runScrapeTestAction(marketId: string, source: string) {
   const supabase = await createClient()
@@ -33,7 +58,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     .eq('id', user.id)
     .maybeSingle()
 
-  if (!userRow || !['superadmin', 'admin'].includes(userRow.user_type ?? '')) {
+  if (!userRow || !isAdminOrBroker({ user_type: userRow.user_type ?? '' })) {
     return { error: 'Forbidden', status: 403 }
   }
 

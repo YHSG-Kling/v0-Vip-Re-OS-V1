@@ -4,6 +4,7 @@ import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { DollarSign, CheckCircle2 } from "lucide-react"
+import { usd } from "@/lib/format/money"
 
 interface FinancialMeaningCardProps {
   financeType?: string | null
@@ -30,14 +31,10 @@ function getReadinessNote(personaTone?: string, isCashBuyer?: boolean): string {
   return "You're financially prepared for this step."
 }
 
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
+// `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+// (imported above).
+const formatCurrency = usd
 
 export function FinancialMeaningCard({
   financeType,

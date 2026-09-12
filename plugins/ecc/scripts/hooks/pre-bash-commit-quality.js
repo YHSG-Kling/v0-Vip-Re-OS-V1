@@ -21,6 +21,104 @@ const fs = require('fs');
 
 const MAX_STDIN = 1024 * 1024; // 1MB limit
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE CANONICAL COMMENT SCANNER  (CLAUDE.md §2 "Measurement discipline")
+//
+// The console.log and debugger checks below used to be a naive per-line prefix
+// test:
+//
+//     line.includes('console.log') && !line.trim().startsWith('//')
+//                                  && !line.trim().startsWith('*')
+//
+// That is blind in BOTH directions, and measured on this tree it was wrong in
+// both at once:
+//
+//   OVER-reports — it flagged `foo() // console.log(x)` (a TRAILING comment),
+//     every line of a `/* … */` block whose continuation lines do not begin
+//     with a star, and `const s = "console.log"` inside a plain STRING. On the
+//     5,428 checkable files here that was 10,737 console.log "findings", a
+//     number nobody could act on and therefore nobody read.
+//
+//   UNDER-reports — any line whose trim begins with a star was skipped
+//     outright, so live code sharing a line with a block-comment CLOSE
+//     (`*/ console.log(x)`) was invisible to it.
+//
+// So it does not go quiet when it is wrong; it goes confidently wrong. The
+// repo's ruling is that comment removal happens in exactly ONE module,
+// scripts/strip-comments.ts, and this hook now routes through it rather than
+// growing a private approximation of it (which would be the duplicate CLAUDE.md
+// §1 forbids).
+//
+// WHY blankStrings AND NOT stripComments
+//   All three exports preserve newlines, so all three keep the line numbers this
+//   hook reports via `content.split('\n')` indexing — that alone does not choose
+//   between them. blankStrings is the only one that ALSO blanks string and
+//   template CONTENTS, which is what stops `const s = "console.log"` from being
+//   read as a call. stripComments would leave that literal intact and the string
+//   false positive would survive the conversion.
+//
+// WHY THE SECRET AND TODO CHECKS STILL READ THE RAW LINE
+//   Blanking string contents is exactly wrong for them. A hardcoded credential
+//   lives INSIDE a quoted literal — that is what a hardcoded credential IS — so
+//   handing those checks string-blanked text would blind the secret scanner
+//   completely: the §2 failure this conversion exists to end, re-introduced one
+//   check to the left. TODO/FIXME is the same shape in reverse: the comment is
+//   the SUBJECT of that check, so it must be able to see comments. Both keep the
+//   raw line, deliberately.
+//
+// LOADING IT FROM A HOOK
+//   This file is CommonJS and ships inside a plugin; strip-comments.ts is
+//   TypeScript that lives in the repo being committed to. Node strips types from
+//   a required .ts natively (v22.18+), so the import is a plain require() of the
+//   file resolved from the working directory upward — no build step, no vendored
+//   copy. When it cannot be loaded (older Node, or a repo that does not carry
+//   the scanner) the two comment-sensitive checks are SKIPPED AND SAID TO BE
+//   SKIPPED. They are never silently downgraded to the naive test, because
+//   "nobody checked" must not render as "checked and fine" (CLAUDE.md §4).
+// ─────────────────────────────────────────────────────────────────────────────
+const CANONICAL_SCANNER = path.join('scripts', 'strip-comments.ts');
+
+let scannerCache; // undefined = not attempted, null = unavailable
+let scannerProblem = 'scripts/strip-comments.ts not found from the working directory';
+
+function loadCommentScanner() {
+  if (scannerCache !== undefined) {
+    return scannerCache;
+  }
+  scannerCache = null;
+
+  let dir = process.cwd();
+  for (let hops = 0; hops < 24; hops++) {
+    const candidate = path.join(dir, CANONICAL_SCANNER);
+    if (fs.existsSync(candidate)) {
+      try {
+        const mod = require(candidate);
+        if (typeof mod.blankStrings === 'function') {
+          scannerCache = mod;
+          scannerProblem = null;
+        } else {
+          scannerProblem = `${candidate} does not export blankStrings`;
+        }
+      } catch (err) {
+        // Most likely a Node without native TypeScript type stripping.
+        scannerProblem = `${candidate} could not be loaded: ${err.message.split('\n')[0]}`;
+      }
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return scannerCache;
+}
+
+/** Why the scanner is unavailable, or null once it has loaded successfully. */
+function commentScannerProblem() {
+  loadCommentScanner();
+  return scannerProblem;
+}
+
 /**
  * Detect staged files for commit
  * @returns {string[]} Array of staged file paths
@@ -57,79 +155,109 @@ function shouldCheckFile(filePath) {
   return checkableExtensions.some(ext => filePath.endsWith(ext));
 }
 
+// Basic hardcoded-secret patterns. These run against the RAW line on purpose —
+// see the header note: a key lives inside a quoted literal, so comment-stripped
+// or string-blanked text cannot see one.
+const SECRET_PATTERNS = [
+  { pattern: /sk-[a-zA-Z0-9]{20,}/, name: 'OpenAI API key' },
+  { pattern: /ghp_[a-zA-Z0-9]{36}/, name: 'GitHub PAT' },
+  { pattern: /AKIA[A-Z0-9]{16}/, name: 'AWS Access Key' },
+  { pattern: /api[_-]?key\s*[=:]\s*['"][^'"]+['"]/i, name: 'API key' }
+];
+
 /**
- * Find issues in file content
- * @param {string} filePath 
+ * Find issues in a file's CONTENT.
+ *
+ * Exported so the positive control can drive the real detector directly rather
+ * than a copy of it — a fixture that exercises a re-typed version of the check
+ * proves nothing about the check that ships.
+ *
+ * @param {string} content
  * @returns {object[]} Array of issues found
  */
-function findFileIssues(filePath) {
+function findContentIssues(content) {
   const issues = [];
-  
-  try {
-    const content = getStagedFileContent(filePath);
-    if (content === null || content === undefined) {
-      return issues;
+  const rawLines = content.split('\n');
+
+  // One scan of the WHOLE file, not per line: block comments and template
+  // literals span lines, and a per-line view cannot see either. blankStrings
+  // preserves every newline, so codeLines[i] is still line i+1 of the file and
+  // the line numbers reported below still match the file on disk.
+  const scanner = loadCommentScanner();
+  const codeLines = scanner ? scanner.blankStrings(content).split('\n') : null;
+
+  rawLines.forEach((line, index) => {
+    const lineNum = index + 1;
+    // Comments removed and string CONTENTS blanked. null when the canonical
+    // scanner is unavailable, in which case these two checks do not run at all
+    // rather than falling back to a test that cannot see what it is judging.
+    const code = codeLines === null ? null : (codeLines[index] || '');
+
+    // Check for console.log — live code only.
+    if (code !== null && code.includes('console.log')) {
+      issues.push({
+        type: 'console.log',
+        message: `console.log found at line ${lineNum}`,
+        line: lineNum,
+        severity: 'warning'
+      });
     }
-    const lines = content.split('\n');
-    
-    lines.forEach((line, index) => {
-      const lineNum = index + 1;
-      
-      // Check for console.log
-      if (line.includes('console.log') && !line.trim().startsWith('//') && !line.trim().startsWith('*')) {
+
+    // Check for debugger statements — live code only.
+    if (code !== null && /\bdebugger\b/.test(code)) {
+      issues.push({
+        type: 'debugger',
+        message: `debugger statement at line ${lineNum}`,
+        line: lineNum,
+        severity: 'error'
+      });
+    }
+
+    // Check for TODO/FIXME without issue reference. RAW line: the comment is
+    // the subject of this check, so stripped text would have nothing to match.
+    const todoMatch = line.match(/\/\/\s*(TODO|FIXME):?\s*(.+)/);
+    if (todoMatch && !todoMatch[2].match(/#\d+|issue/i)) {
+      issues.push({
+        type: 'todo',
+        message: `TODO/FIXME without issue reference at line ${lineNum}: "${todoMatch[2].trim()}"`,
+        line: lineNum,
+        severity: 'info'
+      });
+    }
+
+    // Check for hardcoded secrets. RAW line: a key is string CONTENT, which is
+    // exactly what blankStrings blanks.
+    for (const { pattern, name } of SECRET_PATTERNS) {
+      if (pattern.test(line)) {
         issues.push({
-          type: 'console.log',
-          message: `console.log found at line ${lineNum}`,
-          line: lineNum,
-          severity: 'warning'
-        });
-      }
-      
-      // Check for debugger statements
-      if (/\bdebugger\b/.test(line) && !line.trim().startsWith('//')) {
-        issues.push({
-          type: 'debugger',
-          message: `debugger statement at line ${lineNum}`,
+          type: 'secret',
+          message: `Potential ${name} exposed at line ${lineNum}`,
           line: lineNum,
           severity: 'error'
         });
       }
-      
-      // Check for TODO/FIXME without issue reference
-      const todoMatch = line.match(/\/\/\s*(TODO|FIXME):?\s*(.+)/);
-      if (todoMatch && !todoMatch[2].match(/#\d+|issue/i)) {
-        issues.push({
-          type: 'todo',
-          message: `TODO/FIXME without issue reference at line ${lineNum}: "${todoMatch[2].trim()}"`,
-          line: lineNum,
-          severity: 'info'
-        });
-      }
-      
-      // Check for hardcoded secrets (basic patterns)
-      const secretPatterns = [
-        { pattern: /sk-[a-zA-Z0-9]{20,}/, name: 'OpenAI API key' },
-        { pattern: /ghp_[a-zA-Z0-9]{36}/, name: 'GitHub PAT' },
-        { pattern: /AKIA[A-Z0-9]{16}/, name: 'AWS Access Key' },
-        { pattern: /api[_-]?key\s*[=:]\s*['"][^'"]+['"]/i, name: 'API key' }
-      ];
-      
-      for (const { pattern, name } of secretPatterns) {
-        if (pattern.test(line)) {
-          issues.push({
-            type: 'secret',
-            message: `Potential ${name} exposed at line ${lineNum}`,
-            line: lineNum,
-            severity: 'error'
-          });
-        }
-      }
-    });
+    }
+  });
+
+  return issues;
+}
+
+/**
+ * Find issues in a staged file
+ * @param {string} filePath
+ * @returns {object[]} Array of issues found
+ */
+function findFileIssues(filePath) {
+  try {
+    const content = getStagedFileContent(filePath);
+    if (content === null || content === undefined) {
+      return [];
+    }
+    return findContentIssues(content);
   } catch {
     // File not readable, skip
+    return [];
   }
-  
-  return issues;
 }
 
 /**
@@ -333,7 +461,19 @@ function evaluate(rawInput) {
     }
     
     console.error(`[Hook] Checking ${stagedFiles.length} staged file(s)...`);
-    
+
+    // Say so when the console.log/debugger scan cannot run. A guard that reports
+    // nothing because it could not look must not read as a clean bill of health
+    // (CLAUDE.md §2, §4). This is a notice, not a block: the hook still runs its
+    // secret, TODO and linter checks, and refusing every commit in a repo that
+    // does not carry the canonical scanner would be a worse failure than saying
+    // plainly which check was skipped.
+    if (!loadCommentScanner()) {
+      console.error(`[Hook] NOTICE: console.log/debugger scan SKIPPED — ${commentScannerProblem()}.`);
+      console.error('[Hook]         Those two checks report nothing because they did not run,');
+      console.error('[Hook]         not because the staged files are clean.');
+    }
+
     // Check each staged file
     const filesToCheck = stagedFiles.filter(shouldCheckFile);
     let totalIssues = 0;
@@ -444,4 +584,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, evaluate };
+module.exports = { run, evaluate, findContentIssues, loadCommentScanner, commentScannerProblem };

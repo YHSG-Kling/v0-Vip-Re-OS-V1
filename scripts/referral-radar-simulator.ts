@@ -45,17 +45,19 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
 
   console.log("\n[Layer 1 · gating + detection + both-outputs framing]")
-  check("isPastClient: contact_type past_client → true", isPastClient({ contact_type: "past_client", nurture_status: null }))
+  check("isPastClient: canonical lifetime_customer → true", isPastClient({ contact_type: "lifetime_customer", nurture_status: null }))
+  check("isPastClient: the RETIRED spelling past_client still reads true (readers stay tolerant)",
+    isPastClient({ contact_type: "past_client", nurture_status: null }))
   check("isPastClient: nurture_status closed → true", isPastClient({ contact_type: "buyer", nurture_status: "closed" }))
   check("isPastClient: plain lead → false", !isPastClient({ contact_type: "lead", nurture_status: null }))
   check("isWithdrawn: nurture_status withdrawn → true", isWithdrawn({ nurture_status: "withdrawn" }))
 
-  const baby: RadarContact = { id: "x", first_name: "Jane", contact_type: "past_client", last_life_event_detected: fresh, life_events: [{ type: "new_baby" }] }
+  const baby: RadarContact = { id: "x", first_name: "Jane", contact_type: "lifetime_customer", last_life_event_detected: fresh, life_events: [{ type: "new_baby" }] }
   const evBaby = detectLifeEvent(baby, now)
   check("detect: fresh new_baby signal → new_baby event with angle + client hook",
     evBaby?.type === "new_baby" && !!evBaby?.angle && evBaby!.clientHook.toLowerCase().includes("family"))
 
-  const staleBaby: RadarContact = { id: "x", first_name: "Jane", contact_type: "past_client", last_life_event_detected: stale, life_events: [{ type: "new_baby" }] }
+  const staleBaby: RadarContact = { id: "x", first_name: "Jane", contact_type: "lifetime_customer", last_life_event_detected: stale, life_events: [{ type: "new_baby" }] }
   check("detect: a STALE life-event stamp does NOT fire the scraped event (no old news)",
     detectLifeEvent(staleBaby, now)?.type !== "new_baby")
 
@@ -65,7 +67,7 @@ async function main() {
   const primed: RadarContact = { id: "x", first_name: "Lee", contact_type: "sphere", referral_score: 88 }
   check("detect: high referral_score → referral_primed", detectLifeEvent(primed, now)?.type === "referral_primed")
 
-  const nothing: RadarContact = { id: "x", first_name: "Pat", contact_type: "past_client", equity_estimate: 1000, referral_score: 5 }
+  const nothing: RadarContact = { id: "x", first_name: "Pat", contact_type: "lifetime_customer", equity_estimate: 1000, referral_score: 5 }
   check("detect: NO real signal → null (never fabricates an event)", detectLifeEvent(nothing, now) === null)
 
   const touch = composeReferralTouch("Jane", evBaby!)
@@ -100,7 +102,7 @@ async function main() {
     // so resolveResponsibleAgentUserId can reach the agent's users.id for the nudge.
     const { data: pc } = await svc.from("contacts").insert({
       brokerage_id: brokerageId, first_name: `${TAG}`, last_name: "PastClient",
-      contact_type: "past_client", agent_id: agentRowId,
+      contact_type: "lifetime_customer", agent_id: agentRowId,
       last_life_event_detected: fresh, life_events: [{ type: "new_baby" }],
     }).select("id").single()
     cleanup.push({ table: "contacts", id: (pc as any).id })
@@ -108,7 +110,7 @@ async function main() {
     // A WITHDRAWN past client with the SAME fresh signal — must get NEITHER output.
     const { data: wc } = await svc.from("contacts").insert({
       brokerage_id: brokerageId, first_name: `${TAG}W`, last_name: "Withdrawn",
-      contact_type: "past_client", nurture_status: "withdrawn", agent_id: agentRowId,
+      contact_type: "lifetime_customer", nurture_status: "withdrawn", agent_id: agentRowId,
       last_life_event_detected: fresh, life_events: [{ type: "new_baby" }],
     }).select("id").single()
     cleanup.push({ table: "contacts", id: (wc as any).id })

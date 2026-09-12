@@ -29,8 +29,8 @@ export async function acceptAIISAHandoff(params: {
   // ── AUTH GATE ────────────────────────────────────────────────────────────
   // Two valid callers:
   //   1. UI (session-authenticated agent/broker) — verify ctx.brokerageId
-  //   2. Trusted server-to-server (e.g. VAPI webhook route, already verified
-  //      via VAPI_WEBHOOK_SECRET) — actorUserId === 'system' AND CRON_SECRET
+  //   2. Trusted server-to-server (e.g. the Twilio voice webhook routes, which
+  //      verify their own signature) — actorUserId === 'system' AND CRON_SECRET
   //      is configured (proves we're in a real deploy, not an open endpoint).
   const ctx = await getAgentContext()
   const isSystemCaller =

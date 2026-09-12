@@ -11,6 +11,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { 
   ArrowLeft,
   Check,
@@ -21,6 +23,10 @@ import {
   Calendar,
   AlertTriangle,
 } from 'lucide-react'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { WelcomeMessageCard } from "./welcome-message-card"
+import { CertifyAgentCard } from "./certify-agent-card"
+import { getCertificationReadiness } from "@/app/actions/ai-agent-onboarding"
 
 export const dynamic = 'force-dynamic'
 
@@ -37,6 +43,13 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
     redirect('/login')
   }
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user details and verify admin access
   const { data: userData } = await supabase
     .from('users')
@@ -48,15 +61,27 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
     redirect('/dashboard')
   }
 
-  if (!['admin', 'broker', 'superadmin'].includes(userData.user_type || '')) {
+  if (!isAdminOrBroker({ user_type: userData.user_type || '' })) {
     redirect('/dashboard/onboarding')
+  }
+
+  // IDENTITY CLASS. The roster links here with agent_onboarding.agent_id
+  // (see lib/onboarding/onboarding-roster.ts), which FKs agents(id). Both
+  // lookups below read the `users` table, so they matched nothing and the
+  // `notFound()` beneath them fired for EVERY agent — this page was
+  // unreachable from the only place that links to it. The agents-class
+  // queries further down (agent_step_completions) were always correct, so the
+  // id itself is right; only these two reads need resolving.
+  const agentUserId = await resolveUserIdForAgentRecord(supabase, agentId)
+  if (!agentUserId) {
+    notFound()
   }
 
   // Get agent details
   const { data: agentUser } = await supabase
     .from('users')
     .select('id, first_name, last_name, email, created_at')
-    .eq('id', agentId)
+    .eq('id', agentUserId)
     .single()
 
   if (!agentUser) {
@@ -67,7 +92,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
   const { data: agentUserBrokerage } = await supabase
     .from('users')
     .select('brokerage_id')
-    .eq('id', agentId)
+    .eq('id', agentUserId)
     .eq('brokerage_id', userData.brokerage_id)
     .single()
 
@@ -319,6 +344,32 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
               </div>
             </CardContent>
           </Card>
+        </div>
+
+        {/* AI welcome message — generate-and-review, never auto-sent. The door
+            for app/actions/ai-agent-onboarding.ts:generateWelcomeMessage. */}
+        <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <WelcomeMessageCard agentId={agentId} agentName={agentName} />
+          {/* Exam-gated activation — the door for certifyAgent. Readiness is
+              read server-side from the STORED quiz record; the action re-reads
+              it at certify time (§4: no caller-supplied score). */}
+          <CertifyAgentCard
+            agentId={agentId}
+            agentName={agentName}
+            readiness={await (async () => {
+              const r = await getCertificationReadiness(agentId)
+              return r.success
+                ? {
+                    bestScore: r.bestScore,
+                    attemptCount: r.attemptCount,
+                    passingScore: r.passingScore,
+                    eligible: r.eligible,
+                    alreadyActive: r.alreadyActive,
+                    missed: r.missed,
+                  }
+                : { error: r.error }
+            })()}
+          />
         </div>
 
         {/* Steps by Day */}

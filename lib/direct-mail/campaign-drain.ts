@@ -21,9 +21,21 @@
  * AUDIENCE rows (no recipient link — 'farm' etc.) are the farm/lifecycle
  * dispatchers' domain and are skipped with an honest reason, never a
  * simulated send. NOT server-only (simulator-driven).
+ *
+ * m491 — THE MAILING-LIST ROW. This drain is the path that actually mails a
+ * LEAD, and it wrote no `direct_mail_recipients` row: neither here, nor in
+ * orchestrateRenderAndSend, nor in dispatchDirectMail. A lead's piece existed
+ * only as a campaign row, so the mailing list could not say who was mailed and
+ * the Recipients surface was empty for every 1:1 send. m491 gave that table a
+ * `lead_id`; the drain now stages the row before spending and stamps it
+ * mailed/failed alongside the campaign. Best-effort — the refusal is reported,
+ * never swallowed, but it does not withhold a legitimate piece, because the
+ * RESPONSE path does not depend on this row (both response writers fall back to
+ * `direct_mail_campaigns.lead_id`).
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { refreshNeighborCampaignCounters } from "./neighbor-campaign-rollup"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -109,6 +121,68 @@ export async function runDirectMailCampaignDrain(
       continue
     }
 
+    // ── m491: STAGE THE MAILING-LIST ROW BEFORE SPENDING ─────────────────────
+    // This drain is the path that ACTUALLY MAILS A LEAD, and it wrote no
+    // `direct_mail_recipients` row at all — neither here, nor in
+    // orchestrateRenderAndSend, nor in dispatchDirectMail. So a lead's mail piece
+    // existed only as a campaign row: the mailing list could not say who was
+    // mailed, the Recipients surface showed nothing for the piece, and a returned
+    // reply card had no recipient row to point at. m491 gave the table a
+    // `lead_id`; this is the writer that fills it.
+    //
+    // BEST-EFFORT, deliberately: the refusal is REPORTED, never swallowed, but it
+    // does not withhold the piece. The response path does not depend on this row
+    // (logResponse and the QR route both fall back to `direct_mail_campaigns.lead_id`,
+    // which is where a 1:1 campaign names its addressee), so a ledger gap here is
+    // a defect to surface, not a reason to cancel a legitimate marketing send.
+    //
+    // m493/QR — THE INSERT IS ALSO WHERE THE PRINTED OPT-OUT COMES FROM. The
+    // token column is NOT NULL with a pgcrypto DEFAULT, so the row is minted
+    // with one and the ONLY way to learn it is to select it back off this
+    // insert. That is why `.select("id, unsubscribe_token")` and not just "id":
+    // the piece cannot be rendered with a working opt-out until this line
+    // returns. A re-read afterwards would be a second round trip to the same
+    // row for a value the insert already had.
+    let recipientRowId: string | null = null
+    let unsubscribeToken: string | null = null
+    {
+      const { data: recRow, error: recErr } = await svc
+        .from("direct_mail_recipients")
+        .insert({
+          brokerage_id:   input.brokerageId,
+          campaign_id:    row.id,
+          contact_id:     row.contact_id ?? null,
+          lead_id:        row.lead_id ?? null,
+          first_name:     name.split(" ")[0] ?? name,
+          last_name:      name.split(" ").slice(1).join(" "),
+          address_line1:  addr.street,
+          city:           addr.city,
+          state:          addr.state,
+          zip:            addr.zip,
+          delivery_status: "pending",
+        })
+        .select("id, unsubscribe_token")
+        .maybeSingle()
+      if (recErr) {
+        console.error(
+          `[campaign-drain] direct_mail_recipients insert refused for campaign ${row.id}: ${recErr.message}`,
+        )
+      }
+      const rec = recRow as { id?: string; unsubscribe_token?: string | null } | null
+      recipientRowId   = rec?.id ?? null
+      unsubscribeToken = rec?.unsubscribe_token ?? null
+      // A row with no token means the m493 DEFAULT did not fire — the piece can
+      // still mail (the marketing send is legitimate) but it would mail WITHOUT
+      // a way for the recipient to stop it, and that is not something to notice
+      // only in a printer's proof. Said out loud, once, per piece.
+      if (recipientRowId && !unsubscribeToken) {
+        console.error(
+          `[campaign-drain] recipient ${recipientRowId} came back with no unsubscribe_token; ` +
+          `the piece will print no opt-out. Check the m493 DEFAULT on direct_mail_recipients.`,
+        )
+      }
+    }
+
     // ONE real dispatch through the shared rail — every gate applies.
     try {
       // The staged play resolved the agent as agents.id on the row; the
@@ -138,6 +212,12 @@ export async function runDirectMailCampaignDrain(
           persona: "sphere",
         } as any,
         fallbackTemplateId: fallbackTpl,
+        // The token minted on the recipient row above, carried to the printed
+        // piece. This is the half of the owner's "traceable back to their
+        // direct mail campaign to unsubscribe" ruling that the mechanism could
+        // not satisfy on its own: the resolver and the public surface existed,
+        // and nothing put the code where the person could reach it.
+        unsubscribeToken,
         systemSource: `campaign_drain:${row.target_audience ?? "approved"}`,
       })
 
@@ -148,10 +228,43 @@ export async function runDirectMailCampaignDrain(
         pieces_mailed: result.success ? 1 : 0,
       }).eq("id", row.id)
 
+      // m491 — the mailing-list row tells the same truth as the campaign row.
+      // `mailed_at` matters beyond reporting: it is what the mail over-touch cap
+      // counts on (lib/kernel/deconflict countMailTouches).
+      if (recipientRowId) {
+        const { error: recStatusErr } = await svc
+          .from("direct_mail_recipients")
+          .update(
+            result.success
+              ? { delivery_status: "mailed", mailed_at: new Date().toISOString() }
+              : { delivery_status: "failed" },
+          )
+          .eq("id", recipientRowId)
+        if (recStatusErr) {
+          console.error(
+            `[campaign-drain] recipient status update refused for ${recipientRowId}: ${recStatusErr.message}`,
+          )
+        }
+      }
+
+      // NEIGHBOR-NOTIFICATION COUNTERS — derived here because THIS is the first
+      // moment a piece has really gone to the printer. The staging action used
+      // to write recipients_sent at staging time and its own tombstone explains
+      // why that was removed (nothing had been mailed); the consequence was
+      // that the column, and responses_received beside it, had no writer at all
+      // and the listing's neighbor card reported 0 mailed forever.
+      const nnRollup = await refreshNeighborCampaignCounters(svc, row.id)
+      if (nnRollup.refusal) {
+        console.error(`[campaign-drain] neighbor counter rollup refused for ${row.id}: ${nnRollup.refusal}`)
+      }
+
       if (result.success) out.sent++
       else out.failed++
     } catch {
       await svc.from("direct_mail_campaigns").update({ status: "failed" }).eq("id", row.id)
+      if (recipientRowId) {
+        await svc.from("direct_mail_recipients").update({ delivery_status: "failed" }).eq("id", recipientRowId)
+      }
       out.failed++
     }
   }

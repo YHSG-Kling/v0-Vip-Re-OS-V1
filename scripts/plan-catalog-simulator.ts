@@ -65,10 +65,14 @@ async function main() {
     /from\("subscriptions"\)[\s\S]*?eq\("tier_id"/.test(actionSrc) && /is_active: false/.test(actionSrc))
   check("Stripe sync pulls unit_amount from the tier's stripe_price_id",
     /stripe\.prices\.retrieve/.test(actionSrc) && /unit_amount/.test(actionSrc))
-  const pageSrc = readFileSync(join(process.cwd(), "app/signup/page.tsx"), "utf8")
+  const pageSrc = readFileSync(join(process.cwd(), "app/get-started/page.tsx"), "utf8")
+  // Same refactor as the price assertion in billing-access-simulator: the tier
+  // columns are selected in lib/platform/public-tiers.ts now, not inline here.
+  const tiersSrc = readFileSync(join(process.cwd(), "lib/platform/public-tiers.ts"), "utf8")
   check("signup page loads blurb/bullets/highlight from subscription_tiers",
-    /description/.test(pageSrc) && /marketing_bullets/.test(pageSrc) && /is_featured/.test(pageSrc))
-  const formSrc = readFileSync(join(process.cwd(), "app/signup/signup-form.tsx"), "utf8")
+    /loadPublicTiers/.test(pageSrc) && /description/.test(tiersSrc)
+    && /marketing_bullets/.test(tiersSrc) && /is_featured/.test(tiersSrc))
+  const formSrc = readFileSync(join(process.cwd(), "app/get-started/trial-funnel-form.tsx"), "utf8")
   check("signup form is DB-driven — NO hardcoded blurb/features/highlight arrays",
     /tiers\.map/.test(formSrc) && !/blurb:\s*"/.test(formSrc) && !/features:\s*\[/.test(formSrc) && !/highlight:\s*(true|false)/.test(formSrc))
 

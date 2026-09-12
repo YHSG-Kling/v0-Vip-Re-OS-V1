@@ -34,6 +34,17 @@ export enum KernelEvent {
   LISTING_STAGE_CHANGED                     = 'listing_stage_changed',
   LISTING_CANCELLED                         = 'listing_cancelled',
   LISTING_EXPIRED                           = 'listing_expired',
+  // A listing is RETAINED, never deleted (owner's ruling: "listing shouldn't be
+  // deleted because of rules of needing to keep real estate records"). These two
+  // record the only thing that now happens to it — leaving and re-entering the
+  // working surface — so the record can say WHO took it off the board and when.
+  // An archive with no audit trail is worse than a delete for a retention
+  // record. Survivor of `deleteListing`: lib/kernel/listing-archive.ts.
+  // `lifecycle_events.event_type` carries NO CHECK constraint (verified live on
+  // hrvaqgvukzxfskkcrwbt, 2026-08-23 — only `lifecycle_events_source_check`
+  // exists), so these two values need no migration.
+  LISTING_ARCHIVED                          = 'listing_archived',
+  LISTING_UNARCHIVED                        = 'listing_unarchived',
   COMING_SOON_SENT                          = 'coming_soon_sent',
   OPEN_HOUSE_MARKETING_STARTED              = 'open_house_marketing_started',
   OPEN_HOUSE_ATTENDEE_CAPTURED              = 'open_house_attendee_captured',
@@ -106,6 +117,14 @@ export enum KernelEvent {
   // ── Compliance ────────────────────────────────────────────────────────────
   COMPLIANCE_VIOLATION      = 'compliance_violation',
   AUTHORITY_BLOCKED         = 'authority_blocked',
+  // The Wire-Fraud Sentinel's verdict on a wire-instructions document. Emitted
+  // ONLY by /api/cron/wire-fraud-sentinel, and only on a warn/block verdict —
+  // the escalation itself (CRITICAL agent notification + Deal-Coordinator bus
+  // signal) is done by runWireFraudSentinel; this row is the audit trail AND the
+  // cron's cross-run idempotency key (dedupe_key `wire_fraud:<documentId>`),
+  // which is why it is queried back with no time bound rather than relying on
+  // emitKernelEvent's short dedupe window.
+  WIRE_FRAUD_RISK_DETECTED  = 'wire_fraud_risk_detected',
 
   // ── Lead Acquisition (Track A — Lead-first) ───────────────────────────────
   LEAD_CAPTURED                  = 'lead_captured',
@@ -141,7 +160,20 @@ export enum KernelEvent {
   // ── Assignment ───────────────────────────────────────────────────────────
   LEAD_ASSIGNED                  = 'lead_assigned',
   LEAD_ASSIGNMENT_FAILED         = 'lead_assignment_failed',
-  LEAD_CLAIMED                   = 'lead_claimed',
+  // TOMBSTONE (owner ruling, wave 49, 2026-09-10, verbatim: "there should be no
+  // kernel event for agent claiming a lead — agents can't see leads until the
+  // lead gets converted to a contact and the agent is assigned that contact").
+  // LEAD_CLAIMED's only emitter (lib/lead-assignment/assignment-engine.ts
+  // claimLead, reached only from an agent UI action —
+  // app/actions/lead-assignment/assign-lead.ts acknowledgeLeadHandoffAction —
+  // via app/dashboard/agent/components/handoff/new-contact-handoff-panel.tsx) was
+  // exactly that: no system/AI-ISA emitter existed for it, so there was no
+  // legitimate emitter left to keep. Survivor for the underlying acknowledgement
+  // capability: `assignment_log.claimed` / `claimed_at`, still written directly by
+  // claimLead — the three readers of that flag were already reading the column,
+  // never this event. Its D-undecies reader (lib/kernel/event-reactor.ts), its
+  // SIGNAL_REGISTRY entry, and its HANDOFF_ANNOUNCEMENTS declaration
+  // (scripts/signal-integrity-simulator.ts) are retired alongside it.
 
   // ── Conversion ───────────────────────────────────────────────────────────
   LEAD_CONVERTED_TO_CONTACT      = 'lead_converted_to_contact',
@@ -169,6 +201,11 @@ export enum KernelEvent {
   BUYER_FATIGUE_ALERT            = 'buyer_fatigue_alert',
   OFFER_STRATEGY_RECOMMENDED     = 'offer_strategy_recommended',
   BUYER_OFFER_DRAFT_STARTED      = 'buyer_offer_draft_started',
+  // Buyer-initiated (portal "Help me make an offer") -- distinct from
+  // BUYER_OFFER_DRAFT_STARTED (staff opening the agent-side wizard). Records
+  // INTENT only; see lib/kernel/event-reactor.ts and
+  // app/actions/buyer-offer-tools.ts:requestOfferHelp.
+  BUYER_OFFER_SUBMIT_REQUESTED   = 'buyer_offer_submit_requested',
   BUYER_OFFER_SUBMITTED          = 'buyer_offer_submitted',
   BUYER_UNDER_CONTRACT           = 'buyer_under_contract',
   BUYER_OFFER_ELIGIBLE           = 'buyer_offer_eligible',
@@ -187,6 +224,10 @@ export enum KernelEvent {
   TRANSACTION_STAGE_CHANGED           = 'transaction_stage_changed',
   TRANSACTION_CLOSED                  = 'transaction_closed',
   INSPECTION_ORDERED                  = 'inspection_ordered',
+  /** The inspection report is in and the milestone is marked complete
+   *  (app/actions/transaction-inspections.ts markInspectionCompleteAction).
+   *  Portal alias: inspection.completed (event-translator.ts). */
+  INSPECTION_COMPLETED                = 'inspection_completed',
   INSPECTION_QUOTE_REQUESTED          = 'inspection_quote_requested',
   INSPECTION_QUOTE_APPROVED           = 'inspection_quote_approved',
   INSURANCE_QUOTE_REQUESTED           = 'insurance_quote_requested',
@@ -415,6 +456,16 @@ export enum KernelEvent {
   // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
   LIFETIME_CUSTOMER_TOUCHPOINT_SENT  = 'lifetime_customer_touchpoint_sent',
   ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
+  /** Past client's estimated home equity crosses a cash-out-worthy threshold
+   *  (lib/kernel/equity-trigger.ts runEquityTrigger — signal.triggerTypes
+   *  includes "cash_out"). Informational only — nothing here sends or spends.
+   *  Portal alias: wealth.equity_milestone (event-translator.ts). */
+  EQUITY_MILESTONE                   = 'equity_milestone',
+  /** Past client's rate-gap vs today's authoritative market rate crosses the
+   *  modeled-savings threshold (lib/kernel/equity-trigger.ts runEquityTrigger —
+   *  signal.triggerTypes includes "refi"). Never fires on a fabricated rate.
+   *  Portal alias: wealth.refinance_opportunity (event-translator.ts). */
+  REFINANCE_OPPORTUNITY              = 'refinance_opportunity',
   MARKET_UPDATE_SENT                 = 'market_update_sent',
   REFERRAL_ASK_SENT                  = 'referral_ask_sent',
   REFERRAL_PARTNER_CREATED           = 'referral_partner_created',
@@ -455,6 +506,12 @@ export enum KernelEvent {
   // ── Vendor Marketplace ──────────────────────────────────────────────────────
   VENDOR_BOOKING_CREATED             = 'vendor_booking_created',
   VENDOR_BOOKING_COMPLETED           = 'vendor_booking_completed',
+  // The decline path (app/actions/vendor-portal.ts declineVendorBookingAction)
+  // used to reuse VENDOR_BOOKING_CREATED with accept_or_decline: "declined" in
+  // its metadata — a naming bug: any reader keyed on the event value alone
+  // (title/body lookups, notification_rules, campaign_sequences) read a decline
+  // as a creation. lane CB, 2026-09-08.
+  VENDOR_BOOKING_DECLINED            = 'vendor_booking_declined',
   VENDOR_REVIEW_SUBMITTED            = 'vendor_review_submitted',
   VENDOR_ASSIGNED_TO_TRANSACTION     = 'vendor_assigned_to_transaction',
   // Kernel-owned vendor commands (lib/kernel/vendors.ts)
@@ -521,7 +578,17 @@ export enum KernelEvent {
   CONTACT_SUPPRESSION_APPLIED        = 'contact_suppression_applied',
   CONTACT_SUPPRESSION_CLEARED        = 'contact_suppression_cleared',
   CONTACT_SOURCE_ATTRIBUTION_SET     = 'contact_source_attribution_set',
-  CONTACT_LEAD_CONVERTED             = 'contact_lead_converted',
+  // TOMBSTONE — CONTACT_LEAD_CONVERTED ('contact_lead_converted') lived here.
+  // SURVIVOR: LEAD_CONVERTED_TO_CONTACT at lib/kernel/events.ts:147.
+  // It was a SECOND NAME FOR ONE FACT: the manual lane
+  // (lib/kernel/crm.ts convertLeadToContact) emitted this one, the automatic
+  // lane (lib/kernel/lead-acquisition-handlers.ts:538) emitted the survivor.
+  // Because processKernelEvent matches notification_rules.trigger_event on the
+  // event STRING, a conversion rule could only ever cover whichever half of the
+  // traffic happened to use the name it was written against. Retired rather than
+  // aliased: keeping both spellings reachable is what let them drift apart.
+  // Safe to delete outright — measured live before removal: 0 notification_rules
+  // and 0 lifecycle_events rows carried the string.
   CONTACT_AGENT_ASSIGNED             = 'contact_agent_assigned',
   CONTACT_AGENT_NOTIFIED             = 'contact_agent_notified',
   CONTACT_FOLLOWUP_DRAFT_GENERATED   = 'contact_followup_draft_generated',
@@ -558,7 +625,14 @@ export enum KernelEvent {
   OFFER_OS_ESIGN_COMPLETED           = 'offer_os_esign_completed',
   OFFER_OS_SUBMITTED                 = 'offer_os_submitted',
   OFFER_OS_AI_ANALYZED               = 'offer_os_ai_analyzed',
-  OFFER_OS_AI_COMPARED               = 'offer_os_ai_compared',
+  // TOMBSTONE (orphan doctrine §1.1, wave 55) — OFFER_OS_AI_COMPARED
+  // ('offer_os_ai_compared') lived here. SURVIVOR: OFFER_COMPARISON_GENERATED
+  // above (lib/kernel/events.ts:55), emitted by
+  // lib/offers/offer-analyzer.ts:analyzeAndCompareOffers. Its sole emitter,
+  // lib/kernel/offers.ts:compareOffersForListing, was itself a duplicate
+  // offer_comparison writer with no live caller and is tombstoned there; no
+  // other emitter of this event ever existed, so the enum member goes with it
+  // rather than be kept as a dead value nothing can reach.
   OFFER_OS_COUNTERED                 = 'offer_os_countered',
   OFFER_OS_COUNTER_RESPONDED         = 'offer_os_counter_responded',
   OFFER_OS_ACCEPTED                  = 'offer_os_accepted',

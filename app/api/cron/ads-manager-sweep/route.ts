@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
-import { proposeAdOptimizations } from "@/lib/ads/ad-manager"
+import { proposeAdOptimizations, proposeAdLaunches } from "@/lib/ads/ad-manager"
 import { proposeCompetitorInspiredCreative } from "@/lib/ads/ad-creative-engine"
 import { publishLaunchingCampaigns } from "@/lib/ads/launch-assembler"
 
@@ -16,6 +16,9 @@ import { publishLaunchingCampaigns } from "@/lib/ads/launch-assembler"
  *   2. CREATE — for brokerages with competitor-ad intelligence, auto-generate NEW
  *      ad creatives inspired by high-performing competitor ads (fresh copy + an
  *      Asset-Manager video) into the ad_creative approval queue.
+ *   3. LAUNCH — approved campaigns (and staged streaming-TV drafts) whose
+ *      account is connected get a launch proposal (lib/ads/ad-manager.ts
+ *      proposeAdLaunches); the approval of that action is the human gate.
  * Auth: CRON_SECRET.
  */
 export const dynamic = "force-dynamic"
@@ -31,13 +34,25 @@ export async function GET(request: Request) {
     const optimizeIds = Array.from(new Set((live ?? []).map((r: { brokerage_id: string }) => r.brokerage_id)))
     const createIds = Array.from(new Set((competitors ?? []).map((r: { brokerage_id: string }) => r.brokerage_id)))
 
-    let scanned = 0, proposed = 0, creativesProposed = 0, published = 0
+    let scanned = 0, proposed = 0, creativesProposed = 0, published = 0, launchesProposed = 0
     for (const bid of optimizeIds) {
       const res = await proposeAdOptimizations(bid, svc)
       scanned += res.scanned; proposed += res.proposed
       // Publish approved+validated 'launching' campaigns to the platform (real create).
       const pub = await publishLaunchingCampaigns(bid, svc)
       published += pub.published
+    }
+    // 3. LAUNCH — approved campaigns with an approved creative and a connected
+    //    account (and staged streaming-TV drafts with Vibe connected) get a
+    //    launch proposal, so nothing approved waits for someone to find a button.
+    const { data: launchable } = await svc.from("ad_campaigns").select("brokerage_id, platform, status")
+      .in("status", ["approved", "draft"])
+    const launchIds = (launchable ?? [])
+      .filter((r: { platform: string; status: string }) => r.status === "approved" || ((r.platform === "vibe_ctv" || r.platform === "chatgpt") && r.status === "draft"))
+      .map((r: { brokerage_id: string }) => r.brokerage_id)
+    for (const bid of Array.from(new Set(launchIds))) {
+      const res = await proposeAdLaunches(bid, svc)
+      launchesProposed += res.proposed
     }
     for (const bid of createIds) {
       const res = await proposeCompetitorInspiredCreative(bid, svc)
@@ -55,7 +70,7 @@ export async function GET(request: Request) {
       rebalancesProposed = loop.rebalancesProposed
     } catch { /* loop retries next sweep */ }
 
-    return NextResponse.json({ ok: true, optimize_brokerages: optimizeIds.length, create_brokerages: createIds.length, scanned, proposed, creativesProposed, published, rebalancesProposed })
+    return NextResponse.json({ ok: true, optimize_brokerages: optimizeIds.length, create_brokerages: createIds.length, scanned, proposed, creativesProposed, published, launchesProposed, rebalancesProposed })
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
   }

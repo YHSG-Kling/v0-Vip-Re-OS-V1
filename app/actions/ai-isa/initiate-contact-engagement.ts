@@ -2,7 +2,8 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
-import { engageContact } from './engage-contact'
+import { collectError } from '@/lib/errors/collect-error'
+import { engageContact, type ISAEngagementReason } from './engage-contact'
 
 /**
  * initiateAIISAContactEngagement
@@ -24,8 +25,23 @@ import { engageContact } from './engage-contact'
  *   2. Internal trusted callers (cron stale-contact-monitor — already auth'd
  *      via verifyCronAuth at the route layer — and ghost-reengagement which
  *      runs inside cron). CRON_SECRET must be set in env to permit this.
+ *
+ * ── WHY `reason` IS A PARAMETER ─────────────────────────────────────────────
+ *
+ * It used to be the literal 'reactivation', hardcoded — and because EVERY
+ * production caller reaches engageContact through this wrapper, that one literal
+ * made two of the engine's six declared reasons unreachable from anywhere.
+ * engageContact branches on 'ghosted' twice (the 'ghost_recovery' call purpose
+ * handed to buildCallContext, and the situational voicemail's fresh hook), so
+ * those branches could not execute in production no matter what the detector
+ * found. The detector now reports 'stale' vs 'ghosted' per contact and the cron
+ * passes it through; the default stays 'reactivation' so every existing caller
+ * behaves exactly as before.
  */
-export async function initiateAIISAContactEngagement(contactId: string): Promise<{
+export async function initiateAIISAContactEngagement(
+  contactId: string,
+  reason: ISAEngagementReason = 'reactivation',
+): Promise<{
   success: boolean
   emailSent?: boolean
   contactId?: string
@@ -34,6 +50,10 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
   error?: string
 }> {
   const supabase = createServiceClient()
+  // Hoisted so the catch can anchor the error row to a tenant. Every console that
+  // reads automation_errors filters on brokerage_id — an unanchored row is written
+  // and then invisible, which is the same outcome as not writing it.
+  let brokerageId: string | null = null
 
   try {
     // ── AUTH GATE ────────────────────────────────────────────────────────
@@ -60,6 +80,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     if (hasSession && ctx.brokerageId && contact.brokerage_id !== ctx.brokerageId) {
       return { success: false, reason: 'Forbidden' }
     }
+    brokerageId = (contact.brokerage_id as string) ?? null
     // Converted contacts have an assigned agent; nurture runs on the contact.
     if (!contact.agent_id) {
       return { success: false, reason: 'Contact not yet assigned to agent' }
@@ -69,7 +90,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     const result = await engageContact({
       contactId,
       brokerageId: contact.brokerage_id as string,
-      reason: 'reactivation',
+      reason,
       actorId: ctx.userId || undefined,
     })
 
@@ -85,17 +106,15 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     const message = error instanceof Error ? error.message : String(error)
     console.error('[initiateAIISAContactEngagement] Error:', message)
 
-    // automation_errors: no entity_type/entity_id columns — use context_json
-    await createServiceClient()
-      .from('automation_errors')
-      .insert({
-        workflow_name:  'ai_isa_contact_engagement',
-        error_message:  message,
-        context_json:   JSON.stringify({ contactId }),
-        severity:       'high',
-        status:         'new',
-      })
-      .then(() => void 0)
+    await collectError({
+      workflowName: 'ai_isa_contact_engagement',
+      errorMessage: message,
+      stack: error instanceof Error ? error.stack : undefined,
+      severity: 'high',
+      brokerageId: brokerageId ?? undefined,
+      context: { contactId },
+      client: supabase,
+    })
 
     return { success: false, error: message }
   }

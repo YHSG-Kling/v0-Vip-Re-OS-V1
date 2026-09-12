@@ -23,6 +23,19 @@ function fmtWhen(iso: string | null): string {
   return Number.isFinite(d.getTime()) ? d.toLocaleDateString() : "—"
 }
 
+/**
+ * WHO INVITED THEM. `portal_contact_invites.invited_by` (a users.id — see the
+ * identity-class note in lib/portal/portal-clients-read.ts) is stamped on every
+ * invite and, until now, read by nothing. Three states, never collapsed:
+ * a resolved name; an id that does not resolve inside this brokerage; and no id
+ * at all — which for a CLIENT row means link-only access, not "invited by nobody".
+ */
+function fmtInviter(userId: string | null, name: string | null, noneLabel: string): string {
+  if (name) return name
+  if (userId) return "outside this brokerage"
+  return noneLabel
+}
+
 export function PortalClientsPanel({ brokerageId }: { brokerageId: string }) {
   const [clients, setClients] = useState<PortalClientRow[]>([])
   const [pendingInvites, setPendingInvites] = useState<PendingPortalInviteRow[]>([])
@@ -82,7 +95,8 @@ export function PortalClientsPanel({ brokerageId }: { brokerageId: string }) {
             <table className="w-full text-sm">
               <thead><tr className="border-b bg-muted/10 text-left text-xs text-muted-foreground">
                 <th className="px-3 py-2">Client</th><th className="px-3 py-2">Email</th>
-                <th className="px-3 py-2">Accepted</th><th className="px-3 py-2">Last portal activity</th>
+                <th className="px-3 py-2">Accepted</th><th className="px-3 py-2">Invited by</th>
+                <th className="px-3 py-2">Last portal activity</th>
                 <th className="px-3 py-2">User row</th>
               </tr></thead>
               <tbody>
@@ -91,6 +105,9 @@ export function PortalClientsPanel({ brokerageId }: { brokerageId: string }) {
                     <td className="px-3 py-2 font-medium">{c.name}</td>
                     <td className="px-3 py-2 text-xs">{c.email ?? "—"}</td>
                     <td className="px-3 py-2 text-xs">{c.acceptedAt ? fmtWhen(c.acceptedAt) : "link access"}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {fmtInviter(c.invitedByUserId, c.invitedByName, "no invite on file (link access)")}
+                    </td>
                     <td className="px-3 py-2 text-xs">{c.lastActivityAt ? fmtWhen(c.lastActivityAt) : "no activity recorded"}</td>
                     <td className="px-3 py-2">
                       {c.userLinked
@@ -115,7 +132,10 @@ export function PortalClientsPanel({ brokerageId }: { brokerageId: string }) {
                   <span className="flex-1 truncate">
                     {i.name}{i.email ? ` · ${i.email}` : ""} ·{" "}
                     <span className="text-xs text-muted-foreground">
-                      {i.status}{i.invitedAt ? ` · invited ${fmtWhen(i.invitedAt)}` : ""}{i.expiresAt ? ` · expires ${fmtWhen(i.expiresAt)}` : ""}
+                      {i.status}
+                      {i.invitedAt ? ` · invited ${fmtWhen(i.invitedAt)}` : ""}
+                      {` · by ${fmtInviter(i.invitedByUserId, i.invitedByName, "inviter not recorded")}`}
+                      {i.expiresAt ? ` · expires ${fmtWhen(i.expiresAt)}` : ""}
                     </span>
                   </span>
                 </div>

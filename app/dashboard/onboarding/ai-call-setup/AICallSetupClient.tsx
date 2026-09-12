@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
-import { Phone, ArrowRight, CheckCircle } from "lucide-react"
+import { Phone, ArrowRight } from "lucide-react"
 import { saveAIIdentityProfile, type AIIdentityProfile } from "@/app/actions/ai-identity"
 import { toast } from "sonner"
 
@@ -126,7 +126,7 @@ export function AICallSetupClient({ brokerageId, brokerageName, existingProfile 
                   <div>
                     <p className="font-medium text-sm">Handle inbound calls</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      AI answers calls forwarded to your VAPI number.
+                      AI answers calls forwarded to your brokerage number.
                     </p>
                   </div>
                   <Switch

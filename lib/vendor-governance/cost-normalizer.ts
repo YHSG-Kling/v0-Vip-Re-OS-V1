@@ -73,7 +73,24 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     unitType: 'records',
     costPerUnit: 0.10, // $0.10 per enrichment
   },
-  
+
+  // KEYLESS / FREE LANES — rated at exactly $0 ON PURPOSE.
+  //
+  // normalizeVendorCost() below falls back to $0.01/unit for an UNKNOWN vendor
+  // key. Without these rows, metering the free OSINT lane (Nominatim + Overpass
+  // + US Census, the `osint_free` posture row in lib/platform/provider-posture.ts)
+  // would INVENT a cent of spend per call and inflate the same
+  // vendor_usage_tracking ledger checkVendorBudget reads to decide whether a
+  // brokerage may spend. A free call must be recorded as free, or not at all —
+  // it must never be priced by the unknown-vendor default. The lane IS recorded
+  // (rather than skipped) so the ledger shows the work that was done for $0.
+  'osint_free': {
+    vendorName: 'OSINT Free (OSM + Census)',
+    unitType: 'api_calls',
+    costPerUnit: 0, // keyless free tiers — Nominatim, Overpass, US Census ACS
+    notes: 'Keyless lane. Zero cost by construction; the row exists so free calls are never priced by the unknown-vendor fallback.',
+  },
+
   // Email Providers
   'sendgrid': {
     vendorName: 'SendGrid',

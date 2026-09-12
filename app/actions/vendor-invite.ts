@@ -5,8 +5,10 @@
  *
  * inviteVendorToPlatformAction:
  *   Caller: any admin / broker / team_lead / agent within a brokerage (round 15
- *   opened invites to every tier — INVITE_ALLOWED_ROLES below is the gate, and
- *   lib/vendors/vendor-scope.ts mirrors it as VENDOR_INVITE_ROLES).
+ *   opened invites to every tier). The gate is the SHARED predicate
+ *   lib/vendors/vendor-scope.ts:canInviteVendors — this file no longer keeps a
+ *   local INVITE_ALLOWED_ROLES copy, so there is one role list, not two that
+ *   have to be kept in step.
  *   Creates a vendor_invitations row with a cryptographically random token,
  *   sends a Supabase invite email pointing the vendor to /vendor-invite/[token].
  *
@@ -32,7 +34,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { randomBytes } from "node:crypto"
-import { resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+import { canInviteVendors, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * Best-effort first-inviter-wins attribution stamp on the vendor row
@@ -62,8 +65,12 @@ async function stampVendorInviteAttribution(
 }
 
 const INVITE_TTL_DAYS = 14
-const INVITE_ALLOWED_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead","agent"])
 
+/** Roles that may REVOKE a pending invite — leadership only (an agent may bring
+ *  a vendor in, but pulling the invite back is a brokerage decision). Kept here
+ *  rather than in vendor-scope because nothing else needs it; the INVITE side
+ *  now defers to lib/vendors/vendor-scope.ts:canInviteVendors so the two copies
+ *  of that list cannot drift apart. */
 function generateInviteToken(): string {
   // 32 random bytes → 43 url-safe base64 chars. Plenty of entropy
   // (~256 bits) and short enough for a clean URL.
@@ -82,6 +89,17 @@ export interface InviteVendorResult {
   error?:       string
   invitationId?: string
   inviteUrl?:   string
+  /** Whether the invitation EMAIL actually went out. The invitation row is the
+   *  durable artifact and is created either way, but the send is a separate
+   *  provider call that can fail (already-registered address, SMTP outage) —
+   *  and a UI that says "invitation sent" over a failed send is exactly the
+   *  "reports success without doing the thing" defect. `false` means: the link
+   *  is live, hand it over yourself. */
+  emailSent?:   boolean
+  emailError?:  string
+  /** True when an unexpired pending invitation already existed and was reused
+   *  instead of minting a second token. */
+  reused?:      boolean
 }
 
 export async function inviteVendorToPlatformAction(
@@ -91,25 +109,31 @@ export async function inviteVendorToPlatformAction(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
 
-  const { data: caller } = await supabase
+  // `error` is read deliberately: supabase-js RESOLVES a refused query, so
+  // `data: null` from an RLS denial is indistinguishable from "no such user"
+  // unless the error is inspected. Both paths refuse — the gate fails CLOSED —
+  // but a denied read must say so rather than blame the brokerage config.
+  const { data: caller, error: callerErr } = await supabase
     .from("users")
     .select("user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (callerErr) return { ok: false, error: `Could not verify your account: ${callerErr.message}` }
 
   if (!caller?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!INVITE_ALLOWED_ROLES.has(caller.user_type ?? "")) {
+  if (!canInviteVendors(caller.user_type)) {
     return { ok: false, error: "Forbidden — your role cannot invite vendors" }
   }
 
   const svc = createServiceClient()
 
   // Look up vendor — must exist and belong to the caller's brokerage.
-  const { data: vendor } = await svc
+  const { data: vendor, error: vendorErr } = await svc
     .from("vendors")
     .select("id, name, email, brokerage_id")
     .eq("id", input.vendorId)
     .maybeSingle()
+  if (vendorErr) return { ok: false, error: `Could not read the vendor record: ${vendorErr.message}` }
   if (!vendor) return { ok: false, error: "Vendor not found" }
   if (vendor.brokerage_id !== caller.brokerage_id) {
     return { ok: false, error: "Forbidden — vendor belongs to another brokerage" }
@@ -120,13 +144,20 @@ export async function inviteVendorToPlatformAction(
 
   // If a pending invite already exists for this vendor + email, reuse it
   // (idempotent — clicking "Invite" twice should not flood the vendor's inbox).
-  const { data: existing } = await svc
+  const { data: existing, error: existingErr } = await svc
     .from("vendor_invitations")
     .select("id, token, expires_at")
     .eq("vendor_id", vendor.id)
     .eq("status", "pending")
     .gt("expires_at", new Date().toISOString())
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle()
+  // A failed lookup must NOT fall through to "no pending invite" — that would
+  // mint a second live token for the same vendor on every retry.
+  if (existingErr) {
+    return { ok: false, error: `Could not check for an existing invitation: ${existingErr.message}` }
+  }
 
   let invitationId: string
   let token: string
@@ -177,24 +208,36 @@ export async function inviteVendorToPlatformAction(
   // Send Supabase auth invite. The magic link drops them at /auth/callback;
   // /auth/callback then redirects to /vendor-invite/[token] (next param) where
   // accept-form.tsx finalizes the link to user_role_assignments.
+  let emailSent = false
+  let emailError: string | undefined
   try {
-    await svc.auth.admin.inviteUserByEmail(vendor.email.toLowerCase(), {
-      data: {
-        first_name:     vendor.name?.split(" ")[0] ?? "Vendor",
-        last_name:      vendor.name?.split(" ").slice(1).join(" ") ?? "",
-        user_type:      "vendor",
-        brokerage_id:   caller.brokerage_id,
-        invitation_id:  invitationId,
-        custom_message: input.customMessage ?? null,
+    // supabase-js resolves this call with { error } rather than throwing on a
+    // provider refusal, so the error is read explicitly — a swallowed refusal
+    // here is what made "Invitation sent" a claim nobody had checked.
+    const { error: sendErr } = await svc.auth.admin.inviteUserByEmail(
+      vendor.email.toLowerCase(),
+      {
+        data: {
+          first_name:     vendor.name?.split(" ")[0] ?? "Vendor",
+          last_name:      vendor.name?.split(" ").slice(1).join(" ") ?? "",
+          user_type:      "vendor",
+          brokerage_id:   caller.brokerage_id,
+          invitation_id:  invitationId,
+          custom_message: input.customMessage ?? null,
+        },
+        redirectTo: `${appUrl}/auth/callback?next=${encodeURIComponent(`/vendor-invite/${token}`)}`,
       },
-      redirectTo: `${appUrl}/auth/callback?next=${encodeURIComponent(`/vendor-invite/${token}`)}`,
-    })
+    )
+    if (sendErr) emailError = sendErr.message
+    else emailSent = true
   } catch (err: any) {
-    console.warn("[inviteVendor] Email send failed:", err?.message)
-    // Non-fatal — caller can manually share inviteUrl.
+    emailError = err?.message ?? "unknown send failure"
+  }
+  if (!emailSent) {
+    console.warn(`[inviteVendor] invitation ${invitationId} created but email not sent: ${emailError}`)
   }
 
-  return { ok: true, invitationId, inviteUrl }
+  return { ok: true, invitationId, inviteUrl, emailSent, emailError, reused: !!existing }
 }
 
 // ── ACCEPT ───────────────────────────────────────────────────────────────────
@@ -248,10 +291,37 @@ export async function acceptVendorInviteAction(
     .maybeSingle()
 
   if (existingUser) {
-    // If user already belongs to a different brokerage, refuse — vendor
-    // cross-brokerage support is intentionally NOT implemented here.
+    // ── A SHARED VENDOR SHARES ITS BILLING IDENTITY, NOT YET ITS SEAT ────────
+    // §5 says a vendor already on the platform MAY be used by other brokerages,
+    // and may not be charged for platform use a second time. The BILLING half of
+    // that is built and enforced in the database (m549: vendors.platform_vendor_id
+    // + vendor_platform_use_already_paid + the enforce_..._single_charge triggers).
+    // The LOGIN half is not, and it is not a forgotten `if` — it is unrepresentable
+    // twice over, both verified against the live schema:
+    //
+    //   · `users.brokerage_id` is a single scalar, so a vendor user belongs to
+    //     exactly one tenant;
+    //   · `user_role_assignments` carries UNIQUE (user_id, role)
+    //     (user_role_assignments_user_role_unique), so ONE user can hold exactly
+    //     ONE row with role='vendor'. A second bench seat cannot be written even
+    //     if this refusal were removed.
+    //
+    // So this REFUSES rather than half-granting, which is §4's fail-closed rule:
+    // widening `users.brokerage_id` without a per-bench seat would give one login
+    // a tenant-shaped identity across two brokerages, and §5 also says a vendor
+    // sees a contact only where it is ASSIGNED to that contact and sees no
+    // financials but its own. A seat that cannot express WHICH bench it is acting
+    // as cannot honour either rule.
+    //
+    // What the message must not do is read as a dead end, because it is not one:
+    // the second brokerage adds the same COMPANY to its own bench today and is
+    // blocked from double-charging it. Only the shared login is pending.
     if (existingUser.brokerage_id && existingUser.brokerage_id !== invitation.brokerage_id) {
-      return { ok: false, error: "This email is already tied to a different brokerage" }
+      return {
+        ok: false,
+        error:
+          "This email already has a vendor login with another brokerage. A vendor can work with more than one brokerage — ask this brokerage to add your company to their vendor list, which costs you nothing — but a single login cannot yet be shared across brokerages. Accept this invitation from a different email address to hold a separate seat.",
+      }
     }
     await svc.from("users").update({
       user_type:    "vendor",
@@ -290,6 +360,114 @@ export async function acceptVendorInviteAction(
     updated_at:   new Date().toISOString(),
   })
 
+  // ── THE VENDOR'S GLOBAL PLATFORM IDENTITY — the writer that never existed ──
+  // (§1.2, built 2026-08-27.) vendor_marketplace_profiles is the table the
+  // ENTIRE vendor platform rail keys on: requireVendorProfile in
+  // app/actions/vendor-billing.ts (Stripe checkout), the /vendor/* pages,
+  // app/api/webhooks/stripe/vendor (subscription events), vendor-service-areas,
+  // and lib/vendors/vendor-platform-identity.ts (m549's one-charge-per-company
+  // rule). Verified live 2026-08-27: the table held 0 rows, NO code path,
+  // migration, or trigger ever inserted one (the only trigger touches
+  // updated_at) — so every one of those surfaces dead-ended at "No vendor
+  // marketplace profile for this account", and the identity module could only
+  // ever fall through its fallbacks to null. This acceptance is the one moment
+  // the platform holds BOTH halves — the vendor company (invitation.vendor_id)
+  // and the human login (user.id) — so the identity is established here.
+  //
+  // Failure here is LOGGED AND NON-FATAL: the portal seat (users +
+  // user_role_assignments above) is the invitation's contract; the platform
+  // identity is retried implicitly the next time this company invites a seat.
+  try {
+    const { data: vendorRow, error: vendorReadErr } = await svc
+      .from("vendors")
+      .select("id, name, email, platform_vendor_id")
+      .eq("id", invitation.vendor_id)
+      .maybeSingle()
+    if (vendorReadErr) throw new Error(`vendor read refused: ${vendorReadErr.message}`)
+
+    // 1. This login may already carry a profile (a vendor accepting a second
+    //    brokerage's bench invite from the same email).
+    let profileId: string | null = null
+    const { data: byUser, error: byUserErr } = await svc
+      .from("vendor_marketplace_profiles")
+      .select("id")
+      .eq("user_id", user.id)
+      .limit(1)
+      .maybeSingle()
+    if (byUserErr) throw new Error(`profile read refused: ${byUserErr.message}`)
+    profileId = (byUser as { id: string } | null)?.id ?? null
+
+    // 2. Else the COMPANY may already hold one under a different login —
+    //    UNIQUE(company_name) is the table's global company key, and m549's
+    //    ruling is one platform identity per company, never a second. `.eq`
+    //    mirrors that constraint's exact-match semantics on purpose.
+    const companyName = ((vendorRow as { name?: string | null } | null)?.name ?? "").trim()
+    if (!profileId && companyName) {
+      const { data: byCompany, error: byCompanyErr } = await svc
+        .from("vendor_marketplace_profiles")
+        .select("id")
+        .eq("company_name", companyName)
+        .limit(1)
+        .maybeSingle()
+      if (byCompanyErr) throw new Error(`profile company read refused: ${byCompanyErr.message}`)
+      profileId = (byCompany as { id: string } | null)?.id ?? null
+    }
+
+    // 3. Else create it — with EXPLICIT money-facing values, never the column
+    //    defaults. The live defaults are subscription_tier 'basic' AND
+    //    subscription_status 'active', and 'active' is in
+    //    PLATFORM_USE_PAYING_STATUSES (lib/vendors/vendor-platform-identity.ts)
+    //    — a defaulted row would read as a vendor already PAYING the platform,
+    //    which both exempts its brokerages from platform-use charges they owe
+    //    (m549 gate) and misstates the vendor's own billing. 'canceled' is the
+    //    one non-paying token in the SubscriptionStatus vocabulary
+    //    (lib/kernel/vendor-subscription.ts) and collapses to basic
+    //    capabilities until the vendor actually checks out through
+    //    createVendorSubscriptionCheckout.
+    if (!profileId && companyName) {
+      const { data: created, error: createErr } = await svc
+        .from("vendor_marketplace_profiles")
+        .insert({
+          user_id:             user.id,
+          company_name:        companyName,
+          category:            "service", // bench trades are services (CHECK: api|service|tool|integration)
+          support_email:       ((vendorRow as { email?: string | null } | null)?.email ?? user.email).toLowerCase(),
+          subscription_tier:   "basic",
+          subscription_status: "canceled",
+          status:              "pending",
+        })
+        .select("id")
+        .single()
+      if (createErr) throw new Error(`profile insert refused: ${createErr.message}`)
+      profileId = (created as { id: string }).id
+    }
+
+    // 4. Stamp the canonical link vendors.platform_vendor_id → profile (m549's
+    //    Fallback-0), so the identity module stops needing its portal-grant and
+    //    email fallbacks for this vendor. First-writer-wins: never overwrite an
+    //    existing link. The update is COUNTED (§3 — a matched-nothing UPDATE
+    //    resolves identically to one that worked).
+    if (profileId && vendorRow && !(vendorRow as { platform_vendor_id?: string | null }).platform_vendor_id) {
+      const { data: linked, error: linkErr } = await svc
+        .from("vendors")
+        .update({ platform_vendor_id: profileId, updated_at: new Date().toISOString() })
+        .eq("id", invitation.vendor_id)
+        .is("platform_vendor_id", null)
+        .select("id")
+      if (linkErr) {
+        console.error(`[acceptVendorInvite] platform_vendor_id link refused for vendor ${invitation.vendor_id}: ${linkErr.message}`)
+      } else if (!linked || linked.length === 0) {
+        // A concurrent acceptance linked it first — fine, the link exists.
+        console.warn(`[acceptVendorInvite] vendor ${invitation.vendor_id} was linked concurrently; kept the first link`)
+      }
+    }
+    if (!companyName && !profileId) {
+      console.error(`[acceptVendorInvite] vendor ${invitation.vendor_id} has no company name — platform identity NOT established`)
+    }
+  } catch (e) {
+    console.error(`[acceptVendorInvite] platform identity not established for vendor ${invitation.vendor_id}:`, (e as Error).message)
+  }
+
   // Mark invitation accepted
   await svc.from("vendor_invitations").update({
     status:      "accepted",
@@ -324,22 +502,35 @@ export async function revokeVendorInviteAction(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
 
-  const { data: caller } = await supabase
+  const { data: caller, error: callerErr } = await supabase
     .from("users")
     .select("user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  if (callerErr) return { ok: false, error: `Could not verify your account: ${callerErr.message}` }
   if (!caller?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!["broker","broker_admin","admin","superadmin","team_lead"].includes(caller.user_type ?? "")) {
-    return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: caller.user_type ?? "" })) {
+    return { ok: false, error: "Forbidden — only a broker, admin or team lead can revoke an invitation" }
   }
 
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` makes the revocation PROVABLE. Without it this returned
+  // {ok:true} whenever the statement executed — including when the tenant
+  // filter matched nothing, so revoking another brokerage's invitation, or an
+  // already-accepted one, reported success while the token stayed live.
+  const { data: revoked, error } = await svc
     .from("vendor_invitations")
-    .update({ status: "revoked" })
+    .update({ status: "revoked", updated_at: new Date().toISOString() })
     .eq("id", invitationId)
     .eq("brokerage_id", caller.brokerage_id)
     .eq("status", "pending")
-  return error ? { ok: false, error: error.message } : { ok: true }
+    .select("id")
+  if (error) return { ok: false, error: error.message }
+  if (!revoked || revoked.length === 0) {
+    return {
+      ok: false,
+      error: "Nothing was revoked — that invitation is not a pending invitation of your brokerage (it may already be accepted, expired or revoked).",
+    }
+  }
+  return { ok: true }
 }

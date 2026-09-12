@@ -7,16 +7,63 @@
  *   - app/actions/brief-audio.ts        (morning brief read aloud in agent's voice)
  *   - app/api/internal/voice-tts/route.ts (real-time assistant TTS)
  *   - app/actions/podcast-generation.ts  (legacy — to be migrated)
+ *   - lib/video/reel-voiceover.ts        (avatar/reel narration, multilingual)
  *
  * Default voice settings prioritize naturalness over speed. Callers can
  * override via `voiceSettings`. Returns raw mp3 bytes; caller decides
  * whether to stream, cache, or upload to blob storage.
+ *
+ * RESEARCH FINDING (wave 52, 2026-09-10 — Exa web search against ElevenLabs'
+ * own API reference, elevenlabs-python reference.md, and the convert /
+ * convert-with-timestamps endpoint docs): `language_code` is NOT a general
+ * "precision hint" for every model, despite how earlier comments in this repo
+ * described it. Per ElevenLabs: "Currently only Turbo v2.5 and Flash v2.5
+ * support language enforcement. For other models, an error will be returned
+ * if language code is provided" (the plain /convert endpoint — used by
+ * synthesizeSpeech below) — `eleven_multilingual_v2` is one of those "other
+ * models" and is NOT in the enforcement allowlist. The /convert-with-timestamps
+ * endpoint (synthesizeSpeechWithTimestamps) is more forgiving — "if the model
+ * does not support the provided language code, it will be ignored" — but
+ * still names multilingual_v2 as unsupported for the param. Net effect: a
+ * caller that sets modelId="eleven_multilingual_v2" (this repo's multilingual
+ * constant, lib/video/multilingual-reel.ts MULTILINGUAL_TTS_MODEL) AND passes
+ * languageCode risked a hard 400 on the plain-convert path and a silent no-op
+ * on the with-timestamps path either way — never the "precision hint" the
+ * comments described. FIX: `language_code` is now sent to the API ONLY when
+ * modelId names a model on ElevenLabs' actual enforcement allowlist
+ * (LANGUAGE_ENFORCEMENT_MODELS below); for every other model (including the
+ * multilingual one this repo uses for avatar reels) the param is dropped
+ * before the request — auto-detection from the (already-translated, see
+ * lib/video/multilingual-reel.ts translateReelScript) input text is what
+ * actually selects the language for that model, so dropping the param loses
+ * nothing multilingual_v2 was ever honoring. ADDITIVE / SAFE: every existing
+ * caller that never set languageCode is byte-for-byte unaffected; a caller
+ * that WAS setting languageCode against multilingual_v2 stops risking the 400
+ * and gets the same auto-detected audio it always effectively got.
  */
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { ELEVENLABS_REALISM_VOICE_SETTINGS, ELEVENLABS_TEXT_NORMALIZATION } from "@/lib/video/realism-profile"
 
 const ELEVENLABS_BASE = "https://api.elevenlabs.io"
+
+/**
+ * Models ElevenLabs actually enforces `language_code` on (per the research
+ * finding above). Everything else — including `eleven_multilingual_v2`, the
+ * model this repo uses for avatar/reel narration — either 400s (plain
+ * /convert) or silently ignores the param (/convert-with-timestamps), so it
+ * is never sent to them. Extend this set only when ElevenLabs documents a
+ * new model on the enforcement allowlist.
+ */
+const LANGUAGE_ENFORCEMENT_MODELS = new Set(["eleven_turbo_v2_5", "eleven_flash_v2_5"])
+
+/** PURE. The `language_code` body field to spread into an ElevenLabs request —
+ *  `{}` whenever the model doesn't actually honor it, so a caller can never
+ *  reintroduce the 400/no-op by hand at a new call site. */
+function languageCodeField(modelId: string, languageCode: string | null | undefined): { language_code: string } | Record<string, never> {
+  return languageCode && LANGUAGE_ENFORCEMENT_MODELS.has(modelId) ? { language_code: languageCode } : {}
+}
 
 export interface VoiceSettings {
   stability?: number          // 0-1, lower = more variable
@@ -25,12 +72,15 @@ export interface VoiceSettings {
   use_speaker_boost?: boolean
 }
 
-const DEFAULT_VOICE_SETTINGS: Required<VoiceSettings> = {
-  stability: 0.5,
-  similarity_boost: 0.75,
-  style: 0.0,
-  use_speaker_boost: true,
-}
+// REALISM (wave 55): these three were ElevenLabs' own bare API defaults
+// (stability 0.5 / similarity_boost 0.75 / style 0) — nobody had ever chosen
+// them for realism. ELEVENLABS_REALISM_VOICE_SETTINGS (lib/video/
+// realism-profile.ts, see its header for the 2026-09-11 research) is the ONE
+// tuned constant every avatar/voice call site now shares (§6) — including
+// lib/providers/dispatch.ts's D-ID avatar-video TTS leg, which sent NO
+// voice_settings at all before this wave. `apply_text_normalization` is added
+// alongside it below so numbers/dates in a script are spelled out correctly.
+const DEFAULT_VOICE_SETTINGS: Required<VoiceSettings> = ELEVENLABS_REALISM_VOICE_SETTINGS
 
 /** ElevenLabs default professional voice (Rachel) — fallback when no clone */
 export const FALLBACK_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
@@ -106,9 +156,11 @@ export async function synthesizeSpeech(
         text: input.text,
         model_id: input.modelId ?? "eleven_monolingual_v1",
         voice_settings: settings,
-        // language_code is optional — only sent when the caller specifies it (multilingual path).
-        // ElevenLabs ignores it for monolingual models and auto-detects when omitted on multilingual.
-        ...(input.languageCode ? { language_code: input.languageCode } : {}),
+        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
+        // language_code is sent ONLY to models ElevenLabs actually enforces it
+        // on (see the file header's research finding) — never to multilingual_v2,
+        // which either 400s or ignores it depending on endpoint.
+        ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),
       },
     })
 
@@ -229,8 +281,10 @@ export async function synthesizeSpeechWithTimestamps(
         text: input.text,
         model_id: input.modelId ?? "eleven_monolingual_v1",
         voice_settings: settings,
-        // language_code is optional — only sent when the caller specifies it (multilingual path).
-        ...(input.languageCode ? { language_code: input.languageCode } : {}),
+        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
+        // language_code is sent ONLY to models ElevenLabs actually enforces it
+        // on (see the file header's research finding) — never to multilingual_v2.
+        ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),
       },
     })
 
@@ -327,8 +381,10 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
           text: input.text,
           model_id: input.modelId ?? "eleven_monolingual_v1",
           voice_settings: settings,
-          // language_code is optional — only sent when the caller specifies it (multilingual path).
-          ...(input.languageCode ? { language_code: input.languageCode } : {}),
+        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
+          // language_code is sent ONLY to models ElevenLabs actually enforces it
+          // on (see the file header's research finding) — never to multilingual_v2.
+          ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),
         }),
       }
     )

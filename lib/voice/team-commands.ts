@@ -129,10 +129,11 @@ async function routeTeamCommand(
     case "quarterly_review": {
       // THE QBR SPOKEN TWIN — the same loader the Command Center card uses
       // (keep-one), principal-gated exactly like the dashboard action.
-      const { data: me } = await svc.from("users").select("role").eq("id", ctx.agentUserId).maybeSingle()
+      // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+      const { data: me } = await svc.from("users").select("user_type").eq("id", ctx.agentUserId).maybeSingle()
       const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
       const principal = await isTenancyPrincipal(svc, {
-        userId: ctx.agentUserId, brokerageId: ctx.brokerageId, role: String((me as any)?.role ?? ""),
+        userId: ctx.agentUserId, brokerageId: ctx.brokerageId, role: String((me as any)?.user_type ?? ""),
       })
       if (!principal) {
         return { ok: false, spoken: "The quarterly review is for the account principal — ask your broker or team lead to pull it up." }

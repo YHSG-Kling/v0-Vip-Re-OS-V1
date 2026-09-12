@@ -29,6 +29,28 @@ import {
   type RequiredBrandElement,
 } from "@/lib/brand-template-registry"
 
+/** Upper bound on one batch — these are synchronous CPU loops on caller input. */
+const BATCH_MAX = 500
+
+/**
+ * Session gate. NOT EXPORTED — this module is `"use server"`, so exporting it
+ * would mint another public endpoint.
+ *
+ * The two batch actions below are pure computation with no database access, so
+ * there is no tenant scope to enforce and none is claimed here. What they DID
+ * expose was an unauthenticated, unbounded synchronous loop over a caller-supplied
+ * array: `batchClassifyTemplates` / `batchGetBrandRequirements` run in-process
+ * with no yield, so one request with a large enough array occupies a server
+ * worker for as long as it takes. Requiring a session and capping the array is
+ * the whole fix; the single-item siblings in this file are naturally bounded and
+ * are left as they are.
+ */
+async function requireSession(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  return ctx.isAuthenticated ? { ok: true } : { ok: false, error: "Not authenticated" }
+}
+
 // ============================================
 // TEMPLATE CLASSIFICATION ACTIONS
 // ============================================
@@ -92,8 +114,14 @@ export async function batchClassifyTemplatesAction(
   error?: string
 }> {
   try {
+    const gate = await requireSession()
+    if (!gate.ok) return { success: false, error: gate.error }
+
     if (!Array.isArray(metadataList) || metadataList.length === 0) {
       return { success: false, error: "metadataList must be a non-empty array" }
+    }
+    if (metadataList.length > BATCH_MAX) {
+      return { success: false, error: `Classify at most ${BATCH_MAX} templates per call` }
     }
 
     const classifications = batchClassifyTemplates(metadataList)
@@ -211,8 +239,14 @@ export async function batchGetBrandRequirementsAction(
   error?: string
 }> {
   try {
+    const gate = await requireSession()
+    if (!gate.ok) return { success: false, error: gate.error }
+
     if (!Array.isArray(contexts) || contexts.length === 0) {
       return { success: false, error: "contexts must be a non-empty array" }
+    }
+    if (contexts.length > BATCH_MAX) {
+      return { success: false, error: `Resolve at most ${BATCH_MAX} contexts per call` }
     }
 
     const requirements = batchGetBrandRequirements(contexts)

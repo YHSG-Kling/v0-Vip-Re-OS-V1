@@ -5,6 +5,8 @@
  * Every stage transition must validate requirements and log events.
  */
 
+import type { TransactionStatus } from "./transaction-status"
+
 // Stage definitions (post-contract only)
 export const TRANSACTION_STAGES = {
   UNDER_CONTRACT: 'UNDER_CONTRACT',
@@ -18,13 +20,26 @@ export const TRANSACTION_STAGES = {
 
 export type TransactionStage = typeof TRANSACTION_STAGES[keyof typeof TRANSACTION_STAGES]
 
-// Status mapping (for transactions.status column)
-export const STAGE_TO_STATUS_MAP: Record<TransactionStage, string> = {
+// Status mapping (for transactions.status column).
+//
+// SECOND SPELLING, SECOND SILENT REFUSAL. The first defect wrote the UPPERCASE
+// stage straight into `status`; the fix that replaced it invented `closing`,
+// which `transactions_status_check` does not admit EITHER — so FINANCING_PENDING
+// and CLOSING_PREP still lost the WHOLE row (23514, both writers below), and no
+// deal ever persisted an advance past APPRAISAL. `closing` is precisely the
+// value m291 removed from the column: see the "WHAT WAS THERE" note in
+// lib/transactions/transaction-status.ts:24 — the ONE transactions.status
+// vocabulary, which this map is now typed against so `tsc` refuses a third
+// spelling. Values are the survivor's ladder
+// (under_contract → pending → clear_to_close → closed), lib/transactions/transaction-status.ts:36.
+//   FINANCING_PENDING → `pending`        inspection/appraisal contingencies cleared, lender still working
+//   CLOSING_PREP      → `clear_to_close` the lender has issued CTC — docs to title
+export const STAGE_TO_STATUS_MAP: Record<TransactionStage, TransactionStatus> = {
   UNDER_CONTRACT: 'under_contract',
   INSPECTION: 'under_contract',
   APPRAISAL: 'under_contract',
-  FINANCING_PENDING: 'closing',
-  CLOSING_PREP: 'closing',
+  FINANCING_PENDING: 'pending',
+  CLOSING_PREP: 'clear_to_close',
   CLOSED: 'closed',
   LOST: 'lost',
 }

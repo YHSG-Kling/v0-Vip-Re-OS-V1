@@ -40,6 +40,13 @@ const PROTECTIVE_ACTION: Record<string, string> = {
   communication: "Re-engage — this deal has gone quiet; a check-in protects it.",
   documents:     "Collect the missing/rejected document blocking the file.",
   participants:  "Assign the missing party (lender/title) — gaps here stall everything.",
+  // PERSISTED vocabulary: health-scorer collapses its ten categories into four before
+  // writing deal_health_factors, so a stored weakest link arrives under these names.
+  // Each action covers the categories that collapsed into it.
+  financing_status:      "Push the lender for clear-to-close and confirm earnest money is on file — financing is the biggest risk to this close.",
+  deadline_proximity:    "Resolve the inspection items and the nearest overdue deadline before they slip the close.",
+  timeline_adherence:    "Knock out the overdue milestone driving the risk.",
+  document_completeness: "Clear the title commitment and any open compliance item — either can block funding.",
 }
 
 function verdictFromScore(score: number): DealVerdict {

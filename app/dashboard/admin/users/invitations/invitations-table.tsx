@@ -3,8 +3,8 @@
 import { useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, X, Clock, CheckCircle2, AlertTriangle } from "lucide-react"
-import { revokeInvitationAction, type InvitationRow } from "@/app/actions/admin/invitations"
+import { Loader2, X, Clock, CheckCircle2, AlertTriangle, RefreshCw } from "lucide-react"
+import { revokeInvitationAction, resendInvitationAction, type InvitationRow } from "@/app/actions/admin/invitations"
 
 function defaultStatusBadge(s: string) {
   switch (s) {
@@ -37,6 +37,20 @@ export function InvitationsTable({
       if (!r.ok) { setFeedback(`Revoke failed: ${r.error}`); return }
       setRows(prev => prev.map(row => row.id === id ? { ...row, status: "revoked" } : row))
       setFeedback("Invitation revoked.")
+    })
+  }
+
+  function handleResend(id: string) {
+    setFeedback(null)
+    setPendingId(id)
+    startTransition(async () => {
+      const r = await resendInvitationAction(id)
+      setPendingId(null)
+      if (!r.ok) { setFeedback(`Resend failed: ${r.error}`); return }
+      setRows(prev => prev.map(row =>
+        row.id === id ? { ...row, status: "pending", days_until_expiry: 7 } : row
+      ))
+      setFeedback("Invitation re-opened for 7 days.")
     })
   }
 
@@ -81,18 +95,33 @@ export function InvitationsTable({
                     : "—"}
                 </td>
                 <td className="px-4 py-2.5 text-right">
-                  {r.status === "pending" && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={isPending && pendingId === r.id}
-                      onClick={() => handleRevoke(r.id)}
-                    >
-                      {isPending && pendingId === r.id
-                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        : <><X className="h-3.5 w-3.5 mr-1" />Revoke</>}
-                    </Button>
-                  )}
+                  <div className="flex items-center justify-end gap-1">
+                    {/* Expired/revoked invites can be re-opened; pending can be extended or revoked */}
+                    {(r.status === "pending" || r.status === "expired" || r.status === "revoked") && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isPending && pendingId === r.id}
+                        onClick={() => handleResend(r.id)}
+                      >
+                        {isPending && pendingId === r.id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <><RefreshCw className="h-3.5 w-3.5 mr-1" />Resend</>}
+                      </Button>
+                    )}
+                    {r.status === "pending" && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isPending && pendingId === r.id}
+                        onClick={() => handleRevoke(r.id)}
+                      >
+                        {isPending && pendingId === r.id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <><X className="h-3.5 w-3.5 mr-1" />Revoke</>}
+                      </Button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

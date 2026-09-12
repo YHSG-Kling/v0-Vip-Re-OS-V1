@@ -6,6 +6,8 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import WidgetSettingsClient from "./widget-settings-client"
+import { ChatWidgetScopeCard } from "@/app/components/settings/ChatWidgetScopeCard"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = { title: "Widget & AI Settings" }
 
@@ -16,6 +18,13 @@ export default async function WidgetSettingsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Resolve the user's profile
   const { data: profile } = await service
     .from("users")
@@ -26,7 +35,10 @@ export default async function WidgetSettingsPage() {
   if (!profile?.brokerage_id) redirect("/dashboard")
 
   // Only internal staff can access this page
-  const ALLOWED_TYPES = ["agent","broker","admin","superadmin","tc","team_lead","isa","compliance_officer"]
+  // SCOPE LADDER (staff roster, kept inline): 'superadmin' removed — dead as
+  // users.user_type (0 live rows); broker_owner added — storable seat that owns
+  // the brokerage.
+  const ALLOWED_TYPES = ["agent","broker","broker_owner","admin","tc","team_lead","isa","compliance_officer"]
   if (!ALLOWED_TYPES.includes(profile.user_type ?? "")) redirect("/dashboard")
 
   const brokerageId = profile.brokerage_id
@@ -66,7 +78,8 @@ export default async function WidgetSettingsPage() {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.NEXT_PUBLIC_SITE_URL ?? ""
 
   return (
-    <WidgetSettingsClient
+    <div className="space-y-6">
+      <WidgetSettingsClient
       userId={user.id}
       brokerageId={brokerageId}
       agentId={agent?.id ?? null}
@@ -74,6 +87,15 @@ export default async function WidgetSettingsPage() {
       widgetPosition={(agent?.widget_position as "right" | "left") ?? "right"}
       aiIdentity={aiIdentity}
       appUrl={appUrl}
-    />
+      />
+
+      {/* Whose identity the conversation carries — moved off the orphaned
+          /settings/global page, which was the only place this could be set.
+          The client above owns the launcher's appearance and placement; this
+          owns who is on the other end of it. */}
+      <div className="rounded-lg border bg-card p-4">
+        <ChatWidgetScopeCard />
+      </div>
+    </div>
   )
 }

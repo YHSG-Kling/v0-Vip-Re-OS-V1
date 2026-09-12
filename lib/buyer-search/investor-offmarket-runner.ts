@@ -49,7 +49,11 @@ function toProperty(r: any, stage: "lead" | "contact"): OffMarketProperty {
 
 /**
  * Match a qualified investor buyer to our off-market inventory and persist. Idempotent per contact.
- * Only for contact_type='investor' — regular buyers are matched to MLS inventory by the retail matchers.
+ * Only for contact_persona='investor' — regular buyers are matched to MLS inventory by the retail
+ * matchers. REPOINTED from contact_type (2026-08-31, owner ruling verbatim: "investor is a persona
+ * and not a contact type"): the gate always MEANT "a buyer whose situation is an investment
+ * purchase" — the persona m589 made storable. The tolerant contact_type read below keeps any
+ * pre-m593 legacy row (zero live at repoint) matched rather than dropped.
  */
 export async function runInvestorOffMarketMatch(
   svc: Svc,
@@ -57,12 +61,18 @@ export async function runInvestorOffMarketMatch(
 ): Promise<InvestorOffMarketResult> {
   const { data: contact } = await svc
     .from("contacts")
-    .select("id, contact_type, agent_id, brokerage_id")
+    .select("id, contact_type, contact_persona, agent_id, brokerage_id")
     .eq("id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
   if (!contact) return { ok: false, reason: "contact_not_found" }
-  if ((contact as any).contact_type !== "investor") return { ok: false, reason: "not_investor" }
+  // m593 IS APPLIED (2026-08-31, verified: the contact_type CHECK no longer
+  // admits 'investor' and its backfill mapped any typed row to buyer + persona)
+  // — so the transitional contact_type tolerant read that stood here is gone.
+  // The persona IS the fact now, and a spelling the database cannot store must
+  // not keep a live branch (§2: a check no input can trigger reads as coverage).
+  const isInvestor = (contact as any).contact_persona === "investor"
+  if (!isInvestor) return { ok: false, reason: "not_investor" }
 
   const box = await loadBuyerCriteria(svc, params.contactId)
   if (!box) return { ok: false, reason: "no_box" }
@@ -173,12 +183,16 @@ export async function refreshInvestorOffMarketMatches(
 ): Promise<InvestorRefreshResult> {
   const out: InvestorRefreshResult = { investors: 0, matched: 0, portalCards: 0 }
   // Only investor contacts that actually carry a buy-box (an investor without saved criteria can't be
-  // matched — honest skip, no wasted scan).
+  // matched — honest skip, no wasted scan). The filter is contact_persona — the axis the owner ruled
+  // the investing lives on contact_persona (m589). The transitional OR over the
+  // legacy contact_type spelling is dropped: m593 is applied and backfilled, so
+  // no row can carry it — a filter arm the database cannot satisfy is dead
+  // coverage wearing a live face (§2).
   const { data: investors } = await svc
     .from("contacts")
     .select("id, property_preferences!inner(contact_id)")
     .eq("brokerage_id", params.brokerageId)
-    .eq("contact_type", "investor")
+    .eq("contact_persona", "investor")
     .limit(500)
   for (const inv of (investors ?? []) as any[]) {
     out.investors++

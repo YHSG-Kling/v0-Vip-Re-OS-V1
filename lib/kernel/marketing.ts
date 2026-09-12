@@ -15,7 +15,10 @@
  * Column contracts (live schema — verified against Supabase):
  *   newsletter_campaigns:    campaign_name, subject_line, content, status, send_date, brokerage_id, agent_id, approval_status, open_rate, click_rate, unsubscribe_rate, brand_compliance_passed
  *   newsletter_subscribers:  email, first_name, last_name, status, brokerage_id, agent_id, contact_id
- *   newsletter_scheduled_sends: newsletter_id, scheduled_time, sent_time, recipient_count
+ *   newsletter_scheduled_sends: newsletter_id, brokerage_id, scheduled_time, sent_time, recipient_count
+ *     (scheduled_time is the surviving schedule column — scheduled_send_time is
+ *      a writer-less orphan awaiting the integrator's DROP, see §6 note at the
+ *      insert site below)
  *   blog_posts:              title, slug, excerpt, content, publish_status (NOT status), brokerage_id, agent_user_id, created_by, seo_score, featured_image_url, wordpress_post_id
  *   ai_video_projects:       title, status, script_content, video_type, agent_id, listing_id, brokerage_id, provider_status, video_url
  *   podcast_episodes:        title, description, script, status, brokerage_id, agent_id, source_video_project_id, publish_channels, published_at, audio_url
@@ -30,12 +33,17 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+// Client-agnostic identity resolver, NOT agent-identity-resolver: this module
+// carries no "server-only" marker and is imported from the marketing surfaces,
+// so it must never pull the service-role resolver into a page bundle.
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 import { evaluateKernelOutbound, isComplianceBlocked, getComplianceReason } from "@/lib/kernel/adapters/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted } from "@/lib/ai/models"
+import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
 
 // ─── RESULT CONTRACT ──────────────────────────────────────────────────────────
 
@@ -63,7 +71,13 @@ export interface MarketingActorContext {
 // Loads the top-level marketing workspace summary in a single round trip.
 // Used by the canonical marketing studio page to prime the dashboard.
 //
-// Input:  ctx.brokerageId, ctx.agentId (optional filter)
+// Input:  ctx.brokerageId. NOTE: ctx.agentId is NOT applied as a filter — this
+//         summary is brokerage-wide. The per-agent cut is not implemented
+//         because the seven source tables split across two id classes
+//         (marketing_campaigns/blog_posts key on agent_user_id, a USERS id;
+//         the rest key on agent_id, an AGENTS id) and narrowing them needs a
+//         resolve, not a substitution. The header used to claim the filter
+//         existed; it never did.
 // Output: counts, recent campaigns, upcoming sends, recent blog posts, recent episodes
 // Tables: marketing_campaigns, newsletter_campaigns, blog_posts, podcast_episodes,
 //         direct_mail_campaigns, qr_codes, marketing_assets, campaign_calendar
@@ -73,7 +87,12 @@ export interface MarketingWorkspaceData {
   campaignCounts: { draft: number; live: number; ended: number }
   newsletterCounts: { draft: number; scheduled: number; sent: number; totalSubscribers: number }
   blogCounts: { draft: number; published: number }
-  videoCounts: { generating: number; completed: number }
+  /** ai_video_projects carries NINE statuses (lib/video/video-status.ts), so a
+   *  two-bucket tally has to be keyed on the canonical SETS, not on two hand-
+   *  picked tokens. Named inProgress/finished rather than generating/completed
+   *  precisely so a future reader does not assume `finished` means
+   *  status === 'completed' — a published video is finished too. */
+  videoCounts: { inProgress: number; finished: number }
   podcastCounts: { draft: number; completed: number }
   directMailCounts: { planning: number; mailed: number }
   qrCount: number
@@ -84,11 +103,9 @@ export async function loadMarketingWorkspace(
   ctx: MarketingActorContext
 ): Promise<KernelMarketingResult<MarketingWorkspaceData>> {
   const supabase = await createServiceClient()
-  const { brokerageId, agentId } = ctx
+  const { brokerageId } = ctx
 
   try {
-    const base = { brokerage_id: brokerageId }
-
     const [
       campaignRows,
       newsletterRows,
@@ -125,8 +142,38 @@ export async function loadMarketingWorkspace(
         .limit(5),
     ])
 
+    // supabase-js RESOLVES a refused read: `.data` comes back null and `.error`
+    // carries the reason. Every count below is derived from `.data`, so without
+    // this check an RLS refusal or a dropped column renders as a workspace of
+    // honest-looking ZEROS — indistinguishable from a brokerage that has not
+    // created anything yet, and impossible for the operator to notice.
+    const reads: Array<[string, { error: { message: string } | null }]> = [
+      ["marketing_campaigns", campaignRows],
+      ["newsletter_campaigns", newsletterRows],
+      ["newsletter_subscribers", subscriberCount],
+      ["blog_posts", blogRows],
+      ["ai_video_projects", videoRows],
+      ["podcast_episodes", podcastRows],
+      ["direct_mail_campaigns", mailRows],
+      ["qr_codes", qrResult],
+      ["campaign_calendar", eventRows],
+    ]
+    const failed = reads.filter(([, r]) => r.error)
+    if (failed.length > 0) {
+      return {
+        success: false,
+        error: `loadMarketingWorkspace could not read ${failed
+          .map(([t, r]) => `${t} (${r.error!.message})`)
+          .join("; ")}`,
+      }
+    }
+
     const tally = (rows: any[], key: string, val: string) =>
       (rows || []).filter((r) => r[key] === val).length
+
+    /** Count rows whose status falls in one of the canonical video sets. */
+    const tallyIn = (rows: any[], key: string, vals: readonly string[]) =>
+      (rows || []).filter((r) => vals.includes(r[key])).length
 
     return {
       success: true,
@@ -147,8 +194,11 @@ export async function loadMarketingWorkspace(
           published: tally(blogRows.data || [], "publish_status", "published"),
         },
         videoCounts: {
-          generating: tally(videoRows.data || [], "status", "generating"),
-          completed:  tally(videoRows.data || [], "status", "completed"),
+          // `generating` alone hid queued and scripting work; `completed` alone
+          // dropped every PUBLISHED video out of both buckets, so a brokerage
+          // that had shipped its whole library read as having produced nothing.
+          inProgress: tallyIn(videoRows.data || [], "status", VIDEO_IN_PROGRESS_STATUSES),
+          finished:   tallyIn(videoRows.data || [], "status", VIDEO_FINISHED_STATUSES),
         },
         podcastCounts: {
           draft:     tally(podcastRows.data || [], "status", "draft"),
@@ -171,7 +221,7 @@ export async function loadMarketingWorkspace(
 // 2. createNewsletterCampaign
 //
 // Creates a newsletter campaign in draft status.
-// Input:  brokerageId, agentId, campaignName, subjectLine, content?
+// Input:  brokerageId, agentId, campaignName, subjectLine, content?, marketingCampaignId?
 // Output: { campaignId }
 // Tables write: newsletter_campaigns
 // Rules:  canAccessFeature('email_campaigns'); content passes applyBrandVoice
@@ -182,6 +232,12 @@ export interface CreateNewsletterCampaignInput {
   campaignName: string
   subjectLine: string
   content?: string
+  /** Optional umbrella marketing_campaigns id — same linkage createBlogDraft
+   *  below already writes onto blog_posts.marketing_campaign_id. Verified
+   *  against ctx.brokerageId before writing: the id is caller data even when
+   *  the ctx is session-derived, and an unverified id would file this tenant's
+   *  issue under another tenant's ROI rollup. */
+  marketingCampaignId?: string
 }
 
 export async function createNewsletterCampaign(
@@ -205,6 +261,23 @@ export async function createNewsletterCampaign(
   })
 
   const supabase = await createServiceClient()
+
+  // Gate first, then use the service client (§4): this runs on the service
+  // role, so the brokerage predicate below is the ONLY thing standing between
+  // this insert and a cross-tenant campaign link.
+  let marketingCampaignId: string | null = null
+  if (input.marketingCampaignId) {
+    const { data: umbrella, error: umbrellaError } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", input.marketingCampaignId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (umbrellaError) return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
+    if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
+    marketingCampaignId = umbrella.id as string
+  }
+
   const { data, error } = await supabase
     .from("newsletter_campaigns")
     .insert({
@@ -217,6 +290,10 @@ export async function createNewsletterCampaign(
       status:         "draft",
       approval_status: "pending_review",
       brand_compliance_passed: false,
+      // The umbrella link the ROI measurer reads — verified above, never the
+      // raw input id. Same shape as createBlogDraft's
+      // blog_posts.marketing_campaign_id write later in this file.
+      marketing_campaign_id: marketingCampaignId,
       created_at:     new Date().toISOString(),
     })
     .select("id")
@@ -288,6 +365,18 @@ export async function scheduleNewsletterSend(params: {
   userId: string
   agentId?: string
 }): Promise<KernelMarketingResult<{ scheduleId: string }>> {
+  // FAIL CLOSED ON A MISSING TENANT (§4). An empty brokerageId used to slide
+  // through here: the campaign read below matched nothing (so the caller got
+  // "Campaign not found" — closed by accident), but the real defect was the
+  // INSERT further down, which wrote the ledger row with NO brokerage_id at
+  // all — an untenanted row on a tenanted table, invisible to every
+  // brokerage-scoped read of the ledger. The row now carries the same tenant
+  // the campaign was verified against, and a caller with no tenant is refused
+  // outright instead of by coincidence.
+  if (!params.brokerageId) {
+    return { success: false, error: "No brokerage in the caller's context — refusing to schedule an untenanted send." }
+  }
+
   const supabase = await createServiceClient()
 
   const { data: campaign } = await supabase
@@ -338,6 +427,20 @@ export async function scheduleNewsletterSend(params: {
       .from("newsletter_scheduled_sends")
       .insert({
         newsletter_id:   params.campaignId,
+        // The tenant the campaign read above was verified against — this insert
+        // used to carry NO brokerage_id, which is why the publish-newsletters
+        // cron's ledger-close deliberately matches on newsletter_id alone
+        // (app/api/cron/publish-newsletters/route.ts:588). New rows are
+        // tenanted; the cron's match stays id-anchored so the old untenanted
+        // rows still close.
+        brokerage_id:    params.brokerageId,
+        // `scheduled_time` is the SURVIVING spelling (§6). The table carries
+        // both scheduled_time and scheduled_send_time; every reader —
+        // lib/campaigns/roi-calculator.ts:365's window filter and the studio's
+        // send list fallback (marketing-studio-client.tsx:2525) — reads
+        // scheduled_time, and nothing reads scheduled_send_time. The sibling
+        // writer (app/actions/newsletter/schedule-newsletter.ts) converged
+        // onto this column in the same change.
         scheduled_time:  params.scheduledTime,
         recipient_count: recipientCount ?? 0,
         created_at:      new Date().toISOString(),
@@ -711,6 +814,30 @@ Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
   }
 
   const supabase = await createServiceClient()
+
+  // Gate first, then use the service client (§4) — the same block
+  // createNewsletterCampaign carries above, because it is the same hole: this
+  // runs on the service role, so nothing but this predicate stands between the
+  // insert and a cross-tenant campaign link. The FK proves a
+  // marketing_campaigns row EXISTS; it never proves it is OURS, and an
+  // attacker-supplied or stale campaignId would file this tenant's post under
+  // another tenant's campaign — feeding THEIR ROI rollup
+  // (lib/marketing/campaign-measurer.ts reads blog_posts by
+  // marketing_campaign_id). The raw input id is never written; only the
+  // verified one is.
+  let marketingCampaignId: string | null = null
+  if (input.campaignId) {
+    const { data: umbrella, error: umbrellaError } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", input.campaignId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (umbrellaError) return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
+    if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
+    marketingCampaignId = umbrella.id as string
+  }
+
   const { data, error } = await supabase
     .from("blog_posts")
     .insert({
@@ -722,7 +849,7 @@ Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
       excerpt,
       content,
       publish_status:        "draft",
-      marketing_campaign_id: input.campaignId ?? null,
+      marketing_campaign_id: marketingCampaignId,
       seo_score:             0,
       created_at:            new Date().toISOString(),
       updated_at:            new Date().toISOString(),
@@ -902,11 +1029,19 @@ export async function createVideoProject(
   // to 'customer_facing' (safer — over-restrict by default).
   const audienceType = input.audienceType ?? "customer_facing"
 
+  // ai_video_projects.agent_id is a NOT NULL FK to agents(id). ctx.agentId is
+  // caller-supplied and optional, so resolve from the authenticated users.id
+  // instead of trusting it — and refuse rather than stage a project nobody owns.
+  const videoAgentId = await resolveAgentIdInBrokerage(supabase, ctx.userId, ctx.brokerageId)
+  if (!videoAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — complete onboarding before generating video." }
+  }
+
   const { data, error } = await supabase
     .from("ai_video_projects")
     .insert({
       brokerage_id:        ctx.brokerageId,
-      agent_id:            ctx.agentId ?? null,
+      agent_id:            videoAgentId,
       title:               input.title.trim(),
       script_content:      input.scriptContent.trim(),
       video_type:          input.videoType,
@@ -1002,7 +1137,11 @@ export async function distributeVideoAsset(params: {
   if (!project.video_url) {
     return { success: false, error: "Video is not yet generated. Preview the project first to confirm it is ready." }
   }
-  if (project.status !== "completed") {
+  // Any FINISHED asset may be distributed. Requiring exactly "completed" refused
+  // an agent's own manual upload (`uploaded`, with a real video_url) and refused
+  // a re-distribution, because a successful distribute rewrites the status to
+  // "distributed" — success locked the video out of its own feature.
+  if (!(VIDEO_FINISHED_STATUSES as readonly string[]).includes(project.status)) {
     return { success: false, error: `Video is not yet completed (current: ${project.status}).` }
   }
   // Migration 1051: AI-generated videos can't distribute until admin
@@ -1191,11 +1330,18 @@ export async function createPodcastEpisodeKernel(
   }
 
   const supabase = await createServiceClient()
+  // podcast_episodes.agent_id is a NOT NULL FK to agents(id) — same resolve as
+  // the video path, same refusal when the user has no agent profile.
+  const episodeAgentId = await resolveAgentIdInBrokerage(supabase, ctx.userId, ctx.brokerageId)
+  if (!episodeAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — complete onboarding before creating a podcast episode." }
+  }
+
   const { data, error } = await supabase
     .from("podcast_episodes")
     .insert({
       brokerage_id: ctx.brokerageId,
-      agent_id: ctx.agentId ?? null,
+      agent_id: episodeAgentId,
       title: input.title.trim(),
       description: input.description ?? null,
       script: input.script ?? null,
@@ -1339,6 +1485,22 @@ export interface CreateMarketingCampaignInput {
   listingId?:    string
   budgetTotal?:  number
   visibilityScope?: "agent" | "team" | "brokerage"
+  // ── AUDIENCE CRITERIA — the columns the launch gate reads ─────────────────
+  // These six were read by publishMarketingCampaignSafe
+  // (lib/marketing/campaign-publisher.ts:47-67) and by distributeVideoAsset's
+  // touchpoint recorder (this file, line ~1141) and written by NOTHING, in
+  // either creation path. resolveCampaignAudience reads an empty criteria array
+  // as "no filter" (lib/marketing/audience-resolver.ts:64), so a campaign
+  // created here resolved to EVERY contact in the brokerage up to its 5000-row
+  // cap — and then launched against that. Accepting them here is the writer
+  // half; the reader half was already built.
+  audiencePersonas?:       string[]
+  audienceGenerations?:    string[]
+  audienceAgeSegs?:        string[]
+  audienceLeadSourceTags?: string[]
+  audienceBuyerStages?:    string[]
+  /** Explicit pinned list — overrides every criterion above in the resolver. */
+  audienceContactIds?:     string[]
 }
 
 export async function createMarketingCampaign(
@@ -1358,6 +1520,16 @@ export async function createMarketingCampaign(
       campaign_name:    input.campaignName.trim(),
       campaign_type:    input.campaignType,
       listing_id:       input.listingId    ?? null,
+      // The five text[] criteria are NOT NULL DEFAULT '{}' — an explicit empty
+      // array says "no criterion" in the same words the resolver reads.
+      // audience_contact_ids is nullable and the resolver reads `?? undefined`,
+      // so its floor is NULL: an empty array there would mean "pinned to nobody".
+      audience_personas:         input.audiencePersonas       ?? [],
+      audience_generations:      input.audienceGenerations    ?? [],
+      audience_age_segs:         input.audienceAgeSegs        ?? [],
+      audience_lead_source_tags: input.audienceLeadSourceTags ?? [],
+      audience_buyer_stages:     input.audienceBuyerStages    ?? [],
+      audience_contact_ids:      input.audienceContactIds     ?? null,
       budget_total:     input.budgetTotal  ?? 0,
       budget_spent:     0,
       visibility_scope: input.visibilityScope ?? "agent",
@@ -1426,62 +1598,26 @@ export async function repurposeContentAsset(params: {
   return { success: true, data: { logId: data.id } }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 20. createQrAsset
+// ─── REMOVED in the QR merge (wave Q) ────────────────────────────────────────
 //
-// Creates a QR code record.
-// Input:  ctx, label, targetUrl, purpose, listingId?, expiresAt?
-// Output: { qrCodeId, slug }
-// Tables write: qr_codes
-// Rules:  slug must be unique; targetUrl must be a valid URL
-// ───────────────────���─────────────────────────────────────────────────────────
-
-export interface CreateQrAssetInput {
-  ctx:        MarketingActorContext
-  label:      string
-  targetUrl:  string
-  purpose:    "listing" | "open_house" | "general" | "campaign" | "lead_capture"
-  listingId?: string
-  expiresAt?: string
-}
-
-export async function createQrAsset(
-  input: CreateQrAssetInput
-): Promise<KernelMarketingResult<{ qrCodeId: string; slug: string }>> {
-  const { ctx } = input
-  if (!input.label?.trim())    return { success: false, error: "QR code label is required." }
-  if (!input.targetUrl?.trim()) return { success: false, error: "Target URL is required." }
-
-  // Basic URL validation
-  try { new URL(input.targetUrl) } catch {
-    return { success: false, error: "Target URL is not a valid URL." }
-  }
-
-  const slug = `qr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-  const supabase = await createServiceClient()
-
-  const { data, error } = await supabase
-    .from("qr_codes")
-    .insert({
-      brokerage_id: ctx.brokerageId,
-      agent_id:     ctx.agentId ?? null,
-      label:        input.label.trim(),
-      slug,
-      purpose:      input.purpose,
-      target_url:   input.targetUrl.trim(),
-      listing_id:   input.listingId ?? null,
-      expires_at:   input.expiresAt ?? null,
-      is_active:    true,
-      scan_count:   0,
-      lead_count:   0,
-      created_at:   new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-  return { success: true, data: { qrCodeId: data.id, slug } }
-}
+// `createQrAsset(input)` + `CreateQrAssetInput` — MERGED-THEN-DELETED.
+// SURVIVOR: lib/marketing/tracked-qr.ts:mintTrackedQr — the one QR minter, now the single
+// writer of `qr_codes` for the whole tree.
+//
+// WHAT WAS MERGED ONTO THE SURVIVOR FIRST: `expires_at`. This function was the ONLY writer of
+// that column anywhere in the tree, so deleting it without moving the capability would have made
+// a live column dead schema — and app/api/qr/scan reads expires_at to refuse an expired code, so
+// nothing would ever have expired. mintTrackedQr now takes `expiresAt`, and it is reachable from
+// createQrCodeAction (app/actions/marketing-studio.ts) and the admin POST route — more callers
+// than this function ever had.
+//
+// It was deleted rather than kept because it was BOTH a duplicate AND an orphan export: zero
+// callers in the tree, its own fourth slug recipe (`qr-<epoch>-<rand>`), no idempotency (a retry
+// minted a second code for the same thing), and it never set destination_type — so its codes were
+// invisible to every destination-bucketed analytic and to the m148 scan-event metadata.
+//
+// `previewQrAsset` below is NOT a duplicate and stays: it is the only reader that surfaces
+// expires_at alongside the scan/lead counters.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 21. previewQrAsset

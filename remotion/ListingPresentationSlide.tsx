@@ -57,13 +57,9 @@
  * inject whatever it needs without forking compositions.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
+import { AvatarPIP } from "./components/AvatarPIP"
 
 export type SlideKind = "title" | "image" | "comps" | "chart" | "closing"
 
@@ -122,7 +118,7 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         padding: "0 48px",
       }}>
         {brand.logoUrl ? (
-          <Img src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
+          <SafeImg src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
         ) : (
           <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 2 }}>{brand.brokerageName}</div>
         )}
@@ -163,6 +159,9 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         endFrame={avatarEndFrame}
         accentColor={brand.accentColor}
         primaryColor={brand.primaryColor}
+        position="bottom-right"
+        size={280}
+        ringWidth={5}
       />
 
       {/* Bottom-left agent name plate */}
@@ -200,17 +199,17 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
     }}>
       <div style={{
         width: 64, height: 4, backgroundColor: accentColor, marginBottom: 32,
-        opacity: interpolate(frame, [0, 12], [0, 1]),
+        opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }} />
       <div style={{
         fontSize: 84, fontWeight: 800, lineHeight: 1.05, marginBottom: 24,
-        opacity: interpolate(frame, [6, 24], [0, 1]),
+        opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }}>
         {title}
       </div>
       {body.map((p, i) => (
         <div key={i} style={{
-          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8]),
+          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           maxWidth: 1200, lineHeight: 1.45,
         }}>{p}</div>
       ))}
@@ -225,7 +224,7 @@ const ImageSlideBody: React.FC<{
     <div style={{ height: "100%", display: "flex", gap: 48 }}>
       <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
         {heroImageUrl ? (
-          <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <div style={{
             width: "100%", height: "100%", display: "flex",
@@ -299,52 +298,12 @@ const ClosingSlideBody: React.FC<{
   )
 }
 
-/* ─────────── avatar PIP ─────────── */
-
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  startFrame:     number
-  endFrame:       number
-  accentColor:    string
-  primaryColor:   string
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", bottom: 64, right: 56,
-    width: 280, height: 280,
-    borderRadius: 140,
-    boxShadow: `0 0 0 5px ${accentColor}, 0 24px 48px rgba(0,0,0,0.18)`,
-    overflow: "hidden",
-    backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video
-          src={avatarVideoUrl}
-          startFrom={startFrame}
-          endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring,
-      backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 100, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// TOMBSTONE (§1 orphan doctrine — duplicate exists, merge onto survivor
+// first): the private `AvatarPIP` that stood here (bottom-right, 280×280,
+// `trimBefore={startFrame} trimAfter={endFrame}` with NO freeze/fade guard)
+// was byte-identical to BuyerConsultationSlide.tsx's own private duplicate
+// and a `position`-less subset of the shared survivor. Wave 61 re-audit:
+// merged its "bottom-right" geometry onto remotion/components/AvatarPIP.tsx
+// (position="bottom-right" | size=280 | ringWidth=5), which also gives this
+// slide the avatarPipWindowFade freeze guard the private copy never had.
+// Survivor: remotion/components/AvatarPIP.tsx:52.

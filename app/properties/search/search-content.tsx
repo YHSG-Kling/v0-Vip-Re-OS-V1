@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { searchProperties, smartSearch, saveProperty } from "@/app/actions/idx-search"
+import { requestShowing } from "@/app/actions/showings"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -11,7 +12,16 @@ import { Slider } from "@/components/ui/slider"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
-import { Search, Heart, Grid3x3, List, MapPin, Bed, Bath, Maximize } from "lucide-react"
+import { Textarea } from "@/components/ui/textarea"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Search, Heart, Grid3x3, List, MapPin, Bed, Bath, Maximize, SlidersHorizontal } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import Link from "next/link"
 
@@ -23,6 +33,11 @@ export default function PropertySearchContent() {
   const [properties, setProperties] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
+  // Mobile filter-panel collapse. The `hidden lg:block` arm below was
+  // unreachable: nothing ever called setShowFilters, so the sidebar was
+  // permanently expanded on phones and pushed every result below the fold. The
+  // missing half is the toggle button rendered above the two-column layout
+  // (hidden at `lg`, where the sidebar is always visible anyway).
   const [showFilters, setShowFilters] = useState(true)
   const [filters, setFilters] = useState({
     minPrice: 0,
@@ -35,10 +50,35 @@ export default function PropertySearchContent() {
   })
   const [extractedFilters, setExtractedFilters] = useState<any>(null)
 
-  const contactId = searchParams.get("contactId") || "demo-contact-id"
+  // "Schedule" on every result card had no handler. requestShowing has handled
+  // OUTSIDE properties (listingId undefined + mls/address/price fields) since
+  // it was written — these IDX results are exactly that case.
+  const [showingProperty, setShowingProperty] = useState<any | null>(null)
+  const [showingDate, setShowingDate] = useState("")
+  const [showingTime, setShowingTime] = useState("")
+  const [showingNotes, setShowingNotes] = useState("")
+  const [requestingShowing, setRequestingShowing] = useState(false)
+
+  // No fallback. "demo-contact-id" is not a uuid, so every action given it
+  // failed a uuid parse — including the ALREADY-WIRED heart button, which showed
+  // a destructive "Error" toast on a page that otherwise looked healthy. A
+  // placeholder id does not make a feature work without a contact; it makes the
+  // failure look like a bug in the save.
+  const contactId = searchParams.get("contactId")
 
   const handleSmartSearch = async () => {
     if (!naturalQuery.trim()) return
+    // smartSearch personalises against the contact's budget, persona, timeline
+    // and search history, and throws outright when the contact row is missing —
+    // which is what the old "demo-contact-id" fallback guaranteed.
+    if (!contactId) {
+      toast({
+        title: "No client selected",
+        description: "Smart search reads the client's budget and history. Open it from a client's record.",
+        variant: "destructive",
+      })
+      return
+    }
 
     setLoading(true)
     try {
@@ -87,6 +127,14 @@ export default function PropertySearchContent() {
   }
 
   const handleSaveProperty = async (property: any) => {
+    if (!contactId) {
+      toast({
+        title: "No client selected",
+        description: "Open this search from a client's record to save properties for them.",
+        variant: "destructive",
+      })
+      return
+    }
     const result = await saveProperty({
       contactId: contactId,
       mlsNumber: property.mlsNumber,
@@ -104,6 +152,71 @@ export default function PropertySearchContent() {
         description: result.error,
         variant: "destructive",
       })
+    }
+  }
+
+  const handleOpenSchedule = (property: any) => {
+    if (!contactId) {
+      toast({
+        title: "No client selected",
+        description: "A showing is requested for a specific client. Open this search from a client's record.",
+        variant: "destructive",
+      })
+      return
+    }
+    setShowingProperty(property)
+    setShowingDate("")
+    setShowingTime("")
+    setShowingNotes("")
+  }
+
+  const handleRequestShowing = async () => {
+    if (!contactId || !showingProperty) return
+    if (!showingDate || !showingTime) {
+      toast({
+        title: "Pick a date and time",
+        description: "The request carries a preferred date and time to the listing side.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setRequestingShowing(true)
+    try {
+      // No listingId: an IDX result is an OUTSIDE property keyed by its MLS
+      // number, never one of our listings.id values.
+      const result = await requestShowing({
+        contactId,
+        mlsNumber:       showingProperty.mlsNumber,
+        propertyAddress: showingProperty.address,
+        propertyCity:    showingProperty.city,
+        propertyState:   showingProperty.state,
+        propertyZip:     showingProperty.zip,
+        listPrice:       showingProperty.price,
+        primaryPhotoUrl: showingProperty.photos?.[0],
+        source:          "agent_input",
+        preferredDates:  [{ date: showingDate, time: showingTime }],
+        clientNotes:     showingNotes || undefined,
+      })
+
+      // requestShowing resolves with { success:false, error } on a BBA-gate
+      // refusal or an insert failure — it does not throw, so an unread result
+      // would be a silent no-op.
+      if (result.success) {
+        toast({
+          title: "Showing requested",
+          description: `Request sent for ${showingProperty.address}.`,
+        })
+        setShowingProperty(null)
+      } else {
+        toast({
+          title: "Showing not requested",
+          description: result.error ?? "The request was refused.",
+          variant: "destructive",
+        })
+      }
+    } finally {
+      setRequestingShowing(false)
     }
   }
 
@@ -180,8 +293,26 @@ export default function PropertySearchContent() {
       </div>
 
       <div className="max-w-7xl mx-auto">
+        {/* Mobile-only filter toggle — the control that makes the aside's
+            "hidden lg:block" arm reachable. At `lg` the sidebar is always
+            shown, so the button is hidden there. */}
+        <div className="lg:hidden mb-4">
+          <Button
+            variant="outline"
+            onClick={() => setShowFilters((v) => !v)}
+            aria-expanded={showFilters}
+            aria-controls="property-search-filters"
+          >
+            <SlidersHorizontal className="mr-2 h-4 w-4" />
+            {showFilters ? "Hide Filters" : "Show Filters"}
+          </Button>
+        </div>
+
         <div className="flex flex-col lg:flex-row gap-6">
-          <aside className={`lg:w-80 ${showFilters ? "block" : "hidden lg:block"}`}>
+          <aside
+            id="property-search-filters"
+            className={`lg:w-80 ${showFilters ? "block" : "hidden lg:block"}`}
+          >
             <Card>
               <CardContent className="p-6 space-y-6">
                 <div className="flex items-center justify-between mb-4">
@@ -364,7 +495,9 @@ export default function PropertySearchContent() {
                         <Button asChild className="flex-1">
                           <Link href={`/properties/${property.mlsNumber}?contactId=${contactId}`}>View Details</Link>
                         </Button>
-                        <Button variant="outline">Schedule</Button>
+                        <Button variant="outline" onClick={() => handleOpenSchedule(property)}>
+                          Schedule
+                        </Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -374,6 +507,61 @@ export default function PropertySearchContent() {
           </main>
         </div>
       </div>
+
+      <Dialog open={!!showingProperty} onOpenChange={(o) => !o && setShowingProperty(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Request a showing</DialogTitle>
+            <DialogDescription>
+              {showingProperty
+                ? `${showingProperty.address}${showingProperty.city ? `, ${showingProperty.city}` : ""}${
+                    showingProperty.mlsNumber ? ` · MLS #${showingProperty.mlsNumber}` : ""
+                  }`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="showing-date">Preferred date</Label>
+                <Input
+                  id="showing-date"
+                  type="date"
+                  value={showingDate}
+                  min={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => setShowingDate(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="showing-time">Preferred time</Label>
+                <Input
+                  id="showing-time"
+                  type="time"
+                  value={showingTime}
+                  onChange={(e) => setShowingTime(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="showing-notes">Notes for the listing side (optional)</Label>
+              <Textarea
+                id="showing-notes"
+                placeholder="Access notes, alternate times, who is attending…"
+                value={showingNotes}
+                onChange={(e) => setShowingNotes(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleRequestShowing}
+              disabled={requestingShowing || !showingDate || !showingTime}
+            >
+              {requestingShowing ? "Sending…" : "Request showing"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { createServiceClient }      from "@/lib/supabase/service"
 import { createClient }              from "@/lib/supabase/server"
 import { calculateFatigue }          from "@/lib/fatigue/fatigue-calculator"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 // Every read in this file used to be unauthenticated and accepted
 // caller-supplied contactId / brokerageId. Any signed-in user could read
@@ -11,21 +12,9 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // passing the brokerage's UUID. Now: session is required and brokerage
 // is resolved from the session.
 
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 async function verifyContactAccess(contactId: string, brokerageId: string): Promise<boolean> {
   const svc = createServiceClient()
@@ -125,10 +114,47 @@ export async function triggerFatigueCalculation(
 
   try {
     const result = await calculateFatigue(contactId, auth.brokerageId)
+    // Ported from the retired app/actions/fatigue.ts: once a buyer crosses into
+    // high/critical, the alert that was just written gets an AI recovery plan
+    // attached. Best-effort — a plan failure never fails the score.
+    if (result.risk_level === "high" || result.risk_level === "critical") {
+      try {
+        const { generateRecoveryPlan } = await import("@/lib/fatigue/recovery-generator")
+        await generateRecoveryPlan(result)
+      } catch (planErr) {
+        console.warn("[buyer-fatigue] recovery plan failed:", planErr)
+      }
+    }
     return { success: true as const, data: result }
   } catch (err: any) {
     return { success: false as const, error: err.message }
   }
+}
+
+// ─── ACTIVE ALERT FOR ONE BUYER ───────────────────────────────────────────────
+// Carried over from app/actions/fatigue.ts, the duplicate action module retired
+// with the scorer. ContactFatigueGuard is its caller.
+
+export async function getBuyerFatigueAlert(contactId: string) {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
+    return { success: false as const, error: "Forbidden" }
+  }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("fatigue_alerts")
+    .select("*")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", auth.brokerageId)
+    .eq("dismissed", false)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) return { success: false as const, error: error.message }
+  return { success: true as const, alert: data ?? null }
 }
 
 // ─── GET REINVIGORATION SUGGESTIONS (AI) ──────────────────────────────────────
@@ -168,6 +194,8 @@ export async function getReinvigorationSuggestions(
 
   try {
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "anthropic/claude-opus-4.6" as any,
       messages: [
         {

@@ -3,16 +3,17 @@ import { getAgentContext } from "@/lib/identity"
 import { getRevenuePipelineProjectionAction } from "@/app/actions/revenue-pipeline"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { TrendingUp } from "lucide-react"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { usd } from "@/lib/format/money"
 
 export const dynamic = "force-dynamic"
 
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 export default async function RevenuePipelinePage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ADMIN_ROLES.has(ctx.userType)) redirect("/dashboard")
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) redirect("/dashboard")
 
   const res = await getRevenuePipelineProjectionAction()
   if (!res.success) {

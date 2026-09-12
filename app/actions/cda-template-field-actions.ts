@@ -18,7 +18,10 @@ import {
 import { aiClassifyCdaFields, type SuggestedBinding } from "@/lib/transactions/cda-field-classifier"
 import { listPdfFields } from "@/lib/forms/pdf-form-fill"
 
-const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_admin", "admin", "superadmin"])
+// SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin' removed
+// — dead as users.user_type (0 live rows); broker_owner added — storable seat
+// with CDA (finance) authority per m472.
+const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_owner", "broker_admin", "admin"])
 
 // Build the resolve context for a CDA from the waterfall + the transaction.
 async function buildContext(
@@ -250,7 +253,7 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
 
   const { buildCdaFillValues } = await import("@/lib/transactions/cda-pdf-fill")
   const { fillPdfForm } = await import("@/lib/forms/pdf-form-fill")
-  const { put } = await import("@vercel/blob")
+  const { uploadBufferToBucket } = await import("@/lib/storage/buckets")
 
   const plan = buildCdaFillValues(resolution.fields)
   if (plan.values.length === 0) return { success: false, error: "nothing_to_fill" }
@@ -271,18 +274,21 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
     return { success: false, error: e instanceof Error ? `pdf_fill_failed: ${e.message}` : "pdf_fill_failed" }
   }
 
-  // Store the filled PDF + record it on the CDA.
-  let url: string
-  try {
-    const blob = await put(`cda-filled/${cda.id}-${cda.transaction_id}.pdf`, Buffer.from(filledBytes), {
-      access: "public",
-      contentType: "application/pdf",
-      addRandomSuffix: true,
-    })
-    url = blob.url
-  } catch (e) {
-    return { success: false, error: e instanceof Error ? `pdf_store_failed: ${e.message}` : "pdf_store_failed" }
-  }
+  // Store the filled PDF in Supabase Storage (platform buckets) + record it on the CDA.
+  const stored = await uploadBufferToBucket({
+    bucket: "cda-filled",
+    path: `${cda.id}-${cda.transaction_id}-${crypto.randomUUID()}.pdf`,
+    buffer: Buffer.from(filledBytes),
+    contentType: "application/pdf",
+    // The follow-up the previous comment promised. A FILLED closing-disclosure
+    // agreement carries the commission split — a brokerage financial, and
+    // commission is off agent-facing display entirely (CLAUDE.md §5). It was
+    // being stored `public: true`, i.e. at a permanent unauthenticated URL that
+    // was then persisted to closing_disclosure_agreement.generated_pdf_url.
+    public: false,
+  })
+  if (!stored.ok) return { success: false, error: `pdf_store_failed: ${stored.error}` }
+  const url: string = stored.url
 
   await supabase
     .from("closing_disclosure_agreement")

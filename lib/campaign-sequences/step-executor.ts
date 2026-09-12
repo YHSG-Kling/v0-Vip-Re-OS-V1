@@ -11,7 +11,7 @@
  *   5. Resolve variables ({{contact.x}}, {{step_1.image_url}}, etc.)
  *   6. Dispatch via channel registry (ChannelAdapter.execute)
  *   7. Write step_output to enrollment.step_outputs[output_variable_name]
- *   8. Audit log (workflow_step_runs + sequence_step_executions + isa_outreach_log)
+ *   8. Audit log (sequence_step_executions + isa_outreach_log)
  *   9. Emit kernel events
  *  10. Advance enrollment to next step
  *
@@ -28,6 +28,7 @@ import { buildVariableContext, resolveVariables } from "@/lib/workflow/variables
 import { checkSequenceAuthority }  from "./compliance-gate"
 import { decideFirstTouch, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
 import { recordSequenceTouchpoint } from "./touchpoint-bridge"
+import { bestEffort } from "@/lib/db/best-effort"
 import { isDeconflictDeferral, decideDeferral, MAX_DEFERS } from "./deferral-policy"
 import { publishManagerSignal }    from "@/lib/kernel/manager-signals"
 import { KernelEvent }             from "@/lib/kernel/events"
@@ -77,6 +78,7 @@ export async function executeSequenceStep(
   const contactId: string | null = enrollment.contact_id
   const previousOutputs: Record<string, Record<string, unknown>> = enrollment.step_outputs ?? {}
 
+
   // ── Step 2: Fetch next step ────────────────────────────────────────────────
   const nextStepNumber = (enrollment.current_step ?? 0) + 1
 
@@ -113,6 +115,41 @@ export async function executeSequenceStep(
     return { status: "completed" }
   }
 
+  // ── Step 2b: CONVERSION FINALITY ───────────────────────────────────────────
+  //
+  // A lead-keyed enrollment whose lead has CONVERTED must stop sending. The
+  // conversion path already terminates enrollments
+  // (lib/contact-promotion/lead-deactivator.ts), and it does so for a stated
+  // reason: a paused enrollment that resumes later "would bypass the new
+  // contact's preferences/consent". This is the same ruling enforced at
+  // EXECUTION time, for the rows that predate it or slipped past it — the
+  // executor's lead branch (email / direct mail, Step 6 below) had NO conversion
+  // check at all, so a converted lead's welcome drip kept mailing.
+  //
+  // TERMINATE rather than re-target: switching a live sequence's recipient from
+  // the lead to the contact mid-run is exactly the consent bypass the deactivator
+  // refuses. The contact's own sequences are enrolled by the contact lane. The
+  // skip is LEDGERED (blocked_reason) so a stopped sequence can say why.
+  // Runs AFTER the step is resolved so the skip row carries a real step_id.
+  if (enrollment.lead_id && !contactId) {
+    const { assertLeadNotConverted } = await import("@/lib/contact-promotion/conversion-finality")
+    const verdict = await assertLeadNotConverted(supabase, enrollment.lead_id, { brokerageId })
+    if (!verdict.allowed) {
+      await logAndSkip(supabase, {
+        enrollmentId, enrollment, step, contactId: verdict.contactId,
+        reason: `conversion finality: ${verdict.reason}`,
+      })
+      const { error: closeErr } = await supabase
+        .from("sequence_enrollments")
+        .update({ status: "completed", completed_at: new Date().toISOString(), next_step_at: null })
+        .eq("id", enrollmentId)
+      if (closeErr) {
+        console.error("[executeSequenceStep] conversion-finality enrollment close refused:", closeErr.message)
+      }
+      return { status: "completed", reason: verdict.reason }
+    }
+  }
+
   // ── Step 3: Sequence creator user id ──────────────────────────────────────
   const { data: seqRow } = await supabase
     .from("campaign_sequences")
@@ -146,8 +183,17 @@ export async function executeSequenceStep(
     )
 
     if (!gateResult.allowed) {
-      await supabase.from("sequence_step_executions").insert({
+      // TENANT: `sequence_enrollments.brokerage_id`, read at step 1 — the record
+      // this execution is filed against. `runChannelOrderLearning`
+      // (lib/campaign-sequences/channel-order-runner.ts:23) reads this ledger
+      // `.eq("brokerage_id", brokerageId)` with a `brokerages.id` handed to it by
+      // the weekly learning cron, and the enrollment's brokerage IS that id.
+      // Unstamped, every authority-blocked step was excluded from the channel
+      // learner's window — so the learner ranked channels over the sends that
+      // happened and never over the ones the compliance gate stopped.
+      const { error: blockedLedgerError } = await supabase.from("sequence_step_executions").insert({
         enrollment_id: enrollmentId,
+        brokerage_id: brokerageId,
         sequence_id: enrollment.sequence_id,
         step_id: step.id,
         contact_id: contactId,
@@ -156,6 +202,9 @@ export async function executeSequenceStep(
         blocked_reason: gateResult.reason ?? "Authority gate blocked",
         sent_at: null,
       })
+      if (blockedLedgerError) {
+        console.error("[executeSequenceStep] authority_blocked ledger write refused:", blockedLedgerError.message)
+      }
 
       await processKernelEvent({
         event: KernelEvent.AUTHORITY_BLOCKED,
@@ -319,7 +368,7 @@ export async function executeSequenceStep(
   }
 
   // ── Step 8: Build StepContext and dispatch via registry ────────────────────
-  const stepRunId = crypto.randomUUID()
+  const stepStartedAt = new Date().toISOString()
   const stepCtx: StepContext = {
     enrollmentId,
     step,
@@ -333,17 +382,12 @@ export async function executeSequenceStep(
     supabase,
   }
 
-  // Write running row to workflow_step_runs
-  void Promise.resolve(supabase.from("workflow_step_runs").insert({
-    id: stepRunId,
-    enrollment_id: enrollmentId,
-    step_id: step.id,
-    channel: step.channel,
-    status: "running",
-    output_variable_name: step.output_variable_name ?? null,
-    started_at: new Date().toISOString(),
-  })).catch(() => {})
-
+  // ONE LEDGER (m302). This used to open a second, parallel "running" row in
+  // workflow_step_runs — a duplicate of sequence_step_executions written from
+  // the adjacent line, best-effort so its failures were discarded, and inserted
+  // HERE, after the compliance gate, so every authority-blocked or channel-
+  // restricted step was invisible to it. It is dropped; the timing and output
+  // it carried now ride the one ledger that is written on every path.
   const dispatchResult: StepResult = await registry.dispatch(step.channel, stepCtx)
 
   const now = new Date().toISOString()
@@ -360,17 +404,18 @@ export async function executeSequenceStep(
     const defers  = (previousOutputs.__defers as Record<string, number> | undefined) ?? {}
     const decision = decideDeferral(defers[stepKey] ?? 0)
 
-    void Promise.resolve(supabase.from("workflow_step_runs").update({
-      status: "skipped", blocked_reason: dispatchResult.error ?? "over-touch deferral",
-      finished_at: now, duration_ms: durationMs,
-    }).eq("id", stepRunId)).catch(() => {})
-
-    await supabase.from("sequence_step_executions").insert({
-      enrollment_id: enrollmentId, sequence_id: enrollment.sequence_id, step_id: step.id,
+    // Same tenant, same source: the enrollment this deferral belongs to.
+    const { error: deferralLedgerError } = await supabase.from("sequence_step_executions").insert({
+      enrollment_id: enrollmentId, brokerage_id: brokerageId, sequence_id: enrollment.sequence_id, step_id: step.id,
       contact_id: contactId, channel: step.channel, status: "skipped",
       blocked_reason: `over-touch deferral (attempt ${decision.attempt}/${MAX_DEFERS}): ${dispatchResult.error ?? ""}`.trim(),
       sent_at: null,
+      provider_key: dispatchResult.providerKey ?? null,
+      started_at: stepStartedAt, finished_at: now, duration_ms: durationMs,
     })
+    if (deferralLedgerError) {
+      console.error("[executeSequenceStep] deferral ledger write refused:", deferralLedgerError.message)
+    }
 
     if (decision.action === "reschedule") {
       // Retry the SAME step (current_step unchanged) after the backoff — touch preserved.
@@ -427,22 +472,37 @@ export async function executeSequenceStep(
     ).catch(() => {})
   }
 
-  // ── Step 10: Update workflow_step_runs ─────────────────────────────────────
-  void Promise.resolve(
-    supabase.from("workflow_step_runs").update({
-      status: dispatchResult.status === "sent" ? "sent" : "failed",
-      step_output: dispatchResult.output ?? null,
-      provider_key: dispatchResult.providerKey,
-      provider_message_id: dispatchResult.messageId ?? null,
-      blocked_reason: dispatchResult.error ?? null,
-      finished_at: now,
-      duration_ms: durationMs,
-    }).eq("id", stepRunId)
-  ).catch(() => {})
+  // ── Step 10: the per-step ledger (ONE row, every path — m302) ──────────────
+  // Carries what the dropped workflow_step_runs duplicate used to hold: the
+  // step's output under its variable name, the provider that actually carried
+  // it, and the dispatch timing. Awaited — but awaiting is not observing:
+  // supabase-js RESOLVES a refused insert, so until this was destructured a
+  // refusal was swallowed exactly as the duplicate's `.catch(() => {})` was.
+  //
+  // THIS is the row `runChannelOrderLearning` counts (`status = 'sent'`, plus
+  // `replied_at`). Unstamped it fell outside that reader's
+  // `.eq("brokerage_id", …)`, so the channel-order advisory was computed over an
+  // empty window for every brokerage and could only ever recommend nothing.
+  //
+  // ── TWO COLUMNS, TWO DIFFERENT FACTS (CLAUDE.md §6) ────────────────────────
+  // `blocked_reason` is why THE OS REFUSED to send — a gate ruled, the provider
+  // was never called, no money was spent, nothing reached the contact.
+  // `error_message` is why THE PROVIDER refused — we did call out, and it came
+  // back rejected. They are not two spellings of one idea and the receipts
+  // reader knows it: lib/intelligence/decision-receipts.ts:80 renders
+  // blocked_reason for a blocked/skipped step and line 82 prefers error_message
+  // for a failed one. This insert put BOTH into blocked_reason, so
+  // `error_message` had no writer at all and every provider failure in the
+  // agent's decision trail read as a policy block — "email failed: Outbound
+  // blocked", which is the one sentence that is never true of a failure.
+  // Routed by the gate vocabulary dispatch itself returns as providerKey.
+  const GATE_PROVIDER_KEYS = new Set(["compliance_gate", "deconflict_gate", "autonomy_gate"])
+  const refusedByGate = GATE_PROVIDER_KEYS.has(dispatchResult.providerKey ?? "")
+  const failureReason = dispatchResult.error ?? null
 
-  // ── Step 11: sequence_step_executions audit row ────────────────────────────
-  await supabase.from("sequence_step_executions").insert({
+  const { error: stepLedgerError } = await supabase.from("sequence_step_executions").insert({
     enrollment_id: enrollmentId,
+    brokerage_id: brokerageId,
     sequence_id: enrollment.sequence_id,
     step_id: step.id,
     contact_id: contactId,
@@ -450,8 +510,18 @@ export async function executeSequenceStep(
     status: executionStatus,
     provider_message_id: dispatchResult.messageId ?? null,
     sent_at: dispatchResult.status === "sent" ? now : null,
-    blocked_reason: dispatchResult.error ?? null,
+    blocked_reason: refusedByGate ? failureReason : null,
+    error_message: refusedByGate ? null : failureReason,
+    step_output: dispatchResult.output ?? null,
+    output_variable_name: step.output_variable_name ?? null,
+    provider_key: dispatchResult.providerKey ?? null,
+    started_at: stepStartedAt,
+    finished_at: now,
+    duration_ms: durationMs,
   })
+  if (stepLedgerError) {
+    console.error("[executeSequenceStep] step ledger write refused:", stepLedgerError.message)
+  }
 
   // ── Step 12: isa_outreach_log + message_provider_logs ─────────────────────
   let isaOutreachLogId: string | null = null
@@ -502,11 +572,14 @@ export async function executeSequenceStep(
   // Stamp the SAME shared ledger speed-to-lead reads; the `.is(null)` guard is idempotent and
   // race-safe — if the ISA stamped between our read and now, we never clobber its channel.
   if (dispatchResult.status === "sent" && claimFirstTouch && contactId) {
-    await supabase
-      .from("contacts")
-      .update({ first_touched_at: now, first_touch_channel: step.channel })
-      .eq("id", contactId)
-      .is("first_touched_at", null)
+    await bestEffort(
+      supabase
+        .from("contacts")
+        .update({ first_touched_at: now, first_touch_channel: step.channel })
+        .eq("id", contactId)
+        .is("first_touched_at", null),
+      "first-touch ledger claim, written AFTER dispatchResult.status === 'sent'; the `.is(null)` guard makes it race-safe and a lost claim only means speed-to-lead does not stand down, never an unconsented send (dispatch re-gates every touch)",
+    )
 
     void publishManagerSignal({
       brokerageId,
@@ -546,8 +619,13 @@ async function logAndSkip(
   supabase: ReturnType<typeof createServiceClient>,
   opts: { enrollmentId: string; enrollment: any; step: any; contactId: string | null; reason: string }
 ) {
-  await supabase.from("sequence_step_executions").insert({
+  // The tenant comes off the enrollment record this helper is already handed —
+  // the same `sequence_enrollments.brokerage_id` its three sibling writers use.
+  // Never the caller's, never guessed: an execution belongs to the enrollment it
+  // executes, and that is the id the channel-order learner compares.
+  const { error: skipLedgerError } = await supabase.from("sequence_step_executions").insert({
     enrollment_id: opts.enrollmentId,
+    brokerage_id: opts.enrollment.brokerage_id,
     sequence_id: opts.enrollment.sequence_id,
     step_id: opts.step.id,
     contact_id: opts.contactId,
@@ -556,17 +634,52 @@ async function logAndSkip(
     blocked_reason: opts.reason,
     sent_at: null,
   })
+  if (skipLedgerError) {
+    console.error("[executeSequenceStep] skip ledger write refused:", skipLedgerError.message)
+  }
 }
 
 // ─── Helper: advance enrollment ───────────────────────────────────────────────
 
+/**
+ * `currentStep` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, and it is
+ * the only thing that knows WHICH step this advance is advancing PAST.
+ *
+ * Two defects lived in that gap:
+ *
+ *  1. THE NEXT STEP WAS DERIVED FROM THE ENROLLMENT ROW ALONE — `current_step + 2`
+ *     — while the step actually executed was handed in. When those two disagree
+ *     (a step re-run, a hand-edited enrollment, a sequence whose step numbers are
+ *     not contiguous) the schedule silently skipped or repeated a step and nothing
+ *     said so. The executed step's own `step_number` is now the anchor, and a
+ *     disagreement is REPORTED rather than absorbed.
+ *
+ *  2. THE ADVANCE WAS UNCONDITIONAL. `.eq("id", enrollment.id)` with no guard on
+ *     the step it was moving off means two concurrent executors both write
+ *     `current_step + 1` from the same stale read and the enrollment jumps a step —
+ *     and both then fire the completion event. The UPDATE is now conditional on the
+ *     enrollment still sitting where this execution left it, and it `.select()`s so
+ *     the caller can COUNT what matched: an UPDATE that matches NOTHING resolves
+ *     with `error === null`, byte-identical to one that worked (CLAUDE.md §3).
+ */
 async function advanceEnrollment(
   supabase: ReturnType<typeof createServiceClient>,
   enrollment: Record<string, any>,
   currentStep: Record<string, any>,
   executionStatus: string
 ): Promise<ExecuteResult> {
-  const nextStepNumber = (enrollment.current_step ?? 0) + 2
+  const enrolledAt: number = enrollment.current_step ?? 0
+  const executedStepNumber: number =
+    typeof currentStep?.step_number === "number" ? currentStep.step_number : enrolledAt + 1
+
+  if (executedStepNumber !== enrolledAt + 1) {
+    console.warn(
+      `[advanceEnrollment] enrollment ${enrollment.id} sits at current_step=${enrolledAt} ` +
+      `but the step just executed is step_number=${executedStepNumber}; scheduling from the executed step`,
+    )
+  }
+
+  const nextStepNumber = executedStepNumber + 1
 
   const { data: followingStep } = await supabase
     .from("campaign_sequence_steps")
@@ -586,11 +699,30 @@ async function advanceEnrollment(
 
   const isComplete = !followingStep
 
-  await supabase.from("sequence_enrollments").update({
-    current_step: (enrollment.current_step ?? 0) + 1,
-    next_step_at: nextStepAt,
-    ...(isComplete ? { status: "completed", completed_at: new Date().toISOString() } : {}),
-  }).eq("id", enrollment.id)
+  const { data: advancedRows, error: advanceError } = await supabase
+    .from("sequence_enrollments")
+    .update({
+      current_step: executedStepNumber,
+      next_step_at: nextStepAt,
+      ...(isComplete ? { status: "completed", completed_at: new Date().toISOString() } : {}),
+    })
+    .eq("id", enrollment.id)
+    // The guard: only advance an enrollment that is still where this execution
+    // found it. A concurrent executor that already advanced it matches ZERO rows.
+    .eq("current_step", enrolledAt)
+    .select("id")
+
+  if (advanceError) {
+    console.error("[advanceEnrollment] advance refused:", advanceError.message)
+    return { status: executionStatus as ExecuteResult["status"] }
+  }
+  if (!advancedRows || advancedRows.length === 0) {
+    // Not an error: someone else moved it. Do NOT fire the completion event twice.
+    console.warn(
+      `[advanceEnrollment] enrollment ${enrollment.id} was already advanced past step ${enrolledAt} — not advancing again`,
+    )
+    return { status: executionStatus as ExecuteResult["status"] }
+  }
 
   if (isComplete) {
     await processKernelEvent({

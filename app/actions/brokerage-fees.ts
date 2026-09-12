@@ -14,7 +14,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,10 +49,18 @@ export interface AgentFeeCharge {
   periodStart: string
   periodEnd: string | null
   amount: number
+  /** ISO currency of `amount` (generatePeriodicCharges stamps it from the fee
+   *  type). Was written on every charge and read by nobody, so both fee UIs
+   *  hardcoded USD — a wrong number the moment a fee type carries anything else. */
+  currency: string
   status: ChargeStatus
   dueDate: string | null
   paidAt: string | null
   paymentMethod: string | null
+  /** Broker's waive reason (waiveCharge writes it). Written since the fee system
+   *  shipped, displayed nowhere — a waived charge showed WITH NO WHY to either
+   *  side of the money. */
+  notes: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -76,8 +85,8 @@ export async function createFeeType(input: CreateFeeTypeInput): Promise<{
   feeTypeId?: string
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
   if (!isBrokerRole(ctx.userType)) {
@@ -127,8 +136,8 @@ export async function toggleFeeType(params: {
   feeTypeId: string
   isActive: boolean
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
   const svc = createServiceClient()
@@ -145,8 +154,13 @@ export async function toggleFeeType(params: {
 // ---------------------------------------------------------------------------
 
 export async function listFeeTypes(): Promise<FeeType[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return []
+  // The fee schedule is broker-level financial config — gate the read to the
+  // same roles that create/toggle fees (createFeeType / setFeeTypeActive). This
+  // uses the service client (RLS-bypassing), so a brokerage_id check alone let
+  // any plain agent enumerate the whole fee structure.
+  if (!isBrokerRole(ctx.userType)) return []
 
   const svc = createServiceClient()
   const { data } = await svc
@@ -172,15 +186,15 @@ export async function listFeeTypes(): Promise<FeeType[]> {
 }
 
 export async function getMyOpenCharges(): Promise<AgentFeeCharge[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) return []
 
   const svc = createServiceClient()
   const { data: charges } = await svc
     .from("agent_fee_charges")
     .select(`
       id, agent_id, fee_type_id, period_start, period_end,
-      amount, status, due_date, paid_at, payment_method,
+      amount, currency, status, due_date, paid_at, payment_method, notes,
       brokerage_fee_types(name)
     `)
     .eq("agent_id", ctx.agentId)
@@ -196,10 +210,12 @@ export async function getMyOpenCharges(): Promise<AgentFeeCharge[]> {
     periodStart: c.period_start,
     periodEnd: c.period_end,
     amount: c.amount,
+    currency: c.currency ?? "USD",
     status: c.status,
     dueDate: c.due_date,
     paidAt: c.paid_at,
     paymentMethod: c.payment_method,
+    notes: c.notes ?? null,
   }))
 }
 
@@ -207,15 +223,15 @@ export async function listBrokerageCharges(filter?: {
   status?: ChargeStatus
   agentId?: string
 }): Promise<AgentFeeCharge[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || !isBrokerRole(ctx.userType)) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId || !isBrokerRole(ctx.userType)) return []
 
   const svc = createServiceClient()
   let q = svc
     .from("agent_fee_charges")
     .select(`
       id, agent_id, fee_type_id, period_start, period_end,
-      amount, status, due_date, paid_at, payment_method,
+      amount, currency, status, due_date, paid_at, payment_method, notes,
       brokerage_fee_types(name)
     `)
     .eq("brokerage_id", ctx.brokerageId)
@@ -254,10 +270,12 @@ export async function listBrokerageCharges(filter?: {
     periodStart: c.period_start,
     periodEnd: c.period_end,
     amount: c.amount,
+    currency: c.currency ?? "USD",
     status: c.status,
     dueDate: c.due_date,
     paidAt: c.paid_at,
     paymentMethod: c.payment_method,
+    notes: c.notes ?? null,
   }))
 }
 
@@ -269,8 +287,8 @@ export async function markChargePaid(params: {
   chargeId: string
   paymentMethod?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
   const svc = createServiceClient()
@@ -290,8 +308,8 @@ export async function waiveCharge(params: {
   chargeId: string
   reason?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
   const svc = createServiceClient()
@@ -375,8 +393,21 @@ export async function generatePeriodicCharges(): Promise<{
 // helpers
 // ---------------------------------------------------------------------------
 
+// BROKERAGE-WIDE MONEY (m472). The fee schedule IS the brokerage charging its
+// agents, and brokerage_fee_types / agent_fee_assignments / agent_fee_charges are
+// all FINANCE tables under public.is_brokerage_finance_admin(). This function is
+// kept as the local NAME its six call sites already read, but its ANSWER now
+// comes from the ONE shared roster instead of a literal written here — so the app
+// and RLS cannot disagree, which matters because these paths write through the
+// SERVICE client and have no RLS backstop.
+//
+// The old literal refused broker_owner — the person who owns the brokerage could
+// not set their own brokerage's fees. The shared roster admits them. It carries
+// 'broker_admin' forward as an input spelling and drops 'superadmin', which is
+// MEASURED dead as a user_type (zero live rows; the platform's one superadmin is
+// user_type='admin' with platform_role='superadmin', admitted through 'admin').
 function isBrokerRole(t?: string | null) {
-  return ["admin", "broker", "broker_admin", "superadmin"].includes(t ?? "")
+  return isBrokerageFinanceAdmin({ user_type: t })
 }
 
 function computePeriodStart(cadence: FeeCadence, today: string): string | null {

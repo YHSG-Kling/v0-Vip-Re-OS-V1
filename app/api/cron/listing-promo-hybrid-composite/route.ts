@@ -31,10 +31,13 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -94,6 +97,16 @@ export async function GET(req: NextRequest) {
       continue
     }
 
+    // ai_video_projects.agent_id is agents-class since m366, while the persona
+    // post-pass and lifecycle_events.actor_user_id both want the owner's USERS
+    // id. One resolve for the row; null means the agents row is gone and those
+    // two hand-offs are skipped rather than handed the wrong id space.
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    const projAgentUserId = p.agent_id ? await resolveAgentRecordToUserId(p.agent_id) : null
+    if (p.agent_id && !projAgentUserId) {
+      console.error(`[listing-promo-hybrid-composite] no users row behind agents.id=${p.agent_id} (project ${p.id}) — persona post-pass + lifecycle actor skipped`)
+    }
+
     try {
       // Download the Remotion middle MP4 to a buffer (ffmpeg needs a local file).
       const mainResp = await fetch(p.video_url!)
@@ -117,16 +130,17 @@ export async function GET(req: NextRequest) {
       }
 
       // Upload stitched mp4.
-      const blob = await put(
+      const hybridUrl = await hostRenderedMedia(
+        svc,
         `listing-promo/hybrid/${p.id}.mp4`,
         stitch.outputBuffer,
-        { access: "public", contentType: "video/mp4" },
+        "video/mp4",
       )
 
       await svc.from("ai_video_projects").update({
         status:    "completed",
-        video_url: blob.url,
-        video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: blob.url },
+        video_url: hybridUrl,
+        video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: hybridUrl },
       }).eq("id", p.id)
 
       // Move the listing_promo_videos ledger to 'rendering' so the
@@ -145,6 +159,7 @@ export async function GET(req: NextRequest) {
         // post-pass logs failures per-persona without blocking the
         // social-publish handoff.
         try {
+          if (!projAgentUserId) throw new Error("agent owner unresolved — nothing to personalize under")
           const { runPersonaVariantPostPass } = await import("@/lib/video/persona-variant-post-pass")
           // Pull listing + brokerage display data for the still composition.
           const { data: listingRow } = await svc.from("listings")
@@ -163,14 +178,14 @@ export async function GET(req: NextRequest) {
             assetType:    "listing_promo",
             assetId:      p.listing_id,
             brokerageId:  p.brokerage_id,
-            agentUserId:  p.agent_id,
+            agentUserId:  projAgentUserId,
             brand: {
               primaryColor:  br?.brand_primary_color ?? "#0F172A",
               accentColor:   br?.brand_accent_color  ?? "#F59E0B",
               logoUrl:       br?.logo_url            ?? undefined,
               brokerageName: br?.name                ?? "Your Brokerage",
             },
-            mainVideoUrl:    blob.url,
+            mainVideoUrl:    hybridUrl,
             subject,
             // bundleLoc omitted — composite cron has no Remotion bundle.
             // The post-pass module skips the still thumbnail and only runs
@@ -184,25 +199,34 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      await svc.from("lifecycle_events").insert({
-        brokerage_id:  p.brokerage_id,
-        actor_user_id: p.agent_id,
-        event_type:    KernelEvent.VIDEO_GENERATION_COMPLETED,
+      // Audit row + reactor (was a bare insert nobody downstream heard).
+      await emitKernelEvent({
+        brokerageId: p.brokerage_id,
+        actorUserId: projAgentUserId,  // FK users(id) — the resolved owner, not the project's agents id
+        event:       KernelEvent.VIDEO_GENERATION_COMPLETED,
         metadata: {
           ai_video_project_id: p.id,
           hybrid_composited:   true,
         },
-        entity_id:   p.id,
-        entity_type: "ai_video_project",
-        source:      "system",
-        processed:   false,
+        entityId:   p.id,
+        entityType: "ai_video_project",
+        source:     "system",
       })
 
       results.push({ id: p.id, outcome: "completed" })
     } catch (e) {
       const msg = (e as Error).message
+      // "failed", not "error". This block already reports outcome:"failed" two
+      // lines down, but it WROTE "error" — a token no failure handler in the
+      // codebase matches. The cost of that one word: listing-promo-social-publish
+      // (`projectStatus === "failed"`) never marked the promo row failed and
+      // retried the dead project every tick forever; video-coordination never
+      // published the failure signal, so no human heard about it; the reaper
+      // treated it as neither stale nor terminal and never escalated; the m365
+      // trigger left the queue row spinning; and the board's red failure UI never
+      // rendered, so a failed render sat in the "Queued" column.
       await svc.from("ai_video_projects").update({
-        status:         "error",
+        status:         "failed",
         error_message:  msg.slice(0, 800),
         video_metadata: { ...meta, hybrid_pending: false, hybrid_error: msg.slice(0, 400) },
       }).eq("id", p.id)

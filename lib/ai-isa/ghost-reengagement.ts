@@ -6,6 +6,7 @@ import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-co
 import { ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach, cadenceProfileFor } from '@/lib/ai-isa/reengagement-policy'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 import { adaptiveReengagementHook, cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
+import { conversionVerdictForRow, excludeConvertedLeads } from '@/lib/contact-promotion/conversion-finality'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
 
@@ -19,14 +20,22 @@ export async function detectGhostLeads(
     Date.now() - thresholdDays * 24 * 60 * 60 * 1000,
   ).toISOString()
 
-  const { data, error } = await supabase
-    .from('leads')
-    .select('id')
-    .eq('brokerage_id', brokerageId)
-    .eq('lifecycle_state', 'isa_qualifying')
-    .eq('is_active', true)
-    .not('reengagement_status', 'in', '("completed","opted_out","handed_to_sphere")')
-    .or(`last_activity_at.lt.${cutoff},and(last_activity_at.is.null,created_at.lt.${cutoff})`)
+  // CONVERSION FINALITY: a converted lead is never a ghost. `is_active` was
+  // carrying this by accident and carrying it wrong — lib/kernel/crm.ts's
+  // converter left it TRUE — and the stale-lead processor was actively writing
+  // `lifecycle_state='isa_qualifying'` back onto converted leads, which is the
+  // exact predicate below. Both halves of that loop are closed; this is the end
+  // that makes the sweep itself correct regardless.
+  const { data, error } = await excludeConvertedLeads(
+    supabase
+      .from('leads')
+      .select('id')
+      .eq('brokerage_id', brokerageId)
+      .eq('lifecycle_state', 'isa_qualifying')
+      .eq('is_active', true)
+      .not('reengagement_status', 'in', '("completed","opted_out","handed_to_sphere")')
+      .or(`last_activity_at.lt.${cutoff},and(last_activity_at.is.null,created_at.lt.${cutoff})`),
+  )
 
   if (error) throw new Error(`detectGhostLeads query failed: ${error.message}`)
 
@@ -66,6 +75,18 @@ export async function runGhostReengagement(
 
       if (leadError || !lead) {
         console.error(`[ghost-reengagement] Could not load lead ${leadId}:`, leadError?.message)
+        continue
+      }
+
+      // SECOND GATE, on the row this loop already read (`select('*')` carries
+      // contact_id). The batch predicate above and this row check answer the
+      // same question from two directions, so a lead that converted between the
+      // sweep and this iteration is still refused. Reported, not silently
+      // skipped.
+      const finality = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!finality.allowed) {
+        console.log(`[ghost-reengagement] skipped lead ${leadId}: ${finality.reason}`)
+        skipped++
         continue
       }
 
@@ -119,6 +140,21 @@ export async function runGhostReengagement(
           .from('leads')
           .update({ reengagement_status: 'completed' })
           .eq('id', leadId)
+        // REENGAGEMENT_COMPLETED — a live notification_rules trigger_event with
+        // no emitter: REENGAGEMENT_STARTED below fires when the loop begins, but
+        // nothing told the reactor when it stopped. Real moment: right here,
+        // tenant/contact from the row already loaded this iteration. void/catch
+        // so a fan-out hiccup never blocks the sweep.
+        const { emitKernelEvent } = await import('@/lib/kernel/emit')
+        void emitKernelEvent({
+          event:       KernelEvent.REENGAGEMENT_COMPLETED,
+          brokerageId,
+          entityType:  'lead',
+          entityId:    leadId,
+          contactId:   lead.contact_id ?? undefined,
+          source:      'cron',
+          metadata:    { reason: stopReason, attempts: lead.reengagement_attempt_count ?? 0 },
+        }).catch((err) => console.error(`[ghost-reengagement] REENGAGEMENT_COMPLETED emit failed for ${leadId}:`, err))
         stopped++
         continue
       }

@@ -8,6 +8,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { foldCommissionRows, type CommissionRow } from "@/lib/finance/brokerage-earnings-writer"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -17,8 +18,10 @@ export const maxDuration = 300
  *
  * For each active agent in every brokerage, computes:
  *   gci_gross          = sum(agent_commissions.gross_commission) closed this month
- *   agent_payout       = sum(agent_commissions.agent_commission)
- *   brokerage_gross    = gci_gross - agent_payout
+ *   agent_payout / brokerage_gross — the shared NET-PREFERENCE fold
+ *     (lib/finance/brokerage-earnings-writer.ts:foldCommissionRows): prefer
+ *     the stored net_to_agent / net_to_brokerage, fall back to the generated
+ *     pre-cap split columns
  *   ai_cost_cents      = sum(ai_tool_usage.cost_cents) for this agent this month
  *   fee_income_cents   = sum(agent_fee_charges.amount * 100) where status='paid'
  *   marketing_spend_cents = 0 (future: attribute campaign spend)
@@ -66,16 +69,27 @@ export async function GET(req: NextRequest) {
         // ── GCI from agent_commissions (the canonical, populated table) ──────
         // commission_records was never written (dead table) → this P&L showed $0.
         // GCI is recognized at CLOSE (close_date), not payout.
+        // NET-PREFERENCE RULE (owner ruling 2026-08-28), through the ONE shared
+        // fold — foldCommissionRows — rather than an inlined twin of it: prefer
+        // the STORED post-cap, post-fee net_to_agent / net_to_brokerage; fall
+        // back to the GENERATED pre-cap split only for manually entered rows.
+        // Post-cap the two disagree on purpose (agent keeps 100%, brokerage $0).
         const { data: commissions } = await supabase
           .from("agent_commissions")
-          .select("gross_commission, agent_commission, close_date")
+          .select("gross_commission, agent_commission, brokerage_commission, net_to_agent, net_to_brokerage, close_date")
           .eq("agent_id", agent.id)
           .gte("close_date", `${monthStart}T00:00:00Z`)
           .lte("close_date", `${monthEnd}T23:59:59Z`)
 
-        const gciGross    = commissions?.reduce((s, r) => s + (r.gross_commission ?? 0), 0) ?? 0
-        const agentPayout = commissions?.reduce((s, r) => s + (r.agent_commission ?? 0), 0) ?? 0
-        const brokerageGross = gciGross - agentPayout
+        // transaction_id is deliberately null here — this per-agent snapshot
+        // counts rows, not distinct deals, so the fold's txCount is unused.
+        const foldRows: CommissionRow[] = (commissions ?? []).map((r) => ({
+          ...r, transaction_id: null, agent_id: agent.id,
+        }))
+        const f = foldCommissionRows(foldRows)
+        const gciGross    = f.gci
+        const agentPayout = f.splits
+        const brokerageGross = f.net
         const txCount = commissions?.length ?? 0
 
         // ── AI cost from ai_tool_usage ────────────────────────────────────────

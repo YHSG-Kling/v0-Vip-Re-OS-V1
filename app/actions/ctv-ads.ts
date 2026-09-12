@@ -9,33 +9,16 @@
 import { createClient } from "@/lib/supabase/server"
 import {
   stageCtvCampaign,
+  launchCtvCampaignOnVibe,
   type CtvLaunchPackage,
   type CtvTargeting,
 } from "@/lib/ads/ctv-campaign"
-import { dispatchCtvCampaign, type CtvDispatchResult } from "@/lib/providers/vibe"
+import type { CtvDispatchResult } from "@/lib/providers/vibe"
+import { requireAdsActor as requireActor } from "@/lib/auth/require-caller"
 
-interface SessionActor {
-  userId: string
-  brokerageId: string
-}
-
-/** Resolve the signed-in user's brokerage; refuse when unauthenticated. */
-async function requireActor(): Promise<{ actor?: SessionActor; error?: string }> {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { error: "Not authenticated" }
-
-  const { data: profile, error } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (error) return { error: error.message }
-  if (!profile?.brokerage_id) return { error: "No brokerage on this account" }
-  return { actor: { userId: user.id, brokerageId: profile.brokerage_id } }
-}
+// TOMBSTONE: local requireActor merged onto lib/auth/require-caller.ts
+// requireAdsActor (imported above as `requireActor`) — §1/§6 SAME BODY census
+// round 3, 2026-09-09.
 
 export async function stageCtvCampaignAction(input: {
   listingId?: string | null
@@ -114,9 +97,11 @@ export async function markCtvCampaignLaunchedAction(
 }
 
 /**
- * Attempt API dispatch to Vibe. Always honest: today this returns
- * dispatched:false with the reason (not connected, or connected but the Vibe
- * API contract is not in hand yet). Never mutates campaign status.
+ * Dispatch a staged CTV campaign to Vibe end-to-end (advertiser → upload video
+ * creative → create campaign → strategy + geo targeting → PUBLISH). Honest:
+ * dispatched:true ONLY on a Vibe-confirmed PUBLISHED campaign — and only then is
+ * the row flipped to 'live' with the Vibe ids recorded. On any failure the row
+ * is untouched and the real reason is returned (the human-finalize path stays).
  */
 export async function dispatchCtvCampaignAction(
   campaignId: string,
@@ -135,5 +120,13 @@ export async function dispatchCtvCampaignAction(
   if (fetchError) return { dispatched: false, reason: fetchError.message }
   if (!campaign) return { dispatched: false, reason: "Campaign not found" }
 
-  return dispatchCtvCampaign(campaignId)
+  // Dispatch + flip-to-live + ledger live in ONE place, shared with the Ads
+  // Manager executor (lib/ads/ctv-campaign.ts::launchCtvCampaignOnVibe). The
+  // flip used to be re-spelled here; it moved onto the survivor (2026-09-07).
+  return launchCtvCampaignOnVibe({
+    campaignId: campaign.id as string,
+    brokerageId: actor.brokerageId,
+    actorUserId: actor.userId,
+    launchedVia: "vibe_api",
+  })
 }

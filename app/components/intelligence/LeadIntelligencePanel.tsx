@@ -1,31 +1,105 @@
 // CANONICAL — always import LeadIntelligencePanel from this path.
-// The duplicate at app/components/features/intelligence/LeadIntelligencePanel.tsx
-// re-exports from here and exists only for backwards-compat during migration.
+// The backwards-compat re-export that used to sit at
+// app/components/features/intelligence/LeadIntelligencePanel.tsx is GONE (the
+// directory no longer exists; verified 2026-09-01 — the only surviving mention
+// of that path in the tree was this comment, and the one importer is
+// app/leads/page.tsx:94, which already points here). Kept as a tombstone so the
+// path is not re-created.
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Brain, TrendingUp, Home, MapPin, RefreshCw, Loader2, DollarSign, Calendar } from "lucide-react"
+import { Brain, TrendingUp, Home, MapPin, RefreshCw, Loader2, DollarSign, Calendar, Sparkles } from "lucide-react"
 import { enrichLeadData } from "@/app/actions/lead-intelligence"
+import { getLeadPredictions } from "@/app/actions/ai-predictions"
 import { useToast } from "@/hooks/use-toast"
+import { timelineLabel } from "@/constants/crm-standards"
 
-export default function LeadIntelligencePanel({ leadId, initialData }: { leadId: string; initialData?: any }) {
+/**
+ * `canViewPredictions` — LEAD-DESK ONLY (CLAUDE.md §5: agents never see
+ * leads; LEAD_DESK_USER_TYPES, lib/auth/lead-visibility.ts). getLeadPredictions
+ * itself gates server-side via resolveLeadVisibilityForSession — this prop is
+ * a UI-side convenience so the tab doesn't render (and then come back empty)
+ * for a caller who could never pass that gate, not the security boundary.
+ * app/leads/page.tsx passes its own `isAdminOrBroker` (resolved from the same
+ * lead-visibility module) for this; no other caller sets it, so the Predictions
+ * tab defaults OFF for every other mount of this panel.
+ */
+export default function LeadIntelligencePanel({
+  leadId,
+  initialData,
+  canViewPredictions = false,
+}: {
+  leadId: string
+  initialData?: any
+  canViewPredictions?: boolean
+}) {
   const [intelligence, setIntelligence] = useState<any>(initialData || null)
   const [isEnriching, setIsEnriching] = useState(false)
   const { toast } = useToast()
 
+  // WIRED (orphan doctrine §1.2, this lane) — getLeadPredictions had zero UI
+  // callers despite ai_predictions carrying live writers for this lead/contact
+  // (churn, conversation analysis, property match, CMA, hidden opportunities,
+  // sphere mining, market arbitrage). Lazy: fetched only when the gate admits
+  // this caller and a lead is actually selected, never speculatively.
+  const [predictions, setPredictions] = useState<any[] | null>(null)
+  const [loadingPredictions, setLoadingPredictions] = useState(false)
+
+  useEffect(() => {
+    if (!canViewPredictions || !leadId) {
+      setPredictions(null)
+      return
+    }
+    let cancelled = false
+    setLoadingPredictions(true)
+    getLeadPredictions(leadId)
+      .then((rows) => { if (!cancelled) setPredictions(rows) })
+      .catch(() => { if (!cancelled) setPredictions([]) })
+      .finally(() => { if (!cancelled) setLoadingPredictions(false) })
+    return () => { cancelled = true }
+  }, [canViewPredictions, leadId])
+
+  // Enrichment CONSUMES ITS RESULT instead of reloading the page.
+  //
+  // What was here: `window.location.reload()`. On the one page that renders this
+  // panel (app/leads/page.tsx:1832) the panel is shown only while
+  // `selectedLeadId` is set — client state — so a full reload did not "reload
+  // intelligence data" at all: it threw away the selection and CLOSED the panel,
+  // along with every filter, tab and scroll position on the page.
+  //
+  // What it can consume, and what it cannot. `enrichLeadData` (app/actions/
+  // lead-intelligence.ts:758) returns `{ success: true, dataSources }` or
+  // `{ success: false, error }` — `dataSources` is exactly the list rendered as
+  // the "Data Sources" badges below, so that half is fed straight back into
+  // state. It returns NO refreshed profile, and there is no reader anywhere in
+  // the tree that returns this panel's shape (a `lead_intelligence` row with its
+  // lead_engagement_scores / lead_property_ownership / motivated_seller_signals
+  // children), so the recomputed scores cannot be pulled without BUILDING that
+  // reader — a change inside app/actions/lead-intelligence.ts, which this lane
+  // does not own. Until it exists the honest thing is to say the scores land on
+  // the next load rather than silently show stale numbers under a success toast.
   const handleEnrich = async () => {
     setIsEnriching(true)
     try {
       const result = await enrichLeadData(leadId)
       if (result.success) {
-        toast({ title: "Lead data enriched successfully" })
-        // Reload intelligence data
-        window.location.reload()
+        const dataSources = (result as { dataSources?: string[] }).dataSources ?? []
+        setIntelligence((prev: any) => ({
+          ...(prev ?? {}),
+          data_sources: dataSources,
+          last_enriched_at: new Date().toISOString(),
+        }))
+        toast({
+          title: "Lead data enriched",
+          description: dataSources.length
+            ? `Consulted: ${dataSources.join(", ")}. Updated scores appear on the next load.`
+            : "No external source returned data for this lead.",
+        })
       } else {
         toast({ title: "Enrichment failed", description: result.error, variant: "destructive" })
       }
@@ -131,6 +205,11 @@ export default function LeadIntelligencePanel({ leadId, initialData }: { leadId:
           <TabsTrigger value="property">Property Data</TabsTrigger>
           <TabsTrigger value="signals">Seller Signals ({signals.length})</TabsTrigger>
           <TabsTrigger value="engagement">Engagement</TabsTrigger>
+          {canViewPredictions && (
+            <TabsTrigger value="predictions">
+              AI Predictions{predictions && predictions.length > 0 ? ` (${predictions.length})` : ""}
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="profile" className="space-y-4">
@@ -152,7 +231,9 @@ export default function LeadIntelligencePanel({ leadId, initialData }: { leadId:
                     <Calendar className="w-4 h-4 text-blue-600" />
                     Timeline
                   </h4>
-                  <Badge>{intelligence.timeline || "Unknown"}</Badge>
+                  {/* Canonical bucket label (constants/crm-standards.ts TIMELINE_LABELS) —
+                      the raw value ("1-3_months") was rendered verbatim before. */}
+                  <Badge>{timelineLabel(intelligence.timeline) || "Unknown"}</Badge>
                 </div>
               </div>
 
@@ -382,6 +463,48 @@ export default function LeadIntelligencePanel({ leadId, initialData }: { leadId:
             </Card>
           )}
         </TabsContent>
+
+        {canViewPredictions && (
+          <TabsContent value="predictions" className="space-y-4">
+            {loadingPredictions ? (
+              <Card>
+                <CardContent className="p-12 text-center">
+                  <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin text-primary" />
+                  <p className="text-muted-foreground">Loading AI predictions...</p>
+                </CardContent>
+              </Card>
+            ) : predictions && predictions.length > 0 ? (
+              <div className="grid gap-3">
+                {predictions.map((p: any) => (
+                  <Card key={p.id} className="border-l-4 border-l-violet-500">
+                    <CardHeader className="pb-2">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm capitalize flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 text-violet-600" />
+                          {String(p.prediction_type ?? "prediction").replace(/_/g, " ")}
+                        </CardTitle>
+                        {typeof p.confidence_score === "number" && (
+                          <Badge variant="secondary">{Math.round(p.confidence_score * 100)}% confidence</Badge>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent className="text-xs text-muted-foreground space-y-1">
+                      <div>{p.created_at ? new Date(p.created_at).toLocaleString() : "Date unknown"}</div>
+                      {p.model_version && <div>Model: {p.model_version}</div>}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <Card>
+                <CardContent className="p-12 text-center text-muted-foreground">
+                  <Sparkles className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No AI predictions recorded for this lead yet</p>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )

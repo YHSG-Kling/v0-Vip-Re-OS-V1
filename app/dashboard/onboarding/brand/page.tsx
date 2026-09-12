@@ -8,6 +8,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getBrandSetupStatus } from "@/app/actions/onboarding/brand"
 import { BrandSetupClient } from "./brand-setup-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = 'force-dynamic'
 
@@ -25,6 +26,13 @@ export default async function BrandSetupPage() {
     redirect("/auth/login")
   }
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user and brokerage info
   // Wave 34 — also pull users.personal_website_url so the brand wizard
   // can expose it during onboarding (Settings/Profile is the post-

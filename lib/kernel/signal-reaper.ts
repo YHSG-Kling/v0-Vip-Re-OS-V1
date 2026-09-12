@@ -9,7 +9,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { SIGNAL_REGISTRY } from "./signal-registry"
+import { signalSpec } from "./signal-registry"
 import { shouldReapSignal, shouldAutoReplaySignal, MAX_HANDLED_OPEN_HOURS, FEED_ONLY_TTL_HOURS } from "./signal-reaper-policy"
 import { publishManagerSignal } from "./manager-signals"
 import type { ManagerKey } from "./manager-registry"
@@ -42,7 +42,9 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
   }>) {
     result.scanned += 1
     const ageHours = (now - new Date(row.created_at).getTime()) / 3_600_000
-    const disposition = SIGNAL_REGISTRY[row.signal_type]?.disposition ?? "handled"
+    // Read through the registry's accessor. An UNCATALOGUED signal (signalSpec → undefined)
+    // still reaps conservatively as "handled" — escalate to a human, never expire quietly.
+    const disposition = signalSpec(row.signal_type)?.disposition ?? "handled"
     const action = shouldReapSignal({ ageHours, disposition })
     if (action === "keep") continue
 

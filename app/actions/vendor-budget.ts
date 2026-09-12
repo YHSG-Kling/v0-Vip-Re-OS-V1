@@ -3,12 +3,13 @@
 // Vendor-budget surfaces, role-scoped. PRIVACY CONTRACT (enforced here, server-side):
 //   • Brokerage/subscriber users  → coarse level + a (superadmin-toggled) warning.
 //     NEVER dollar amounts, ceiling, percent, or vendor names.
-//   • Platform staff (superadmin/support) → full spend + per-vendor breakdown.
+//   • Platform staff (superadmin, admin, marketing, support — the owner's roster,
+//     resolved from users.platform_role) → full spend + per-vendor breakdown.
 //   • Only superadmin may flip the brokerage-warning visibility toggle.
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import {
   checkVendorBudget,
   getBrokerageBudgetWarningEnabled,
@@ -16,20 +17,36 @@ import {
   getBudgetBlockedSendCount,
 } from "@/lib/vendor-governance/budget-gate"
 import { redactBudgetForActor, type BudgetView } from "@/lib/vendor-governance/budget-visibility"
-import { aggregateBrokerageSpend, type BrokerageSpendRow } from "@/lib/vendor-governance/budget-eval"
+import { aggregateBrokerageSpend, aggregateVendorBreakdown, type BrokerageSpendRow, type VendorBreakdownRow } from "@/lib/vendor-governance/budget-eval"
 
-async function resolveActor(): Promise<{ userId: string; userType: string; brokerageId: string | null; email: string } | null> {
+/**
+ * `platform_role` IS SELECTED HERE, AND ITS ABSENCE WAS THE BUG.
+ *
+ * The two platform-staff gates below used to read `isPlatformStaff(actor.userType)`
+ * against a roster of platform_role values. Measured on the live database, that gate
+ * admitted NOBODY who should have passed and one class who should not:
+ *
+ *   • the platform's ONLY superadmin is (user_type='admin', platform_role='superadmin')
+ *     → refused, so the vendor-spend console was dark for the one person who owns it;
+ *   • a `marketing` staffer carries user_type='system' ('marketing' is not even a legal
+ *     user_type) → refused, permanently, whatever the roster said;
+ *   • a `support` staffer carries user_type='support' → admitted, but so would any
+ *     TENANT user whose user_type is 'support', which is a tenant role unconnected to
+ *     platform employment. That is a privacy gate on vendor names and dollar amounts.
+ */
+async function resolveActor(): Promise<{ userId: string; userType: string; platformRole: string | null; brokerageId: string | null; email: string } | null> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
   const { data } = await supabase
     .from("users")
-    .select("user_type, brokerage_id, email")
+    .select("user_type, platform_role, brokerage_id, email")
     .eq("id", user.id)
     .maybeSingle()
   return {
     userId: user.id,
     userType: data?.user_type ?? "agent",
+    platformRole: (data as { platform_role?: string | null } | null)?.platform_role ?? null,
     brokerageId: data?.brokerage_id ?? null,
     email: data?.email ?? user.email ?? "",
   }
@@ -74,7 +91,7 @@ export async function getPlatformVendorBudget(brokerageId: string): Promise<
 > {
   const actor = await resolveActor()
   if (!actor) return { ok: false, error: "Unauthenticated" }
-  if (!isPlatformStaff(actor.userType)) return { ok: false, error: "Platform staff access required" }
+  if (!isPlatformStaffIdentity(actor.userType, actor.platformRole)) return { ok: false, error: "Platform staff access required" }
 
   const [budget, vendors] = await Promise.all([
     checkVendorBudget({ brokerageId }),
@@ -92,27 +109,70 @@ export async function getPlatformVendorSpendOverview(): Promise<
 > {
   const actor = await resolveActor()
   if (!actor) return { ok: false, error: "Unauthenticated" }
-  if (!isPlatformStaff(actor.userType)) return { ok: false, error: "Platform staff access required" }
+  if (!isPlatformStaffIdentity(actor.userType, actor.platformRole)) return { ok: false, error: "Platform staff access required" }
 
   const svc = createServiceClient()
   const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
-  const [{ data: usage }, { data: brokerages }] = await Promise.all([
+  // `error` is destructured on BOTH reads. supabase-js RESOLVES a refused query, so
+  // `{ data }` alone read a denial as "no spend" — and the support console renders
+  // that as "All brokerages within budget", a false all-clear on the platform's
+  // spend-control surface.
+  const [{ data: usage, error: usageError }, { data: brokerages, error: brokeragesError }] = await Promise.all([
     svc.from("vendor_usage_tracking").select("brokerage_id, total_cost").gte("created_at", startOfMonth),
     svc.from("brokerages").select("id, name, plan_tier"),
   ])
+  if (usageError) return { ok: false, error: usageError.message }
+  if (brokeragesError) return { ok: false, error: brokeragesError.message }
   return { ok: true, rows: aggregateBrokerageSpend(usage ?? [], brokerages ?? []) }
 }
 
 /**
+ * Month-to-date spend per (vendor, usage_type) — the reader usage_type,
+ * units_used, cost_per_unit and agent_id never had (census 1a; the ledger's
+ * writer at lib/vendor-governance/usage-logger.ts:106 has always stamped all
+ * four, and the only thing that ever LOOKED like a reader was a dead route's
+ * select("*")). Same platform-staff gate and same fail-closed error handling
+ * as the overview above: this is the cost ledger, and a refusal rendered as
+ * "no spend" is a false all-clear on an invoice-feeding surface (§3/§5).
+ */
+export async function getPlatformVendorBreakdown(): Promise<
+  { ok: true; rows: VendorBreakdownRow[] } | { ok: false; error: string }
+> {
+  const actor = await resolveActor()
+  if (!actor) return { ok: false, error: "Unauthenticated" }
+  if (!isPlatformStaffIdentity(actor.userType, actor.platformRole)) return { ok: false, error: "Platform staff access required" }
+
+  const svc = createServiceClient()
+  const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
+  const { data, error } = await svc
+    .from("vendor_usage_tracking")
+    .select("vendor_name, usage_type, units_used, cost_per_unit, total_cost, agent_id")
+    .gte("created_at", startOfMonth)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, rows: aggregateVendorBreakdown(data ?? []) }
+}
+
+/**
  * Toggle whether brokerage users see the "approaching usage limit" warning.
- * SUPERADMIN ONLY (not support — this is platform configuration). Audit-logged.
+ * SUPERADMIN ONLY — deliberately NOT the four-role staff roster, because this is
+ * platform CONFIGURATION (it hides a cost signal from every tenant at once), not
+ * catalogue maintenance. Audit-logged.
+ *
+ * The superadmin test reads BOTH columns for the same reason the staff test does:
+ * `actor.userType !== "superadmin"` alone refused the platform's only superadmin,
+ * whose row is (user_type='admin', platform_role='superadmin'). This is the exact
+ * shape used by public.is_platform_admin() in RLS and by requireSuperadmin() in
+ * app/actions/superadmin/platform-staff.ts — narrowing to superadmin means
+ * platform_role='superadmin' OR the legacy user_type marker, never user_type alone.
  */
 export async function setBrokerageBudgetWarningVisibility(enabled: boolean): Promise<
   { ok: true; enabled: boolean } | { ok: false; error: string }
 > {
   const actor = await resolveActor()
   if (!actor) return { ok: false, error: "Unauthenticated" }
-  if (actor.userType !== "superadmin") return { ok: false, error: "Superadmin access required" }
+  if (actor.userType !== "superadmin" && actor.platformRole !== "superadmin") {
+    return { ok: false, error: "Superadmin access required" }
+  }
 
   const svc = createServiceClient()
   const { error } = await svc

@@ -18,7 +18,11 @@ import {
 } from "@/app/actions/superadmin/tenant-users"
 import { enterTenantAction } from "@/app/actions/superadmin/impersonation"
 
-const CREATABLE_ROLES = ["admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "lender", "vendor"]
+// Mirrors TENANT_CREATABLE_ROLES in app/actions/superadmin/tenant-users.ts — a menu
+// offering a role the action refuses is a dead end. 'lender' removed with it (owner
+// ruling: lender is a vendor CATEGORY, not a user type — invite them as a vendor
+// and pick the lender category).
+const CREATABLE_ROLES = ["admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "vendor"]
 
 function fmtLastLogin(iso: string | null): string {
   if (!iso) return "—"
@@ -251,7 +255,7 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
             <div className="space-y-1">
               {pendingInvites.map((i) => (
                 <div key={i.id} className="flex items-center gap-2 text-sm">
-                  <span className="flex-1 truncate">{i.email} · <span className="text-xs text-muted-foreground">{i.role}{i.status === "expired" ? " · expired" : ""}</span></span>
+                  <span className="flex-1 truncate">{i.email} · <span className="text-xs text-muted-foreground">{i.role}{i.teamName ? ` · ${i.teamName}` : ""}{i.status === "expired" ? " · expired" : ""}</span></span>
                   <Button size="sm" variant="ghost" disabled={pending} onClick={() => invite("resend", i.id)}>Resend</Button>
                   <Button size="sm" variant="ghost" disabled={pending} onClick={() => invite("revoke", i.id)}>Revoke</Button>
                 </div>

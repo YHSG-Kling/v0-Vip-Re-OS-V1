@@ -17,11 +17,17 @@
 //   - Errors returned as structured { success, error } — never thrown silently
 //   - All writes emit canonical KernelEvents
 
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// published four service-client commands — `markOnboardingStepComplete` takes
+// userId / agentId / brokerageId from its parameters — as Server Actions with no
+// session token in the file (§4). The only callers are app/dashboard/page.tsx
+// (a server component that resolves the user from getAgentContext first) and the
+// server-only kernel barrel. `server-only` keeps it that way at build time.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
+import { roleDashboardRoute } from "./role-routes"
 import { emitUserProvisionedEvent } from "./users"
 import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 
@@ -319,7 +325,7 @@ export async function loadOnboardingWorkspace(params: {
   const completionPct = onboarding?.completion_percentage ?? 0
   const isComplete    = onboarding?.status === "completed"
   const nextRoute     = isComplete
-    ? ROLE_DASHBOARD_ROUTES[userType] ?? "/dashboard/agent"
+    ? roleDashboardRoute(userType)
     : "/dashboard/onboarding"
 
   return {
@@ -405,7 +411,9 @@ export async function determineFirstLoginDestination(
   }
 
   // Onboarding complete or exempt from onboarding (broker, admin, etc.)
-  const dashboardRoute = ROLE_DASHBOARD_ROUTES[userType] ?? "/dashboard/agent"
+  // The post-login route is computed by the ONE resolver (role-routes.ts:roleDashboardRoute) —
+  // it carries DEFAULT_DASHBOARD_ROUTE, so this file never re-spells "/dashboard/agent".
+  const dashboardRoute = roleDashboardRoute(userType)
   const isOnboardingRequired = ONBOARDING_ROLES.has(userType)
 
   return {

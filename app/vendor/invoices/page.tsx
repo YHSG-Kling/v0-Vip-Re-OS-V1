@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { readRoleGrants, selectVendorGrant } from "@/lib/auth/role-grants"
 import { readVendorStripeConnect } from "@/lib/connections/vendor-stripe"
 import { readVendorQuickBooks } from "@/lib/connections/vendor-quickbooks"
 import { defaultQbReconciliationPeriod, loadVendorQbReconciliation } from "@/lib/finance/qb-reconciliation"
@@ -26,21 +27,34 @@ export default async function VendorInvoicesPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Canonical vendor linkage: user_role_assignments.vendor_id
-  const { data: ra } = await supabase
-    .from("user_role_assignments")
-    .select("vendor_id, brokerage_id")
-    .eq("user_id", user.id)
-    .not("vendor_id", "is", null)
-    .maybeSingle()
+  // Canonical vendor linkage: user_role_assignments.vendor_id — asked of a table
+  // that is UNIQUE on (user_id, role), not on user_id, so the narrowing to
+  // vendor-bearing grants still leaves several rows possible and `.maybeSingle()`
+  // over them ERRORS. Read every grant, then choose. The brokerage anchor comes
+  // off the SAME vendor grant, so an invoice list can never be scoped to one
+  // tenant while the vendor belongs to another.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[vendor/invoices] role grant read failed:", grantsResult.error)
+  }
+  const { grant: vendorGrant, ambiguous } = grantsResult.ok
+    ? selectVendorGrant(grantsResult.grants)
+    : { grant: null, ambiguous: false }
 
-  const vendorId = (ra?.vendor_id as string | null) ?? null
-  const brokerageId = (ra?.brokerage_id as string | null) ?? null
+  const vendorId = vendorGrant?.vendor_id ?? null
+  const brokerageId = vendorGrant?.brokerage_id ?? null
 
   if (!vendorId || !brokerageId) {
+    // Three outcomes that used to share one sentence. "We could not read it" and
+    // "you do not have one" send a reader to completely different places.
+    const reason = !grantsResult.ok
+      ? "We could not verify your vendor account just now — please refresh."
+      : ambiguous
+        ? "Your account is linked to more than one vendor — ask the brokerage to correct it."
+        : "No vendor profile found for your account."
     return (
       <div className="p-6 text-center text-muted-foreground">
-        <p>No vendor profile found for your account.</p>
+        <p>{reason}</p>
         <Link href="/vendor/dashboard">
           <Button variant="link">Back to Dashboard</Button>
         </Link>

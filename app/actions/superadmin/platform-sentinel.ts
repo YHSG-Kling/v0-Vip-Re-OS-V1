@@ -22,6 +22,7 @@
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveActorNames } from "@/lib/kernel/actor-attribution"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { isEmailOnSuppressionList } from "@/lib/platform/suppression-list"
 import {
@@ -51,6 +52,13 @@ export interface SentinelActionRow {
   status: string
   createdAt: string
   actedAt: string | null
+  /** WHO decided. platform_sentinel_actions.acted_by is stamped by every
+   *  approve/send/dismiss below and, until wave H5, was read by nothing — the
+   *  queue showed WHEN a fleet-wide staff decision was taken and never BY WHOM,
+   *  so the accountable half of an accountability record was write-only.
+   *  Resolved to the staff email; null when the row predates the stamp or the
+   *  user row is gone (FK is ON DELETE SET NULL). */
+  actedBy: string | null
 }
 
 /** Fleet-wide flywheel stats for one proposal kind (the learning strip). */
@@ -115,7 +123,7 @@ async function audit(actorUserId: string, actorEmail: string, action: string, ta
   } catch (err) { console.error("[platform-sentinel audit] failed:", err) }
 }
 
-function toRow(r: any, nameOf: Map<string, string>): SentinelActionRow {
+function toRow(r: any, nameOf: Map<string, string>, actorOf?: Map<string, string>): SentinelActionRow {
   return {
     id: r.id,
     kind: r.kind,
@@ -129,6 +137,7 @@ function toRow(r: any, nameOf: Map<string, string>): SentinelActionRow {
     status: r.status,
     createdAt: r.created_at,
     actedAt: r.acted_at ?? null,
+    actedBy: r.acted_by ? (actorOf?.get(r.acted_by) ?? r.acted_by) : null,
   }
 }
 
@@ -147,7 +156,7 @@ export async function listSentinelActionsAction(): Promise<{ ok: true; data: Sen
       .order("created_at", { ascending: false })
       .limit(200),
     svc.from("platform_sentinel_actions")
-      .select("id, kind, severity, brokerage_id, title, detail, draft_channel, draft_text, status, created_at, acted_at")
+      .select("id, kind, severity, brokerage_id, title, detail, draft_channel, draft_text, status, created_at, acted_at, acted_by")
       .neq("status", "proposed")
       .order("acted_at", { ascending: false, nullsFirst: false })
       .limit(30),
@@ -181,6 +190,19 @@ export async function listSentinelActionsAction(): Promise<{ ok: true; data: Sen
     for (const b of (brks ?? []) as any[]) nameOf.set(b.id, b.name ?? "(unnamed)")
   }
 
+  // WHO decided. Resolved once for the decided rows; a staff id with no user
+  // row left resolves to the raw id rather than to a blank, so a deleted
+  // account never renders as "nobody decided this" — that fallback lives at
+  // the render site (toRow: `actorOf?.get(r.acted_by) ?? r.acted_by`).
+  // TOMBSTONE (§1.1, 2026-09-03): the inline users lookup that stood here was
+  // one of four copies AND the only one that never read its error, so a refused
+  // read rendered every decision as its raw id with no trace of why. Survivor
+  // lib/kernel/actor-attribution.ts:91 (resolveActorNames) — unscoped on
+  // purpose: acted_by is PLATFORM staff, who belong to no tenant.
+  const actorIds = ((recentRes.data ?? []) as any[]).map((r) => r.acted_by).filter(Boolean) as string[]
+  const { names: actorOf, error: actorErr } = await resolveActorNames(svc, actorIds)
+  if (actorErr) console.error("[platform-sentinel] decision actor lookup failed:", actorErr)
+
   const proposed = ((proposedRes.data ?? []) as any[]).map((r) => toRow(r, nameOf))
   proposed.sort((a, b) =>
     (SEVERITY_ORDER[a.severity as SentinelSeverity] ?? 3) - (SEVERITY_ORDER[b.severity as SentinelSeverity] ?? 3) ||
@@ -204,7 +226,7 @@ export async function listSentinelActionsAction(): Promise<{ ok: true; data: Sen
     ok: true,
     data: {
       proposed,
-      recent: ((recentRes.data ?? []) as any[]).map((r) => toRow(r, nameOf)),
+      recent: ((recentRes.data ?? []) as any[]).map((r) => toRow(r, nameOf, actorOf)),
       emailRailReady: !!process.env.SENDGRID_API_KEY,
       learning: {
         kinds,
@@ -282,7 +304,7 @@ export async function approveSentinelActionAction(id: string, opts: { send?: boo
   const [{ data: admins }, { data: brk }] = await Promise.all([
     svc.from("users").select("email")
       .eq("brokerage_id", row.brokerage_id)
-      .in("user_type", ["broker", "broker_admin", "admin"])
+      .in("user_type", ["broker", "admin"])
       .is("deleted_at", null).limit(20),
     svc.from("brokerages").select("email").eq("id", row.brokerage_id).maybeSingle(),
   ])

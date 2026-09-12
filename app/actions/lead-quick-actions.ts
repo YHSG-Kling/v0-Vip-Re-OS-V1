@@ -6,11 +6,16 @@
  * ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY.
  *   - `leads` are platform OR brokerage-scoped (NEVER agent-assigned in the canonical flow — the
  *     moment a lead is assigned to an agent it's promoted to a contact).
- *   - Platform admin / staff (superadmin / support) → always allowed.
- *   - Brokerage-LEVEL roles only (broker / broker_owner / broker_admin / admin) → allowed when
- *     their `users.brokerage_id` matches `leads.brokerage_id`. (When the lead has
+ *   - Platform admin / staff → always allowed. Identified by `users.platform_role`, NOT by
+ *     `user_type='superadmin'`, which no live row holds.
+ *   - Brokerage-LEVEL roles (broker / broker_owner / admin) → allowed when their
+ *     `users.brokerage_id` matches `leads.brokerage_id`. (When the lead has
  *     `brokerage_id IS NULL` it is platform-only — only platform admin / staff can act.)
- *   - Agents, team leads, TCs, compliance officers do NOT get access to lead rows — agents work
+ *   - team_lead → allowed, ROW-SCOPED TO THEIR OWN TEAM (owner ruling: "if team tier
+ *     subscriptions, they don't have a broker in the subscription so the team lead can see
+ *     leads"). A team lead may act on a lead their own team's agents are working, and on no
+ *     other; where their team is the tenant's only team the scope is the tenant.
+ *   - Agents, TCs, compliance officers do NOT get access to lead rows — agents work
  *     CONTACTS only (post-promotion); the CRM contact flow is where non-broker work happens.
  *   - Anyone else → structured `{ success:false, error:"Forbidden" }` (no row leak).
  *
@@ -20,12 +25,14 @@
  */
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { resolveLeadVisibility, leadRowInScope } from "@/lib/auth/lead-visibility"
 import { revalidatePath } from "next/cache"
 
 interface LeadRow {
   id:               string
   brokerage_id:     string | null
+  /** Needed by the row-scope test — a team's lead is one worked by a team agent. */
+  agent_id:         string | null
   first_name:       string | null
   last_name:        string | null
   email:            string | null
@@ -34,12 +41,26 @@ interface LeadRow {
   mailing_zip:      string | null
 }
 
-// ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. Only brokerage-LEVEL
-// roles (broker/admin family) may act on lead rows — team_lead / TC / compliance
-// were removed from this set deliberately; they work contacts, not the lead desk.
-const BROKERAGE_ROLES = new Set([
-  "broker", "broker_owner", "broker_admin", "admin",
-])
+// TOMBSTONE (lead-visibility consolidation): the inline `BROKERAGE_ROLES` set is
+// DELETED. The survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility,
+// which answers admission AND row scope, and leadRowInScope, which asks the same
+// question of ONE already-fetched row — the shape this gate needs.
+//
+// The comment that stood here recorded team_lead's removal as deliberate. The
+// owner's ruling supersedes it: a team lead reaches lead rows, scoped to their
+// own team. Because this gate acts on a SINGLE lead it can enforce that exactly
+// — the fetched row is tested against the resolved scope, so a team lead may
+// verify or re-enrich a lead their team is working and no other.
+//
+// ALSO REMOVED HERE: 'broker_admin', which is not a storable user_type and so
+// could never match a live row through this comparison (it stays an input
+// spelling inside the one roster). 'superadmin' was never in this set — the file
+// already used isPlatformStaffIdentity for staff, which the survivor now does
+// on its behalf.
+//
+// The `agent_id` the scope needs is read alongside the rest of the row: a
+// single-lead gate that fetched no agent_id could not tell a team's lead from
+// the brokerage's.
 
 async function assertCanActOnLead(leadId: string): Promise<
   { ok: true; userId: string; lead: LeadRow } | { ok: false; error: string }
@@ -49,29 +70,33 @@ async function assertCanActOnLead(leadId: string): Promise<
   if (!user) return { ok: false, error: "Unauthorized" }
 
   const svc = createServiceClient()
-  const { data: lead } = await svc.from("leads")
-    .select("id, brokerage_id, first_name, last_name, email, phone, mailing_address, mailing_zip")
+  const { data: lead, error: leadError } = await svc.from("leads")
+    .select("id, brokerage_id, agent_id, first_name, last_name, email, phone, mailing_address, mailing_zip")
     .eq("id", leadId).maybeSingle()
+  // supabase-js RESOLVES a refusal — a swallowed error reads as "no such lead",
+  // and both refuse, but they must not be reported as the same thing.
+  if (leadError) return { ok: false, error: "Could not read that lead" }
   if (!lead) return { ok: false, error: "Lead not found" }
   const l = lead as LeadRow
 
-  const { data: profile } = await svc.from("users")
+  const { data: profile, error: profileError } = await svc.from("users")
     .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
+  if (profileError) return { ok: false, error: "Could not verify your account" }
 
-  // Platform admin / staff always allowed (including for platform-only leads where brokerage_id IS NULL).
-  if (profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)) {
-    return { ok: true, userId: user.id, lead: l }
-  }
+  const vis = await resolveLeadVisibility(svc, {
+    userId: user.id,
+    userType: profile?.user_type ?? null,
+    platformRole: profile?.platform_role ?? null,
+    brokerageId: profile?.brokerage_id ?? null,
+  })
+  if (!vis.allowed) return { ok: false, error: vis.status === "forbidden" ? "Forbidden" : vis.reason }
 
-  // Brokerage-LEVEL roles — only when their brokerage matches the lead's. NULL brokerage_id on the
-  // lead means platform-only → no brokerage staff can act; the previous block already handled platform.
-  if (profile?.user_type && BROKERAGE_ROLES.has(profile.user_type)
-    && profile.brokerage_id && l.brokerage_id === profile.brokerage_id) {
-    return { ok: true, userId: user.id, lead: l }
-  }
+  // A lead with brokerage_id NULL is PLATFORM-ONLY. leadRowInScope refuses it for
+  // every tenant scope (NULL never equals a brokerage id) and admits it for
+  // platform scope, which is the rule this file already documented.
+  if (!leadRowInScope(vis.scope, l)) return { ok: false, error: "Forbidden" }
 
-  // Agents do NOT have access to lead rows in the canonical flow.
-  return { ok: false, error: "Forbidden" }
+  return { ok: true, userId: user.id, lead: l }
 }
 
 // ── Verify email (Tier 1+2 free / Tier 3 PDL ~$0.01) ───────────────────────
@@ -105,7 +130,16 @@ export async function verifyLeadAddressAction(params: {
       zip_code:     gate.lead.mailing_zip ?? undefined,
     })
     if (!data) return { success: false, error: "Lob not configured (set LOB_API_KEY)", cost }
-    await createServiceClient().from("leads").update({ mailing_address_verified: data.verified }).eq("id", params.leadId)
+    // Stamp the CASS marker too. It is the same Lob US-verification the direct-mail
+    // gate buys (lib/providers/mailing-cass-gate.ts) and the same one the promotion
+    // gate buys (lib/lead-pipeline/promotion-address-verification.ts); without the
+    // marker, a hand-verified address is re-verified — and re-billed — by both.
+    const { CASS_SOURCE } = await import("@/lib/providers/mailing-cass-gate")
+    const { error: verifyWriteError } = await createServiceClient()
+      .from("leads")
+      .update({ mailing_address_verified: data.verified, mailing_address_source: CASS_SOURCE })
+      .eq("id", params.leadId)
+    if (verifyWriteError) return { success: false, error: verifyWriteError.message, cost }
     revalidatePath(`/leads/${params.leadId}`)
     return { success: true, verified: data.verified, deliverability: data.deliverability, cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "address verify failed" } }

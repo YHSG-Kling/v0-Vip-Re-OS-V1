@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getVendorDocuments } from "@/app/actions/vendor-documents"
 import { readVendorW9, type VendorW9Read } from "@/lib/vendors/w9"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { VendorW9Card } from "./w9-card"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -29,17 +30,25 @@ export default async function VendorDocumentsPage() {
 
   // W-9 posture (owner round 43) — canonical vendor linkage is
   // user_role_assignments.vendor_id (the same rail the invoice center uses).
+  // "Which vendor is this user?" — one answer required, from a table that permits
+  // several grants per user (UNIQUE on (user_id, role)). `.maybeSingle()` over the
+  // vendor-bearing grants ERRORS as soon as there are two of them, and the
+  // discarded error silently became "no vendor", which here silently drops the
+  // whole W-9 card off the page.
   let vendorId: string | null = null
   let w9: VendorW9Read | null = null
-  const { data: ra } = await supabase
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", user.id)
-    .not("vendor_id", "is", null)
-    .maybeSingle()
-  if (ra?.vendor_id) {
-    vendorId = ra.vendor_id as string
-    w9 = await readVendorW9(createServiceClient(), vendorId).catch(() => null)
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[vendor/documents] role grant read failed:", grantsResult.error)
+  } else {
+    const { vendorId: resolved, ambiguous } = selectVendorId(grantsResult.grants)
+    if (ambiguous) {
+      console.error("[vendor/documents] user", user.id, "is linked to more than one vendor — W-9 card suppressed")
+    }
+    if (resolved) {
+      vendorId = resolved
+      w9 = await readVendorW9(createServiceClient(), vendorId).catch(() => null)
+    }
   }
 
   // Group by category for display

@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Badge }   from "@/components/ui/badge"
 import { Button }  from "@/components/ui/button"
 import { cn }      from "@/lib/utils"
 import { ChevronRight, Loader2 } from "lucide-react"

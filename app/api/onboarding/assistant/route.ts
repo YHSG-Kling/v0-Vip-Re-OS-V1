@@ -1,9 +1,11 @@
-import { streamText, convertToModelMessages } from 'ai'
+import { convertToModelMessages } from 'ai'
 import type { UIMessage } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { requireAuth } from '@/lib/kernel/api-auth'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { searchKB } from '@/lib/intelligence/kb-search'
 
 export async function POST(request: Request) {
@@ -13,8 +15,14 @@ export async function POST(request: Request) {
   if (!auth.ok) return auth.response
 
   const brokerageId = auth.brokerageId
-  // For lifecycle events we need the agents.id; fall back to users.id if no agent row
-  const agentId = auth.agentId ?? auth.userId
+  // The comment here used to say "we need the agents.id; fall back to users.id
+  // if no agent row" — stating the requirement and then breaking it in the same
+  // breath (m361). Every agent_id and entity_id below is agents-class, so a
+  // users id is not a lesser answer, it is a wrong one.
+  const agentId = auth.agentId
+  if (!agentId) {
+    return Response.json({ error: "No agent profile for this user yet — finish account setup." }, { status: 409 })
+  }
 
   try {
     const body = await request.json()
@@ -43,26 +51,59 @@ export async function POST(request: Request) {
       }
     }
 
-    // Fire SETUP_ASSISTANT_QUERY_MADE kernel event
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id: brokerageId,
-      entity_type: 'agent',
-      entity_id: agentId,
-      event_type: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
-      actor_user_id: auth.userId,
+    // READER for onboarding_ai_chats.question / .ai_response (readerless-write-
+    // census) — this agent's own prior Q&A, tenant- and agent-scoped from the
+    // session (§4), explicit columns. Without this the assistant re-answered
+    // the same question from scratch every turn and could contradict its own
+    // earlier answer to the same agent.
+    const { data: priorChats } = await supabase
+      .from('onboarding_ai_chats')
+      .select('question, ai_response, created_at')
+      .eq('agent_id', agentId)
+      .eq('brokerage_id', brokerageId)
+      .order('created_at', { ascending: false })
+      .limit(5)
+
+    let memoryContext = ''
+    if (priorChats && priorChats.length > 0) {
+      const turns = [...priorChats].reverse()
+        .map((c) => `Q: ${c.question}\nA: ${c.ai_response}`)
+        .join('\n\n')
+      memoryContext = `\n\nPrior questions this agent has already asked you (do not repeat these answers verbatim — build on them):\n${turns}`
+    }
+
+    // Fire SETUP_ASSISTANT_QUERY_MADE kernel event — audit row + reactor.
+    await emitKernelEvent({
+      brokerageId,
+      entityType: 'agent',
+      entityId: agentId,
+      event: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
+      actorUserId: auth.userId,
     })
 
+    // DOCUMENTED REASON THIS DOES NOT CALL loadBrandVoicePrompt
+    // (docs/ai-agent-surfaces-2026-09.md §3): this assistant onboards a NEW
+    // AGENT onto the PLATFORM itself (accounts, features, setup steps) — there
+    // is no brokerage/tenant brand voice to speak in yet at this point in the
+    // agent's lifecycle, and its knowledge is the platform's own KB
+    // (searchKB), not a tenant's brand_voice_profile / ai_identity_profiles.
     const systemPrompt = `You are a helpful setup assistant for this real-estate platform. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
 
 Context:
-${kbContext || 'No specific documentation found for this query.'}`
+${kbContext || 'No specific documentation found for this query.'}${memoryContext}`
 
-    const result = streamText({
-      model: 'anthropic/claude-sonnet-4-20250514',
+    // Routed streaming entry — routing table picks the model, the fair-use cap
+    // is checked BEFORE streaming, and the cost ledger is written on finish.
+    // Identity comes from requireAuth above, never from the request body.
+    const result = await streamTextRouted({
+      feature: 'onboarding_setup_assistant',
       system: systemPrompt,
       messages: await convertToModelMessages(messages),
       temperature: 0.7,
-      maxOutputTokens: 400,
+      maxTokens: 400,
+      userId: auth.userId,
+      brokerageId,
+      agentId,
       onFinish: async ({ text: aiResponse }) => {
         // INSERT onboarding_ai_chats
         await supabase.from('onboarding_ai_chats').insert({
@@ -79,12 +120,12 @@ ${kbContext || 'No specific documentation found for this query.'}`
           aiResponse.toLowerCase().includes('not certain')
 
         if (noKBResults || uncertainResponse) {
-          await supabase.from('lifecycle_events').insert({
-            brokerage_id: brokerageId,
-            entity_type: 'agent',
-            entity_id: agentId,
-            event_type: KernelEvent.SETUP_ASSISTANT_ESCALATED,
-            actor_user_id: auth.userId,
+          await emitKernelEvent({
+            brokerageId,
+            entityType: 'agent',
+            entityId: agentId,
+            event: KernelEvent.SETUP_ASSISTANT_ESCALATED,
+            actorUserId: auth.userId,
             metadata: {
               query: latestQuery,
               reason: noKBResults ? 'no_kb_results' : 'uncertain_response',
@@ -113,7 +154,7 @@ ${kbContext || 'No specific documentation found for this query.'}`
               .from('users')
               .select('id')
               .eq('brokerage_id', brokerageId)
-              .in('user_type', ['admin', 'broker', 'broker_admin', 'superadmin'])
+              .in('user_type', ['admin', 'broker', 'superadmin'])
             for (const adm of admins ?? []) {
               await service.from('notifications').insert({
                 user_id: adm.id,
@@ -136,6 +177,11 @@ ${kbContext || 'No specific documentation found for this query.'}`
 
     return result.toUIMessageStreamResponse()
   } catch (error) {
+    // Fair-use refusal happens BEFORE any bytes stream — surface it as a 429
+    // rather than laundering "you're at your monthly cap" into a 500.
+    if (error instanceof AIFairUseError) {
+      return Response.json({ error: error.message }, { status: 429 })
+    }
     console.error('[onboarding/assistant] API error:', error)
     return new Response(
       JSON.stringify({ error: 'Failed to process assistant request' }),

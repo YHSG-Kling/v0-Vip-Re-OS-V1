@@ -19,7 +19,6 @@ import {
   MessageSquare,
   CheckCircle,
   Clock,
-  AlertTriangle,
   Lightbulb,
 } from "lucide-react"
 import { SellerUpdateComposer } from "@/app/components/listings/SellerUpdateComposer"

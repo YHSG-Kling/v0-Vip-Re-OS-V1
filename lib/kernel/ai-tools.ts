@@ -8,27 +8,26 @@
 // Owner: AI Tools subsystem
 // Commands:
 //   1. loadAiToolsWorkspace   — load tool usage history + saved outputs for a user
-//   2. runAiTool              — execute an AI tool, log to ai_tool_usage, enforce gates
-//   3. saveAiToolOutput       — persist tool output to saved_ai_outputs
-//   4. attachAiOutputToEntity — link a saved output to a contact/lead/listing/transaction
-//   5. previewAiOutput        — return a formatted preview without persisting
+//   2. saveAiToolOutput       — persist tool output to saved_ai_outputs
+//   3. attachAiOutputToEntity — link a saved output to a contact/lead/listing/transaction
+//   4. previewAiOutput        — return a formatted preview without persisting
+//
+// THE LEDGER WRITE IS NOT A COMMAND HERE. `runAiTool` was a second, less
+// complete writer of ai_tool_usage with no caller; it is gone, and the survivor
+// is app/actions/ai-tools-hub.ts:164 (executeAITool). Tombstone below.
 //
 // ─── EXPLICIT RULES ──────────────────────────────────────────────────────────
-// Rule 1: All tool executions must be logged to ai_tool_usage (no silent runs).
-// Rule 2: Tool output is saved only when the user explicitly saves it.
-// Rule 3: An output can be attached to one entity at a time (upsert by entity).
-// Rule 4: tool_name must be a value from VALID_TOOL_NAMES — no ad-hoc tool strings.
-// Rule 5: execution_time_ms is always tracked for performance auditing.
+// Rule 1: Tool output is saved only when the user explicitly saves it.
+// Rule 2: An output can be attached to one entity at a time (upsert by entity).
+// Rule 3: tool_name must be a value from VALID_TOOL_NAMES — no ad-hoc tool strings.
 //
 // ─── EXPLICIT COMMANDS ───────────────────────────────────────────────────────
 // loadAiToolsWorkspace(input)   → AiToolsWorkspaceData
-// runAiTool(input)              → { success, result, usageId }
 // saveAiToolOutput(input)       → { success, savedOutputId }
 // attachAiOutputToEntity(input) → { success }
 // previewAiOutput(input)        → { preview: string }
 //
 // ─── TABLES WRITTEN ──────────────────────────────────────────────────────────
-// ai_tool_usage         — every execution (insert)
 // saved_ai_outputs      — user saves (upsert)
 // ai_assistant_notes    — entity attachment (insert)
 // lifecycle_events      — entity attachment events (insert)
@@ -37,7 +36,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { ActorRole } from "@/lib/kernel/types"
 
 // ─── VALID TOOL NAMES ─────────────────────────────────────────────────────────
-// Strict union — no ad-hoc strings allowed in runAiTool.
+// Strict union — no ad-hoc strings allowed. Mirrors the tool ids the AI
+// Toolkit dispatch switches on (app/actions/ai-tools-hub.ts:259).
 export type AiToolName =
   | "explain_this"
   | "property_comparison"
@@ -104,18 +104,6 @@ export interface SavedAiOutput {
   entity_type: string | null
   entity_id: string | null
   created_at: string
-}
-
-export interface RunAiToolInput {
-  ctx: AiToolsActorContext
-  toolName: AiToolName
-  /** Raw params passed to the AI tool executor */
-  params: Record<string, unknown>
-  /** Output text from the tool (generated upstream by the executor) */
-  outputText: string
-  tokensUsed?: number
-  executionTimeMs?: number
-  success?: boolean
 }
 
 export interface SaveAiToolOutputInput {
@@ -208,58 +196,47 @@ export async function loadAiToolsWorkspace(
   }
 }
 
-// ─── COMMAND 2: runAiTool ─────────────────────────────────────────────────────
+// ─── THE LEDGER COMMAND IS GONE ──────────────────────────────────────────────
 /**
- * Log an AI tool execution to ai_tool_usage.
+ * TOMBSTONE — `runAiTool` LIVED HERE AND IS GONE.
+ * SURVIVOR: app/actions/ai-tools-hub.ts:164 — executeAITool's ledger insert.
  *
- * This command is called AFTER the tool has already run (the AI executor
- * lives in the action layer). The kernel owns the audit trail.
+ * It was a SECOND writer of `ai_tool_usage`, of strictly lower completeness,
+ * with no caller anywhere: nothing imported it from this module, and nothing
+ * imported it from the kernel barrel either — the barrel re-export was its only
+ * reference. The AI Toolkit page (app/dashboard/ai-tools/ai-tools-client.tsx:421)
+ * calls `executeAITool` directly, and that is the lane every tool run takes.
  *
- * Input:  { ctx, toolName, params, outputText, tokensUsed?, executionTimeMs?, success? }
- * Output: { success, data: { usageId } }
+ * WHAT IT WROTE, against the live 17-column table: user_id, brokerage_id,
+ * tool_name, context_json, output_text, tokens_used, execution_time_ms,
+ * success. WHAT IT DID NOT: `model_used`, `cost_cents`, `feature`, `agent_id`,
+ * `team_id`, `manager`. On the platform's AI cost ledger those are not
+ * decoration:
  *
- * Tables written:
- *   ai_tool_usage (insert)
+ *   · a row with tokens and NO MODEL is refused outright by the live CHECK
+ *     m508 ("a row claiming tokens must name a model"), so the one interesting
+ *     case — tokensUsed > 0 — could never have landed at all; and
+ *   · `cost_cents` is what lib/finance/usage-metering.ts and the per-tier
+ *     overage projection read. A row with tokens and no cost understates the
+ *     invoice by exactly that call.
  *
- * Business rules:
- *   Rule 1: All executions logged — success or failure.
- *   Rule 2: toolName must be a valid AiToolName.
- *   Rule 3: usageId is returned so the caller can reference the record for saving.
+ * NOTHING WAS MERGED ONTO THE SURVIVOR, because this held nothing the survivor
+ * lacks. executeAITool names every column, derives tokens_used / model_used /
+ * cost_cents from a provenance union that no tool can assert a number into,
+ * reads its insert error, and bumps usage_counters.ai_tokens_monthly and
+ * billing_usage.ai_calls when its own row carries the spend. The only thing
+ * unique here was the returned `usageId`, and no caller ever wanted one:
+ * saveAiToolOutput below keys `saved_ai_outputs` on the user and tool, not on a
+ * usage row.
+ *
+ * The OTHER ledger writer is lib/ai/cost-tracking.ts:169 logAIUsage — the one
+ * for a raw model call (tool_name='ai_model'), which is what the routed lanes
+ * use. Two writers, two jobs, both complete. This was the third.
+ *
+ * `RunAiToolInput` went with it — this command was its only consumer.
  */
-export async function runAiTool(
-  input: RunAiToolInput
-): Promise<KernelAiToolsResult<{ usageId: string }>> {
-  try {
-    const { ctx, toolName, params, outputText, tokensUsed = 0, executionTimeMs = 0, success = true } = input
-    const supabase = createServiceClient()
 
-    const { data: usageRow, error } = await supabase
-      .from("ai_tool_usage")
-      .insert({
-        user_id: ctx.userId,
-        brokerage_id: ctx.brokerageId,
-        tool_name: toolName,
-        context_json: params,
-        output_text: outputText,
-        tokens_used: tokensUsed,
-        execution_time_ms: executionTimeMs,
-        success,
-      })
-      .select("id")
-      .single()
-
-    if (error) throw error
-
-    return { success: true, data: { usageId: usageRow.id } }
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : "Failed to log AI tool run",
-    }
-  }
-}
-
-// ─── COMMAND 3: saveAiToolOutput ─────────────────────────────────────────────
+// ─── COMMAND 2: saveAiToolOutput ─────────────────────────────────────────────
 /**
  * Persist a tool output to saved_ai_outputs.
  *
@@ -312,7 +289,7 @@ export async function saveAiToolOutput(
   }
 }
 
-// ─── COMMAND 4: attachAiOutputToEntity ───────────────────────────────────────
+// ─── COMMAND 3: attachAiOutputToEntity ───────────────────────────────────────
 /**
  * Attach a saved AI output to a real estate entity as a note.
  *
@@ -389,7 +366,7 @@ export async function attachAiOutputToEntity(
   }
 }
 
-// ─── COMMAND 5: previewAiOutput ──────────────────────────────────────────────
+// ─── COMMAND 4: previewAiOutput ──────────────────────────────────────────────
 /**
  * Return a formatted preview of an AI output without persisting.
  *

@@ -12,6 +12,7 @@ import {
   twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS,
 } from "../lib/voice/reception-brain"
 import { encodeOutboundBrief, decodeOutboundBrief, composeVoicemailMessage } from "../lib/voice/twilio-outbound"
+import { OUTBOUND_CALL_GATE_ORDER } from "../lib/voice/outbound-call-gates"
 import { relayConfigured, twimlConnectRelay, parseRelayFrame, relaySpeak, relayEnd, parseRelayPlanRequest, composePacingRule } from "../lib/voice/conversation-relay"
 import { validateA2pProfile, nextA2pStep, describeA2pState } from "../lib/voice/a2p-registration"
 import { rollupVoiceActivity, composeVoiceActivityBrief } from "../lib/kernel/call-intelligence"
@@ -123,9 +124,16 @@ console.log("\n── PURE: the OUTBOUND lane (ISA calls off Vapi) ──")
     decoded !== null && decoded.objective === brief.objective && decoded.systemPrompt === "PERSONA: speak like Dana.")
   check("legacy/foreign ai_notes decode to null (reception fallback, never a crash)",
     decodeOutboundBrief("engine:twilio") === null && decodeOutboundBrief(null) === null && decodeOutboundBrief('{"engine":"vapi"}') === null)
-  const vm = composeVoicemailMessage(brief, "VIP Premier")
+  // `recorded` is explicit now that call recording is real: the voicemail has to
+  // state that the call is being recorded when it is, and must NOT claim it when
+  // it is not. Both directions are asserted below — a disclosure that is right
+  // only in the default case is the shape that lies to the callee.
+  const vm = composeVoicemailMessage(brief, "VIP Premier", { recorded: false })
   check("machine answer → HONEST voicemail: identifies the AI + office, capped",
     /\bAI\b/i.test(vm) && vm.includes("VIP Premier") && vm.length <= 450)
+  const vmRecorded = composeVoicemailMessage(brief, "VIP Premier", { recorded: true })
+  check("recorded call → the voicemail SAYS it is recorded; unrecorded does not",
+    /record/i.test(vmRecorded) && !/record/i.test(vm) && vmRecorded.length <= 450)
 }
 
 console.log("\n── PURE: the PLATFORM scope (the app's own line) ──")
@@ -208,8 +216,8 @@ console.log("\n── PURE: A2P 10DLC step machine ──")
 console.log("\n── PURE: voice-lane activity → the Monday brief ──")
 {
   const v = rollupVoiceActivity([
-    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
-    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
+    { direction: "inbound", call_type: "ai_inbound", status: "completed", outcome: "completed" },
+    { direction: "inbound", call_type: "ai_inbound", status: "completed", outcome: "completed" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "completed" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "voicemail" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "no_answer" },
@@ -291,14 +299,14 @@ console.log("\n── SOURCE: wiring ──")
   check("turn: book → real scheduled showing on the SAME rails (via the shared bookShowingFromCall); transfer → Dial; hangup → complete",
     turn.includes("bookShowingFromCall") && turn.includes("twimlTransfer") && turn.includes("finishCall")
     && src("lib/voice/twilio-voice.ts").includes('from("showings")'))
-  const binding = src("lib/voice/vapi-numbers.ts")
-  check("binding DEFAULTS to the Twilio lane; VOICE_ENGINE=vapi is legacy-only",
-    binding.includes('process.env.VOICE_ENGINE === "vapi" ? "vapi" : "twilio"') && binding.includes("bindNumberToTwilioLane"))
+  const binding = src("lib/voice/inbound-number-binding.ts")
+  check("binding is Twilio-ONLY (VAPI retired — no VOICE_ENGINE flag, no vapi assistant/number-import)",
+    binding.includes("bindNumberToTwilioLane") && !binding.includes("VOICE_ENGINE") && !binding.includes("registerNumberWithVapi"))
   const bind = src("lib/voice/twilio-voice.ts")
   check("bind sets VoiceUrl via the TENANT's creds — no vendor assistant object",
     bind.includes("VoiceUrl") && bind.includes("resolveTenantTwilioCreds") && bind.includes("IncomingPhoneNumbers/"))
   const matrix = src("lib/providers/tenancy-matrix.ts")
-  check("matrix: vapi = LEGACY, twilio-native default (no new vapi)", matrix.includes("LEGACY voice lane") && matrix.includes("VOICE_ENGINE=vapi"))
+  check("matrix: vapi = RETIRED, twilio-native is the single voice lane", matrix.includes("RETIRED voice lane") && matrix.includes("fully replaced by Twilio-native"))
   check("registry burn domain twilio_voice_lane (ai_isa)",
     "twilio_voice_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.twilio_voice_lane.manager === "ai_isa")
   check("PLATFORM scope: inbound + turn routes branch by the platform's own number; ledger is platform_reception_calls",
@@ -309,16 +317,29 @@ console.log("\n── SOURCE: wiring ──")
     && src("lib/voice/platform-reception.ts").includes('"phone:reception"'))
   check("PLATFORM scope: nothing about the product hardcoded — brand from platform_settings, pricing from subscription_tiers",
     src("lib/voice/platform-reception.ts").includes("loadProductBrand") && src("lib/voice/platform-reception.ts").includes('from("subscription_tiers")'))
+  // 2026-09-09: the three local requireProviders copies merged onto lib/auth/platform-guard.ts
+  // (§1/§6). "providers-gated" now means: the file calls the gate, and the gate is the capability check.
+  const PLATFORM_GUARD_SRC = src("lib/auth/platform-guard.ts")
+  const providersGated = (a: string) => a.includes('platformStaffCan(role, "providers")')
+    || (a.includes("requireProviders()") && PLATFORM_GUARD_SRC.includes('requirePlatformCapability("providers")') && PLATFORM_GUARD_SRC.includes("platformStaffCan(role, capability)"))
   check("PLATFORM bind action: providers-gated + audited, master account, VoiceUrl → the shared inbound webhook",
-    (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
+    (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return providersGated(a) && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
   check("registry burn domain platform_reception (data_steward)",
     "platform_reception" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.platform_reception.manager === "data_steward")
 
   // ── OUTBOUND lane wiring ──
   const outboundLib = src("lib/voice/twilio-outbound.ts")
-  check("OUTBOUND: TCPA chokepoint + budget gate run BEFORE the Twilio dial (fails closed)",
-    outboundLib.indexOf("enforceTCPACompliance") < outboundLib.indexOf("callConnector")
-    && outboundLib.includes("checkVendorBudget") && outboundLib.includes('estimatePlatformVendorCost("twilio_voice"'))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to read
+  // `indexOf("enforceTCPACompliance") < indexOf("callConnector")` in THIS file,
+  // which broke the moment the gates were correctly consolidated into
+  // lib/voice/outbound-call-gates.ts (wave 8). What must hold is: the executor
+  // runs the whole gate stack before it dials, and the stack really contains
+  // the TCPA and budget gates — both checked against the exported gate list.
+  check("OUTBOUND: the gate stack runs BEFORE the Twilio dial",
+    outboundLib.indexOf("runOutboundCallGates") >= 0
+    && outboundLib.indexOf("runOutboundCallGates") < outboundLib.indexOf("callConnector"))
+  check("OUTBOUND: that stack still contains the TCPA chokepoint + the vendor budget ceiling",
+    OUTBOUND_CALL_GATE_ORDER.includes("tcpa") && OUTBOUND_CALL_GATE_ORDER.includes("vendor_budget"))
   check("OUTBOUND: machine detection + status callback registered at dial time",
     outboundLib.includes('MachineDetection: "Enable"') && outboundLib.includes("/api/voice/twilio/status"))
   const outboundRoute = src("app/api/voice/twilio/outbound/route.ts")
@@ -329,8 +350,9 @@ console.log("\n── SOURCE: wiring ──")
   const statusRoute = src("app/api/voice/twilio/status/route.ts")
   check("status callback closes BOTH ledgers (voice_calls + platform_reception_calls) — no in_progress-forever rows",
     statusRoute.includes('from("voice_calls")') && statusRoute.includes('from("platform_reception_calls")') && statusRoute.includes("validateTwilioSignature"))
-  check("callers default to the Twilio lane (VOICE_ENGINE=vapi legacy-only): call-executor + AI-ISA",
-    src("lib/voice-engine/call-executor.ts").includes("placeOutboundAiCall") && src("lib/application/ai-isa.ts").includes("placeOutboundAiCall"))
+  check("callers place through the Twilio lane (VAPI retired — no flag branch): call-executor + AI-ISA",
+    src("lib/voice-engine/call-executor.ts").includes("placeOutboundAiCall") && src("lib/application/ai-isa.ts").includes("placeOutboundAiCall")
+    && !src("lib/voice-engine/call-executor.ts").includes("VOICE_ENGINE"))
 
   // ── INBOUND SMS → unified inbox wiring ──
   const smsLib = src("lib/voice/sms-inbound.ts")
@@ -385,7 +407,7 @@ console.log("\n── SOURCE: wiring ──")
     ciRoute.includes("timingSafeEqual") && ciRoute.includes('"not found"')
     && ciRoute.includes("!(call as any).summary") && ciRoute.includes("intent_signals"))
   check("A2P MOCK VERIFY: providers-gated one-click action (Mock=true chain) + audited + card on the connectors page",
-    (() => { const a = src("app/actions/superadmin/a2p-verify.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("mock: true") && a.includes("superadmin_audit_log") })()
+    (() => { const a = src("app/actions/superadmin/a2p-verify.ts"); return providersGated(a) && a.includes("mock: true") && a.includes("superadmin_audit_log") })()
     && src("app/dashboard/superadmin/connectors/page.tsx").includes("A2pVerifyCard"))
   check("VOICE INTEGRITY: CNAM + SHAKEN/STIR appended to the SAME step machine state (twilio_a2p jsonb, no new tables) — gated on campaign approval, Twilio-published policy SIDs, statuses POLLED never assumed",
     a2pLib.includes("RNf3db3cd1fe25fcfd3c3ded065c8fea53") && a2pLib.includes("RN7a97559effdf62d00f4298208492a5ea")
@@ -394,7 +416,7 @@ console.log("\n── SOURCE: wiring ──")
   check("VOICE INTEGRITY: mock leaves bundles in Twilio's real 'draft' status (never a fabricated approval) + errors kept SEPARATE from last_error so the stall detector stays honest",
     a2pLib.includes('{ sid: tpSid, status: "draft" }') && a2pLib.includes("voice_integrity_error") && !a2pLib.includes('cnam_status = "twilio-approved"'))
   check("VOICE INTEGRITY: providers-gated + audited register button on the A2P board (per-tenant cell, board idiom)",
-    (() => { const a = src("app/dashboard/superadmin/a2p/actions.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("superadmin_audit_log") && a.includes("runVoiceIntegrityRegistration") })()
+    (() => { const a = src("app/dashboard/superadmin/a2p/actions.ts"); return providersGated(a) && a.includes("superadmin_audit_log") && a.includes("runVoiceIntegrityRegistration") })()
     && src("app/dashboard/superadmin/a2p/page.tsx").includes("VoiceIntegrityCell"))
   check("PORTAL CHAT gains the SAME live-inventory facts (additive: buyers only, share-freely exception stated, read failure never breaks the chat)",
     (() => { const p = src("app/api/portal/ai-chat/route.ts"); return p.includes("loadInventoryContext") && p.includes("portalView !== 'seller'") && p.includes("share freely") })())

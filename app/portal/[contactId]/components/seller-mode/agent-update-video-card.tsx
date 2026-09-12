@@ -13,7 +13,10 @@ interface AgentUpdateVideoCardProps {
     title: string
     videoUrl?: string | null
     thumbnailUrl?: string | null
-    createdAt: string
+    // Nullable because seller_updates.created_at is: the badge below renders
+    // NOTHING rather than `new Date(null)`, which prints "Invalid Date" to a
+    // client on their own portal.
+    createdAt: string | null
     summary?: string | null
   } | null
   agentName?: string | null
@@ -30,7 +33,7 @@ export function AgentUpdateVideoCard({ contactId, latestUpdate, agentName }: Age
             <Video className="h-4 w-4" />
             Agent Updates
           </CardTitle>
-          {latestUpdate && (
+          {latestUpdate?.createdAt && (
             <Badge variant="outline" className="text-xs">
               <Clock className="h-3 w-3 mr-1" />
               {new Date(latestUpdate.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}

@@ -195,22 +195,66 @@ export async function stopSequencesOnResponse(
   return { unenrolled: data?.length ?? 0 }
 }
 
-export async function unenrollContact(
-  sequenceId: string,
-  contactId: string,
-  reason?: string
-): Promise<{ success: boolean; error?: string }> {
+/**
+ * TAKE ONE CONTACT OFF ONE SEQUENCE.
+ *
+ * The narrow sibling of `stopSequencesOnResponse` above: that one terminates
+ * EVERY sequence a person is on because they replied; this one terminates the
+ * single sequence a workflow step names.
+ *
+ * ── IT HAD NO CALLER, AND ITS CALLER HAD ITS OWN COPY ───────────────────────
+ *
+ * This was exported, re-exported through lib/campaign-sequences/index.ts, and
+ * invoked by nothing — while `lib/workflow/adapters/segment-ops.ts`
+ * `removeFromCampaignAdapter`, which is exactly "unenroll this contact from
+ * that sequence", hand-rolled the same UPDATE. Two writers for one idea, and
+ * the hand-rolled one was the weaker of the two in four separate ways:
+ *
+ *   · NO TENANT PREDICATE, on a service-role client. Same defect this function
+ *     had — hence `brokerageId` below, which is now REQUIRED rather than
+ *     optional, so the seam cannot be re-opened by omission.
+ *   · `status = 'cancelled'` where the engine writes `'unenrolled'`. The live
+ *     CHECK admits both (registry: status_vocab_pass6), and no reader anywhere
+ *     selects on either, so the two spellings were pure §6 drift — one
+ *     terminal state that could not be counted with one query.
+ *   · `.eq("status","active")` only, so a PAUSED enrollment survived a
+ *     "remove from campaign" step and resumed later. `.in([active,paused])`
+ *     here is the correct set and is what `stopSequencesOnResponse` uses.
+ *   · The result was discarded entirely. supabase-js RESOLVES a refused
+ *     update, so a tenant refusal and a successful removal were byte-identical.
+ *
+ * `.select("id")` is not decoration: an UPDATE matching NOTHING also resolves
+ * with `error: null`, so the row COUNT is the only thing that separates "taken
+ * off the sequence" from "the predicate refused and nobody was told". Whether
+ * zero is a failure is the CALLER's call — a contact who was never enrolled is
+ * a no-op, an unmatched brokerage is a refusal — so the count is returned
+ * rather than judged here.
+ *
+ * TOMBSTONE — the `reason?: string` parameter is DELETED. It was accepted and
+ * never written, because `sequence_enrollments` carries no column for it (live
+ * columns: scripts/schema-snapshot.ts). The workflow caller records its reason
+ * where reasons already persist — the step's own `output`, which the executor
+ * writes to `sequence_enrollments.step_outputs` — instead of handing it to a
+ * function that would have dropped it.
+ */
+export async function unenrollContact(params: {
+  sequenceId: string
+  contactId: string
+  brokerageId: string
+}): Promise<{ success: boolean; unenrolled: number; error?: string }> {
   const supabase = createServiceClient()
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("sequence_enrollments")
     .update({
       status: "unenrolled",
       completed_at: new Date().toISOString(),
     })
-    .eq("sequence_id", sequenceId)
-    .eq("contact_id", contactId)
+    .eq("brokerage_id", params.brokerageId)
+    .eq("sequence_id", params.sequenceId)
+    .eq("contact_id", params.contactId)
     .in("status", ["active", "paused"])
+    .select("id")
 
-  if (error) return { success: false, error: error.message }
-  return { success: true }
+  if (error) return { success: false, unenrolled: 0, error: error.message }
+  return { success: true, unenrolled: data?.length ?? 0 }
 }

@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
+import { isTenantScopeRefusal } from "@/lib/kernel/tenant-scope"
 import { resolveEgressScope, describeScope } from "@/lib/kernel/egress-scope"
 import { computeManagerTrust } from "@/lib/kernel/outcome-learning"
 import { loadDealPlayLift } from "@/lib/kernel/deal-play-outcomes"
@@ -8,6 +9,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
 import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
+import { AutonomyAccuracyCard } from "./autonomy-accuracy-card"
 import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { ActingAsLog } from "./acting-as-log"
 import { CoverageCard } from "./coverage-card"
@@ -16,9 +18,12 @@ import { TeamAnnouncementComposer } from "./team-announcement-composer"
 import { AutonomyHaltBanner } from "./autonomy-halt-banner"
 import { CriticalSetupMeter } from "@/app/components/onboarding/critical-setup-meter"
 import { loadTenantAutonomyHalt } from "@/lib/managers/autonomy-gate"
-import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
+import { listEarnedAutonomyAction, listPolicyDecisionsAction } from "@/app/actions/document-kernel-review"
+import { PolicyDecisionsPanel } from "./policy-decisions-panel"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -38,17 +43,30 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   const { data: userData } = await supabase
     .from("users")
-    .select("user_type, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   const userType    = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? undefined
+  // PLATFORM SCOPE — resolved from BOTH identity columns, and this page has ~13
+  // decisions hanging off it. Every one of them used to read
+  // `userType === "superadmin"`, which is FALSE for the platform's only
+  // superadmin (user_type='admin', platform_role='superadmin'). The consequence
+  // was not a refusal — it was a SILENT DOWNGRADE: the owner passed the
+  // admin/broker entry gate, then got the brokerage slice of the Command Center
+  // (their own brokerage's queue, Trust Meter, QBR) and the header said "Your
+  // brokerage". Platform-wide scope was never once granted on this surface.
+  // Same shape as public.is_platform_admin() in RLS and requireSuperadmin() in
+  // lib/auth/platform-guard.ts — see app/actions/vendor-budget.ts:136-147.
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(userType, userData?.platform_role)
   // TIER PARITY (owner rule): the Command Center — the feed, the Trust Meter,
   // Earned Autonomy — is for the tenancy's PRINCIPAL, whatever shape the
   // tenancy has. A solo agent IS their own broker; a team lead governs a team
   // signup. Only brokerage/multi_location tiers require the broker/admin seat.
-  let mayEnter = ["admin", "broker", "superadmin"].includes(userType)
+  let mayEnter = isAdminOrBroker({ user_type: userType })
   if (!mayEnter && brokerageId) {
     const svcGate = createServiceClient()
     const { data: brk } = await svcGate.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
@@ -71,13 +89,13 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // admin is scoped to their location while broker/broker_admin see all locations.
   let locationId: string | null = null
   let teamId: string | null = null
-  if (userType !== "superadmin" && brokerageId) {
+  if (!isSuperadmin && brokerageId) {
     const { data: agentRow } = await supabase
       .from("agents").select("location_id, team_id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
     locationId = (agentRow as any)?.location_id ?? null
     teamId = (agentRow as any)?.team_id ?? null
   }
-  const baseScope = userType !== "superadmin" && brokerageId
+  const baseScope = !isSuperadmin && brokerageId
     ? resolveEgressScope({ userType, userId: user.id, brokerageId, locationId, teamId })
     : undefined
 
@@ -127,41 +145,95 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   const scopeLabel = effectiveScope
     ? describeScope(effectiveScope)
-    : (userType === "superadmin" ? "Platform — all brokerages" : "Your brokerage")
+    : (isSuperadmin ? "Platform — all brokerages" : "Your brokerage")
 
-  const data = await loadCommandCenter({
-    brokerageId: userType === "superadmin" ? undefined : brokerageId,
-    scope: effectiveScope,
-    limit:       100,
-  })
+  // PLATFORM IS ASKED FOR, NOT INFERRED FROM AN ABSENT ID. This used to read
+  // `brokerageId: isSuperadmin ? undefined : brokerageId`, and loadCommandCenter
+  // applied every one of its seven tenant predicates only `if (brokerageId)` on a
+  // SERVICE client. The entry gate above is isAdminOrBroker(user_type), which never
+  // consults brokerage_id — so a NON-superadmin broker/admin whose
+  // users.brokerage_id is NULL produced the SAME undefined the superadmin does and
+  // would have read every brokerage's approval queue, proposed client messages and
+  // ad-spend proposals. CLAUDE.md §4: the gate that cannot run must refuse.
+  //
+  // Identity semantics on public.users are UNCHANGED — the platform discriminator
+  // is still `platform_role`, resolved above. Only the meaning of an absent
+  // brokerage_id changes, from "all tenants" to "refuse".
+  let data: Awaited<ReturnType<typeof loadCommandCenter>>
+  try {
+    data = await loadCommandCenter({
+      ...(isSuperadmin
+        ? { platform: { reason: "platform_role='superadmin' — the platform-wide Command Center" } }
+        : { brokerageId }),
+      scope: effectiveScope,
+      limit: 100,
+    })
+  } catch (e) {
+    if (!isTenantScopeRefusal(e)) throw e
+    // Honest refusal rather than a fabricated empty queue: "nothing is waiting on
+    // a human" is a claim, and an unscoped viewer has not earned it.
+    return (
+      <div className="mx-auto max-w-6xl space-y-4 p-6">
+        <h1 className="text-2xl font-semibold">Command Center</h1>
+        <p className="text-sm text-red-700">
+          Your account has no brokerage assigned and no platform role, so this queue cannot be
+          scoped. Nothing is shown rather than showing another brokerage&apos;s work. Ask an
+          administrator to set your brokerage.
+        </p>
+      </div>
+    )
+  }
 
   // THE TRUST METER — per-manager human-approval rates + the broker's own rejection
   // reasons (outcome learning made visible; brokerage scope only).
-  const trust = brokerageId && userType !== "superadmin"
+  const trust = brokerageId && !isSuperadmin
     ? await computeManagerTrust(brokerageId).catch(() => null)
     : null
 
   // DEAL PLAY LIFT — did the AI-team play move listings? Honest by construction:
   // "still learning" until both cohorts clear the sample gate (never a thin-data claim).
-  const lift = brokerageId && userType !== "superadmin"
+  const lift = brokerageId && !isSuperadmin
     ? await loadDealPlayLift(createServiceClient(), brokerageId).catch(() => null)
     : null
 
   // EARNED AUTONOMY — the grant ledger beside the Trust Meter (broker/admin
   // only; the action enforces the role — a non-granting viewer sees nothing).
-  const earned = brokerageId && userType !== "superadmin"
+  const earned = brokerageId && !isSuperadmin
     ? await listEarnedAutonomyAction().catch(() => null)
     : null
 
+  // POLICY DECISIONS — the amber/red verdict ledger beside the earned block
+  // (REVIEW_ROLES inside the action — the TC named as approver sees their own
+  // queue). Read-only: resolution lives on the signals feed (manager_signals).
+  const policyDecisions = brokerageId && !isSuperadmin
+    ? await listPolicyDecisionsAction().catch(() => null)
+    : null
+
+  // AUTONOMY-ACCURACY GLANCE — the governance mirror: autonomy is EARNED by
+  // measured prediction accuracy, not toggled. The full per-domain report lives
+  // on Manager Trust; this compact glance puts it on the operator's one screen.
+  let autonomyAccuracy: import("@/lib/managers/accuracy-gate").AutonomyAccuracySummary | null = null
+  if (brokerageId && !isSuperadmin) {
+    try {
+      const { loadAccuracyGateReport, loadAccuracyHoldRollup, summarizeAutonomyAccuracy } =
+        await import("@/lib/managers/accuracy-gate")
+      const [verdicts, holds] = await Promise.all([
+        loadAccuracyGateReport(brokerageId),
+        loadAccuracyHoldRollup(brokerageId, 30),
+      ])
+      autonomyAccuracy = summarizeAutonomyAccuracy(verdicts, holds)
+    } catch { /* the glance is additive — never blocks the Command Center */ }
+  }
+
   // YOUR AI TEAMMATES — the tenant's own chartered identities on the manager
   // bench (the action enforces tier-parity principal access; others see nothing).
-  const teammates = brokerageId && userType !== "superadmin"
+  const teammates = brokerageId && !isSuperadmin
     ? await listAiTeammatesAction().catch(() => null)
     : null
 
   // QUARTERLY BUSINESS REVIEW + adoption pulse — the principal's 90-day read
   // (the action enforces tier-parity principal access; others see nothing).
-  const qbr = brokerageId && userType !== "superadmin"
+  const qbr = brokerageId && !isSuperadmin
     ? await getQuarterlyReviewAction().catch(() => null)
     : null
 
@@ -215,7 +287,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   // PER-TENANT AUTONOMY HALT — if platform staff paused this brokerage's autonomous AI, say so
   // honestly, up top, with the staff-entered reason (the same state the dispatch gate enforces).
-  const tenantHalt = brokerageId && userType !== "superadmin"
+  const tenantHalt = brokerageId && !isSuperadmin
     ? await loadTenantAutonomyHalt(brokerageId).catch(() => null)
     : null
 
@@ -224,7 +296,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // without (markets → scrape pipeline, assignment rules → Engine 2, providers
   // → egress, …). Server-composed from real tables; dismissals are UI-only.
   let setupReadiness: import("@/lib/onboarding/critical-setup").CriticalSetupReadiness | null = null
-  if (brokerageId && userType !== "superadmin") {
+  if (brokerageId && !isSuperadmin) {
     try {
       const { loadCriticalSetupFacts, composeSetupReadiness } = await import("@/lib/onboarding/critical-setup")
       const facts = await loadCriticalSetupFacts(createServiceClient(), { brokerageId })
@@ -248,14 +320,24 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {/* ANNOUNCE TO MY TEAM — the principal's internal broadcast composer.
           Page entry is already principal-gated (mayEnter above, the same
           tier-parity rule); the server action re-enforces it. In-app only. */}
-      {brokerageId && userType !== "superadmin" && (
+      {brokerageId && !isSuperadmin && (
         <div className="mx-6 mt-4">
-          <TeamAnnouncementComposer canChooseScope={["admin", "broker"].includes(userType)} />
+          <TeamAnnouncementComposer canChooseScope={isAdminOrBroker({ user_type: userType })} />
         </div>
       )}
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">
           <EarnedAutonomyPanel grants={earned.grants} />
+        </div>
+      )}
+      {policyDecisions?.ok && policyDecisions.groups && (
+        <div className="mx-6 mt-4">
+          <PolicyDecisionsPanel groups={policyDecisions.groups} />
+        </div>
+      )}
+      {autonomyAccuracy && (
+        <div className="mx-6 mt-4">
+          <AutonomyAccuracyCard summary={autonomyAccuracy} />
         </div>
       )}
       {teammates?.ok && (
@@ -288,7 +370,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       )}
       <CommandCenterClient
         data={data}
-        scope={userType === "superadmin" ? "platform" : "brokerage"}
+        scope={isSuperadmin ? "platform" : "brokerage"}
         scopeLabel={scopeLabel}
         canSwitch={canSwitch}
         scopeOptions={scopeOptions}

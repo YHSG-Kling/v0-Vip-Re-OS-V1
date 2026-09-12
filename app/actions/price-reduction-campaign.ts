@@ -33,7 +33,10 @@ export async function launchPriceReductionCampaign(listingId: string): Promise<L
   if (!listingId) return { ok: false, error: "listingId required" }
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "not authenticated" }
-  if (!["agent", "admin", "broker", "superadmin", "team_lead"].includes(ctx.role)) {
+  // SCOPE LADDER (kept inline — admits agent): 'superadmin' removed — dead as
+  // users.user_type (0 live rows); broker_owner added — storable seat that owns
+  // the brokerage.
+  if (!["agent", "admin", "broker", "broker_owner", "team_lead"].includes(ctx.role)) {
     return { ok: false, error: "not authorized" }
   }
 

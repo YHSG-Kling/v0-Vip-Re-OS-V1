@@ -52,11 +52,11 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
 
   console.log("\n[Layer 1 · pure category + filter]")
-  check("LENDER_VENDOR_CATEGORY is 'Lender'", LENDER_VENDOR_CATEGORY === "Lender")
+  check("LENDER_VENDOR_CATEGORY is 'Lender'", LENDER_VENDOR_CATEGORY === "lender")
   check("isLenderVendorCategory: Lender / mortgage / loan officer → true",
-    isLenderVendorCategory("Lender") && isLenderVendorCategory("Mortgage Broker") && isLenderVendorCategory("loan officer"))
+    isLenderVendorCategory("lender") && isLenderVendorCategory("Mortgage Broker") && isLenderVendorCategory("loan officer"))
   check("isLenderVendorCategory: inspector / stager / null → false",
-    !isLenderVendorCategory("Inspector") && !isLenderVendorCategory("Stager") && !isLenderVendorCategory(null))
+    !isLenderVendorCategory("inspector") && !isLenderVendorCategory("stager") && !isLenderVendorCategory(null))
   check("lenderFilterIds([]) → safe sentinel; passes real ids through",
     lenderFilterIds([]).length === 1 && JSON.stringify(lenderFilterIds(["a"])) === JSON.stringify(["a"]))
 
@@ -87,7 +87,7 @@ async function main() {
   // RESPA inheritance — a Lender vendor is a settlement service.
   const { isRespaRegulatedCategory } = await import("../lib/compliance/vendor-respa")
   check("a Lender vendor INHERITS the RESPA settlement-service gate",
-    isRespaRegulatedCategory("Lender") === true)
+    isRespaRegulatedCategory("lender") === true)
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
@@ -116,7 +116,7 @@ async function main() {
 
     // Seed a LENDER vendor (a lender IS a vendor).
     const { data: vendor, error: vErr } = await svc.from("vendors").insert({
-      brokerage_id: brokerageId, name: `${TAG} Capital`, category: "Lender", email: `${TAG}@lender.local`.toLowerCase(),
+      brokerage_id: brokerageId, name: `${TAG} Capital`, category: "lender", email: `${TAG}@lender.local`.toLowerCase(),
     }).select("id").single()
     if (vErr) { check("seed lender vendor", false, vErr.message); report(); return }
     const vendorId = (vendor as any).id
@@ -165,7 +165,7 @@ async function main() {
     // RESPA inheritance (live category).
     const { isRespaRegulatedCategory } = await import("../lib/compliance/vendor-respa")
     check("lender vendor is a RESPA settlement service (inherits disclosure/kickback gate)",
-      isRespaRegulatedCategory("Lender") === true)
+      isRespaRegulatedCategory("lender") === true)
 
     // Idempotent re-link — reuses the single assignment.
     const link2 = await linkLenderVendorToTransaction(svc, { vendorId, transactionId, brokerageId, lenderName: `${TAG} Capital` })

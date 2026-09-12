@@ -14,9 +14,11 @@ import type { CoverageBoard } from "@/lib/analytics/territory-coverage"
 import type { TerritoryRoiReport } from "@/lib/analytics/territory-roi"
 import type { ParkedRetentionReport } from "@/lib/lead-pipeline/parked-retention"
 import { purgeStaleParkedLeadsFormAction } from "@/app/actions/superadmin/parked-retention"
+import { usd2OrNull } from "@/lib/format/money"
 
 const pct = (r: number | null) => (r == null ? "—" : `${Math.round(r * 100)}%`)
-const usd = (n: number | null) => (n == null ? null : `$${n.toFixed(2)}`)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd2OrNull
+const usd = usd2OrNull
 
 export function TerritoryCoverageBoard({
   board,

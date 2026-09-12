@@ -231,6 +231,11 @@ export async function mintVideoQr(
       destinationType: dest.destinationType,
       targetUrl: dest.buildTargetUrl(normalizeOrigin(args.origin), args),
       listingId: args.listingId ?? null,
+      // ★ TRACKING LINKED TO CAMPAIGN ★ every video minted under a marketing campaign stamps
+      // qr_codes.marketing_campaign_id, so outro-QR scans roll up to that campaign in
+      // lib/marketing/campaign-measurer.ts instead of vanishing. The campaign already drives the
+      // newsletter destination URL below — it just was never written to the row.
+      marketingCampaignId: args.campaignId ?? null,
       purpose: "campaign",
       origin: args.origin,
     },

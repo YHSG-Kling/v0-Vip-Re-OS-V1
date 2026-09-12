@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Mail, Phone, User, TrendingUp, Circle, ShieldAlert, CalendarPlus, ListPlus, Inbox, Settings2, PhoneOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
@@ -90,6 +91,7 @@ function activityIcon(type: string) {
 type DetailTab = "activity" | "inbox" | "channels"
 
 export default function ContactDetailPane({ contact, sentimentSummary, agentId }: ContactDetailPaneProps) {
+  const router = useRouter()
   const [activities, setActivities]   = useState<ISAActivity[]>([])
   const [actLoading, setActLoading]   = useState(false)
   const [actionMsg, setActionMsg]     = useState<string | null>(null)
@@ -357,6 +359,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
               initialPreferredChannel={contact.preferred_channel}
               initialSocialHandles={contact.social_handles}
               initialCallStopFlag={contact.call_stop_flag ?? false}
+              onSaved={() => router.refresh()}
             />
           </>
         )}

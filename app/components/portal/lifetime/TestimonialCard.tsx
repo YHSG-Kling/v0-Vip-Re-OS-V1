@@ -2,11 +2,18 @@
 
 // TestimonialCard — the newly-closed / lifetime client shares their experience IN THE PORTAL: a few
 // written words OR a short video. It lands in agent_reviews (is_published=false) for the agent to
-// approve + use in marketing. Two tabs: Write / Record. Reuses the Vercel Blob upload (same route as the
-// buyer financial upload). Once submitted, shows a thank-you (idempotent in the session).
+// approve + use in marketing. Two tabs: Write / Record. Once submitted, shows a thank-you (idempotent
+// in the session).
+//
+// The video upload went through @vercel/blob/client's `upload()` until the owner ruled that all file
+// storage lives in Supabase buckets. Survivor: lib/storage/browser-upload.ts#uploadViaSignedUrl, which
+// keeps the browser→storage direct PUT (so a testimonial clip is still not capped at Vercel's 4.5 MB
+// function body limit) and drops the client-chosen path — this component used to name
+// `testimonials/${contactId}/…` with a contactId that arrives as a PROP, so any signed-in caller could
+// write under any contact. The path is now built server-side from the session's brokerage.
 
 import { useState } from "react"
-import { upload } from "@vercel/blob/client"
+import { uploadViaSignedUrl } from "@/lib/storage/browser-upload"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -33,10 +40,14 @@ export function TestimonialCard({ contactId, agentFirstName }: { contactId: stri
     setErr(null)
     setBusy(true)
     try {
-      const blob = await upload(`testimonials/${contactId}/${Date.now()}-${file.name}`, file, {
-        access: "public", handleUploadUrl: "/api/blob/upload",
-      })
-      const res = await submitClientTestimonial({ contactId, kind: "video", videoUrl: blob.url })
+      const stored = await uploadViaSignedUrl({ purpose: "portal_testimonial", file })
+      if (!stored.ok) {
+        // The server's wording carries the real ceiling and the real reason, so
+        // it is shown rather than replaced with a generic failure.
+        setErr(stored.error)
+        return
+      }
+      const res = await submitClientTestimonial({ contactId, kind: "video", videoUrl: stored.url })
       if (res.ok) setDone(true); else setErr(res.error ?? "Couldn't save your video — please try again.")
     } catch {
       setErr("Upload failed — please try a shorter clip or check your connection.")

@@ -52,6 +52,36 @@ const SEVERITY_DOT: Record<string, string> = {
   normal:      "bg-blue-400",
 }
 
+const STATUS_VERB: Record<PortalStreamRow["agentActionStatus"], string> = {
+  open:               "open",
+  completed_manual:   "done manually",
+  completed_executed: "executed",
+  completed_ai:       "delegated to AI",
+  dismissed:          "dismissed",
+}
+
+/**
+ * WHO dispositioned a non-open row, and any note they left. The CRM contact
+ * panel passes the FULL stream (open and resolved rows alike); until now a
+ * resolved row looked identical to an open one. States come from the action
+ * and are never collapsed: a name; an id no user of this brokerage carries;
+ * none recorded; a refused lookup. ("withheld" is the customer feed's state and
+ * never reaches this agent-only component.)
+ */
+function dispositionLine(r: PortalStreamRow): string | null {
+  if (r.agentActionStatus === "open") return null
+  const when = r.agentActionCompletedAt ? new Date(r.agentActionCompletedAt).toLocaleDateString() : null
+  const on = when ? ` · ${when}` : ""
+  const verb = STATUS_VERB[r.agentActionStatus]
+  switch (r.agentActionCompletedByState) {
+    case "resolved":       return `${verb} by ${r.agentActionCompletedByName}${on}`
+    case "unresolved":     return `${verb} by someone outside this brokerage${on}`
+    case "lookup_refused": return `${verb}${on} — who could not be looked up`
+    case "withheld":
+    case "not_recorded":   return `${verb}${on} — by whom not recorded`
+  }
+}
+
 export function AgentActionDispositionQueue({ rows, compact, title }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -136,6 +166,12 @@ export function AgentActionDispositionQueue({ rows, compact, title }: Props) {
                 {r.agentActionLabel && r.agentCopy !== r.agentActionLabel && (
                   <p className={cn("text-muted-foreground leading-snug mt-0.5", compact ? "text-[10px]" : "text-[11px]")}>
                     {r.agentCopy}
+                  </p>
+                )}
+                {dispositionLine(r) && (
+                  <p className={cn("text-muted-foreground leading-snug mt-0.5 italic", compact ? "text-[10px]" : "text-[11px]")}>
+                    {dispositionLine(r)}
+                    {r.agentActionNotes && <> — &ldquo;{r.agentActionNotes}&rdquo;</>}
                   </p>
                 )}
               </div>

@@ -4,6 +4,7 @@ import { loadCampaignCenter } from "@/lib/kernel/campaign-center"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ApproveItemButton, ApprovePlayButton } from "./approve-buttons"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Campaign Command Center | Kernel OS",
@@ -27,7 +28,7 @@ export default async function CampaignCenterPage() {
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = u?.user_type ?? "agent"
   const brokerageId = u?.brokerage_id ?? undefined
-  if (!["admin", "broker", "superadmin"].includes(userType) || !brokerageId) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType }) || !brokerageId) redirect("/dashboard")
 
   const data = await loadCampaignCenter(brokerageId)
 

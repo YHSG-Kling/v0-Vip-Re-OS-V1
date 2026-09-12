@@ -32,15 +32,29 @@ export async function updateTemplate(input: UpdateTemplateInput) {
 
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
 
-  // Verify template belongs to user's brokerage
+  // Verify template belongs to user's brokerage — and read the fields the
+  // version bump below compares against.
   const { data: template } = await supabase
     .from('newsletter_brokers_templates')
-    .select('id')
+    .select('id, version_number, brand_colors, logo_url')
     .eq('id', input.templateId)
     .eq('brokerage_id', userData.brokerage_id)
     .single()
 
   if (!template) throw new Error('Template not found or access denied')
+
+  // Version bump (2026-09-01): the UI renders "v{version_number}" badges
+  // (template-builder.tsx:581, marketing-studio-client.tsx:4746) but nothing
+  // ever incremented the column — every template read "v1" forever. Same rule
+  // as the platform contract precedent (app/actions/superadmin/
+  // subscription-contracts.ts:125): a CONTENT revision bumps the version;
+  // metadata (name, description, tags, default flag) does not — the badge
+  // tells the reader "the rendered template changed", not "someone renamed it".
+  const contentChanged =
+    (input.brandColors !== undefined &&
+      JSON.stringify(input.brandColors) !== JSON.stringify(template.brand_colors ?? null)) ||
+    (input.logoUrl !== undefined && input.logoUrl !== (template.logo_url ?? undefined))
+  const nextVersion = (template.version_number ?? 1) + (contentChanged ? 1 : 0)
 
   // Update template
   const { error: updateError } = await supabase
@@ -52,6 +66,7 @@ export async function updateTemplate(input: UpdateTemplateInput) {
       logo_url: input.logoUrl,
       is_default: input.isDefault,
       template_tags: input.templateTags,
+      version_number: nextVersion,
       updated_at: new Date().toISOString(),
     })
     .eq('id', input.templateId)

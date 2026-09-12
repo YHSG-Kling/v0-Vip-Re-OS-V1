@@ -257,6 +257,45 @@ export async function validateReactivation(
   contactId: string,
   userRole: string
 ): Promise<TransitionValidationResult> {
+  // ── `currentState` WAS ACCEPTED AND NEVER READ ────────────────────────────
+  //
+  // Its sibling `validateRollback` above tests
+  // `targetDef.allowedFrom.includes(currentState)`; this one took the same
+  // argument and never looked at it, so "reactivate" would accept ANY target
+  // state, including the paused state the buyer is already sitting in.
+  //
+  // The allowedFrom test is NOT the right check here, and that was verified
+  // against lifecycle-definitions.ts rather than assumed: NO state lists
+  // BUYER_ON_HOLD or BUYER_DISENGAGED in its allowedFrom except
+  // BUYER_DISENGAGED itself (which lists BUYER_ON_HOLD). Reactivation edges are
+  // deliberately absent from the graph — that is WHY this separate validator
+  // exists — so importing the sibling's test verbatim would have refused every
+  // reactivation there is. Pinning to the graph would have been the wrong build.
+  //
+  // What the argument is genuinely for is the pair check the word "reactivate"
+  // implies: the target must be somewhere OTHER than the paused states.
+  // ON_HOLD → DISENGAGED is a real transition, but it is a further
+  // disengagement and the ordinary `validateStateTransition` path already
+  // admits it (it IS in BUYER_DISENGAGED.allowedFrom); routing it through the
+  // reactivation gate would let it skip that path's frozen-state and
+  // allowedFrom checks.
+  if (targetState === currentState) {
+    return {
+      allowed: false,
+      reason: `Buyer is already "${currentState}" — reactivation must name a different state`,
+    }
+  }
+
+  if (targetState === "BUYER_ON_HOLD" || targetState === "BUYER_DISENGAGED") {
+    return {
+      allowed: false,
+      reason:
+        `"${targetState}" is not a reactivation from "${currentState}" — ` +
+        `use the ordinary transition validator, which carries the frozen-state and allowed-from checks`,
+      blockers: ["not_a_reactivation"],
+    }
+  }
+
   // Check if target state requires financial verification
   if (requiresFinancialVerification(targetState)) {
     const verification = await checkFinancialVerification({ contactId })

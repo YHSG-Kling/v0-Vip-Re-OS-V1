@@ -3,16 +3,17 @@
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import {
-  AlertCircle, Clock, UserPlus, Mail, Phone, MessageSquare, X, CheckCircle2, Loader2,
-  TimerOff, Sparkles,
+  AlertCircle, Clock, UserPlus, Mail, Phone, X, CheckCircle2, Loader2,
+  TimerOff, Sparkles, Play,
 } from "lucide-react"
 import {
   claimStaleLead, reengageStaleContact, markContactTouched, disableReengagementForContact,
+  resumeReengagementForContact,
   type StaleLoad, type StaleLeadRow, type StaleContactRow,
 } from "./actions"
 
@@ -195,17 +196,25 @@ function MyStaleLeadRow({ lead }: { lead: StaleLeadRow }) {
 
 function DormantContactRow({ contact, onRefresh }: { contact: StaleContactRow; onRefresh: () => void }) {
   const [pending, startTransition] = useTransition()
-  const [action, setAction] = useState<"reengage" | "touched" | "disable" | null>(null)
+  const [action, setAction] = useState<"reengage" | "touched" | "disable" | "resume" | null>(null)
 
-  function run(act: "reengage" | "touched" | "disable") {
+  function run(act: "reengage" | "touched" | "disable" | "resume") {
     setAction(act)
     startTransition(async () => {
       let r: { success: boolean; error?: string }
       if (act === "reengage")      r = await reengageStaleContact(contact.id)
       else if (act === "touched")  r = await markContactTouched(contact.id)
+      // The RETURN LEG. "Stop AI" used to be a one-way door: the row rendered an
+      // "ISA off" badge and no surface in the app could set the flag back.
+      else if (act === "resume")   r = await resumeReengagementForContact(contact.id)
       else                         r = await disableReengagementForContact(contact.id)
       if (r.success) {
-        toast.success(act === "reengage" ? "AI re-engagement queued" : act === "touched" ? "Marked as touched" : "Re-engagement disabled")
+        toast.success(
+          act === "reengage" ? "AI re-engagement queued"
+            : act === "touched" ? "Marked as touched"
+            : act === "resume" ? "AI re-engagement resumed"
+            : "Re-engagement disabled",
+        )
         onRefresh()
       } else toast.error(r.error ?? "Failed")
       setAction(null)
@@ -237,10 +246,15 @@ function DormantContactRow({ contact, onRefresh }: { contact: StaleContactRow; o
             {pending && action === "touched" ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <CheckCircle2 className="h-3 w-3 mr-1" />}
             I just touched
           </Button>
-          {contact.isaReengageAllowed && (
+          {contact.isaReengageAllowed ? (
             <Button size="sm" variant="ghost" onClick={() => run("disable")} disabled={pending}>
               {pending && action === "disable" ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <X className="h-3 w-3 mr-1" />}
               Stop AI
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => run("resume")} disabled={pending}>
+              {pending && action === "resume" ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Play className="h-3 w-3 mr-1" />}
+              Resume AI
             </Button>
           )}
         </div>

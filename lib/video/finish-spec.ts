@@ -68,7 +68,17 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   // the person rides as a floating presenter; the content stays the star.
   MarketUpdateReel: { ...AVATAR_LED, presenter: "circle_pip", broll: "optional" },
   AffordabilitySnapshotReel: CHART_REEL,
-  EquityReportReel: { ...CHART_REEL, qr: true }, // anniversary QR
+  // OWNER RULING (wave 61): the anniversary equity reel's AvatarPIP is a real,
+  // used capability — video-director.ts's anniversary case now PREFERS the
+  // avatar (needsAvatar:true) and requests one only when the agent's D-ID twin
+  // is consented/ready (resolveAvatarRequirement); with no twin the SAME
+  // composition renders honestly without one (remotion/EquityReportReel.tsx
+  // avatarVideoUrl null → photo/monogram fallback). "circle_pip" describes the
+  // composition's genuine capability (mirrors MarketUpdateReel), not a
+  // per-commission guarantee — requires_did_avatar stays false in the registry
+  // (m218: the avatar PIP is OPTIONAL) because a video without one is still a
+  // complete, honest deliverable.
+  EquityReportReel: { ...CHART_REEL, qr: true, presenter: "circle_pip" }, // anniversary QR + optional avatar PIP
   ExplainerAnimReel: { ...CHART_REEL, broll: "none" }, // the animation IS the visual
   // ── Avatar-led personal video. The talking head is for PERSONAL messages
   // (the agent speaking TO one person); explainers + narrated slide decks use
@@ -79,7 +89,17 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   // coordinator QR pass; music stays off so nothing fights the avatar's voice.
   TeammateExplainerReel: { ...AVATAR_LED, bookends: false, broll: "none", music: false, qr: false },
   AgentExplainerReel: { ...AVATAR_LED, presenter: "circle_pip" },
-  ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false }, // music fights the voice
+  // captions: false override (wave 61 caption-consolidation audit) — AVATAR_LED's
+  // captions:true is aspirational here: no producer stages a render naming
+  // compositionId="ListingPresentationSlide" today (grep app/+lib/ for the id
+  // finds only the content-contract schema, composition-geometry entry, and a
+  // comment naming it — never a caller). The composition is REUSED as a React
+  // component by the live ListingSectionReel producer (section-render.ts), which
+  // now carries its own CaptionLayer/captionScript directly (see
+  // remotion/ListingSectionReel.tsx). Never delete — CLAUDE.md §1 "unreferenced
+  // is not dead"; wave 60/104 carried this as "ListingPresentationSlide no cron
+  // (KEPT)" pending the presentation-video-composer (header comment, W40+).
+  ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false, captions: false }, // music fights the voice
   BuyerConsultationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false },
   ListingSectionReel: { ...CHART_REEL, broll: "none" },
   // ── Report shows (PartnersMeetingReel serves 4 uses; see REEL_USE_FINISH) ──

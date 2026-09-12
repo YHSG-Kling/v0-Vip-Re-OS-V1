@@ -7,8 +7,7 @@ import { CollaborativeSearchDashboard } from "@/components/portal/CollaborativeS
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
-import { Switch } from "@/app/components/ui/switch"
-import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Settings, Filter, DollarSign, Bed, Bath, MapPin } from "lucide-react"
+import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Filter, DollarSign, Bed, Bath, MapPin } from "lucide-react"
 import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
 import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
 import { FitBadge } from "@/app/components/portal/FitBadge"
@@ -288,6 +287,47 @@ export default async function SearchPage({
         preferences={preferences ?? undefined}
       />
 
+      {/* ── ORPHAN-ROUTE SWEEP (lane G) ───────────────────────────────────────
+          /properties/search is the FILTER-GRID half of buyer search: explicit
+          price / beds / baths / property-type / city / MLS-status controls, a
+          grid-or-list toggle, and a showing-request dialog that works for
+          OUTSIDE (non-brokerage) IDX results. It is not a duplicate of the smart
+          search above — that one asks a question in English against this buyer's
+          own preferences; this one is browsing the board by hand.
+
+          IT BECAME AN ORPHAN IN THIS LANE AND IS RESOLVED IN THIS LANE, said
+          plainly: its only inbound link in the whole tree lived on
+          /properties/saved, which this lane deleted as a duplicate of the portal
+          Properties tab. Deleting a page and letting its neighbour go dark is
+          moving an orphan, not closing one — so the link moves here, to the
+          buyer surface that owns search.
+
+          The contactId query param is required by that page (it refuses to run
+          without one — a "demo-contact-id" fallback was removed from it in an
+          earlier wave precisely because a placeholder id makes every action fail
+          a uuid parse). It is a convenience, not a grant: `saveProperty`,
+          `smartSearch` and `requestShowing` all re-establish access server-side. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Filter className="h-5 w-5" />
+            Browse the whole MLS
+          </CardTitle>
+          <CardDescription>
+            Prefer to set the filters yourself? Search every active listing by price, beds,
+            baths, type and city — and request a showing on anything you find.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild variant="outline">
+            <Link href={`/properties/search?contactId=${contactId}`}>
+              <Search className="h-4 w-4 mr-2" />
+              Open property search
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Saved/Dismissed Properties */}
       <div className="grid gap-6 md:grid-cols-2">
         {/* Saved Properties */}
@@ -393,7 +433,19 @@ export default async function SearchPage({
       {showCollaborativeSearch && (
         <div className="pt-4">
           <h2 className="text-xl font-semibold mb-4">Family Search</h2>
-          <CollaborativeSearchDashboard contactId={contactId} contactEmail={contact.email || ""} />
+          <CollaborativeSearchDashboard
+            contactId={contactId}
+            contactEmail={contact.email || ""}
+            savedProperties={savedProperties.map((s: any) => ({
+              listing_id: s.listing_id,
+              property_address: s.property_address ?? null,
+              city: s.city ?? null,
+              state: s.state ?? null,
+              list_price: s.list_price ?? null,
+              bedrooms: s.bedrooms ?? null,
+              bathrooms: s.bathrooms ?? null,
+            }))}
+          />
         </div>
       )}
     </div>

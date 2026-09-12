@@ -76,6 +76,9 @@ export async function ingestMessageService(
     // STEP 3: Determine direction and normalize
     let normalizedMessage
     let authorType: AuthorType
+    // Set when the STEP 3b suppression write is REFUSED — read at the final
+    // return so this never reports success on a lost opt-out.
+    let suppressionError: string | null = null
 
     if (params.rawMessage) {
       normalizedMessage = normalizeInboundMessage(params.rawMessage, params.contactId)
@@ -119,8 +122,14 @@ export async function ingestMessageService(
         const optOutChannel = globalOptOut ? 'all' : (channel === 'email' ? 'email' : 'sms')
         const source = channel === 'sms' ? 'inbound_sms' : 'inbound_email'
 
-        // Fire-and-forget: update contact suppression flags
-        supabase
+        // AWAITED, NOT FIRE-AND-FORGET. This is the consumer's STOP. It used to
+        // be launched un-awaited with a `.then` that console.error'd the failure
+        // and nothing else — so the function ran on and returned `{ success:
+        // true }` for an opt-out the row never took, which is a fail-open on
+        // suppression (CLAUDE.md §4). The message is STILL persisted below
+        // either way (the audit trail must survive a refused suppression); what
+        // changes is that the caller stops being told this succeeded.
+        const { error: suppressWriteError } = await supabase
           .from('contacts')
           .update({
             ...(globalOptOut ? {
@@ -137,9 +146,10 @@ export async function ingestMessageService(
             updated_at: new Date().toISOString(),
           })
           .eq('id', params.contactId)
-          .then(({ error }) => {
-            if (error) console.error('[communication-spine] DNC update failed:', error)
-          })
+        if (suppressWriteError) {
+          suppressionError = suppressWriteError.message
+          console.error('[communication-spine] DNC update REFUSED:', suppressWriteError.message)
+        }
       }
     }
 
@@ -154,19 +164,36 @@ export async function ingestMessageService(
     })
 
     if (!validation.allowed) {
+      // TENANT — `contact.brokerage_id`, from the contact this message is filed
+      // against, already read and error-checked at STEP 1 above. Resolved once,
+      // not re-fetched here. Unstamped, a role violation is invisible in the
+      // automations console AND un-resolvable through it (`workflows.ts:531`
+      // treats the same predicate as an ownership check and returns "Forbidden"
+      // on a miss), so a messaging-rule breach would be recorded where the
+      // brokerage that must act on it can never reach it.
       if (validation.shouldLog) {
-        await supabase.from('automation_errors').insert({
-          workflow_name: 'communication_spine_role_violation',
-          error_message: validation.reason || 'Role-based messaging rule violated',
-          severity: 'medium',
-          status: 'open',
-          context_json: JSON.stringify({
-            authorType,
-            contactId: params.contactId,
-            conversationId: convResult.conversationId,
-          }),
-          created_at: new Date().toISOString(),
-        })
+        if (!contact.brokerage_id) {
+          console.error(
+            `[communication-spine] role violation for contact ${params.contactId}: contact carries no brokerage_id — automation_errors row NOT written rather than written where the console can neither see nor resolve it`,
+          )
+        } else {
+          const { error: roleViolationLogError } = await supabase.from('automation_errors').insert({
+            brokerage_id: contact.brokerage_id,
+            workflow_name: 'communication_spine_role_violation',
+            error_message: validation.reason || 'Role-based messaging rule violated',
+            severity: 'medium',
+            status: 'open',
+            context_json: JSON.stringify({
+              authorType,
+              contactId: params.contactId,
+              conversationId: convResult.conversationId,
+            }),
+            created_at: new Date().toISOString(),
+          })
+          if (roleViolationLogError) {
+            console.error('[communication-spine] automation_errors insert refused:', roleViolationLogError.message)
+          }
+        }
       }
       return { success: false, error: validation.reason }
     }
@@ -196,6 +223,19 @@ export async function ingestMessageService(
       void pauseActiveSequenceEnrollmentsOnReply(params.contactId).catch((e) => {
         console.error('[communication-spine] pause-on-reply failed:', e)
       })
+    }
+
+    // FAIL CLOSED (CLAUDE.md §4). The message landed — that is why messageId and
+    // conversationId still come back — but if the contact's opt-out flags were
+    // REFUSED at STEP 3b, outreach is not actually suppressed and no caller may
+    // read this as a clean success.
+    if (suppressionError) {
+      return {
+        success: false,
+        conversationId: convResult.conversationId,
+        messageId: persistResult.messageId,
+        error: `Message stored, but the contact's opt-out was NOT applied: ${suppressionError}`,
+      }
     }
 
     return {
@@ -242,14 +282,18 @@ async function pauseActiveSequenceEnrollmentsOnReply(contactId: string): Promise
     })
     .in('id', ids)
 
-  // One lifecycle event per paused enrollment for audit trail.
+  // One kernel event per paused enrollment — audit row + reactor. suppressEnrollment:
+  // this IS the sequence engine reacting to a reply; its own event must not re-enroll.
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
   for (const e of active) {
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id:  e.brokerage_id,
-      entity_type:   'sequence_enrollment',
-      entity_id:     e.id,
-      event_type:    KernelEvent.SEQUENCE_PAUSED_ON_REPLY,
-      metadata:      { reason: 'contact_replied', sequence_id: e.sequence_id },
+    await emitKernelEvent({
+      brokerageId:  e.brokerage_id,
+      entityType:   'sequence_enrollment',
+      entityId:     e.id,
+      event:        KernelEvent.SEQUENCE_PAUSED_ON_REPLY,
+      contactId,
+      metadata:     { reason: 'contact_replied', sequence_id: e.sequence_id },
+      suppressEnrollment: true,
     }).then(() => null, () => null)
   }
 }

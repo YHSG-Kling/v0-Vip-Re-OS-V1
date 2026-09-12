@@ -1,11 +1,29 @@
 /**
  * app/unsubscribe/page.tsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Kernel OS email/SMS unsubscribe endpoint.
- * URL: /unsubscribe?contactId={id}&channel=email|sms
+ * THE LEGACY email/SMS unsubscribe surface.
+ * URL: /unsubscribe?contactId={id}&channel=email|sms|mail
  *
- * On confirm: updates contacts row, inserts suppression row, shows success.
- * No authentication required — link is sent in email footers.
+ * KEPT because `lib/kernel/communications/assemble-email.ts:126` stamps this
+ * exact URL into the footer of every non-transactional email the product sends,
+ * and delivered email cannot be recalled. It is repaired rather than removed —
+ * see app/api/unsubscribe/route.ts for the full account of what was broken
+ * (short version: it queried the wrong one of the two unique uuid columns on
+ * `contacts`, so it never matched a real link, and its write would have been an
+ * FK violation that supabase-js resolves and the writer discards).
+ *
+ * ITS CREDENTIAL IS AN ENTITY ID, WHICH IS NOT A SECRET. Anyone who is forwarded
+ * one marketing email holds a working suppression capability for the original
+ * addressee. That is inherent to the link shape and cannot be fixed here; every
+ * suppression written through it is therefore labelled `email_footer_unverified`
+ * in the compliance ledger.
+ *
+ * THE SHAPE THAT DOES NOT HAVE THAT PROBLEM is the per-recipient token:
+ *   /unsubscribe/{token}  →  app/unsubscribe/[token]/page.tsx
+ * one opaque 70-bit credential per mail piece, minted by m493, printable on a
+ * postcard, revocable, and scoped to a single recipient of a single campaign.
+ *
+ * No authentication required on either — the caller is a member of the public.
  */
 
 import { Suspense } from 'react'

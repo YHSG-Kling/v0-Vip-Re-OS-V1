@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -23,6 +23,7 @@ import {
   DollarSign,
   CheckCircle2,
 } from "lucide-react"
+import { formatDateOrTBD } from "@/lib/format/dates"
 
 interface Transaction {
   id: string
@@ -62,23 +63,11 @@ const EMD_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   released: { label: "Released", color: "bg-slate-100 text-slate-600" },
 }
 
-function formatDate(date: string | null | undefined): string {
-  if (!date) return "TBD"
-  return new Date(date).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })
-}
-
-function formatCurrency(amount: number | null | undefined): string {
-  if (!amount) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
+// `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `formatDateOrTBD` (imported above).
+// `formatCurrency` (same round) had no call site in this file at all — a
+// dead sibling of the same paste, deleted with it rather than kept as
+// unreferenced dead code.
 
 export function TitleTransactionList({ transactions }: { transactions: Transaction[] }) {
   const [search, setSearch] = useState("")
@@ -211,7 +200,7 @@ export function TitleTransactionList({ transactions }: { transactions: Transacti
                             {emdStatus.label}
                           </Badge>
                         </TableCell>
-                        <TableCell>{formatDate(closeDate)}</TableCell>
+                        <TableCell>{formatDateOrTBD(closeDate)}</TableCell>
                         <TableCell>
                           <Button variant="ghost" size="icon" asChild>
                             <Link href={`/portal/title/${txn.transaction_id}`}>

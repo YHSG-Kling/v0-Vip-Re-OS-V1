@@ -330,6 +330,14 @@ export async function logActualPerformance(
     return { success: false, error: insertError.message }
   }
 
+  // A new graded outcome moves the content_performance accuracy rail — drop the
+  // accuracy-gate's cached verdicts so earned/supervised autonomy reflects this
+  // write without waiting out the TTL or a process restart. Best-effort.
+  try {
+    const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+    __clearAccuracyGateCache()
+  } catch { /* cache invalidation is never load-bearing */ }
+
   return { success: true }
 }
 
@@ -362,57 +370,26 @@ export async function getPrediction(
   return { success: true, prediction: data }
 }
 
-// ─── getPredictionAccuracyStats ───────────────────────────────────────────────
-
-/**
- * Returns aggregate accuracy statistics for a brokerage's predictions.
- */
-export async function getPredictionAccuracyStats(
-  brokerageId: string
-): Promise<{
-  success: boolean
-  stats?: {
-    totalPredictions: number
-    avgDeltaScore: number
-    accuracyRate: number
-  }
-  error?: string
-}> {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("prediction_accuracy_log")
-    .select("delta_score")
-    .eq("brokerage_id", brokerageId)
-
-  if (error) {
-    return { success: false, error: error.message }
-  }
-
-  if (!data || data.length === 0) {
-    return {
-      success: true,
-      stats: {
-        totalPredictions: 0,
-        avgDeltaScore: 0,
-        accuracyRate: 0,
-      },
-    }
-  }
-
-  const totalPredictions = data.length
-  const avgDeltaScore = data.reduce((sum, row) => sum + Math.abs(row.delta_score || 0), 0) / totalPredictions
-
-  // Accuracy rate = % of predictions within 15 points of actual
-  const accurateCount = data.filter((row) => Math.abs(row.delta_score || 0) <= 15).length
-  const accuracyRate = (accurateCount / totalPredictions) * 100
-
-  return {
-    success: true,
-    stats: {
-      totalPredictions,
-      avgDeltaScore: Math.round(avgDeltaScore * 10) / 10,
-      accuracyRate: Math.round(accuracyRate),
-    },
-  }
-}
+// ─── getPredictionAccuracyStats — DELETED (orphan burn-down lane C) ───────────
+//
+// SURVIVOR: lib/analytics/prediction-accuracy.ts:775 (contentAdapter) and its pure
+// summarizer at lib/analytics/prediction-accuracy.ts:754 (summarizeContentRows) —
+// Rail 8, "content_performance". Same table, same brokerage predicate, same
+// |delta_score| aggregation, and it is the version that is actually SURFACED:
+// app/dashboard/analytics/page.tsx and app/dashboard/superadmin/platform/page.tsx
+// render it through PredictionAccuracyPanel, and lib/managers/accuracy-gate.ts
+// reads it to decide whether a manager has earned autonomous action.
+//
+// Strictly stronger on the two axes this shared with it:
+//   · MEDIAN |delta| rather than the mean — one badly-graded outlier cannot drag
+//     a brokerage's whole accuracy figure;
+//   · zero graded rows reports available:false with a reason, where this returned
+//     `success: true` with `avgDeltaScore: 0, accuracyRate: 0` — a perfect-looking
+//     zero error for a rail that had never been graded at all.
+//
+// NOT MERGED, DELIBERATELY: the `accuracyRate` = "% within 15 points". That band
+// is invented here — nothing in the content predictor defines a ±15 tolerance —
+// and the survivor's honesty contract (lib/analytics/prediction-accuracy.ts:16)
+// says withinRate is exposed ONLY where the source system itself defines the
+// band, and that we never mint a tolerance to look good. Carrying it forward
+// would break the rule the survivor exists to keep, so it stays deleted.

@@ -55,10 +55,16 @@ export function vendorOwnership(vendor: string): VendorOwnership {
   return USER_CONNECTED_VENDORS.has(vendor) ? "user_connected" : "platform"
 }
 
+// CENSUS NOTE: the two predicates below are proof-only (scripts/scraper-simulator.ts:791-795
+// pins the classification). Product readers use the SETS directly (resolve-connectivity.ts:141,
+// provider-posture.ts:741-742) and the two manifests stamp ownership by construction
+// (app-capability-registry.ts) — there is no inline duplicate of the classifier to merge.
+/** @proofSeam see CENSUS NOTE above */
 export function isPlatformVendor(vendor: string): boolean {
   return vendorOwnership(vendor) === "platform"
 }
 
+/** @proofSeam see CENSUS NOTE above */
 export function isUserConnectedVendor(vendor: string): boolean {
   return vendorOwnership(vendor) === "user_connected"
 }

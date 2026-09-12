@@ -28,17 +28,9 @@
  *   15–18s  CTA       — payoff line + agent name + EHO footer
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  spring,
-  useCurrentFrame,
-  useVideoConfig,
-  Easing,
-} from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig, Easing } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import {
   seriesToPoints,
   linePath,
@@ -120,15 +112,15 @@ const AvatarPIP: React.FC<{
   if (avatarVideoUrl) {
     return (
       <div style={ring}>
-        <Video src={avatarVideoUrl} startFrom={startFrame} endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <Video src={avatarVideoUrl} objectFit="cover" trimBefore={startFrame} trimAfter={endFrame}
+          style={{ width: "100%", height: "100%" }} />
       </div>
     )
   }
   if (agentPhotoUrl) {
     return (
       <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
     )
   }
@@ -146,6 +138,11 @@ const AvatarPIP: React.FC<{
 // ── diagram canvas geometry ──────────────────────────────────────────────────
 const CANVAS = { x: 90, y: 470, w: 900, h: 470 }   // diagram drawing region
 
+// NOT lib/format/money.ts's `compactCentsMoney` (§1/§6, 2026-09-08): that one
+// takes CENTS and has an M tier; this takes DOLLARS, K-only, no locale
+// commas — the same "compact dollars" shape already documented there as
+// lib/video/director-content.ts:419's `compactMoney`, not a duplicate of it
+// either. Genuinely different unit/contract, recorded rather than merged.
 const fmtMoney = (n: number): string =>
   n >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`
 
@@ -170,7 +167,12 @@ const EquityDiagram: React.FC<{ data: EquityOverTimeData; accent: string }> = ({
   const vSlice = valuePts.slice(0, shown)
   const bSlice = balancePts.slice(0, shown)
   // Equity wedge = between the value line (top) and balance line (bottom).
-  const wedge = [...vSlice, ...[...bSlice].reverse()]
+  // Annotated at the CONSTRUCTION site rather than left to inference: the wedge
+  // is the one point array in this file assembled by hand instead of returned by
+  // seriesToPoints (lib/charts/geometry.ts:46), so it is the only one where a
+  // shape mistake would surface as a silently malformed `d` attribute inside
+  // linePath rather than as a type error here.
+  const wedge: Point[] = [...vSlice, ...[...bSlice].reverse()]
   const wedgePath = wedge.length ? `${linePath(wedge)} Z` : ""
 
   const finalOp = interpolate(local, [80, 110], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
@@ -337,35 +339,42 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 28,
-              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateRight: "clamp" }),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateRight: "clamp" }),
+            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {eyebrow}
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 840,
-            opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateRight: "clamp" }),
-            transform: `translateY(${interpolate(frame, [12, 36], [16, 0], { easing: ENTER, extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
+            opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+            translate: `0 ${interpolate(frame, [12, 36], [16, 0], { easing: ENTER, extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
           }}>
             {title}
           </div>
         </AbsoluteFill>
       </Sequence>
 
-      {/* DIAGRAM — 3-15s */}
+      {/* DIAGRAM — 3-15s.
+          AVATAR LEAD-IN FIX (wave 60 realism audit — same defect + fix as
+          MarketUpdateReel/EquityReportReel/AgentExplainerReel). This is the
+          avatar's ONLY window, but it still opens after the silent COVER
+          tile; passing the composition-absolute COVER frame as `<Video
+          trimBefore>` skipped the clip's first COVER seconds of REAL
+          narration. `startFrame: 0` plays the clip from its own beginning
+          the moment it first becomes visible. */}
       <Sequence from={COVER} durationInFrames={DIAGRAM}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER, endFrame: COVER + DIAGRAM }} />
+            startFrame: 0, endFrame: DIAGRAM }} />
           {/* Title strip (right of PIP) */}
           <div style={{ position: "absolute", top: 90, left: 380, right: 60 }}>
             <div style={{ width: 56, height: 6, background: brand.accentColor, borderRadius: 3, marginBottom: 14 }} />
@@ -420,7 +429,11 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile.
+          NO CAPTION OVER SILENCE (wave 59) — the avatar's baked-in audio
+          starts at COVER, not frame 0; see CaptionLayer.visibleFromFrame. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + DIAGRAM} />
     </AbsoluteFill>
   )
 }

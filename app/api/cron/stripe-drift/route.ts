@@ -63,6 +63,31 @@ export async function GET(request: NextRequest) {
       .not("stripe_price_id", "is", null)
     if (error) throw new Error(`Failed to load tier catalog: ${error.message}`)
 
+    // "checked 0, drifted 0" IS NOT A CLEAN BILL — it is a check that could not
+    // see anything (CLAUDE.md §2). The filter above skips every tier whose
+    // stripe_price_id is NULL, and MEASURED LIVE that is all four of them, so
+    // once a key is present this cron would report a healthy catalogue while
+    // comparing nothing at all. An UNLINKED catalogue is the finding, not the
+    // absence of one: no tier can be repriced (stripeSwapPrice skips on a NULL
+    // price id) and no drift can ever be detected. Reported with its denominator.
+    const { count: activeTierCount } = await svc
+      .from("subscription_tiers")
+      .select("id", { count: "exact", head: true })
+      .eq("is_active", true)
+    const linked = (tiers ?? []).length
+    const unlinked = Math.max(0, (activeTierCount ?? 0) - linked)
+    if (linked === 0) {
+      const reason = `Stripe is configured but NO active tier carries a stripe_price_id (0 of ${activeTierCount ?? 0} linked) — nothing could be compared, and no tier can be repriced. Publish each tier from /dashboard/superadmin/plans.`
+      await recordCronSuccessAction({
+        context_id: contextId, records_processed: 0,
+        metadata: { checked: 0, drifted: 0, notified: 0, unlinkedTiers: unlinked, catalogUnlinked: true, reason },
+      })
+      return NextResponse.json({
+        message: "Nothing to check — the plan catalog is not linked to Stripe",
+        checked: 0, drifted: 0, notified: 0, unlinkedTiers: unlinked, catalogUnlinked: true, reason,
+      })
+    }
+
     const { stripe } = await import("@/lib/stripe")
     const drifts: Array<{ tierName: string; priceId: string; finding: PlanDriftFinding | null; error?: string }> = []
     let checked = 0
@@ -117,12 +142,14 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // `unlinkedTiers` travels with every result: a partially-linked catalogue is
+    // a partially-blind check, and the count is what makes the zero readable.
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: checked,
-      metadata: { checked, drifted: drifts.length, notified, drifts },
+      metadata: { checked, drifted: drifts.length, notified, unlinkedTiers: unlinked, drifts },
     })
-    return NextResponse.json({ message: "Stripe drift check complete", checked, drifted: drifts.length, notified })
+    return NextResponse.json({ message: "Stripe drift check complete", checked, drifted: drifts.length, notified, unlinkedTiers: unlinked })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Stripe drift check failed"
     await recordCronFailureAction({ context_id: contextId, error: message })

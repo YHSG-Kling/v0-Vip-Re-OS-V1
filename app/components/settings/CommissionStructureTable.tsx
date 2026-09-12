@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { deleteCommissionStructure } from '@/app/actions/settings/delete-commission-structure';
 import { SettingsCard } from './SettingsCard';
 

@@ -73,6 +73,12 @@ export async function scrapeSocialMedia(params: {
     errors: [] as string[]
   }
 
+  /** Scraper invocations that actually left the building this run — the unit
+   *  `billing_usage.scraper_calls` is denominated in. Counted at the call, not
+   *  derived from post counts: a scrape that returns nothing still burns a
+   *  credit, and a scrape that throws burned one before it threw. */
+  let scraperCalls = 0
+
   const facebookGroups = FACEBOOK_GROUP_TEMPLATES.map(template =>
     template.replace('{city}', targetCity).replace('{state}', targetState)
   )
@@ -81,6 +87,7 @@ export async function scrapeSocialMedia(params: {
     try {
       const groupUrl = `https://www.facebook.com/groups/${groupName.toLowerCase().replace(/\s/g, '')}`
 
+      scraperCalls += 1
       const fbResult = await scrapeFacebookGroupPosts({
         groupUrl,
         keywords: SEARCH_KEYWORDS,
@@ -98,6 +105,17 @@ export async function scrapeSocialMedia(params: {
 
         if (analysis.confidence < 0.70) continue
 
+        // TENANCY: brokerage_id is deliberately left NULL here. This is the
+        // PLATFORM raw-lead pool, not tenant data — the owner's rule is that
+        // raw leads are platform-viewable and feed deduping/enrichment, and a
+        // tenant only ever sees its own leads. The tenant-scoped artifact is
+        // produced below by processRawRecord(rawRecord.id, brokerageId), which
+        // is what carries the brokerage. Every reader agrees: getMotivatedSellers
+        // and getIntelligenceDashboardStats (app/actions/lead-intelligence.ts)
+        // query this table unscoped on purpose while scoping their sibling
+        // queries by brokerage, and the neighborhood report reads property
+        // history across a whole zip. Stamping a tenant here would fragment the
+        // dedup pool. Same call as platform_credentials in m273.
         const { data: rawRecord } = await supabase
           .from('batchdata_motivated_sellers_raw')
           .insert({
@@ -148,6 +166,7 @@ export async function scrapeSocialMedia(params: {
   ]
 
   try {
+    scraperCalls += 1
     const redditResult = await scrapeRedditPosts({
       subreddits: redditSubreddits,
       keywords: SEARCH_KEYWORDS,
@@ -165,6 +184,9 @@ export async function scrapeSocialMedia(params: {
 
       if (analysis.confidence < 0.70) continue
 
+      // TENANCY: brokerage_id deliberately NULL — platform raw-lead pool, not
+      // tenant data. See the matching note on the Facebook insert above; the
+      // tenant-scoped artifact is created by processRawRecord(..., brokerageId).
       const { data: rawRecord } = await supabase
         .from('batchdata_motivated_sellers_raw')
         .insert({
@@ -205,6 +227,38 @@ export async function scrapeSocialMedia(params: {
   } catch (error) {
     console.error('[v0] Failed to scrape Reddit:', error)
     results.errors.push(`Reddit: ${String(error)}`)
+  }
+
+  // THE BILLING METER — `billing_usage.scraper_calls`.
+  //
+  // Recorded HERE, server-side, and NOT from the client that invoked this
+  // action. The client (app/dashboard/admin/lead-intake/social-scrape-trigger.tsx)
+  // is the wrong place for three reasons: it cannot see how many scraper calls
+  // were actually made (only how many posts came back), a tab closed mid-run
+  // records nothing while the credits are already spent, and a client-callable
+  // usage writer is a `"use server"` endpoint that lets any authenticated caller
+  // move their own tenant's billing meter in either direction. This is the
+  // authoritative point — it is where the credits are consumed.
+  //
+  // Until this call `billing_usage` HAD NO WRITER AT ALL, so the tenant usage
+  // bars (app/settings/billing/usage-section.tsx) and the overage projection
+  // (app/components/features/admin/overage-calculator.tsx) read zero for every
+  // tenant on every day. `units` is a DELTA — this run's calls, not a total.
+  if (scraperCalls > 0) {
+    const { recordUsageEvent } = await import('@/lib/kernel/billing')
+    const metered = await recordUsageEvent({
+      brokerageId,
+      metric: 'scraper_calls',
+      units: scraperCalls,
+      actorContext: { userId: ctx.userId },
+    })
+    if (!metered.success) {
+      // Metering must not fail the scrape (the leads are already banked), but
+      // the refusal is REPORTED rather than dropped — a meter that quietly
+      // stops recording is exactly the defect this write exists to end.
+      console.warn('[scrape-social-media] billing_usage scraper_calls not recorded:', metered.error)
+      results.errors.push(`usage metering: ${metered.error ?? 'unknown error'}`)
+    }
   }
 
   return {

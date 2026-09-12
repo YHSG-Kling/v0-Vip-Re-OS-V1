@@ -21,6 +21,15 @@ interface PortalAIAssistantProps {
   isBuyer: boolean
   isSeller: boolean
   persona: string
+  /** wave 60 (§3.3 "fail over to text") — a NEW value (any change, including
+   *  Date.now()) opens this panel programmatically. Set by PortalChatLauncher
+   *  when the Live Agent's D-ID session fails so the visitor lands in a real,
+   *  working conversation instead of a closed overlay. */
+  openSignal?: number
+  /** One-line banner shown once at the top of the chat when openSignal fires
+   *  it open — "why am I suddenly looking at text chat". Cleared on the
+   *  visitor's next send so it never lingers into an unrelated conversation. */
+  fallbackNotice?: string | null
 }
 
 // ── Suggested questions per portal view ──────────────────────────────────────
@@ -29,6 +38,21 @@ const SUGGESTED_QUESTIONS: Record<'buyer' | 'seller' | 'lifetime', string[]> = {
   buyer:    ['What happens next?', 'What is earnest money?', 'When do I get keys?'],
   seller:   ['How is my listing doing?', 'When will I get paid?', 'What does under contract mean?'],
   lifetime: ['What is my home worth now?', 'When should I sell?', 'How are my neighbors doing?'],
+}
+
+// PERSONA-SPECIFIC STARTERS (BUILD, wave 52) — `persona` (contacts.contact_persona,
+// the SAME vocabulary scripts/check-vocabularies.ts snapshots, never a second list)
+// was threaded down from app/portal/[contactId]/layout.tsx through
+// PortalChatLauncher and reached this component with no reader. Only personas
+// where a materially different opening question exists get an override; every
+// other value (including "other") falls through to the buyer/seller/lifetime
+// default — no invented specialization for a persona this wasn't written for.
+const PERSONA_QUESTION_OVERRIDES: Partial<Record<string, string[]>> = {
+  investor:   ['What is the estimated cap rate?', 'What are comparable rents nearby?', 'What repairs affect ROI?'],
+  first_time: ['What does earnest money mean?', 'What should I budget for closing costs?', 'What is a home inspection?'],
+  luxury:     ['What discretion/privacy protections are in place?', 'How is this property marketed to qualified buyers?', 'What concierge services are available?'],
+  senior:     ['What does downsizing timeline look like?', 'Are there age-restricted community options?', 'How does this affect my current home sale?'],
+  relocated:  ['What should I know about this area?', 'How do school districts compare nearby?', 'What is the commute like from here?'],
 }
 
 // SESSION_KEY prefix for sessionStorage persistence
@@ -53,6 +77,9 @@ export default function PortalAIAssistant({
   contactId,
   isBuyer,
   isSeller,
+  persona,
+  openSignal,
+  fallbackNotice,
 }: PortalAIAssistantProps) {
   const portalView: 'buyer' | 'seller' | 'lifetime' = isSeller
     ? 'seller'
@@ -60,7 +87,7 @@ export default function PortalAIAssistant({
     ? 'buyer'
     : 'lifetime'
 
-  const suggestedQuestions = SUGGESTED_QUESTIONS[portalView]
+  const suggestedQuestions = PERSONA_QUESTION_OVERRIDES[persona] ?? SUGGESTED_QUESTIONS[portalView]
 
   // ── Local state ────────────────────────────────────────────────────────────
   const [isOpen,      setIsOpen]      = useState(false)
@@ -175,6 +202,19 @@ export default function PortalAIAssistant({
     setIsMinimized(false)
   }, [])
 
+  // ── D-ID FAILOVER (wave 60 §3.3) — never a dead button ─────────────────────
+  // A caller (PortalChatLauncher) bumps openSignal when the Live Agent's D-ID
+  // session fails to mint or drops mid-conversation; this panel opens itself
+  // rather than leaving the visitor looking at a closed overlay with nowhere
+  // to go. Skips the initial mount (openSignal starts undefined).
+  const [notice, setNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (openSignal === undefined) return
+    handleOpen()
+    setNotice(fallbackNotice ?? null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal])
+
   const handleMinimize = useCallback(() => {
     setIsMinimized(true)
   }, [])
@@ -184,6 +224,7 @@ export default function PortalAIAssistant({
     const text = input.trim()
     if (!text || status === 'streaming' || status === 'submitted') return
     setError(null)
+    setNotice(null)
     sendMessage({ text })
     setInput('')
   }, [input, status, sendMessage])
@@ -258,6 +299,14 @@ export default function PortalAIAssistant({
               </button>
             </div>
           </div>
+
+          {/* Failover notice (wave 60 §3.3) — the one-line "why text now" */}
+          {notice && (
+            <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800 flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>{notice}</span>
+            </div>
+          )}
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">

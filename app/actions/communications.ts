@@ -11,17 +11,15 @@
 import {
   logGHLCall,
   syncContactToGHL,
-  getContactConversationHistory,
   addGHLContactNote,
-  triggerGHLWorkflow,
-  createGHLSocialPost,
-  createGHLCalendarEvent,
 } from "@/services/goHighLevelService"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
-import { supabaseService as _supabaseService } from "@/services/supabaseService"
-const supabaseService = _supabaseService as any
+// Imported directly, NOT through an `as any` cast. The cast that used to sit here hid
+// five members this file calls that did not exist on the service at all — tsc could not
+// see a single one, and each call was a runtime TypeError.
+import { supabaseService } from "@/services/supabaseService"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 
 // =====================================================
@@ -68,13 +66,24 @@ export async function sendSMS(params: {
     brokerageId: contact.brokerage_id,
     agentId: contact.agent_id ?? undefined,
     systemSource: "communications",
-    leadId: params.contactId,
+    // contactId, NOT leadId. This read the recipient out of `contacts` above and
+    // then handed that contacts.id to the leadId slot. dispatchSms picks its
+    // lookup table with `params.contactId ? "contacts" : "leads"`, so it went
+    // looking for a contacts.id in `leads`, found nothing, and the guard
+    // `if (!recipientError && recipient)` fell through — which SKIPPED
+    // evaluateOutboundCompliance entirely. Express consent, quiet hours and the
+    // fair-housing content check never ran on anything sent through here.
+    // (checkSuppression still ran, so DNC/opt-out by phone was never the hole.)
+    contactId: params.contactId,
     metadata: params.trackingData,
   })
 
   // Log to activities for local tracking
   if (result.success) {
-    await supabase.from("activities").insert({
+    // THE record that an SMS went out. The kernel reads channel/outcome/title
+    // straight into the AI's picture of this contact, so a lost row makes the
+    // assistant believe the message was never sent — and send it again.
+    const { error: smsActivityError } = await supabase.from("activities").insert({
       brokerage_id: contact.brokerage_id,
       agent_id: contact.agent_id,
       contact_id: params.contactId,
@@ -85,6 +94,9 @@ export async function sendSMS(params: {
       status: "completed",
       entity_type: "contact",
     })
+    if (smsActivityError) {
+      console.error("[communications] sms_sent activity REJECTED — the SMS was delivered but is not on the contact's record:", smsActivityError.message)
+    }
   }
 
   return { ...result, providerKey: result.providerKey }
@@ -144,11 +156,13 @@ export async function sendEmail(params: {
     brokerageId: contact.brokerage_id,
     agentId: contact.agent_id ?? undefined,
     systemSource: "communications",
-    leadId: params.contactId,
+    // contactId, NOT leadId — same defect as sendSMS above; see the note there.
+    contactId: params.contactId,
   })
 
   if (result.success) {
-    await supabase.from("activities").insert({
+    // Same as sendSMS above: this row is the record of the send, not a log line.
+    const { error: emailActivityError } = await supabase.from("activities").insert({
       brokerage_id: contact.brokerage_id,
       agent_id: contact.agent_id,
       contact_id: params.contactId,
@@ -159,6 +173,9 @@ export async function sendEmail(params: {
       status: "completed",
       entity_type: "contact",
     })
+    if (emailActivityError) {
+      console.error("[communications] email_sent activity REJECTED — the email was delivered but is not on the contact's record:", emailActivityError.message)
+    }
   }
 
   return { ...result, providerKey: result.providerKey }
@@ -176,7 +193,21 @@ export async function logCall(params: {
   notes?: string
   outcome?: "answered" | "voicemail" | "no_answer" | "busy"
 }) {
-  const contact = await supabaseService.getContactById(params.contactId)
+  // SESSION GATE + TENANT ANCHOR (added when this action was wired to the CRM
+  // contact pane, lane E2 2026-08-28 — it previously had "no gate of its own",
+  // as the behavioural-event note below records). Tenant from the SESSION,
+  // never from params (§4): the contact must belong to the caller's brokerage
+  // or the log is refused.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  // Tenant-scoped read (§4, lane N3a 2026-09-01): getContactById now REQUIRES
+  // the session brokerage and applies it as an equality predicate, so a foreign
+  // contact id finds nothing — the explicit post-read inequality check this
+  // used to carry is subsumed by the predicate.
+  const contact = await supabaseService.getContactById(params.contactId, ctx.brokerageId)
 
   if (!contact) {
     return { success: false, error: "Contact not found" }
@@ -214,32 +245,62 @@ export async function logCall(params: {
         duration: params.duration,
         outcome: params.outcome,
         recording_url: params.recordingUrl,
-        mock: result.mock,
       },
     })
+
+    // ── BEHAVIOURAL EVENT (orphan burn-down, lane O — trackBehavioralEvent WIRED) ──
+    // `call_answered` is worth 20 points in the scored vocabulary
+    // (lib/lead-scoring/behavioral-events.ts:60) and is one of the four REPLY
+    // events that drive the responsiveness factor — and NOTHING in the tree
+    // produced one. The recorder's live call sites are all machine-side (IDX
+    // views, the SendGrid event webhook, the inbound SMS/email router); a
+    // contact picking up the phone is the one high-value signal that only an
+    // AGENT can witness, which is precisely the caller
+    // app/actions/ai-auto-response.ts:trackBehavioralEvent was written to serve
+    // — its own header says so, and it had none.
+    //
+    // Routed through that action rather than the lib recorder ON PURPOSE: the
+    // recorder is unauthenticated by contract and requires the caller to have
+    // resolved tenant server-side, and `logCall` has no gate of its own. The
+    // action resolves user + brokerage from the SESSION (never from these
+    // params) and refuses when there is no tenant, so the behavioural write is
+    // gated even though the call log around it is not.
+    //
+    // Only "answered" is recorded. A voicemail, a busy signal or a no-answer is
+    // the agent acting, not the contact engaging, and scoring those would
+    // reward dialling instead of reaching someone. Best-effort: this is
+    // telemetry and must never fail the call log.
+    if ((params.outcome ?? "answered") === "answered") {
+      try {
+        const { trackBehavioralEvent } = await import("@/app/actions/ai-auto-response")
+        await trackBehavioralEvent({
+          contactId: params.contactId,
+          eventType: "call_answered",
+          eventData: { direction: params.direction, duration_seconds: params.duration ?? null },
+        })
+      } catch (behaviouralErr) {
+        console.error("[communications] behavioural call_answered event failed:", behaviouralErr)
+      }
+    }
   }
 
   return result
 }
 
 // =====================================================
-// GET CONTACT HISTORY (from GHL)
+// GET CONTACT HISTORY
 // =====================================================
-
-export async function getContactHistory(contactId: string) {
-  // Try to get from GHL first
-  const ghlHistory = await getContactConversationHistory(contactId)
-
-  // Also get local activity log
-  const localActivities = await supabaseService.getContactActivities(contactId)
-
-  return {
-    success: true,
-    ghlHistory: ghlHistory.history,
-    localActivities,
-    mock: ghlHistory.mock,
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getContactHistory` deleted.
+// SURVIVORS: app/actions/contact-details.ts:getContactActivity (the gated,
+// multi-source contact timeline wired at app/crm/page.tsx:417) and
+// `getRecentCommunications` below (the tenant-scoped message history). The
+// GHL half of this twin pulled conversation history from GoHighLevel — but
+// GHL is a one-way contact-data SYNC TARGET in this product, not a message
+// transport (ruling recorded at lib/services/communication.service.tsx:174),
+// and no surface ever rendered the pull: a stripped-source census found zero
+// callers outside the the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero
+// importers. The GHL fetcher chain (`getContactConversationHistory` +
+// helpers) went with it — tombstone at services/goHighLevelService.ts.
 
 export async function getCommunicationStats(params?: { agentId?: string; startDate?: string; endDate?: string }) {
   try {
@@ -283,16 +344,36 @@ export async function getCommunicationStats(params?: { agentId?: string; startDa
   }
 }
 
+/**
+ * Recent message history for a contact.
+ *
+ * GATED + TENANT-SCOPED (was neither). `"use server"` makes this a public HTTP
+ * endpoint and it had no session: `.eq("contact_id", contactId)` was the only
+ * predicate, so a contact uuid returned **the full bodies of every SMS and email
+ * exchanged with that person** — the most sensitive read in this file. The
+ * `messages` table's own RLS was the sole barrier, which is precisely the
+ * assumption this codebase has already been burned by; the app layer now states
+ * the invariant too, so a future swap to a service client cannot silently open it.
+ *
+ * `limit` is clamped — it went straight into `.limit()`.
+ */
 export async function getRecentCommunications(contactId: string, limit = 20) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized", communications: [] }
+    }
+
+    const capped = Math.min(Math.max(Math.trunc(limit) || 20, 1), 200)
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("messages")
       .select("*")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false })
-      .limit(limit)
+      .limit(capped)
 
     if (error) throw error
 
@@ -311,7 +392,18 @@ export async function addContactNote(params: {
   note: string
   category?: string
 }) {
-  const contact = await supabaseService.getContactById(params.contactId)
+  // SESSION GATE + TENANT ANCHOR (§4, lane N3a 2026-09-01 — added when
+  // getContactById grew its required tenant parameter). This "use server"
+  // export is a public HTTP endpoint and it WRITES a note onto the contact; it
+  // previously called the service-role reader with no gate at all, so anyone
+  // authenticated-or-not could pin notes to any tenant's contact. Same gate
+  // shape as its sibling logCall above.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  const contact = await supabaseService.getContactById(params.contactId, ctx.brokerageId)
 
   if (!contact) {
     return { success: false, error: "Contact not found" }
@@ -330,13 +422,17 @@ export async function addContactNote(params: {
   // Add note to GHL
   const ghlResult = await addGHLContactNote(ghlContactId, params.note)
 
-  // Also save locally
+  // Also save locally. `category` and `ghl_note_id` are dropped here rather than passed:
+  // contact_notes has no column for either, so they were never going to persist. The
+  // external note id still comes back to the caller below.
   const localResult = await supabaseService.addContactNote({
     contact_id: params.contactId,
     note: params.note,
-    category: params.category,
-    ghl_note_id: ghlResult.noteId,
   })
+
+  if (!localResult) {
+    return { success: false, error: "Note synced externally but could not be saved locally" }
+  }
 
   return {
     success: true,
@@ -349,155 +445,13 @@ export async function addContactNote(params: {
 // SOCIAL MEDIA POSTING (via GHL)
 // =====================================================
 
-export async function publishSocialPost(params: {
-  content: string
-  platforms: Array<"facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "google">
-  mediaUrls?: string[]
-  scheduledTime?: string
-  agentId?: string  // ignored — derived from session
-}) {
-  // Auth gate — previously open. Any caller could publish content to the
-  // brokerage's connected GHL social accounts under our credentials.
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
-
-  // Create post via GHL Social Planner
-  const result = await createGHLSocialPost({
-    content: params.content,
-    platforms: params.platforms,
-    mediaUrls: params.mediaUrls,
-    scheduledTime: params.scheduledTime,
-  })
-
-  // Log locally
-  if (result.success) {
-    await supabaseService.logActivity({
-      activity_type: "social_post_created",
-      description: `Social post ${params.scheduledTime ? "scheduled" : "published"} to ${params.platforms.join(", ")}`,
-      metadata: {
-        ghl_post_id: result.postId,
-        platforms: params.platforms,
-        scheduled_time: params.scheduledTime,
-        mock: result.mock,
-      },
-    })
-  }
-
-  return result
-}
-
 // =====================================================
 // SCHEDULE APPOINTMENT (via GHL Calendar)
 // =====================================================
 
-export async function scheduleAppointment(params: {
-  contactId: string
-  calendarId: string
-  title: string
-  startTime: string
-  endTime: string
-  meetingType?: "in_person" | "video" | "phone"
-  notes?: string
-  assignedUserId?: string
-}) {
-  const contact = await supabaseService.getContactById(params.contactId)
-
-  if (!contact) {
-    return { success: false, error: "Contact not found" }
-  }
-
-  // Sync contact to GHL
-  const ghlSync = await syncContactToGHL({
-    firstName: contact.first_name,
-    lastName: contact.last_name,
-    email: contact.email || undefined,
-    phone: contact.phone || undefined,
-  })
-
-  const ghlContactId = ghlSync.contactId || params.contactId
-
-  // Create calendar event in GHL
-  const result = await createGHLCalendarEvent({
-    contactId: ghlContactId,
-    calendarId: params.calendarId,
-    title: params.title,
-    startTime: params.startTime,
-    endTime: params.endTime,
-    meetingType: params.meetingType,
-    notes: params.notes,
-    assignedUserId: params.assignedUserId,
-  })
-
-  // Log locally
-  if (result.success) {
-    await supabaseService.logActivity({
-      contact_id: params.contactId,
-      activity_type: "appointment_scheduled",
-      description: `${params.title} scheduled for ${new Date(params.startTime).toLocaleString()}`,
-      metadata: {
-        ghl_event_id: result.eventId,
-        ghl_contact_id: ghlContactId,
-        meeting_type: params.meetingType,
-        mock: result.mock,
-      },
-    })
-  }
-
-  return result
-}
-
 // =====================================================
 // TRIGGER GHL AUTOMATION
 // =====================================================
-
-export async function triggerAutomation(params: {
-  contactId: string
-  workflowId: string
-  eventName?: string
-  eventData?: Record<string, any>
-}) {
-  const contact = await supabaseService.getContactById(params.contactId)
-
-  if (!contact) {
-    return { success: false, error: "Contact not found" }
-  }
-
-  // Sync to GHL
-  const ghlSync = await syncContactToGHL({
-    firstName: contact.first_name,
-    lastName: contact.last_name,
-    email: contact.email || undefined,
-    phone: contact.phone || undefined,
-  })
-
-  const ghlContactId = ghlSync.contactId || params.contactId
-
-  // Trigger workflow
-  const result = await triggerGHLWorkflow({
-    contactId: ghlContactId,
-    workflowId: params.workflowId,
-    eventData: params.eventData,
-  })
-
-  // Log locally
-  await supabaseService.logActivity({
-    contact_id: params.contactId,
-    activity_type: "workflow_triggered",
-    description: `GHL workflow ${params.workflowId} triggered${params.eventName ? ` (${params.eventName})` : ""}`,
-    metadata: {
-      workflow_id: params.workflowId,
-      event_name: params.eventName,
-      ghl_contact_id: ghlContactId,
-      mock: result.mock,
-    },
-  })
-
-  return result
-}
 
 // =====================================================
 // SEND NOTIFICATION TO AGENT (Push/SMS/Email)
@@ -521,23 +475,14 @@ export async function sendNotificationToAgent(
   }
 
   // Write in-app notification to notifications table
-  const { data: notifRecord, error: notifError } = await supabaseService.client
-    .from("notifications")
-    .insert({
-      user_id: userId,
-      type: "agent_notification",
-      title: notification.title,
-      body: notification.message,
-      priority: notification.priority || "medium",
-      is_read: false,
-      channel: "in_app",
-    })
-    .select("id")
-    .single()
-
-  if (notifError) {
-    console.error("[v0] Failed to write notification:", notifError.message)
-  }
+  const notifRecord = await supabaseService.createNotification({
+    user_id: userId,
+    type: "agent_notification",
+    title: notification.title,
+    body: notification.message,
+    priority: notification.priority || "medium",
+    channel: "in_app",
+  })
 
   // Log to activity table
   await supabaseService.logActivity({
@@ -580,11 +525,15 @@ export async function sendNotificationToAgent(
 /** notifications.type for tenant-internal team announcements. */
 const TEAM_ANNOUNCEMENT_TYPE = "team_announcement"
 
-const BROADCAST_ADMIN_ROLES = new Set(["broker", "admin", "super_admin", "superadmin", "broker_owner", "broker_admin"])
+// SCOPE LADDER (kept inline — team_lead is deliberately forced to team scope,
+// so this must not widen to the shared operational roster): 'superadmin' /
+// 'super_admin' removed — tested against users.user_type, where 0 live rows
+// store either spelling.
+const BROADCAST_ADMIN_ROLES = new Set(["broker", "admin", "broker_owner", "broker_admin"])
 
 /** Staff seats (users.user_type) included in a whole-brokerage announcement
  *  alongside every active agent. */
-const BROKERAGE_STAFF_TYPES = ["broker", "admin", "tc", "coordinator"] as const
+const BROKERAGE_STAFF_TYPES = ["broker", "admin", "tc"] as const
 
 async function resolveAnnouncementRecipients(
   svc: any,

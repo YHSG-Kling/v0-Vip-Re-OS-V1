@@ -13,13 +13,22 @@
 //
 // Pure core (testable); the service actions (submit/approve/reject) live in app/actions/vendor-verification.
 
+import { VENDOR_CATEGORIES } from "@/lib/kernel/vendor-categories"
+
 export const AUTO_OK_THRESHOLD = 70
-export const REJECT_HINT_THRESHOLD = 40
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: REJECT_HINT_THRESHOLD.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const REJECT_HINT_THRESHOLD = 40
 
 export type VerificationRecommendation = "auto_ok" | "review" | "reject_recommended"
 
 /** The allowed service categories for the operational bench (mirrors the vendors.category CHECK). */
-const VALID_CATEGORIES = new Set(["Lender", "Inspector", "Title Company", "Contractor", "Stager", "Other"])
+const VALID_CATEGORIES = new Set<string>(VENDOR_CATEGORIES)
 
 export interface VendorApplicationSignals {
   name: string | null | undefined
@@ -142,7 +151,16 @@ export async function runVendorApprovalQueue(svc: Svc, params: { brokerageId: st
     const isDuplicate = activeKeys.has(`${(v.name ?? "").trim().toLowerCase()}|${(v.category ?? "").trim().toLowerCase()}`)
     const result = scoreVendorApplication({ name: v.name, email: v.email, phone: v.phone, website: v.website, category: v.category, estimatedTurnaroundDays: v.estimated_turnaround_days, isDuplicate })
     if (v.ai_verification_score == null) {
-      await svc.from("vendors").update({ ai_verification_score: result.score, verification_flags: result.flags }).eq("id", v.id)
+      // The score is what the broker's approval brief ranks on. A refused write
+      // means this vendor is re-scored on every run and the stored score the
+      // approval UI reads stays null, while the brief below shows a number.
+      const { error: scoreError } = await svc.from("vendors").update({ ai_verification_score: result.score, verification_flags: result.flags }).eq("id", v.id)
+      if (scoreError) {
+        console.error(
+          `[vendor-verification] vendors verification-score write REFUSED for vendor ${v.id} — the stored score stays null:`,
+          scoreError.message,
+        )
+      }
     }
     scored.push({ id: v.id, name: v.name ?? "A vendor", score: v.ai_verification_score ?? result.score, rec: result.recommendation })
   }

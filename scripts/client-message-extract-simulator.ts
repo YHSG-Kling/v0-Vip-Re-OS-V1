@@ -25,6 +25,9 @@ function main() {
   console.log("\n[gated set]")
   for (const k of ["listing_concierge", "deal_coordinator", "shopping_agent", "sphere_of_influence", "campaign_orchestrator"])
     check(`${k} is gated`, GATED_CLIENT_MANAGERS.has(k))
+  // "marketing_agent" is not a ManagerKey (m618: retired, survivor campaign_orchestrator)
+  // but stays a valid managed_agents.agent_kind execution-identity (lib/agents/marketing-agent.ts)
+  // whose resolutions[] output rides marketing_agent_actions, never this client-message gate.
   check("marketing_agent is NOT gated (internal resolutions only)", !GATED_CLIENT_MANAGERS.has("marketing_agent"))
 
   console.log("\n[per-manager extraction]")

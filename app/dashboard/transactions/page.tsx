@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getTransactions } from "@/app/actions/transactions"
+import { PortfolioRiskScan } from "./portfolio-risk-scan"
+import { DealsLostBoard } from "./deals-lost-board"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -43,19 +45,30 @@ export default async function TransactionsPage() {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  const agentId = agentRecord?.id ?? user.id
+  // NOT `?? user.id` (m348). transactions.agent_id FKs agents, so the users id
+  // matched nothing and this page rendered "no transactions" — indistinguishable
+  // from a genuinely empty pipeline. Say what is actually true instead. The
+  // notice mirrors app/dashboard/goals/page.tsx rather than inventing a new one.
+  const agentId = agentRecord?.id ?? ""
   const brokerageId = agentRecord?.brokerage_id ?? null
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your transactions.
+      </div>
+    )
+  }
 
   const { data: brokerageInfo } = brokerageId
     ? await supabase.from("brokerages").select("name, logo_url").eq("id", brokerageId).maybeSingle()
     : { data: null }
 
   // Fetch transactions using server action (proper architecture pattern)
-  // getTransactions returns { success, data } or { success: false, error }
-  const txResult = await getTransactions({
-    agent_id: agentId,
-    ...(brokerageId ? { brokerage_id: brokerageId } : {}),
-  })
+  // getTransactions returns { success, data } or { success: false, error }.
+  // Agent and tenant are resolved from the SESSION inside the action now — this
+  // page no longer hands them in, because an argument the action ignores reads
+  // as though it were honoured.
+  const txResult = await getTransactions()
   const transactions = (txResult && "data" in txResult ? txResult.data : null) ?? []
 
   // Fetch deal_health_scores separately — no FK join supported from transactions
@@ -123,6 +136,10 @@ export default async function TransactionsPage() {
             </div>
           )}
         </div>
+
+        {/* AI portfolio risk scan — reads the whole in-escrow book at once and
+            writes ai_risk_level / ai_primary_risk back onto each deal. */}
+        <PortfolioRiskScan agentId={agentId} />
 
         {/* Status Radar */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -333,6 +350,11 @@ export default async function TransactionsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Deals Lost — the read half of the deal-autopsy learning lane
+            (deal_autopsy_observations). The writer runs on every lost deal;
+            until this board its only reader was its own idempotency check. */}
+        <DealsLostBoard />
       </div>
     </div>
   )

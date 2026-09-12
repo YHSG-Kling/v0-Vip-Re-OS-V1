@@ -40,7 +40,7 @@ function main() {
   console.log("\n[wiring — membership set at signup, disposition drives CDA broker-side steps + auto-dispute]")
   const signup = src("app/actions/auth/signup-brokerage.ts")
   check("signup writes brokerage_on_platform / team_on_platform (solo → checkbox, org → true)", /brokerage_on_platform:\s*input\.tier === "solo_agent"/.test(signup))
-  const form = src("app/signup/signup-form.tsx")
+  const form = src("app/get-started/trial-funnel-form.tsx")
   check("the signup form shows the membership checkboxes for solo agents", /tier === "solo_agent"[\s\S]*?My brokerage is on the platform/.test(form))
 
   const portal = src("app/actions/cda-portal.ts")

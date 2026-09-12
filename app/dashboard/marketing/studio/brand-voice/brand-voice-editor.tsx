@@ -23,7 +23,9 @@ const TONE_OPTIONS = [
   { value: "authoritative", label: "Authoritative" },
   { value: "conversational",label: "Conversational" },
   { value: "luxury",        label: "Luxury / Aspirational" },
-  { value: "educational",   label: "Educational" },
+  { value: "friendly",      label: "Friendly" },
+  // "educational" was offered here and the column has never accepted it, so
+  // picking it silently failed the save. friendly is the value that exists.
 ]
 
 const FORMALITY_OPTIONS = [

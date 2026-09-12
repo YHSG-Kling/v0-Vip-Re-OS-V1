@@ -159,7 +159,7 @@ async function main() {
 
     // ── CROSSING past client: closed deal, big equity, low original→current rate gap. ──
     const { data: pc } = await svc.from("contacts").insert({
-      brokerage_id: brokerageId, first_name: TAG, last_name: "PastClient", contact_type: "past_client",
+      brokerage_id: brokerageId, first_name: TAG, last_name: "PastClient", contact_type: "lifetime_customer",
     }).select("id").single()
     cleanup.push({ table: "contacts", id: (pc as any).id })
     const contactId = (pc as any).id
@@ -236,7 +236,7 @@ async function main() {
 
     // ── BELOW-THRESHOLD past client: small equity, no rate gap → NO action. ──
     const { data: pc2 } = await svc.from("contacts").insert({
-      brokerage_id: brokerageId, first_name: `${TAG}low`, last_name: "PastClient", contact_type: "past_client",
+      brokerage_id: brokerageId, first_name: `${TAG}low`, last_name: "PastClient", contact_type: "lifetime_customer",
     }).select("id").single()
     cleanup.push({ table: "contacts", id: (pc2 as any).id })
     const contactId2 = (pc2 as any).id

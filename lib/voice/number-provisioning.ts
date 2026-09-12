@@ -5,7 +5,7 @@
 // "Add Number") and the staff-context action (app/actions/superadmin/
 // number-provisioning.ts, fleet numbers console) — run THIS pipeline:
 //
-//   search available numbers → purchase → persist vapi_phone_numbers row →
+//   search available numbers → purchase → persist tenant_phone_numbers row →
 //   phone_number_events audit line → (optionally) bind the number's webhooks
 //   to the Twilio-native AI lane (bindNumberToTwilioLane).
 //
@@ -22,7 +22,7 @@ const NOT_CONFIGURED = "Twilio not configured (missing TWILIO_ACCOUNT_SID / AUTH
 
 // ─── The ONE phone_number_events writer ──────────────────────────────────────
 
-export type PhoneNumberEventType = "purchased" | "manually_added" | "ported_in" | "released" | "failed" | "vapi_registered"
+export type PhoneNumberEventType = "purchased" | "manually_added" | "ported_in" | "released" | "failed" | "webhooks_bound"
 
 /** Insert one phone_number_events audit line (best-effort — audit never masks
  *  the underlying outcome; callers that need audit-or-fail check the return). */
@@ -36,7 +36,6 @@ export async function logPhoneNumberEvent(
     source?: string | null
     agentId?: string | null
     twilioSid?: string | null
-    vapiNumberId?: string | null
     costUsd?: number | null
     notes?: string | null
   },
@@ -51,7 +50,6 @@ export async function logPhoneNumberEvent(
     event_type: ev.eventType,
     source: ev.source ?? null,
     twilio_sid: ev.twilioSid ?? null,
-    vapi_number_id: ev.vapiNumberId ?? null,
     cost_usd: ev.costUsd ?? null,
     notes: ev.notes ?? null,
   }), { flow: "number_provisioning", table: "phone_number_events", brokerageId: ev.brokerageId })
@@ -130,16 +128,35 @@ export interface ProvisionNumberParams {
   eventNotes?: string | null
   /** Point the number's VoiceUrl/SmsUrl/StatusCallback at our AI lane after purchase. */
   bindToVoiceLane?: boolean
+  /** TENANT purchases enforce the plan's phone allowance (bundle → metered
+   *  overage → hard cap); the staff fleet console leaves this off (staff
+   *  provision on a tenant's behalf and see the numbers console directly). */
+  enforceTenantAllowance?: boolean
 }
 
 export type ProvisionNumberResult =
-  | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; credTier: TwilioCreds["tier"]; bound: boolean; bindNote?: string }
-  | { ok: false; error: string; notConfigured?: boolean }
+  | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; credTier: TwilioCreds["tier"]; bound: boolean; bindNote?: string; billing?: "included" | "overage"; monthlyOverageCents?: number }
+  | { ok: false; error: string; notConfigured?: boolean; capReached?: boolean }
 
 /** The full purchase pipeline — the ONE implementation both the tenant action
  *  and the staff console run. Failures are honest: a purchase that lands but
  *  fails to save is logged 'failed' with a reconcile note, never swallowed. */
 export async function provisionNumber(svc: any, params: ProvisionNumberParams): Promise<ProvisionNumberResult> {
+  // 0. Plan-allowance gate (tenant purchases only). The bundle is metered resale:
+  //    inside the included count is free, beyond it is billable overage, and the
+  //    hard cap is a runaway backstop — the ONLY case that blocks a purchase.
+  let billing: "included" | "overage" | undefined
+  let monthlyOverageCents = 0
+  if (params.enforceTenantAllowance) {
+    const { evaluateTenantNumberProvisioning } = await import("@/lib/billing/phone-plan-resolve")
+    const verdict = await evaluateTenantNumberProvisioning(svc, params.brokerageId)
+    if (!verdict.allowed) {
+      return { ok: false, error: verdict.reason ?? "Your plan's active-number limit has been reached", capReached: true }
+    }
+    billing = verdict.billing
+    monthlyOverageCents = verdict.monthlyOverageCents
+  }
+
   const creds = await resolveCreds(svc, params.brokerageId)
   if (!creds) return { ok: false, error: NOT_CONFIGURED, notConfigured: true }
 
@@ -172,15 +189,16 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
   }
   const purchasedSid = purchaseRes.data?.sid ?? null
 
-  // 3. Persist the number row (vapi_phone_numbers is the inventory ledger;
-  //    vapi_phone_number_id stays null until an inbound binding registers it).
-  const { data: inserted, error: saveErr } = await svc.from("vapi_phone_numbers").insert({
+  // 3. Persist the number row. twilio_number_sid is the Twilio
+  //    IncomingPhoneNumbers .sid — the handle bindNumberToTwilioLane needs to
+  //    register this number's webhooks, so it is written at purchase time.
+  const { data: inserted, error: saveErr } = await svc.from("tenant_phone_numbers").insert({
     agent_user_id: params.scopeType === "agent" ? params.agentUserId ?? null : null,
     brokerage_id: params.brokerageId,
     scope_type: params.scopeType,
     phone_number: targetNumber,
     phone_digits: targetNumber.replace(/\D/g, ""),
-    byoc_credential_id: purchasedSid,
+    twilio_number_sid: purchasedSid,
     number_source: "byoc_twilio",
     is_active: true,
   }).select("id").maybeSingle()
@@ -194,11 +212,15 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
   }
   const numberRowId = (inserted as any)?.id ?? null
 
-  // 4. The audit line.
+  // 4. The audit line — the billing disposition (bundle vs metered overage) is
+  //    stamped so finance can trace which numbers ride the plan and which bill.
+  const billingNote = billing
+    ? `plan:${billing}${billing === "overage" ? ` (+${(monthlyOverageCents / 100).toFixed(2)}/mo)` : ""}`
+    : null
   await logPhoneNumberEvent(svc, {
     brokerageId: params.brokerageId, agentId: params.agentId, phoneNumber: targetNumber,
     eventType: "purchased", source: params.eventSource, twilioSid: purchasedSid,
-    costUsd: 1.15, notes: params.eventNotes ?? null,
+    costUsd: 1.15, notes: [params.eventNotes, billingNote].filter(Boolean).join(" · ") || null,
   })
 
   // 5. Optional webhook binding onto the Twilio-native AI lane (best-effort:
@@ -214,7 +236,7 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
     bindNote = "Purchased + saved, but the row id was not returned — bind the number from its row later"
   }
 
-  return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote }
+  return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote, billing, monthlyOverageCents }
 }
 
 // ─── Release (Twilio release → deactivate row → event) ───────────────────────
@@ -231,8 +253,8 @@ export async function releaseNumber(
   svc: any,
   params: { brokerageId: string; numberRowId: string; eventSource?: string | null; notes?: string | null },
 ): Promise<ReleaseNumberResult> {
-  const { data: row } = await svc.from("vapi_phone_numbers")
-    .select("id, brokerage_id, phone_number, byoc_credential_id, is_active")
+  const { data: row } = await svc.from("tenant_phone_numbers")
+    .select("id, brokerage_id, phone_number, twilio_number_sid, is_active")
     .eq("id", params.numberRowId).maybeSingle()
   const n = row as any
   if (!n) return { ok: false, error: "Number row not found" }
@@ -241,7 +263,7 @@ export async function releaseNumber(
 
   let twilioReleased = false
   let note: string | undefined
-  if (n.byoc_credential_id) {
+  if (n.twilio_number_sid) {
     const creds = await resolveCreds(svc, params.brokerageId)
     if (!creds) {
       // A Twilio-owned number cannot be honestly released without creds.
@@ -249,7 +271,7 @@ export async function releaseNumber(
     }
     const res = await callConnector({
       connector: "twilio", baseUrl: "https://api.twilio.com",
-      path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.byoc_credential_id}.json`,
+      path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.twilio_number_sid}.json`,
       method: "DELETE",
       auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
     })
@@ -264,11 +286,11 @@ export async function releaseNumber(
     note = "No Twilio SID on file (manually added / ported number) — DB-only release"
   }
 
-  const { error: updErr } = await svc.from("vapi_phone_numbers").update({ is_active: false }).eq("id", n.id)
+  const { error: updErr } = await svc.from("tenant_phone_numbers").update({ is_active: false }).eq("id", n.id)
   if (updErr) {
     await logPhoneNumberEvent(svc, {
       brokerageId: params.brokerageId, phoneNumber: n.phone_number,
-      eventType: "failed", source: params.eventSource, twilioSid: n.byoc_credential_id,
+      eventType: "failed", source: params.eventSource, twilioSid: n.twilio_number_sid,
       notes: `Number ${twilioReleased ? "RELEASED on Twilio" : "release attempted"} but the row deactivation failed: ${updErr.message} -- reconcile manually`,
     })
     return { ok: false, error: `Number ${twilioReleased ? "released on Twilio" : "release attempted"} but the row deactivation failed (${updErr.message}) -- reconcile manually` }
@@ -276,7 +298,7 @@ export async function releaseNumber(
 
   await logPhoneNumberEvent(svc, {
     brokerageId: params.brokerageId, phoneNumber: n.phone_number,
-    eventType: "released", source: params.eventSource, twilioSid: n.byoc_credential_id,
+    eventType: "released", source: params.eventSource, twilioSid: n.twilio_number_sid,
     notes: [params.notes, note].filter(Boolean).join(" · ") || null,
   })
   return { ok: true, phoneNumber: n.phone_number, twilioReleased, note }

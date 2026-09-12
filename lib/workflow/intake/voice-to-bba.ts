@@ -139,7 +139,15 @@ Now extract from this transcript:
 
 `
 
-export async function extractBBAIntake(input: { text: string }): Promise<VoiceToBBAResult> {
+export async function extractBBAIntake(input: {
+  text: string
+  /** Tenant + actor for the AI cost ledger. Every caller resolves both
+   *  server-side — the assistant tool-call route from its session row, the
+   *  voice-assistant actions and the workflow route from `users.brokerage_id`
+   *  for the authenticated user. Never a request body (CLAUDE.md §4). */
+  brokerageId?: string | null
+  userId?: string | null
+}): Promise<VoiceToBBAResult> {
   const intake = emptyIntake()
 
   if (!input.text || input.text.trim().length < 5) {
@@ -154,6 +162,8 @@ export async function extractBBAIntake(input: { text: string }): Promise<VoiceTo
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.userId ?? null,
       feature: "offer_data_extraction",       // routes to gpt-4o per AI_TASK_ROUTING
       system: "You are a structured-data extraction system for real estate contracts. Output strict JSON only.",
       prompt: EXTRACTION_PROMPT + input.text,

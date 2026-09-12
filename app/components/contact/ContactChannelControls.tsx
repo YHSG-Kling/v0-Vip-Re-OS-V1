@@ -13,11 +13,12 @@
  * Renders as a compact panel suitable for sidebar or tab use.
  */
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { PhoneOff, Phone, Mail, MessageSquare, MapPin, Facebook, Instagram, Linkedin, Twitter, ChevronDown, Save, Loader2, AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   updateChannelControls,
+  getContactChannelControls,
   type PreferredChannel,
   type SocialHandles,
 } from "@/app/actions/contacts/update-channel-controls"
@@ -46,7 +47,7 @@ const CHANNEL_OPTIONS: {
     value: "phone",
     label: "Phone call",
     icon: <Phone size={14} />,
-    description: "AI ISA voice call via VAPI",
+    description: "AI ISA voice call",
   },
   {
     value: "direct_mail",
@@ -107,6 +108,58 @@ export default function ContactChannelControls({
   const isSocialChannel = ["facebook", "instagram", "linkedin", "twitter"].includes(
     preferredChannel
   )
+
+  // ── HYDRATE FROM THE RECORD ────────────────────────────────────────────────
+  //
+  // THE WRITE HALF OF THIS PANEL WAS LIVE AND THE READ HALF WAS NOT.
+  // `getContactChannelControls` — the read written for exactly this component —
+  // had no caller, and the only mount (the inbox ContactDetailPane) feeds
+  // `initialPreferredChannel` / `initialSocialHandles` from a `conversations`
+  // query that selects NEITHER column. So both props arrived undefined on every
+  // render and the panel opened on its "email" / no-handles defaults for every
+  // contact, whatever was actually stored — and pressing Save then WROTE those
+  // defaults back over the contact's real preference.
+  //
+  // The server read is the authority. The initial* props are kept as the
+  // pre-hydration paint only. Hydration runs once per contactId — Save is
+  // disabled until it lands, so the defaults can no longer be written back
+  // over a real preference by someone who clicked before the read returned.
+  const [hydrated, setHydrated] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setHydrated(false)
+    setLoadError(null)
+    void (async () => {
+      const current = await getContactChannelControls(contactId)
+      if (cancelled) return
+      // A REFUSED READ IS NOT A HYDRATION. `ok: false` means the record was
+      // never read — forbidden, or the ownership check itself was refused. The
+      // old shape could not say that: it returned `callStopFlag: false` for a
+      // refusal, so an outage painted the call-suppression switch OFF and then
+      // ARMED Save, offering to write that "calls are allowed" back. Leaving
+      // `hydrated` false keeps Save disabled and says why, which is the only
+      // honest thing a panel can do when it does not know the record's state.
+      if (!current.ok) {
+        setLoadError(current.error ?? "Could not load channel preferences.")
+        return
+      }
+      setLoadError(null)
+      // A null field is "no such preference" — not a reason to overwrite what
+      // the caller passed in, so it leaves the prop-derived value standing.
+      if (current.preferredChannel) setPreferredChannel(current.preferredChannel)
+      if (current.socialHandles) setSocialHandles(current.socialHandles)
+      setCallStopFlag(current.callStopFlag)
+      setHydrated(true)
+    })()
+    return () => {
+      cancelled = true
+    }
+    // `dirty` is deliberately NOT a dependency — re-running on every keystroke
+    // is what would clobber the edit this guard exists to protect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactId])
 
   function handleSave() {
     startTransition(async () => {
@@ -280,16 +333,20 @@ export default function ContactChannelControls({
         <button
           type="button"
           onClick={handleSave}
-          disabled={isPending}
+          disabled={isPending || !hydrated}
           className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
         >
-          {isPending ? (
+          {isPending || !hydrated ? (
             <Loader2 size={12} className="animate-spin" />
           ) : (
             <Save size={12} />
           )}
-          Save preferences
+          {hydrated ? "Save preferences" : loadError ? "Unavailable" : "Loading preferences…"}
         </button>
+
+        {loadError && !hydrated && (
+          <p className="text-[11px] font-medium text-destructive">{loadError}</p>
+        )}
 
         {saveMsg && (
           <p

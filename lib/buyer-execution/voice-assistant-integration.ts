@@ -229,6 +229,25 @@ async function searchPropertiesVoice(
 }
 
 /**
+ * PURE. The property the buyer NAMED, straight out of what they said — or null.
+ *
+ * Deliberately conservative: it recognises a street-address shape (a house number
+ * followed by a street word) and nothing else. It does NOT try to resolve the
+ * property to a listing row — that is entity resolution's job, and guessing a listing
+ * from a voice transcript is how the wrong home ends up on a showing request.
+ * A null here simply means "ask", which is the behaviour that was always there.
+ */
+function extractSpokenPropertyReference(transcript: string): string | null {
+  const said = (transcript ?? "").trim()
+  if (!said) return null
+  const m = said.match(
+    /\b\d{1,6}\s+[A-Za-z0-9'.-]+(?:\s+[A-Za-z0-9'.-]+){0,3}\s+(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|court|ct|place|pl|way|terrace|ter|circle|cir|parkway|pkwy)\b\.?/i,
+  )
+  if (!m) return null
+  return m[0].replace(/\.$/, "").trim()
+}
+
+/**
  * Handle tour scheduling via voice
  * ENFORCES financial verification gate
  */
@@ -266,13 +285,30 @@ async function scheduleTourVoice(
   }
   
   // 3. Delegate to showing management system
-  // NOTE: This would integrate with actual showing management system
-  // For now, return guidance
+  //
+  // `transcript` — WHAT THE BUYER ACTUALLY SAID — was accepted by this handler and
+  // read by NOTHING until 2026-08-24, while its sibling `searchPropertiesVoice` above
+  // hands the same string straight to the search. So a buyer who said "book me a tour
+  // of 412 Oak Street on Saturday" was answered with "Can you tell me which property
+  // you're interested in visiting?" — the assistant asking for the one thing it had
+  // just been told. On a voice surface that is the difference between an assistant and
+  // a form.
+  //
+  // The property reference is not RESOLVED here — that is entity resolution's job
+  // (app/actions/voice-assistant/core/resolve-entities.ts) and this handler is still
+  // the guidance stub its note says it is. What changes is that the spoken reply stops
+  // discarding the utterance, and the reference travels in displayData so the step
+  // that does the booking does not have to ask a second time.
+  const spokenProperty = extractSpokenPropertyReference(transcript)
+
   return {
     success: true,
-    spokenResponse: "I can help you schedule a tour! Can you tell me which property you're interested in visiting? You can say the address or describe the property.",
+    spokenResponse: spokenProperty
+      ? `I can help you schedule a tour of ${spokenProperty}. Let me get that in front of your agent — what day and time work for you?`
+      : "I can help you schedule a tour! Can you tell me which property you're interested in visiting? You can say the address or describe the property.",
     displayData: {
       canTour: true,
+      spokenPropertyReference: spokenProperty,
       nextAction: 'property_selection',
     }
   }

@@ -9,7 +9,10 @@ import { listOnboardingSteps } from "@/lib/kernel"
 import type { OnboardingStepRow } from "@/lib/kernel"
 import { OnboardingStepsClient } from "./OnboardingStepsClient"
 
-const ADMIN_ROLES = ["admin", "broker", "superadmin"] as const
+// TRUE ADMIN GATE (operational: onboarding) — repointed to the ONE tenant
+// roster, matching the repointed action gate in app/actions/admin/onboarding-steps.ts.
+// 'superadmin' was dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export default async function OnboardingStepsAdminPage() {
   const supabase = await createClient()
@@ -25,7 +28,7 @@ export default async function OnboardingStepsAdminPage() {
     .single()
 
   if (userError || !userRow) redirect("/login")
-  if (!(ADMIN_ROLES as ReadonlyArray<string>).includes(userRow.user_type)) {
+  if (!isAdminOrBroker({ user_type: userRow.user_type })) {
     redirect("/dashboard")
   }
 

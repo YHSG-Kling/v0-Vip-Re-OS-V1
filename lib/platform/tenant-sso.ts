@@ -32,11 +32,18 @@ export type SsoDomainValidation = { ok: true; domain: string } | { ok: false; er
 
 const LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: PUBLIC_EMAIL_DOMAINS.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /**
  * Public consumer email providers — an SSO connection claims every login on
  * its domain, so a shared public domain can never belong to one brokerage.
  */
-export const PUBLIC_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
+const PUBLIC_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
   "gmail.com", "googlemail.com",
   "yahoo.com", "ymail.com",
   "outlook.com", "hotmail.com", "live.com", "msn.com",
@@ -44,7 +51,8 @@ export const PUBLIC_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
   "aol.com",
 ])
 
-export const PUBLIC_DOMAIN_ERROR = (domain: string) =>
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+const PUBLIC_DOMAIN_ERROR = (domain: string) =>
   `${domain} is a public email provider — SSO connects your brokerage's OWN identity provider to a domain ` +
   "your company controls (e.g. yourbrokerage.com). Everyone on a public domain would be claimed by your " +
   "connection, so public inbox domains can't be used."

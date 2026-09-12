@@ -14,6 +14,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
+import { STATUS_AT_LISTING_AGREEMENT_SIGNED } from "@/lib/listings/listing-status-sync"
 
 export const complianceListingAutoCreateChain: WorkflowChain = {
   key: "compliance-listing-auto-create",
@@ -56,6 +57,102 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           .maybeSingle()
         if (!agent) return { success: false, error: "Agent profile not found" }
 
+        // ── ADOPT THE DRAFT BEFORE CREATING ANYTHING ──────────────────────────
+        // Two doors open a listing and BOTH are legitimate:
+        //   · the agent runs the New Listing wizard first, which parks a DRAFT row
+        //     (createListingRecord → status='draft', LISTING_AGREEMENT_INITIATED)
+        //     so the agreement and its forms have something to hang off;
+        //   · the signed agreement simply arrives, with no draft ahead of it —
+        //     the "agent never manually clicks Create Listing" path.
+        //
+        // A bare INSERT serves only the second door. Once the wizard parks a draft,
+        // the same property would end up with TWO listing rows — the draft the agent
+        // has been working in, and a second one the seller's portal, the media
+        // pipeline and the MLS-readiness gate would each pick differently. So look
+        // for this seller's draft at THIS brokerage first and promote it in place.
+        const draftAddress = String(data.propertyAddress ?? "").trim().toLowerCase()
+        const { data: draftCandidates } = await svc
+          .from("listings")
+          .select("id, address")
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("seller_contact_id", ctx.contactId)
+          .eq("status", "draft")
+          .order("created_at", { ascending: false })
+
+        const existingDraft = (draftCandidates ?? []).find(
+          (l) => String(l.address ?? "").trim().toLowerCase() === draftAddress,
+        )
+
+        if (existingDraft) {
+          // Payload hoisted so the WHERE clause sits directly against .from() —
+          // the tenant filters below are the point of this write, not a footnote
+          // buried under twenty lines of column assignments.
+          const promotion = {
+            list_price:      data.listPrice,
+            listing_date:    data.listDate ?? null,
+            expiration_date: data.expirationDate ?? null,
+            commission_rate: data.commissionRate ?? null,
+            city:            data.city ?? null,
+            state:           data.state ?? null,
+            zip:             data.zipCode ?? null,
+            status:          STATUS_AT_LISTING_AGREEMENT_SIGNED,
+            lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
+            metadata: {
+              source_document_id: ctx.metadata.document_id,
+              extracted_terms: data,
+              workflow_run_id: ctx.runId,
+              promoted_from_draft: true,
+            },
+            updated_at: new Date().toISOString(),
+          }
+
+          const { data: promoted, error: promoteErr } = await svc
+            .from("listings")
+            .update(promotion)
+            .eq("id", existingDraft.id)
+            // The id came from a brokerage-scoped read, but the WRITE carries the
+            // tenant anchor too — a promotion must never be able to reach across
+            // brokerages even if the lookup above is one day loosened.
+            .eq("brokerage_id", ctx.brokerageId)
+            // Re-assert the draft state in the WHERE clause: if a concurrent run
+            // already promoted this row, 0 rows come back and we do not double-fire.
+            .eq("status", "draft")
+            .select("id")
+            .maybeSingle()
+
+          if (promoteErr) {
+            return { success: false, error: `Draft promotion failed: ${promoteErr.message}` }
+          }
+          if (!promoted) {
+            // Already promoted by another run — the listing exists and is signed.
+            // Not an error; hand the id downstream so notify_agent still resolves.
+            return { success: true, output: { listingId: existingDraft.id, adopted: true, alreadyPromoted: true } }
+          }
+
+          const { KernelEvent } = await import("@/lib/kernel/events")
+          // One emit does the audit row + fan-out (was a direct insert whose outcome was
+          // swallowed by `.then(() => {})`, then a separate fan-out call).
+          try {
+            const { emitKernelEvent } = await import("@/lib/kernel/emit")
+            const r = await emitKernelEvent({
+              event: KernelEvent.LISTING_CREATED,
+              brokerageId: ctx.brokerageId,
+              entityType: "listing",
+              entityId: existingDraft.id,
+              sellerContactId: ctx.contactId,
+              listingId: existingDraft.id,
+              agentUserId: ctx.agentUserId,
+              actorUserId: ctx.agentUserId ?? null,
+              metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, promoted_from_draft: true },
+            })
+            if (r.error) console.error("[compliance-listing-auto-create] LISTING_CREATED row refused (non-fatal):", r.error)
+          } catch (err: any) {
+            console.error("[compliance-listing-auto-create] LISTING_CREATED fan-out failed (non-fatal):", err?.message ?? err)
+          }
+
+          return { success: true, output: { listingId: existingDraft.id, adopted: true } }
+        }
+
         const { data: listing, error } = await svc
           .from("listings")
           .insert({
@@ -70,10 +167,16 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             listing_date: data.listDate ?? null,
             expiration_date: data.expirationDate ?? null,
             commission_rate: data.commissionRate ?? null,
-            // listings_status_check allows coming_soon|active|pending|sold|expired|
-            // withdrawn — a freshly auto-created (signed, pre-MLS) listing is
-            // "coming_soon". ("pending_mls" violated the constraint → insert threw.)
-            status: "coming_soon",
+            // A freshly auto-created (signed, pre-MLS) listing carries the status the
+            // owner's ruling puts on a listing whose compliance gate has passed, taken
+            // from the one place that spells it (§6) instead of a literal here.
+            // The comment this replaced listed SIX values as "listings_status_check
+            // allows …"; the live CHECK admits TEN (draft, listing_signed, coming_soon,
+            // active, pending, withdrawn, cancelled, off_market, expired, sold). A
+            // hand-copied constraint list is a claim about the database that ages badly
+            // — the same defect the deleted 7-value ListingStatus in
+            // lib/listings/listing-status-sync.ts carried (CLAUDE.md §3).
+            status: STATUS_AT_LISTING_AGREEMENT_SIGNED,
             lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
             created_via: "compliance_auto_create",
             metadata: {
@@ -93,18 +196,10 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
         // kernel createListingRecord emits. Direct-insert chains otherwise skip it,
         // so auto-created listings never kicked off marketing/portal automation.
         const { KernelEvent } = await import("@/lib/kernel/events")
-        await svc.from("lifecycle_events").insert({
-          entity_type: "listing",
-          entity_id: listing.id,
-          event_type: KernelEvent.LISTING_CREATED ?? "listing_created",
-          brokerage_id: ctx.brokerageId,
-          metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, created_via: "compliance_auto_create" },
-          created_at: new Date().toISOString(),
-        }).then(() => {})
-
+        // One emit does the audit row + fan-out (see the draft-promotion branch above).
         try {
-          const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-          await fanOutKernelEvent({
+          const { emitKernelEvent } = await import("@/lib/kernel/emit")
+          const r = await emitKernelEvent({
             event: KernelEvent.LISTING_CREATED,
             brokerageId: ctx.brokerageId,
             entityType: "listing",
@@ -112,8 +207,10 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             sellerContactId: ctx.contactId,
             listingId: listing.id as string,
             agentUserId: ctx.agentUserId,
-            metadata: { stage: "LISTING_AGREEMENT_SIGNED" },
+            actorUserId: ctx.agentUserId ?? null,
+            metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, created_via: "compliance_auto_create" },
           })
+          if (r.error) console.error("[compliance-listing-auto-create] LISTING_CREATED row refused (non-fatal):", r.error)
         } catch (err: any) {
           console.error("[compliance-listing-auto-create] LISTING_CREATED fan-out failed (non-fatal):", err?.message ?? err)
         }
@@ -147,7 +244,9 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           is_read: false,
         })
 
-        await svc.from("activities").insert({
+        // The record that compliance passing an agreement AUTO-CREATED a
+        // listing — the provenance of a row nobody typed.
+        const { error: autoCreateActivityError } = await svc.from("activities").insert({
           contact_id: ctx.contactId,
           brokerage_id: ctx.brokerageId,
           agent_user_id: ctx.agentUserId,
@@ -155,6 +254,9 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           description: "Listing record auto-created from compliance-passed listing agreement.",
           metadata: { listing_id: listingId, workflow_run_id: ctx.runId },
         })
+        if (autoCreateActivityError) {
+          console.error(`[compliance-listing-auto-create] listing_auto_created activity REJECTED for listing ${listingId} — the listing has no provenance record:`, autoCreateActivityError.message)
+        }
 
         return { success: true, output: { notified: true } }
       },

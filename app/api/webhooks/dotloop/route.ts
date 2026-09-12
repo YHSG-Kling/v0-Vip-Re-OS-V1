@@ -2,8 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { logEventAndTrigger } from "@/lib/events"
-import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
-import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { evaluateEnvelopeExecution } from "@/lib/forms/esign-execution-loop"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -97,6 +96,37 @@ export async function POST(request: NextRequest) {
         .select()
         .single()
 
+      // ── LOOP-LEVEL SIGNATURE-ANCHOR EXECUTION (closes the tagged→signed→verified
+      //    loop, lib/forms/esign-anchor-eval.ts::evalAnchorExecution) ───────────
+      //
+      // A dotloop `document.signed` event fires ONCE PER DOCUMENT, not once per
+      // loop. Every downstream "this deal's paperwork is ready" action — the
+      // offer's esign_status, the listing agreement's fully_executed_at, the
+      // voice-cockpit packet finalize — used to fire on the loop_id match alone,
+      // with NO check that every document in a multi-document loop had actually
+      // signed. The FIRST signer in a three-signature loop was enough to mark
+      // the whole packet "fully signed."
+      //
+      // TOMBSTONE (wave 47 lane FA, orphan doctrine §1.1 — merged onto a
+      // survivor): the inline gate + the three ready-writes (offer stamp,
+      // listing-agreement stamp, finalizeVoiceCockpitPacket) that used to live
+      // here are now lib/forms/esign-execution-loop.ts::evaluateEnvelopeExecution
+      // — the SAME gate, generalized so DocuSign/SkySlope/Authentisign/
+      // Brokermint/FormSimplicity tenants (owner ruling 2026-09-09: the
+      // provider comes from the tenant's SETTINGS, never assumed) get the exact
+      // same "every tracked document must be signed" invariant, not a
+      // Dotloop-only one. Also wired: app/api/webhooks/{docusign,skyslope,
+      // authentisign}/route.ts and lib/transactions/esign-doc-sync-sweep.ts
+      // (the autonomous half for Brokermint/FormSimplicity, which have no
+      // webhook at all).
+      const execution = await evaluateEnvelopeExecution(supabase as any, {
+        brokerageId: (doc?.brokerage_id as string | null) ?? "",
+        providerSource: "dotloop",
+        externalEnvelopeId: loop_id,
+        transactionId: (doc?.transaction_id as string | null) ?? null,
+      })
+      const loopFullyExecuted = execution.evaluated && execution.fullyExecuted
+
       if (!error && doc) {
         // Complete the signature packet keyed to THIS client_documents row —
         // the portal Sign button gates on it (owner rule: gone the moment ink lands).
@@ -107,15 +137,7 @@ export async function POST(request: NextRequest) {
           .is("completed_at", null)
           .then(() => {}, () => {})
 
-        // Check if all documents in the loop are signed
-        const { data: allDocs } = await supabase
-          .from("client_documents")
-          .select("status")
-          .eq("dotloop_loop_id", loop_id)
-
-        const allSigned = allDocs?.every((d) => d.status === "signed")
-
-        if (allSigned && doc.transaction_id) {
+        if (loopFullyExecuted && doc.transaction_id) {
           // Legacy event
           await logEventAndTrigger({
             event_type: "transaction.documents_complete",
@@ -143,89 +165,17 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // ── Esign completion: offers ──────────────────────────────────────────────
-      // If this loop_id matches an offer's esign_provider ref, mark it fully signed
+      // TOMBSTONE (wave 47 lane FA): the offer stamp, listing_agreement stamp
+      // and finalizeVoiceCockpitPacket call that used to live here — each
+      // gated on loopFullyExecuted, matching offers via the dead
+      // `esign_provider = loop_id` comparison (esign_provider is CHECK-
+      // constrained to provider NAMES, scripts/check-vocabularies.ts — that
+      // comparison could never match a real loop id) — now happen INSIDE
+      // evaluateEnvelopeExecution above (lib/forms/esign-execution-loop.ts,
+      // applyReadyWrites), matched correctly via offers.provider_envelope_id.
+      // execution.readyWritesApplied / execution.signalPublished report what
+      // it did; nothing further to do here for this event.
       if (loop_id) {
-        const { data: matchedOffer } = await supabase
-          .from("offers")
-          .select("id, contact_id")
-          .eq("esign_provider", loop_id)
-          .maybeSingle()
-
-        if (matchedOffer) {
-          await supabase
-            .from("offers")
-            .update({
-              esign_status:       "fully_signed",
-              esign_completed_at: now,
-            })
-            .eq("id", matchedOffer.id)
-
-          await logEventAndTrigger({
-            brokerage_id: "",
-            event_type: "buyer.offer.esign.completed",
-            user_id:    matchedOffer.contact_id,
-            payload:    { offerId: matchedOffer.id, loop_id, provider: "dotloop" },
-            source:     "webhook",
-            dedupe_key: `offer-esign-complete-${matchedOffer.id}`,
-          } as any)
-        }
-
-        // ── Esign completion: listing_agreements ─────────────────────────────
-        const { data: matchedAgreement } = await supabase
-          .from("listing_agreements")
-          .select("id, listing_id")
-          .eq("provider_ref", loop_id)
-          .maybeSingle()
-
-        if (matchedAgreement) {
-          await supabase
-            .from("listing_agreements")
-            .update({
-              esign_status:      "fully_signed",
-              fully_executed_at: now,
-            })
-            .eq("id", matchedAgreement.id)
-
-          // Listing agreement signed → the listing becomes "coming soon"
-          // (pre-listing). Run the stage change through the KERNEL (service
-          // client, since a webhook has no user session) so the
-          // LISTING_AGREEMENT_SIGNED kernel event + its automation fire — the
-          // prior raw UPDATE bypassed that, and logEventAndTrigger threw on the
-          // empty brokerage_id. Going live on the MLS is a later, separate step
-          // (MLS_READY → MLS_ACTIVE). Only advance from pre-signature stages.
-          const { data: listingRow } = await supabase
-            .from("listings")
-            .select("lifecycle_stage, brokerage_id")
-            .eq("id", matchedAgreement.listing_id)
-            .maybeSingle()
-
-          if (listingRow?.brokerage_id && listingRow.lifecycle_stage === "LISTING_AGREEMENT_INITIATED") {
-            await transitionLifecycle({
-              brokerageId: listingRow.brokerage_id,
-              entityType:  "listing_stage_machine",
-              entityId:    matchedAgreement.listing_id,
-              fromState:   listingRow.lifecycle_stage,
-              toState:     "LISTING_AGREEMENT_SIGNED",
-              actorUserId: null,
-              eventType:   "listing_agreement_signed",
-              metadata:    { agreementId: matchedAgreement.id, loop_id, provider: "dotloop", source: "webhook" },
-            }, supabase)
-
-            // status is the MLS-status column, not part of the stage machine.
-            await supabase
-              .from("listings")
-              .update({ status: "coming_soon", stage_entered_at: now })
-              .eq("id", matchedAgreement.listing_id)
-          }
-        }
-
-        // ── Esign completion: voice-cockpit staged artifacts ─────────────────
-        // Shared helper handles the documents + buyer_broker_agreements flip
-        // and kernel event emission. Every provider webhook calls this so the
-        // dispatch chain converges regardless of which provider the agent uses.
-        await finalizeVoiceCockpitPacket(supabase as any, loop_id, "dotloop")
-
         // INGRESS CONTINUITY: park an unmatched loop as a dead letter for the
         // daily reconciler — never lost behind this 200.
         const { ensureEsignIngressContinuity } = await import("@/lib/kernel/ingress-continuity")

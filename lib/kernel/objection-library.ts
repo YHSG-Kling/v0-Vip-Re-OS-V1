@@ -21,6 +21,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { isoWeekTag } from "@/lib/kernel/commission-forecaster"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -300,12 +301,12 @@ export async function runObjectionLibrary(
   return result
 }
 
-/** ISO-week tag like "2026-W24" — the idempotency key for one summary per week. */
-export function isoWeekTag(d: Date): string {
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-  const dayNum = (date.getUTCDay() + 6) % 7 // Mon=0
-  date.setUTCDate(date.getUTCDate() - dayNum + 3) // nearest Thursday
-  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4))
-  const week = 1 + Math.round(((date.getTime() - firstThursday.getTime()) / 86_400_000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7)
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
+// TOMBSTONE (orphan doctrine §1.1, lane O): this file's own isoWeekTag(d) — computing
+// the same "2026-W24" ISO-week tag by a different formula (verified byte-identical
+// output over 2020-2031) — was a duplicate of the survivor at
+// lib/kernel/commission-forecaster.ts:634, which is actually imported by another
+// module (lib/kernel/agent-coaching.ts) while this copy was reached only from within
+// this file and from scripts/objection-library-simulator.ts. Merged onto the survivor
+// (imported above); re-exported under the same name so nothing that imports
+// isoWeekTag from this file needs to change.
+export { isoWeekTag }

@@ -328,17 +328,114 @@ function checkForElement(content: string, element: string): boolean {
   return pattern ? pattern.test(content) : false
 }
 
-function calculateThemFirstScore(content: string): number {
-  // Count buyer-focused words (you, your, imagine, feel, enjoy)
+/**
+ * THE ONE DETERMINISTIC "THEM FIRST" PRONOUN RATIO. 0..1, higher = more
+ * buyer-focused. 0.5 when the content contains no personal pronouns at all —
+ * that is "no signal", not "balanced", and callers should treat it as such.
+ *
+ * WHY IT IS EXPORTED FROM HERE. There were two byte-identical private copies of
+ * this function — this one and `lib/kernel/compliance.ts::calculatePronounRatio`
+ * — same word lists, same 0.5 neutral, same ratio. Two copies of a compliance
+ * threshold is how the gate and the report start disagreeing about the same
+ * content after someone tunes one word list. The kernel already imports from
+ * this module (kernel → compliance-rules), so this is the only direction that
+ * does not create a cycle: the survivor lives here and the kernel calls it.
+ *
+ * NOT A REPLACEMENT FOR `lib/them-first/validator.ts::validateThemFirstContent`.
+ * That one is the richer instrument — AI structural analysis
+ * (feelings/trust/value/solution), sentiment, and a severity-graded prohibited-
+ * phrase catalogue including Fair Housing. It costs an AI call. This is the
+ * cheap deterministic signal, for the paths that need a number on every
+ * generation rather than an adjudication.
+ */
+export function calculateThemFirstScore(content: string): number {
+  return evaluateThemFirstFocus(content).overall_score
+}
+
+/**
+ * The pass line the two deleted copies both enforced, kept as ONE number.
+ *
+ * Deliberately NOT exported: nothing outside this module needs the threshold,
+ * only the verdict, and an exported const no other file names is a one-sided
+ * pair the opposite-missing census would (correctly) book as a new orphan.
+ */
+const THEM_FIRST_PASS_RATIO = 0.7
+
+/** The verdict shape the generation paths need: ratio, the counts behind it, and what to do. */
+export interface ThemFirstFocus {
+  passed: boolean
+  overall_score: number
+  agent_centric_count: number
+  buyer_centric_count: number
+  recommendations: string[]
+}
+
+/**
+ * THE SAME RATIO, WITH THE VERDICT THE GENERATORS ACTUALLY NEEDED.
+ *
+ * ── MERGED HERE, THEN THE DUPLICATES DELETED (orphan doctrine §1) ───────────
+ *
+ * A previous wave collapsed two byte-identical private copies of the pronoun
+ * ratio (`lib/kernel/compliance.ts::calculatePronounRatio` and this one) onto
+ * this file and recorded it in the manager registry. It missed TWO MORE, both
+ * in `app/actions`, both spelled `validateThemFirstContent` — a third name for
+ * the same idea, which is precisely the §6 defect:
+ *
+ *   · app/actions/ai-content-generation.tsx  (an EXPORT, so in a `"use server"`
+ *     file it was also a public HTTP endpoint), read by
+ *     enhancedGenerateListingDescription and written into
+ *     `ai_generated_content.metadata.them_first_score`;
+ *   · app/actions/listing-video.ts (private), read by the narration path and
+ *     written into `ai_video_projects.provider_metadata.them_first_score` AND
+ *     used to set `compliance_status`.
+ *
+ * So the number stamped on a listing description, the number stamped on a video
+ * project, and the number the compliance REPORT and the kernel GATE compute
+ * were four readings from THREE different word lists. This function is the one
+ * list; both call sites now import it and the two copies are gone, each with a
+ * tombstone naming this line.
+ *
+ * WHAT THE SURVIVOR GAINED, per §1 (merge onto the survivor FIRST): the pass
+ * threshold, the raw counts, and the recommendation set. What the DELETED
+ * copies lost, deliberately: they counted "perfect for", "ideal for" and
+ * "great for families" as BUYER-CENTRIC — i.e. they REWARDED three phrases
+ * `FAIR_HOUSING_PATTERNS` in this same directory exists to flag. That is not a
+ * vocabulary difference worth carrying forward.
+ *
+ * 0.5 means "no personal pronouns at all" — no signal, not balance. It sits
+ * below the pass line on purpose: unsigned content is not content that passed.
+ */
+export function evaluateThemFirstFocus(content: string): ThemFirstFocus {
+  // Buyer-focused words (you, your, imagine, feel, enjoy)
   const buyerWords = (content.match(/\b(you|your|yours|imagine|feel|enjoy|benefit|discover|experience)\b/gi) || [])
     .length
 
-  // Count agent-focused words (I, me, my, we, our, us)
+  // Agent-focused words (I, me, my, we, our, us)
   const agentWords = (content.match(/\b(i|me|my|mine|we|us|our|ours)\b/gi) || []).length
 
-  // Calculate ratio
   const totalWords = buyerWords + agentWords
-  if (totalWords === 0) return 0.5 // Neutral if no personal pronouns
+  const overall_score = totalWords === 0 ? 0.5 : buyerWords / totalWords
+  const passed = overall_score >= THEM_FIRST_PASS_RATIO
 
-  return buyerWords / totalWords
+  const recommendations: string[] = []
+  if (passed) {
+    recommendations.push("Great job keeping the focus on the buyer!")
+  } else {
+    if (totalWords === 0) {
+      recommendations.push(
+        "No personal pronouns at all — this reads as a spec sheet. Address the reader directly.",
+      )
+    }
+    recommendations.push("Reduce agent-centric language (I, me, my)")
+    recommendations.push("Increase buyer-focused language (you, your, imagine)")
+    recommendations.push("Focus on buyer benefits rather than agent credentials")
+  }
+
+  return {
+    passed,
+    overall_score,
+    agent_centric_count: agentWords,
+    buyer_centric_count: buyerWords,
+    recommendations,
+  }
 }

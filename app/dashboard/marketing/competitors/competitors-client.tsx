@@ -12,7 +12,6 @@ import {
   BarChart2,
   Target,
   Plus,
-  Trash2,
   Loader2,
   MapPin,
   ExternalLink,

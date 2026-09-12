@@ -1,7 +1,10 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
 
-export async function GET(request: Request, { params }: { params: Promise<{ contactId: string }> }) {
+// The Request is deliberately unread — the contact comes from the ROUTE PARAM and the
+// gate from the session. It keeps its position because Next.js passes the route
+// context second.
+export async function GET(_request: Request, { params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
   const supabase = await createClient()
 

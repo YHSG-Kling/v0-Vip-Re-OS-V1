@@ -15,8 +15,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun, sanitizeCompNoun } from "@/lib/compliance/client-text-guard"
 
 export type RecruitStatus = "prospect" | "contacted" | "interviewing" | "offer_extended" | "joined" | "declined"
-/** The non-terminal stages the Recruiting Manager reaches out on. */
-export type RecruitOutreachStage = "prospect" | "contacted" | "interviewing" | "offer_extended"
+/** The non-terminal stages the Recruiting Manager reaches out on — DERIVED from RecruitStatus
+ *  (2026-08-31; it was a second hand-spelled union, so renaming a stage could silently sever the
+ *  outreach subset from the full vocabulary). joined/declined are the terminal exclusions. */
+export type RecruitOutreachStage = Exclude<RecruitStatus, "joined" | "declined">
 
 export interface RecruitLite {
   first_name: string | null
@@ -26,8 +28,9 @@ export interface RecruitLite {
   annual_volume: number | null
 }
 
-/** Stages we proactively reach out on. joined/declined are terminal — no outreach. */
-export function recruitStageNeedsOutreach(status: string): status is "prospect" | "contacted" | "interviewing" | "offer_extended" {
+/** Stages we proactively reach out on. joined/declined are terminal — no outreach.
+ *  Returns the named RecruitOutreachStage instead of a third hand-spelled copy of the union. */
+export function recruitStageNeedsOutreach(status: string): status is RecruitOutreachStage {
   return status === "prospect" || status === "contacted" || status === "interviewing" || status === "offer_extended"
 }
 

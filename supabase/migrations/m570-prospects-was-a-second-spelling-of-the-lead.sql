@@ -1,0 +1,80 @@
+-- ═════════════════════════════════════════════════════════════════════════════
+-- ⚠  THE "NOT APPLIED" CLAIM BELOW IS STALE. THIS MIGRATION *IS* APPLIED.
+--
+--    MEASURED 2026-09-04 against hrvaqgvukzxfskkcrwbt's own migration ledger,
+--    `supabase_migrations.schema_migrations`, which carries a row named
+--    `m570_…`. It was one of TWENTY files in this directory whose header said
+--    it had never run; all twenty were in the ledger. Nobody came back to
+--    update the headers after applying them.
+--
+--    THE EVIDENCE IS ONE-DIRECTIONAL, AND THAT IS STATED RATHER THAN GLOSSED:
+--    presence in the ledger PROVES a migration ran. ABSENCE PROVES NOTHING —
+--    the ledger only records migrations applied through the migration tool, and
+--    m599 and m602–m605 are all applied and all absent from it, because they
+--    were executed as direct SQL. So this banner is written only onto files the
+--    ledger positively vouches for.
+--
+--    The original header is preserved below unedited. It is the record of what
+--    its author believed when they wrote it, and CLAUDE.md §3 is the reason the
+--    belief was wrong: "a migration that exists as a .sql file has not been
+--    applied" — which is true, and cuts both ways. A file cannot tell you it
+--    ran, and it cannot tell you it did not.
+--
+--    scripts/migration-claim-guard.ts now holds this class shut.
+-- ═════════════════════════════════════════════════════════════════════════════
+
+-- m570-prospects-was-a-second-spelling-of-the-lead.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+-- DROP prospects + prospect_context — a parallel mini-CRM nothing ever used.
+--
+-- WRITTEN 2026-08-27, NOT APPLIED (integrator applies; lanes only write).
+-- Apply ONLY after the same-branch code deletions land, and regenerate the
+-- schema caches afterwards (schema-snapshot.ts, schema-fk-map.ts,
+-- live-tables.ts, check-vocabularies.ts — all generated, never hand-edited).
+--
+-- THE EVIDENCE (verified live on hrvaqgvukzxfskkcrwbt, 2026-08-27):
+--   · prospects: 0 rows. prospect_context: 0 rows.
+--   · No trigger on either table (pg_trigger, tgisinternal = false: none).
+--   · No pg_proc body inserts into either table.
+--   · The ONLY code that ever addressed them — four session-gated routes with
+--     ZERO in-tree callers — is deleted in this change set:
+--       app/api/prospects/route.ts
+--       app/api/prospects/[id]/context/route.ts
+--       app/api/generate/text/route.ts   (read prospect_context .single() —
+--       app/api/generate/email/route.ts   a guaranteed PGRST116/500 on the
+--                                         permanently-empty table)
+--     docs/wave20-audit.md had already recorded "saved_calculations,
+--     prospects and prospect_context have no insert call sites at all";
+--     docs/wave27-audit.md ruled prospect_context's "fate follows prospects".
+--   · Registry tombstone: lib/kernel/manager-registry.ts
+--     `prospects_route_family_retired` names every deleted path + survivors.
+--
+-- THE SURVIVOR (§1 + §5): the lead CRM. Leads belong to the BROKERAGE and
+-- carry every field this pair promised —
+--     prospects.name/email/phone/source/metadata → leads (full pipeline)
+--     prospect_context.emotion / pain_point      → leads.motivation_type,
+--                                                  leads.qualification_summary
+--     prospect_context.situation / life_context  → leads.life_events, persona
+--     prospect_context.timeline                  → leads.timeline (the §5
+--                                                  bucket vocabulary)
+--     prospect_context.what_helps                → leads.notes,
+--                                                  leads.isa_handoff_brief
+-- and the outreach the generate routes promised is the live ISA/nurture rail
+-- (speed-to-lead, lead-action-plan, ai-lead-nurturing).
+--
+-- ORDER MATTERS: prospect_context.prospect_id FKs prospects(id) ON DELETE
+-- CASCADE — child first anyway, so neither drop can be blocked by the other.
+-- No backfill: there has never been a row to move.
+
+alter table public.generated_content drop constraint if exists generated_content_prospect_id_fkey;
+alter table public.generated_content drop column if exists prospect_id;
+drop table if exists public.prospect_context;
+drop table if exists public.prospects;
+
+-- AMENDED AT APPLY (integrator, 2026-08-27): pg_constraint showed ONE inbound
+-- FK the drop had to clear first — generated_content.prospect_id REFERENCES
+-- prospects(id) ON DELETE SET NULL. No code writes or reads that column (the
+-- only prospect_id tokens in the tree belong to platform_reception_calls,
+-- whose rail rides the DIFFERENT table platform_prospects — verified before
+-- applying, because a reception writer into prospects would have refuted this
+-- migration's whole premise). Column retired with its family.

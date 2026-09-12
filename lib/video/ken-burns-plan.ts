@@ -53,6 +53,8 @@ export interface KenBurnsClip {
   roomLabel: string
 }
 
+import { varyingSceneWeights } from "./realism-profile"
+
 export interface KenBurnsOptions {
   /** Frames per second — used only to derive sane min/max dwell. Default 30. */
   fps?: number
@@ -156,13 +158,22 @@ export function kenBurnsPlan(
   // clip[n-1].fromFrame + duration === totalFrames.
   const stride = (totalFrames - crossfade) / n
 
+  // WAVE 61 REALISM — vary each clip's stride +/-SCENE_DURATION_VARIANCE_PCT
+  // (lib/video/realism-profile.ts) so the cut cadence doesn't feel machine-
+  // metronomic. `weights` sum to exactly `n`, so the cumulative timeline
+  // still tiles [0, totalFrames] exactly — only the RHYTHM of the cuts
+  // changes, never the reel's total runtime.
+  const weights = varyingSceneWeights(n)
+  const cumWeight: number[] = [0]
+  for (let i = 0; i < n; i++) cumWeight.push(cumWeight[i] + weights[i])
+
   const clips: KenBurnsClip[] = []
   for (let i = 0; i < n; i++) {
-    const fromFrame = Math.round(i * stride)
+    const fromFrame = Math.round(cumWeight[i] * stride)
     const isLast = i === n - 1
     // End frame: last clip lands exactly on totalFrames; others extend one
     // cross-fade past the next clip's start.
-    const nextStart = isLast ? totalFrames : Math.round((i + 1) * stride)
+    const nextStart = isLast ? totalFrames : Math.round(cumWeight[i + 1] * stride)
     const endFrame = isLast ? totalFrames : nextStart + crossfade
     const durationFrames = endFrame - fromFrame
 

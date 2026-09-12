@@ -14,7 +14,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { buildReceptionPrompt, parseTurnPlan, transcriptToMessages, TURN_INSTRUCTIONS, type VoiceTurnPlan } from "./reception-brain"
-import type { InboundIdentity } from "./vapi-numbers"
+import type { InboundIdentity } from "./inbound-number-binding"
 
 /** Twilio request signature: HMAC-SHA1(url + sorted concatenated POST params, authToken), base64. */
 export function computeTwilioSignature(authToken: string, url: string, params: Record<string, string>): string {
@@ -42,7 +42,7 @@ export interface InboundCallContext {
 /** Resolve the tenant + reception identity from the CALLED number (To). */
 export async function resolveInboundContext(svc: any, toNumber: string): Promise<InboundCallContext | null> {
   const digits = toNumber.replace(/\D/g, "")
-  const { data: num } = await svc.from("vapi_phone_numbers")
+  const { data: num } = await svc.from("tenant_phone_numbers")
     .select("id, brokerage_id, agent_user_id")
     .eq("phone_digits", digits).eq("is_active", true).maybeSingle()
   if (!num) return null
@@ -120,13 +120,13 @@ export async function bindNumberToTwilioLane(
   svc: any,
   numberRowId: string,
 ): Promise<{ ok: true } | { ok: false; error: string; notConfigured?: boolean }> {
-  const { data: row } = await svc.from("vapi_phone_numbers")
-    .select("id, brokerage_id, phone_number, byoc_credential_id, is_active")
+  const { data: row } = await svc.from("tenant_phone_numbers")
+    .select("id, brokerage_id, phone_number, twilio_number_sid, is_active")
     .eq("id", numberRowId).maybeSingle()
   if (!row) return { ok: false, error: "Number row not found" }
   const n = row as any
   if (!n.is_active) return { ok: false, error: "Number is inactive" }
-  if (!n.byoc_credential_id) return { ok: false, error: "Number has no Twilio SID on file — re-provision it first" }
+  if (!n.twilio_number_sid) return { ok: false, error: "Number has no Twilio SID on file — re-provision it first" }
 
   const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
   const creds = await resolveTenantTwilioCreds(svc, n.brokerage_id)
@@ -140,7 +140,7 @@ export async function bindNumberToTwilioLane(
   const res = await callConnector({
     connector: "twilio",
     baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.byoc_credential_id}.json`,
+    path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.twilio_number_sid}.json`,
     method: "POST",
     bodyType: "form",
     body: {
@@ -157,7 +157,7 @@ export async function bindNumberToTwilioLane(
 
   await svc.from("phone_number_events").insert({
     brokerage_id: n.brokerage_id, phone_number: n.phone_number,
-    event_type: "vapi_registered", source: "inbound_binding",
+    event_type: "webhooks_bound", source: "inbound_binding",
     notes: "Number bound to the Twilio-native AI lane (VoiceUrl → /api/voice/twilio/inbound; SmsUrl → /api/providers/inbound; StatusCallback → /api/voice/twilio/status)",
   }).then(undefined, () => {})
   return { ok: true }
@@ -243,6 +243,58 @@ export async function proposeSellerLeadFromCall(
     }, svc)
     return (p as any)?.ok !== false
   } catch { return false }
+}
+
+/** Callback task from a live call — the WRITER half of the owner's ruling
+ *  (wave 55: "make a task to call a person back"). Both transports call this
+ *  with whatever the caller's OWN number is (voice_calls.phone_from) as the
+ *  fallback when they didn't give a different one. Best-effort by design, same
+ *  as bookShowingFromCall/rsvpOpenHouseFromCall above: the spoken confirmation
+ *  already stands; a write failure is reported to the console, not the caller. */
+export async function createCallbackTaskFromCall(
+  svc: any,
+  ctx: InboundCallContext,
+  call: { id: string; contact_id: string | null; lead_id?: string | null; phone_from?: string | null },
+  phone: string | null,
+  whenPhrase: string,
+  reason: string | null,
+): Promise<{ ok: boolean; taskId?: string; dueIso?: string; error?: string }> {
+  try {
+    // The caller's own ANI when they didn't name a different number — read off
+    // the ledger row when the caller passed a bare row (turn route always has
+    // it; the relay route's `call` select below is extended to carry it too).
+    let callerAni = call.phone_from ?? null
+    if (!callerAni) {
+      const { data: row } = await svc.from("voice_calls").select("phone_from").eq("id", call.id).maybeSingle()
+      callerAni = (row as any)?.phone_from ?? null
+    }
+    const { createCallbackTask } = await import("@/lib/ai-isa/callback-task")
+    const result = await createCallbackTask(svc, {
+      brokerageId: ctx.brokerageId,
+      contactId: call.contact_id,
+      leadId: call.lead_id ?? null,
+      phone: (phone ?? callerAni ?? "").trim(),
+      whenPhrase,
+      reason,
+      voiceCallId: call.id,
+      assigneeType: "ai_isa",
+    })
+    if (!result.ok) {
+      console.error("[twilio-voice] callback task NOT created — the spoken promise stands with nothing behind it:", result.error)
+      return result
+    }
+    if (ctx.agentUserId) {
+      await svc.from("notifications").insert({
+        user_id: ctx.agentUserId, brokerage_id: ctx.brokerageId, type: "callback_requested",
+        title: "The AI receptionist booked a callback",
+        body: `A caller asked to be called back${reason ? ` about: ${reason}` : ""} — the ISA will place the call around ${new Date(result.dueIso!).toLocaleString()}. Transcript on the call record.`,
+        entity_type: "voice_call", entity_id: call.id, priority: "medium", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+    }
+    return result
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "createCallbackTaskFromCall threw" }
+  }
 }
 
 /** One turn against ANY system prompt (reception or outbound brief) — the

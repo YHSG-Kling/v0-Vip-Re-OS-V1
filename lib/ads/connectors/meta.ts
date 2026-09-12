@@ -15,6 +15,7 @@ import { deriveMetrics } from "./types"
 const GRAPH = "https://graph.facebook.com/v19.0"
 
 /** Pure: map a Meta Insights data row → our normalized performance row. */
+/** @proofSeam pure mapper, already wired internally by metaConnector.fetchPerformance below; exported for scripts/ad-connector-simulator.ts */
 export function mapInsights(row: Record<string, unknown> | null | undefined): ProviderPerformanceRow {
   const num = (v: unknown) => (v == null ? 0 : Number(v) || 0)
   const spend = num(row?.spend)

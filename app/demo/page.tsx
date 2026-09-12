@@ -25,7 +25,7 @@ export default async function DemoPage() {
       <div className="max-w-2xl mx-auto px-6 py-14">
         <div className="flex justify-end gap-4 text-sm text-muted-foreground mb-4">
           <Link href="/pricing" className="underline underline-offset-2 hover:text-foreground">Pricing</Link>
-          <Link href="/signup" className="underline underline-offset-2 hover:text-foreground">Start free trial</Link>
+          <Link href="/get-started" className="underline underline-offset-2 hover:text-foreground">Start free trial</Link>
         </div>
         <div className="text-center mb-8">
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">Book a 15-minute demo</h1>

@@ -8,10 +8,8 @@ import {
   FileText,
   Mail,
   TrendingUp,
-  AlertCircle,
   CheckCircle2,
   Clock,
-  DollarSign,
   Eye,
   Star,
   Activity,
@@ -29,33 +27,165 @@ import {
   exportReportCsvAction,
   exportReportPdfAction,
   emailReportAction,
+  loadReportingWorkspaceAction,
+  generateSourcePerformanceReportAction,
+  generateCampaignROIReportAction,
+  generateReputationReportAction,
+  generateTransactionPipelineReportAction,
+  generateTeamPerformanceReportAction,
+  generateAgentPerformanceReportAction,
 } from "@/app/actions/reporting-kernel"
 
+type ReportPeriod = "month" | "quarter" | "ytd"
+
+/** First day of the selected window, as YYYY-MM-DD. */
+function periodStart(p: ReportPeriod): string {
+  const now = new Date()
+  if (p === "month") return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10)
+  if (p === "quarter") {
+    const q = Math.floor(now.getMonth() / 3) * 3
+    return new Date(now.getFullYear(), q, 1).toISOString().slice(0, 10)
+  }
+  return `${now.getFullYear()}-01-01`
+}
+
 interface ReportsClientProps {
-  agentId: string
-  brokerageId: string
-  role: string
-  userId: string
-  monthStart: string
+  // NO agentId / brokerageId. The three report actions this component calls
+  // resolve both from the SESSION (app/actions/reporting-kernel.ts:
+  // resolveActorContext), and used to ACCEPT them from here as well and throw
+  // them away. Passing a tenant down a prop chain into a server action is the
+  // shape that becomes an IDOR the day someone makes the action honour it.
+  //
+  // ─── TOMBSTONE: role / userId / monthStart REMOVED ─────────────────────────
+  // All three were accepted, destructured, and never read once — the same
+  // "accepted and thrown away" shape the paragraph above forbids for
+  // agentId/brokerageId, and for the same reason: the day someone wires one up,
+  // the client is stating an identity the server is supposed to resolve.
+  // Nothing is lost, because each already lives somewhere that is authoritative:
+  //   role, userId → resolved server-side per call by
+  //                  app/actions/reporting-kernel.ts resolveActorContext.
+  //   monthStart   → this component computes its own window from the selected
+  //                  period (periodStart() above, and `dateFrom` state); the
+  //                  prop was a second, unused spelling of the same idea.
   initialCampaignData: any
-  initialFinancialData: any
   initialReputationData: any
   initialSourceData: any
 }
 
 export function ReportsClient({
-  agentId,
-  brokerageId,
-  role,
-  userId,
-  monthStart,
   initialCampaignData,
-  initialFinancialData,
   initialReputationData,
   initialSourceData,
 }: ReportsClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+
+  // ── PERIOD ─────────────────────────────────────────────────────────────────
+  // The page prefetches source / campaign / reputation for YTD. Changing the
+  // period re-queries them through the reporting-kernel action wrappers, which
+  // resolve the actor context server-side (agents.id RESOLVED, never the users
+  // id substituted) — the client never states who it is.
+  const [dateFrom, setDateFrom] = useState<string>(() => periodStart("ytd"))
+  const [period, setPeriod] = useState<ReportPeriod>("ytd")
+  const [periodError, setPeriodError] = useState<string | null>(null)
+
+  const [campaignData, setCampaignData]     = useState<any>(initialCampaignData)
+  const [reputationData, setReputationData] = useState<any>(initialReputationData)
+  const [sourceData, setSourceData]         = useState<any>(initialSourceData)
+
+  // Pipeline / Team / Scorecard load on demand — they are NOT prefetched.
+  const [pipelineData, setPipelineData]   = useState<any>(null)
+  const [pipelineError, setPipelineError] = useState<string | null>(null)
+  const [teamData, setTeamData]           = useState<any>(null)
+  const [teamError, setTeamError]         = useState<string | null>(null)
+  const [workspace, setWorkspace]         = useState<any>(null)
+  const [scorecard, setScorecard]         = useState<any>(null)
+  const [scorecardError, setScorecardError] = useState<string | null>(null)
+
+  function applyPeriod(next: ReportPeriod) {
+    setPeriod(next)
+    setPeriodError(null)
+    const from = periodStart(next)
+    setDateFrom(from)
+    startTransition(async () => {
+      const [src, camp, rep] = await Promise.all([
+        generateSourcePerformanceReportAction({ dateFrom: from }),
+        generateCampaignROIReportAction({ dateFrom: from }),
+        generateReputationReportAction({}),
+      ])
+      // Every outcome READ. A refused report is named, not rendered as an empty
+      // (and therefore reassuring) period.
+      const refusals = [
+        !src.success  ? `sources: ${src.error ?? "failed"}`     : null,
+        !camp.success ? `campaigns: ${camp.error ?? "failed"}`  : null,
+        !rep.success  ? `reputation: ${rep.error ?? "failed"}`  : null,
+      ].filter(Boolean) as string[]
+      if (src.success)  setSourceData(src.data ?? null)
+      if (camp.success) setCampaignData(camp.data ?? null)
+      if (rep.success)  setReputationData(rep.data ?? null)
+      setPeriodError(refusals.length ? refusals.join(" · ") : null)
+    })
+  }
+
+  function loadPipeline() {
+    setPipelineError(null)
+    startTransition(async () => {
+      const res = await generateTransactionPipelineReportAction({})
+      if (!res.success) { setPipelineError(res.error ?? "Pipeline report failed"); return }
+      setPipelineData(res.data ?? null)
+    })
+  }
+
+  function loadTeam() {
+    setTeamError(null)
+    startTransition(async () => {
+      const res = await generateTeamPerformanceReportAction()
+      if (!res.success) { setTeamError(res.error ?? "Team report failed"); return }
+      setTeamData(res.data ?? null)
+    })
+  }
+
+  function loadScorecard() {
+    setScorecardError(null)
+    startTransition(async () => {
+      const [ws, perf] = await Promise.all([
+        loadReportingWorkspaceAction({ dateFrom }),
+        generateAgentPerformanceReportAction({
+          periodStart: dateFrom,
+          periodEnd:   new Date().toISOString().slice(0, 10),
+        }),
+      ])
+      if (ws.success) setWorkspace(ws.data ?? null)
+      if (perf.success) setScorecard(perf.data ?? null)
+      const refusals = [
+        !ws.success   ? (ws.error ?? "workspace failed")   : null,
+        !perf.success ? (perf.error ?? "scorecard failed") : null,
+      ].filter(Boolean) as string[]
+      setScorecardError(refusals.length ? refusals.join(" · ") : null)
+    })
+  }
+
+  // Summary is a PERFORMANCE snapshot built from the analytics already loaded —
+  // commission is intentionally NOT shown here (it lives in Financials →
+  // Commission Tracker; duplicating it made Reports read as a commission rehash).
+  const sources   = sourceData?.sources ?? []
+  const campaigns = campaignData?.campaigns ?? []
+  const totalLeads    = sources.reduce((s: number, x: any) => s + (x.contact_count ?? 0), 0)
+  const avgCloseRate  = sources.length
+    ? sources.reduce((s: number, x: any) => s + (x.close_rate ?? 0), 0) / sources.length
+    : 0
+  const avgRoi = campaigns.length
+    ? campaigns.reduce((s: number, x: any) => s + (x.roi_percentage ?? x.roi ?? 0), 0) / campaigns.length
+    : 0
+  const avgRating   = reputationData?.avgRating ?? null
+  const totalReviews = reputationData?.totalReviews ?? 0
+  const topSource = [...sources].sort(
+    (a: any, b: any) => (b.revenue ?? b.totalRevenue ?? 0) - (a.revenue ?? a.totalRevenue ?? 0),
+  )[0] ?? null
+  const topCampaign = [...campaigns].sort(
+    (a: any, b: any) => (b.roi_percentage ?? b.roi ?? 0) - (a.roi_percentage ?? a.roi ?? 0),
+  )[0] ?? null
+  const hasSummaryData = sources.length > 0 || campaigns.length > 0 || !!reputationData
 
   // Email dialog state
   const [emailDialogOpen, setEmailDialogOpen] = useState(false)
@@ -66,15 +196,23 @@ export function ReportsClient({
   const [emailError, setEmailError] = useState("")
   const [emailSuccess, setEmailSuccess] = useState(false)
 
+  // A FAILED EXPORT MUST SAY SO. The catch below used to be empty under the
+  // comment "Error is surfaced to user via disabled button state — no toast
+  // needed for export". No such state existed: the buttons are disabled only
+  // while `isPending`, which the transition clears whether the export succeeded
+  // or threw. So a refused export — an unauthorised report type, a query
+  // failure, a PDF that never rendered — produced NO download and NO message.
+  // The user clicked Export and nothing whatsoever happened.
+  const [exportError, setExportError] = useState<string | null>(null)
+
   const handleExport = (format: "csv" | "pdf", reportType: string) => {
+    setExportError(null)
     startTransition(async () => {
       try {
         if (format === "csv") {
           const result = await exportReportCsvAction({
             reportType,
-            agentId,
-            brokerageId,
-            dateFrom: monthStart,
+            dateFrom,
           })
           if (!result.success || !result.data) throw new Error(result.error ?? "Export failed")
           const blob = new Blob([result.data], { type: "text/csv" })
@@ -89,9 +227,7 @@ export function ReportsClient({
         } else {
           const result = await exportReportPdfAction({
             reportType,
-            agentId,
-            brokerageId,
-            dateFrom: monthStart,
+            dateFrom,
           })
           if (!result.success || !result.pdfUrl) throw new Error(result.error ?? "Export failed")
           const a = document.createElement("a")
@@ -103,7 +239,11 @@ export function ReportsClient({
           document.body.removeChild(a)
         }
       } catch (error: any) {
-        // Error is surfaced to user via disabled button state — no toast needed for export
+        setExportError(
+          `${format.toUpperCase()} export of the ${reportType} report failed — ${
+            error?.message ?? "the server gave no reason"
+          }`,
+        )
       }
     })
   }
@@ -122,9 +262,7 @@ export function ReportsClient({
           recipients:  emailRecipients.split(",").map((e) => e.trim()).filter(Boolean),
           subject:     emailSubject,
           message:     emailMessage || undefined,
-          agentId,
-          brokerageId,
-          dateFrom:    monthStart,
+          dateFrom,
         })
         if (!result.success) {
           setEmailError(result.error ?? "Failed to send report.")
@@ -153,6 +291,18 @@ export function ReportsClient({
           <p className="text-muted-foreground">Comprehensive analytics and performance insights</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* PERIOD — re-queries source / campaign / reputation through the
+              reporting kernel, and the exports below follow the same window. */}
+          <Select value={period} onValueChange={(v) => applyPeriod(v as ReportPeriod)}>
+            <SelectTrigger className="w-[150px] h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="month">This month</SelectItem>
+              <SelectItem value="quarter">This quarter</SelectItem>
+              <SelectItem value="ytd">Year to date</SelectItem>
+            </SelectContent>
+          </Select>
           <Button
             variant="outline"
             size="sm"
@@ -204,101 +354,201 @@ export function ReportsClient({
             <Star className="h-4 w-4" />
             Reputation
           </TabsTrigger>
+          <TabsTrigger value="pipeline" className="flex items-center gap-1.5">
+            <Clock className="h-4 w-4" />
+            Pipeline
+          </TabsTrigger>
+          <TabsTrigger value="team" className="flex items-center gap-1.5">
+            <Send className="h-4 w-4" />
+            Team
+          </TabsTrigger>
         </TabsList>
 
-        {/* Summary Tab */}
+        {periodError && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+            Some reports could not be refreshed for this period — {periodError}. The figures below are
+            from the last window that loaded, not this one.
+          </div>
+        )}
+
+        {/* The export rail's refusal. Every Export CSV / Export PDF button in
+            every tab below routes through handleExport, so one banner covers
+            them all — and a silent failure is no longer possible. */}
+        {exportError && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+            {exportError}. Nothing was downloaded.
+          </div>
+        )}
+
+        {/* Summary Tab — performance snapshot (NOT commission; that's in Financials) */}
         <TabsContent value="summary" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-4">
-            {initialFinancialData && (
-              <>
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">YTD Revenue</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">
-                      ${(initialFinancialData.ytdGrossCommission ?? initialFinancialData.totalCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+          {/* MY SCORECARD — the reporting workspace + the persisted agent
+              performance report for the selected window. Loaded on demand: the
+              performance report WRITES a row, so it must be an explicit act, not
+              a side effect of opening the page. */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">My Scorecard</CardTitle>
+                  <CardDescription>
+                    Activity and outcomes since {new Date(dateFrom).toLocaleDateString()}
+                  </CardDescription>
+                </div>
+                <Button size="sm" variant="outline" onClick={loadScorecard} disabled={isPending} className="bg-transparent">
+                  {scorecard || workspace ? "Refresh" : "Load scorecard"}
+                </Button>
+              </div>
+            </CardHeader>
+            {(scorecard || workspace || scorecardError) && (
+              <CardContent className="space-y-3">
+                {scorecardError && <p className="text-sm text-destructive">{scorecardError}</p>}
+                {workspace && (
+                  <div className="grid gap-3 grid-cols-2 md:grid-cols-4 text-center">
+                    <div>
+                      <div className="text-xl font-bold">{workspace.agentStats?.ytdTransactions ?? 0}</div>
+                      <div className="text-xs text-muted-foreground">transactions</div>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {(initialFinancialData.recentCommissions?.length ?? initialFinancialData.commission_count ?? 0)} commissions
-                    </p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">Total Expenses</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">
-                      ${(initialFinancialData.ytdExpenses ?? initialFinancialData.totalExpenses ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                    <div>
+                      <div className="text-xl font-bold">{workspace.agentStats?.activeListings ?? 0}</div>
+                      <div className="text-xs text-muted-foreground">active listings</div>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {(initialFinancialData.recentExpenses?.length ?? initialFinancialData.expense_count ?? 0)} entries
-                    </p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">Net Profit</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold text-green-600">
-                      ${(
-                        initialFinancialData.ytdNetIncome ??
-                        ((initialFinancialData.ytdGrossCommission ?? initialFinancialData.totalCommission ?? 0) -
-                         (initialFinancialData.ytdExpenses ?? initialFinancialData.totalExpenses ?? 0))
-                      ).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                    <div>
+                      <div className="text-xl font-bold">{workspace.agentStats?.pendingPipeline ?? 0}</div>
+                      <div className="text-xs text-muted-foreground">in pipeline</div>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">YTD net income</p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">Agent Commission</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">
-                      ${(initialFinancialData.ytdAgentCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                    <div>
+                      <div className="text-xl font-bold">{workspace.agentStats?.newContactsLast30 ?? 0}</div>
+                      <div className="text-xs text-muted-foreground">new contacts (30d)</div>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">after splits</p>
-                  </CardContent>
-                </Card>
-              </>
+                  </div>
+                )}
+                {scorecard?.metrics && (
+                  <div className="grid gap-3 grid-cols-2 md:grid-cols-4 text-center border-t pt-3">
+                    <div>
+                      <div className="text-xl font-bold">{scorecard.metrics.closedDeals ?? 0}</div>
+                      <div className="text-xs text-muted-foreground">closed this period</div>
+                    </div>
+                    <div>
+                      <div className="text-xl font-bold">{Math.round(scorecard.metrics.conversionRate ?? 0)}%</div>
+                      <div className="text-xs text-muted-foreground">conversion rate</div>
+                    </div>
+                    <div>
+                      <div className="text-xl font-bold">{scorecard.metrics.newContacts ?? 0}</div>
+                      <div className="text-xs text-muted-foreground">contacts added</div>
+                    </div>
+                    <div>
+                      <div className="text-xl font-bold">
+                        {scorecard.metrics.avgRating ? scorecard.metrics.avgRating.toFixed(1) : "—"}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        avg rating · {scorecard.metrics.totalReviews ?? 0} reviews
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
             )}
+          </Card>
+
+          <div className="grid gap-4 md:grid-cols-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <TrendingUp className="h-4 w-4" /> Total Leads
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{totalLeads.toLocaleString("en-US")}</div>
+                <p className="text-xs text-muted-foreground mt-1">across {sources.length} source{sources.length === 1 ? "" : "s"}</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <CheckCircle2 className="h-4 w-4" /> Avg Close Rate
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{(avgCloseRate * 100).toFixed(0)}%</div>
+                <p className="text-xs text-muted-foreground mt-1">lead → closed, blended</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <Activity className="h-4 w-4" /> Campaign ROI
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className={`text-2xl font-bold ${avgRoi >= 0 ? "text-green-600" : "text-red-600"}`}>{avgRoi.toFixed(0)}%</div>
+                <p className="text-xs text-muted-foreground mt-1">avg across {campaigns.length} campaign{campaigns.length === 1 ? "" : "s"}</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <Star className="h-4 w-4" /> Avg Rating
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{avgRating != null ? avgRating.toFixed(1) : "N/A"}</div>
+                <p className="text-xs text-muted-foreground mt-1">{totalReviews} review{totalReviews === 1 ? "" : "s"}</p>
+              </CardContent>
+            </Card>
           </div>
 
           <Card>
             <CardHeader>
-              <CardTitle>Recent Commissions</CardTitle>
-              <CardDescription>Latest closed commissions this year</CardDescription>
+              <CardTitle>Highlights</CardTitle>
+              <CardDescription>Your best-performing channels this year — open a tab for the full breakdown</CardDescription>
             </CardHeader>
             <CardContent>
-              {initialFinancialData?.recentCommissions && initialFinancialData.recentCommissions.length > 0 ? (
+              {hasSummaryData ? (
                 <div className="space-y-3">
-                  {initialFinancialData.recentCommissions.map((row: any) => (
-                    <div key={row.id} className="flex items-center justify-between p-3 border rounded-lg">
+                  {topSource && (
+                    <div className="flex items-center justify-between p-3 border rounded-lg">
                       <div>
-                        <div className="font-medium text-sm">
-                          {row.close_date ? new Date(row.close_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "No close date"}
-                        </div>
+                        <div className="font-medium text-sm capitalize">Top source · {topSource.source ?? topSource.source_family ?? "Unknown"}</div>
                         <div className="text-xs text-muted-foreground">
-                          Agent: ${(row.agent_commission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                          {(topSource.contact_count ?? 0)} contacts &bull; {((topSource.close_rate ?? 0) * 100).toFixed(0)}% close rate
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-medium">
-                          ${(row.gross_commission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                        </div>
-                        <div className="text-xs text-muted-foreground">gross</div>
+                      <div className="text-right text-sm font-medium">
+                        ${(topSource.revenue ?? topSource.totalRevenue ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                        <div className="text-xs text-muted-foreground font-normal">influenced revenue</div>
                       </div>
                     </div>
-                  ))}
+                  )}
+                  {topCampaign && (
+                    <div className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <div className="font-medium text-sm">Top campaign · {topCampaign.campaign_name ?? topCampaign.name ?? "Unnamed"}</div>
+                        <div className="text-xs text-muted-foreground">{topCampaign.total_leads ?? topCampaign.leadsGenerated ?? 0} leads generated</div>
+                      </div>
+                      <div className="text-right text-sm font-medium">
+                        {(topCampaign.roi_percentage ?? topCampaign.roi ?? 0).toFixed(0)}% ROI
+                      </div>
+                    </div>
+                  )}
+                  {reputationData && (
+                    <div className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <div className="font-medium text-sm">Reputation</div>
+                        <div className="text-xs text-muted-foreground">{totalReviews} reviews · {reputationData.responseRate?.toFixed(0) ?? 0}% response rate</div>
+                      </div>
+                      <div className="text-right text-sm font-medium flex items-center gap-1">
+                        <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
+                        {avgRating != null ? avgRating.toFixed(1) : "N/A"}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
-                <p className="text-muted-foreground">No commission data available</p>
+                <p className="text-muted-foreground">No performance data yet — as leads, campaigns, and reviews come in, your snapshot builds here.</p>
               )}
             </CardContent>
           </Card>
@@ -325,9 +575,9 @@ export function ReportsClient({
               </div>
             </CardHeader>
             <CardContent>
-              {initialSourceData?.sources && initialSourceData.sources.length > 0 ? (
+              {sourceData?.sources && sourceData.sources.length > 0 ? (
                 <div className="space-y-3">
-                  {initialSourceData.sources.map((source: any) => (
+                  {sourceData.sources.map((source: any) => (
                     <div key={source.source} className="flex items-center justify-between p-4 border rounded-lg">
                       <div>
                         <div className="font-medium capitalize">{source.source ?? source.source_family ?? "Unknown"}</div>
@@ -374,9 +624,9 @@ export function ReportsClient({
               </div>
             </CardHeader>
             <CardContent>
-              {initialCampaignData?.campaigns && initialCampaignData.campaigns.length > 0 ? (
+              {campaignData?.campaigns && campaignData.campaigns.length > 0 ? (
                 <div className="space-y-3">
-                  {initialCampaignData.campaigns.map((campaign: any) => {
+                  {campaignData.campaigns.map((campaign: any) => {
                     const name        = campaign.campaign_name ?? campaign.name ?? "Unnamed"
                     const budget      = campaign.budget_total  ?? campaign.budget ?? 0
                     const spent       = campaign.budget_spent  ?? campaign.budgetSpent ?? campaign.total_spend ?? 0
@@ -433,7 +683,7 @@ export function ReportsClient({
               </div>
             </CardHeader>
             <CardContent>
-              {initialReputationData ? (
+              {reputationData ? (
                 <div className="grid gap-4 md:grid-cols-3 mb-6">
                   <Card className="border-0 bg-muted/50">
                     <CardContent className="pt-6">
@@ -441,7 +691,7 @@ export function ReportsClient({
                         <div>
                           <p className="text-sm text-muted-foreground">Average Rating</p>
                           <div className="text-2xl font-bold">
-                            {initialReputationData.avgRating?.toFixed(1) ?? "N/A"}
+                            {reputationData.avgRating?.toFixed(1) ?? "N/A"}
                           </div>
                         </div>
                         <Star className="h-8 w-8 text-yellow-500 fill-yellow-500" />
@@ -454,7 +704,7 @@ export function ReportsClient({
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="text-sm text-muted-foreground">Reviews Received</p>
-                          <div className="text-2xl font-bold">{initialReputationData.totalReviews ?? 0}</div>
+                          <div className="text-2xl font-bold">{reputationData.totalReviews ?? 0}</div>
                         </div>
                         <Eye className="h-8 w-8 text-blue-500" />
                       </div>
@@ -467,7 +717,7 @@ export function ReportsClient({
                         <div>
                           <p className="text-sm text-muted-foreground">Response Rate</p>
                           <div className="text-2xl font-bold">
-                            {initialReputationData.responseRate?.toFixed(0) ?? 0}%
+                            {reputationData.responseRate?.toFixed(0) ?? 0}%
                           </div>
                         </div>
                         <CheckCircle2 className="h-8 w-8 text-green-500" />
@@ -477,11 +727,11 @@ export function ReportsClient({
                 </div>
               ) : null}
 
-              {initialReputationData?.recentReviews && initialReputationData.recentReviews.length > 0 ? (
+              {reputationData?.recentReviews && reputationData.recentReviews.length > 0 ? (
                 <div>
                   <h4 className="font-medium mb-3">Recent Reviews</h4>
                   <div className="space-y-3">
-                    {initialReputationData.recentReviews.map((review: any, idx: number) => (
+                    {reputationData.recentReviews.map((review: any, idx: number) => (
                       <div key={idx} className="p-4 border rounded-lg">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
@@ -511,6 +761,123 @@ export function ReportsClient({
               ) : (
                 <p className="text-muted-foreground">No review data available</p>
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Pipeline Tab — transaction pipeline by stage, loaded on demand */}
+        <TabsContent value="pipeline" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Transaction Pipeline</CardTitle>
+                  <CardDescription>Open deals by stage, pipeline value, and what has closed YTD</CardDescription>
+                </div>
+                <Button size="sm" variant="outline" onClick={loadPipeline} disabled={isPending} className="bg-transparent">
+                  {pipelineData ? "Refresh" : "Load pipeline"}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {pipelineError && (
+                <p className="text-sm text-destructive mb-3">{pipelineError}</p>
+              )}
+              {!pipelineData && !pipelineError && (
+                <p className="text-muted-foreground text-sm">Load the pipeline report to see stage-by-stage volume.</p>
+              )}
+              {pipelineData && (
+                <div className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <Card className="border-0 bg-muted/50">
+                      <CardContent className="pt-6">
+                        <p className="text-sm text-muted-foreground">Pipeline Value</p>
+                        <div className="text-2xl font-bold">
+                          ${Number(pipelineData.totalPipelineValue ?? 0).toLocaleString()}
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card className="border-0 bg-muted/50">
+                      <CardContent className="pt-6">
+                        <p className="text-sm text-muted-foreground">Closed YTD</p>
+                        <div className="text-2xl font-bold">{pipelineData.closedYTD ?? 0}</div>
+                      </CardContent>
+                    </Card>
+                    <Card className="border-0 bg-muted/50">
+                      <CardContent className="pt-6">
+                        <p className="text-sm text-muted-foreground">Closed YTD Value</p>
+                        <div className="text-2xl font-bold">
+                          ${Number(pipelineData.closedYTDValue ?? 0).toLocaleString()}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                  {(pipelineData.byStage ?? []).length > 0 ? (
+                    <div className="space-y-2">
+                      {pipelineData.byStage.map((row: any) => (
+                        <div key={row.stage} className="flex items-center justify-between border rounded-lg p-3">
+                          <div>
+                            <p className="font-medium capitalize">{String(row.stage).replace(/_/g, " ")}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {row.count} deal{row.count === 1 ? "" : "s"} · avg {Math.round(row.avg_days_in_stage ?? 0)} days in stage
+                            </p>
+                          </div>
+                          <span className="font-semibold">${Number(row.total_value ?? 0).toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground text-sm">No open deals in the pipeline.</p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Team Tab — team revenue vs goal, loaded on demand */}
+        <TabsContent value="team" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Team Performance</CardTitle>
+                  <CardDescription>Revenue against goal for every team in scope</CardDescription>
+                </div>
+                <Button size="sm" variant="outline" onClick={loadTeam} disabled={isPending} className="bg-transparent">
+                  {teamData ? "Refresh" : "Load teams"}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {teamError && <p className="text-sm text-destructive mb-3">{teamError}</p>}
+              {!teamData && !teamError && (
+                <p className="text-muted-foreground text-sm">Load the team report to see attainment.</p>
+              )}
+              {teamData && ((teamData.teams ?? []).length > 0 ? (
+                <div className="space-y-2">
+                  {teamData.teams.map((t: any) => (
+                    <div key={t.id} className="flex items-center justify-between border rounded-lg p-3">
+                      <div>
+                        <p className="font-medium">{t.team_name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {t.agent_count} agent{t.agent_count === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-semibold">${Number(t.total_revenue ?? 0).toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {Math.round(t.attainment_pct ?? 0)}% of ${Number(t.goal_amount ?? 0).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-sm">
+                  No teams in scope — team reports are visible to team leads, brokers and admins.
+                </p>
+              ))}
             </CardContent>
           </Card>
         </TabsContent>

@@ -1,9 +1,25 @@
 // lib/kernel/observability.ts
 // Read-only observability layer for superadmin dashboards.
 // Queries automation_errors and calendar_sync_logs.
-// All functions require superadmin role. No writes.
+// All functions require the platform 'sentinel' capability. No writes.
+//
+// WHY THE SERVICE CLIENT (#198): the gate above admits platform staff, but the
+// queries used to run through the RLS-bound session client — and the live
+// SELECT policies on both tables are tenant-only
+// (`brokerage_id = current_user_brokerage_id()`, automation_errors adding an
+// `IS NULL` branch; measured in pg_policies). Platform staff have no tenant
+// brokerage_id, so every read resolved to zero rows / a refused count and the
+// page stayed empty for the only audience allowed to open it. This is the same
+// shape every other platform surface already solved
+// (app/actions/superadmin/*): authorize via requirePlatformCapability, then
+// read through the service client. The RLS alternative — adding an
+// `is_platform_staff()` OR-branch — was rejected because that helper admits
+// marketing/support too, which is BROADER than the 'sentinel' capability
+// ({superadmin, admin} + override layer) this surface is gated on; gate and
+// data path would disagree again, just in the other direction.
 
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import type { CalendarSyncLogRow } from "./calendar-sync"
 
 // ─── RE-EXPORT CalendarSyncLogRow so consumers only import from observability ─
@@ -34,18 +50,38 @@ export type ObservabilityFilterParams = {
 }
 
 // ─── INTERNAL GUARD ───────────────────────────────────────────────────────────
+//
+// TWO DEFECTS IN THE GATE THIS REPLACES.
+//
+// 1. IT ADMITTED NOBODY. It read the profile of `userId` and threw unless
+//    `user_type === 'superadmin'`. Measured live: no row in public.users carries
+//    that user_type. The one platform superadmin is platform_role='superadmin'
+//    with user_type='admin' — 'admin' being also a TENANT user_type is exactly
+//    why the platform roster is carried on platform_role
+//    (lib/platform/platform-staff-roster.ts). The predicate was unsatisfiable,
+//    so all three exports threw for every caller. The only consumer,
+//    /dashboard/superadmin/observability, already gates on
+//    requirePlatformCapability("sentinel") and let staff in — then its try/catch
+//    swallowed this throw and rendered "Failed to load observability data".
+//    Nobody has ever seen that page's contents.
+//
+// 2. IT AUTHORIZED A CALLER-SUPPLIED ID. `userId` arrived as a parameter and the
+//    role was read from THAT row, not from the session. Identity must be
+//    resolved from the session and the supplied id authorized against it, never
+//    the reverse. The gate now does exactly that, and the claimed id must match
+//    the signed-in actor.
+//
+// WHICH CAPABILITY: 'sentinel' — the SAME capability the one calling page
+// already declares, so gate and page can no longer disagree. Automation-error
+// and calendar-sync telemetry is platform-integrity monitoring, not tenant
+// financials, so 'sentinel' ({superadmin, admin}) is the right authority and
+// 'billing'/'tenants' are not. Every export here is read-only.
 
-async function requireSuperadmin(userId: string): Promise<void> {
-  const supabase = await createClient()
-  const { data: user, error } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", userId)
-    .single()
-
-  if (error || !user) throw new Error("User not found")
-  if (user.user_type !== "superadmin") {
-    throw new Error("Forbidden: superadmin access required")
+async function requirePlatformObservability(claimedUserId: string): Promise<void> {
+  const gate = await requirePlatformCapability("sentinel")
+  if (!gate.ok) throw new Error(gate.error ?? "Forbidden: platform 'sentinel' capability required")
+  if (claimedUserId && claimedUserId !== gate.userId) {
+    throw new Error("Forbidden: observability may only be read as the signed-in actor")
   }
 }
 
@@ -54,9 +90,11 @@ async function requireSuperadmin(userId: string): Promise<void> {
 export async function listAutomationErrors(
   params: ObservabilityFilterParams & { userId: string }
 ): Promise<{ rows: AutomationErrorRow[]; total: number }> {
-  await requireSuperadmin(params.userId)
+  await requirePlatformObservability(params.userId)
 
-  const supabase = await createClient()
+  // Post-gate service client: platform staff read ANY tenant's telemetry; the
+  // tenant-scoped RLS on automation_errors cannot express that (see header).
+  const supabase = createServiceClient()
   const limit = params.limit ?? 50
   const offset = params.offset ?? 0
 
@@ -112,9 +150,10 @@ export async function listCalendarSyncLogs(params: {
   limit?: number
   offset?: number
 }): Promise<CalendarSyncLogRow[]> {
-  await requireSuperadmin(params.userId)
+  await requirePlatformObservability(params.userId)
 
-  const supabase = await createClient()
+  // Post-gate service client (see header — calendar_sync_logs RLS is tenant-only).
+  const supabase = createServiceClient()
   const limit = params.limit ?? 50
   const offset = params.offset ?? 0
 
@@ -139,9 +178,10 @@ export async function getObservabilityDashboard(params: {
   calendarSyncFailures: number
   lastUpdated: string
 }> {
-  await requireSuperadmin(params.userId)
+  await requirePlatformObservability(params.userId)
 
-  const supabase = await createClient()
+  // Post-gate service client (see header — both tables carry tenant-only RLS).
+  const supabase = createServiceClient()
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 

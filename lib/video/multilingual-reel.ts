@@ -8,9 +8,18 @@
  *       (NOT Gemini — uses the Vercel AI Gateway with the Claude/OpenAI models
  *       already wired in).
  *   (2) Rendering ElevenLabs TTS using the `eleven_multilingual_v2` model with
- *       the target language — driven by the translated input text (ElevenLabs
- *       auto-detects from the text; language_code is forwarded as a hint for
- *       precision when specified).
+ *       the target language — driven ENTIRELY by the translated input text.
+ *       CORRECTED (wave 52 — Exa research against ElevenLabs' own API
+ *       reference): `language_code` is NOT a general "hint for precision" on
+ *       this model, despite what this comment used to say. ElevenLabs: "only
+ *       Turbo v2.5 and Flash v2.5 support language enforcement" — the plain
+ *       /convert endpoint 400s if you send language_code with any other
+ *       model, and /convert-with-timestamps silently ignores it for
+ *       multilingual_v2 either way. See lib/voice/elevenlabs-tts.ts's file
+ *       header for the full finding and the fix (language_code is now sent
+ *       ONLY to models on ElevenLabs' actual enforcement allowlist). The
+ *       translated TEXT is what selects the language for multilingual_v2 —
+ *       which is exactly what step (1) already produces.
  *   (3) Commissioning the reel variant via the EXISTING Video Director
  *       (commissionVideo) with a locale suffix on the idempotency key so the
  *       same (entity, kind, locale) never double-commissions.
@@ -18,6 +27,14 @@
  * D-ID + ElevenLabs ONLY. No HeyGen. No Gemini vision.
  *
  * Exports:
+ *   · DEFAULT_LANGUAGE             — owner ruling (wave 51, 2026-09-10, verbatim: "the
+ *                                    default language is english"): THE one constant
+ *                                    every language resolution in the codebase falls
+ *                                    back to when a locale is unknown/null — never a
+ *                                    second hardcoded "en" literal (CLAUDE.md §6, one
+ *                                    vocabulary per function). Canonical home for it:
+ *                                    this is the file that already owns the BCP-47 →
+ *                                    ElevenLabs language_code vocabulary.
  *   · localeToElevenLabsLanguage   — PURE locale→ElevenLabs language_code mapper.
  *   · MULTILINGUAL_TTS_MODEL       — the ElevenLabs model constant (no identifier
  *                                    in comments beyond what the API name is — the
@@ -32,124 +49,171 @@
 import type { createServiceClient } from "@/lib/supabase/service"
 import type { GatewayChatMessage } from "@/lib/ai/gateway-chat"
 import type { VideoSituation, CommissionOpts } from "@/lib/video/video-director"
+// SCHEMA_SNAPSHOT is loaded LAZILY (inside schemaHasColumn below), never as a
+// top-level value import: this file's header promises the pure helpers
+// (DEFAULT_LANGUAGE, LANGUAGE_OPTIONS, localeToElevenLabsLanguage, languageName,
+// resolveContactLanguage) are safe for a "use client" language-selector UI to
+// import directly (app/components/portal/PortalSettingsPage.tsx,
+// app/crm/components/contact-header-card.tsx) — a static import of the
+// ~180KB generated schema cache would inline it into every one of those
+// browser bundles for a helper only resolveContactLanguageFromDb's server-side
+// I/O path ever calls.
 
-// ─── ElevenLabs multilingual model constant ──────────────────────────────────
+// ─── Language vocabulary — defined ONCE in ./language-vocabulary (pure, zero
+// ─── imports, browser-safe) and re-exported here so every existing importer of
+// ─── this module keeps working. See that file's header for why it is separate.
+import {
+  DEFAULT_LANGUAGE,
+  MULTILINGUAL_TTS_MODEL,
+  localeToElevenLabsLanguage,
+  isMultilingualLocale,
+  languageName,
+} from "@/lib/video/language-vocabulary"
+export {
+  DEFAULT_LANGUAGE,
+  MULTILINGUAL_TTS_MODEL,
+  LOCALE_TO_ELEVENLABS_LANGUAGE,
+  localeToElevenLabsLanguage,
+  isMultilingualLocale,
+  LANGUAGE_NAMES,
+  languageName,
+  LANGUAGE_OPTIONS,
+} from "@/lib/video/language-vocabulary"
+// elevenLabsModelForLane (lib/video/realism-profile.ts) is the ONE model_id
+// selector (§6) — used below in place of the bare MULTILINGUAL_TTS_MODEL
+// literal so the video_metadata this function stamps stays honest about
+// which model actually renders the audio (wave 57).
+import { elevenLabsModelForLane } from "@/lib/video/realism-profile"
+
+// ─── resolveContactLanguage — THE ONE LANGUAGE RESOLVER (§6) ─────────────────
 
 /**
- * The ElevenLabs model that handles many languages from a single cloned voice.
- * Language is driven by the input text; the language_code param is forwarded as
- * an explicit hint when the caller knows the target locale.
+ * The inputs resolveContactLanguage needs, ALREADY READ by the caller. This
+ * function does NO I/O itself — every caller (a `server-only` reactor, a pure
+ * simulator, a future non-DB caller) can drive it, and the tier order is
+ * provable without a database. `resolveContactLanguageFromDb` below is the
+ * convenience wrapper that does the actual reads for the two real callers.
  */
-export const MULTILINGUAL_TTS_MODEL = "eleven_multilingual_v2"
-
-// ─── Locale → ElevenLabs language_code (PURE) ────────────────────────────────
-
-/**
- * Canonical BCP-47 locale tags → ElevenLabs language_code strings accepted by
- * the multilingual model endpoint.
- *
- * ElevenLabs language_code values are lowercase ISO 639-1 codes (2-letter). The
- * model auto-detects from the input text when no language_code is supplied, but
- * passing an explicit code improves accuracy for shorter scripts or scripts that
- * contain loan words from other languages.
- *
- * New languages can be appended here without touching any caller — the function
- * returns null for unmapped locales, which falls back to auto-detection.
- */
-const LOCALE_TO_ELEVENLABS_LANGUAGE: Record<string, string> = {
-  // Spanish
-  "es":    "es",
-  "es-mx": "es",
-  "es-ar": "es",
-  "es-co": "es",
-  "es-cl": "es",
-  "es-es": "es",
-  "es-us": "es",
-  // Portuguese
-  "pt":    "pt",
-  "pt-br": "pt",
-  "pt-pt": "pt",
-  // French
-  "fr":    "fr",
-  "fr-ca": "fr",
-  "fr-fr": "fr",
-  // German
-  "de":    "de",
-  "de-de": "de",
-  "de-at": "de",
-  "de-ch": "de",
-  // Italian
-  "it":    "it",
-  "it-it": "it",
-  // Chinese (Simplified / Traditional both map to zh for the voice model)
-  "zh":    "zh",
-  "zh-cn": "zh",
-  "zh-tw": "zh",
-  "zh-hk": "zh",
-  // Japanese
-  "ja":    "ja",
-  // Korean
-  "ko":    "ko",
-  // Arabic
-  "ar":    "ar",
-  // Hindi
-  "hi":    "hi",
-  // Polish
-  "pl":    "pl",
-  // Dutch
-  "nl":    "nl",
-  // Russian
-  "ru":    "ru",
-  // Turkish
-  "tr":    "tr",
-  // Ukrainian
-  "uk":    "uk",
-  // Swedish
-  "sv":    "sv",
-  // Norwegian
-  "no":    "no",
-  // Danish
-  "da":    "da",
-  // Finnish
-  "fi":    "fi",
-  // Indonesian
-  "id":    "id",
-  // Tagalog / Filipino
-  "tl":    "tl",
-  // Vietnamese
-  "vi":    "vi",
-  // English (default — monolingual model is preferred but multilingual handles it)
-  "en":    "en",
-  "en-us": "en",
-  "en-gb": "en",
-  "en-au": "en",
+export interface ContactLanguageInputs {
+  /** contacts.preferred_language — tier 1. Null when the contact/agent never
+   *  set one, OR when the column does not exist yet (m620 not applied). */
+  contactPreferredLanguage?: string | null
+  /** The most recent call_transcriptions.language for a voice_calls row linked
+   *  to this contact — tier 2. Null when no transcribed call exists. */
+  latestCallTranscriptionLanguage?: string | null
+  /** The intake-time locale capture (form locale field / Accept-Language
+   *  header), stored at contacts.metadata->>'captured_language' until m620
+   *  lands and a typed column replaces it — tier 3. */
+  intakeCapturedLanguage?: string | null
 }
 
 /**
- * localeToElevenLabsLanguage — PURE.
+ * resolveContactLanguage — PURE. THE ONE RESOLVER every avatar-video, persona-
+ * reel, caption, and copy-generation caller uses to answer "what language does
+ * this contact get". Tier order is the owner's ruling, in force:
  *
- * Map a BCP-47 locale tag (case-insensitive) to the ElevenLabs language_code
- * accepted by the multilingual model. Returns null when the locale is unmapped
- * (the model will auto-detect from the translated text — perfectly safe fallback).
+ *   1. contacts.preferred_language   — the contact/agent said so explicitly.
+ *   2. call_transcriptions.language  — they've spoken to us before; a real
+ *      detected language beats a guess.
+ *   3. intake-time locale            — the form/Accept-Language capture at
+ *      first touch, before any of the above could exist.
+ *   4. DEFAULT_LANGUAGE ("en")       — owner ruling: default is English.
  *
- * Unit-testable in isolation (no I/O).
+ * Every tier value is passed through `localeToElevenLabsLanguage` so a raw
+ * BCP-47 locale ("es-MX", "pt-BR") or an already-mapped code both resolve the
+ * same way, and an unmapped/garbage value never survives to the next stage
+ * silently wrong — it falls through to the next tier exactly like a null would.
  */
-export function localeToElevenLabsLanguage(locale: string): string | null {
-  if (!locale) return null
-  const key = locale.trim().toLowerCase()
-  return LOCALE_TO_ELEVENLABS_LANGUAGE[key] ?? null
+export function resolveContactLanguage(ctx: ContactLanguageInputs): string {
+  const tiers: Array<string | null | undefined> = [
+    ctx.contactPreferredLanguage,
+    ctx.latestCallTranscriptionLanguage,
+    ctx.intakeCapturedLanguage,
+  ]
+  for (const raw of tiers) {
+    if (!raw) continue
+    const mapped = localeToElevenLabsLanguage(raw)
+    if (mapped) return mapped
+  }
+  return DEFAULT_LANGUAGE
 }
 
 /**
- * isMultilingualLocale — PURE helper.
- *
- * Returns true when the locale is non-English (i.e. requires translation + the
- * multilingual TTS model). English locales can use the cheaper monolingual model.
- * Used by commissionMultilingualReel to skip translation for the default locale.
+ * schemaHasColumn — PURE. Reads the generated schema cache
+ * (scripts/schema-snapshot.ts, regenerated from the live database — CLAUDE.md
+ * §3) rather than assuming a column exists. This is what lets
+ * resolveContactLanguageFromDb ship AHEAD of m620 being applied: the SELECT
+ * below never names `preferred_language` until the cache says the live table
+ * actually has it, so a query against the unmigrated database never 42703s.
  */
-export function isMultilingualLocale(locale: string): boolean {
-  const lang = localeToElevenLabsLanguage(locale)
-  return lang !== null && lang !== "en"
+async function schemaHasColumn(table: string, column: string): Promise<boolean> {
+  const { SCHEMA_SNAPSHOT } = await import("@/scripts/schema-snapshot")
+  return (SCHEMA_SNAPSHOT[table] ?? []).includes(column)
+}
+
+/**
+ * resolveContactLanguageFromDb — the real callers' entry point. Does the tiered
+ * reads (tolerating m620's absence per the header above) and delegates the
+ * decision to the pure resolver.
+ *
+ * NEVER THROWS — a read failure at any tier is treated as "this tier has no
+ * answer" (falls through), consistent with CLAUDE.md §4 fail-closed: a language
+ * we cannot determine renders as the ruled default, never as a broken page.
+ */
+export async function resolveContactLanguageFromDb(
+  supabase: AnyClient,
+  contactId: string,
+): Promise<string> {
+  let contactPreferredLanguage: string | null = null
+  let intakeCapturedLanguage: string | null = null
+  try {
+    const cols = (await schemaHasColumn("contacts", "preferred_language"))
+      ? "preferred_language, metadata"
+      : "metadata"
+    const { data } = await supabase
+      .from("contacts")
+      .select(cols)
+      .eq("id", contactId)
+      .maybeSingle()
+    const row = data as { preferred_language?: string | null; metadata?: Record<string, unknown> | null } | null
+    contactPreferredLanguage = row?.preferred_language ?? null
+    const meta = row?.metadata
+    intakeCapturedLanguage =
+      meta && typeof meta === "object" && typeof (meta as any).captured_language === "string"
+        ? (meta as any).captured_language
+        : null
+  } catch {
+    // Tolerate a refused/failed read — falls through to the next tier.
+  }
+
+  let latestCallTranscriptionLanguage: string | null = null
+  try {
+    const { data: calls } = await supabase
+      .from("voice_calls")
+      .select("id")
+      .eq("contact_id", contactId)
+      .order("started_at", { ascending: false })
+      .limit(10)
+    const callIds = (calls ?? []).map((c: any) => c.id).filter(Boolean)
+    if (callIds.length > 0) {
+      const { data: transcription } = await supabase
+        .from("call_transcriptions")
+        .select("language")
+        .in("voice_call_id", callIds)
+        .order("transcribed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      latestCallTranscriptionLanguage = (transcription as any)?.language ?? null
+    }
+  } catch {
+    // Tolerate a refused/failed read — falls through to the next tier.
+  }
+
+  return resolveContactLanguage({
+    contactPreferredLanguage,
+    latestCallTranscriptionLanguage,
+    intakeCapturedLanguage,
+  })
 }
 
 // ─── Translation via AI gateway ──────────────────────────────────────────────
@@ -430,10 +494,18 @@ export async function commissionMultilingualReel(
           locale,
           script_content: translatedScript,
           video_metadata: {
-            tts_model:         MULTILINGUAL_TTS_MODEL,
+            // WAVE 57: descriptive metadata only (reel-voiceover.ts derives
+            // its OWN model via elevenLabsModelForLane rather than reading
+            // this field back — see that file's header). Kept in sync with
+            // the model actually used so this row never describes a model
+            // the render no longer runs under (elevenLabsModelForLane("reel_
+            // narration", …) is eleven_v3 for every locale — see lib/video/
+            // realism-profile.ts's research header for why MULTILINGUAL_TTS_
+            // MODEL is no longer that model).
+            tts_model:         elevenLabsModelForLane("reel_narration", ttsLanguageCode),
             tts_language_code: ttsLanguageCode,
             translated_captions: translation.translatedCaptions ?? [],
-            source_locale:     "en",
+            source_locale:     DEFAULT_LANGUAGE,
             target_locale:     locale,
           },
           updated_at: now,

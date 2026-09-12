@@ -14,7 +14,10 @@ export default async function ShowingPrepListPage() {
   if (!user) redirect("/login")
 
   const result = await loadUpcomingShowingsForAgent()
-  if ("error" in result) redirect("/dashboard/agent/setup")
+  // /dashboard/agent/setup never had a page.tsx, so the recovery from "no agent
+  // record" 404'd. Same destination as every other site with this branch:
+  // the onboarding wizard (app/dashboard/communications/page.tsx:67).
+  if ("error" in result) redirect("/dashboard/onboarding")
 
   return <ShowingPrepListClient rows={result.rows} />
 }

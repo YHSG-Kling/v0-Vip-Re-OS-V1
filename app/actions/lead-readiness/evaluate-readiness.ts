@@ -81,19 +81,65 @@ export async function evaluateAndLogLeadReadiness(leadId: string): Promise<{
   }
 }
 
+/** Ceiling on one batch. A pipeline view asks about a page of leads, not a table. */
+const MAX_BATCH = 200
+
 /**
  * Batch evaluate readiness for multiple leads.
  * Useful for dashboard views showing lead pipeline status.
+ *
+ * THREE THINGS THIS HAD TO GAIN BEFORE IT COULD BE WIRED (it is a `"use server"`
+ * export, so it is a public HTTP endpoint):
+ *
+ *   1. AUTHENTICATION. It had none.
+ *   2. TENANT SCOPE. evaluateLeadReadiness reads with the SERVICE client and
+ *      filters on `.eq("id", leadId)` only — it does not scope by brokerage. An
+ *      anonymous caller passing arbitrary lead ids therefore read other
+ *      tenants' lead scores and stages straight through RLS. The ids are now
+ *      intersected with the caller's brokerage first, and ids that do not belong
+ *      to it are simply not evaluated.
+ *   3. A CEILING. `Promise.all` over a caller-supplied array is an amplification
+ *      lever: one request of N ids became 2N concurrent service-role queries.
  */
 export async function batchEvaluateLeadReadiness(leadIds: string[]): Promise<{
   evaluations: Array<{ leadId: string; evaluation: ReadinessEvaluation | null }>
   error: string | null
 }> {
   try {
-    console.log("[v0] Batch evaluating readiness for", leadIds.length, "leads")
+    if (!Array.isArray(leadIds) || leadIds.length === 0) {
+      return { evaluations: [], error: null }
+    }
+    if (leadIds.length > MAX_BATCH) {
+      return { evaluations: [], error: `Too many leads in one batch (max ${MAX_BATCH})` }
+    }
+
+    const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { evaluations: [], error: "Unauthenticated" }
+    }
+
+    // Keep only leads that belong to the caller's brokerage. Destructure the
+    // error: a read we could not perform is a REFUSAL, not "none of these leads
+    // are yours" — silently returning an empty evaluation set would read as
+    // "nothing is ready", which is a claim about the pipeline we cannot make.
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data: ownLeads, error: scopeError } = await svc
+      .from("leads")
+      .select("id")
+      .eq("brokerage_id", ctx.brokerageId)
+      .in("id", leadIds)
+
+    if (scopeError) {
+      return { evaluations: [], error: `Cannot verify lead ownership: ${scopeError.message}` }
+    }
+
+    const scopedIds = (ownLeads ?? []).map((r: { id: string }) => r.id)
+    console.log("[v0] Batch evaluating readiness for", scopedIds.length, "leads")
 
     const evaluations = await Promise.all(
-      leadIds.map(async (leadId) => {
+      scopedIds.map(async (leadId) => {
         const evaluation = await evaluateLeadReadiness(leadId)
         return { leadId, evaluation }
       })

@@ -35,7 +35,22 @@ function sourceLayer() {
   console.log("\n[wiring — session log, ledger points, lift KPI, UI, owned]")
   const act = src("app/actions/onboarding/mentor-session.ts")
   check("logMentorSession writes the canonical mentor_sessions table", /from\("mentor_sessions"\)\.insert\(\{/.test(act))
-  check("logMentorSession awards CONSOLIDATED ledger points to both parties", /from\("agent_points_log"\)\.insert\(\[[\s\S]*?MENTOR_SESSION_HELD[\s\S]*?menteeAgentId/.test(act))
+  // This asserted a DIRECT `agent_points_log.insert([...])` covering both parties.
+  // m484 made award_agent_points() the one award path — increment and ledger row
+  // in a single transaction — and no app writer inserts into that table any more,
+  // so the old shape asserted an implementation the ruling deliberately removed.
+  // The claim that still matters is unchanged: BOTH parties are credited, for the
+  // same named reason, through the one path.
+  check(
+    "logMentorSession awards CONSOLIDATED points to both parties through the one award path",
+    /awardAgentPoints\(/.test(act) &&
+      /for \(const agentId of \[input\.mentorAgentId, input\.menteeAgentId\]\)/.test(act) &&
+      /reason:\s*"MENTOR_SESSION_HELD"/.test(act),
+  )
+  check(
+    "and it writes the ledger through that path only — no direct agent_points_log insert survives here",
+    !/from\("agent_points_log"\)\.insert\(/.test(act),
+  )
   check("a low mentee rating flags a possible mismatch to the broker", /menteeRating \?\? 5\) <= 2[\s\S]*?mentor_mismatch_review/.test(act))
   check("getMentorLift compares mentored vs unmentored newer agents", /getMentorLift/.test(act) && /computeMentorLift\(/.test(act))
   check("the mentee UI wires the log-session form", /logMentorSession\(\{ mentorAgentId/.test(src("app/dashboard/onboarding/mentorship/mentorship-client.tsx")))

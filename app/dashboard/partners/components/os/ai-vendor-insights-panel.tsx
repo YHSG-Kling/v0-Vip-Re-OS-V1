@@ -5,9 +5,21 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Sparkles, AlertTriangle, TrendingUp, RefreshCw, Lightbulb } from "lucide-react"
-import { getVendorRecommendations, analyzeVendorPerformance } from "@/app/actions/ai-vendor-management"
+// `getVendorRecommendations` is NOT imported here any more — it is a
+// per-JOB matcher and its `serviceType` is REQUIRED, which this panel has not
+// got. It survives at app/actions/ai-vendor-management.ts:77 and is consumed by
+// the booking flow; the same-named bench read used by the marketing panel is a
+// DIFFERENT function at app/actions/marketing-package-automation.ts:313.
+// This panel asks the portfolio-wide question, which is what
+// analyzeVendorPerformance answers — see loadInsights below.
+import { analyzeVendorPerformance } from "@/app/actions/ai-vendor-management"
 
 interface AiVendorInsightsPanelProps {
+  /**
+   * Display/refetch key ONLY — it is NOT sent to the server. The action derives
+   * tenant and actor from the SESSION (CLAUDE.md §4); passing this one back
+   * would be the body-supplied-identity shape the action was just fixed for.
+   */
   brokerageId: string
 }
 
@@ -28,19 +40,43 @@ export function AiVendorInsightsPanel({ brokerageId }: AiVendorInsightsPanelProp
   async function loadInsights() {
     setLoading(true)
     try {
-      // Get AI recommendations
-      const result = await getVendorRecommendations(brokerageId as any)
+      // 🚨 WAS: `getVendorRecommendations(brokerageId as any)` — a brokerage id
+      // passed as the WHOLE params object, cast through `any` so the compiler
+      // could not object. `params.agentId` was therefore `undefined` and the
+      // action's own `isValidUUID` gate refused EVERY call, so this panel has
+      // only ever rendered the "Expand Vendor Network" placeholder below. The
+      // `as any` is what hid it. No argument is passed now: the action reads
+      // tenant and actor from the session.
+      const result = await analyzeVendorPerformance()
 
       const aiInsights: Insight[] = []
 
-      if (result.success && (result as any).recommendations) {
-        ((result as any).recommendations as any[]).forEach((rec: any, idx: number) => {
+      if (result.success && (result as any).analysis) {
+        const analysis = (result as any).analysis
+
+        // Red flags first — a declining or unreliable vendor is the thing a
+        // partners desk needs to see before any upside suggestion.
+        ;((analysis.redFlags ?? []) as any[]).forEach((flag: any, idx: number) => {
+          aiInsights.push({
+            id: `flag-${idx}`,
+            type: "warning",
+            title: flag.issue || "Vendor Issue",
+            description: flag.suggestedAction || flag.issue,
+            vendorName: flag.vendorName,
+          })
+        })
+
+        ;((analysis.recommendations ?? []) as any[]).forEach((rec: any, idx: number) => {
           aiInsights.push({
             id: `rec-${idx}`,
-            type: rec.priority === "high" ? "warning" : "recommendation",
-            title: rec.title || "Vendor Recommendation",
-            description: rec.description || rec.message,
-            vendorId: rec.vendorId,
+            // "replace" and "decrease_usage" are corrective, not upside.
+            type: rec.type === "replace" || rec.type === "decrease_usage"
+              ? "warning"
+              : rec.type === "increase_usage"
+                ? "opportunity"
+                : "recommendation",
+            title: rec.action || "Vendor Recommendation",
+            description: rec.reasoning || rec.action,
             vendorName: rec.vendorName,
           })
         })

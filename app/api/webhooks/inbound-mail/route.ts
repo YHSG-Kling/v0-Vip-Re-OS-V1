@@ -21,8 +21,11 @@ import {
   detectInboundProvider, parseInbound, parseFetchInstruction, verifyInbound,
   type ParsedInboundEmail,
 } from "@/lib/inbound-mail/providers"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { resolveUserByInboundIdentifier } from "@/lib/inbound-mail/resolve-user-provider"
 import { fetchGmailMessagesSinceHistory, fetchOutlookMessage } from "@/lib/inbound-mail/oauth-fetchers"
+import { requireTenantedUnambiguousTenant } from "@/lib/kernel/unambiguous-tenant"
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text()
@@ -76,12 +79,25 @@ export async function POST(request: NextRequest) {
         credential:   resolvedCredential,
         newHistoryId: instruction.historyId,
       })
-      // Persist the new history_id so the next push starts from here
+      // Persist the new history_id so the next push starts from here.
+      //
+      // NOT optional, and the result is now read. This is Gmail's incremental
+      // sync cursor: if the write is lost the next push notification replays
+      // from the OLD history_id, so the same inbound emails are fetched and
+      // processed again. The failure mode is duplicate inbound handling, which
+      // is exactly the sort of thing that looks like a mystery rather than a
+      // bug — and supabase-js resolves a rejected update, so nothing surfaced.
       const supabase = createServiceClient()
-      await supabase
+      const { error: cursorError } = await supabase
         .from("platform_credentials")
         .update({ config: { ...resolvedCredential.config, history_id: instruction.historyId } })
         .eq("id", resolvedCredential.credential_id)
+      if (cursorError) {
+        console.error(
+          `[inbound-mail] Gmail history cursor NOT advanced for credential ${resolvedCredential.credential_id} — the next push will replay:`,
+          cursorError.message,
+        )
+      }
     } else if (provider === "outlook" && instruction.outlookResource) {
       const one = await fetchOutlookMessage({
         credential:  resolvedCredential,
@@ -126,14 +142,55 @@ export async function POST(request: NextRequest) {
     let contactId: string | null = null
 
     if (email.fromEmail) {
-      const { data: c } = await supabase
-        .from("contacts")
-        .select("id, brokerage_id")
-        .eq("email", email.fromEmail)
-        .maybeSingle()
-      if (c) {
-        contactId = c.id as string
-        if (!brokerageId) brokerageId = c.brokerage_id as string
+      if (brokerageId) {
+        // Tenant already established by the credential — resolve the sender WITHIN it.
+        const { data: c } = await supabase
+          .from("contacts")
+          .select("id")
+          .eq("brokerage_id", brokerageId)
+          .eq("email", email.fromEmail)
+          .maybeSingle()
+        if (c) contactId = c.id as string
+      } else {
+        // No credential-derived tenant, so the sender's email is all we have to go on.
+        // An email address is not unique across tenants: the same person can be a
+        // contact at two brokerages, and .maybeSingle() would have handed us whichever
+        // row came back first — which then became `brokerageId` for the entire flow
+        // below (offer intake, document upload, transaction routing). One shared
+        // address filed another tenant's documents.
+        //
+        // Take the match only when it is UNAMBIGUOUS. Two or more tenants claiming the
+        // sender means we cannot know whose mail this is, and guessing is the bug.
+        //
+        // ONE SPELLING OF THE RULE (§6). This block used to build its own Set and
+        // test `rows.length === 1 || (rows.length > 1 && tenants.size === 1)`,
+        // which is `length >= 1 && size === 1` written the long way — and the same
+        // sentence appeared twice more in app/api/webhooks/sendgrid-events/route.ts.
+        // Survivor: lib/kernel/unambiguous-tenant.ts.
+        //
+        // requireTenantedUnambiguousTenant, not the plain form: `brokerageId`
+        // feeds `.eq("brokerage_id", brokerageId)` for the whole flow below, so a
+        // single candidate whose brokerage_id is NULL must NOT be accepted. The
+        // old expression took it (the row type claimed non-null; the column is
+        // nullable) and the null then flowed into the tenant predicate. That is
+        // the one behavioural change here, and it fails CLOSED.
+        const { data: matches } = await supabase
+          .from("contacts")
+          .select("id, brokerage_id")
+          .eq("email", email.fromEmail)
+          .limit(2)
+        const senderMatch = requireTenantedUnambiguousTenant(
+          (matches ?? []) as Array<{ id: string; brokerage_id: string | null }>,
+        )
+        if (senderMatch.ok) {
+          contactId = senderMatch.rows[0].id
+          brokerageId = senderMatch.brokerageId
+        } else if (senderMatch.reason === "ambiguous_tenant") {
+          console.warn(
+            `[inbound-mail] sender ${email.fromEmail} is a contact at ${senderMatch.tenantCount} brokerages — ` +
+            "refusing to guess a tenant; skipping this message",
+          )
+        }
       }
     }
     if (!contactId && email.toEmail && brokerageId) {
@@ -147,22 +204,54 @@ export async function POST(request: NextRequest) {
     }
 
     // EMAIL → OFFER lookout (runs BEFORE the known-contact requirement, since an outside agent
-    // emailing an offer is NOT a known contact). If this is an offer for an in-house listing
-    // (matched by address, not sender), the offer flow owns it: auto-ingest when the buyer is a
-    // known sender contact, else surface a one-tap confirm to the listing agent. Best-effort.
+    // emailing an offer is NOT a known contact).
+    //
+    // WHOSE MAILBOX THIS IS, PASSED THROUGH (wave 12, R1). This route already
+    // resolves the credential that owns the inbox and used to hand the offer
+    // lane only the SENDER — the one identity an outside buyer's agent does not
+    // have with us. The mailbox owner is the authority the owner's ruling names:
+    // watch the LISTING AGENT's inbox for the listing's address. `agent_user_id`
+    // is a `users.id` and `listings.agent_id` is an `agents.id`; the intake
+    // RESOLVES between them and never coalesces one into the other.
+    //
+    // The transactional lane frequently resolves no agent at all. That is passed
+    // through as null, and the intake keeps its brokerage-wide fallback and
+    // records that the match was unkeyed — the working path is not deleted.
+    const mailbox = {
+      userId:  resolvedCredential?.agent_user_id ?? null,
+      address: resolvedCredential?.account_id ?? email.toEmail ?? null,
+    }
     if (brokerageId && email.attachments.some((a) => a.mime === "application/pdf")) {
       try {
-        const { tryIngestInboundOffer } = await import("@/lib/inbound-mail/offer-intake")
+        const { tryIngestInboundOffer, tryRouteOutboundOfferReply } = await import("@/lib/inbound-mail/offer-intake")
         const intake = await tryIngestInboundOffer({
           brokerageId,
           subject:         email.subject ?? null,
           bodyText:        email.bodyText ?? null,
           fromEmail:       email.fromEmail ?? null,
           senderContactId: contactId,
+          mailbox,
           attachments:     email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),
         }, supabase)
         if (intake.handled) {
           results.push({ email_from: email.fromEmail, uploads: 0 })
+          continue
+        }
+        // THE OUTBOUND RECIPROCAL (wave 12, R2). We sent our buyer's offer OUT to
+        // an outside listing agent; this is their reply coming back. It cannot
+        // reach the branch above: an outside listing has no `listings` row, so
+        // `offers.listing_id` is null and there is nothing for the address match
+        // to compare against. The counterparty address recorded at send time is
+        // the only key this mail will ever have.
+        const replied = await tryRouteOutboundOfferReply({
+          brokerageId,
+          subject:     email.subject ?? null,
+          fromEmail:   email.fromEmail ?? null,
+          mailbox,
+          attachments: email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),
+        }, supabase)
+        if (replied.handled) {
+          results.push({ email_from: email.fromEmail, uploads: replied.documentIds?.length ?? 0 })
           continue
         }
         // Not an offer — but maybe another deal doc (signed contract / inspection / appraisal /
@@ -202,7 +291,7 @@ export async function POST(request: NextRequest) {
           // The mailbox OWNER is the agent the portal routed this lead to — the
           // contact is created assigned to them (owner's rule: portal leads are
           // agent-assigned contacts, never cold raw leads).
-          await ingestPortalLead(supabase, brokerageId, portalLead, resolvedCredential?.agent_user_id ?? null)
+          await ingestPortalLead(supabase, brokerageId, portalLead, mailbox.userId)
           results.push({ email_from: email.fromEmail, uploads: 0 })
           continue
         }
@@ -243,10 +332,24 @@ export async function POST(request: NextRequest) {
       const { data: up, error: upErr } = await supabase.storage
         .from("documents")
         .upload(path, buf, { contentType: att.mime, upsert: false })
+      // An emailed-in attachment is whatever the counterparty sent — a signed
+      // contract, an addendum, a client's bank letter. getPublicUrl put every
+      // one at a permanent, unauthenticated URL that the row then persisted.
+      // One issuer, fail closed: no signed URL → the bytes are removed and the
+      // attachment is skipped, never filed behind a public link.
       let storageUrl: string | null = null
       if (!upErr && up) {
-        const { data: pub } = supabase.storage.from("documents").getPublicUrl(up.path)
-        storageUrl = pub.publicUrl ?? null
+        const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath: up.path })
+        if (issued.ok) {
+          storageUrl = issued.url
+        } else {
+          console.error(`[inbound-mail] ${issued.reason}`)
+          await removeOrRecordOrphan(supabase as never, {
+            bucket: "documents", objectPath: up.path,
+            reason: "inbound_mail_sign_failed", detail: issued.reason,
+            brokerageId,
+          })
+        }
       }
       if (!storageUrl) continue
 

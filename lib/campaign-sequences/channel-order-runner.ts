@@ -19,12 +19,22 @@ export async function runChannelOrderLearning(brokerageId: string, client?: Svc,
   const svc = client ?? createServiceClient()
   const since = new Date(Date.now() - (opts?.windowDays ?? 30) * 86_400_000).toISOString()
 
-  const { data: rows } = await svc
+  const { data: rows, error } = await svc
     .from("sequence_step_executions")
     .select("channel, status, replied_at")
     .eq("brokerage_id", brokerageId)
     .gte("created_at", since)
     .limit(20_000)
+
+  // supabase-js RESOLVES a refused query, so `const { data: rows }` alone made a
+  // refusal indistinguishable from "this brokerage has sent nothing" — and the
+  // function's own success shape, `{ channelsRanked: 0, recommended: null }`, is
+  // exactly what an empty window produces. FAIL CLOSED: recommend nothing and say
+  // the read failed, rather than publishing an advisory computed over a refusal.
+  if (error) {
+    console.error(`[channel-order] sequence_step_executions read refused for brokerage ${brokerageId}:`, error.message)
+    return { channelsRanked: 0, recommended: null }
+  }
 
   const byChannel = new Map<string, { sent: number; replies: number }>()
   for (const r of (rows ?? []) as any[]) {

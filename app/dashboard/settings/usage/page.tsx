@@ -8,31 +8,52 @@
  * "Twin avatars", "Live AI minutes").
  */
 
-import { redirect } from "next/navigation"
 import { loadUsageOverview, type MetricSnapshot } from "@/app/actions/usage-overview"
 import { Card } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
 import { AlertTriangle, CheckCircle2, Infinity as InfinityIcon, TrendingUp } from "lucide-react"
+// ONE tier label map (§6). The local one here spelled the RETIRED vocabulary —
+// starter / professional / team / enterprise — which scripts/1023-align-plan-tier-
+// vocabulary.sql migrated away from (starter → solo_agent, professional →
+// brokerage, enterprise → multi_location). Live `brokerages.plan_tier` is
+// CHECK-constrained to solo_agent | team | brokerage | multi_location, so three
+// of the four keys could never match and only 'team' resolved — by coincidence
+// of spelling. The survivor is lib/kernel/tier-role-matrix.ts:TIER_LABELS, which
+// the invite/upgrade copy already reads.
+import { TIER_LABELS, isCanonicalTier } from "@/lib/kernel/tier-role-matrix"
 
 export const dynamic = "force-dynamic"
-
-const TIER_LABELS: Record<string, string> = {
-  starter: "Starter",
-  professional: "Professional",
-  team: "Team",
-  enterprise: "Enterprise",
-}
 
 export default async function UsagePage() {
   const res = await loadUsageOverview()
 
   if (!res.ok) {
+    // Walkthrough [14]: this entry sits in the AGENT navigation but loadUsageOverview
+    // admits broker/admin/superadmin/team_lead only, so a plain agent was silently
+    // redirected to /dashboard — a click that appeared to do nothing. The entry itself
+    // is NOT wrong: team leads share this navigation and legitimately see the meter.
+    // What was wrong was bouncing without saying why. Consumption is billed to the
+    // brokerage, so the meter is the broker's; an agent's own activity is on their
+    // dashboard.
     if (res.error === "Forbidden") {
-      redirect("/dashboard")
+      return (
+        <div className="p-6 max-w-lg space-y-2">
+          <p className="text-sm font-medium">Plan usage is tracked at the brokerage level</p>
+          <p className="text-sm text-muted-foreground">
+            AI, voice and storage consumption is billed to your brokerage, so the meter is
+            visible to your broker, admins and team leads. Your own activity and results are
+            on your{" "}
+            <a href="/dashboard" className="text-blue-600 hover:underline">
+              dashboard
+            </a>
+            .
+          </p>
+        </div>
+      )
     }
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Couldn't load usage. {res.error}
+        Couldn&apos;t load usage. {res.error}
       </div>
     )
   }
@@ -58,7 +79,7 @@ export default async function UsagePage() {
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-sm">
-            {TIER_LABELS[data.planTier] ?? data.planTier} plan
+            {isCanonicalTier(data.planTier) ? TIER_LABELS[data.planTier] : data.planTier} plan
           </Badge>
         </div>
       </div>

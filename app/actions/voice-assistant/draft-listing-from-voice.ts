@@ -6,10 +6,32 @@
  * extractListingIntake + fillListingPacket + generateListingAgreement.
  *
  * Wired into VoiceAssistantPanel as a parallel "Draft Listing" mode.
+ *
+ * THE SURVIVOR OF THE LISTING-INTAKE CONSOLIDATION.
+ * app/api/workflow/intake/listing/route.ts was the same business process behind an
+ * HTTP door — same extractListingIntake, same workflow_intake_sessions row, same
+ * fillListingPacket, same documents insert (document_type 'listing_agreement',
+ * status 'needs_agent_input'), same recordAIFill audit, same generateListingAgreement
+ * staging, same /dashboard/listings/new?documentId= URL. It was retired because
+ * nothing in the tree addressed it and nothing outside could (it authenticated on
+ * `supabase.auth.getUser()`, i.e. a browser session), while this function is reached
+ * from app/mobile/voice/voice-session-button.tsx, app/actions/wizard-staging.ts and
+ * app/api/internal/voice-command/route.ts.
+ * Nothing had to be merged onto this survivor: it is a strict superset of that route
+ * (multi-turn follow-ups, the ready-to-finalize confirmation turn, the assistant turn
+ * appended to `conversation`, metadata.source='voice_intake', and a refusal when
+ * propertyState is missing — where the route wrote a NULL state_code). The route's
+ * intakeToListingDraftParams() mapper produces field-for-field what this function
+ * already hand-builds.
  */
 
 import { createClient } from "@/lib/supabase/server"
-import { extractListingIntake, type ListingIntake } from "@/lib/workflow/intake/voice-to-listing"
+// intakeToListingDraftParams is the ONE intake → generateListingAgreement mapping. It
+// was written for the retired /api/workflow/intake/listing route while this action
+// hand-built the identical object beside it; the survivor takes the shared mapper so
+// there is one spelling of the mapping, not two (CLAUDE.md §6). `state` is checked
+// before it is called, so its throw-on-missing-state can never fire here.
+import { extractListingIntake, intakeToListingDraftParams, type ListingIntake } from "@/lib/workflow/intake/voice-to-listing"
 import { fillListingPacket } from "@/lib/workflow/intake/form-fill-engine"
 
 export interface VoiceDraftListingRequest {
@@ -55,7 +77,14 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
   const brokerageId = userRow?.brokerage_id
   if (!brokerageId) return { kind: "error", error: "No brokerage on user" }
 
-  // Load any prior session
+  // Load any prior session — OWNER-SCOPED (§4). `sessionId` is caller-supplied,
+  // and without the `agent_user_id` predicate any authenticated user could
+  // resume ANOTHER user's intake — reading their contact linkage and the whole
+  // prior conversation — by guessing or replaying a session id. Identity comes
+  // from the SESSION, never the request. A miss (not found OR not yours —
+  // deliberately indistinguishable) starts a NEW session: req.sessionId is
+  // cleared so the persist below inserts rather than updating a row this
+  // caller does not own.
   let priorIntake: ListingIntake | undefined
   let priorConversation: Array<{ role: string; content: string; ts: string }> = []
   if (req.sessionId) {
@@ -63,17 +92,23 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
       .from("workflow_intake_sessions")
       .select("current_intake, conversation, contact_id")
       .eq("id", req.sessionId)
+      .eq("agent_user_id", user.id)
       .maybeSingle()
     if (session) {
       priorIntake = session.current_intake as ListingIntake
       priorConversation = (session.conversation as any[]) || []
       if (!req.contactId && session.contact_id) req.contactId = session.contact_id
+    } else {
+      req.sessionId = undefined
     }
   }
 
   const extracted = await extractListingIntake({
     text:  req.voiceInput,
     prior: priorIntake,
+    // §4 — session user, and the brokerage read off THEIR users row.
+    brokerageId,
+    userId: user.id,
   })
 
   const newConversation = [
@@ -175,14 +210,13 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
   try {
     const intakeMod = await import("@/app/actions/ai-listing-intake")
     if (typeof (intakeMod as any).generateListingAgreement === "function") {
-      await (intakeMod as any).generateListingAgreement({
+      await (intakeMod as any).generateListingAgreement(intakeToListingDraftParams({
+        intake:      extracted.intake,
         brokerageId,
-        contactId:       req.contactId ?? null,
-        agentUserId:     user.id,
-        state,
-        propertyAddress: extracted.intake.propertyAddress.value ?? undefined,
-        documentId:      doc.id,
-      })
+        contactId:   req.contactId ?? null,
+        agentUserId: user.id,
+        documentId:  doc.id,
+      }))
     }
   } catch { /* generator optional */ }
 

@@ -14,7 +14,10 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { composeConnectionImpact, composeConnectionHeadline, type ConnectionImpactRead } from "@/lib/agentic-os/connection-impact"
 
-const BROKER_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline, brokerage-wide connectivity view):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage.
+const BROKER_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 async function resolveCaller() {
   const supabase = await createClient()

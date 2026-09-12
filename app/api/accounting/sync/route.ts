@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,7 +22,7 @@ export async function POST(request: NextRequest) {
       .single()
 
     const resolvedType = profile?.user_type ?? profile?.role ?? ""
-    if (!profile || !["broker", "admin"].includes(resolvedType)) {
+    if (!profile || !isBrokerageFinanceAdmin({ user_type: resolvedType })) {
       return NextResponse.json({ error: "Forbidden: broker or admin role required" }, { status: 403 })
     }
 
@@ -68,19 +70,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create sync log" }, { status: 500 })
     }
 
-    // Log kernel event for sync started
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: profile.brokerage_id,
-      event_type: KernelEvent.SYSTEM_SYNC_TRIGGERED,
-      entity_type: "accounting_sync_log",
-      entity_id: syncLog.id,
-      actor_user_id: user.id,
+    // Kernel event for sync started — audit row + reactor.
+    await emitKernelEvent({
+      brokerageId: profile.brokerage_id,
+      event: KernelEvent.SYSTEM_SYNC_TRIGGERED,
+      entityType: "accounting_sync_log",
+      entityId: syncLog.id,
+      actorUserId: user.id,
       metadata: {
         provider: credentials.provider_name,
         sync_type,
         triggered_by: user.id,
       },
-      created_at: new Date().toISOString(),
     })
 
     // Perform sync based on type
@@ -92,11 +93,13 @@ export async function POST(request: NextRequest) {
       if (sync_type === "commission" || sync_type === "full") {
         // Sync commissions
         const { data: commissions } = await supabase
-          .from("commissions")
-          .select("id, gross_commission, agent_commission, brokerage_commission, status, paid_date")
+          // KEEP-ONE (m283): agent_commissions is the canonical ledger.
+          // Column translation: commissions.paid_date -> paid_at.
+          .from("agent_commissions")
+          .select("id, gross_commission, agent_commission, brokerage_commission, status, paid_at")
           .eq("brokerage_id", profile.brokerage_id)
           .eq("status", "paid")
-          .is("paid_date", null)
+          .is("paid_at", null)
           .limit(100)
 
         if (commissions) {
@@ -169,20 +172,19 @@ export async function POST(request: NextRequest) {
         })
         .eq("id", syncLog.id)
 
-      // Log kernel event for sync completed
-      await supabase.from("lifecycle_events").insert({
-        brokerage_id: profile.brokerage_id,
-        event_type: KernelEvent.SYSTEM_SYNC_COMPLETED,
-        entity_type: "accounting_sync_log",
-        entity_id: syncLog.id,
-        actor_user_id: user.id,
+      // Kernel event for sync completed — audit row + reactor.
+      await emitKernelEvent({
+        brokerageId: profile.brokerage_id,
+        event: KernelEvent.SYSTEM_SYNC_COMPLETED,
+        entityType: "accounting_sync_log",
+        entityId: syncLog.id,
+        actorUserId: user.id,
         metadata: {
           provider: credentials.provider_name,
           sync_type,
           records_synced: recordsSynced,
           records_failed: recordsFailed,
         },
-        created_at: new Date().toISOString(),
       })
 
       return NextResponse.json({

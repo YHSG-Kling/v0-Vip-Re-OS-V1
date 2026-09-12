@@ -76,7 +76,7 @@ export async function startWarmBridge(svc: any, ctx: InboundCallContext, input: 
     // Our number rings the agent — recognizable caller ID, tenant creds.
     const from = ctx.identity.forwardNumber === ctx.forwardNumber ? undefined : undefined
     const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-    const { data: numRow } = await svc.from("vapi_phone_numbers").select("phone_number")
+    const { data: numRow } = await svc.from("tenant_phone_numbers").select("phone_number")
       .eq("id", ctx.numberRowId).maybeSingle()
     const res = await callConnector<{ sid?: string }>({
       connector: "twilio",

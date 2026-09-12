@@ -33,6 +33,21 @@ export interface PerformanceQuery {
   campaignExternalId: string
   sinceIso:           string
   cred:               ConnectorCredential
+  /** Per-campaign provider state carried between ingest passes (a pending
+   *  async report id, for one). Stored on ad_campaigns.targeting_config by the
+   *  ingest under `provider_state`; Meta/Google ignore it. */
+  providerState?:     Record<string, unknown>
+}
+
+/** An ASYNC provider has accepted the question and will answer on a later pass.
+ *  The ingest persists `providerState` so the next pass can read the answer.
+ *  (Vibe reporting is a create-then-poll report; a cron tick never blocks on it.) */
+export interface PerformancePending { pending: true; providerState: Record<string, unknown> }
+
+export type PerformanceFetchResult = ProviderPerformanceRow | PerformancePending | null
+
+export function isPerformancePending(r: PerformanceFetchResult): r is PerformancePending {
+  return !!r && (r as PerformancePending).pending === true
 }
 
 export interface AudienceSyncResult {
@@ -66,8 +81,10 @@ export interface AdConnector {
   pushCustomAudience(args: AudiencePushArgs): Promise<AudienceSyncResult>
   /** Create a lookalike/similar audience seeded from an existing custom audience. */
   createLookalike(args: LookalikeArgs): Promise<AudienceSyncResult>
-  /** Pull campaign performance for ad_performance ingestion. */
-  fetchPerformance(args: PerformanceQuery): Promise<ProviderPerformanceRow | null>
+  /** Pull campaign performance for ad_performance ingestion. A synchronous
+   *  provider returns the row (or null); an async one may return a pending
+   *  marker with the state to carry to the next pass. */
+  fetchPerformance(args: PerformanceQuery): Promise<PerformanceFetchResult>
 }
 
 /** Pure: derive cost-per-lead + ctr consistently from raw counters (reused by every connector). */

@@ -181,15 +181,20 @@ function UploadModal({ access, onClose, onSaved }: {
   async function handleUpload(file: File) {
     setUploading(true); setError(null)
     try {
-      // Use the @vercel/blob/client put helper. The brand_asset_
-      // library already uses the same pattern; we copy it here for
-      // consistency.
-      const { upload } = await import("@vercel/blob/client")
-      const blob = await upload(`stock-library/${file.name}`, file, {
-        access: "public",
-        handleUploadUrl: "/api/blob/upload",
-      })
-      setVideoUrl(blob.url)
+      // Was @vercel/blob/client's `upload()`. Survivor:
+      // lib/storage/browser-upload.ts#uploadViaSignedUrl (owner ruling — all
+      // file storage lives in Supabase buckets). Still a direct browser→storage
+      // PUT, so a B-roll clip is not capped at Vercel's 4.5 MB function body
+      // limit. The old path was `stock-library/${file.name}` — no tenant in it
+      // at all, so two brokerages uploading `intro.mp4` wrote the same key; the
+      // key is now built server-side under the session's brokerage.
+      const { uploadViaSignedUrl } = await import("@/lib/storage/browser-upload")
+      const stored = await uploadViaSignedUrl({ purpose: "stock_library", file })
+      if (!stored.ok) {
+        setError(stored.error)
+        return
+      }
+      setVideoUrl(stored.url)
     } catch (e) {
       setError((e as Error).message)
     } finally {

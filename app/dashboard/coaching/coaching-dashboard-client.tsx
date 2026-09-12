@@ -1,12 +1,12 @@
 "use client"
 
-import { useState, useEffect, useTransition } from "react"
+import { useState } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
   Accordion,
   AccordionContent,
@@ -32,19 +32,12 @@ import {
   Gauge,
 } from "lucide-react"
 import { toast } from "sonner"
-import {
-  CoachingCommandStrip,
-  ConversionCoachingPanel,
-  ResponseQualityPanel,
-  CallReviewPanel,
-  HandoffCoachingPanel,
-  AppointmentCoachingPanel,
-  WeeklyImprovementPanel,
-} from "./components/os"
 import { generateWeeklyCoachingReport } from "@/app/actions/coaching"
 import { createClient } from "@/lib/supabase/client"
 import { aiCoachGoalProgress } from "@/app/actions/ai-agent-goals"
 import { getAgentCoachingInsights } from "@/app/actions/ai-predictions"
+import { completeSuggestion, dismissSuggestion } from "@/app/actions/assistant"
+import { createTask } from "@/app/actions/tasks"
 
 interface WeeklyReport {
   id: string
@@ -109,6 +102,13 @@ interface Suggestion {
   status: string
 }
 
+interface CallCoachingTip {
+  category: string
+  priority: string
+  tip: string
+  improvement_area: string
+}
+
 interface CoachingDashboardClientProps {
   agentId: string
   brokerageId: string
@@ -118,6 +118,7 @@ interface CoachingDashboardClientProps {
   sellerCoaching: SellerCoachingItem[]
   interventions: Intervention[]
   suggestions: Suggestion[]
+  callCoachingTips: CallCoachingTip[]
 }
 
 // Score dial SVG component
@@ -164,11 +165,14 @@ function ScoreDial({ score }: { score: number }) {
 
 // Stage coaching card component
 function StageCoachingCard({
+  entityId,
   name,
   stage,
   coaching,
   type,
 }: {
+  /** contacts.id for a buyer, listings.id for a seller — the task is filed against it. */
+  entityId: string
   name: string
   stage: string
   coaching: BuyerCoachingItem["coaching"] | SellerCoachingItem["coaching"]
@@ -176,6 +180,36 @@ function StageCoachingCard({
 }) {
   const stageBadgeColor =
     type === "buyer" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+
+  // The next action used to be rendered AS the button label with no handler —
+  // a coaching sentence dressed as a control. It is guidance, so it reads as
+  // guidance now, and the control beside it turns the guidance into a real task
+  // on the agent's task list (tasks table, filed against this contact/listing).
+  const [addingTask, setAddingTask] = useState(false)
+  const [taskAdded, setTaskAdded] = useState(false)
+
+  async function addNextActionAsTask() {
+    setAddingTask(true)
+    try {
+      const res = await createTask({
+        title: coaching.next_action_prompt,
+        description: `Coaching next action for ${name} — ${coaching.coaching_headline}`,
+        contactId: type === "buyer" ? entityId : undefined,
+        listingId: type === "seller" ? entityId : undefined,
+        priority: "high",
+      })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "The task was not created")
+        return
+      }
+      setTaskAdded(true)
+      toast.success("Added to your tasks")
+    } catch (err: any) {
+      toast.error(err?.message ?? "The task was not created")
+    } finally {
+      setAddingTask(false)
+    }
+  }
 
   return (
     <Card className="mb-4">
@@ -249,10 +283,39 @@ function StageCoachingCard({
           )}
         </div>
 
-        {/* Next Action CTA */}
-        <Button variant="outline" size="sm" className="w-full">
-          {coaching.next_action_prompt}
-        </Button>
+        {/* Next Action */}
+        {coaching.next_action_prompt && (
+          <div className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
+            <p className="text-sm text-foreground">
+              <span className="font-medium">Next: </span>
+              {coaching.next_action_prompt}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={addNextActionAsTask}
+              disabled={addingTask || taskAdded}
+            >
+              {taskAdded ? (
+                <>
+                  <CheckCircle2 className="mr-2 h-3.5 w-3.5" />
+                  Added to your tasks
+                </>
+              ) : addingTask ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  Adding…
+                </>
+              ) : (
+                <>
+                  <Target className="mr-2 h-3.5 w-3.5" />
+                  Add as task
+                </>
+              )}
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -275,6 +338,7 @@ export function CoachingDashboardClient({
   sellerCoaching,
   interventions,
   suggestions,
+  callCoachingTips,
 }: CoachingDashboardClientProps) {
   const router = useRouter()
   const [isGenerating, setIsGenerating] = useState(false)
@@ -287,27 +351,43 @@ export function CoachingDashboardClient({
   const [goalCoaching, setGoalCoaching] = useState<any>(null)
   const [goalCoachingLoading, setGoalCoachingLoading] = useState(false)
   const [goalCoachingLoaded, setGoalCoachingLoaded] = useState(false)
+  // Why the analysis produced nothing. The action distinguishes "No goals set for this
+  // year" from a genuine failure, and the two need different offers — re-running the
+  // analysis cannot help an agent who has no goals yet.
+  const [goalCoachingError, setGoalCoachingError] = useState<string | null>(null)
 
   // AI Insights tab state
   const [aiInsights, setAiInsights] = useState<any>(null)
   const [aiInsightsLoading, setAiInsightsLoading] = useState(false)
   const [aiInsightsLoaded, setAiInsightsLoaded] = useState(false)
 
-  function loadGoalCoaching() {
-    if (goalCoachingLoaded) return
+  // `force` lets an explicit retry re-run. Without it the tab click set
+  // goalCoachingLoaded=true, so the retry button in the empty state hit the guard on
+  // the first line and returned immediately — a button that could never do anything.
+  function loadGoalCoaching(force = false) {
+    if (goalCoachingLoaded && !force) return
     setGoalCoachingLoading(true)
     aiCoachGoalProgress({ agentId, brokerageId }).then((res) => {
-      setGoalCoaching((res as any).success ? (res as any).data : null)
+      const ok = (res as any).success
+      setGoalCoaching(ok ? (res as any).data : null)
+      setGoalCoachingError(ok ? null : ((res as any).error ?? "Goal analysis failed"))
       setGoalCoachingLoaded(true)
       setGoalCoachingLoading(false)
     })
   }
 
-  function loadAiInsights() {
-    if (aiInsightsLoaded) return
+  // Same `force` escape hatch as loadGoalCoaching — the Refresh button below sets
+  // aiInsightsLoaded=false and calls straight back in, but this closure still sees the
+  // PREVIOUS render's `true` and would return on the guard, so the button did nothing.
+  function loadAiInsights(force = false) {
+    if (aiInsightsLoaded && !force) return
     setAiInsightsLoading(true)
     getAgentCoachingInsights(agentId).then((res) => {
-      setAiInsights(res ?? null)
+      // getAgentCoachingInsights returns a bare [] on a query error and the rollup object
+      // on success. `[]` is truthy, so `res ?? null` rendered the populated branch with an
+      // undefined score and zero conversations — a failure dressed up as "0 out of 0".
+      const rollup = res && !Array.isArray(res) ? res : null
+      setAiInsights(rollup)
       setAiInsightsLoaded(true)
       setAiInsightsLoading(false)
     })
@@ -348,16 +428,27 @@ export function CoachingDashboardClient({
     }
   }
 
+  // Suggestion disposition goes through the canonical server actions
+  // (app/actions/assistant.ts). This used to be a raw client-side supabase
+  // update whose result was never read — supabase-js RESOLVES a failed query, so
+  // an RLS-blocked or missing row still fell through to
+  // toast.success("Suggestion dismissed") and the card vanished from a list it
+  // was never removed from. The actions report the affected row count; a refusal
+  // is now shown and the card stays put.
   const handleSuggestionAction = async (id: string, action: "executed" | "ignored") => {
     setExecutingId(id)
     try {
-      const supabase = createClient()
-      await supabase.from("smart_assistant_suggestions").update({ status: action }).eq("id", id)
+      const res = action === "executed"
+        ? await completeSuggestion(id)
+        : await dismissSuggestion(id)
+
+      if (!res.success) {
+        toast.error(res.error ?? "Failed to update suggestion")
+        return
+      }
 
       setLocalSuggestions((prev) => prev.filter((s) => s.id !== id))
       toast.success(action === "executed" ? "Action executed" : "Suggestion dismissed")
-    } catch (error) {
-      toast.error("Failed to update suggestion")
     } finally {
       setExecutingId(null)
     }
@@ -372,24 +463,17 @@ export function CoachingDashboardClient({
         </p>
       </div>
 
-      {/* OS Command Strip */}
-      <div className="mb-6">
-        <CoachingCommandStrip opportunity={null} />
-      </div>
-
-      {/* OS Panels Grid */}
-      <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <ConversionCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} issues={[]} topImprovement={null} />
-        <ResponseQualityPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} objectionOpportunities={[]} suggestions={[]} />
-        <CallReviewPanel agentId={agentId} brokerageId={brokerageId} insights={[]} summary={null} />
-      </div>
-
-      {/* Second Row of OS Panels */}
-      <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <HandoffCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} issues={[]} totalHandoffs={0} successRate={0} />
-        <AppointmentCoachingPanel agentId={agentId} brokerageId={brokerageId} metrics={[]} showRateIssues={[]} overallShowRate={0} appointmentsSet={0} appointmentsKept={0} />
-        <WeeklyImprovementPanel agentId={agentId} brokerageId={brokerageId} focusAreas={[]} weeklyProgress={null} lastReportDate={null} onGenerateReport={handleGenerateReport} />
-      </div>
+      {/* The seven ./components/os panels that used to sit here were mounted with every
+          prop hardcoded ([] / null / 0) — six permanently blank cards plus a command strip
+          that asserted "All systems performing well" without measuring anything. No loader
+          in app/actions or lib produces the shapes they read (ConversionMetric,
+          ObjectionOpportunity, CallCoachingInsight, HandoffIssue, ShowRateIssue, FocusArea
+          exist nowhere else in the codebase), and every job they claimed is already done
+          live: the outcome-based Weekly Report below carries the no-show rate, tour→offer
+          conversion, cold book and deal-health leaks (lib/kernel/agent-coaching); AI ISA
+          handoffs and per-call coaching insights render on /dashboard/voice/isa; call
+          performance renders on /dashboard/voice-intelligence. Deleted rather than left
+          blank — see the report; do not re-add without a loader. */}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
         {/* LEFT — Weekly Report Card (1/4 width) */}
@@ -508,11 +592,15 @@ export function CoachingDashboardClient({
                     <Home className="h-3.5 w-3.5" />
                     Sellers ({sellerCoaching.length})
                   </TabsTrigger>
-                  <TabsTrigger value="goals" className="text-xs gap-1" onClick={loadGoalCoaching}>
+                  {/* Arrow, not a bare reference — a bare handler would pass the
+                      MouseEvent as `force` (truthy) and refetch on every tab click. */}
+                  <TabsTrigger value="goals" className="text-xs gap-1" onClick={() => loadGoalCoaching()}>
                     <TrendingUp className="h-3.5 w-3.5" />
                     Goal Coaching
                   </TabsTrigger>
-                  <TabsTrigger value="insights" className="text-xs gap-1" onClick={loadAiInsights}>
+                  {/* Arrow, not a bare reference — a bare handler passes the MouseEvent as
+                      `force` (truthy) and refetches on every tab click. */}
+                  <TabsTrigger value="insights" className="text-xs gap-1" onClick={() => loadAiInsights()}>
                     <Brain className="h-3.5 w-3.5" />
                     AI Insights
                   </TabsTrigger>
@@ -528,6 +616,7 @@ export function CoachingDashboardClient({
                     buyerCoaching.map((item) => (
                       <StageCoachingCard
                         key={item.contact.id}
+                        entityId={item.contact.id}
                         name={`${item.contact.first_name} ${item.contact.last_name}`}
                         stage={item.contact.buyer_stage}
                         coaching={item.coaching}
@@ -547,6 +636,7 @@ export function CoachingDashboardClient({
                     sellerCoaching.map((item) => (
                       <StageCoachingCard
                         key={item.listing.id}
+                        entityId={item.listing.id}
                         name={item.listing.property_address}
                         stage={item.listing.lifecycle_stage || "pre_listing"}
                         coaching={item.coaching}
@@ -566,11 +656,35 @@ export function CoachingDashboardClient({
                   ) : !goalCoaching ? (
                     <div className="py-12 text-center space-y-3">
                       <TrendingUp className="mx-auto h-12 w-12 text-muted-foreground/40" />
-                      <p className="text-muted-foreground text-sm">No goals set for this year yet.</p>
-                      <Button size="sm" variant="outline" onClick={loadGoalCoaching}>
-                        <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                        Analyze Goals
-                      </Button>
+                      {/* Two different dead ends, two different offers. Re-running the
+                          analysis is useless when the cause is that no goals exist —
+                          the agent has to set them first. */}
+                      {/^No goals set/i.test(goalCoachingError ?? "") ? (
+                        <>
+                          <p className="text-muted-foreground text-sm">
+                            No goals set for {new Date().getFullYear()} yet — your coach needs targets
+                            before it can tell you how you&apos;re tracking.
+                          </p>
+                          <Button size="sm" variant="outline" asChild>
+                            <Link href="/dashboard/goals">
+                              <Target className="h-3.5 w-3.5 mr-1.5" />
+                              Set your goals
+                            </Link>
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-muted-foreground text-sm">
+                            {goalCoachingError
+                              ? `Couldn't analyze your goals: ${goalCoachingError}`
+                              : "Goal analysis hasn't run yet."}
+                          </p>
+                          <Button size="sm" variant="outline" onClick={() => loadGoalCoaching(true)}>
+                            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                            Try again
+                          </Button>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <>
@@ -631,7 +745,9 @@ export function CoachingDashboardClient({
                         </div>
                       )}
 
-                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => { setGoalCoachingLoaded(false); loadGoalCoaching() }}>
+                      {/* force, not setLoaded(false)+call — the state update isn't visible to
+                          this closure, so the un-forced call bailed on the guard. */}
+                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => loadGoalCoaching(true)}>
                         <RefreshCw className="h-3 w-3 mr-1.5" />
                         Refresh
                       </Button>
@@ -703,7 +819,7 @@ export function CoachingDashboardClient({
                         </div>
                       )}
 
-                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => { setAiInsightsLoaded(false); loadAiInsights() }}>
+                      <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => loadAiInsights(true)}>
                         <RefreshCw className="h-3 w-3 mr-1.5" />
                         Refresh
                       </Button>
@@ -769,6 +885,43 @@ export function CoachingDashboardClient({
               )}
             </CardContent>
           </Card>
+
+          {/* Call behaviour — the aggregate pattern across this week's analysed
+              calls (them-first score, talk/listen ratio). Sourced from
+              getCoachingTips; the per-call insight list lives on
+              /dashboard/voice/isa and is deliberately not duplicated here. */}
+          {callCoachingTips.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Gauge className="h-5 w-5 text-sky-500" />
+                  Call Behaviour ({callCoachingTips.length})
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Patterns across the calls analysed in the last 7 days
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {callCoachingTips.map((tip, i) => (
+                  <div key={`${tip.category}-${i}`} className="rounded-lg border bg-card p-3">
+                    <div className="mb-1 flex items-start justify-between gap-2">
+                      <Badge variant="outline" className="capitalize">{tip.category}</Badge>
+                      <Badge
+                        variant="outline"
+                        className={tip.priority === "high"
+                          ? "border-red-200 bg-red-50 text-red-700"
+                          : "border-amber-200 bg-amber-50 text-amber-700"}
+                      >
+                        {tip.priority}
+                      </Badge>
+                    </div>
+                    <p className="text-sm font-medium text-foreground">{tip.tip}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{tip.improvement_area}</p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Smart Suggestions */}
           <Card>

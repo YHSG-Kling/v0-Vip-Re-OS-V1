@@ -31,6 +31,10 @@ export interface TrackUsageResult {
 function inferUsageType(vendorKey: string): string {
   if (vendorKey.includes('gpt') || vendorKey.includes('claude')) return 'tokens'
   if (vendorKey.includes('zenrows') || vendorKey.includes('apify')) return 'api_calls'
+  // Keyless OSINT-free lane (Nominatim + Overpass + Census) meters connector
+  // requests, matching VENDOR_PRICING['osint_free'].unitType. Checked BEFORE the
+  // 'data' rule below so it cannot be misread as a records vendor.
+  if (vendorKey.includes('osint')) return 'api_calls'
   if (vendorKey.includes('sendgrid') || vendorKey.includes('resend')) return 'emails'
   if (vendorKey.includes('twilio')) return 'minutes'
   if (vendorKey.includes('lob')) return 'pieces'

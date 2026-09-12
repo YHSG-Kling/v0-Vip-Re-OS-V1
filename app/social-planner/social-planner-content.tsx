@@ -16,12 +16,12 @@ import {
   Clock,
 } from "lucide-react"
 import { getSocialPosts, deleteSocialPost } from "../actions/social-publishing"
+import { getEvaluationHistory } from "@/app/actions/content-compliance"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
-import Link from "next/link"
 
 interface ComplianceEvent {
   id: string
@@ -57,6 +57,29 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
       setPosts([])
     } finally {
       setLoading(false)
+    }
+
+    // `complianceLogs` was rendered (the whole "Compliance Audit" tab) but
+    // never populated (unread-state-census: setComplianceLogs was never
+    // called) — the tab always read as "All Posts Compliant" regardless of
+    // what compliance_events actually held. getEvaluationHistory reads the
+    // SAME table System 4.2's rules engine writes to.
+    try {
+      const result = await getEvaluationHistory({ status_filter: "fail" })
+      if (result.success && result.history) {
+        setComplianceLogs(
+          result.history.map((h) => ({
+            id: h.id,
+            postId: h.entity_id ?? "",
+            status: "FAIL" as const,
+            reason: h.blocked_reason ?? h.violations?.join("; ") ?? "Compliance gate blocked this content",
+            suggestion: "Review and revise before publishing.",
+            timestamp: h.created_at,
+          })),
+        )
+      }
+    } catch (error) {
+      console.error("[v0] Failed to load compliance history:", error)
     }
   }
 
@@ -219,7 +242,6 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
                                 <VideoGenerationButtons
                                   script={post.content}
                                   title={`Social Post - ${post.platform}`}
-                                  userId={userId}
                                   size="sm"
                                   className="mt-2"
                                 />

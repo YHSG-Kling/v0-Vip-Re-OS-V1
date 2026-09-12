@@ -647,7 +647,7 @@ export async function runFlowIntegrity(svc: Svc, brokerageId: string, now: Date 
   }
 
   const { data: owners } = (escalated.length || probationHealed.size)
-    ? await svc.from("users").select("id").eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(3)
+    ? await svc.from("users").select("id").eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(3)
     : { data: [] as any[] }
   const ownerRows = ((owners ?? []) as Array<{ id: string }>)
 

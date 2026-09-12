@@ -36,16 +36,11 @@
  * before the render queued.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { AvatarPIP } from "./components/AvatarPIP"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentExplainerReelProps {
@@ -66,6 +61,15 @@ export interface AgentExplainerReelProps {
   avatarVideoUrl: string | null
   /** Static photo fallback when no avatar video is available. */
   agentPhotoUrl:  string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the avatar clip these
+   * three PIP windows all cut into (lib/video/avatar-render-orchestrator.ts,
+   * wave 56 realism ruling — see remotion/components/AvatarPIP.tsx). Optional
+   * + additive: absent renders EXACTLY as before (the raw hold past the
+   * window's end); present, a window whose real content ends partway through
+   * fades to the fallback instead of freezing on the clip's last frame.
+   */
+  avatarDurationSeconds?: number | null
   /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
   qrCodeDataUrl?: string | null
   qrCaption?:     string
@@ -92,57 +96,16 @@ const B3     = 5  * FPS  // 10-15
 const CTA    = 3  * FPS  // 15-18
 const TOTAL  = COVER + B1 + B2 + B3 + CTA
 
-/** Avatar PIP — 360×360, top-left, with the brand accent ring.
- *  Sized so it stays present without eating the bullet column.
- *  When no video is available, falls back to the agent photo or
- *  an initial card. */
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  accentColor:    string
-  primaryColor:   string
-  startFrame:     number
-  endFrame:       number
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, accentColor, primaryColor, startFrame, endFrame }) => {
-  const ringStyle: React.CSSProperties = {
-    position: "absolute", top: 48, left: 48,
-    width: 360, height: 360,
-    borderRadius: 180,
-    boxShadow: `0 0 0 6px ${accentColor}`,
-    overflow: "hidden",
-    backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ringStyle}>
-        <Video
-          src={avatarVideoUrl}
-          startFrom={startFrame}
-          endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ringStyle}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ringStyle,
-      backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 140, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// TOMBSTONE (§6 same-body census, wave 56): a private `AvatarPIP` (360×360,
+// top-left ring, avatar video / photo / monogram fallback) lived here,
+// byte-identical in behavior to remotion/components/AvatarPIP.tsx modulo size
+// and corner. Survivor: remotion/components/AvatarPIP.tsx:29 `AvatarPIP` —
+// now takes `size`/`position`/`ringWidth` so it serves this composition's
+// larger top-left look AND EquityReportReel/MarketUpdateReel's original
+// top-right 200px look from one component, plus the wave-56 avatarDurationSeconds
+// freeze/fade guard neither copy had before. Call sites below pass
+// `size={360} position="top-left" ringWidth={6}` to reproduce the original
+// look exactly.
 
 const BulletPanel: React.FC<{
   index:        1 | 2 | 3
@@ -150,8 +113,8 @@ const BulletPanel: React.FC<{
   accentColor:  string
 }> = ({ index, text, accentColor }) => {
   const frame = useCurrentFrame()
-  const indexFade  = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: "clamp" })
-  const textFade   = interpolate(frame, [8, 24], [0, 1], { extrapolateRight: "clamp" })
+  const indexFade  = interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const textFade   = interpolate(frame, [8, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <div style={{
       position: "absolute", top: 0, right: 0, bottom: 0,
@@ -176,7 +139,7 @@ const BulletPanel: React.FC<{
 
 export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
   eyebrow, title, bullets, ctaLabel, agentName, avatarVideoUrl, agentPhotoUrl, brand,
-  captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean,
+  captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean, avatarDurationSeconds,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -192,54 +155,65 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 28,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1]),
+            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {eyebrow}
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.1,
-            maxWidth: 840, opacity: interpolate(frame, [12, 36], [0, 1]),
+            maxWidth: 840, opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {title}
           </div>
         </AbsoluteFill>
       </Sequence>
 
-      {/* BULLET 1 — 3-6s */}
+      {/* BULLET 1 — 3-6s.
+          AVATAR LEAD-IN FIX (wave 60 realism audit — same defect + fix as
+          MarketUpdateReel/EquityReportReel). AvatarPIP never mounts during
+          COVER and D-ID is never asked to pad COVER seconds of lead-in
+          silence (pad_audio is 0.3s TRAILING only — realism-profile.ts), so
+          passing the composition-absolute frame as `<Video trimBefore>`
+          skipped the clip's first COVER seconds of REAL narration. Each
+          window now gets frames relative to the avatar track's own start
+          (0, B1, B1+B2) instead. */}
       <Sequence from={COVER} durationInFrames={B1}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER, endFrame: COVER + B1 }} />
+            startFrame: 0, endFrame: B1,
+            avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
           <BulletPanel index={1} text={bullets[0]} accentColor={brand.accentColor} />
         </AbsoluteFill>
       </Sequence>
 
-      {/* BULLET 2 — 6-10s */}
+      {/* BULLET 2 — 6-10s. See the AVATAR LEAD-IN FIX note on BULLET 1. */}
       <Sequence from={COVER + B1} durationInFrames={B2}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER + B1, endFrame: COVER + B1 + B2 }} />
+            startFrame: B1, endFrame: B1 + B2,
+            avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
           <BulletPanel index={2} text={bullets[1]} accentColor={brand.accentColor} />
         </AbsoluteFill>
       </Sequence>
 
-      {/* BULLET 3 — 10-15s */}
+      {/* BULLET 3 — 10-15s. See the AVATAR LEAD-IN FIX note on BULLET 1. */}
       <Sequence from={COVER + B1 + B2} durationInFrames={B3}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER + B1 + B2, endFrame: COVER + B1 + B2 + B3 }} />
+            startFrame: B1 + B2, endFrame: B1 + B2 + B3,
+            avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
           <BulletPanel index={3} text={bullets[2]} accentColor={brand.accentColor} />
         </AbsoluteFill>
       </Sequence>
@@ -269,7 +243,11 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile.
+          NO CAPTION OVER SILENCE (wave 59) — the avatar's baked-in audio
+          starts at COVER, not frame 0; see CaptionLayer.visibleFromFrame. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + B1 + B2 + B3} />
     </AbsoluteFill>
   )
 }

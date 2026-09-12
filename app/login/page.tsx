@@ -7,9 +7,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useState, useEffect, Suspense, useId } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { Mail, Lock, Loader2, KeyRound } from 'lucide-react'
 import { checkSsoDomainAction } from '@/app/actions/tenant-sso'
+import { loginUser } from '@/app/actions/auth'
+import { MAGIC_LINK_MESSAGE_COPY, toMagicLinkMessage } from '@/app/types/auth'
 
 function LoginContent() {
   const [email, setEmail] = useState('')
@@ -36,6 +38,21 @@ function LoginContent() {
     const errorParam = searchParams.get('error')
     if (errorParam) {
       setError(decodeURIComponent(errorParam))
+    }
+
+    // ── THE ?message= RAIL, WHICH HAD NO READER ─────────────────────────────
+    // app/auth/callback/route.ts bounces every failed magic-link exchange here
+    // as `/login?message=<code>` (link-expired, link-used, error), and
+    // app/auth/error/page.tsx forwards into the same rail. Nothing on this page
+    // ever read that parameter, so an expired link landed the user back on a
+    // blank sign-in form with no explanation and no instruction to request
+    // another. The codes are the one vocabulary in app/types/auth.ts; an
+    // unrecognised value narrows to null and renders nothing rather than
+    // echoing arbitrary query text as if the product had said it.
+    const magic = toMagicLinkMessage(searchParams.get('message'))
+    if (magic) {
+      if (magic === 'check-email') setMessage(MAGIC_LINK_MESSAGE_COPY[magic])
+      else setError(MAGIC_LINK_MESSAGE_COPY[magic])
     }
   }, [searchParams])
 
@@ -86,24 +103,37 @@ function LoginContent() {
     }
   }
 
+  // Password sign-in goes through the SERVER action, not the browser client.
+  //
+  // `loginUser` is the only sign-in path that runs `rejectIfSuspended` — the
+  // gate that reads the same `users.status` flag the tenant admin edit form
+  // (updateUser) and the superadmin suspend action (setTenantUserStatusAction)
+  // write. Calling `supabase.auth.signInWithPassword` from the browser skipped
+  // it entirely, so deactivating a user removed nothing: they could sign back
+  // in at this form and keep a live session until the token expired. The magic
+  // link and SSO lanes already land on /auth/callback, which runs the same gate
+  // via handleAuthCallback; password sign-in was the one door left open.
+  //
+  // The session still arrives in the browser: @supabase/ssr's server client
+  // stores the session in cookies (it forces persistSession + cookie storage
+  // regardless of the auth options lib/supabase/server.ts passes), and the
+  // browser client reads those same cookies. router.refresh() re-renders the
+  // server tree with the new session before we navigate.
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
     setError(null)
 
     try {
-      const supabase = createClient()
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
+      const result = await loginUser(email, password)
 
-      if (error) {
-        setError(error.message)
+      if (!result.success) {
+        setError(result.error)
         setIsLoading(false)
         return
       }
 
+      router.refresh()
       router.push('/dashboard')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred')
@@ -132,7 +162,45 @@ function LoginContent() {
         return
       }
 
-      setMessage('Check your email for the magic link!')
+      // One wording per outcome (§6) — the same copy the ?message=check-email
+      // rail renders, so the two paths cannot drift apart.
+      setMessage(MAGIC_LINK_MESSAGE_COPY['check-email'])
+      setIsLoading(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred')
+      setIsLoading(false)
+    }
+  }
+
+  // Password reset had a working endpoint (/api/auth/reset-password) and no way
+  // to reach it — no control on any login page, and the confirm page its email
+  // linked to did not exist. Both halves are wired now.
+  //
+  // The response is deliberately the same whether or not the address is
+  // registered: telling an anonymous caller "no account with that email" turns
+  // this form into an account-enumeration oracle.
+  const handleForgotPassword = async () => {
+    const address = email.trim()
+    if (!address) {
+      setError('Enter your email address first, then choose Forgot password')
+      return
+    }
+    setIsLoading(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: address }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok || !body?.success) {
+        setError(body?.error || `Could not send the reset email (HTTP ${res.status})`)
+        setIsLoading(false)
+        return
+      }
+      setMessage(`If an account exists for ${address}, a password reset link is on its way.`)
       setIsLoading(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred')
@@ -212,6 +280,11 @@ function LoginContent() {
                   <p className="text-sm text-red-600">{error}</p>
                 </div>
               )}
+              {message && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
+                  <p className="text-sm text-blue-700">{message}</p>
+                </div>
+              )}
               <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={isLoading}>
                 {isLoading ? (
                   <>
@@ -222,6 +295,15 @@ function LoginContent() {
                   'Sign In'
                 )}
               </Button>
+
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                disabled={isLoading}
+                className="w-full text-sm text-blue-600 hover:underline disabled:opacity-50"
+              >
+                Forgot password?
+              </button>
 
               {/* Additive SSO path — appears only when the typed email's
                   domain has an active brokerage SSO connection. */}

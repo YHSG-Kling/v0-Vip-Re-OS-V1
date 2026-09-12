@@ -89,7 +89,9 @@ export async function getDirectMailPerformance(): Promise<
     svc.from("direct_mail_campaigns")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
-      .eq("status", "sent")
+      // The mailed state is "mailed" — there is no "sent", so direct-mail
+      // performance reporting read zero campaigns.
+      .eq("status", "mailed")
       .gte("mailing_date", since28d),
     svc.from("direct_mail_variant_outcomes")
       .select("sends_count, scans_count, cost_spent_cents")
@@ -226,7 +228,9 @@ export async function getDirectMailPerformance(): Promise<
       .from("direct_mail_campaigns")
       .select("contact_id, qr_code_id, per_piece_cost, pieces_mailed")
       .eq("brokerage_id", brokerageId)
-      .eq("status", "sent")
+      // The mailed state is "mailed" — there is no "sent", so direct-mail
+      // performance reporting read zero campaigns.
+      .eq("status", "mailed")
       .gte("mailing_date", since28d)
       .not("contact_id", "is", null)
       .limit(5000)

@@ -1,12 +1,29 @@
-"use server"
+// NOT a server-action module (2026-09-03, integrator, lane R3-A's sweep — this
+// file was held back because lane H2 was converting its lifecycle_events
+// insert at the same time). The module-level "use server" that stood here
+// made calculateFatigue(contactId, brokerageId) and calculateAllBuyerFatigue
+// public HTTP doors onto a service client with the tenant taken from the
+// PARAMETER — CLAUDE.md §4's IDOR shape. Every caller is in-process server
+// code: app/actions/buyer-fatigue.ts (a gated action), app/api/fatigue/cron/
+// route.ts and app/api/fatigue/calculate/route.ts (both gate before calling).
+// The brokerageId parameter is now an in-process contract, not a public one.
+// `server-only` makes a future client import fail at build time.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
+// agents.id → { users.id, users.brokerage_id }. The ONE crossing helper: both
+// `fatigue_alerts.agent_user_id` (a users FK) and the tenant this file's
+// smart_assistant_suggestions row must carry come from it.
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
+import { BUYER_ACTIVE_STAGES } from "@/lib/contacts/buyer-stage"
 import { generateText }        from "ai"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { deriveRiskLevel, type FatigueRiskLevel } from "./fatigue-display"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
-export type RiskLevel = "fresh" | "moderate" | "high" | "critical"
+/** ONE vocabulary (§6): the same literal union the display module speaks. */
+export type RiskLevel = FatigueRiskLevel
 
 export interface FatigueFactors {
   total_showings:            number
@@ -27,12 +44,12 @@ export interface FatigueResult {
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-function toRiskLevel(score: number): RiskLevel {
-  if (score >= 75) return "critical"
-  if (score >= 50) return "high"
-  if (score >= 25) return "moderate"
-  return "fresh"
-}
+// TOMBSTONE (§6, wave 26, lane L4): `toRiskLevel` DELETED. It was a byte-identical
+// second spelling of the cut points (critical>=75 / high>=50 / moderate>=25) that
+// lib/fatigue/fatigue-display.ts:deriveRiskLevel already owns — and whose header
+// explicitly claims to MIRROR this file. Two copies of one threshold set is the
+// defect §6 names: a change to one silently desynchronises the badge from the
+// scorer. SURVIVOR: lib/fatigue/fatigue-display.ts:deriveRiskLevel (imported above).
 
 function riskLabel(r: RiskLevel): string {
   return r.charAt(0).toUpperCase() + r.slice(1)
@@ -141,7 +158,7 @@ export async function calculateFatigue(
     (engagementDeclineFactor * 20)
 
   const score     = Math.min(100, Math.round(rawScore))
-  const riskLevel = toRiskLevel(score)
+  const riskLevel = deriveRiskLevel(score)
 
   const factors: FatigueFactors = {
     total_showings:            totalShowings,
@@ -230,12 +247,15 @@ export async function calculateFatigue(
       // Insert fatigue_alert. pass 13: fatigue_alerts.agent_user_id FKs users(id)
       // but contacts.agent_id is agents.id — the raw stamp FK-threw and every
       // fatigue alert died unnoticed. Resolve to the owning agent's auth user id.
-      let fatigueAgentUserId: string | null = null
-      if (contact?.agent_id) {
-        const { data: owningAgent } = await supabase
-          .from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
-        fatigueAgentUserId = owningAgent?.user_id ?? null
-      }
+      //
+      // ONE RESOLVER, TWO ANSWERS, RESOLVED ONCE. The ad-hoc `agents.select
+      // ("user_id")` this replaced destructured no `error`, so a refused lookup
+      // arrived as "this agent has no user" and was indistinguishable from it.
+      // The shared resolver returns the crossing (`agents.id` → `users.id`) AND
+      // that user's `users.brokerage_id`, which is the value the suggestion below
+      // has to carry.
+      const owningAgent = await resolveAgentRecipient(supabase, contact?.agent_id ?? null)
+      const fatigueAgentUserId: string | null = owningAgent.ok ? owningAgent.userId : null
       const { data: alert } = await supabase
         .from("fatigue_alerts")
         .insert({
@@ -251,25 +271,55 @@ export async function calculateFatigue(
         .select("id")
         .single()
 
-      // Insert smart_assistant_suggestion
-      await supabase.from("smart_assistant_suggestions").insert({
-        agent_id:           contact?.agent_id ?? null,
-        title:              `${buyerName} showing signs of search fatigue`,
-        description:        alertMessage,
-        context_type:       "buyer_fatigue",
-        action_type:        "view_buyer",
-        action_payload_json: JSON.stringify({ contact_id: contactId }),
-        priority:           riskLevel === "critical" ? "high" : "medium",
-        status:             "pending",
-      })
+      // Insert smart_assistant_suggestion.
+      //
+      // TENANT: the OWNING AGENT'S `users.brokerage_id` — deliberately not this
+      // function's `brokerageId` argument, even though the two agree on every
+      // live row today. `getContactCopilotSuggestions` reads this table
+      // `.eq("agent_id", ctx.agentId).eq("brokerage_id", ctx.brokerageId)` with
+      // both halves from one `getAgentContext()`, and that context's brokerage IS
+      // `users.brokerage_id`. Stamping the anchor's brokerage instead would be
+      // stamping a value the reader does not compute — wave 23's badge-count
+      // lesson, which is that a wrong tenant hides the row exactly as NULL does.
+      //
+      // NO AGENT (or an unreadable one) → NO ROW. Both readers filter `agent_id`,
+      // so an unattributed suggestion is invisible whatever it is stamped with.
+      if (!owningAgent.ok) {
+        console.error(`[fatigue] suggestion skipped — agent tenant unresolved: ${owningAgent.reason}`)
+      } else if (!contact?.agent_id || !owningAgent.brokerageId) {
+        console.error(
+          `[fatigue] suggestion skipped for contact ${contactId} — ` +
+          "the contact has no agent, or that agent has no users.brokerage_id; a suggestion nobody can read was not written",
+        )
+      } else {
+        const { error: suggestionError } = await supabase.from("smart_assistant_suggestions").insert({
+          agent_id:           contact.agent_id,
+          brokerage_id:       owningAgent.brokerageId,
+          title:              `${buyerName} showing signs of search fatigue`,
+          description:        alertMessage,
+          context_type:       "buyer_fatigue",
+          action_type:        "view_buyer",
+          action_payload_json: JSON.stringify({ contact_id: contactId }),
+          priority:           riskLevel === "critical" ? "high" : "medium",
+          status:             "pending",
+        })
+        if (suggestionError) {
+          console.error("[fatigue] smart_assistant_suggestions insert refused:", suggestionError.message)
+        }
+      }
 
-      // lifecycle_events sub-event
-      await supabase.from("lifecycle_events").insert({
-        brokerage_id:   brokerageId,
-        entity_type:    "buyer_lifecycle",
-        entity_id:      contactId,
-        event_type:     KernelEvent.BUYER_FATIGUE_DETECTED,
-        actor_user_id:  contact?.agent_id ?? null,
+      // Kernel sub-event — audit row + reactor (the bare insert reached nothing).
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      await emitKernelEvent({
+        brokerageId,
+        entityType:   "buyer_lifecycle",
+        entityId:     contactId,
+        event:        KernelEvent.BUYER_FATIGUE_DETECTED,
+        contactId,
+        // lifecycle_events.actor_user_id FKs users(id) — contact.agent_id is an
+        // agents.id, so the raw stamp FK-threw and the sub-event was lost even
+        // though the alert beside it landed. Reuse the id already resolved above.
+        actorUserId:  fatigueAgentUserId,
         metadata: {
           fatigue_score:   score,
           risk_level:      riskLevel,
@@ -284,11 +334,12 @@ export async function calculateFatigue(
 
 // ─── BATCH CALCULATOR ────────────────────────────────────────────────────────
 
-const ACTIVE_BUYER_STAGES = [
-  "prospect", "pre_approval_pending", "financially_verified",
-  "search_configured", "searching", "touring", "tour_completed",
-  "offer_strategy", "offer_submitted", "buyer_under_contract",
-]
+// Was ten lowercase stage names — prospect, pre_approval_pending, touring, … —
+// and contacts.buyer_stage admits NONE of them (the ladder is BUYER_*). The
+// batch sweep below selected on them, so it has never processed a contact. The
+// list also lived in this local const, which is why the CHECK-vocabulary guard
+// (inline literals only) could not see it; it now comes from the shared ladder.
+const ACTIVE_BUYER_STAGES = BUYER_ACTIVE_STAGES
 
 export async function calculateAllBuyerFatigue(
   brokerageId?: string

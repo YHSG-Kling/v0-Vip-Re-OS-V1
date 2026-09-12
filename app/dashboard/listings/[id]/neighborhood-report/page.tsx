@@ -1,4 +1,3 @@
-import { Suspense } from "react"
 import { notFound, redirect } from "next/navigation"
 import Link from "next/link"
 import {
@@ -13,7 +12,6 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
   ArrowLeft,
   RefreshCw,
@@ -47,6 +45,22 @@ export const dynamic = "force-dynamic"
 export const metadata = {
   title: "Neighborhood Report | VIP-OS",
   description: "Detailed neighborhood intelligence report for listing",
+}
+
+/**
+ * One area distress/ownership signal, as the SIGNAL SCANNER actually writes it.
+ *
+ * Only the three columns a writer fills. `batchdata_motivated_sellers_raw` also
+ * carries seven `property_*` columns, and this page used to select all of them —
+ * but the table's only writer (app/actions/scrape-social-media.ts) never names
+ * one, so they answered null on every row and were rendered nowhere. A
+ * comparable-property fact on a seller-facing report comes from the CMA lane's
+ * RentCast comps, not from a column nothing populates.
+ */
+interface AreaSignalRow {
+  motivation_type: string | null
+  motivation_confidence: number | null
+  created_at: string
 }
 
 // ============================================================================
@@ -87,28 +101,65 @@ export default async function NeighborhoodReportPage({
   // getNeighborhoodReport returns zip_code; alias to zip for local use
   const zip = listing.zip_code
 
+  // WHY THESE READS DESTRUCTURE `error`. Every one of them used to end
+  // `.then((r) => r.data)`, which throws the refusal away: supabase-js RESOLVES
+  // a refused query, so an RLS block, a bad filter or a dropped column arrived
+  // here as `null`/`[]` and rendered as "this zip has no market data" on a
+  // report an agent puts in front of a seller. A read that DID NOT ANSWER and a
+  // zip that genuinely has no snapshot are different facts; the console line
+  // below is what tells them apart.
+  const readOne = <T,>(label: string) => (r: { data: T | null; error: { message: string } | null }): T | null => {
+    if (r.error) {
+      console.error(`[neighborhood-report] ${label} read was refused: ${r.error.message}`)
+      return null
+    }
+    return r.data
+  }
+
   const [marketData, marketInsight, homeValueEstimate, propertyHistory] = await Promise.all([
-    // Area market snapshot from market_data table (MLS-sourced, zip-level)
+    // Area market snapshot from market_data table (MLS-sourced, zip-level).
+    //
+    // `median_list_price` IS NOT READ HERE. It carries DEFAULT 0 and no writer
+    // — lib/intelligence/market-insight-generator.ts:233 is the only upsert and
+    // it does not name the column — so every row answers 0, and a client-facing
+    // "$0 median list price" is worse than an absent one. The median this report
+    // shows is market_data.median_sale_price, written at
+    // lib/intelligence/market-insight-generator.ts:244 from RentCast /markets.
     supabase
       .from("market_data")
       .select(
-        "median_sale_price, median_list_price, price_trend_pct_1yr, price_trend_pct_30d, months_of_inventory, avg_days_on_market, active_listings, sold_listings_30d, list_to_sale_ratio, market_type, data_date"
+        "median_sale_price, price_trend_pct_1yr, price_trend_pct_30d, months_of_inventory, avg_days_on_market, active_listings, sold_listings_30d, list_to_sale_ratio, market_type, data_date"
       )
       .eq("zip_code", zip)
       .order("data_date", { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then((r) => r.data),
+      .then(readOne("market_data")),
 
-    // AI market narrative from market_insights table (zip-level)
+    // AI market narrative from market_insights table (zip-level).
+    //
+    // THE NARRATIVE IS `summary`, NOT `ai_narrative`. This select asked for
+    // `ai_narrative` and the card below rendered it — but nothing has ever
+    // written that column. The narrative the generator actually produces is
+    // written as `headline` + `summary`
+    // (lib/intelligence/market-insight-generator.ts:431-432), which sat right
+    // here in the select, unrendered. So the "AI market analysis" paragraph of
+    // a seller-facing report was silently blank while its text existed one
+    // column over. One spelling now (CLAUDE.md §6): `summary`.
+    //
+    // `market_type` is also gone from this select. market_insights carries the
+    // column but no writer names it; the market type this card shows comes from
+    // market_data.market_type, written at
+    // lib/intelligence/market-insight-generator.ts:248 and already rendered in
+    // the card description below.
     supabase
       .from("market_insights")
-      .select("ai_narrative, headline, summary, price_trend, dom_trend, inventory_level, key_stats, market_type, insight_date")
+      .select("headline, summary, price_trend, dom_trend, inventory_level, key_stats, insight_date")
       .eq("zip_code", zip)
       .order("insight_date", { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then((r) => r.data),
+      .then(readOne("market_insights")),
 
     // Property value from cma_reports (primary) — joined by listing_id.
     // CMAs are the agent-generated comps-based valuation for this listing.
@@ -135,31 +186,51 @@ export default async function NeighborhoodReportPage({
             source: "cma" as const,
           }
         }
-        // Fallback: home_value_estimates (filled by consumer valuation request flow)
+        // Fallback: home_value_estimates. No listing_id on that table, so the only
+        // structural key is the SELLER contact — listings.seller_contact_id, NOT
+        // contact_id, which exists but is never populated for listings.
+        if (!listing.seller_contact_id || !listing.brokerage_id) return null
+        const hveCols =
+          "estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at"
         const hve = await supabase
           .from("home_value_estimates")
-          .select("estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at")
-          .eq("property_address", listing.address)
+          .select(hveCols)
+          .eq("brokerage_id", listing.brokerage_id)
+          .eq("contact_id", listing.seller_contact_id)
           .order("generated_at", { ascending: false })
           .limit(1)
           .maybeSingle()
         return hve.data ? { ...hve.data, source: "hve" as const } : null
       }),
 
-    // BatchData property history: prior distress/ownership signals for this
-    // specific property address AND nearby properties in the zip.
-    // This is property history intelligence — not seller prospecting.
-    // We pull the actual records so we can show motivation types, estimated
-    // values over time, and sqft/beds — a true property history timeline.
+    // AREA DISTRESS/OWNERSHIP SIGNALS — the count and the motivation mix only.
+    //
+    // WHAT WAS BROKEN. This read asked for seven `property_*` columns and
+    // filtered on `.eq("property_zip", zip)`. The only writer of this table is
+    // the social-signal scanner at app/actions/scrape-social-media.ts:121 and
+    // :192, and it writes NONE of them — it stamps `residential_city`,
+    // `residential_state`, `motivation_type`, `motivation_confidence` and
+    // `raw_json`. So the zip filter matched zero rows on every render, forever,
+    // and the amber "N distress/ownership signals in this zip" card could never
+    // appear on a seller-facing report; the seven property columns it selected
+    // were never rendered either. Live evidence: the table holds 0 rows and all
+    // seven property_* columns are nullable with no default, no trigger and no
+    // seed (project hrvaqgvukzxfskkcrwbt).
+    //
+    // Repointed onto the grain the writer actually fills — city + state — and
+    // relabelled below, because that is the area this data really describes.
+    // The seven property columns are NOT read here: nothing in the repo writes
+    // them, and a comparable-property fact shown to a seller must come from a
+    // provider that supplies it (RentCast comps, read by the CMA lane), never
+    // from a blank column.
     supabase
       .from("batchdata_motivated_sellers_raw")
-      .select(
-        "property_address, property_city, property_zip, property_beds, property_baths, property_sqft, property_estimated_value, motivation_type, motivation_confidence, created_at"
-      )
-      .eq("property_zip", zip)
+      .select("motivation_type, motivation_confidence, created_at")
+      .ilike("residential_city", listing.city ?? "")
+      .eq("residential_state", listing.state)
       .order("created_at", { ascending: false })
       .limit(20)
-      .then((r) => r.data ?? []),
+      .then((r) => readOne<AreaSignalRow[]>("batchdata_motivated_sellers_raw")(r) ?? []),
   ])
 
   // AI neighborhood analysis — area-based, no property specs
@@ -234,7 +305,6 @@ interface ReportContentProps {
   listingId: string
   marketData: {
     median_sale_price: number | null
-    median_list_price: number | null
     price_trend_pct_1yr: number | null
     price_trend_pct_30d: number | null
     months_of_inventory: number | null
@@ -246,14 +316,12 @@ interface ReportContentProps {
     data_date: string | null
   } | null
   marketInsight: {
-    ai_narrative: string | null
     headline: string | null
     summary: string | null
     price_trend: string | null
     dom_trend: string | null
     inventory_level: string | null
     key_stats: Record<string, unknown> | null
-    market_type: string | null
     insight_date: string | null
   } | null
   homeValueEstimate: {
@@ -267,18 +335,7 @@ interface ReportContentProps {
     generated_at: string | null
     source?: "cma" | "hve"
   } | null
-  propertyHistory: Array<{
-    property_address: string | null
-    property_city: string | null
-    property_zip: string | null
-    property_beds: number | null
-    property_baths: number | null
-    property_sqft: number | null
-    property_estimated_value: number | null
-    motivation_type: string | null
-    motivation_confidence: number | null
-    created_at: string
-  }>
+  propertyHistory: AreaSignalRow[]
   neighborhoodAI: {
     success: boolean
     analysis?: {
@@ -444,7 +501,7 @@ function NeighborhoodReportContent({
                   <div className="flex items-center gap-2">
                     <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
                     <p className="font-semibold text-amber-800">
-                      {propertyHistory.length} distress/ownership signal{propertyHistory.length !== 1 ? "s" : ""} in this zip (BatchData)
+                      {propertyHistory.length} distress/ownership signal{propertyHistory.length !== 1 ? "s" : ""} in {listing.city}, {listing.state}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-1.5 pt-0.5">
@@ -457,8 +514,21 @@ function NeighborhoodReportContent({
                 </div>
               )
             })()}
-            {marketInsight?.ai_narrative && (
-              <p className="text-sm text-muted-foreground leading-relaxed">{marketInsight.ai_narrative}</p>
+            {/* THE AI MARKET NARRATIVE. Was `marketInsight.ai_narrative`, a
+                column no writer has ever named — so this paragraph rendered
+                blank on every seller-facing report while the text the generator
+                really produces sat one column over. `headline` + `summary` are
+                what lib/intelligence/market-insight-generator.ts:431-432
+                writes. */}
+            {(marketInsight?.headline || marketInsight?.summary) && (
+              <div className="space-y-1">
+                {marketInsight.headline && (
+                  <p className="text-sm font-semibold">{marketInsight.headline}</p>
+                )}
+                {marketInsight.summary && (
+                  <p className="text-sm text-muted-foreground leading-relaxed">{marketInsight.summary}</p>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>
@@ -698,6 +768,12 @@ function NeighborhoodReportContent({
                 <div key={source.id} className="flex items-center gap-2">
                   <CheckCircle className="h-4 w-4 text-green-500" />
                   <span className="text-sm font-medium">{source.source_name}</span>
+                  {/* WHICH ENDPOINT — source_type is CHECK-constrained and cannot name the
+                      provider's actual route (RentCast is stored as 'custom'), so
+                      api_endpoint is the only place the provenance is recorded. */}
+                  {source.api_endpoint && (
+                    <span className="text-xs font-mono text-muted-foreground">{source.api_endpoint}</span>
+                  )}
                   {source.last_synced_at && (
                     <span className="text-xs text-muted-foreground">
                       (synced {new Date(source.last_synced_at).toLocaleDateString()})

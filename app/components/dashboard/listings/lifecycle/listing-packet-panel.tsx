@@ -44,6 +44,8 @@ interface PacketDocument {
 interface PacketJob {
   id: string
   status: string
+  /** Hosted printable binder PDF (rendered from config.content at completion); null when the render failed. */
+  output_url?: string | null
   config: {
     content?: PacketDocument[]
     quality_check?: {
@@ -307,6 +309,14 @@ export function ListingPacketPanel({ listingId, agentId, brokerageId, listing }:
             Generated {new Date(latestPacket.completed_at).toLocaleDateString()} at{" "}
             {new Date(latestPacket.completed_at).toLocaleTimeString()}
           </p>
+        )}
+        {latestPacket.output_url && (
+          <Button variant="outline" size="sm" className="mt-2 w-full sm:w-auto" asChild>
+            <a href={latestPacket.output_url} target="_blank" rel="noopener noreferrer">
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Download printable packet (PDF)
+            </a>
+          </Button>
         )}
       </CardHeader>
       <CardContent className="space-y-4">

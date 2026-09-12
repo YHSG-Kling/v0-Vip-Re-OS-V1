@@ -36,6 +36,7 @@ import {
   dismissPredictiveSeller,
   markPredictiveAction,
   cancelQueuedAutoTouch,
+  listDismissedPredictiveSellers,
 } from "@/app/actions/predictive-listing"
 import type { PredictiveSellerRow } from "@/app/actions/predictive-listing"
 
@@ -72,11 +73,42 @@ function formatRelative(when: string | null | undefined): string {
   return "now"
 }
 
+interface DismissedRow {
+  contactId: string
+  contactName: string
+  suppressionReason: string | null
+  suppressedUntil: string | null
+  suppressedByName: string | null
+}
+
+function formatAvm(value: number): string {
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `$${Math.round(value / 1_000)}K`
+  return `$${Math.round(value)}`
+}
+
 export function PredictiveListingCard(props: Props) {
   const { brokerageId, userId, predictedSellers, queuedAutoTouches } = props
   const [isPending, startTransition] = useTransition()
   const [sellers, setSellers] = useState(predictedSellers)
   const [queue, setQueue] = useState(queuedAutoTouches)
+
+  // The dismissals ledger — who hid which contact, why, and until when
+  // (suppression_reason / suppressed_by_user_id / suppressed_until, written by
+  // handleDismiss below and previously read by nothing). Lazy-loaded on expand
+  // so the dashboard's initial read stays what it was.
+  const [dismissedOpen, setDismissedOpen] = useState(false)
+  const [dismissed, setDismissed] = useState<DismissedRow[] | null>(null)
+
+  function toggleDismissed() {
+    const opening = !dismissedOpen
+    setDismissedOpen(opening)
+    if (opening && dismissed === null) {
+      listDismissedPredictiveSellers()
+        .then(setDismissed)
+        .catch(() => setDismissed([]))
+    }
+  }
 
   function handleDismiss(contactId: string) {
     if (!confirm("Hide this contact from your Predicted Sellers for 90 days?")) return
@@ -161,6 +193,27 @@ export function PredictiveListingCard(props: Props) {
                   {s.topSignals.length > 0 && (
                     <p className="text-xs text-muted-foreground mt-0.5 truncate">
                       {s.topSignals.slice(0, 2).map((sig) => sig.label).join(" • ")}
+                    </p>
+                  )}
+                  {/* The scorer's own context, recorded on every pass and never
+                      shown: the home value it worked from (with its source, so a
+                      cached estimate is not mistaken for a fresh AVM) and the
+                      evidence depth behind the score. */}
+                  {(s.avmValue != null || s.signalsFired != null) && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                      {s.avmValue != null && (
+                        <>
+                          Est. {formatAvm(s.avmValue)}
+                          {s.avmSource ? ` (${s.avmSource})` : ""}
+                        </>
+                      )}
+                      {s.avmValue != null && s.signalsFired != null && " · "}
+                      {s.signalsFired != null && (
+                        <>
+                          {s.signalsFired} signal{s.signalsFired === 1 ? "" : "s"}
+                          {s.motivationTotal != null ? ` (+${Math.round(s.motivationTotal)} motivation)` : ""}
+                        </>
+                      )}
                     </p>
                   )}
                 </div>
@@ -258,6 +311,41 @@ export function PredictiveListingCard(props: Props) {
             ))}
           </div>
         )}
+
+        {/* Recently dismissed — the other half of the Dismiss button above. */}
+        <div className="border-t pt-2">
+          <button
+            type="button"
+            onClick={toggleDismissed}
+            className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5"
+          >
+            Recently dismissed
+            <ChevronRight className={`h-3 w-3 transition-transform ${dismissedOpen ? "rotate-90" : ""}`} />
+          </button>
+          {dismissedOpen && (
+            dismissed === null ? (
+              <p className="text-xs text-muted-foreground mt-1">Loading…</p>
+            ) : dismissed.length === 0 ? (
+              <p className="text-xs text-muted-foreground mt-1">Nothing is currently dismissed.</p>
+            ) : (
+              <ul className="mt-1 space-y-1">
+                {dismissed.map((d) => (
+                  <li key={d.contactId} className="text-xs text-muted-foreground">
+                    <Link href={`/crm?contact=${d.contactId}`} className="text-foreground hover:underline">
+                      {d.contactName}
+                    </Link>
+                    {" — "}
+                    {(d.suppressionReason ?? "dismissed").replace(/_/g, " ")}
+                    {d.suppressedByName ? ` by ${d.suppressedByName}` : ""}
+                    {d.suppressedUntil
+                      ? ` · hidden until ${new Date(d.suppressedUntil).toLocaleDateString()}`
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+            )
+          )}
+        </div>
       </CardContent>
     </Card>
   )

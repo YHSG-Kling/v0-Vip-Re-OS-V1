@@ -53,6 +53,11 @@ export async function lookupPropertyByAddress(params: {
   city: string
   state: string
   zip?: string
+  /** Tenant + actor for the AI cost ledger. This is a PAID Perplexity Sonar
+   *  call (~$0.005–0.015 each, per the note above) and it booked nothing.
+   *  Both are resolved server-side by the callers — never from a body (§4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<AddressLookupResult> {
   const { address, city, state, zip } = params
   const fullAddress = [address, city, state, zip].filter(Boolean).join(", ")
@@ -88,6 +93,8 @@ Respond with ONLY the JSON object. No explanation, no markdown.
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: params.brokerageId ?? null,
+      userId: params.userId ?? null,
       feature: "home_value_estimate",
       prompt,
       maxTokens: 512,

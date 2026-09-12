@@ -32,7 +32,7 @@ export interface TridClockRunResult {
   escalated: number
 }
 
-export interface SingleClockResult { result: TridClockResult; escalated: boolean; transitioned: boolean }
+interface SingleClockResult { result: TridClockResult; escalated: boolean; transitioned: boolean }
 
 /** Map the forward clock verdict to the trid_timeline.compliance_status enum (it already
  *  carries 'at_risk' and 'violation'; we never downgrade a standing 'violation'/'closed'). */
@@ -42,7 +42,8 @@ function statusForVerdict(overall: TridClockResult["overall"], prior: string | n
   return null // ok/insufficient → leave whatever the post-hoc monitor set
 }
 
-export async function runTridClockForTimeline(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function runTridClockForTimeline(
   input: { brokerageId: string; timeline: any; today: string; copyGenerator?: CopyGenerator; escalate?: boolean },
   svc: Svc,
 ): Promise<SingleClockResult> {

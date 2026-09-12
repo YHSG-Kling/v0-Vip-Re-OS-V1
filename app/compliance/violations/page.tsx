@@ -1,18 +1,31 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getComplianceViolations } from '@/app/actions/compliance-monitoring'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, CheckCircle2, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
+import { ResolveViolationButton } from './resolve-violation-button'
 
 export const dynamic = 'force-dynamic'
+
+// Mirrors the PATCH gate at app/api/compliance/flags/route.ts — the button is
+// hidden for a role the endpoint would 403 anyway; the endpoint's own gate
+// (re-checked server-side on every PATCH) is the real authority, this is UX.
+const CAN_RESOLVE_ROLES = new Set(['broker', 'broker_owner', 'admin', 'compliance_officer'])
 
 export default async function ComplianceViolationsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
+
+  const { data: profile } = await supabase
+    .from('users')
+    .select('user_type')
+    .eq('id', user.id)
+    .maybeSingle()
+  const canResolve = CAN_RESOLVE_ROLES.has((profile as { user_type?: string } | null)?.user_type ?? '')
 
   const violations = await getComplianceViolations()
 
@@ -61,9 +74,14 @@ export default async function ComplianceViolationsPage() {
                     <p className="text-sm text-gray-600">{v.description || 'No description available'}</p>
                     <p className="text-xs text-gray-400 mt-1">{new Date(v.created_at).toLocaleDateString()}</p>
                   </div>
-                  <Badge variant={v.status === 'resolved' ? 'outline' : 'destructive'}>
-                    {v.status || 'open'}
-                  </Badge>
+                  <div className="flex flex-col items-end gap-2">
+                    <Badge variant={v.status === 'resolved' ? 'outline' : 'destructive'}>
+                      {v.status || 'open'}
+                    </Badge>
+                    {canResolve && v.status !== 'resolved' && (
+                      <ResolveViolationButton flagId={v.id} />
+                    )}
+                  </div>
                 </div>
               </CardContent>
             </Card>

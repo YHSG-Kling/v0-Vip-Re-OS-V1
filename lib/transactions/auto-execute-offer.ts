@@ -40,12 +40,19 @@ export async function autoExecuteFullySignedOffer(
   const svc = client ?? createServiceClient()
   if (!offerId) return { attempted: false, created: false, reason: "no offer id" }
 
+  // `buyer_signed_at` IS LOAD-BEARING IN THIS SELECT and was missing from it.
+  // shouldAutoExecuteOffer → isOfferFullyExecuted now reads the buyer leg (the
+  // owner's "fully executed by both buyer and seller"); a column left out of the
+  // select arrives `undefined`, which the predicate reads as "not signed", and
+  // the whole autonomous loop would have gone permanently and SILENTLY dead —
+  // returning "offer not fully executed" for every offer forever. A predicate
+  // that cannot see the column it judges is CLAUDE.md §2's blind guard.
   const { data: offer } = await svc.from("offers")
-    .select("id, brokerage_id, agent_id, contact_id, property_address, transaction_id, seller_response_type, seller_signed_at, fully_signed_contract_received_at")
+    .select("id, brokerage_id, agent_id, contact_id, property_address, transaction_id, buyer_signed_at, seller_response_type, seller_signed_at, fully_signed_contract_received_at")
     .eq("id", offerId).maybeSingle()
   const o = offer as {
     id: string; brokerage_id: string; agent_id: string | null; contact_id: string | null
-    property_address: string | null; transaction_id: string | null
+    property_address: string | null; transaction_id: string | null; buyer_signed_at: string | null
     seller_response_type: string | null; seller_signed_at: string | null; fully_signed_contract_received_at: string | null
   } | null
   if (!o) return { attempted: false, created: false, reason: "offer not found" }

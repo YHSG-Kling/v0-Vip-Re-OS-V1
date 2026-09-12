@@ -10,11 +10,16 @@
 
 export interface EventInput {
   brokerage_id: string
+  /** users.id of the ACTOR (lifecycle_events.actor_user_id FKs public.users). Never a contact id. */
   user_id?: string
   event_type: string
   payload: Record<string, any>
   source: "ui" | "webhook" | "system" | "cron"
   dedupe_key?: string
+  /** Explicit entity — when absent, derived from payload (contact_id / listing_id / …), and
+   *  the brokerage itself is the last resort: both columns are NOT NULL on the live table. */
+  entity_type?: string
+  entity_id?: string
 }
 /** @alias Event — avoids collision with DOM Event in server-action contexts. */
 export type OrchestratorEvent = Event

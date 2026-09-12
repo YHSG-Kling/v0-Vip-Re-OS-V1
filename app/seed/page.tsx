@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { SeedPageClient } from "./seed-page-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -20,7 +21,7 @@ export default async function SeedPage() {
     .eq("id", ctx.userId)
     .single()
 
-  if (!userData || !["broker", "admin"].includes(userData.user_type)) {
+  if (!userData || !isAdminOrBroker({ user_type: userData.user_type })) {
     redirect("/dashboard")
   }
 

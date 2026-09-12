@@ -38,8 +38,11 @@ export interface BrandVoiceUpsertInput {
   custom_instructions?: string
 }
 
-// Roles permitted to read/write brand voice profiles
-const BRAND_VOICE_ALLOWED_ROLES = ["agent", "broker", "admin", "superadmin"]
+// Roles permitted to read/write brand voice profiles.
+// SCOPE LADDER (kept inline — admits agent, not an admin gate): 'superadmin'
+// removed — dead as users.user_type (0 live rows); broker_owner added —
+// storable seat that owns the brokerage and holds at least its broker's access.
+const BRAND_VOICE_ALLOWED_ROLES = ["agent", "broker", "broker_owner", "admin"]
 
 // ── Load the caller's brand voice profile ────────────────────────────────────
 

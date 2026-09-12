@@ -33,6 +33,17 @@ export interface SnapshotRow {
   /** Tier hint for "provision new subscriber from this snapshot" (payload metadata). */
   recommendedTier: string | null
   counts: { global: number; brand: number; voice: number; site: number; features: number }
+  /**
+   * WHO CAPTURED IT. `captured_by` FKs users(id) (scripts/schema-fk-map.ts) and
+   * is stamped from the superadmin gate's userId on every capture; it was read
+   * by nothing. This is a PLATFORM surface (requireSuperadmin, which honours
+   * `platform_role`), so the name is resolved platform-wide — there is no tenant
+   * to anchor on, and "unresolved" here means the users row is no longer on
+   * file, not "another brokerage". Never "the system".
+   */
+  capturedByUserId: string | null
+  capturedByName: string | null
+  capturedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
 }
 
 function counts(payload: SnapshotPayload) {
@@ -72,14 +83,44 @@ export async function listSnapshotsAction(): Promise<{ ok: true; snapshots: Snap
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { data } = await svc.from("platform_config_snapshots").select("id, name, description, source_brokerage_id, payload, created_at").order("created_at", { ascending: false }).limit(100)
+  // `error` is read — a refused list used to resolve as "No snapshots yet".
+  const { data, error } = await svc.from("platform_config_snapshots").select("id, name, description, source_brokerage_id, payload, captured_by, created_at").order("created_at", { ascending: false }).limit(100)
+  if (error) return { ok: false, error: error.message }
+  const rows = (data ?? []) as any[]
+
+  // One batched name read for every distinct capturer on the page.
+  const capturerIds = Array.from(new Set(rows.map((s) => s.captured_by).filter((id): id is string => !!id)))
+  const capturerNameById = new Map<string, string>()
+  let capturerLookupRefused = false
+  if (capturerIds.length > 0) {
+    const { data: capturers, error: capturersErr } = await svc.from("users").select("id, first_name, last_name, email").in("id", capturerIds)
+    if (capturersErr) {
+      capturerLookupRefused = true
+      console.error("[config-snapshots] capturer name lookup refused:", capturersErr.message)
+    }
+    for (const u of (capturers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) capturerNameById.set(u.id as string, label as string)
+    }
+  }
+
   return {
     ok: true,
-    snapshots: ((data ?? []) as any[]).map((s) => ({
-      id: s.id, name: s.name, description: s.description, sourceBrokerageId: s.source_brokerage_id, createdAt: s.created_at,
-      recommendedTier: ((s.payload ?? {}) as SnapshotPayload).recommendedTier ?? null,
-      counts: counts((s.payload ?? {}) as SnapshotPayload),
-    })),
+    snapshots: rows.map((s) => {
+      const capturedByUserId = (s.captured_by as string | null) ?? null
+      const capturedByName = capturedByUserId ? capturerNameById.get(capturedByUserId) ?? null : null
+      const capturedByState: SnapshotRow["capturedByState"] =
+        !capturedByUserId ? "not_recorded"
+        : capturedByName ? "resolved"
+        : capturerLookupRefused ? "lookup_refused"
+        : "unresolved"
+      return {
+        id: s.id, name: s.name, description: s.description, sourceBrokerageId: s.source_brokerage_id, createdAt: s.created_at,
+        recommendedTier: ((s.payload ?? {}) as SnapshotPayload).recommendedTier ?? null,
+        counts: counts((s.payload ?? {}) as SnapshotPayload),
+        capturedByUserId, capturedByName, capturedByState,
+      }
+    }),
   }
 }
 

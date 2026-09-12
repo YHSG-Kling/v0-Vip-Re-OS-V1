@@ -10,8 +10,7 @@
 import { useState, useEffect } from "react"
 import { providerPortalMode } from "@/lib/integrations/providers/catalog"
 import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from "@/components/ui/card"
+  Card, CardContent, } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -28,9 +27,7 @@ import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command"
 import {
-  FileText, ExternalLink, Search, Building2, CheckCircle2,
-  AlertCircle, Clock, ClipboardList, Send, Download, RefreshCw,
-  Shield, Loader2, Users, Settings, Eye, UserCircle2,
+  FileText, ExternalLink, Search, Building2, AlertCircle, ClipboardList, Send, Download, Shield, Loader2, Users, Settings, Eye, UserCircle2,
 } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import Link from "next/link"
@@ -101,6 +98,10 @@ interface ListingAgreement {
   agent_signed_at: string | null
   fully_executed_at: string | null
   provider_name: string | null
+  /** listing_agreements.upload_mode — 'manual_upload' | 'provider_pull' (live CHECK). */
+  upload_mode: string | null
+  /** Populated only on the manual_upload path (execution-engine.ts:876). */
+  document_url: string | null
   brokerage_id: string
   agent_user_id: string | null
 }
@@ -269,11 +270,23 @@ export function FormsLibraryClient({
       .map(a => ({
         id:          a.id,
         type:        a.agreement_type ?? "Listing Agreement",
-        provider:    a.provider_name,
+        // WHERE IT CAME FROM, read off upload_mode rather than guessed from
+        // provider_name. A hand-uploaded agreement has no e-sign provider, and
+        // printing an empty provider cell made it look like a provider had been
+        // used and had not reported. An unknown/absent mode falls through to the
+        // provider name — the pre-existing behaviour, not a new claim.
+        provider:
+          a.upload_mode === "manual_upload" ? "Uploaded by hand"
+          : a.upload_mode === "provider_pull" ? (a.provider_name ?? "E-sign provider")
+          : a.provider_name,
         status:      a.esign_status,
         sentAt:      a.agent_signed_at,
         completedAt: a.fully_executed_at,
-        documentUrl: null,
+        // The signed PDF, which this list hardcoded to null. It exists only on the
+        // manual path — execution-engine.ts:876 writes document_url ONLY when
+        // upload_mode is 'manual_upload' and provider_ref (not a URL) otherwise —
+        // so the link is offered exactly where there is one to offer.
+        documentUrl: a.upload_mode === "manual_upload" ? a.document_url : null,
         source:      "listing_agreements" as const,
       })),
   ].sort((a, b) => {

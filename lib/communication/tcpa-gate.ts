@@ -68,13 +68,51 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
   // 1. Look up contact compliance state (when contactId provided — most paths have it)
   if (input.contactId) {
     const svc = createServiceClient()
-    const { data: contact } = await svc
+    // THIS READ IS THE GATE. It used to be `const { data: contact }` with the
+    // error dropped, and supabase-js RESOLVES a refused query — so a refused
+    // read produced `contact === null`, the `if (contact)` block was skipped
+    // whole, and DNC / STOP opt-out / express consent / phone-status / RND
+    // staleness were ALL bypassed. Execution fell through to the quiet-hours
+    // check, which knows nothing about consent, and the gate could return
+    // allowed. A consent gate that fails OPEN is the one direction this must
+    // never fail, and it covered SMS as well as voice.
+    //
+    // Both "the read was refused" and "an id was named but no row came back"
+    // mean the same thing here — WE CANNOT VERIFY CONSENT — so both refuse.
+    // The caller supplied the id; a missing row is a data fault, not consent.
+    const { data: contact, error: contactError } = await svc
       .from("contacts")
       .select("dnc_status, tcpa_consent, tcpa_consent_date, sms_opt_out, phone_status, phone_validated_at, email_opt_out")
       .eq("id", input.contactId)
       .maybeSingle()
 
-    if (contact) {
+    if (contactError) {
+      const log = await writeLog(input, "blocked", "other", {
+        reason: "compliance_state_unreadable",
+        contact_id: input.contactId,
+        db_error: contactError.message,
+      })
+      return {
+        allowed: false,
+        blockReason: "other",
+        message: `Could not read this contact's compliance state (${contactError.message}) — nothing was sent. Consent cannot be assumed.`,
+        logEntryId: log,
+      }
+    }
+    if (!contact) {
+      const log = await writeLog(input, "blocked", "other", {
+        reason: "contact_not_found",
+        contact_id: input.contactId,
+      })
+      return {
+        allowed: false,
+        blockReason: "other",
+        message: "No contact record found for the id supplied, so there is no consent on file — nothing was sent.",
+        logEntryId: log,
+      }
+    }
+
+    {
       if (contact.dnc_status === true) {
         const log = await writeLog(input, "blocked", "dnc", { dnc_status: true })
         return { allowed: false, blockReason: "dnc", message: "Contact is on DNC list", logEntryId: log }

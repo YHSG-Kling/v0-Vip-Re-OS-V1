@@ -7,6 +7,7 @@ import { routeUnknownToNotes, CANONICAL_CONTACT_FIELDS } from '@/lib/data-stewar
 import { normalizeRowEnums, NORMALIZABLE_ENUM_FIELDS } from '@/lib/data-steward/value-normalizer'
 import { aiMatchEnumValues, aiMatchKey } from '@/lib/data-steward/ai-value-matcher'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 // Common column names from other CRMs' exports (kvCORE, Follow Up Boss, Lofty/Chime,
@@ -39,8 +40,17 @@ const IMPORT_FIELD_ALIASES: Record<string, string> = {
 }
 
 // ─── processImportRows ────────────────────────────────────────────────────────
-
-export async function processImportRows(params: {
+//
+// ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ──────────────────────────────────
+// This file is `'use server'`, so an export here is a PUBLIC HTTP ENDPOINT. This
+// is the internal bulk worker, not a door: its ONE call site is :~275 in THIS
+// file, the gated import action that owns the auth check. Its own signature
+// still shows why it should never have been exported — `brokerageId` and
+// `agentUserId` are accepted and DELIBERATELY IGNORED because they used to be
+// trusted, which let any signed-in user bulk-create contacts in any brokerage
+// (§4: tenant from the SESSION). Lowered to module-private so the parameters
+// cannot be re-trusted by a future caller that is not this file.
+async function processImportRows(params: {
   brokerageId?: string  // ignored — derived from session
   agentUserId?: string | null  // ignored — derived from session
   importId: string
@@ -177,12 +187,13 @@ export async function processImportRows(params: {
     .eq('id', params.importId)
     .eq('brokerage_id', brokerageId)
 
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: brokerageId,
-    entity_type: 'lead_import',
-    entity_id: params.importId,
-    event_type: KernelEvent.LEAD_IMPORT_COMPLETED,
-    actor_user_id: agentUserId,
+  // Audit row + reactor (was a bare insert nobody downstream heard).
+  await emitKernelEvent({
+    brokerageId,
+    entityType: 'lead_import',
+    entityId: params.importId,
+    event: KernelEvent.LEAD_IMPORT_COMPLETED,
+    actorUserId: agentUserId,
     metadata: {
       created,
       merged,

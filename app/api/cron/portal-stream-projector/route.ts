@@ -3,6 +3,7 @@ NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   translateEvent,
+  canonicalPortalEventType,
   PROJECTABLE_EVENT_TYPES,
 } from "@/lib/portal-stream/event-translator"
 import { verifyCronAuth } from "@/lib/cron-auth"
@@ -107,7 +108,10 @@ export async function GET(request: NextRequest) {
         //   1) MILESTONE_LESSON_MAP (curated static portal lesson_key)
         //   2) learning_modules tagged with the event's stage (channel
         //      includes 'portal_lesson' and published)
-        const stageTags = eventTypeToStageTags(ev.event_type)
+        // Kernel-spelled rows (offer_submitted …) project as their portal kind
+        // (offer.submitted) — one vocabulary in the stream (event-translator.ts).
+        const portalEventType = canonicalPortalEventType(ev.event_type)
+        const stageTags = eventTypeToStageTags(portalEventType)
         const educationLessonKey = staticLessonKeyFor(stageTags)
         const learningModuleId = await pickPortalLessonModule(
           svc, ev.brokerage_id, stageTags, persona,
@@ -124,7 +128,7 @@ export async function GET(request: NextRequest) {
           transaction_id:        resolved.transactionId,
           listing_id:            resolved.listingId,
           source_event_id:       ev.id,
-          event_type:            ev.event_type,
+          event_type:            portalEventType,
           customer_copy:         translation.customerCopy,
           customer_icon:         translation.customerIcon,
           agent_copy:            translation.agentCopy,

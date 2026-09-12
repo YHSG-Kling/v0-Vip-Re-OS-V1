@@ -26,6 +26,10 @@ export function CrmConnectForm({
   connected: CrmProvider[]
 }) {
   const [keys, setKeys] = useState<Record<string, string>>({})
+  // The SECOND HALF of a key+secret pair. Optional, and separate from `keys`
+  // because a blank one must arrive as absent rather than as "" — the server
+  // treats "" as no secret for exactly that reason (crm-connect.ts).
+  const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [urls, setUrls] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState<string | null>(null)
   const [pending, start] = useTransition()
@@ -36,7 +40,12 @@ export function CrmConnectForm({
   function connect(p: CrmProvider) {
     setMsg(null)
     start(async () => {
-      const res = await connectCrmAction({ provider: p, apiKey: keys[p] ?? "", apiUrl: urls[p] })
+      const res = await connectCrmAction({
+        provider: p,
+        apiKey: keys[p] ?? "",
+        apiSecret: secrets[p] ?? undefined,
+        apiUrl: urls[p],
+      })
       setMsg(res.ok ? `Connected ${p} ✓` : `Error: ${res.error}`)
     })
   }
@@ -75,6 +84,18 @@ export function CrmConnectForm({
                 placeholder="API key"
                 value={keys[p.key] ?? ""}
                 onChange={(e) => setKeys((s) => ({ ...s, [p.key]: e.target.value }))}
+              />
+              {/* The pair's SECOND half. Optional — most CRMs issue a single key, and
+                  the column it fills (agent_api_credentials.api_secret /
+                  integration_credentials.api_secret) had no writer at all until this
+                  box existed, so any provider that DOES issue a secret resolved as
+                  key-only and could not authenticate. Stored encrypted; never echoed
+                  back into this form. */}
+              <Input
+                type="password"
+                placeholder="API secret (only if your provider issues one)"
+                value={secrets[p.key] ?? ""}
+                onChange={(e) => setSecrets((s) => ({ ...s, [p.key]: e.target.value }))}
               />
               {p.needsUrl && (
                 <Input

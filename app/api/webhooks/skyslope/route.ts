@@ -1,10 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import {
-  finalizeVoiceCockpitPacket,
-  finalizeLegacyEsignArtifacts,
-} from "@/lib/esign-webhooks/finalize-packet"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId } from "@/lib/forms/esign-execution-loop"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SKYSLOPE WEBHOOK HANDLER
@@ -100,8 +97,20 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "skyslope")
-    const legacy = await finalizeLegacyEsignArtifacts(supabase as any, envelopeId)
+    // PROVIDER-AGNOSTIC LOOP-EXECUTION GATE (wave 47 lane FA — see
+    // lib/forms/esign-execution-loop.ts). SkySlope's own completion event
+    // only proves ONE envelope finished; the gate reads every client_documents
+    // / transaction_documents row tracked for the matched transaction/listing
+    // and only finalizes when ALL of them are signed — otherwise it signals
+    // compliance_officer → deal_coordinator instead of finalizing early.
+    const brokerageId = await resolveEnvelopeBrokerageId(supabase as any, envelopeId)
+    const execution = brokerageId
+      ? await evaluateEnvelopeExecution(supabase as any, {
+          brokerageId,
+          providerSource: "skyslope",
+          externalEnvelopeId: envelopeId,
+        })
+      : null
 
     // INGRESS CONTINUITY: park an unmatched envelope as a dead letter for the
     // daily reconciler — never lost behind this 200.
@@ -109,11 +118,12 @@ export async function POST(request: NextRequest) {
     await ensureEsignIngressContinuity(supabase as any, { provider: "skyslope", envelopeId })
 
     return NextResponse.json({
-      received:    true,
+      received:   true,
       envelopeId,
-      docs_signed: voice.docs_signed,
-      bba_signed:  voice.bba_signed,
-      legacy,
+      evaluated:  execution?.evaluated ?? false,
+      fully_executed: execution?.fullyExecuted ?? false,
+      ready_writes_applied: execution?.readyWritesApplied ?? false,
+      signal_published: execution?.signalPublished ?? false,
     })
   } catch (error: any) {
     console.error("[skyslope-webhook] Error:", error)

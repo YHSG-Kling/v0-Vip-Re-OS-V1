@@ -127,11 +127,20 @@ export async function closeReferralOnDealClose(
         const { data: already } = await supabase.from("commission_distributions").select("id")
           .eq("transaction_id", transactionId).eq("agent_id", r.referring_agent_id).eq("distribution_type", "referral").limit(1).maybeSingle()
         if (!already) {
-          await supabase.from("commission_distributions").insert({
+          // The try/catch here never sees a refusal — supabase-js RESOLVES one.
+          // This row is the referring agent's fee; losing it silently is money
+          // an agent is owed and will never be paid.
+          const { error: feeError } = await supabase.from("commission_distributions").insert({
             brokerage_id: brokerageId, transaction_id: transactionId, agent_id: r.referring_agent_id,
             distribution_type: "referral", calculation_type: "percent", calculation_value: r.referral_fee_pct,
             calculated_amount: fee, source_of_funds: "agent", status: "pending",
           })
+          if (feeError) {
+            console.error(
+              `[referral-closer] commission_distributions insert REFUSED — agent ${r.referring_agent_id}'s referral fee on transaction ${transactionId} was NOT booked:`,
+              feeError.message,
+            )
+          }
         }
       }
     } catch (e) { console.error("[referral-closer] agent referral fee booking failed:", e) }

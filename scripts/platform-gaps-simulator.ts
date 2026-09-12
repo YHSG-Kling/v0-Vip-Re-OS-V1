@@ -30,7 +30,7 @@ async function main() {
 
   const subsPage = readFileSync(join(process.cwd(), "app/dashboard/superadmin/subscriptions/page.tsx"), "utf8")
   check("revenue trend rendered on the subscriptions page", /loadRevenueAnalytics/.test(subsPage) && /Revenue trend/.test(subsPage))
-  const signup = readFileSync(join(process.cwd(), "app/signup/signup-form.tsx"), "utf8")
+  const signup = readFileSync(join(process.cwd(), "app/get-started/trial-funnel-form.tsx"), "utf8")
   check("signup REQUIRES ToS checkbox + records acceptance of the CURRENT version before provisioning",
     /tosAccepted/.test(signup) && /recordTosAcceptanceAction/.test(signup) && /getCurrentTosVersionAction/.test(signup) && /disabled=\{isPending \|\| !tosAccepted\}/.test(signup))
   const tosAct = readFileSync(join(process.cwd(), "app/actions/public/tos-acceptance.ts"), "utf8")

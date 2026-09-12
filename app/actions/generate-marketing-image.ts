@@ -16,7 +16,7 @@
  *   - noLogo=true: skip compositing, use brokerage name text in the prompt instead
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   generateImage,
@@ -95,8 +95,8 @@ export interface GenerateMarketingImageResult {
 export async function generateMarketingImage(
   input: GenerateMarketingImageInput
 ): Promise<GenerateMarketingImageResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
   if (!input.prompt?.trim()) {

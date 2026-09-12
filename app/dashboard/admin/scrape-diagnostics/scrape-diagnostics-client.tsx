@@ -208,6 +208,32 @@ export function ScrapeDiagnosticsClient({
         </div>
       </div>
 
+      {/* A REFUSED READ SAYS SO. Without this, a dimension whose query failed
+          renders as an empty panel and a zero in the stat cards below — a
+          diagnostics page reporting health for an outage. The counts that
+          follow are computed from whatever DID load, so the banner also warns
+          that they are partial rather than authoritative. */}
+      {data.readErrors.length > 0 && (
+        <div className="mx-auto max-w-7xl px-8 pt-8">
+          <div className="rounded-lg border border-red-800 bg-red-950/40 p-5">
+            <p className="text-xs font-mono uppercase tracking-wide text-red-400">
+              {data.readErrors.length} of 6 diagnostic reads failed
+            </p>
+            <p className="mt-2 text-sm text-red-200">
+              The counts and panels below are computed from the reads that succeeded — they are
+              incomplete, not a healthy zero.
+            </p>
+            <ul className="mt-3 space-y-1">
+              {data.readErrors.map(e => (
+                <li key={e.dimension} className="font-mono text-xs text-red-300">
+                  <span className="text-red-400">{e.dimension}</span> — {e.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {/* Stat cards */}
       <div className="mx-auto max-w-7xl px-8 pt-8">
         <div className="grid grid-cols-2 gap-4 md:grid-cols-5">

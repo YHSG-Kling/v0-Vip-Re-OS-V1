@@ -439,8 +439,24 @@ export async function optimizeTourRoute(
   // address actually becomes coordinates in production. The simulator injects its own
   // resolver (no network in tests). No fabrication: a stop the geocoder can't place stays
   // un-geocoded (kept in place, null drive).
-  const resolve: ResolveCoords =
+  //
+  // THE STREET HAS TO SURVIVE THE HANDOFF. createCachedGeocoder takes
+  // `AddressParts` — { address, city, state, zip } — and a tour_stops row spells
+  // its street `property_address`. Passing the row straight through type-checked
+  // (city/state/zip overlap, and every AddressParts field is optional) while
+  // SILENTLY DROPPING the street: buildGeocodeQuery saw only "city, state, zip",
+  // so every stop in one town geocoded to the same town centroid, every leg
+  // measured ~0 miles and the "optimized" order was whatever the tie-break gave.
+  // The adapter below names the mapping, so the two spellings meet in one place.
+  const geocodeParts =
     opts.resolveCoords ?? (await import("@/lib/external/nominatim-geocode")).createCachedGeocoder()
+  const resolve: ResolveCoords = (stop) =>
+    (geocodeParts as (p: Record<string, unknown>) => Promise<{ lat: number; lng: number } | null> | { lat: number; lng: number } | null)({
+      // The WHOLE row goes through — an injected resolver (the simulators') keys
+      // on the row's own id — with `address` ADDED as the alias Nominatim reads.
+      ...(stop as Record<string, unknown>),
+      address: stop.property_address ?? null,
+    })
 
   const geoStops: GeoStop[] = []
   for (const r of stopRows) {

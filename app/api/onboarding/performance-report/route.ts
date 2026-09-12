@@ -2,13 +2,17 @@
 // VIP Real Estate AI OS — Layer 11
 // API route for generating AI-powered performance reports
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { streamText } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { getAgentProgress } from '@/app/actions/onboarding/progress'
 
-export async function POST(request: NextRequest) {
+// TOMBSTONE — this handler took the framework's Request object and read NOTHING from
+// it: no query string, no body, no header. Every input comes from the SESSION
+// (CLAUDE.md §4). A route handler may be declared with no parameters at all, and an
+// unread `request` in the signature advertises a filter this endpoint does not honour.
+export async function POST() {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
@@ -32,7 +36,13 @@ export async function POST(request: NextRequest) {
   // agent_quiz_attempts all FK agents(id) — the raw user.id filter read EMPTY
   // for every agent and the performance report showed zeros. Resolve it.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const agentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
+  // NOT `?? user.id` (m353). The comment above says the raw user.id filter
+  // "read EMPTY for every agent and the performance report showed zeros" — the
+  // fallback reinstated exactly that. A report of zeros is worse than no report.
+  const agentId = await resolveAgentId(supabase as any, user.id)
+  if (!agentId) {
+    return NextResponse.json({ error: 'No agent profile for this user — the performance report is agent-scoped.' }, { status: 409 })
+  }
 
   // Gather metrics
   const progressResult = await getAgentProgress(agentId, brokerageId)
@@ -101,9 +111,16 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Stream AI-generated report using Claude
-  const result = streamText({
-    model: 'anthropic/claude-sonnet-4-20250514',
+  // Stream through the routed entry — routing table model, fair-use cap
+  // checked BEFORE streaming, cost ledger written on finish. Identity is the
+  // session-resolved user/brokerage/agent above, never the request body.
+  let result: Awaited<ReturnType<typeof streamTextRouted>>
+  try {
+    result = await streamTextRouted({
+    feature: 'onboarding_performance_report',
+    userId: user.id,
+    brokerageId,
+    agentId,
     system: `You are a real estate brokerage training coach. Generate a performance report for a new agent going through onboarding. Be encouraging but honest. Provide actionable recommendations.`,
     prompt: `Based on this agent's onboarding metrics:
 
@@ -151,12 +168,23 @@ Make the narrative personalized and actionable. If they're doing well, acknowled
         console.error('[PerformanceReport] Error saving report:', err)
       }
     },
-  })
+    })
+  } catch (err) {
+    // Fair-use refusal fires before any bytes stream — surface the cap, not a 500.
+    if (err instanceof AIFairUseError) {
+      return NextResponse.json({ error: err.message }, { status: 429 })
+    }
+    throw err
+  }
 
   return result.toTextStreamResponse()
 }
 
-export async function GET(request: NextRequest) {
+// TOMBSTONE — this handler took the framework's Request object and read NOTHING from
+// it: no query string, no body, no header. Every input comes from the SESSION
+// (CLAUDE.md §4). A route handler may be declared with no parameters at all, and an
+// unread `request` in the signature advertises a filter this endpoint does not honour.
+export async function GET() {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()

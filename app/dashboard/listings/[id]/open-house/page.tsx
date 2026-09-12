@@ -15,15 +15,18 @@ export default async function OpenHousePage({ params }: Props) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  const { data: agentRecord } = data.listing.agent_id
-    ? await supabase.from("agents").select("id").eq("user_id", data.listing.agent_id).maybeSingle()
-    : { data: null }
+  // IDENTITY CLASS (m353). listings.agent_id ALREADY IS the agents id — it FKs
+  // agents(id). This looked the agents row up by `user_id` using that value, so
+  // it matched nothing on every listing and agentId was always "" — after which
+  // the old `?? user?.id` quietly supplied a users id in its place. Two wrongs
+  // that between them looked like a working page. No lookup is needed at all.
+  const listingAgentId = (data.listing.agent_id as string | null) ?? ""
 
   return (
     <OpenHouseClient
       listingId={id}
       initialData={data}
-      agentId={agentRecord?.id ?? user?.id ?? ""}
+      agentId={listingAgentId}
       userId={user?.id ?? ""}
     />
   )

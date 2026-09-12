@@ -2,6 +2,9 @@
 export type { ListingStage, ReadinessCheckType, RequiredRole, StageDefinition } from "./lifecycle-definitions"
 export {
   LISTING_LIFECYCLE_STAGES,
+  USER_TYPE_TO_LIFECYCLE_ROLE,
+  normalizeLifecycleRole,
+  entersFromAnyStage,
   getStageDefinition,
   getAllStages,
   getStageIndex,

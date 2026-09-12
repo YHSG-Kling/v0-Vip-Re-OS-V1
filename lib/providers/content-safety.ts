@@ -15,6 +15,7 @@
 // Either way it records a compliance_events row so the catch is auditable.
 
 import { evaluateContentSafety } from "@/lib/compliance/content-safety-checks"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface ContentSafetyInput {
@@ -58,7 +59,12 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
   // Auditable record of the catch (best-effort — never let logging break the gate decision).
   try {
     const svc = createServiceClient()
-    await svc.from("compliance_events").insert({
+    // SERVICE-ROLE client → sentinelWrite (lib/kernel/write-sentinel.ts). A lost
+    // safety-catch audit row is exactly the kind of loss the repair digest exists
+    // to rank: it means the platform blocked something and cannot prove it did.
+    await sentinelWrite(
+      svc,
+      svc.from("compliance_events").insert({
       brokerage_id: input.brokerageId,
       actor_user_id: input.actorUserId ?? null,
       actor_role: input.isAutonomous ? "ai_manager" : "system",
@@ -70,7 +76,14 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
       blocked_reason: blocked ? reason : null,
       severity,
       details: { system_source: input.systemSource ?? null, autonomous: input.isAutonomous, disposition: blocked ? "blocked" : "flagged", categories },
-    })
+      }),
+      {
+        table: "compliance_events",
+        flow: "content_safety_backstop_audit",
+        brokerageId: input.brokerageId ?? null,
+        reason: "audit echo of a safety catch — the gate decision above is the real control and must not fail because logging did",
+      },
+    )
   } catch (err) {
     console.warn("[content-safety] compliance_events insert failed:", (err as any)?.message)
   }

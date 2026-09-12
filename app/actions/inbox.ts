@@ -12,20 +12,53 @@
  *   5. Return plain serializable result
  *
  * Import from this file — never from lib/kernel/communications directly in client components.
+ *
+ * ─── TOMBSTONE (orphan doctrine §1.1, lane BT 2026-08-27) ────────────────────
+ * app/api/inbox/messages/route.ts DELETED. It was a session-gated HTTP door
+ * (GET load / POST reply) onto the same two kernel commands, with ZERO callers:
+ * no mention of "/api/inbox/messages" anywhere in first-party source (verified
+ * on comment-stripped source, positive-controlled finder), no secret lane for an
+ * out-of-process caller (cookie session only — unlike /api/errors/collect,
+ * which stays for exactly that reason), and no vercel.json / CRON_REGISTRY /
+ * provider-console shape. SURVIVOR: getInboxMessages / sendInboxMessage in THIS
+ * file — a strict superset of the deleted handlers (adds leadId/party filters
+ * and the agents-table brokerage_id fallback the route lacked), wired to
+ * app/dashboard/communications/inbox/InboxClient.tsx.
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { requireCaller } from "@/lib/auth/require-caller"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { buildActorContext } from "@/lib/kernel/actor-context"
 import {
   loadUniversalInbox,
   sendInboxReply,
-  type InboxChannel,
-  type InboxMessageRow,
-  type InboxThread,
 } from "@/lib/kernel/communications"
+// NOTE: This file is a "use server" module — it may ONLY export async
+// functions. All inbox types/interfaces live in ./inbox-types and are
+// imported here as type-only imports. Consumers that need these types should
+// import them from "@/app/actions/inbox-types" (or directly from
+// "@/lib/kernel/communications"), never from this module.
+import type {
+  InboxChannel,
+  InboxMessageRow,
+  InboxThread,
+  GetInboxMessagesParams,
+  SendInboxMessageParams,
+  ForceComplianceOverrideParams,
+} from "@/app/actions/inbox-types"
 
-// ─── RE-EXPORT TYPES (safe to use in client components) ───────────────────────
-export type { InboxChannel, InboxMessageRow, InboxThread }
+// GetInboxMessagesParams.channel is a raw string (it comes straight off a query
+// string on the API route). Narrow it to a valid InboxChannel before passing it
+// to the kernel; anything unrecognized falls back to the "all" lane.
+const INBOX_CHANNELS: readonly InboxChannel[] = [
+  "all", "sms", "email", "voice", "portal", "chat", "ai", "vendor",
+]
+function toInboxChannel(value: string | undefined): InboxChannel {
+  return value && (INBOX_CHANNELS as readonly string[]).includes(value)
+    ? (value as InboxChannel)
+    : "all"
+}
 
 // ─── RESOLVE ACTOR CONTEXT (shared util) ─────────────────────────────────────
 
@@ -65,17 +98,6 @@ async function resolveActorContext() {
 
 // ─── ACTION: getInboxMessages ─────────────────────────────────────────────────
 
-export interface GetInboxMessagesParams {
-  channel?: InboxChannel
-  contactId?: string
-  unreadOnly?: boolean
-  limit?: number
-  /** Restrict to one AI-ISA lead's conversation (leads are NOT contacts). */
-  leadId?: string
-  /** "lead" fetches only the AI-ISA lead lane. */
-  party?: "lead"
-}
-
 export async function getInboxMessages(params: GetInboxMessagesParams = {}): Promise<{
   success: boolean
   messages?: InboxMessageRow[]
@@ -88,7 +110,7 @@ export async function getInboxMessages(params: GetInboxMessagesParams = {}): Pro
 
     const result = await loadUniversalInbox({
       actorContext,
-      channel: params.channel ?? "all",
+      channel: toInboxChannel(params.channel),
       contactId: params.contactId,
       unreadOnly: params.unreadOnly ?? false,
       limit: params.limit ?? 50,
@@ -115,12 +137,6 @@ export async function getInboxMessages(params: GetInboxMessagesParams = {}): Pro
 }
 
 // ─── ACTION: sendInboxMessage ─────────────────────────────────────────────────
-
-export interface SendInboxMessageParams {
-  contactId: string
-  body: string
-  channel: "sms" | "email" | "portal" | "chat"
-}
 
 export async function sendInboxMessage(params: SendInboxMessageParams): Promise<{
   success: boolean
@@ -164,13 +180,6 @@ export async function sendInboxMessage(params: SendInboxMessageParams): Promise<
 // These remain enforced because they're legal boundaries, not gating
 // suggestions. The override only bypasses brand voice / them-first /
 // fair-housing-wording gates.
-
-export interface ForceComplianceOverrideParams {
-  contactId:      string
-  body:           string
-  channel:        "sms" | "email" | "portal" | "chat"
-  overrideReason: string
-}
 
 export async function forceComplianceOverrideAndSend(
   params: ForceComplianceOverrideParams,
@@ -241,7 +250,14 @@ export async function forceComplianceOverrideAndSend(
   // Audit row: allowed=false because the original gate failed, with the
   // OVERRIDE_REASON appended to violations + OVERRIDDEN prefix on
   // blocked_reason so compliance reports can filter for these.
-  await supabase
+  //
+  // FAIL CLOSED (CLAUDE.md §4). This row was written with
+  // `.then(() => null, () => null)` — a fair-housing / brand-voice gate being
+  // BYPASSED by a broker, with its written reason, thrown on the floor. If the
+  // record of the override cannot be written, the override does not happen: an
+  // unrecorded compliance bypass is the one thing this action must never
+  // produce. The send below is skipped by returning here.
+  const { error: overrideAuditError } = await supabase
     .from("compliance_events")
     .insert({
       brokerage_id:   overrideCtx.brokerageId,
@@ -260,7 +276,17 @@ export async function forceComplianceOverrideAndSend(
         ? `OVERRIDDEN: ${originalBlockedReason}`
         : `OVERRIDDEN by ${overrideCtx.userType}`,
     })
-    .then(() => null, () => null)
+
+  if (overrideAuditError) {
+    console.error(
+      "[inbox] compliance override audit row REFUSED — refusing to send:",
+      overrideAuditError.message,
+    )
+    return {
+      success: false,
+      error: "The compliance-override audit record could not be written, so the message was not sent. Nothing may bypass the gate without a record.",
+    }
+  }
 
   // Resolve agent_id for the insert (mirrors sendInboxReply)
   const { data: agentRow } = await supabase
@@ -429,41 +455,65 @@ export async function markInboxRead(params: {
   channel?: string
 }): Promise<{ success: boolean; error?: string }> {
   try {
-    const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+    // Resolve caller's brokerage_id — earlier code authed the caller but then
+    // mutated by contact_id only, letting anyone mark another tenant's messages
+    // read.
+    //
+    // ── AND IT STILL HAD NO ROLE TEST (wave 26, lane SEC3) ────────────────────
+    //
+    // Two brokerage_ids compared, admitted on EQUALITY ALONE. `users.user_type`
+    // can hold `contact`, `vendor` and `lender` on rows that carry a
+    // brokerage_id, so any of those seats could reach into the AGENT's inbox and
+    // mark another client's unread conversation as read — destroying the signal
+    // the agent triages by, on a contact they have no business touching. This is
+    // the communications inbox (its only caller is InboxClient), so the
+    // back-office roster is the question, asked before any row is touched.
+    //
+    // The `users` read discarded `error` (§3 — a refusal RESOLVES, so an RLS
+    // denial read as "Unauthorized"); `requireCaller()` reads it.
+    const caller = await requireCaller()
+    if (!caller.ok) {
+      return { success: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+    }
+    if (!isCrmContactStaff(caller.userType)) return { success: false, error: "Forbidden" }
+    const supabase = caller.supabase
 
-    // Resolve caller's brokerage_id — previous code authed the caller but
-    // then mutated by contact_id only, letting anyone mark another tenant's
-    // messages read.
-    const { data: callerRow } = await supabase
-      .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
-
-    // Verify the contact belongs to the caller's brokerage
-    const { data: contact } = await supabase
+    // Verify the contact belongs to the caller's brokerage. A refused read is
+    // NOT "Forbidden" — that reads as a decision when it was an outage.
+    const { data: contact, error: contactError } = await supabase
       .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
-    if (!contact || contact.brokerage_id !== callerRow.brokerage_id) {
+    if (contactError) return { success: false, error: "Access check failed" }
+    if (!contact || contact.brokerage_id !== caller.brokerageId) {
       return { success: false, error: "Forbidden" }
     }
 
-    // Mark portal messages as read — scoped by brokerage
-    await supabase
+    // Both updates dropped their `error` entirely. supabase-js RESOLVES a
+    // refusal, so a denied write returned nothing and this reported
+    // `success: true` over two mutations that never happened — the inbox then
+    // re-rendered the thread as read and the badge came back on the next load
+    // with no explanation anywhere. Zero rows matched is NOT an error here (a
+    // contact with nothing unread is the ordinary case), so these are
+    // error-checked rather than counted.
+    const { error: portalReadError } = await supabase
       .from("client_portal_messages")
       .update({ read: true, read_at: new Date().toISOString() })
       .eq("contact_id", params.contactId)
-      .eq("brokerage_id", callerRow.brokerage_id)
+      .eq("brokerage_id", caller.brokerageId)
       .eq("read", false)
+    if (portalReadError) {
+      return { success: false, error: portalReadError.message }
+    }
 
     // Mark messages table — scoped by brokerage
-    await supabase
+    const { error: messagesReadError } = await supabase
       .from("messages")
       .update({ status: "read" })
       .eq("contact_id", params.contactId)
-      .eq("brokerage_id", callerRow.brokerage_id)
+      .eq("brokerage_id", caller.brokerageId)
       .eq("status", "unread")
+    if (messagesReadError) {
+      return { success: false, error: messagesReadError.message }
+    }
 
     return { success: true }
   } catch (err) {

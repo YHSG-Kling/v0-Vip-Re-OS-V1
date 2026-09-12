@@ -27,6 +27,7 @@
  */
 
 import "server-only"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
 import { logTenantFinding } from "@/lib/kernel/tenant-guard"
 
@@ -142,6 +143,37 @@ export async function calculateRevenueProtection(input: {
       latestByTransaction.set(r.transaction_id, { risk_level: r.risk_level })
     }
   }
+  // IDENTITY CLASS. input.agentId is a USERS id — the rollup cron reads it
+  // straight out of `users` (app/api/cron/revenue-protection-rollup/route.ts)
+  // and the agent dashboard passes the session's user.id. EVERY agent_id this
+  // function touches FKs agents(id): transactions, listings,
+  // listing_health_interventions AND revenue_protection_snapshots
+  // (scripts/schema-fk-map.ts — m366 re-pointed the last two). So the users id
+  // is resolved ONCE here and never used as an identity again below.
+  //
+  // What the previous comment at this spot got wrong, and what it cost: it
+  // asserted the two snapshot tables were "users-class and correctly filtered"
+  // by the users id, and scripts/identity-class-guard.ts pinned that belief as
+  // an assertion. The insert at the bottom of this function therefore wrote the
+  // users id into an agents(id) FK with no error read — a 23503 that supabase-js
+  // RESOLVES rather than throws — so the daily cron reported snapshots_written
+  // while revenue_protection_snapshots held 0 rows, and the previous-period
+  // lookup filtered by the same wrong class and never found a delta.
+  const agentRecordId = input.agentId
+    ? await resolveUserIdToAgentRecord(input.agentId, input.brokerageId)
+    : null
+  // REFUSE rather than write a broken row. A per-agent call whose user has no
+  // agents row in this brokerage cannot be scored: writing `agent_id: null`
+  // would make the row indistinguishable from the BROKERAGE-WIDE snapshot
+  // (getBrokerageRevenueProtection reads `.is("agent_id", null)`), and writing
+  // the users id is the FK refusal this comment exists to remember. The cron's
+  // per-agent try/catch counts this as an error instead of a snapshot.
+  if (input.agentId && !agentRecordId) {
+    throw new Error(
+      `[revenue-protection] users id ${input.agentId} has no agents row in brokerage ${input.brokerageId}; refusing to score`,
+    )
+  }
+
   const atRiskTransactionIds = Array.from(latestByTransaction.keys())
 
   let atRiskDealRows: Array<{ id: string; agent_id: string | null; estimated_commission: number | null; commission_amount: number | null }> = []
@@ -152,7 +184,7 @@ export async function calculateRevenueProtection(input: {
       .in("id", atRiskTransactionIds)
       .eq("brokerage_id", input.brokerageId)
       .not("status", "in", "(closed,cancelled,withdrawn)")
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data } = await q
     atRiskDealRows = (data ?? []) as typeof atRiskDealRows
   }
@@ -183,7 +215,7 @@ export async function calculateRevenueProtection(input: {
       .in("id", atRiskListingIds)
       .eq("brokerage_id", input.brokerageId)
       .in("status", ["active", "coming_soon"])
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data } = await q
     atRiskListingRows = (data ?? []) as typeof atRiskListingRows
   }
@@ -205,7 +237,8 @@ export async function calculateRevenueProtection(input: {
     .eq("resolved", true)
     .gte("resolved_at", `${start}T00:00:00Z`)
     .lte("resolved_at", `${end}T23:59:59Z`)
-  if (input.agentId) listingSavesQuery = listingSavesQuery.eq("agent_id", input.agentId)
+  // listing_health_interventions.agent_id FKs agents(id) — the resolved id, not the users id.
+  if (agentRecordId) listingSavesQuery = listingSavesQuery.eq("agent_id", agentRecordId)
   const { data: listingSaves } = await listingSavesQuery
 
   // Hydrate saved-deal GCI by transaction lookup (need estimated_commission)
@@ -219,7 +252,7 @@ export async function calculateRevenueProtection(input: {
       .select("id, agent_id, estimated_commission, commission_amount")
       .in("id", savedDealIds)
       .eq("brokerage_id", input.brokerageId)
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data: rows } = await q
     for (const r of (rows ?? []) as Array<{ id: string; agent_id: string | null; estimated_commission: number | null; commission_amount: number | null }>) {
       const gci = Number(r.commission_amount ?? r.estimated_commission ?? 0)
@@ -237,7 +270,7 @@ export async function calculateRevenueProtection(input: {
       .select("id, agent_id, list_price")
       .in("id", savedListingIds)
       .eq("brokerage_id", input.brokerageId)
-    if (input.agentId) q = q.eq("agent_id", input.agentId)
+    if (agentRecordId) q = q.eq("agent_id", agentRecordId)
     const { data: rows } = await q
     const savedListings = (rows ?? []) as Array<{ id: string; agent_id: string | null; list_price: number | null }>
     const resolved = await resolveListingGci(
@@ -296,10 +329,14 @@ export async function calculateRevenueProtection(input: {
   let savedGci = 0
   let savesCount = 0
 
+  // `info.agent_id` is transactions.agent_id / listings.agent_id — an agents(id).
+  // These two comparisons used to test it against input.agentId (the users id),
+  // which is NEVER equal, so the per-agent arm counted ZERO saves even when the
+  // queries above had already been correctly narrowed to agentRecordId.
   for (const s of (dealSaves ?? []) as Array<{ transaction_id: string; severity?: string }>) {
     const info = savedDealGci.get(s.transaction_id)
     if (!info) continue
-    if (input.agentId && info.agent_id !== input.agentId) continue
+    if (agentRecordId && info.agent_id !== agentRecordId) continue
     savedGci += info.gci
     savesCount += 1
     addCategory(categoryMap, "saved_deal", info.gci)
@@ -307,7 +344,7 @@ export async function calculateRevenueProtection(input: {
   for (const s of (listingSaves ?? []) as Array<{ listing_id: string; severity?: string; category?: string | null }>) {
     const info = savedListingGci.get(s.listing_id)
     if (!info) continue
-    if (input.agentId && info.agent_id !== input.agentId) continue
+    if (agentRecordId && info.agent_id !== agentRecordId) continue
     savedGci += info.gci
     savesCount += 1
     addCategory(categoryMap, s.category ?? "saved_listing", info.gci)
@@ -320,16 +357,20 @@ export async function calculateRevenueProtection(input: {
   let previousSnapshotId: string | null = null
   let protectedGciDelta: number | null = null
   let savesGciDelta: number | null = null
-  if (input.agentId) {
-    const { data: prev } = await supabase
+  if (agentRecordId) {
+    const { data: prev, error: prevError } = await supabase
       .from("revenue_protection_snapshots")
       .select("id, protected_gci, saved_gci")
-      .eq("agent_id", input.agentId)
+      .eq("agent_id", agentRecordId)
       .eq("snapshot_type", snapshotType)
       .lt("period_end", end)
       .order("period_end", { ascending: false })
       .limit(1)
       .maybeSingle()
+    // A refused read is not "no previous period". Say so; the deltas stay null.
+    if (prevError) {
+      console.error(`[revenue-protection] previous-snapshot lookup refused for agent ${agentRecordId}:`, prevError.message)
+    }
     if (prev) {
       previousSnapshotId = (prev.id as string | null) ?? null
       protectedGciDelta = Math.round(protectedGci - Number(prev.protected_gci ?? 0))
@@ -364,8 +405,13 @@ export async function calculateRevenueProtection(input: {
   }
 
   if (input.persist !== false) {
-    await supabase.from("revenue_protection_snapshots").insert({
-      agent_id:              input.agentId,
+    // revenue_protection_snapshots.agent_id FKs agents(id). NULL is the
+    // brokerage-wide row; a per-agent call has already refused above if it
+    // could not resolve, so `agentRecordId` is exactly `input.agentId`'s class-
+    // correct twin here. The error is READ: a swallowed 23503 is how this table
+    // stayed empty for weeks while the cron counted snapshots.
+    const { error: insertError } = await supabase.from("revenue_protection_snapshots").insert({
+      agent_id:              agentRecordId,
       brokerage_id:          input.brokerageId,
       snapshot_type:         snapshotType,
       period_start:          start,
@@ -385,6 +431,11 @@ export async function calculateRevenueProtection(input: {
       protected_gci_delta:   result.protectedGciDelta,
       saves_gci_delta:       result.savesGciDelta,
     })
+    if (insertError) {
+      throw new Error(
+        `[revenue-protection] snapshot insert refused for brokerage ${input.brokerageId}, agent ${agentRecordId ?? "brokerage-wide"}: ${insertError.message}`,
+      )
+    }
   }
 
   return result

@@ -185,6 +185,8 @@ Superadmin → Plans, then press its "Publish" button
 the DB value, archives any previously linked one (existing subscriptions
 keep billing), and links the new id. No code change, no MCP needed.
 REMAINING OWNER STEP: register the webhook endpoint
-`https://<app>/api/webhooks/stripe` in the Stripe dashboard (subscription +
-checkout events) and set STRIPE_WEBHOOK_SECRET — the readiness board now
+`https://<app>/api/billing/webhook` in the Stripe dashboard (subscription +
+checkout events) and set STRIPE_WEBHOOK_SECRET
+(`/api/webhooks/stripe` — what this line said before — is a 404; that
+directory holds only the separate vendor endpoint `vendor/route.ts`) — the readiness board now
 flags Stripe as broken until it's set (paid signups never activate without it).

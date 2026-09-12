@@ -17,8 +17,8 @@ import { Card } from "@/components/ui/card"
 import { Calculator, ChevronDown, ChevronUp, Sparkles } from "lucide-react"
 import { getBuyerClosingCosts } from "@/app/actions/buyer-closing-costs"
 import type { BuyerClosingEstimate, BuyerCostLine } from "@/lib/offers/buyer-closing-costs"
-
-const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+import { usd } from "@/lib/format/money"
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 function sourceBadge(l: BuyerCostLine): string | null {
   if (l.pending) return null // the pending state is its own label

@@ -1,8 +1,13 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getScrapingMarkets } from "@/app/actions/lead-scraping-config"
+import {
+  getScrapingMarkets,
+  getScrapingKeywords,
+  getScrapingJobs,
+} from "@/app/actions/lead-scraping-config"
 import { MarketsSetupClient } from "./markets-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -30,9 +35,16 @@ export default async function MarketsSetupPage() {
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? null
-  if (!["admin", "broker", "broker_admin", "superadmin"].includes(userType)) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType })) redirect("/dashboard")
 
-  const { markets } = await getScrapingMarkets()
+  // Markets carry their nested property/motivated params from getScrapingMarkets'
+  // own select. Keywords and job history are the rest of the scrape config that
+  // had no reader anywhere in the product before this page loaded them.
+  const [{ markets }, { keywords }, { jobs }] = await Promise.all([
+    getScrapingMarkets(),
+    getScrapingKeywords(),
+    getScrapingJobs(25),
+  ])
 
   // The territory-marketplace carry: the zip searched on /pricing, stored at
   // signup as a suggestion. Prefill only — the admin still creates the market.
@@ -55,11 +67,55 @@ export default async function MarketsSetupPage() {
         </p>
       </div>
       <MarketsSetupClient
-        initialMarkets={(markets ?? []).map((m: any) => ({
-          id: m.id, name: m.name, city: m.city, state: m.state,
-          zip_codes: Array.isArray(m.zip_codes) ? m.zip_codes : [],
-          is_active: m.is_active !== false,
+        initialMarkets={(markets ?? []).map((m: any) => {
+          const pp = Array.isArray(m.lead_scraping_property_params)
+            ? m.lead_scraping_property_params[0]
+            : m.lead_scraping_property_params
+          const mp = Array.isArray(m.lead_scraping_motivated_params)
+            ? m.lead_scraping_motivated_params[0]
+            : m.lead_scraping_motivated_params
+          return {
+            id: m.id, name: m.name, city: m.city, state: m.state,
+            zip_codes: Array.isArray(m.zip_codes) ? m.zip_codes : [],
+            is_active: m.is_active !== false,
+            propertyParams: pp
+              ? {
+                  id: pp.id,
+                  min_price: pp.min_price ?? null, max_price: pp.max_price ?? null,
+                  min_beds: pp.min_beds ?? null, max_beds: pp.max_beds ?? null,
+                  is_active: pp.is_active !== false,
+                }
+              : null,
+            motivatedParams: mp
+              ? {
+                  id: mp.id,
+                  min_equity_percent: mp.min_equity_percent ?? null,
+                  max_days_on_market: mp.max_days_on_market ?? null,
+                  include_expired_listings: mp.include_expired_listings !== false,
+                  include_fsbo: mp.include_fsbo !== false,
+                  is_active: mp.is_active !== false,
+                }
+              : null,
+          }
+        })}
+        initialKeywords={(keywords ?? []).map((k: any) => ({
+          id: k.id, keyword: k.keyword,
+          keyword_type: k.keyword_type ?? k.category ?? "custom",
+          weight: k.weight ?? null,
+          is_active: k.is_active !== false,
         }))}
+        initialJobs={(jobs ?? []).map((j: any) => {
+          const mkt = Array.isArray(j.lead_scraping_markets)
+            ? j.lead_scraping_markets[0]
+            : j.lead_scraping_markets
+          return {
+            id: j.id, job_type: j.job_type, source: j.source, status: j.status ?? "pending",
+            leads_found: j.leads_found ?? null, leads_created: j.leads_created ?? null,
+            error_message: j.error_message ?? null,
+            created_at: j.created_at ?? null, completed_at: j.completed_at ?? null,
+            market_label: mkt ? `${mkt.name} — ${mkt.city}, ${mkt.state}` : null,
+          }
+        })}
         suggestedZip={suggestedZip}
       />
     </div>

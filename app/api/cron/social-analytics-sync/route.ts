@@ -18,8 +18,8 @@ export const maxDuration = 300
 // + stored tenant credentials the publisher posted with. The
 // bundle-attribution rollup reads this table for SOCIAL_POST scans — before
 // this cron existed, that lane could only ever see the dead fake-success
-// stub's zeros. Registered in CRON_REGISTRY; marketing_agent-owned (same
-// lane as publish-social-posts).
+// stub's zeros. Registered in CRON_REGISTRY; campaign_orchestrator-owned (m618:
+// survivor of the retired marketing_agent seat; same lane as publish-social-posts).
 export async function GET(request: NextRequest) {
   const unauth = verifyCronAuth(request)
   if (unauth) return unauth
@@ -38,12 +38,22 @@ export async function GET(request: NextRequest) {
     const svc = createServiceClient()
     const result = await syncSocialAnalytics(svc, { sinceDays: 30, limit: 100 })
 
+    // THE WINNER PASS (2026-09-07): with fresh numbers in, judge every measured
+    // brokerage's recent posts against its own 28-day baseline and publish
+    // `content_winner` to the Ads Manager — the signal the registry declared and
+    // the handler consumed, which nothing had ever emitted.
+    let winners = { brokerages: 0, winners: 0, signalled: 0 }
+    try {
+      const { detectContentWinnersAll } = await import("@/lib/marketing/content-winner")
+      winners = await detectContentWinnersAll(svc)
+    } catch (e) { console.error("[social-analytics-sync] winner pass failed:", (e as Error).message) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: result.synced,
-      metadata: { ...result },
+      metadata: { ...result, winners },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, ...result })
+    return NextResponse.json({ ok: true, ...result, winners })
   } catch (err: any) {
     await recordCronFailureAction({
       context_id: contextId,

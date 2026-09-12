@@ -14,7 +14,15 @@ import { createServiceClient } from "@/lib/supabase/service"
 type Svc = ReturnType<typeof createServiceClient>
 
 /** Stable marker so the installer is idempotent per brokerage. */
-export const REACTIVATION_TRIGGER = "ai_isa_reactivation"
+// campaign_sequences.trigger_event carries a live CHECK; "ai_isa_reactivation"
+// is not one of its 14 values, and sequence_type does not admit "reactivation"
+// either. Both were rejected, so ensureReactivationSequence could never
+// install anything — campaign_sequences is empty in production. The CHECK
+// already has exact words for both: reengagement_started / re_engagement.
+export const REACTIVATION_TRIGGER = "reengagement_started"
+
+/** campaign_sequences.sequence_type ∈ (drip, nurture, post_close, re_engagement, transaction). */
+export const REACTIVATION_SEQUENCE_TYPE = "re_engagement"
 
 interface StepSeed {
   step_number: number
@@ -69,7 +77,7 @@ export async function ensureReactivationSequence(brokerageId: string, client?: S
     .select("id")
     .eq("brokerage_id", brokerageId)
     .eq("trigger_event", REACTIVATION_TRIGGER)
-    .eq("sequence_type", "reactivation")
+    .eq("sequence_type", REACTIVATION_SEQUENCE_TYPE)
     .maybeSingle()
   if (existing) {
     // UPGRADE PATH: a previously-installed sequence gains any NEW rungs
@@ -99,7 +107,7 @@ export async function ensureReactivationSequence(brokerageId: string, client?: S
       name: "AI ISA Reactivation",
       description: "Multi-channel, persona-driven re-engagement for quiet contacts & leads. Stops the moment they reply.",
       trigger_event: REACTIVATION_TRIGGER,
-      sequence_type: "reactivation",
+      sequence_type: REACTIVATION_SEQUENCE_TYPE,
       is_active: true,
       compliance_gated: true,
     })

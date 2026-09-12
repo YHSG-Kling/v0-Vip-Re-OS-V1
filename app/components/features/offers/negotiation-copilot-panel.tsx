@@ -220,23 +220,74 @@ export function NegotiationCoPilotPanel({
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2 flex-wrap">
               <Sparkles className="h-4 w-4 text-purple-700" />
-              <span className="text-xs font-semibold uppercase tracking-wide text-purple-900">AI strategy ready</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-purple-900">
+                {/* generated_by attribution — 'ai' is the generator's stamp. */}
+                {preStrategy.generatedBy === "ai" || preStrategy.generatedBy == null ? "AI strategy ready" : `Strategy by ${preStrategy.generatedBy}`}
+              </span>
               <span className={`text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded ${actionBadgeColor}`}>
                 {preStrategy.recommendedAction.replace(/_/g, " ")}
               </span>
               {preStrategy.status === "accepted_by_agent" && (
-                <span className="text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded bg-emerald-700 flex items-center gap-0.5">
+                <span
+                  className="text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded bg-emerald-700 flex items-center gap-0.5"
+                  title={preStrategy.agentDispositionAt ? `Accepted ${new Date(preStrategy.agentDispositionAt).toLocaleString()}` : undefined}
+                >
                   <CheckCircle2 className="h-2.5 w-2.5" /> Accepted
                 </span>
               )}
               {preStrategy.status === "dismissed" && (
-                <span className="text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded bg-slate-500 flex items-center gap-0.5">
+                <span
+                  className="text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded bg-slate-500 flex items-center gap-0.5"
+                  title={preStrategy.agentDispositionAt ? `Dismissed ${new Date(preStrategy.agentDispositionAt).toLocaleString()}` : undefined}
+                >
                   <XCircle className="h-2.5 w-2.5" /> Dismissed
+                </span>
+              )}
+              {/* Loop closed: the automated recorder stamped the real-world outcome. */}
+              {preStrategy.outcome && preStrategy.outcomeRecordedAt && (
+                <span className="text-[10px] uppercase font-bold text-white px-1.5 py-0.5 rounded bg-indigo-600">
+                  outcome: {preStrategy.outcome.replace(/_/g, " ")}
                 </span>
               )}
             </div>
             <span className="text-[10px] text-muted-foreground">refreshed {ageLabel}</span>
           </div>
+
+          {/* Disposition + outcome trail — when it was acted on and how the loop closed. */}
+          {(preStrategy.agentDispositionAt || preStrategy.outcomeRecordedAt || preStrategy.rationale?.dismissReason) && (
+            <div className="text-[11px] text-muted-foreground space-y-0.5">
+              {preStrategy.agentDispositionAt && (
+                <p>
+                  {preStrategy.agentDisposition === "dismissed" ? "Dismissed" : `Dispositioned (${(preStrategy.agentDisposition ?? "").replace(/_/g, " ") || "accepted"})`}{" "}
+                  {new Date(preStrategy.agentDispositionAt).toLocaleString()}
+                  {preStrategy.rationale?.dismissReason ? ` — "${preStrategy.rationale.dismissReason.replace(/_/g, " ")}"` : ""}
+                </p>
+              )}
+              {preStrategy.outcomeRecordedAt && (
+                <p>Outcome recorded {new Date(preStrategy.outcomeRecordedAt).toLocaleString()}</p>
+              )}
+            </div>
+          )}
+
+          {/* WHY — curated rationale_signals (see StrategyRationale: named fields only, never raw JSON). */}
+          {preStrategy.rationale && (preStrategy.rationale.keyRisks.length > 0 || preStrategy.rationale.agentTrackRecord || preStrategy.rationale.peerPatternKeys.length > 0) && (
+            <div className="rounded border bg-purple-50/40 p-2 text-[11px] space-y-1">
+              <p className="font-semibold text-purple-900 uppercase tracking-wide text-[10px]">Why this strategy</p>
+              {preStrategy.rationale.keyRisks.length > 0 && (
+                <ul className="list-disc pl-4 text-muted-foreground">
+                  {preStrategy.rationale.keyRisks.map((risk, i) => <li key={i}>{risk}</li>)}
+                </ul>
+              )}
+              {preStrategy.rationale.agentTrackRecord && (
+                <p className="text-muted-foreground">Your track record: {preStrategy.rationale.agentTrackRecord}</p>
+              )}
+              {preStrategy.rationale.peerPatternKeys.length > 0 && (
+                <p className="text-muted-foreground">
+                  Peer patterns: {preStrategy.rationale.peerPatternKeys.map((k) => k.replace(/_/g, " ")).join(", ")}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Numeric drivers */}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">

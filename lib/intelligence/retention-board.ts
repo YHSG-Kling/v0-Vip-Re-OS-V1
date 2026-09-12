@@ -18,6 +18,23 @@ export interface RetentionBoardAgent {
   trend: string | null
   /** The real signals driving the score (recency, drought, empty pipeline, stalled ramp). */
   drivers: string[]
+  /**
+   * HOW FAR IT MOVED — score − previous_score, both stored by the radar
+   * (lib/recruiting/retention-radar.ts:116). `previous_score` was written on every
+   * daily row and read by nothing: the board showed the WORD "declining" with no
+   * magnitude, and −2 (noise) rendered identically to −30 (an agent walking out the
+   * door). Null when the row has no prior score — a first-ever score has no delta,
+   * and one is never invented.
+   */
+  delta: number | null
+  /**
+   * The WEAKEST measured sub-signal from the radar's stored `signal_breakdown`
+   * (key → 0–1), rendered as 0–100 beside the driver labels. The labels in
+   * `drivers` (driving_signals) say WHICH signals are weak; the breakdown is the
+   * only place that says HOW weak, and it too was write-only. Null when the row
+   * carries no breakdown.
+   */
+  weakestSignal: { key: string; score: number } | null
 }
 
 export interface RetentionBoard {
@@ -38,9 +55,29 @@ interface RawScore {
   tier: string
   score_trend: string | null
   driving_signals: string[] | null
+  /** OPTIONAL on the type, always selected by the reader below. A row that predates
+   *  the radar writing it, or a caller (the pure simulator) that omits it, has no
+   *  delta — the board says nothing rather than showing a fabricated 0. */
+  previous_score?: number | null
+  /** key → 0–1 sub-score, exactly as computeRetentionScore built it. */
+  signal_breakdown?: Record<string, number> | null
 }
 
 const TIER_RANK: Record<string, number> = { critical: 0, at_risk: 1, watch: 2, healthy: 3, engaged: 4 }
+
+/** PURE: the lowest sub-score in a stored signal_breakdown, as 0–100. Null on an
+ *  absent, empty or unusable breakdown — the board says nothing rather than 0. */
+function weakestOf(breakdown: Record<string, number> | null | undefined): { key: string; score: number } | null {
+  if (!breakdown || typeof breakdown !== "object" || Array.isArray(breakdown)) return null
+  let out: { key: string; score: number } | null = null
+  for (const [key, raw] of Object.entries(breakdown)) {
+    const v = Number(raw)
+    if (!Number.isFinite(v)) continue
+    const score = Math.round(v * 100)
+    if (!out || score < out.score) out = { key, score }
+  }
+  return out
+}
 
 /**
  * PURE: fold the latest-per-agent score rows + a name map into the board. Keeps only the most recent
@@ -68,6 +105,12 @@ export function summarizeRetentionBoard(
       tier: r.tier,
       trend: r.score_trend ?? null,
       drivers: Array.isArray(r.driving_signals) ? r.driving_signals : [],
+      // Derived (§2), never a stored delta that could disagree with the two scores
+      // it sits between.
+      delta: typeof r.previous_score === "number" && Number.isFinite(r.previous_score)
+        ? r.composite_score - r.previous_score
+        : null,
+      weakestSignal: weakestOf(r.signal_breakdown),
     })
   }
 
@@ -87,7 +130,7 @@ export async function generateRetentionBoard(
     const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
     const { data: scores } = await supabase
       .from("agent_retention_scores")
-      .select("agent_id, score_date, composite_score, tier, score_trend, driving_signals")
+      .select("agent_id, score_date, composite_score, tier, score_trend, driving_signals, previous_score, signal_breakdown")
       .eq("brokerage_id", brokerageId).gte("score_date", since)
       .order("score_date", { ascending: false }).limit(2000)
     const rows = (scores ?? []) as RawScore[]

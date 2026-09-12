@@ -9,8 +9,16 @@
 // compliance approves but does NOT apply the broker's signature; the signed CDA
 // can't reach title until the broker has signed. Roles below mirror the action gates.
 
-export const CDA_APPROVE_ROLES = new Set(["compliance_officer", "admin", "broker", "broker_admin", "superadmin"])
-export const CDA_BROKER_SIGN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// SCOPE LADDER (separation-of-duties rosters, kept inline — the two sets are
+// deliberately different and must not collapse into one shared predicate).
+// 'superadmin' removed from both: tested against users.user_type (cda-portal
+// passes auth.userType) and 0 live rows store it — the platform superadmin is
+// user_type='admin' + platform_role='superadmin', admitted via 'admin' already.
+// 'broker_owner' added to both: storable, owns the brokerage, and m472 groups it
+// with broker for CDA (finance) authority; without it the owner of the brokerage
+// could neither approve nor broker-sign their own CDA.
+export const CDA_APPROVE_ROLES = new Set(["compliance_officer", "admin", "broker", "broker_owner", "broker_admin"])
+export const CDA_BROKER_SIGN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 export interface PolicyVerdict {
   ok: boolean

@@ -22,16 +22,37 @@ export interface AssistantVoiceOption {
   label: string
   /** How it reads on the phone + narration — shown in the picker. */
   style: string
+  gender: "male" | "female"
+  accent: string
 }
 
-/** Curated ElevenLabs PREMADE voices (stable public ids). */
+/**
+ * THE ONE curated ElevenLabs PREMADE (stock) voice list (stable public ids).
+ *
+ * MERGED SURVIVOR. `lib/voice/voice-resolver.ts:GENERIC_VOICES` was a SECOND
+ * hand-maintained list of the same thing — 8 entries, 5 of them the same ids as
+ * these, with the same job (offer a professional stock voice to somebody who
+ * does not want a clone). Two lists meant a voice could be offered on the
+ * Assistant settings page and be missing from the AI Identity picker, and a
+ * correction to one silently did not reach the other.
+ *
+ * The extra voices GENERIC_VOICES carried (Elli, Arnold, Sam) and the extra
+ * fields it carried (gender, accent) are ported HERE, and GENERIC_VOICES is now
+ * a derived projection of this array — same name, same shape, same call sites,
+ * zero duplicated data. This module is the survivor because it is client-safe:
+ * voice-resolver.ts carries `import "server-only"`, so a client-side picker can
+ * never import its list directly.
+ */
 export const ASSISTANT_VOICE_OPTIONS: AssistantVoiceOption[] = [
-  { voiceId: "21m00Tcm4TlvDq8ikWAM", label: "Rachel", style: "Warm, professional female — the classic concierge" },
-  { voiceId: "EXAVITQu4vr4xnSDxMaL", label: "Sarah", style: "Soft, reassuring female — great for client updates" },
-  { voiceId: "AZnzlk1XvdvUeBnXmlld", label: "Domi", style: "Confident, energetic female — market updates with punch" },
-  { voiceId: "pNInz6obpgDQGcFmaJgB", label: "Adam", style: "Deep, steady male — authoritative reports" },
-  { voiceId: "ErXwobaYiN019PkySvjV", label: "Antoni", style: "Well-rounded male — friendly explainer tone" },
-  { voiceId: "TxGEqnHWrfWFTfGW9XjX", label: "Josh", style: "Young, upbeat male — social-first energy" },
+  { voiceId: "21m00Tcm4TlvDq8ikWAM", label: "Rachel", style: "Warm, professional female — the classic concierge", gender: "female", accent: "American" },
+  { voiceId: "EXAVITQu4vr4xnSDxMaL", label: "Sarah", style: "Soft, reassuring female — great for client updates", gender: "female", accent: "American" },
+  { voiceId: "AZnzlk1XvdvUeBnXmlld", label: "Domi", style: "Confident, energetic female — market updates with punch", gender: "female", accent: "American" },
+  { voiceId: "MF3mGyEYCl7XYWbV9V6O", label: "Elli", style: "Calm, articulate female — steady long-form narration", gender: "female", accent: "American" },
+  { voiceId: "pNInz6obpgDQGcFmaJgB", label: "Adam", style: "Deep, steady male — authoritative reports", gender: "male", accent: "American" },
+  { voiceId: "ErXwobaYiN019PkySvjV", label: "Antoni", style: "Well-rounded male — friendly explainer tone", gender: "male", accent: "American" },
+  { voiceId: "TxGEqnHWrfWFTfGW9XjX", label: "Josh", style: "Young, upbeat male — social-first energy", gender: "male", accent: "American" },
+  { voiceId: "VR6AewLTigWG4xSOukaG", label: "Arnold", style: "Authoritative, mature male — gravitas for market briefings", gender: "male", accent: "American" },
+  { voiceId: "yoZ06aMxZJJ28mfd3POQ", label: "Sam", style: "Approachable, neutral male — the everyday assistant", gender: "male", accent: "American" },
 ]
 
 /** PURE: label lookup for a saved assistant voice id (null → not a preset —

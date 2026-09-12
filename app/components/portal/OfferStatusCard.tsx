@@ -6,6 +6,8 @@ import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { FileText, ArrowRight, PartyPopper, HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { usdOrNAOnNullish } from "@/lib/format/money"
+import { formatMonthDay } from "@/lib/format/dates"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,8 @@ export interface Offer {
 export interface OfferStatusCardProps {
   offers: Offer[]
   contactId: string
+  /** optional by design: style-override passthrough onto the root element; no
+   *  current caller needs a non-default look. */
   className?: string
 }
 
@@ -46,21 +50,9 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 
 // ─── HELPER FUNCTIONS ─────────────────────────────────────────────────────────
 
-function formatCurrency(amount: number | null): string {
-  if (amount === null || amount === undefined) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  })
-}
+// `formatCurrency`/`formatDate` — same-body census, round 4 (2026-09-09, lane
+// FC): DELETED, byte-identical to lib/format/money.ts `usdOrNAOnNullish` and
+// lib/format/dates.ts `formatMonthDay` (both imported above).
 
 function getOfferAddress(offer: Offer): string {
   return (
@@ -136,7 +128,7 @@ export function OfferStatusCard({ offers, contactId, className }: OfferStatusCar
                   Congratulations! Your offer was accepted!
                 </p>
                 <p className="text-sm text-green-700">
-                  {getOfferAddress(acceptedOffer)} - {formatCurrency(acceptedOffer.offer_amount)}
+                  {getOfferAddress(acceptedOffer)} - {usdOrNAOnNullish(acceptedOffer.offer_amount)}
                 </p>
                 <Button
                   variant="outline"
@@ -169,7 +161,7 @@ export function OfferStatusCard({ offers, contactId, className }: OfferStatusCar
                       {getOfferAddress(offer)}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {formatCurrency(offer.offer_amount)} - {formatDate(offer.created_at)}
+                      {usdOrNAOnNullish(offer.offer_amount)} - {formatMonthDay(offer.created_at)}
                     </p>
                   </div>
                   <Badge

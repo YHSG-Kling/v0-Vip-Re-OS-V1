@@ -15,6 +15,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { resolveUserTeam } from '@/lib/kernel/resolve-user-team'
 
 export interface AssembleEmailParams {
   bodyHtml: string
@@ -54,21 +55,41 @@ export async function assembleEmail(params: AssembleEmailParams): Promise<Assemb
   let signatureText = ''
 
   // 1. Try per-user signature
-  const { data: userRow } = await supabase
+  const { data: userRow, error: userSigError } = await supabase
     .from('users')
-    .select('email_signature, team_id')
+    .select('email_signature')
     .eq('id', params.userId)
     .maybeSingle()
+
+  // supabase-js RESOLVES a refused read, so an unchecked error here would look
+  // exactly like "this user has no signature" and silently fall through the
+  // whole waterfall to the brokerage default.
+  if (userSigError) {
+    console.error(`[assemble-email] user signature read REFUSED for ${params.userId}: ${userSigError.message}`)
+  }
+
+  // TIER 2 COULD NEVER FIRE. This used to read `users.team_id` and branch on it,
+  // but team membership is NOT recorded there for anyone: MEASURED, all 18 users
+  // in the live brokerage have `users.team_id = NULL`, including the team lead
+  // himself. So the team-tier signature was unreachable for every user in the
+  // product — a waterfall rung with no water.
+  //
+  // `lib/kernel/resolve-user-team.ts:resolveUserTeam` is the canonical answer to
+  // "which team is this user on", with a four-source precedence: the team they
+  // LEAD (teams.team_lead_id — a FACT, and the only source that is populated
+  // today), then users.team_id, then team_members, then agents.team_id. Using it
+  // here is the difference between a tier that exists and a tier that runs.
+  const teamOfUser = await resolveUserTeam(supabase, params.userId)
 
   if (userRow?.email_signature) {
     signatureHtml = userRow.email_signature
     signatureText = stripHtml(userRow.email_signature)
-  } else if (userRow?.team_id) {
+  } else if (teamOfUser.teamId) {
     // 2. Team-level signature lives inside teams.branding_override JSONB
     const { data: team } = await supabase
       .from('teams')
       .select('branding_override')
-      .eq('id', userRow.team_id)
+      .eq('id', teamOfUser.teamId)
       .maybeSingle()
 
     const teamSig = (team?.branding_override as any)?.email_signature_html

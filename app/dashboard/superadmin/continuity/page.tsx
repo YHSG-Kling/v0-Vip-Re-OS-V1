@@ -27,16 +27,30 @@ export default async function PlatformContinuityPage() {
   const svc = createServiceClient()
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString()
 
-  const [{ data: ledger }, { data: quarantine }, stats, shapeChanges, sentinelLosses] = await Promise.all([
+  const [{ data: ledger }, { data: quarantine }, stats, shapeChanges, sentinelLosses, { data: reconciled }] = await Promise.all([
     svc.from("self_heal_events")
       .select("brokerage_id, domain, outcome")
       .gte("created_at", since).limit(5000),
+    // ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+    // `last_attempt_at` was written by every branch of runIngressReconciliation
+    // (lib/kernel/ingress-continuity.ts:375-402) and read by NOBODY, so this
+    // board showed an attempt COUNT with no way to tell a letter the worker
+    // retried four minutes ago from one it has not touched since the cron
+    // stopped running — the difference between "healing" and "abandoned by the
+    // healer", which is the whole question this card exists to answer.
     svc.from("ingress_dead_letters")
-      .select("provider, event_kind, external_ref, attempts, created_at, status")
+      .select("provider, event_kind, external_ref, attempts, created_at, status, last_attempt_at")
       .eq("status", "pending").order("created_at", { ascending: true }).limit(50),
     loadFlowActionStats(svc),
     loadRecentShapeChanges(svc as any, since),
     loadSentinelLosses(svc, since),
+    // §1.2 — `reconciled_at` (ingress-continuity.ts:375) had no reader either:
+    // the board counted what is still STUCK and never what the worker actually
+    // healed, so a reconciliation rail that fixed forty letters this week and
+    // one that has been dead since Tuesday rendered identically.
+    svc.from("ingress_dead_letters")
+      .select("provider, reconciled_at")
+      .eq("status", "reconciled").gte("reconciled_at", since).limit(1000),
   ])
 
   // Fold the week's ledger per tenant (platform-scoped rows fold under "platform").
@@ -60,6 +74,25 @@ export default async function PlatformContinuityPage() {
 
   const repairs = composeRepairAutonomy(stats)
   const quarantineRows = ((quarantine ?? []) as any[])
+
+  // §1.2 — the healed half of the same ledger.
+  const reconciledRows = ((reconciled ?? []) as Array<{ provider: string | null; reconciled_at: string | null }>)
+  const lastReconciledAt = reconciledRows
+    .map((r) => r.reconciled_at)
+    .filter((v): v is string => !!v)
+    .sort()
+    .at(-1) ?? null
+  /** "3m" / "4h" / "6d" since an ISO stamp — or null when there is no stamp. */
+  const agoLabel = (iso: string | null | undefined): string | null => {
+    if (!iso) return null
+    const ms = Date.now() - new Date(iso).getTime()
+    if (!Number.isFinite(ms) || ms < 0) return null
+    const mins = Math.floor(ms / 60_000)
+    if (mins < 60) return `${mins}m`
+    const hours = Math.floor(mins / 60)
+    if (hours < 48) return `${hours}h`
+    return `${Math.floor(hours / 24)}d`
+  }
 
   return (
     <div className="space-y-6 p-6">
@@ -126,6 +159,13 @@ export default async function PlatformContinuityPage() {
             <p className="text-xs text-muted-foreground">Orphans replay when their destination appears; schema_drift_quarantine rows drain the moment the contract learns the shape.</p>
           </CardHeader>
           <CardContent>
+            {/* §1.2 — the reconciliation worker's OWN pulse, from reconciled_at.
+                An empty quarantine and a dead worker used to look the same. */}
+            <p className="mb-2 text-xs text-muted-foreground">
+              {reconciledRows.length > 0
+                ? `Healed this week: ${reconciledRows.length} letter${reconciledRows.length === 1 ? "" : "s"} reconciled${agoLabel(lastReconciledAt) ? ` · last ${agoLabel(lastReconciledAt)} ago` : ""}.`
+                : "No letter has been reconciled in the last 7 days — either nothing needed healing, or the reconciliation worker is not running."}
+            </p>
             {quarantineRows.length === 0 ? (
               <p className="text-sm text-muted-foreground">Empty — every inbound payload is readable.</p>
             ) : (
@@ -133,7 +173,13 @@ export default async function PlatformContinuityPage() {
                 {quarantineRows.slice(0, 12).map((q) => (
                   <li key={`${q.provider}:${q.external_ref}`} className="flex items-center justify-between gap-2 text-xs">
                     <span className="truncate text-muted-foreground">{q.provider} · {q.event_kind} · {q.external_ref}</span>
-                    <Badge variant="outline" className="shrink-0">{q.attempts ?? 0} tick{(q.attempts ?? 0) === 1 ? "" : "s"}</Badge>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {/* Never tried = the worker has not reached it at all. */}
+                      <span className="text-muted-foreground">
+                        {agoLabel(q.last_attempt_at) ? `tried ${agoLabel(q.last_attempt_at)} ago` : "never tried"}
+                      </span>
+                      <Badge variant="outline">{q.attempts ?? 0} tick{(q.attempts ?? 0) === 1 ? "" : "s"}</Badge>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -179,6 +225,25 @@ export default async function PlatformContinuityPage() {
                 {shapeChanges.slice(0, 12).map((c) => (
                   <li key={`${c.connector}:${c.fingerprint}`} className="text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">{c.connector}</span> / {c.entity} — new shape {c.fingerprint} since {new Date(c.firstSeenAt).toLocaleDateString()}
+                    {/* last_seen_at: a shape still arriving is a contract change; one seen
+                        once is a blip. Both were stored and neither was shown. */}
+                    {c.lastSeenAt && `, last seen ${new Date(c.lastSeenAt).toLocaleDateString()}`}
+                    {/* shape_keys diffed against the prior shape — WHICH field moved. */}
+                    {c.diffUnavailable ? (
+                      <span className="block">changed fields unknown (an earlier shape recorded no key list)</span>
+                    ) : (
+                      <>
+                        {c.removedKeys.length > 0 && (
+                          <span className="block text-red-700">dropped: {c.removedKeys.slice(0, 8).join(", ")}{c.removedKeys.length > 8 ? ` +${c.removedKeys.length - 8} more` : ""}</span>
+                        )}
+                        {c.addedKeys.length > 0 && (
+                          <span className="block text-amber-700">added: {c.addedKeys.slice(0, 8).join(", ")}{c.addedKeys.length > 8 ? ` +${c.addedKeys.length - 8} more` : ""}</span>
+                        )}
+                        {c.removedKeys.length === 0 && c.addedKeys.length === 0 && (
+                          <span className="block">no key paths differ — a values-only change</span>
+                        )}
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>

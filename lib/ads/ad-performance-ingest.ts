@@ -9,7 +9,8 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { getConnector, loadConnectorCredential } from "./connectors/registry"
-import type { ProviderPerformanceRow } from "./connectors/types"
+import { isPerformancePending, type PerformanceFetchResult, type ProviderPerformanceRow } from "./connectors/types"
+import { recordAdPerformanceSnapshot, detectCreativeFatigue } from "./creative-fatigue-runner"
 
 /** Pure: provider performance row → ad_performance insert payload. */
 export function toAdPerformanceRow(brokerageId: string, campaignId: string, p: ProviderPerformanceRow): Record<string, unknown> {
@@ -28,7 +29,15 @@ export function toAdPerformanceRow(brokerageId: string, campaignId: string, p: P
   }
 }
 
-export interface IngestResult { campaigns: number; ingested: number; skipped: number }
+export interface IngestResult {
+  campaigns: number
+  ingested: number
+  skipped: number
+  /** ad_performance_history rows appended this pass (the time-series the fatigue monitor reads). */
+  historyRecorded: number
+  /** Campaigns whose CTR decay crossed the HIGH-risk bar and raised a gated creative_fatigue signal. */
+  fatigued: number
+}
 
 /**
  * For every LIVE campaign in a brokerage, fetch performance from its platform and
@@ -39,14 +48,21 @@ export async function ingestAdPerformance(
   brokerageId: string, client?: ReturnType<typeof createServiceClient>,
 ): Promise<IngestResult> {
   const supabase = client ?? createServiceClient()
-  const { data: campaigns } = await supabase
+  const { data: campaigns, error: campaignsError } = await supabase
     .from("ad_campaigns")
-    .select("id, platform, status, targeting_config")
+    .select("id, platform, status, targeting_config, campaign_name")
     .eq("brokerage_id", brokerageId)
     .in("status", ["live", "launching"])
-  const live = (campaigns ?? []) as Array<{ id: string; platform: string; targeting_config: Record<string, unknown> | null }>
+  if (campaignsError) {
+    // supabase-js RESOLVES a refusal; an un-read error here reported "0 live
+    // campaigns" for a tenant whose read was refused.
+    console.error("[ad-performance-ingest] ad_campaigns read refused:", campaignsError.message)
+    return { campaigns: 0, ingested: 0, skipped: 0, historyRecorded: 0, fatigued: 0 }
+  }
+  const live = (campaigns ?? []) as Array<{ id: string; platform: string; targeting_config: Record<string, unknown> | null; campaign_name: string | null }>
 
-  let ingested = 0, skipped = 0
+  let ingested = 0, skipped = 0, historyRecorded = 0, fatigued = 0
+  const ingestedCampaigns: Array<{ id: string; name: string | null }> = []
   // Cache one credential per platform per brokerage.
   const credCache = new Map<string, Awaited<ReturnType<typeof loadConnectorCredential>>>()
 
@@ -60,10 +76,52 @@ export async function ingestAdPerformance(
     const cred = credCache.get(c.platform)
     if (!cred) { skipped++; continue }
 
-    const perf = await connector.fetchPerformance({ campaignExternalId: externalId, sinceIso: new Date(Date.now() - 30 * 86_400_000).toISOString(), cred })
+    const providerState = (c.targeting_config?.provider_state as Record<string, unknown> | undefined) ?? undefined
+    let perf: PerformanceFetchResult
+    try {
+      perf = await connector.fetchPerformance({ campaignExternalId: externalId, sinceIso: new Date(Date.now() - 30 * 86_400_000).toISOString(), cred, providerState })
+    } catch (e) {
+      console.error("[ad-performance-ingest] fetch failed for", c.id, (e as Error).message)
+      skipped++; continue
+    }
+    if (isPerformancePending(perf)) {
+      // An async provider (Vibe reports) answers on a later pass; carry its
+      // state on the row. A refused write is logged, not read as "carried".
+      const { error: stateError } = await supabase.from("ad_campaigns")
+        .update({ targeting_config: { ...(c.targeting_config ?? {}), provider_state: perf.providerState } })
+        .eq("id", c.id).eq("brokerage_id", brokerageId)
+      if (stateError) console.error("[ad-performance-ingest] provider_state write refused:", stateError.message)
+      skipped++; continue
+    }
     if (!perf) { skipped++; continue }
     const { error } = await supabase.from("ad_performance").insert(toAdPerformanceRow(brokerageId, c.id, perf))
     if (!error) ingested++; else skipped++
+    if (error) continue
+
+    // THE TIME-SERIES HALF (wired 2026-09-03). ad_performance keeps only the
+    // latest reading per pass; ad_performance_history is what
+    // lib/ads/creative-fatigue-runner.ts detectCreativeFatigue and
+    // lib/ads/ad-outcome-loop.ts read — and NOTHING wrote it, so the fatigue
+    // monitor (manager-registry creative_fatigue) always saw an empty series.
+    const recorded = await recordAdPerformanceSnapshot({
+      brokerageId, adCampaignId: c.id,
+      ctr: perf.ctr, impressions: perf.impressions, clicks: perf.clicks,
+      leads: perf.leads, costPerLead: perf.costPerLead,
+    }, supabase)
+    if (recorded) historyRecorded++
+    ingestedCampaigns.push({ id: c.id, name: c.campaign_name ?? null })
   }
-  return { campaigns: live.length, ingested, skipped }
+
+  // FATIGUE DETECTION runs AFTER this pass's readings land, per campaign. It
+  // proposes a GATED refresh on the inter-manager bus only on HIGH risk and is
+  // honest on thin data (the pure engine refuses to alarm on < MIN_SAMPLE points).
+  for (const c of ingestedCampaigns) {
+    try {
+      const r = await detectCreativeFatigue({ brokerageId, adCampaignId: c.id, campaignName: c.name }, supabase)
+      if (r.flagged) fatigued++
+    } catch (e) {
+      console.error("[ad-performance-ingest] fatigue detection failed for", c.id, (e as Error).message)
+    }
+  }
+  return { campaigns: live.length, ingested, skipped, historyRecorded, fatigued }
 }

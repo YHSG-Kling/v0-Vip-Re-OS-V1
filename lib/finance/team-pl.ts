@@ -11,7 +11,10 @@
 export interface TeamCommissionRow {
   agent_id: string | null
   gross_commission: number | null
+  /** GENERATED pre-cap split (gross × agent_split_percent/100) — the fallback. */
   agent_commission: number | null
+  /** STORED post-cap, post-fee waterfall result (step 11) — preferred when non-null. */
+  net_to_agent?: number | null
   transaction_id: string | null
 }
 
@@ -48,8 +51,12 @@ const num = (n: number | null | undefined) => Number(n ?? 0)
 
 /**
  * PURE: fold a team's canonical commission rows + activity into its P&L. teamNet is the team's agents'
- * retained commission (agent_commission) — the team keeps that; the brokerage keeps the rest. Honest:
- * teamNet is null only when NO row carried an agent_commission (we don't invent a split).
+ * retained commission — the team keeps that; the brokerage keeps the rest. NET-PREFERENCE RULE (owner
+ * ruling 2026-08-28, the cap ruling's rollup sibling): per row, prefer the STORED net_to_agent (the
+ * waterfall's actual post-cap, post-fee result) and fall back to the GENERATED agent_commission (the
+ * pre-cap split) only for manually entered rows that carry a split percent and no net — post-cap the
+ * two disagree on purpose (the agent keeps 100%). Honest: teamNet is null only when NO row carried
+ * either number (we don't invent a split).
  */
 export function computeTeamPnl(input: TeamPnlInput): TeamPnl {
   const { commissions, activeAgentIds, closedCycle, openDealCount } = input
@@ -61,7 +68,8 @@ export function computeTeamPnl(input: TeamPnlInput): TeamPnl {
   const deals = new Set<string>()
   for (const c of commissions) {
     grossCommission += num(c.gross_commission)
-    if (c.agent_commission != null) { netAcc += num(c.agent_commission); sawNet = true }
+    const takeHome = c.net_to_agent != null ? c.net_to_agent : c.agent_commission
+    if (takeHome != null) { netAcc += num(takeHome); sawNet = true }
     if (c.agent_id) grossByAgent.set(c.agent_id, (grossByAgent.get(c.agent_id) ?? 0) + num(c.gross_commission))
     if (c.transaction_id) deals.add(c.transaction_id)
   }
@@ -96,7 +104,7 @@ export function computeTeamPnl(input: TeamPnlInput): TeamPnl {
   }
 }
 
-/** Year-month bucket (UTC) — the period_label the writer keys on, matching agent_pl_snapshot.month_year. */
-export function monthLabel(now: Date): string {
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`
-}
+// monthLabel DELETED (duplicates round 5, lane 59C) — byte-identical to
+// lib/format/dates.ts:monthLabel. Survivor: lib/format/dates.ts. (Still the
+// period_label the writer keys on, matching agent_pl_snapshot.month_year.)
+export { monthLabel } from "@/lib/format/dates"

@@ -117,7 +117,7 @@ async function notifyReconnect(svc: any, row: SocialTokenRow, now: Date): Promis
   let userIds: string[] = row.user_id ? [row.user_id] : []
   if (userIds.length === 0 && row.brokerage_id) {
     const { data: admins } = await svc.from("users").select("id")
-      .eq("brokerage_id", row.brokerage_id).in("user_type", ["broker", "broker_admin", "admin"]).limit(5)
+      .eq("brokerage_id", row.brokerage_id).in("user_type", ["broker", "admin"]).limit(5)
     userIds = ((admins ?? []) as any[]).map((u) => u.id)
   }
   const expires = row.token_expires_at ? new Date(row.token_expires_at).toLocaleDateString() : "soon"

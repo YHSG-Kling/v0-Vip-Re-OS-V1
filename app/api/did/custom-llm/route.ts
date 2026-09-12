@@ -2,51 +2,61 @@
  * /api/did/custom-llm
  *
  * D-ID Agents calls this endpoint as its LLM provider on every conversational
- * turn. We are the brain — D-ID is just the avatar + voice + WebRTC transport.
- *
- * Request shape (OpenAI chat-completions, sent by D-ID):
- *   POST /api/did/custom-llm
- *   Authorization: Basic <base64(DID_CUSTOM_LLM_KEY)>
- *   { model, messages: [...], stream: true, ... }
+ * turn, for EVERY surface that mints a D-ID Agents session — portal
+ * (AgentsWidget), the embeddable widget (/embed/[publicId], third-party
+ * sites), and the public website (SiteChatLauncher → the same embed when a
+ * live-capable widget is configured). One brain, three doors (§6) — this
+ * route decides WHO is talking from the marker(s) present, never from a
+ * second endpoint per surface.
  *
  * Per-session context — D-ID does NOT pass metadata. The browser widget
- * therefore prefixes its very first user message with a hidden context
- * marker:  `[[CTX:contactId=<uuid>]] <real text>`
- * We:
- *   - extract contactId from any message that contains the marker
- *   - strip the marker so it never reaches the LLM or transcript
- *   - load contact + transaction + visible milestones (same data the portal
- *     ai-chat exposes) and inject as a SYSTEM message in front of D-ID's
- *     existing system prompt
+ * therefore prefixes its early user turns with hidden context markers:
+ *   `[[CTX:contactId=<uuid>]]`      — a known contact (portal always; embed
+ *                                     once lead-capture has run)
+ *   `[[CTX:embedSessionId=<uuid>]]` — an embed_sessions row (public website +
+ *                                     embeddable widget, BEFORE capture)
+ * Both may be present. We:
+ *   - extract whichever markers a message carries
+ *   - strip them so neither ever reaches the LLM or transcript
+ *   - resolve a tenant from whichever marker is available, contactId
+ *     preferred (richer — transaction/milestone/listing context)
+ *   - REFUSE (400/403) any turn that carries NEITHER marker, or whose
+ *     referenced row does not resolve — an unresolvable tenant is never
+ *     served uncapped (#187)
  *
- * Once contactId is known, this route mirrors /api/portal/ai-chat semantics:
- *   - same client-visible-only data gate (no internal notes)
- *   - same escalation keyword detector → notifies assigned agent
- *   - same chat_messages persistence so the conversation appears in the CRM
+ * ANONYMOUS VISITORS (public website / embed, pre-capture) used to be
+ * REFUSED OUTRIGHT here — this route required contactId unconditionally, so
+ * every message an unidentified visitor sent got a 400 and the widget's
+ * "after_first_message" lead-capture flow could never even reach its own
+ * trigger (chat() always threw before the capture form could open). Fixed by
+ * accepting embedSessionId as a standalone tenant handle; the brain then
+ * answers from the brokerage's FAQ/knowledge base/brand voice (never
+ * contact-specific data, which does not exist yet) via the SAME
+ * loadBrandVoicePrompt survivor every other AI rail uses (§6 — this route
+ * used to hand-roll its own narrower buildSystemPrompt with no FAQ, no
+ * objection handling, and no knowledge-base RAG; that duplicate is retired
+ * here in favor of lib/ai-isa/brand-voice-prompt.ts).
+ *
+ * Once a contact is known (portal, or an embed visitor who has been
+ * captured — embed_sessions.contact_id, the authoritative link written by
+ * /api/embed/capture), the brain ALSO loads the transaction/milestone/
+ * listing snapshot the portal ai-chat already exposes, on top of the same
+ * brand-voice/FAQ/KB block — richer, never a different vocabulary.
+ *
+ * REALISM (owner ruling, wave 55/57 — the live avatar must not sound like an
+ * AI creation): lib/video/realism-profile.ts's SPOKEN_REALISM_DIRECTIVE is
+ * folded into the system prompt on every turn (compliance-first, not a
+ * post-hoc scan — §5's own ruling for compliance applies equally to realism).
  *
  * Response: OpenAI-format SSE stream piped straight back to D-ID.
  */
 
 import "server-only"
-import { streamText } from "ai"
-import { createGateway } from "@ai-sdk/gateway"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import { selectModelForTask } from "@/lib/ai/models"
-import { resolveModel } from "@/lib/ai/resolve-model"
-
-// Map AIModel union → "provider/modelId" string the Vercel Gateway accepts.
-// Mirrors MODEL_CONFIG in lib/ai/models.ts but kept inline so this route
-// never reaches into a private map.
-const GATEWAY_MODEL_FOR: Record<string, string> = {
-  "claude-sonnet": "anthropic/claude-sonnet-4-20250514",
-  "claude-opus":   "anthropic/claude-opus-4-20250514",
-  "claude-haiku":  "anthropic/claude-haiku-4-20250514",
-  "gpt-4o":        "openai/gpt-4o",
-  "gpt-4-turbo":   "openai/gpt-4-turbo",
-  "gpt-4o-mini":   "openai/gpt-4o-mini",
-}
+import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
+import { SPOKEN_REALISM_DIRECTIVE } from "@/lib/video/realism-profile"
+import { streamTextRouted, AIFairUseError, selectModelForTask } from "@/lib/ai/models"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -76,22 +86,27 @@ function checkAuth(request: NextRequest): boolean {
   return false
 }
 
-// ─── Context marker ─────────────────────────────────────────────────────────
+// ─── Context markers ────────────────────────────────────────────────────────
 
-const CTX_RE = /\[\[CTX:contactId=([0-9a-f-]{36})\]\]\s*/i
+const CONTACT_CTX_RE = /\[\[CTX:contactId=([0-9a-f-]{36})\]\]\s*/gi
+const EMBED_CTX_RE = /\[\[CTX:embedSessionId=([0-9a-f-]{36})\]\]\s*/gi
 
-function extractContactId(messages: any[]): { contactId: string | null; cleaned: any[] } {
+function extractMarkers(messages: any[]): { contactId: string | null; embedSessionId: string | null; cleaned: any[] } {
   let contactId: string | null = null
+  let embedSessionId: string | null = null
   const cleaned = messages.map((m) => {
     if (typeof m?.content !== "string") return m
-    const match = m.content.match(CTX_RE)
-    if (match) {
-      contactId = contactId ?? match[1]
-      return { ...m, content: m.content.replace(CTX_RE, "").trim() || "(continue)" }
-    }
-    return m
+    let content = m.content
+    const cMatch = CONTACT_CTX_RE.exec(content)
+    CONTACT_CTX_RE.lastIndex = 0
+    if (cMatch) contactId = contactId ?? cMatch[1]
+    const eMatch = EMBED_CTX_RE.exec(content)
+    EMBED_CTX_RE.lastIndex = 0
+    if (eMatch) embedSessionId = embedSessionId ?? eMatch[1]
+    content = content.replace(CONTACT_CTX_RE, "").replace(EMBED_CTX_RE, "").trim() || "(continue)"
+    return { ...m, content }
   })
-  return { contactId, cleaned }
+  return { contactId, embedSessionId, cleaned }
 }
 
 // ─── Escalation ─────────────────────────────────────────────────────────────
@@ -107,7 +122,29 @@ function detectsEscalation(text: string): boolean {
   return ESCALATION_KEYWORDS.some((k) => lower.includes(k))
 }
 
-// ─── Context loader ─────────────────────────────────────────────────────────
+async function notifyAgentOfEscalation(params: {
+  agentUserId: string | null
+  brokerageId: string
+  contactId: string | null
+  contactName: string
+  latestText: string
+  source: "portal" | "embed"
+}) {
+  if (!params.agentUserId) return
+  const supabase = createServiceClient()
+  await supabase.from("notifications").insert({
+    user_id: params.agentUserId,
+    brokerage_id: params.brokerageId,
+    type: params.source === "portal" ? "portal_ai_escalation" : "embed_ai_escalation",
+    title: `${params.contactName} needs immediate attention`,
+    body: `Live AI (${params.source}) escalation. Last message: "${params.latestText.slice(0, 200)}"`,
+    entity_type: params.contactId ? "contact" : null,
+    entity_id: params.contactId,
+    priority: "high",
+  }).then(() => {}, () => {})
+}
+
+// ─── Context loader — portal-rich (contact known) ──────────────────────────
 
 interface ContactContext {
   contactName: string
@@ -132,8 +169,6 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
 
   if (!contact) return null
 
-  // Resolve agents.user_id for the assigned agent (used by escalation
-  // notifications + brand voice resolution).
   let agentUserId: string | null = null
   if (contact.agent_id) {
     const { data: agent } = await supabase
@@ -141,12 +176,11 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
     agentUserId = agent?.user_id ?? null
   }
 
-  // Active transaction (most recent open) + client-visible milestones only.
   const { data: txn } = await supabase
     .from("transactions")
     .select("id, status, stage, deal_type, close_date, property_address")
     .eq("contact_id", contactId)
-    .in("status", ["under_contract", "pending", "active"])
+    .in("status", ["under_contract", "active"])
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -162,7 +196,6 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
     visibleMilestones = ms ?? []
   }
 
-  // Active listing (sellers only).
   const { data: listing } = await supabase
     .from("listings")
     .select("address, city, state, status, current_stage:lifecycle_stage, list_price")
@@ -185,11 +218,54 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
   }
 }
 
+// ─── Context loader — anonymous (embed/website, no contact yet) ───────────
+
+interface EmbedContext {
+  brokerageId: string
+  agentId: string | null
+  agentUserId: string | null
+  /** Written by /api/embed/capture the moment the visitor identifies
+   *  themselves mid-conversation — read here so a captured lead gets the rich
+   *  contact context on their VERY NEXT turn without the client having to
+   *  resend a marker. */
+  contactId: string | null
+}
+
+async function loadEmbedContext(embedSessionId: string): Promise<EmbedContext | null> {
+  const supabase = createServiceClient()
+  const { data: session } = await supabase
+    .from("embed_sessions")
+    .select("brokerage_id, contact_id, embed_widget_id")
+    .eq("id", embedSessionId)
+    .maybeSingle()
+  if (!session?.brokerage_id) return null
+
+  let agentId: string | null = null
+  if (session.embed_widget_id) {
+    const { data: w } = await supabase
+      .from("embed_widgets").select("agent_id").eq("id", session.embed_widget_id).maybeSingle()
+    agentId = w?.agent_id ?? null
+  }
+  let agentUserId: string | null = null
+  if (agentId) {
+    const { data: a } = await supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+    agentUserId = a?.user_id ?? null
+  }
+  return { brokerageId: session.brokerage_id, agentId, agentUserId, contactId: session.contact_id ?? null }
+}
+
 // ─── System prompt ──────────────────────────────────────────────────────────
 
-function buildSystemPrompt(ctx: ContactContext, brandVoiceHints: string[]): string {
+function buildSystemPrompt(input: {
+  contactName: string
+  isAnonymous: boolean
+  ctx: ContactContext | null
+  brandVoiceBlock: string
+}): string {
   const lines: string[] = [
-    `You are speaking with ${ctx.contactName} on their real estate client portal.`,
+    input.isAnonymous
+      ? `You are speaking with a visitor on the brokerage's live chat/video assistant. You do not yet know their name — ask for it naturally if it would help.`
+      : `You are speaking with ${input.contactName} on their real estate client portal.`,
     "Keep replies short, warm, and natural — this is a face-to-face video conversation, not a chat window. Two or three sentences usually.",
     "",
     "RULES:",
@@ -202,7 +278,8 @@ function buildSystemPrompt(ctx: ContactContext, brandVoiceHints: string[]): stri
     "",
   ]
 
-  if (ctx.activeTransaction) {
+  const ctx = input.ctx
+  if (ctx?.activeTransaction) {
     lines.push("ACTIVE TRANSACTION:")
     lines.push(`  Property: ${ctx.activeTransaction.property_address ?? "your property"}`)
     lines.push(`  Status: ${ctx.activeTransaction.status}`)
@@ -220,7 +297,7 @@ function buildSystemPrompt(ctx: ContactContext, brandVoiceHints: string[]): stri
     lines.push("")
   }
 
-  if (ctx.activeListing) {
+  if (ctx?.activeListing) {
     lines.push("ACTIVE LISTING:")
     lines.push(`  Address: ${ctx.activeListing.address}, ${ctx.activeListing.city}, ${ctx.activeListing.state}`)
     lines.push(`  Status: ${ctx.activeListing.status}`)
@@ -229,29 +306,24 @@ function buildSystemPrompt(ctx: ContactContext, brandVoiceHints: string[]): stri
     lines.push("")
   }
 
-  if (brandVoiceHints.length) {
-    lines.push("BRAND VOICE GUIDANCE:")
-    for (const h of brandVoiceHints) lines.push(`  - ${h}`)
+  // THE SURVIVOR (§6) — brand voice, FAQ, objection handling, brokerage
+  // knowledge-base RAG, and (when a contact is known) contact notes + extended
+  // memory. This used to be a narrower, hand-rolled "BRAND VOICE GUIDANCE"
+  // bullet list built from applyBrandVoice's advisory notes only; that call
+  // site is retired in favor of lib/ai-isa/brand-voice-prompt.ts, the same
+  // module inbound-email drafting and outbound engagement already use, so the
+  // live avatar and every other AI rail answer from ONE resolved identity.
+  if (input.brandVoiceBlock.trim()) {
+    lines.push("BRAND VOICE, FAQ & KNOWLEDGE:")
+    lines.push(input.brandVoiceBlock)
+    lines.push("")
   }
 
+  // REALISM (owner ruling, wave 55/57) — folded in on every turn, not just
+  // checked after the fact.
+  lines.push(SPOKEN_REALISM_DIRECTIVE)
+
   return lines.join("\n")
-}
-
-// ─── Escalation side-effect ─────────────────────────────────────────────────
-
-async function notifyAgentOfEscalation(ctx: ContactContext, latestText: string) {
-  if (!ctx.agentUserId || !ctx.brokerageId) return
-  const supabase = createServiceClient()
-  await supabase.from("notifications").insert({
-    user_id: ctx.agentUserId,
-    brokerage_id: ctx.brokerageId,
-    type: "portal_ai_escalation",
-    title: `${ctx.contactName} needs immediate attention`,
-    body: `Portal Live AI escalation. Last message: "${latestText.slice(0, 200)}"`,
-    entity_type: "contact",
-    entity_id: ctx.activeTransaction?.contact_id ?? null,
-    priority: "high",
-  }).then(() => {}, () => {})
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
@@ -272,77 +344,93 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "messages required" }, { status: 400 })
   }
 
-  const { contactId, cleaned } = extractContactId(body.messages)
+  const { contactId: markerContactId, embedSessionId, cleaned } = extractMarkers(body.messages)
 
-  // ── Build context-aware system message ────────────────────────────────────
-  let systemPrompt = "You are a helpful real estate assistant. Keep replies short and natural for a video conversation."
-
-  if (contactId) {
-    const ctx = await loadContactContext(contactId)
-    if (ctx) {
-      // Brand voice guidance — runs the same multi-tier resolver as the rest
-      // of the kernel pipeline. Notes-only (advisory) on the live conversation.
-      const latestUserText = [...cleaned].reverse()
-        .find((m) => m.role === "user")?.content ?? ""
-
-      const brand = await applyBrandVoice({
-        brokerageId: ctx.brokerageId ?? "",
-        actorUserId: ctx.agentUserId ?? undefined,
-        actorRole: "agent",
-        journeyType: ctx.contactType === "seller" ? "seller" : "buyer",
-        persona: ctx.buyerStage ?? "other",
-        messageType: "ai",
-        content: latestUserText,
-      }).catch(() => ({ notes: [] as string[] }))
-
-      systemPrompt = buildSystemPrompt(ctx, brand.notes ?? [])
-
-      // Fire escalation if the latest user message has an urgency keyword.
-      if (latestUserText && detectsEscalation(latestUserText)) {
-        notifyAgentOfEscalation(ctx, latestUserText).catch(() => {})
-      }
-    }
+  // FAIL CLOSED (#187): a turn carrying NEITHER marker is refused, never
+  // served uncapped. D-ID sends no metadata of its own — a CTX marker our
+  // widgets prefix is the ONLY tenant handle in the payload, and every turn
+  // carries the full history so a marker sent once rides along on all of them.
+  if (!markerContactId && !embedSessionId) {
+    return NextResponse.json({ error: "context marker required" }, { status: 400 })
   }
 
-  // ── Resolve model via the platform routing table ────────────────────────
-  // Live conversational turns are latency-critical → gpt-4o-mini by default,
-  // claude-haiku as fallback. Both routed through the Vercel AI Gateway so
-  // costs roll up into the same per-brokerage usage meter as every other AI
-  // call on the platform.
-  const { model: routedModel, fallback } = selectModelForTask("live_avatar_conversation")
-  const gateway = createGateway({ apiKey: gatewayKey })
-  const primaryModelStr =
-    GATEWAY_MODEL_FOR[routedModel] ?? GATEWAY_MODEL_FOR["gpt-4o-mini"]
-  const fallbackModelStr =
-    GATEWAY_MODEL_FOR[fallback] ?? GATEWAY_MODEL_FOR["claude-haiku"]
-  const primaryModel = gateway(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
-  const fallbackModel = gateway(resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0]) as string)
+  let ctx: ContactContext | null = null
+  let embedCtx: EmbedContext | null = null
+  let resolvedContactId = markerContactId
 
-  // ── Stream — try primary, fall back on error ────────────────────────────
-  let result: ReturnType<typeof streamText>
+  if (embedSessionId) {
+    embedCtx = await loadEmbedContext(embedSessionId)
+    if (!embedCtx) return NextResponse.json({ error: "unresolvable session" }, { status: 403 })
+    // Authoritative contact link written by /api/embed/capture, when the
+    // client's own marker hasn't caught up yet (e.g. this is the very next
+    // turn right after capture and the widget hasn't re-sent one).
+    resolvedContactId = resolvedContactId ?? embedCtx.contactId
+  }
+
+  if (resolvedContactId) {
+    ctx = await loadContactContext(resolvedContactId)
+  }
+
+  const brokerageId = ctx?.brokerageId ?? embedCtx?.brokerageId ?? null
+  if (!brokerageId) {
+    return NextResponse.json({ error: "unresolvable tenant" }, { status: 403 })
+  }
+  const agentId = ctx?.agentId ?? embedCtx?.agentId ?? null
+  const agentUserId = ctx?.agentUserId ?? embedCtx?.agentUserId ?? null
+  const contactName = ctx?.contactName ?? "there"
+  const isAnonymous = !ctx
+
+  const latestUserText = [...cleaned].reverse()
+    .find((m) => m.role === "user")?.content ?? ""
+
+  const brand = await loadBrandVoicePrompt({
+    brokerageId,
+    agentId: agentId ?? undefined,
+    managerKey: "ai_isa",
+    knowledgeQuery: latestUserText || undefined,
+    contactId: resolvedContactId ?? undefined,
+  }).catch(() => ({ systemBlock: "" }))
+
+  const systemPrompt = buildSystemPrompt({
+    contactName, isAnonymous, ctx, brandVoiceBlock: brand.systemBlock ?? "",
+  })
+
+  if (latestUserText && detectsEscalation(latestUserText)) {
+    notifyAgentOfEscalation({
+      agentUserId, brokerageId, contactId: resolvedContactId, contactName,
+      latestText: latestUserText, source: isAnonymous ? "embed" : "portal",
+    }).catch(() => {})
+  }
+
+  // ── Stream via the routed entry ─────────────────────────────────────────
+  const { model: routedModel } = selectModelForTask("live_avatar_conversation")
+  let result: Awaited<ReturnType<typeof streamTextRouted>>
   try {
-    result = streamText({
-      model: primaryModel,
+    result = await streamTextRouted({
+      feature: "live_avatar_conversation",
       system: systemPrompt,
       messages: cleaned
         .filter((m) => m.role !== "system")
-        .map((m) => ({ role: m.role, content: String(m.content ?? "") })) as any,
+        .map((m) => ({ role: m.role, content: String(m.content ?? "") })),
       temperature: 0.7,
+      userId: agentUserId,
+      brokerageId,
+      agentId,
+      // wave 60 §3.2 ("instrument the turn") — same managerKey brand-voice
+      // resolution above already uses, so this ai_tool_usage row and the
+      // brand-voice load it prices both attribute to the manager that owns
+      // the live-avatar moment. streamTextRouted stamps wall-clock latency
+      // (execution_time_ms) on the row automatically.
+      manager: "ai_isa",
     })
-  } catch {
-    result = streamText({
-      model: fallbackModel,
-      system: systemPrompt,
-      messages: cleaned
-        .filter((m) => m.role !== "system")
-        .map((m) => ({ role: m.role, content: String(m.content ?? "") })) as any,
-      temperature: 0.7,
-    })
+  } catch (err) {
+    if (err instanceof AIFairUseError) {
+      return NextResponse.json({ error: err.message }, { status: 429 })
+    }
+    throw err
   }
 
   // ── Wrap AI SDK text deltas in OpenAI chat-completion SSE format ────────
-  // D-ID expects byte-compatible OpenAI chunks: each delta wrapped in a
-  // `chat.completion.chunk` envelope, terminated by `data: [DONE]`.
   const encoder = new TextEncoder()
   const chunkId = `chatcmpl-${Date.now().toString(36)}`
   const created = Math.floor(Date.now() / 1000)

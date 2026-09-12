@@ -22,8 +22,11 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  TriangleAlert,
+  CircleCheck,
 } from "lucide-react"
 import { loadAvailableFormsAction } from "@/app/actions/forms-kernel"
+import { prefillListingFormAction } from "@/app/actions/listings-kernel"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
@@ -50,20 +53,69 @@ export function ListingFormsPanel({
   const [loaded, setLoaded] = useState(false)
   const [selectedForm, setSelectedForm] = useState<FormTemplate | null>(null)
 
+  // ── WHO SIGNS, AND WHAT IS ON FILE ─────────────────────────────────────────
+  //
+  // The e-sign flow prefills form FIELDS via forms-kernel's prefillFormAction,
+  // which resolves listing + seller only. prefillListingFormFromRecord resolves
+  // the same listing and seller PLUS the block a listing agreement legally needs
+  // and nothing else in this product surfaces: the agent's licence number and
+  // state, and the brokerage's name, address, phone and licence number.
+  //
+  // Those are exactly the fields that produce a defective executed agreement when
+  // blank — and the agent found out only after the seller had signed it. Reading
+  // them here, BEFORE the form goes out, is the whole value: this shows what will
+  // land on the paperwork and names anything missing. It writes nothing.
+  const [prefill, setPrefill] = useState<Record<string, unknown> | null>(null)
+  const [prefillError, setPrefillError] = useState<string | null>(null)
+
   // Load forms when panel is first expanded
   useEffect(() => {
     if (!expanded || loaded || loading) return
     setLoading(true)
-    loadAvailableFormsAction({ context_type: "listing", state })
-      .then(res => {
-        if (res.success && (res as any).data?.forms) {
-          setForms((res as any).data.forms as FormTemplate[])
+    setPrefillError(null)
+
+    Promise.all([
+      loadAvailableFormsAction({ context_type: "listing", state }),
+      prefillListingFormAction(listingId),
+    ])
+      .then(([formsRes, prefillRes]) => {
+        if (formsRes.success && (formsRes as any).data?.forms) {
+          setForms((formsRes as any).data.forms as FormTemplate[])
+        }
+        const p = prefillRes as { success: boolean; error?: string; prefillData?: Record<string, unknown> }
+        if (!p.success || !p.prefillData) {
+          // A readiness read that could not RUN is not "everything is on file".
+          setPrefillError(p.error ?? "The signing details could not be read.")
+        } else {
+          setPrefill(p.prefillData)
         }
         setLoaded(true)
       })
-      .catch(() => setLoaded(true))
+      .catch((e: unknown) => {
+        setPrefillError(e instanceof Error ? e.message : "The signing details could not be read.")
+        setLoaded(true)
+      })
       .finally(() => setLoading(false))
-  }, [expanded, loaded, loading, state])
+  }, [expanded, loaded, loading, state, listingId])
+
+  // Fields that make an executed listing agreement valid. Missing ones are named.
+  const REQUIRED_ON_FORM: Array<{ key: string; label: string }> = [
+    { key: "sellerFirstName",    label: "Seller first name" },
+    { key: "sellerLastName",     label: "Seller last name" },
+    { key: "sellerEmail",        label: "Seller email" },
+    { key: "address",            label: "Property address" },
+    { key: "listPrice",          label: "List price" },
+    { key: "agentLastName",      label: "Listing agent name" },
+    { key: "agentLicenseNumber", label: "Agent licence number" },
+    { key: "brokerageName",      label: "Brokerage name" },
+    { key: "brokerageLicense",   label: "Brokerage licence number" },
+  ]
+  const missingOnForm = prefill
+    ? REQUIRED_ON_FORM.filter(({ key }) => {
+        const v = prefill[key]
+        return v === null || v === undefined || (typeof v === "string" && !v.trim())
+      })
+    : []
 
   const requiredForms = forms.filter(f => f.is_required)
   const optionalForms = forms.filter(f => !f.is_required)
@@ -114,6 +166,40 @@ export function ListingFormsPanel({
 
         {expanded && (
           <CardContent className="pt-0 space-y-3">
+            {/* What will land on the paperwork — read before anything is sent. */}
+            {!loading && prefillError && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-start gap-1.5">
+                <TriangleAlert className="h-3.5 w-3.5 shrink-0 mt-px" />
+                <span>
+                  {prefillError} — the signing details on these forms have NOT been verified. Check
+                  them on the document before sending it out.
+                </span>
+              </div>
+            )}
+            {!loading && !prefillError && prefill && missingOnForm.length > 0 && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <p className="font-medium flex items-center gap-1.5">
+                  <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+                  These will be blank on any form sent from here
+                </p>
+                <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                  {missingOnForm.map((m) => (
+                    <li key={m.key}>{m.label}</li>
+                  ))}
+                </ul>
+                <p className="mt-1.5 text-amber-800">
+                  A listing agreement executed without the agent and brokerage licence details is
+                  defective. Fill these in before sending it for signature.
+                </p>
+              </div>
+            )}
+            {!loading && !prefillError && prefill && missingOnForm.length === 0 && (
+              <p className="text-xs text-emerald-700 flex items-center gap-1.5">
+                <CircleCheck className="h-3.5 w-3.5 shrink-0" />
+                Seller, property, agent licence and brokerage licence details are all on file.
+              </p>
+            )}
+
             {loading ? (
               <div className="flex items-center justify-center py-6 gap-2 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />

@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Loader2, CheckCircle, XCircle, Clock, MessageSquare } from "lucide-react"
 import { toast } from "sonner"
+import { groupByPriority } from "@/lib/format/collections"
+import { agoMinutesFloor } from "@/lib/format/dates"
 
 interface ApprovalItem {
   id: string
@@ -35,6 +37,14 @@ interface ApprovalItem {
   section?: "deals"
   /** Action lanes. Offers carry ["approve","reject","counter"]. */
   actions?: Array<"approve" | "reject" | "counter">
+  /** WHY THIS WAS FLAGGED — the content guardian's findings, decoded from
+   *  approval_items.review_notes by the aggregator. Absent on sources that carry
+   *  no review record. */
+  review?: {
+    violations: Array<{ phrase: string; severity: string | null; fix: string | null; reference: string | null }>
+    excerpt: string | null
+    note: string | null
+  }
   /** Offer-decision metadata for the counter dialog prefill. */
   deal?: {
     offer_id: string
@@ -206,29 +216,11 @@ export default function ApprovalsPage() {
     }
   }
 
-  function groupByPriority(items: ApprovalItem[]): GroupedItems {
-    return items.reduce(
-      (acc, item) => {
-        acc[item.priority].push(item)
-        return acc
-      },
-      { high: [], medium: [], standard: [] } as GroupedItems
-    )
-  }
-
-  function formatTimeAgo(dateString: string): string {
-    const date = new Date(dateString)
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-
-    if (diffMins < 1) return "just now"
-    if (diffMins < 60) return `${diffMins}m ago`
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}h ago`
-    const diffDays = Math.floor(diffHours / 24)
-    return `${diffDays}d ago`
-  }
+  // `groupByPriority`/`formatTimeAgo` — same-body census, round 4
+  // (2026-09-09, lane FC): DELETED, byte-identical to
+  // lib/format/collections.ts `groupByPriority` and lib/format/dates.ts
+  // `agoMinutesFloor` (both imported above).
+  const formatTimeAgo = agoMinutesFloor
 
   // Offers are DEAL DECISIONS — their own section with the full accept /
   // reject / counter response set, never mixed into the marketing feed.
@@ -457,6 +449,41 @@ function DealDecisionCard({
               <span className="text-xs text-muted-foreground">{formatTimeAgo(item.created_at)}</span>
             </div>
             <p className="text-sm text-foreground leading-relaxed">{item.content}</p>
+
+            {/* THE EVIDENCE THE REVIEWER IS DECIDING ON. The content guardian has always
+                written its fair-housing / brand-voice findings and the offending copy into
+                approval_items.review_notes; nothing selected the column, so this card asked
+                for an approve/reject on flagged content while showing neither. */}
+            {(item.review?.violations.length ?? 0) > 0 && (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50/60 p-3 space-y-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  Compliance findings — read before approving
+                </p>
+                <ul className="space-y-1.5">
+                  {item.review!.violations.map((v, i) => (
+                    <li key={i} className="text-xs text-amber-900">
+                      <span className="font-medium">
+                        {v.severity ? `[${v.severity}] ` : ""}{v.phrase}
+                      </span>
+                      {v.fix && <span className="block text-amber-800">Fix: {v.fix}</span>}
+                      {v.reference && <span className="block text-amber-700">{v.reference}</span>}
+                    </li>
+                  ))}
+                </ul>
+                {item.review!.excerpt && (
+                  <p className="text-xs text-muted-foreground whitespace-pre-wrap break-words">
+                    “{item.review!.excerpt}”
+                  </p>
+                )}
+              </div>
+            )}
+            {/* A note that is not the guardian's structured record is shown as written,
+                never silently dropped. */}
+            {item.review?.note && (
+              <p className="mt-2 text-xs text-muted-foreground break-words">
+                Review note: {item.review.note}
+              </p>
+            )}
           </div>
           <div className="flex gap-2 shrink-0 flex-wrap">
             <Button

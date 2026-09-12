@@ -440,8 +440,21 @@ export function PropertyDetailIntelligenceClient({
         </Card>
       )}
 
-      {/* ── Investment Snapshot ──────────────────────────────────────────── */}
-      {investment?.returns && (
+      {/* ── Investment Snapshot ──────────────────────────────────────────────
+          THE RENT TILE USED TO BE FABRICATED. `estimatedMonthlyRent` was
+          `price * 0.0085`, and `price` itself defaulted to 500000 when the
+          property record had none — so a property with no price rendered a
+          confident "$4,250/mo" derived from nothing, and cap rate and
+          cash-on-cash were computed from it. The rent is now the median asking
+          rent of real rental listings from the data provider, the source is
+          named on the card, and when no provider rent could be sourced the tile
+          shows an em dash and the reason instead of a number.
+
+          The card's condition is `investment` rather than `investment.returns`
+          on purpose: `returns` is now null whenever the price or the provider
+          rent is missing, and gating on it would make the whole card VANISH in
+          exactly the case the reader most needs to be told about. */}
+      {investment && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-semibold">Investment Snapshot</CardTitle>
@@ -450,20 +463,26 @@ export function PropertyDetailIntelligenceClient({
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
               <div className="rounded-lg border border-border p-3">
                 <p className="text-xs text-muted-foreground">Cap Rate</p>
-                <p className="font-semibold">{investment.returns.capRate}%</p>
+                <p className="font-semibold">
+                  {investment.returns?.capRate != null ? `${investment.returns.capRate}%` : "—"}
+                </p>
               </div>
               <div className="rounded-lg border border-border p-3">
                 <p className="text-xs text-muted-foreground">Cash-on-Cash</p>
-                <p className="font-semibold">{investment.returns.cashOnCash}%</p>
+                <p className="font-semibold">
+                  {investment.returns?.cashOnCash != null ? `${investment.returns.cashOnCash}%` : "—"}
+                </p>
               </div>
-              {investment.rentalAnalysis?.estimatedMonthlyRent && (
-                <div className="rounded-lg border border-border p-3">
-                  <p className="text-xs text-muted-foreground">Est. Rent / Mo</p>
-                  <p className="font-semibold">
-                    ${investment.rentalAnalysis.estimatedMonthlyRent.toLocaleString()}
-                  </p>
-                </div>
-              )}
+              {/* Always rendered — a rent tile that disappears reads as "not
+                  applicable", which is a different and wrong claim. */}
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-xs text-muted-foreground">Median Asking Rent / Mo</p>
+                <p className="font-semibold">
+                  {investment.rentalAnalysis?.estimatedMonthlyRent != null
+                    ? `$${investment.rentalAnalysis.estimatedMonthlyRent.toLocaleString()}`
+                    : "—"}
+                </p>
+              </div>
               {investment.appreciation?.estimatedAnnualRate && (
                 <div className="rounded-lg border border-border p-3">
                   <p className="text-xs text-muted-foreground">Est. Appreciation</p>
@@ -471,6 +490,26 @@ export function PropertyDetailIntelligenceClient({
                 </div>
               )}
             </div>
+
+            {/* WHERE THE RENT CAME FROM, on the same card as the number. */}
+            <p
+              className={`text-xs mt-3 ${
+                investment.rentSource?.available ? "text-muted-foreground" : "text-amber-700"
+              }`}
+            >
+              {investment.rentalAnalysis?.rentSourceCaption ??
+                "No rental-comparable source is recorded for this snapshot."}
+            </p>
+
+            {/* WHAT IS MISSING AND WHY — printed rather than left as dashes. */}
+            {investment.unavailableNote && (
+              <p className="text-xs text-amber-700 mt-2">{investment.unavailableNote}</p>
+            )}
+
+            {investment.assumptions?.note && (
+              <p className="text-[11px] text-muted-foreground mt-2">{investment.assumptions.note}</p>
+            )}
+
             {investment.recommendation && (
               <p className="text-xs text-muted-foreground mt-3">{investment.recommendation}</p>
             )}

@@ -7,6 +7,38 @@ import { createPartner, createReferral } from "@/app/actions/referrals/referral-
 import { enrollContactInSequence, listCampaignSequences } from "@/app/actions/campaign-sequences"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
+import type { CardSubjectType } from "@/lib/contacts/card-classifier"
+
+// wave 48 (owner ruling 2026-09-10): the picker on the card review surface —
+// "Auto-detect" (undefined) leaves the reader/notes/existing-match classifier
+// in charge; any other choice is an EXPLICIT override that wins outright.
+const SUBJECT_TYPE_OPTIONS: Array<{ value: CardSubjectType | ""; label: string }> = [
+  { value: "", label: "Auto-detect" },
+  { value: "sphere", label: "Sphere of influence (someone I know)" },
+  { value: "agent", label: "Fellow agent (recruiting prospect)" },
+  { value: "potential_contact", label: "Potential client" },
+  { value: "contact", label: "Contact (ready client)" },
+  { value: "vendor", label: "Vendor / service provider" },
+]
+
+// Reader for business_card_scans.classified_by (m617 typed column) — which
+// determination tier decided the class (lib/contacts/card-classifier.ts).
+const CLASSIFIED_BY_LABEL: Record<"picker" | "reader" | "notes" | "match" | "default", string> = {
+  picker: "you picked it",
+  reader: "read off the card",
+  notes: "from your notes",
+  match: "matched an existing record",
+  default: "unclassified",
+}
+
+const SUBJECT_TYPE_LABEL: Record<CardSubjectType, string> = {
+  sphere: "Sphere of influence",
+  agent: "Fellow agent — recruiting prospect",
+  potential_contact: "Potential client",
+  contact: "Contact created",
+  vendor: "Vendor bench candidate",
+  unknown: "Unclassified — needs a human to pick",
+}
 
 type PostScanContact = {
   id: string
@@ -30,6 +62,15 @@ type ScanRow = {
   review_status: "approved" | "rejected"
   contact_id: string | null
   raw_image_url: string
+  /** users.id of a human reviewer — the writer only ever stamps null (see
+   *  getRecentScans in business-card-actions.ts); rendered honestly below. */
+  reviewed_by: string | null
+  /** When the viability gate ran. */
+  reviewed_at: string | null
+  cardSubjectType: CardSubjectType | null
+  subjectUserId: string | null
+  subjectNotes: string | null
+  classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
 }
 
 type ScanResult = {
@@ -38,6 +79,8 @@ type ScanResult = {
   viable: boolean
   extracted?: Record<string, string>
   confidence?: number
+  cardSubjectType?: CardSubjectType
+  subjectUserId?: string | null
 }
 
 function ConfidenceBadge({ score }: { score: number }) {
@@ -65,13 +108,24 @@ export default function BusinessCardsPage() {
   const [agentId, setAgentId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState<string | null>(null)
 
+  // wave 48 — card review surface: free-text notes (priority-2 classification
+  // source) + an explicit picker (wins outright over the auto-classifier).
+  const [cardNotes, setCardNotes] = useState("")
+  const [cardSubjectPick, setCardSubjectPick] = useState<CardSubjectType | "">("")
+
   // Post-scan sheet state
   const [postScanContact, setPostScanContact] = useState<PostScanContact | null>(null)
   const [showNextSteps, setShowNextSteps] = useState(false)
 
   // Option 1 — Referral partner form state
   const [showReferralForm, setShowReferralForm] = useState(false)
-  const [referralPartnerType, setReferralPartnerType] = useState<"agent_to_agent" | "vendor" | "lender" | "title" | "other">("agent_to_agent")
+  // referral_partners.partner_type CHECK — the UI used to offer agent_to_agent /
+  // vendor / lender / title, NONE of which the column accepts, so every scanned
+  // card failed on insert and the agent just saw "Please try again" forever.
+  const [referralPartnerType, setReferralPartnerType] = useState<
+    "real_estate_agent" | "mortgage_broker" | "title_company" | "home_inspector"
+    | "contractor" | "insurance_agent" | "attorney" | "property_manager" | "other"
+  >("real_estate_agent")
   const [referralNotes, setReferralNotes] = useState("")
   const [referralSubmitting, setReferralSubmitting] = useState(false)
   const [referralDone, setReferralDone] = useState(false)
@@ -118,7 +172,19 @@ export default function BusinessCardsPage() {
   }, [])
 
   const processFile = useCallback(async (file: File) => {
-    if (!agentId || !brokerageId) return
+    // Don't silently swallow the drop ("file won't add" from the walkthrough) — a
+    // signed-in but not-yet-provisioned account (agent record / brokerage still
+    // being set up by the login-time self-heal) gets clear feedback instead of
+    // nothing. Once /dashboard has provisioned the records, the ids resolve and
+    // the scan works.
+    if (!agentId || !brokerageId) {
+      toast({
+        title: "Finishing your account setup",
+        description: "We're still setting up your agent profile — refresh in a moment, then add your card.",
+        variant: "destructive",
+      })
+      return
+    }
     setScanning(true)
     setResult(null)
     try {
@@ -130,7 +196,11 @@ export default function BusinessCardsPage() {
         "image/jpeg"
       ) as "image/jpeg" | "image/png" | "image/webp"
 
-      const res = await uploadBusinessCard({ imageBase64: base64, mimeType, agentId, brokerageId })
+      const res = await uploadBusinessCard({
+        imageBase64: base64, mimeType, agentId, brokerageId,
+        notes: cardNotes.trim() || undefined,
+        subjectType: cardSubjectPick || undefined,
+      })
 
       // Reload history
       const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
@@ -144,6 +214,9 @@ export default function BusinessCardsPage() {
         extracted,
         confidence: newScan?.confidence_score,
       })
+      // Reset the review-surface inputs for the next scan.
+      setCardNotes("")
+      setCardSubjectPick("")
 
       // Trigger post-scan sheet only on viable scans that produced a contact
       if (res.viable && res.contactId) {
@@ -166,7 +239,7 @@ export default function BusinessCardsPage() {
     } finally {
       setScanning(false)
     }
-  }, [agentId, brokerageId])
+  }, [agentId, brokerageId, cardNotes, cardSubjectPick])
 
   const dismissSheet = () => {
     setShowNextSteps(false)
@@ -182,7 +255,8 @@ export default function BusinessCardsPage() {
       const partnerResult = await createPartner({
         partnerName: postScanContact.name,
         partnerType: referralPartnerType,
-        agreementType: "referral_fee",
+        agreementType: "informal",
+        notes: referralNotes.trim() || undefined,
       })
 
       // Step 2: log the referral, linking the scanned contact as the referred person
@@ -266,6 +340,45 @@ export default function BusinessCardsPage() {
     <main className="max-w-3xl mx-auto p-6 space-y-8">
       <h1 className="text-2xl font-semibold text-foreground">Business Card Scanner</h1>
 
+      {/* Card review surface (wave 48): a card is never assumed a contact —
+          classify it from context before (or after) you scan. Auto-detect
+          reads the printed title/company, then these notes, then an existing
+          match; picking a class here overrides all of that. */}
+      <section className="space-y-3 rounded-xl border border-border p-4">
+        <div>
+          <label htmlFor="card-notes" className="block text-xs font-medium text-foreground mb-1">
+            Notes on this card (optional)
+          </label>
+          <textarea
+            id="card-notes"
+            value={cardNotes}
+            onChange={(e) => setCardNotes(e.target.value)}
+            rows={2}
+            placeholder="e.g. &quot;old friend from the block party&quot;, &quot;fellow agent at another shop&quot;, &quot;interested in selling next year&quot;..."
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        <div>
+          <label htmlFor="card-subject-type" className="block text-xs font-medium text-foreground mb-1">
+            Who is this?
+          </label>
+          <select
+            id="card-subject-type"
+            value={cardSubjectPick}
+            onChange={(e) => setCardSubjectPick(e.target.value as CardSubjectType | "")}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {SUBJECT_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            A scanned card is never assumed a client — it might be someone you know, a fellow agent, or just met.
+            Auto-detect reads the card and your notes; picking a class here overrides it.
+          </p>
+        </div>
+      </section>
+
       {/* Upload zone */}
       <section
         className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
@@ -316,7 +429,11 @@ export default function BusinessCardsPage() {
                   <span className="text-sm font-medium text-foreground">Extraction confidence</span>
                   {result.confidence !== undefined && <ConfidenceBadge score={result.confidence} />}
                 </div>
-                <span className="text-xs text-green-700 bg-green-100 px-2 py-1 rounded font-medium">Contact created</span>
+                <span className={`text-xs px-2 py-1 rounded font-medium ${
+                  result.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-700"
+                }`}>
+                  {result.cardSubjectType ? SUBJECT_TYPE_LABEL[result.cardSubjectType] : "Contact created"}
+                </span>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -416,10 +533,35 @@ export default function BusinessCardsPage() {
                       </td>
                       <td className="px-4 py-3">
                         {s.review_status === "approved" ? (
-                          <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded font-medium">Contact created</span>
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                            s.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-800"
+                          }`}>
+                            {s.cardSubjectType ? SUBJECT_TYPE_LABEL[s.cardSubjectType] : "Contact created"}
+                          </span>
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
+                        {/* business_card_scans.classified_by (m617 typed column) — which
+                            tier decided the class, so a picker override reads differently
+                            from an auto-detect. */}
+                        {s.review_status === "approved" && s.classifiedBy ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground">{CLASSIFIED_BY_LABEL[s.classifiedBy]}</p>
+                        ) : null}
+                        {/* business_card_scans.subject_notes — the free-text note typed on
+                            the review surface at scan time. */}
+                        {s.subjectNotes ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground italic">&ldquo;{s.subjectNotes}&rdquo;</p>
+                        ) : null}
+                        {/* The status above is the automatic viability gate's verdict.
+                            No person reviews these scans today (reviewed_by is written
+                            as null by its only writer), and this says so rather than
+                            implying a reviewer. A non-null id has no resolver yet — by
+                            ruling, none is built for a column nothing sets. */}
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {s.reviewed_by
+                            ? "reviewed by a person (name not resolved)"
+                            : `auto-gated${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""} — not reviewed by a person`}
+                        </p>
                       </td>
                       <td className="px-4 py-3">
                         {s.contact_id ? (
@@ -527,10 +669,14 @@ export default function BusinessCardsPage() {
                       onChange={(e) => setReferralPartnerType(e.target.value as typeof referralPartnerType)}
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     >
-                      <option value="agent_to_agent">Agent to Agent</option>
-                      <option value="vendor">Vendor</option>
-                      <option value="lender">Lender</option>
-                      <option value="title">Title</option>
+                      <option value="real_estate_agent">Real estate agent</option>
+                      <option value="mortgage_broker">Lender / mortgage broker</option>
+                      <option value="title_company">Title company</option>
+                      <option value="home_inspector">Home inspector</option>
+                      <option value="contractor">Contractor</option>
+                      <option value="insurance_agent">Insurance agent</option>
+                      <option value="attorney">Attorney</option>
+                      <option value="property_manager">Property manager</option>
                       <option value="other">Other</option>
                     </select>
                   </div>

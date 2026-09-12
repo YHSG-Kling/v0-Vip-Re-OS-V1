@@ -1,5 +1,24 @@
 "use server"
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SIX SEQUENCE ACTIONS REMOVED (burn-down), not deprecated — deleted.
+//
+// pauseCampaignSequence / duplicateCampaignSequence / archiveCampaignSequence and
+// batchPauseSequences / batchLaunchSequences / batchArchiveSequences were ONLY
+// reachable from app/dashboard/campaigns/components/os/ — an eight-panel
+// directory that app/dashboard/campaigns/page.tsx never imported, because that
+// page is a pure redirect to the marketing studio. The panels had no host and
+// had never rendered, so these six were unreachable from the running product.
+//
+// The live sequence surface (app/dashboard/campaigns/sequences/SequencesListClient)
+// already covers every one of them through updateCampaignSequence /
+// createCampaignSequence / deleteCampaignSequence — and unlike batchLaunchSequences
+// it runs the brand-voice compliance precheck before activating anything.
+//
+// batchArchiveSequences also hard-DELETEd rows while calling itself "archive",
+// which is not behaviour worth carrying forward.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
@@ -8,13 +27,29 @@ import {
   type CampaignSequence,
   type SequenceStep,
   type SequenceEnrollment,
-  type ChannelType,
   type SequenceCategory,
   type SequenceBuilderStep,
   VALID_STEP_TYPES,
   MARKETING_SEQUENCE_TYPES,
   NURTURE_SEQUENCE_TYPES,
 } from "@/lib/campaigns/sequence-constants"
+import { STEP_PALETTE, storableValue, type StepFieldSpec } from "@/lib/workflow/step-palette"
+
+/** Every per-channel column the step palette declares — the save allow-list.
+ *  scripts/step-palette-consolidation-simulator.ts proves each is a real column
+ *  on campaign_sequence_steps, so this can never name one that does not exist. */
+const PALETTE_FIELD_SPECS: ReadonlyMap<string, StepFieldSpec> = new Map(
+  STEP_PALETTE.flatMap((s) => s.fields).map((f) => [f.name, f]),
+)
+const PALETTE_STEP_FIELDS: readonly string[] = Array.from(PALETTE_FIELD_SPECS.keys())
+
+/** The value to write for a palette field: "" becomes null, EXCEPT where the
+ *  column is NOT NULL (showing_duration_minutes, task_due_offset_days,
+ *  tour_date_offset_days), which take the spec's fallback instead. */
+function fieldValueForWrite(name: string, raw: unknown): unknown {
+  const spec = PALETTE_FIELD_SPECS.get(name)
+  return spec ? storableValue(spec, raw) : (raw === undefined || raw === "" ? null : raw)
+}
 
 // ─── List sequences ───────────────────────────────────────────────────────────
 
@@ -46,6 +81,22 @@ export async function listCampaignSequences(
 
 // ─── Get sequence with steps ──────────────────────────────────────────────────
 
+/**
+ * The sequence, its steps and (optionally) its enrollments — the read behind the
+ * sequence detail + builder pages.
+ *
+ * TENANT GATE. This is the widest read in the file: it returns the sequence, every
+ * step INCLUDING subject + body message copy, and up to 200 enrollments joined to
+ * `contacts(first_name, last_name, email)` — contact PII. It ran on the
+ * RLS-bypassing service client with no auth gate and no brokerage predicate, and
+ * as a "use server" export it is a public HTTP endpoint, so one sequence uuid
+ * returned another brokerage's campaign copy and its contacts' names and email
+ * addresses.
+ *
+ * The gate below is the same one `getSequenceSteps` in this file already applies
+ * to the narrower steps-only read; this brings the wider read up to it. Callers
+ * are server components that pass only an id, so the signature is unchanged.
+ */
 export async function getCampaignSequence(
   sequenceId: string,
   options?: { includeEnrollments?: boolean }
@@ -55,11 +106,21 @@ export async function getCampaignSequence(
   enrollments: SequenceEnrollment[]
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { sequence: null, steps: [], enrollments: [], error: "Not authenticated" }
+  }
+
   const service = createServiceClient()
   const includeEnrollments = options?.includeEnrollments ?? true
 
   const [seqRes, stepsRes, enrollRes] = await Promise.all([
-    service.from("campaign_sequences").select("*").eq("id", sequenceId).maybeSingle(),
+    service
+      .from("campaign_sequences")
+      .select("*")
+      .eq("id", sequenceId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle(),
     service
       .from("campaign_sequence_steps")
       .select("*")
@@ -70,12 +131,20 @@ export async function getCampaignSequence(
           .from("sequence_enrollments")
           .select(`*, contact:contacts(first_name, last_name, email)`)
           .eq("sequence_id", sequenceId)
+          .eq("brokerage_id", ctx.brokerageId)
           .order("enrolled_at", { ascending: false })
           .limit(200)
       : Promise.resolve({ data: null, error: null }),
   ])
 
   if (seqRes.error) return { sequence: null, steps: [], enrollments: [], error: seqRes.error.message }
+
+  // The three reads run in parallel, so the steps and enrollments queries fire
+  // before the brokerage predicate on the sequence has been evaluated. If the
+  // sequence is not this caller's, refuse HERE — returning `sequence: null`
+  // alongside populated steps and enrollments would leak exactly the message
+  // copy and contact PII the gate above exists to protect.
+  if (!seqRes.data) return { sequence: null, steps: [], enrollments: [], error: "Sequence not found" }
 
   const enrollments = ((enrollRes.data ?? []) as SequenceEnrollment[])
 
@@ -191,6 +260,15 @@ export async function deleteCampaignSequence(sequenceId: string): Promise<{ succ
 
 // ─── Create step ──────────────────────────────────────────────────────────────
 
+/**
+ * Three surfaces write steps through here (both campaign builders and the
+ * marketing studio). It used to take the service client straight to an INSERT
+ * with NO ownership check — a signed-in user of any brokerage could add a step
+ * to any sequence they knew the id of — and it accepted only subject/body, so
+ * every per-channel field its callers collected was dropped. Both are fixed
+ * below: the sequence must belong to the caller's brokerage, the channel must be
+ * one the column admits, and the palette's fields ride through.
+ */
 export async function createSequenceStep(params: {
   sequence_id: string
   step_number: number
@@ -201,26 +279,56 @@ export async function createSequenceStep(params: {
   subject?: string
   body?: string
   send_time?: string
+  [field: string]: unknown
 }): Promise<{ step: SequenceStep | null; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { step: null, error: "Not authenticated" }
+
   const service = createServiceClient()
+
+  const { data: owner } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", params.sequence_id)
+    .maybeSingle()
+  if (!owner || owner.brokerage_id !== ctx.brokerageId) {
+    return { step: null, error: "Unauthorized" }
+  }
+
+  if (!params.channel || !VALID_STEP_TYPES.has(params.channel as any)) {
+    return { step: null, error: `Invalid step channel: ${params.channel || "(empty)"}` }
+  }
+
+  const row: Record<string, unknown> = {
+    sequence_id: params.sequence_id,
+    step_number: params.step_number,
+    step_name: params.step_name,
+    channel: params.channel,
+    delay_days: params.delay_days,
+    delay_hours: params.delay_hours,
+    subject: params.subject ?? null,
+    // body is NOT NULL. This wrote `?? null`, and the sequence builder's "Add
+    // step" passes no body — so the INSERT was rejected every time, the action
+    // returned { step: null }, and the caller's `if (result.step)` swallowed it.
+    // The button appeared to do nothing at all. saveSequenceSteps had it right
+    // with `|| ""`; this now matches.
+    body: params.body ?? "",
+    send_time: params.send_time ?? null,
+    is_active: true,
+    sent_count: 0,
+    open_count: 0,
+    click_count: 0,
+    reply_count: 0,
+  }
+  for (const name of PALETTE_STEP_FIELDS) {
+    if (name in row) continue
+    if (!(name in params)) continue
+    row[name] = fieldValueForWrite(name, params[name])
+  }
+
   const { data, error } = await service
     .from("campaign_sequence_steps")
-    .insert({
-      sequence_id: params.sequence_id,
-      step_number: params.step_number,
-      step_name: params.step_name,
-      channel: params.channel,
-      delay_days: params.delay_days,
-      delay_hours: params.delay_hours,
-      subject: params.subject ?? null,
-      body: params.body ?? null,
-      send_time: params.send_time ?? null,
-      is_active: true,
-      sent_count: 0,
-      open_count: 0,
-      click_count: 0,
-      reply_count: 0,
-    })
+    .insert(row)
     .select()
     .maybeSingle()
 
@@ -234,12 +342,51 @@ export async function createSequenceStep(params: {
 export async function updateSequenceStep(
   stepId: string,
   sequenceId: string,
-  updates: Partial<Pick<SequenceStep, "step_name" | "channel" | "delay_days" | "delay_hours" | "subject" | "body" | "send_time" | "is_active" | "condition_field" | "condition_operator" | "condition_value">>
+  updates: Partial<Pick<SequenceStep, "step_name" | "channel" | "delay_days" | "delay_hours" | "subject" | "body" | "send_time" | "is_active">> & Record<string, unknown>
 ): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
+
+  // The step must live in a sequence this brokerage owns. Checking the SEQUENCE
+  // is not enough on its own — a caller could pass a step id from elsewhere with
+  // a sequence id of their own — so the step's own sequence_id is what is read.
+  const { data: step } = await service
+    .from("campaign_sequence_steps")
+    .select("sequence_id, campaign_sequences!inner(brokerage_id)")
+    .eq("id", stepId)
+    .maybeSingle()
+  const ownerBrokerage = (step as any)?.campaign_sequences?.brokerage_id
+  if (!step || ownerBrokerage !== ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  if (updates.channel !== undefined && !VALID_STEP_TYPES.has(updates.channel as any)) {
+    return { success: false, error: `Invalid step channel: ${updates.channel || "(empty)"}` }
+  }
+
+  // The common columns, plus whatever palette fields the caller sent. A key the
+  // palette does not declare is never written, so the Record<string, unknown>
+  // above cannot be used to reach an arbitrary column.
+  const ALLOWED_COMMON = [
+    "step_name", "channel", "delay_days", "delay_hours",
+    "subject", "body", "send_time", "is_active",
+  ]
+  const patch: Record<string, unknown> = {}
+  for (const k of ALLOWED_COMMON) {
+    if (k in updates) patch[k] = (updates as Record<string, unknown>)[k]
+  }
+  for (const name of PALETTE_STEP_FIELDS) {
+    if (name in patch) continue
+    if (!(name in updates)) continue
+    patch[name] = fieldValueForWrite(name, (updates as Record<string, unknown>)[name])
+  }
+  if (Object.keys(patch).length === 0) return { success: true }
+
   const { error } = await service
     .from("campaign_sequence_steps")
-    .update(updates)
+    .update(patch)
     .eq("id", stepId)
 
   if (error) return { success: false, error: error.message }
@@ -281,27 +428,54 @@ export async function reorderSequenceSteps(
 
 // ─── Campaign Operations ──────────────────────────────────────────────────────
 
+/**
+ * Launch (or re-launch) a sequence: verify it has steps, then flip is_active.
+ *
+ * This is also the survivor of the former `resumeCampaignSequence`, whose entire
+ * body was `return launchCampaignSequence(sequenceId)` — resuming a paused
+ * sequence and launching one are the same write, so there was nothing to merge.
+ * Removed rather than kept as a second public endpoint onto the same mutation.
+ */
 export async function launchCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the sequence
+  // belongs to the caller's brokerage before mutating. This gate was missing —
+  // it activates a sequence, i.e. it starts sending real messages to real
+  // contacts, and a bare sequence uuid was enough to start any brokerage's.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
-  
+
+  const { data: existing, error: readError } = await service
+    .from("campaign_sequences")
+    .select("brokerage_id")
+    .eq("id", sequenceId)
+    .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Sequence not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: sequence in another brokerage" }
+  }
+
   // Check if sequence has at least one step
   const { data: steps } = await service
     .from("campaign_sequence_steps")
     .select("id")
     .eq("sequence_id", sequenceId)
     .limit(1)
-  
+
   if (!steps || steps.length === 0) {
     return { success: false, error: "Cannot launch sequence without steps" }
   }
-  
+
   const { error } = await service
     .from("campaign_sequences")
-    .update({ 
-      is_active: true, 
-      updated_at: new Date().toISOString() 
+    .update({
+      is_active: true,
+      updated_at: new Date().toISOString()
     })
     .eq("id", sequenceId)
+    .eq("brokerage_id", ctx.brokerageId)
 
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
@@ -309,232 +483,96 @@ export async function launchCampaignSequence(sequenceId: string): Promise<{ succ
   return { success: true }
 }
 
-export async function pauseCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
-  const service = createServiceClient()
-  const { error } = await service
-    .from("campaign_sequences")
-    .update({ 
-      is_active: false, 
-      updated_at: new Date().toISOString() 
-    })
-    .eq("id", sequenceId)
 
-  if (error) return { success: false, error: error.message }
-  revalidatePath("/dashboard/campaigns/sequences")
-  revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
-  return { success: true }
-}
-
-export async function resumeCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
-  return launchCampaignSequence(sequenceId)
-}
-
-export async function duplicateCampaignSequence(sequenceId: string, brokerageId: string): Promise<{ 
-  sequence: CampaignSequence | null
-  error?: string 
-}> {
-  const service = createServiceClient()
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { sequence: null, error: "Not authenticated" }
-  
-  // Get original sequence
-  const { data: original, error: fetchError } = await service
-    .from("campaign_sequences")
-    .select("*")
-    .eq("id", sequenceId)
-    .maybeSingle()
-  
-  if (fetchError || !original) return { sequence: null, error: "Sequence not found" }
-  
-  // Create duplicate
-  const { data: duplicate, error: createError } = await service
-    .from("campaign_sequences")
-    .insert({
-      brokerage_id: brokerageId,
-      name: `${original.name} (Copy)`,
-      description: original.description,
-      sequence_type: original.sequence_type,
-      trigger_event: original.trigger_event,
-      trigger_conditions: original.trigger_conditions,
-      is_active: false,
-      is_ab_test: original.is_ab_test,
-      ab_test_split_pct: original.ab_test_split_pct,
-      compliance_gated: true,
-      enrollments_total: 0,
-      completions_total: 0,
-      conversions_total: 0,
-      created_by: user.id,
-    })
-    .select()
-    .maybeSingle()
-  
-  if (createError) return { sequence: null, error: createError.message }
-  
-  // Duplicate steps
-  const { data: originalSteps } = await service
-    .from("campaign_sequence_steps")
-    .select("*")
-    .eq("sequence_id", sequenceId)
-    .order("step_number", { ascending: true })
-  
-  if (originalSteps && originalSteps.length > 0) {
-    const stepsToInsert = originalSteps.map(step => ({
-      sequence_id: duplicate.id,
-      step_number: step.step_number,
-      step_name: step.step_name,
-      channel: step.channel,
-      delay_days: step.delay_days,
-      delay_hours: step.delay_hours,
-      subject: step.subject,
-      body: step.body,
-      send_time: step.send_time,
-      is_active: step.is_active,
-      ab_variant: step.ab_variant,
-      condition_field: step.condition_field,
-      condition_operator: step.condition_operator,
-      condition_value: step.condition_value,
-      video_template_id: step.video_template_id,
-      direct_mail_template_id: step.direct_mail_template_id,
-      personalization_tokens: step.personalization_tokens,
-      sent_count: 0,
-      open_count: 0,
-      click_count: 0,
-      reply_count: 0,
-    }))
-    
-    await service.from("campaign_sequence_steps").insert(stepsToInsert)
-  }
-  
-  revalidatePath("/dashboard/campaigns/sequences")
-  return { sequence: duplicate as CampaignSequence }
-}
-
-export async function archiveCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
-  const service = createServiceClient()
-  
-  // First pause the sequence
-  await service
-    .from("campaign_sequences")
-    .update({ is_active: false })
-    .eq("id", sequenceId)
-  
-  // Update any active enrollments to "cancelled"
-  await service
-    .from("sequence_enrollments")
-    .update({ status: "cancelled" })
-    .eq("sequence_id", sequenceId)
-    .eq("status", "active")
-  
-  // Soft delete by adding archived flag (or we could hard delete)
-  const { error } = await service
-    .from("campaign_sequences")
-    .delete()
-    .eq("id", sequenceId)
-
-  if (error) return { success: false, error: error.message }
-  revalidatePath("/dashboard/campaigns/sequences")
-  return { success: true }
-}
 
 // ─── Enrollment Operations ────────────────────────────────────────────────────
 
+/**
+ * Enroll a contact (or a lead's contact) into a sequence — the INTERACTIVE door.
+ *
+ * TWO DEFECTS FIXED (w6s3), both verified against the live schema:
+ *  1. `sequence_enrollments.brokerage_id` is NOT NULL with no default and
+ *     `contact_id` is NOT NULL. This function omitted brokerage_id and passed
+ *     `contact_id: null` on the lead path, so **every enrollment it ever attempted
+ *     was refused by the database**. Nothing has ever been enrolled through the
+ *     product; the enrollment lists and `cancelEnrollment` had nothing to act on.
+ *  2. It had NO gate at all. As a `"use server"` export driving a service client it
+ *     was a public endpoint that could start an automated outbound programme against
+ *     any contact id in any tenant.
+ *
+ * The WRITE now lives in `lib/campaigns/enroll-in-sequence.ts:enrollInSequence`, which
+ * takes its tenant explicitly. `lib/kernel/ai-isa.ts` runs without a session and calls
+ * that library directly with its own ctx.brokerageId — an unattended caller gets its
+ * own door rather than being turned away by this gate or handed a fake identity.
+ */
 export async function enrollContactInSequence(params: {
   sequenceId: string
   contactId?: string
   leadId?: string
 }): Promise<{ enrollment: SequenceEnrollment | null; error?: string }> {
-  if (!params.contactId && !params.leadId) {
-    return { enrollment: null, error: "Must provide contact or lead ID" }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { enrollment: null, error: "Not authenticated" }
   }
-  
-  const service = createServiceClient()
-  const { data, error } = await service
-    .from("sequence_enrollments")
-    .insert({
-      sequence_id: params.sequenceId,
-      contact_id: params.contactId ?? null,
-      lead_id: params.leadId ?? null,
-      status: "active",
-      current_step: 1,
-      enrolled_at: new Date().toISOString(),
-    })
-    .select()
-    .maybeSingle()
 
-  if (error) return { enrollment: null, error: error.message }
-  
-  // Increment enrollment count
-  await service.rpc("increment_sequence_enrollments", { seq_id: params.sequenceId })
-  
-  revalidatePath(`/dashboard/campaigns/sequences/${params.sequenceId}`)
-  return { enrollment: data as SequenceEnrollment }
+  const { enrollInSequence } = await import("@/lib/campaigns/enroll-in-sequence")
+  const result = await enrollInSequence({
+    sequenceId: params.sequenceId,
+    brokerageId: ctx.brokerageId,
+    contactId: params.contactId ?? null,
+    leadId: params.leadId ?? null,
+    enrolledBy: ctx.userId ?? null,
+  })
+
+  if (result.enrollment) revalidatePath(`/dashboard/campaigns/sequences/${params.sequenceId}`)
+  return result
 }
 
 export async function cancelEnrollment(enrollmentId: string, sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  // Tenant gate: service client bypasses RLS, so we must verify the enrollment
+  // belongs to the caller's brokerage before mutating.
+  //
+  // This function had NO gate at all while every other service-client mutation
+  // in this file (deleteCampaignSequence, updateCampaignSequence, …) carries the
+  // comment above. As a "use server" export it is a public endpoint, so an
+  // enrollment uuid was enough to cancel any brokerage's enrollment — pulling a
+  // contact out of a nurture sequence with no trace of who did it.
+  //
+  // It also took `sequenceId` purely for revalidatePath and never checked the
+  // enrollment was IN that sequence; the row's own sequence_id is authoritative
+  // and is what gets confirmed below.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
-  const { error } = await service
+  const { data: existing, error: readError } = await service
+    .from("sequence_enrollments")
+    .select("id, brokerage_id, sequence_id")
+    .eq("id", enrollmentId)
+    .maybeSingle()
+
+  // A refused read is not "no rows" — fail closed rather than reporting a
+  // cancellation that never happened.
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Enrollment not found" }
+  if (existing.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden: enrollment in another brokerage" }
+  }
+
+  const { data: updated, error } = await service
     .from("sequence_enrollments")
     .update({ status: "cancelled" })
     .eq("id", enrollmentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
-  revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
+  if (!updated?.length) return { success: false, error: "Enrollment not cancelled" }
+
+  revalidatePath(`/dashboard/campaigns/sequences/${existing.sequence_id ?? sequenceId}`)
   return { success: true }
 }
 
-// ─── Batch Operations ─────────────────────────────────────────────────────────
-
-export async function batchPauseSequences(sequenceIds: string[]): Promise<{ success: boolean; count: number; error?: string }> {
-  const service = createServiceClient()
-  const { error } = await service
-    .from("campaign_sequences")
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .in("id", sequenceIds)
-
-  if (error) return { success: false, count: 0, error: error.message }
-  revalidatePath("/dashboard/campaigns/sequences")
-  return { success: true, count: sequenceIds.length }
-}
-
-export async function batchLaunchSequences(sequenceIds: string[]): Promise<{ success: boolean; count: number; error?: string }> {
-  const service = createServiceClient()
-  const { error } = await service
-    .from("campaign_sequences")
-    .update({ is_active: true, updated_at: new Date().toISOString() })
-    .in("id", sequenceIds)
-
-  if (error) return { success: false, count: 0, error: error.message }
-  revalidatePath("/dashboard/campaigns/sequences")
-  return { success: true, count: sequenceIds.length }
-}
-
-export async function batchArchiveSequences(sequenceIds: string[]): Promise<{ success: boolean; count: number; error?: string }> {
-  const service = createServiceClient()
-  
-  // Pause all first
-  await service
-    .from("campaign_sequences")
-    .update({ is_active: false })
-    .in("id", sequenceIds)
-  
-  // Cancel active enrollments
-  await service
-    .from("sequence_enrollments")
-    .update({ status: "cancelled" })
-    .in("sequence_id", sequenceIds)
-    .eq("status", "active")
-  
-  // Delete sequences
-  const { error } = await service
-    .from("campaign_sequences")
-    .delete()
-    .in("id", sequenceIds)
-
-  if (error) return { success: false, count: 0, error: error.message }
-  revalidatePath("/dashboard/campaigns/sequences")
-  return { success: true, count: sequenceIds.length }
-}
 
 // SequenceBuilderStep moved to @/lib/campaigns/sequence-constants
 
@@ -553,53 +591,70 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
       .maybeSingle()
     if (!seq || seq.brokerage_id !== ctx.brokerageId) return { steps: [], error: "Not found" }
 
-    // DB stores channel (not step_type) — map on read
+    // DB stores channel (not step_type) — map on read.
+    //
+    // The select used to name only the nine common columns while the mapper below
+    // read `row.output_variable_name`, `row.ad_platform`, `row.video_script` … — so
+    // every per-channel field came back `undefined` and was mapped to null. This is
+    // now the exact INVERSE of saveSequenceSteps: the same PALETTE_STEP_FIELDS
+    // allow-list drives the select, so anything the palette can write, this reads
+    // back. (scripts/step-palette-consolidation-simulator.ts already proves every
+    // palette field name is a real column on campaign_sequence_steps, so this
+    // projection cannot name one that does not exist.)
+    const stepSelect = [
+      "id",
+      "step_number",
+      "step_name",
+      "channel",
+      "delay_days",
+      "delay_hours",
+      "subject",
+      "body",
+      "is_active",
+      ...PALETTE_STEP_FIELDS,
+    ]
+      .filter((c, i, a) => a.indexOf(c) === i)
+      .join(", ")
+
     const { data, error } = await service
       .from("campaign_sequence_steps")
-      .select("id, step_number, step_name, channel, delay_days, delay_hours, subject, body, is_active")
+      .select(stepSelect)
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true })
     if (error) return { steps: [], error: error.message }
-    for (const row of data ?? []) {
+    // `stepSelect` is BUILT AT RUNTIME, so supabase-js cannot infer a row shape and
+    // types `data` as GenericStringError[] — every property access on it is a type
+    // error even though the column is really there. The `.map` below already casts
+    // per-row for the same reason; this validation loop needs the same treatment.
+    // Cast the ROW, not the check: the guard itself still runs against the real
+    // value, so an unknown channel is still refused rather than waved through.
+    for (const row of (data ?? []) as any[]) {
       if (!row.channel || !VALID_STEP_TYPES.has(row.channel)) {
         return { steps: [], error: `Invalid step channel in sequence: ${row.channel ?? "(empty)"}` }
       }
     }
-    const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
-      id: row.id,
-      step_number: row.step_number,
-      step_name: row.step_name ?? row.channel ?? "Step",
-      step_type: (row.channel ?? "email") as SequenceBuilderStep["step_type"],
-      delay_days: row.delay_days ?? 0,
-      delay_hours: row.delay_hours ?? 0,
-      subject: row.subject ?? null,
-      body: row.body ?? "",
-      is_active: row.is_active ?? true,
-      output_variable_name: row.output_variable_name ?? null,
-      qr_attached: row.qr_attached ?? false,
-      qr_target_url_pattern: row.qr_target_url_pattern ?? null,
-      image_prompt: row.image_prompt ?? null,
-      image_style: row.image_style ?? null,
-      image_aspect_ratio: row.image_aspect_ratio ?? null,
-      video_script: row.video_script ?? null,
-      video_voice_only: row.video_voice_only ?? false,
-      video_background_url: row.video_background_url ?? null,
-      voice_drop_script: row.voice_drop_script ?? null,
-      voice_drop_voice_id: row.voice_drop_voice_id ?? null,
-      social_platform: row.social_platform ?? null,
-      social_caption_prompt: row.social_caption_prompt ?? null,
-      task_assignee_type: row.task_assignee_type ?? null,
-      task_title: row.task_title ?? null,
-      task_due_offset_days: row.task_due_offset_days ?? 0,
-      document_type: row.document_type ?? null,
-      document_state: row.document_state ?? null,
-      avm_data_source: row.avm_data_source ?? null,
-      avm_report_type: row.avm_report_type ?? null,
-      avm_include_investor_adj: row.avm_include_investor_adj ?? false,
-      ad_platform: row.ad_platform ?? null,
-      ad_objective: row.ad_objective ?? null,
-      direct_mail_piece_type: row.direct_mail_piece_type ?? null,
-    }))
+    const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => {
+      const step: SequenceBuilderStep = {
+        id: row.id,
+        step_number: row.step_number,
+        step_name: row.step_name ?? row.channel ?? "Step",
+        step_type: row.channel as SequenceBuilderStep["step_type"],
+        delay_days: row.delay_days ?? 0,
+        delay_hours: row.delay_hours ?? 0,
+        subject: row.subject ?? null,
+        body: row.body ?? "",
+        is_active: row.is_active ?? true,
+      }
+      // Carry every palette-declared field back verbatim. `null` is preserved as
+      // null (an unset column), NOT coerced to a default — a false default here
+      // would be written back as fact on the next save.
+      for (const name of PALETTE_STEP_FIELDS) {
+        if (name in step) continue
+        if (!(name in row)) continue
+        step[name] = row[name]
+      }
+      return step
+    })
     return { steps }
   } catch (e: any) {
     return { steps: [], error: e.message }
@@ -649,52 +704,33 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       const toUpdate = steps.filter((s): s is SequenceBuilderStep & { id: string } => !!s.id && existingIds.has(s.id))
       const toInsert = steps.filter((s) => !s.id || !existingIds.has(s.id))
 
-      const buildRow = (s: SequenceBuilderStep, overrideIdx?: number) => ({
-        sequence_id: sequenceId,
-        step_number: overrideIdx ?? steps.indexOf(s) + 1,
-        step_name: s.step_name || s.step_type,
-        channel: s.step_type,
-        delay_days: s.delay_days ?? 0,
-        delay_hours: s.delay_hours ?? 0,
-        subject: s.subject ?? null,
-        body: s.body || "",
-        is_active: s.is_active ?? true,
-        // Variable graph
-        output_variable_name: s.output_variable_name ?? null,
-        // QR modifier
-        qr_attached: s.qr_attached ?? false,
-        qr_target_url_pattern: s.qr_target_url_pattern ?? null,
-        // AI Image
-        image_prompt: s.image_prompt ?? null,
-        image_style: s.image_style ?? null,
-        image_aspect_ratio: s.image_aspect_ratio ?? null,
-        // Video
-        video_script: s.video_script ?? null,
-        video_voice_only: s.video_voice_only ?? false,
-        video_background_url: s.video_background_url ?? null,
-        // Voice Drop
-        voice_drop_script: s.voice_drop_script ?? null,
-        voice_drop_voice_id: s.voice_drop_voice_id ?? null,
-        // Social
-        social_platform: s.social_platform ?? null,
-        social_caption_prompt: s.social_caption_prompt ?? null,
-        // Task
-        task_assignee_type: s.task_assignee_type ?? null,
-        task_title: s.task_title ?? null,
-        task_due_offset_days: s.task_due_offset_days ?? 0,
-        // Document
-        document_type: s.document_type ?? null,
-        document_state: s.document_state ?? null,
-        // AVM/CMA
-        avm_data_source: s.avm_data_source ?? null,
-        avm_report_type: s.avm_report_type ?? null,
-        avm_include_investor_adj: s.avm_include_investor_adj ?? false,
-        // Ad
-        ad_platform: s.ad_platform ?? null,
-        ad_objective: s.ad_objective ?? null,
-        // Direct mail
-        direct_mail_piece_type: s.direct_mail_piece_type ?? null,
-      })
+      // The per-channel columns are taken from the STEP PALETTE, not from a
+      // hand-kept list. The old list covered about half of what the palette
+      // declares — a broker could set an ad budget, a gift occasion, an e-sign
+      // recipient or a tour's properties and the save would drop them without
+      // a word, then the adapter would fail at dispatch days later with "No ad
+      // platform configured". The palette is also the ALLOW-LIST: a key the
+      // palette does not declare is never written, so the index signature on
+      // SequenceBuilderStep cannot be used to reach an arbitrary column.
+      const buildRow = (s: SequenceBuilderStep, overrideIdx?: number) => {
+        const row: Record<string, unknown> = {
+          sequence_id: sequenceId,
+          step_number: overrideIdx ?? steps.indexOf(s) + 1,
+          step_name: s.step_name || s.step_type,
+          channel: s.step_type,
+          delay_days: s.delay_days ?? 0,
+          delay_hours: s.delay_hours ?? 0,
+          subject: s.subject ?? null,
+          body: s.body || "",
+          is_active: s.is_active ?? true,
+        }
+        for (const name of PALETTE_STEP_FIELDS) {
+          if (name in row) continue          // the common fields above win
+          if (!(name in s)) continue         // absent = leave the column alone
+          row[name] = fieldValueForWrite(name, (s as Record<string, unknown>)[name])
+        }
+        return row
+      }
 
       if (toUpdate.length > 0) {
         const updateRows = toUpdate.map((s) => ({ id: s.id, ...buildRow(s) }))

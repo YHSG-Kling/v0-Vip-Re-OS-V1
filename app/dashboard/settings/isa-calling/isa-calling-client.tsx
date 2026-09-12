@@ -30,7 +30,7 @@ import {
   createIsaPhoneNumber,
   deleteIsaPhoneNumber,
   toggleIsaPhoneNumber,
-  type VapiPhoneNumberRow,
+  type PhoneNumberRow,
 } from "@/app/actions/isa-phone-numbers"
 import { saveAIISASettings } from "@/app/actions/ai-isa-settings"
 import type { IsaCapability, IsaCapabilityDescriptor } from "@/lib/ai-isa/settings-types"
@@ -45,19 +45,20 @@ interface DutyAgent {
 
 interface Props {
   brokerageId: string
-  phoneNumbers: VapiPhoneNumberRow[]
+  phoneNumbers: PhoneNumberRow[]
   dutyAgent: DutyAgent | null
   currentUserRole: string | null
   capabilityCatalog: IsaCapabilityDescriptor[]
   enabledCapabilities: IsaCapability[]
 }
 
+// Only the two sources this OS produces. The list used to offer VAPI Native,
+// Vonage and Call Forwarding — a retired provider, a carrier with no
+// integration, and a mode nothing implements (inbound resolves by the digits of
+// OUR numbers, and a forwarded row holds someone else's).
 const NUMBER_SOURCE_LABELS: Record<string, string> = {
-  vapi_native: "VAPI Native (purchased through VAPI)",
-  ported: "Ported (your existing number transferred to VAPI)",
-  byoc_twilio: "BYOC — Twilio (SIP trunk)",
-  byoc_vonage: "BYOC — Vonage (SIP trunk)",
-  forwarded: "Call Forwarding (existing number forwards to VAPI)",
+  byoc_twilio: "Your own Twilio number",
+  ported: "Ported in (an existing number moved to Twilio)",
 }
 
 const DEPARTMENTS = [
@@ -93,11 +94,9 @@ export function IsaCallingClient(props: Props) {
 
   // New phone number form state
   const [newPhoneNumber, setNewPhoneNumber] = useState("")
-  const [newVapiId, setNewVapiId] = useState("")
-  const [newSource, setNewSource] = useState<VapiPhoneNumberRow["number_source"]>("vapi_native")
+  const [newSource, setNewSource] = useState<PhoneNumberRow["number_source"]>("byoc_twilio")
   const [newDepartment, setNewDepartment] = useState("sales_isa")
-  const [newByocCredId, setNewByocCredId] = useState("")
-  const [newForwardingTarget, setNewForwardingTarget] = useState("")
+  const [newTwilioSid, setNewTwilioSid] = useState("")
 
   const dutyAgentDisplay = dutyAgent
     ? `${dutyAgent.first_name ?? ""} ${dutyAgent.last_name ?? ""}`.trim() ||
@@ -107,29 +106,25 @@ export function IsaCallingClient(props: Props) {
 
   function resetForm() {
     setNewPhoneNumber("")
-    setNewVapiId("")
-    setNewSource("vapi_native")
+    setNewSource("byoc_twilio")
     setNewDepartment("sales_isa")
-    setNewByocCredId("")
-    setNewForwardingTarget("")
+    setNewTwilioSid("")
     setError(null)
   }
 
   function handleAdd() {
-    if (!newPhoneNumber || !newVapiId) {
-      setError("Phone number and VAPI Phone ID are required")
+    if (!newPhoneNumber) {
+      setError("Enter the phone number in E.164 form, e.g. +15551234567")
       return
     }
     startTransition(async () => {
       const result = await createIsaPhoneNumber({
         brokerageId,
         scopeType: "brokerage",
-        vapiPhoneNumberId: newVapiId,
         phoneNumber: newPhoneNumber,
         numberSource: newSource,
         department: newDepartment,
-        byocCredentialId: newByocCredId || undefined,
-        forwardingTarget: newForwardingTarget || undefined,
+        twilioNumberSid: newTwilioSid || undefined,
       })
       if (!result.success) {
         setError(result.error ?? "Failed to add number")
@@ -143,15 +138,11 @@ export function IsaCallingClient(props: Props) {
           team_id: null,
           agent_user_id: null,
           scope_type: "brokerage",
-          vapi_phone_number_id: newVapiId,
           phone_number: newPhoneNumber,
           phone_digits: newPhoneNumber.replace(/\D/g, "").slice(-10),
           number_source: newSource,
-          byoc_credential_id: newByocCredId || null,
-          forwarding_target: newForwardingTarget || null,
+          twilio_number_sid: newTwilioSid || null,
           department: newDepartment,
-          ivr_enabled: false,
-          ivr_menu: null,
           is_active: true,
           created_at: new Date().toISOString(),
         },
@@ -190,9 +181,9 @@ export function IsaCallingClient(props: Props) {
       <div>
         <h1 className="text-2xl font-bold">ISA Calling</h1>
         <p className="text-muted-foreground text-sm">
-          Configure inbound + outbound phone numbers for the AI ISA. Numbers can
-          be VAPI-native, ported, BYOC (Twilio/Vonage SIP), or forwarded from
-          your existing line.
+          Register inbound + outbound phone numbers for the AI ISA — numbers your
+          brokerage already owns on Twilio, or ones you ported in. To buy a new
+          one instead, use Add a Number under phone settings.
         </p>
       </div>
 
@@ -243,7 +234,7 @@ export function IsaCallingClient(props: Props) {
                       <label className="text-xs font-medium block mb-1">
                         Number Source
                       </label>
-                      <Select value={newSource} onValueChange={(v) => setNewSource(v as VapiPhoneNumberRow["number_source"])}>
+                      <Select value={newSource} onValueChange={(v) => setNewSource(v as PhoneNumberRow["number_source"])}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
@@ -270,40 +261,18 @@ export function IsaCallingClient(props: Props) {
 
                     <div>
                       <label className="text-xs font-medium block mb-1">
-                        VAPI Phone Number ID
+                        Twilio Number SID <span className="text-muted-foreground font-normal">(optional)</span>
                       </label>
                       <Input
-                        placeholder="phn_xxx (from VAPI dashboard)"
-                        value={newVapiId}
-                        onChange={(e) => setNewVapiId(e.target.value)}
+                        placeholder="PN32 hex characters — from the number's page in the Twilio console"
+                        value={newTwilioSid}
+                        onChange={(e) => setNewTwilioSid(e.target.value)}
                       />
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Without it the number is listed but its webhooks cannot be
+                        registered, so it will not receive calls or texts until you add it.
+                      </p>
                     </div>
-
-                    {(newSource === "byoc_twilio" || newSource === "byoc_vonage") && (
-                      <div>
-                        <label className="text-xs font-medium block mb-1">
-                          BYOC Credential ID (from VAPI Credentials)
-                        </label>
-                        <Input
-                          placeholder="cred_xxx"
-                          value={newByocCredId}
-                          onChange={(e) => setNewByocCredId(e.target.value)}
-                        />
-                      </div>
-                    )}
-
-                    {newSource === "forwarded" && (
-                      <div>
-                        <label className="text-xs font-medium block mb-1">
-                          Forwarding Target (where original number forwards to)
-                        </label>
-                        <Input
-                          placeholder="+15551234567"
-                          value={newForwardingTarget}
-                          onChange={(e) => setNewForwardingTarget(e.target.value)}
-                        />
-                      </div>
-                    )}
 
                     <div>
                       <label className="text-xs font-medium block mb-1">
@@ -362,7 +331,7 @@ export function IsaCallingClient(props: Props) {
                           {num.is_active ? "active" : "paused"}
                         </Badge>
                         <Badge variant="outline" className="text-[10px]">
-                          {NUMBER_SOURCE_LABELS[num.number_source].split(" ")[0]}
+                          {(NUMBER_SOURCE_LABELS[num.number_source] ?? num.number_source).split(" ")[0]}
                         </Badge>
                         {num.department && (
                           <Badge variant="outline" className="text-[10px]">
@@ -371,7 +340,13 @@ export function IsaCallingClient(props: Props) {
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        VAPI ID: <span className="font-mono">{num.vapi_phone_number_id}</span>
+                        {num.twilio_number_sid ? (
+                          <>Twilio SID: <span className="font-mono">{num.twilio_number_sid}</span></>
+                        ) : (
+                          <span className="text-amber-600">
+                            No Twilio SID — webhooks not registered, so this number cannot receive calls or texts.
+                          </span>
+                        )}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">

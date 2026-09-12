@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 export async function POST(request: NextRequest) {
   try {
@@ -88,18 +89,26 @@ export async function POST(request: NextRequest) {
         .eq("id", sourceRecordId)
     }
 
-    // Emit kernel event
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: agent.brokerage_id,
-      agent_id: agent.id,
-      event_type: KernelEvent.AI_FEEDBACK_RECEIVED,
-      payload: {
+    // Emit kernel event — audit row + reactor. The bare insert it replaces carried
+    // NO entity_type / entity_id (both NOT NULL live) and wrote `payload` instead of
+    // `metadata`, so it was refused on every request and no AI_FEEDBACK_RECEIVED row
+    // has ever landed. Entity is the feedback row itself.
+    const { error: feedbackEventError } = await emitKernelEvent({
+      brokerageId: agent.brokerage_id,
+      agentId: agent.id,
+      event: KernelEvent.AI_FEEDBACK_RECEIVED,
+      entityType: "ai_feedback_log",
+      entityId: feedback.id,
+      metadata: {
         source_system: sourceSystem,
         source_record_id: sourceRecordId,
         rating,
         feedback_id: feedback.id,
       },
     })
+    if (feedbackEventError) {
+      console.error("[FeedbackAPI] AI_FEEDBACK_RECEIVED row refused (feedback saved):", feedbackEventError)
+    }
 
     return NextResponse.json({
       ok: true,

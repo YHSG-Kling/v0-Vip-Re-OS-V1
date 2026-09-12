@@ -17,8 +17,11 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, BarChart3, RefreshCw, Clock, AlertCircle, TrendingUp, TrendingDown } from "lucide-react"
+import { Loader2, BarChart3, RefreshCw, Clock, AlertCircle, TrendingUp, TrendingDown, Target } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { loadRecentPredictions } from "./ad-os-actions"
+import { logActualPerformanceAction } from "@/app/actions/content-prediction"
 import { useToast } from "@/hooks/use-toast"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -63,11 +66,53 @@ function formatContentType(ct: string) {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
+const EMPTY_ACTUALS = { likes: "", comments: "", shares: "", impressions: "", clicks: "" }
+
 export function PerformanceIntelligencePanel({ brokerageId, initialPredictions = [] }: Props) {
   const [predictions, setPredictions] = useState<Prediction[]>(initialPredictions)
   const [isPending, startTransition] = useTransition()
   const [hasLoaded, setHasLoaded] = useState(initialPredictions.length > 0)
+  // ── THE OUTCOME HALF ────────────────────────────────────────────────────────
+  // A prediction nobody grades can never be shown to be right or wrong. These
+  // numbers write prediction_accuracy_log — the ledger the platform's
+  // prediction-accuracy rail (and the earned-autonomy gate behind it) reads to
+  // decide whether the content predictor has earned trust. Entered by hand
+  // because the platform does not receive per-post metrics from every network.
+  const [loggingId, setLoggingId] = useState<string | null>(null)
+  const [actuals, setActuals] = useState(EMPTY_ACTUALS)
+  const [loggedIds, setLoggedIds] = useState<string[]>([])
   const { toast } = useToast()
+
+  function handleLogActuals(predictionId: string) {
+    const num = (v: string) => (v.trim() === "" ? undefined : Number(v))
+    const impressions = num(actuals.impressions)
+    if (impressions === undefined || !Number.isFinite(impressions) || impressions < 1) {
+      toast({
+        title: "Impressions are required",
+        description: "Engagement and click rates are computed against reach — without it there is nothing to divide by.",
+        variant: "destructive",
+      })
+      return
+    }
+    startTransition(async () => {
+      const res = await logActualPerformanceAction({
+        predictionId,
+        likes: num(actuals.likes),
+        comments: num(actuals.comments),
+        shares: num(actuals.shares),
+        impressions,
+        clicks: num(actuals.clicks),
+      })
+      if (!res.success) {
+        toast({ title: "Could not log the result", description: res.error, variant: "destructive" })
+        return
+      }
+      setLoggedIds((prev) => [...prev, predictionId])
+      setLoggingId(null)
+      setActuals(EMPTY_ACTUALS)
+      toast({ title: "Logged — this prediction is now graded against reality." })
+    })
+  }
 
   function handleLoad() {
     startTransition(async () => {
@@ -186,13 +231,76 @@ export function PerformanceIntelligencePanel({ brokerageId, initialPredictions =
                   </p>
                 )}
 
-                <p className="text-xs text-muted-foreground/60">
-                  {new Date(p.created_at).toLocaleDateString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                    year: "numeric",
-                  })}
-                </p>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <p className="text-xs text-muted-foreground/60">
+                    {new Date(p.created_at).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </p>
+                  {loggedIds.includes(p.id) ? (
+                    <span className="text-xs text-emerald-700">Actual result logged</span>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs gap-1.5"
+                      onClick={() => {
+                        setLoggingId(loggingId === p.id ? null : p.id)
+                        setActuals(EMPTY_ACTUALS)
+                      }}
+                    >
+                      <Target className="h-3 w-3" />
+                      Log actual result
+                    </Button>
+                  )}
+                </div>
+
+                {loggingId === p.id && !loggedIds.includes(p.id) && (
+                  <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      Enter what this piece actually did once the numbers settled. The delta between the
+                      predicted score and the real one is what the platform&apos;s accuracy rail is measured on.
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                      {([
+                        ["impressions", "Impressions *"],
+                        ["likes", "Likes"],
+                        ["comments", "Comments"],
+                        ["shares", "Shares"],
+                        ["clicks", "Clicks"],
+                      ] as const).map(([key, label]) => (
+                        <div key={key} className="space-y-1">
+                          <Label className="text-[11px]">{label}</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            inputMode="numeric"
+                            className="h-8 text-sm"
+                            value={actuals[key]}
+                            onChange={(e) => setActuals((prev) => ({ ...prev, [key]: e.target.value }))}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" className="h-7 text-xs" disabled={isPending} onClick={() => handleLogActuals(p.id)}>
+                        {isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                        Save result
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs"
+                        disabled={isPending}
+                        onClick={() => setLoggingId(null)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
 

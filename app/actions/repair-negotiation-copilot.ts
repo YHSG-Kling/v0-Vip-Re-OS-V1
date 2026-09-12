@@ -196,6 +196,8 @@ Recommend the negotiation approach for the ${params.side} side. Be direct.`
   let strategy: RepairStrategy | undefined
   try {
     const r = await generateObjectRouted({
+      brokerageId: (tx as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+      userId: user.id,
       feature: "repair_negotiation_strategy",
       schema: z.object({
         recommendedApproach: z.enum([
@@ -246,6 +248,8 @@ Recommend the negotiation approach for the ${params.side} side. Be direct.`
   let items: RepairItemRec[] = []
   try {
     const r = await generateObjectRouted({
+      brokerageId: (tx as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+      userId: user.id,
       feature: "repair_negotiation_items",
       schema: z.object({
         items: z.array(z.object({

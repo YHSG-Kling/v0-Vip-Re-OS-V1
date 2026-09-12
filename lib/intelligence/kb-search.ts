@@ -1,7 +1,7 @@
-import OpenAI from 'openai'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
+import { generateEmbedding, updateHelpTopicEmbedding } from '@/lib/knowledge/embedding-service'
 
 export interface KBResult {
   id: string
@@ -12,19 +12,12 @@ export interface KBResult {
   tags?: string[]
 }
 
-// Lazy initialization to avoid build-time errors when OPENAI_API_KEY is not set
-let _openai: OpenAI | null = null
-function getOpenAI(): OpenAI {
-  if (!_openai) {
-    _openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    })
-  }
-  return _openai
-}
-
 /**
- * Search the knowledge base using vector similarity with ILIKE fallback
+ * Search the knowledge base using vector similarity with ILIKE fallback.
+ * The query embedding + the stored embeddings both go through the ONE canonical
+ * embedder (lib/knowledge/embedding-service, the AI gateway) — the raw-OpenAI
+ * second pipeline was retired; this module keeps only its distinct value (the
+ * 0.55 threshold, the ILIKE fallback, and the KBResult shape its callers read).
  */
 export async function searchKB(
   query: string,
@@ -34,20 +27,15 @@ export async function searchKB(
   const supabase = createServiceClient()
 
   try {
-    // Step 1: Generate embedding for query
-    const embeddingResponse = await getOpenAI().embeddings.create({
-      model: 'text-embedding-3-small',
-      input: query,
-    })
+    // Step 1: Generate embedding for query (canonical gateway embedder)
+    const queryEmbedding = await generateEmbedding(query)
 
-    const queryEmbedding = embeddingResponse.data[0].embedding
-
-    // Step 2: Vector similarity search
-    // Using raw SQL for pgvector cosine distance operator
+    // Step 2: Vector similarity search — pass the pgvector string literal, the
+    // format the canonical pipeline uses.
     const { data: vectorResults, error: vectorError } = await supabase.rpc(
       'match_help_topics',
       {
-        query_embedding: queryEmbedding,
+        query_embedding: `[${queryEmbedding.join(',')}]`,
         p_brokerage_id: brokerageId,
         match_threshold: 0.55,
         match_count: limit,
@@ -117,10 +105,10 @@ async function searchKBFallback(
 export async function embedAndStore(topicId: string): Promise<void> {
   const supabase = createServiceClient()
 
-  // Fetch the article content
+  // Fetch metadata for the kernel event (title + brokerage scope).
   const { data: topic, error: fetchError } = await supabase
     .from('help_topics_kb')
-    .select('id, content, title, brokerage_id')
+    .select('id, title, brokerage_id')
     .eq('id', topicId)
     .single()
 
@@ -128,23 +116,9 @@ export async function embedAndStore(topicId: string): Promise<void> {
     throw new Error(`Topic not found: ${topicId}`)
   }
 
-  // Generate embedding
-  const embeddingResponse = await getOpenAI().embeddings.create({
-    model: 'text-embedding-3-small',
-    input: `${topic.title}\n\n${topic.content}`,
-  })
-
-  const embedding = embeddingResponse.data[0].embedding
-
-  // Store embedding
-  const { error: updateError } = await supabase
-    .from('help_topics_kb')
-    .update({ content_embedding: embedding })
-    .eq('id', topicId)
-
-  if (updateError) {
-    throw new Error(`Failed to store embedding: ${updateError.message}`)
-  }
+  // Embed + store through the ONE canonical pipeline (AI gateway, pgvector
+  // literal storage) — no second raw-OpenAI path.
+  await updateHelpTopicEmbedding(topicId)
 
   // Emit through the canonical emitter — INSERT + reactor fan-out in one call.
   await emitKernelEvent({
@@ -154,7 +128,7 @@ export async function embedAndStore(topicId: string): Promise<void> {
     entityId:    topicId,
     metadata: {
       title:           topic.title,
-      embedding_model: 'text-embedding-3-small',
+      embedding_model: 'openai/text-embedding-3-small',
       timestamp:       new Date().toISOString(),
     },
   })

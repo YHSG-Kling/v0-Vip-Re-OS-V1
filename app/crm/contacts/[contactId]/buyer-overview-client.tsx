@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback }             from "react"
+import { useRouter }                          from "next/navigation"
 import Link                                   from "next/link"
 import { cn }                                 from "@/lib/utils"
 import { BuyerStageProgress }                 from "./components/buyer-stage-progress"
@@ -12,7 +13,6 @@ import { FatiguePanel }                       from "./components/fatigue-panel"
 import { BuyerEngagementHealthCard }          from "./components/buyer-engagement-health-card"
 import { BuyerLifecyclePanel }               from "./components/buyer-lifecycle-panel"
 import { FatigueWidget }                      from "./components/fatigue-widget"
-import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
 import { TourPipelineStepper }                from "@/app/components/shared/TourPipelineStepper"
 import { createTourPlan }                     from "@/app/actions/tour-planner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,6 +22,7 @@ import { Users, Calendar, AlertTriangle, Zap, Loader2, FileText, Home } from "lu
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import { upsertFinancialProfile }             from "@/app/actions/buyer-financial"
 import { toast }                              from "sonner"
+import { timelineLabel }                      from "@/constants/crm-standards"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -119,14 +120,19 @@ interface BuyerOverviewClientProps {
   nextTour:      any | null
   dualAgencyListings: Array<{ listing_id: string; address: string }> | null
   enabledGates?: string[]
+  /** Decided on the SERVER by lib/buyer-lifecycle/gating-helpers:isOfferAllowed.
+   *  Never re-derive it here: the gate reads lifecycle state and financial verification
+   *  with the service-role client, which must never reach a client bundle. */
+  offerAllowed?: boolean
 }
 
 export function BuyerOverviewClient({
   buyerId, contact, journey, profile, partners, drafts,
   propertyInterests, brokerageId, agentUserId, agentName,
   collaborativeSearches, activeSearch, consensus, tours, nextTour,
-  dualAgencyListings, enabledGates = [],
+  dualAgencyListings, enabledGates = [], offerAllowed = false,
 }: BuyerOverviewClientProps) {
+  const router = useRouter()
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
   const [verified, setVerified]     = useState(profile?.verified === true)
@@ -285,7 +291,7 @@ export function BuyerOverviewClient({
               {contact.email && <span>{contact.email}</span>}
               {contact.phone && <span>{contact.phone}</span>}
               {contact.status && <span className="capitalize">{contact.status}</span>}
-              {contact.timeline && <span>{contact.timeline}</span>}
+              {contact.timeline && <span>{timelineLabel(contact.timeline)}</span>}
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -360,8 +366,11 @@ export function BuyerOverviewClient({
         </div>
       ) : activeTab === "Offers" ? (
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          {/* isOfferAllowed is async — used here as a placeholder; server should pre-compute */}
-          {(isOfferAllowed as any)(currentStage) ? (
+          {/* Decided on the server (see page.tsx). This used to call the async
+              isOfferAllowed here and branch on the returned PROMISE, which is always
+              truthy — so this path rendered open for every buyer, whatever their
+              lifecycle state or financial verification said. */}
+          {offerAllowed ? (
             <Link
               href={`/crm/contacts/${buyerId}/offers`}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -663,6 +672,10 @@ export function BuyerOverviewClient({
               blockers={blockers}
               contactId={buyerId}
               agentId={agentUserId}
+              onAdvanced={() => {
+                setRefreshKey((k) => k + 1)
+                router.refresh()
+              }}
             />
           </aside>
 
@@ -677,6 +690,7 @@ export function BuyerOverviewClient({
                 savedCount={propertyInterests ? 1 : 0}
                 tourCount={tours.length}
                 buyerStage={contact.buyer_stage}
+                compact={true}
               />
 
               {/* Dual Agency Opportunity Alert */}
@@ -760,6 +774,28 @@ export function BuyerOverviewClient({
                     <p className="text-xs text-muted-foreground">
                       Next tour: {new Date(nextTour.tour_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}
                     </p>
+                  )}
+                  {/* Financial-verification gate notice — built (present in
+                      this file, unmounted) under §1 wave 56: `blockers`
+                      already surfaces "Financial verification required" as
+                      plain text in the left-rail stage progress, but
+                      `openTourGate`'s persona-aware modal (with a CTA that
+                      scrolls straight to the verification panel) had no
+                      caller anywhere. This does not remove the scheduling
+                      buttons below — an agent may still act — it only makes
+                      the requirement actionable from the same card the
+                      buttons live in, mirroring the Offer section's
+                      "What's required?" pattern below. */}
+                  {!verified && (
+                    <div className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+                      <p className="text-[11px] text-amber-800">Financial verification not yet complete</p>
+                      <button
+                        onClick={openTourGate}
+                        className="text-[11px] font-medium text-amber-900 underline underline-offset-2 shrink-0"
+                      >
+                        What&apos;s required?
+                      </button>
+                    </div>
                   )}
                   <div className="flex gap-2 flex-wrap">
                     <Link href={`/crm/contacts/${buyerId}/tours`}>
@@ -875,7 +911,7 @@ export function BuyerOverviewClient({
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Timeline</p>
-                  <p className="font-medium">{contact.timeline ?? "—"}</p>
+                  <p className="font-medium">{timelineLabel(contact.timeline) ?? "—"}</p>
                 </div>
                 {profile && (
                   <>

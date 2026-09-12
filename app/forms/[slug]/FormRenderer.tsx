@@ -9,6 +9,7 @@ type FormField = {
   type: 'text' | 'email' | 'tel' | 'textarea' | 'select'
   required?: boolean
   options?: string[]
+  placeholder?: string
 }
 
 interface FormDef {
@@ -103,6 +104,7 @@ export default function FormRenderer({ form }: Props) {
               value={values[field.key] ?? ''}
               onChange={e => handleChange(field.key, e.target.value)}
               rows={4}
+              placeholder={field.placeholder || undefined}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           ) : field.type === 'select' && field.options ? (
@@ -125,6 +127,7 @@ export default function FormRenderer({ form }: Props) {
               required={field.required}
               value={values[field.key] ?? ''}
               onChange={e => handleChange(field.key, e.target.value)}
+              placeholder={field.placeholder || undefined}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           )}

@@ -12,11 +12,16 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getChainByKey } from "./chains"
 import { findReusableRun, type ExistingRun } from "./run-dedupe"
 import type {
-  WorkflowChain,
   WorkflowStep,
   WorkflowRunContext,
   WorkflowRunStatus,
+  WorkflowStepStatus,
 } from "./types"
+
+/** Every workflow_run_steps.status write below is `satisfies`-checked against this shape, so a
+ *  status outside WorkflowStepStatus (the vocabulary types.ts declares, previously enforced by
+ *  nothing) cannot be written — a typo'd status used to compile and silently strand the run. */
+type StepStatusWrite = { status: WorkflowStepStatus }
 
 interface StartRunInput {
   chainKey: string
@@ -103,7 +108,7 @@ export async function startRun(input: StartRunInput): Promise<RunResult> {
     step_index: i,
     step_key: s.key,
     step_label: s.label,
-    status: "pending" as const,
+    status: "pending" satisfies WorkflowStepStatus,
   }))
   await svc.from("workflow_run_steps").insert(stepRows)
 
@@ -140,7 +145,14 @@ export async function advanceRun(runId: string): Promise<RunResult> {
     return await completeRun(runId)
   }
 
-  const step = chain.steps[stepIndex]
+  // DECLARED `| undefined` because the very next line believes it can be.
+  // `chain.steps[stepIndex]` types as WorkflowStep with no index check, so the
+  // `if (!step)` guard below reads as dead code to a reviewer and to any tool
+  // that prunes unreachable branches — while `stepIndex` comes out of the
+  // workflow_runs ROW, not out of the chain, and a run whose chain was edited
+  // since it started really can point past the end. The annotation is the only
+  // place the two facts are stated together.
+  const step: WorkflowStep | undefined = chain.steps[stepIndex]
   if (!step) {
     return await completeRun(runId)
   }
@@ -148,7 +160,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
   // Mark step running
   await svc
     .from("workflow_run_steps")
-    .update({ status: "running", started_at: new Date().toISOString() })
+    .update({ status: "running", started_at: new Date().toISOString() } satisfies StepStatusWrite & Record<string, unknown>)
     .eq("run_id", runId)
     .eq("step_index", stepIndex)
 
@@ -204,7 +216,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
         status: "failed",
         error_message: lastError ?? "Unknown error",
         completed_at: new Date().toISOString(),
-      })
+      } satisfies StepStatusWrite & Record<string, unknown>)
       .eq("run_id", runId)
       .eq("step_index", stepIndex)
 
@@ -233,7 +245,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
         status: "needs_approval",
         output: result.output ?? {},
         completed_at: new Date().toISOString(),
-      })
+      } satisfies StepStatusWrite & Record<string, unknown>)
       .eq("run_id", runId)
       .eq("step_index", stepIndex)
 
@@ -255,7 +267,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
       status: "done",
       output: result.output ?? {},
       completed_at: new Date().toISOString(),
-    })
+    } satisfies StepStatusWrite & Record<string, unknown>)
     .eq("run_id", runId)
     .eq("step_index", stepIndex)
 
@@ -300,7 +312,7 @@ export async function approveStep(params: {
 
   await svc
     .from("workflow_run_steps")
-    .update({ status: "done" })
+    .update({ status: "done" } satisfies StepStatusWrite)
     .eq("run_id", params.runId)
     .eq("step_index", step.step_index)
 

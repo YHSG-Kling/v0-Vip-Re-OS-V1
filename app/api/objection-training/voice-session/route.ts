@@ -17,7 +17,7 @@
 
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ensureScenarioAgent, issueAssistantSession } from "@/lib/elevenlabs/conv-ai"
 import { checkUsageCap } from "@/lib/usage/check-cap"
@@ -32,8 +32,8 @@ interface Body {
 }
 
 export async function POST(request: NextRequest) {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
   const body = (await request.json().catch(() => ({}))) as Body
   if (!body.scenarioKey) return NextResponse.json({ error: "scenarioKey required" }, { status: 400 })

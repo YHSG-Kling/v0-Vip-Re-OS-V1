@@ -11,6 +11,19 @@ import { calculateFuzzyMatch } from '@/lib/lead-pipeline/fuzzy-matcher'
 import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
 import { resolveAgentForContact } from '@/lib/lead-assignment/contact-assignment'
 import { mergeIdentityFields } from '@/lib/data-steward/field-steward'
+import { bestEffort } from '@/lib/db/best-effort'
+// PURE — no server-only, no SCHEMA_SNAPSHOT at module scope (see that file's
+// own header note) — safe as a static import into this shared pipeline file.
+import { localeToElevenLabsLanguage } from '@/lib/video/multilingual-reel'
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -41,6 +54,34 @@ const LEAD_CONVERSION_SOURCES = new Set([
   'lead_conversion',
   'crm_import',
 ])
+
+/**
+ * resolveCapturedLanguage — THE ONE intake-time locale resolver (§6), lifted
+ * out of app/api/forms/submit/route.ts (the one door that had it) so every
+ * OTHER public intake door computes `CaptureContactParams.language` the same
+ * way instead of re-deriving its own "which header/field wins" logic.
+ *
+ * Prefers an explicit locale/language FIELD the submission itself carried
+ * (a form, widget or QR payload CAN name one — nothing forces it to), else
+ * falls back to the request's `Accept-Language` header. Both are mapped
+ * through `localeToElevenLabsLanguage` (lib/video/multilingual-reel.ts) so a
+ * garbage/unmapped value never reaches `contacts.metadata->>'captured_language'`
+ * as a fabricated language — this is tier 3 of `resolveContactLanguage`, a
+ * guess, and only a MAPPED guess is worth storing.
+ *
+ * PURE — takes the two raw strings already read by the caller (never parses a
+ * Request itself, so it works identically for a NextRequest route handler and
+ * a "use server" action reading `headers()`).
+ */
+export function resolveCapturedLanguage(
+  explicitLocale: string | null | undefined,
+  acceptLanguageHeader: string | null | undefined,
+): string | null {
+  const fromField = localeToElevenLabsLanguage((explicitLocale ?? '').trim())
+  if (fromField) return fromField
+  const firstTag = (acceptLanguageHeader ?? '').split(',')[0]?.trim() ?? ''
+  return localeToElevenLabsLanguage(firstTag)
+}
 
 export interface CaptureContactParams {
   brokerageId: string
@@ -106,6 +147,24 @@ export interface CaptureContactParams {
   /** Merged into contacts.enrichment_profile (read-merge-write on dedup so existing
    *  enrichment is never clobbered) — e.g. the Article-16 representation_disclosure. */
   enrichmentProfile?: Record<string, unknown> | null
+  /**
+   * TIER 3 OF lib/video/multilingual-reel.ts::resolveContactLanguage — the
+   * intake-time locale, captured at first touch before any preferred_language
+   * setting or transcribed call can exist. An ElevenLabs-mapped language code
+   * (localeToElevenLabsLanguage output) the caller already resolved from the
+   * form's own locale field or the request's Accept-Language header — this
+   * function does not parse either itself (§6, no second resolver).
+   *
+   * Stored at contacts.metadata->>'captured_language' — NOT a typed column.
+   * m620 APPLIED 2026-09-10 — tier 1 (contacts.preferred_language) is live; this stays tier 3 (supabase/migrations/m620-contacts-preferred-
+   * language.sql, WRITTEN NOT APPLIED per CLAUDE.md §3) this IS the only place
+   * an intake-time language lands; once preferred_language exists, a
+   * follow-up lane backfills it from here — the same "typed column pending,
+   * jsonb key live" pattern m617's business_card_scans columns already used.
+   * fill-if-empty on merge (an existing captured_language is never overwritten
+   * by a lower-confidence retry).
+   */
+  language?: string | null
 }
 
 export interface CaptureContactResult {
@@ -198,6 +257,7 @@ export async function captureContact(
         dnc_status: false,
         notes: [params.fromLeadId ? `Promoted from lead ${params.fromLeadId}` : null, params.notes ?? null]
           .filter(Boolean).join('\n') || undefined,
+        ...(params.language ? { metadata: { captured_language: params.language } } : {}),
       })
       .select('id')
       .single()
@@ -291,6 +351,15 @@ export async function captureContact(
       ? { ...((existing?.enrichment_profile as Record<string, unknown> | null) ?? {}), ...params.enrichmentProfile }
       : null
 
+    // Same read-merge-write shape for the intake-language capture: FILL-IF-EMPTY
+    // only — a contact who already told us a language (or gave us one on an
+    // earlier capture) keeps it; a retry never demotes a real answer to a guess.
+    const existingMetadata = (existing?.metadata as Record<string, unknown> | null) ?? null
+    const mergedMetadata =
+      params.language && !existingMetadata?.captured_language
+        ? { ...(existingMetadata ?? {}), captured_language: params.language }
+        : null
+
     // Data Steward lossless merge over the canonical identity/address fields:
     // existing (the surviving row) keeps its non-empty values, empties are filled
     // from the incoming capture, and a REAL conflict (both present, different) is
@@ -335,7 +404,14 @@ export async function captureContact(
     ]
     const mergedNotes = [existing?.notes, ...noteAdditions].filter(Boolean).join('\n')
 
-    await supabase
+    // FAIL CLOSED (CLAUDE.md §4). This payload CARRIES TCPA CONSENT — it upgrades
+    // an existing contact to consented (and moves preferred_channel to phone with
+    // it) whenever the incoming capture ticked the box. supabase-js RESOLVES a
+    // refused UPDATE, so this returned `{ action: 'merged' }` and emitted
+    // CONTACT_DEDUP_MERGED for a merge that never landed — the consent, the notes,
+    // the agent assignment, all of it. The CREATE path below already throws on
+    // `createError`; the MERGE path now refuses the same way.
+    const { error: mergeError } = await supabase
       .from('contacts')
       .update({
         ...stewardMerged,
@@ -354,9 +430,14 @@ export async function captureContact(
         ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
         ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
         ...(mergedEnrichmentProfile ? { enrichment_profile: mergedEnrichmentProfile } : {}),
+        ...(mergedMetadata ? { metadata: mergedMetadata } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('id', bestId)
+
+    if (mergeError) {
+      throw new Error(`Failed to merge contact ${bestId}: ${mergeError.message}`)
+    }
 
     await supabase.from('lifecycle_events').insert({
       brokerage_id: params.brokerageId,
@@ -442,6 +523,7 @@ export async function captureContact(
       ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
       ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
       ...(params.enrichmentProfile ? { enrichment_profile: params.enrichmentProfile } : {}),
+      ...(params.language ? { metadata: { captured_language: params.language } } : {}),
       isa_reengage_allowed: true,
       dnc_status: false,
     })
@@ -503,11 +585,25 @@ export async function captureContact(
       ? await supabase.from('agents').select('user_id').eq('id', createAgentId).maybeSingle()
       : { data: null }
     if (agentRow?.user_id) {
+      // ONE EMAIL, HERE TOO. `ensureClientWelcome` ran a few lines above and, for
+      // any contact type a manager picks up, it has already granted portal access
+      // (sendMagicLink: false) and sent an agent-signed welcome carrying the portal
+      // door. Re-inviting with the OTP mail armed put a SECOND, generic email on top
+      // of it — the same duplicate the conversion lanes were carrying, and the
+      // owner's them-first ruling forbids the generic one specifically. The invite
+      // row itself is still (re)created either way: the grant and the email are
+      // different things.
+      //
+      // ARMED BY EXACTLY THE COMPLEMENT of resolveWelcomeManagers — an EMPTY manager
+      // set means no agent-signed welcome exists to carry the door, so the magic
+      // link is the only thing that will ever tell this contact their portal is
+      // there. One function decides on both lanes (§6).
+      const { resolveWelcomeManagers } = await import('@/lib/kernel/client-welcome')
       const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
       await createSystemPortalInvite({
         contactId,
         agentUserId: agentRow.user_id,
-        sendMagicLink: true,
+        sendMagicLink: resolveWelcomeManagers(params.contact_type ?? null).length === 0,
       })
     }
   } catch (err) {
@@ -525,41 +621,21 @@ export async function queueContactEnrichmentAndScore(params: {
 }): Promise<void> {
   const supabase = createServiceClient()
 
-  // Queue enrichment — idempotent: skip if already pending or processing
-  const { data: existing } = await supabase
-    .from('lead_enrichment_queue')
-    .select('id')
-    .eq('brokerage_id', params.brokerageId)
-    .eq('contact_id', params.contactId)
-    .in('status', ['pending', 'processing'])
-    .limit(1)
-    .maybeSingle()
-
-  if (!existing?.id) {
-    await supabase.from('lead_enrichment_queue').insert({
-      brokerage_id: params.brokerageId,
-      contact_id: params.contactId,   // contact_id NOT lead_id
-      lead_id: null,
-      status: 'pending',
-      enrichment_type: 'skip_trace',
-      trigger_type: 'contact_captured',
-    })
-
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id: params.brokerageId,
-      entity_type: 'contact',
-      entity_id: params.contactId,
-      event_type: KernelEvent.CONTACT_ENRICHMENT_QUEUED,
-      metadata: {},
-    })
-
-    await processKernelEvent({
-      event: KernelEvent.CONTACT_ENRICHMENT_QUEUED,
-      brokerageId: params.brokerageId,
-      entityType: 'contact',
-      entityId: params.contactId,
-    })
-  }
+  // Queue enrichment. This used to be a private copy of the queue write — one of
+  // four in the repo, each with a different set of guards. The pending/processing
+  // idempotency check this copy had was ported onto the survivor,
+  // lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment, which adds
+  // the freshness check this copy lacked and the owner's live-deal suppression
+  // rule that none of the four had. It also emits CONTACT_ENRICHMENT_QUEUED
+  // through emitKernelEvent, which does the lifecycle_events insert AND the
+  // reactor fan-out in one call — the pair of calls here could drift apart.
+  //
+  // The SCORING half below is this function's own capability and stays.
+  await (await import("@/lib/enrichment/contact-enrichment-core")).queueContactEnrichment({
+    brokerageId: params.brokerageId,
+    contactId: params.contactId,
+    triggerType: 'contact_captured',
+  })
 
   // Score immediately with available data (re-scored after enrichment completes)
   const { data: contact } = await supabase
@@ -582,10 +658,13 @@ export async function queueContactEnrichmentAndScore(params: {
     scored_at: new Date().toISOString(),
   })
 
-  await supabase
-    .from('contacts')
-    .update({ last_scored_at: new Date().toISOString() })
-    .eq('id', params.contactId)
+  await bestEffort(
+    supabase
+      .from('contacts')
+      .update({ last_scored_at: new Date().toISOString() })
+      .eq('id', params.contactId),
+    'round-robin recency stamp for the scorer; the score itself is already on lead_score_history above and re-scoring is idempotent, so a lost stamp costs an early re-score, not a fact',
+  )
 
   await supabase.from('lifecycle_events').insert({
     brokerage_id: params.brokerageId,

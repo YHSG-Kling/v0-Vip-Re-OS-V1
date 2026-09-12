@@ -4,7 +4,8 @@
 // buyers get MLS matches (the retail matchers); investors get OFF-MARKET: this matches the investor's
 // buy-box against our scraped motivated-seller inventory and ranks the deals by geography + distress +
 // equity. On-demand (runs when the agent clicks); the ranked list persists across loads. Nothing
-// auto-sends — the agent reviews before acting. Renders only for contact_type='investor'.
+// auto-sends — the agent reviews before acting. Renders only for contact_persona='investor'
+// (owner ruling 2026-08-31: "investor is a persona and not a contact type").
 
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"

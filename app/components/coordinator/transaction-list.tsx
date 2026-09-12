@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ClipboardList, MapPin, Calendar, ChevronRight, AlertTriangle, CheckCircle2 } from "lucide-react"
+import { ClipboardList, MapPin, Calendar, ChevronRight, AlertTriangle } from "lucide-react"
 import Link from "next/link"
 
 interface Transaction {

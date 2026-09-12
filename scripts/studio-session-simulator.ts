@@ -223,7 +223,7 @@ async function main() {
     } else {
       const { data: ins, error } = await svc
         .from("brokerages")
-        .insert({ name: testBrokerageName, subscription_tier: "solo_agent" })
+        .insert({ name: testBrokerageName, plan_tier: "solo_agent" })
         .select("id")
         .single()
       if (error || !ins) { console.error("brokerage seed failed:", error); process.exit(1) }

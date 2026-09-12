@@ -5,6 +5,20 @@
 // POST /api/integrations/test/[provider]
 // Auth-gated, tests provider connection using server-side credentials
 // Dynamic route version that accepts provider as path param
+//
+// ─── TOMBSTONE (orphan doctrine §1.1, lane M3 2026-08-31) ────────────────────
+// app/api/onboarding/integrations/test/route.ts DELETED. It was a body-param
+// twin of THIS route — same testIntegration() call, same platform_credentials
+// and brokerage_integrations writes, same INTEGRATION_CONNECTED/FAILED kernel
+// events — with NO caller anywhere in the tree, while the onboarding tech-stack
+// UI addresses this one (app/dashboard/onboarding/tech-stack/tech-stack-client.tsx:239,
+// `fetch(`/api/integrations/test/${provider}`)`). Both authenticated on a
+// Supabase SESSION, so no external caller could exist for the twin (the same
+// "loop, not a door" test the opposite-missing census applies to
+// /api/agentic-os/voice). NOTHING WAS MERGED because this survivor was missing
+// nothing: it verifies the caller's brokerage the same way and additionally
+// accepts the provider as a path param with brokerage_id optional (falling back
+// to the session's own), which is a superset of the twin's required-body shape.
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"

@@ -14,6 +14,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { assertRowBrokerageOwnership as ensureBrokerageOwnership } from "@/lib/auth/require-caller"
 import {
   startRun as engineStartRun,
   advanceRun as engineAdvanceRun,
@@ -33,18 +34,9 @@ export interface StartChainInput {
   metadata?: Record<string, any>
 }
 
-// Helper: confirm a row belongs to the caller's brokerage.
-async function ensureBrokerageOwnership(
-  table: string,
-  id: string,
-  brokerageId: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const svc = createServiceClient()
-  const { data } = await svc.from(table).select("brokerage_id").eq("id", id).maybeSingle()
-  if (!data) return { ok: false, error: `${table} not found` }
-  if (data.brokerage_id !== brokerageId) return { ok: false, error: "Forbidden" }
-  return { ok: true }
-}
+// TOMBSTONE: local ensureBrokerageOwnership merged onto
+// lib/auth/require-caller.ts assertRowBrokerageOwnership (imported above as
+// `ensureBrokerageOwnership`) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 export async function startChainRun(input: StartChainInput) {
   const ctx = await getAgentContext()

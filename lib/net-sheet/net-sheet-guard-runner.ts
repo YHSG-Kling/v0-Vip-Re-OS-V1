@@ -47,7 +47,8 @@ export interface NetSheetGuardResult {
 /** Tolerant parser: pull net-sheet figures off a settlement-statement document's
  *  extracted_data JSON. Settlement statements vary wildly, so we read a generous set of
  *  common keys and never fabricate a line that isn't there. */
-export function parseSettlementFigures(extracted: Record<string, unknown> | null | undefined): NetSheetFigures {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function parseSettlementFigures(extracted: Record<string, unknown> | null | undefined): NetSheetFigures {
   if (!extracted || typeof extracted !== "object") return {}
   const e = extracted as Record<string, unknown>
   const pick = (...keys: string[]): number | undefined => {

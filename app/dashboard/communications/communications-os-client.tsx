@@ -70,6 +70,9 @@ interface PressureItem {
   sentiment?: string
   contactId: string
   conversationId: string
+  /** contacts.lead_temperature, joined server-side — feeds AiReplyCoachPanel's
+   *  cold-lead nudge below (hidden-wire census category c, wave 50). */
+  leadTemperature?: "hot" | "warm" | "cold"
 }
 
 interface SentimentItem {
@@ -122,6 +125,11 @@ interface CommunicationsOSClientProps {
   sentimentItems: SentimentItem[]
   inboxStats: InboxStats
   connectedSocialAccounts?: ConnectedSocialAccount[]
+  /** 30-day outbound message volume (lane E2 2026-08-28:
+   *  getCommunicationStats WIRED — served by the page from the tenant-scoped
+   *  messages ledger; null when the read was refused, rendered as unavailable
+   *  rather than as zeros). */
+  outboundStats?: { total: number; sms: number; email: number; call: number } | null
 }
 
 export function CommunicationsOSClient({
@@ -136,6 +144,7 @@ export function CommunicationsOSClient({
   sentimentItems,
   inboxStats,
   connectedSocialAccounts = [],
+  outboundStats = null,
 }: CommunicationsOSClientProps) {
   const router = useRouter()
   const [selectedConversation, setSelectedConversation] = useState<PressureItem | null>(null)
@@ -233,6 +242,17 @@ export function CommunicationsOSClient({
     router.push(`/dashboard/campaigns/sequences/${sequenceId}`)
   }, [router])
 
+  // The selected conversation's OWN active/paused sequence enrollment (if any) — BUILT
+  // (hidden-wire census category c, 2026-09-10 wave 49): ConversationActionPanel already
+  // renders an in-sequence badge + pause/resume button when given these, but nothing
+  // here ever passed them, so that UI never appeared next to the message composer even
+  // though the SAME enrollment was already visible one panel over in SequenceExecutionPanel.
+  const selectedEnrollment = selectedConversation
+    ? sequenceEnrollments.find(
+        (e) => e.contactId === selectedConversation.contactId && (e.status === "active" || e.status === "paused"),
+      )
+    : undefined
+
   // Action Panel Handlers
   const handleSendMessage = useCallback(async (params: {
     channel: "email" | "sms" | "in_app"
@@ -309,6 +329,17 @@ export function CommunicationsOSClient({
           totalSocialUnread={inboxStats.totalSocialUnread}
         />
 
+        {/* Outbound volume strip — last 30 days, from the messages ledger */}
+        {outboundStats && (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border bg-card px-4 py-2 text-sm">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sent (30d)</span>
+            <span><span className="font-semibold">{outboundStats.total}</span> total</span>
+            <span className="text-muted-foreground">{outboundStats.email} email</span>
+            <span className="text-muted-foreground">{outboundStats.sms} SMS</span>
+            <span className="text-muted-foreground">{outboundStats.call} call</span>
+          </div>
+        )}
+
         {/* Main Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
           {/* Response Pressure Panel */}
@@ -352,6 +383,10 @@ export function CommunicationsOSClient({
               onScheduleFollowUp={handleScheduleFollowUp}
               onEscalate={handleEscalate}
               onMarkNeedsAttention={handleMarkNeedsAttention}
+              isInSequence={!!selectedEnrollment}
+              sequencePaused={selectedEnrollment?.status === "paused"}
+              onPauseSequence={selectedEnrollment ? () => handlePauseEnrollment(selectedEnrollment.id) : undefined}
+              onResumeSequence={selectedEnrollment ? () => handleResumeEnrollment(selectedEnrollment.id) : undefined}
             />
 
             {/* AI Reply Coach */}
@@ -363,6 +398,7 @@ export function CommunicationsOSClient({
               incomingMessage={replyCoachMessage || selectedConversation.preview}
               channel={getSendableChannel(selectedConversation.channel) as any}
               contactName={selectedConversation.contactName}
+              leadTemperature={selectedConversation.leadTemperature}
               onApplyResponse={handleApplyResponse}
               onSendResponse={async (response) => {
                 await handleSendMessage({
@@ -391,6 +427,24 @@ export function CommunicationsOSClient({
             suggestedNextOutreach={healthAnalysis.suggestedNextOutreach}
             onViewFullAnalysis={() => {
               router.push(`/dashboard/communications/intelligence?contact=${healthAnalysis.contactId}`)
+            }}
+            // Loads the recommendation straight into the AI Reply Coach for
+            // this contact's open thread — reusing the same selection/draft
+            // state the pressure-queue rows already drive, rather than a
+            // second compose surface. No open thread for this contact →
+            // there is nothing to act ON yet, so it goes to their inbox
+            // thread instead. Hidden-wire census category (c), wave 50: this
+            // prop was declared and rendered as a button that did nothing
+            // when clicked (onActOnRecommendation was never passed).
+            onActOnRecommendation={(recommendation) => {
+              const item = pressureItems.find((p) => p.contactId === healthAnalysis.contactId)
+              if (item) {
+                setSelectedConversation(item)
+                setReplyCoachMessage(recommendation)
+              } else {
+                toast.info("Open this contact's thread in the inbox to act on this recommendation")
+                router.push(`/dashboard/communications/inbox?contact=${healthAnalysis.contactId}`)
+              }
             }}
           />
         )}

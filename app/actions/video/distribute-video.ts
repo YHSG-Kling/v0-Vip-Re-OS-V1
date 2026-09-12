@@ -1,7 +1,10 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
+import { normalizeVideoStatus, isCanonicalVideoStatus } from "@/lib/video/video-status"
 
 export type DistributeVideoAction =
   | "post_now"
@@ -41,6 +44,9 @@ export async function distributeVideo(
   }
 
   const supabase = await createClient()
+  // activities / social_posts / client_portal_messages agent_id all FK agents(id).
+  // params.userId is a users.id — it is written to user_id in the same payloads.
+  const actingAgentId = await resolveAgentId(supabase, params.userId)
 
   // Load project to get video_url and metadata
   const { data: project, error: loadError } = await supabase
@@ -53,9 +59,32 @@ export async function distributeVideo(
     return { success: false, error: "Video project not found" }
   }
 
-  const readyStatuses = ["ready", "completed", "preview_ready", "published"]
-  if (!readyStatuses.includes(project.status)) {
-    return { success: false, error: "Video is not ready for distribution. Please wait for generation to complete." }
+  // The stored value is normalised FIRST. `distributed`, `uploaded`, `ready` and
+  // `preview_ready` are all retired spellings of a finished video
+  // (lib/video/video-status.ts:RETIRED_VIDEO_STATUS), and this gate used to
+  // enumerate one of them by hand — so a row written under any of the others was
+  // refused with "wait for generation to complete" for a video that had finished,
+  // and a video that had already been distributed once could never be distributed
+  // again, because its own success rewrote its status out of the accepted set.
+  // One normaliser replaces the hand-list.
+  const rawStatus = String(project.status ?? "")
+  const status = normalizeVideoStatus(rawStatus)
+
+  // A value that survives normalisation and is still not in the vocabulary is
+  // DRIFT, not progress. Saying "wait for generation to complete" about it would
+  // name a condition nobody is waiting on.
+  if (!isCanonicalVideoStatus(status)) {
+    return {
+      success: false,
+      error: `This video's status is "${rawStatus}", which is not a status this system recognises, so it cannot be distributed.`,
+    }
+  }
+
+  if (!(VIDEO_FINISHED_STATUSES as readonly string[]).includes(status)) {
+    return {
+      success: false,
+      error: `This video is "${status}". Only a finished video (${VIDEO_FINISHED_STATUSES.join(" or ")}) can be distributed.`,
+    }
   }
 
   if (!project.video_url) {
@@ -82,7 +111,7 @@ export async function distributeVideo(
         .insert({
           brokerage_id: params.brokerageId,
           user_id: params.userId,
-          agent_id: params.userId,
+          agent_id: actingAgentId,
           platform: params.platform,
           post_type: "custom",
           content: project.script_content?.slice(0, 280) ?? project.title ?? "Check out my latest video!",
@@ -94,7 +123,7 @@ export async function distributeVideo(
           status: params.action === "post_now" ? "scheduled" : "scheduled",
           approval_status: "approved",
           ai_generated: true,
-          // Link back to the video project via kernel_event_id proxy — stored in post_brief
+          // Link back to the video project — stored in post_brief (kernel_event_id retired, m597)
           post_brief: `video_project:${project.id}`,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -106,16 +135,20 @@ export async function distributeVideo(
         return { success: false, error: postError.message }
       }
 
-      // Log activity
-      await supabase.from("activities").insert({
+      // Log activity. The social_posts row above already checked its error and
+      // returns on failure; this is the record that distribution happened.
+      const { error: distributedActivityError } = await supabase.from("activities").insert({
         brokerage_id: params.brokerageId,
-        agent_id: params.userId,
+        agent_id: actingAgentId,
         activity_type: "video_distributed",
         title: `Video distributed to ${params.platform}`,
         description: `"${project.title}" scheduled for ${params.platform}`,
         status: "completed",
         entity_type: "video_project",
       })
+      if (distributedActivityError) {
+        console.error("[distributeVideo] video_distributed activity REJECTED — the post is scheduled but unrecorded:", distributedActivityError.message)
+      }
 
       return { success: true, socialPostId: post?.id }
     }
@@ -126,7 +159,7 @@ export async function distributeVideo(
         .insert({
           brokerage_id: params.brokerageId,
           user_id: params.userId,
-          agent_id: params.userId,
+          agent_id: actingAgentId,
           platform: params.platform ?? "instagram",
           post_type: "custom",
           content: project.script_content?.slice(0, 280) ?? project.title ?? "",
@@ -188,7 +221,7 @@ export async function distributeVideo(
       // Also write a client_portal_messages entry
       await supabase.from("client_portal_messages").insert({
         brokerage_id: params.brokerageId,
-        agent_id: params.userId,
+        agent_id: actingAgentId,
         contact_id: params.contactId,
         direction: "agent_to_client",
         body: `${subject}\n\n${body}`,

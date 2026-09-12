@@ -17,14 +17,19 @@
  *         target → target gets the brand + feature override → clean up == 0.
  */
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { pickFields, payloadLeaksSecret, SNAPSHOT_GLOBAL_FIELDS, SNAPSHOT_SITE_FIELDS, SNAPSHOT_FORBIDDEN_FIELDS, SNAPSHOT_SITE_FORBIDDEN_FIELDS } from "../lib/platform/config-snapshots"
+import { stripComments } from "./strip-comments"
+import { walkTs } from "./runtime-roots"
 
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+/** STRIPPED source — the creation-path census scans for CODE TOKENS, and these
+ *  files carry comments/tombstones naming the very tokens scanned (§2). */
+const code = (p: string) => stripComments(readFileSync(join(process.cwd(), p), "utf8"))
 
 function pureLayer() {
   console.log("\n[allow-list · pure — a snapshot NEVER carries a secret]")
@@ -54,8 +59,12 @@ function sourceLayer() {
   check("capture builds from allow-lists only (brand/voice/features)", /SNAPSHOT_GLOBAL_FIELDS/.test(lib) && /SNAPSHOT_BRAND_FIELDS/.test(lib) && /SNAPSHOT_VOICE_FIELDS/.test(lib) && /pickFields/.test(lib))
   check("apply reuses the canonical override vocab for feature overrides", /normalizeOverrideType/.test(lib) && /feature_access_overrides/.test(lib))
   check("site apply re-sanitizes through the allow-list before touching brokerages", /pickFields\(payload\.site as Record<string, any>, SNAPSHOT_SITE_FIELDS\)/.test(lib) && /from\("brokerages"\)\.update\(/.test(lib))
+  // 2026-08-27: the apply moved INTO createSubscriber (the shared inner path —
+  // tombstone in manual-subscriber.ts names the survivor); manual provisioning
+  // now PASSES the staff-picked snapshotId through and audits the outcome.
   const ms = src("app/actions/superadmin/manual-subscriber.ts")
-  check("manual provisioning reuses the ONE apply path (no twin) + audits snapshot use", /applySnapshotPayload\(snapshot\.payload/.test(ms) && /"tenant\.provisioned_from_snapshot"/.test(ms))
+  check("manual provisioning passes the snapshot through to the ONE apply site (createSubscriber) + audits snapshot use",
+    /snapshotId:\s*input\.snapshotId/.test(ms) && !/applySnapshotPayload\(/.test(code("app/actions/superadmin/manual-subscriber.ts")) && /"tenant\.provisioned_from_snapshot"/.test(ms))
   check("the add-subscriber form offers the snapshot picker with recommended tier", /listSnapshotsAction/.test(src("app/dashboard/superadmin/brokerages/new/manual-subscriber-form.tsx")) && /recommendedTier/.test(src("app/dashboard/superadmin/brokerages/new/manual-subscriber-form.tsx")))
   const act = src("app/actions/superadmin/config-snapshots.ts")
   check("all actions are superadmin-gated + audited", (act.match(/requireSuperadmin\(\)/g) ?? []).length >= 4 && /superadmin_audit_log/.test(act) && /"snapshot\.capture"/.test(act) && /"snapshot\.apply"/.test(act))
@@ -67,6 +76,65 @@ function sourceLayer() {
   check("burn domain owned by data_steward with a runnable proof", /config_snapshots:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:config-snapshots"/.test(reg))
   check("the snapshots table has an owning manager", /platform_config_snapshots:\s*"data_steward"/.test(reg))
   check("package.json wires the proof", /"test:config-snapshots":\s*"tsx scripts\/config-snapshots-simulator\.ts"/.test(src("package.json")))
+}
+
+function creationPathLayer() {
+  console.log("\n[creation paths — EVERY tenant-creation path snapshots at creation (owner ruling)]")
+  // Owner ruling (2026-08-27): "when the platform prospect is converted, the
+  // account should also create the account with a snapshot." The RULE asserted
+  // here (§2 — never a pinned file list): every file under app/ or lib/ that
+  // INSERTS a brokerages row either applies a config snapshot itself
+  // (applySnapshotPayload / snapshotForTier) or delegates to createSubscriber
+  // (which does). The path list is DERIVED from the tree on every run, so a
+  // new creation path that forgets its snapshot goes red the day it lands.
+  const insertRe = /from\("brokerages"\)\s*\.\s*insert/
+  const snapshotRe = /applySnapshotPayload|snapshotForTier/
+  const delegateRe = /createSubscriber\(/
+
+  // POSITIVE CONTROLS — a broken finder and a compliant tree both report zero.
+  check("control: the insert finder sees the multiline .from(\"brokerages\")\\n.insert idiom",
+    insertRe.test('await service\n    .from("brokerages")\n    .insert({ name: "x" })') && !insertRe.test('svc.from("brokerages").select("id")'))
+  check("control: an unsnapshotted creation-path specimen is FLAGGED",
+    (() => { const specimen = 'const { data } = await svc.from("brokerages").insert({ name: "n" }).select("id").single()'; return insertRe.test(specimen) && !snapshotRe.test(specimen) && !delegateRe.test(specimen) })())
+  check("control: the stripper keeps a commented insert from counting as a creation path",
+    !insertRe.test(stripComments('// legacy: svc.from("brokerages").insert({...}) moved to createSubscriber\nconst a = 1')))
+
+  const rootsToScan = ["app", "lib"].flatMap((d) => walkTs(join(process.cwd(), d)))
+  const creationPaths: string[] = []
+  for (const abs of rootsToScan) {
+    const rel = relative(process.cwd(), abs)
+    let stripped = ""
+    try { stripped = stripComments(readFileSync(abs, "utf8")) } catch { continue }
+    if (insertRe.test(stripped)) creationPaths.push(rel)
+  }
+  console.log(`    denominator: ${rootsToScan.length} .ts/.tsx files under app/ + lib/ (node_modules/.next excluded by the walker)`)
+  console.log(`    creation paths found: ${creationPaths.length} — ${creationPaths.join(" · ") || "none"}`)
+  check("the census finds the known creation paths (the finder is not blind)",
+    creationPaths.some((p) => p.includes("signup-brokerage")) && creationPaths.some((p) => p.includes("create-subscriber")))
+
+  const unsnapshotted = creationPaths.filter((rel) => {
+    const stripped = stripComments(readFileSync(join(process.cwd(), rel), "utf8"))
+    return !snapshotRe.test(stripped) && !delegateRe.test(stripped)
+  })
+  check(`every derived creation path snapshots at creation or delegates to one that does (unsnapshotted: ${unsnapshotted.length}${unsnapshotted.length ? " → " + unsnapshotted.join(", ") : ""})`,
+    unsnapshotted.length === 0)
+
+  // The three direct-insert paths, asserted individually so a regression names its file:
+  const signup = code("app/actions/auth/signup-brokerage.ts")
+  check("self-serve signup resolves the snapshot SERVER-SIDE from the tier (snapshotForTier — never the request's snapshotId)",
+    /snapshotForTier\(input\.tier/.test(signup) && /applySnapshotPayload\(/.test(signup))
+  const sub = code("app/actions/admin/create-subscriber.ts")
+  check("createSubscriber applies the staff-picked snapshot OR the tier default, best-effort, and reports the outcome",
+    /params\.snapshotId/.test(sub) && /snapshotForTier\(params\.tierName/.test(sub) && /applySnapshotPayload\(/.test(sub) && /snapshotError/.test(sub))
+  const heal = code("app/actions/onboarding/ensure-agent-brokerage.ts")
+  check("the brokerage-of-one self-heal applies the solo_agent funnel snapshot, best-effort",
+    /snapshotForTier\("solo_agent"/.test(heal) && /applySnapshotPayload\(/.test(heal))
+
+  // MUTATION CONTROL: strip the snapshot calls out of a real path's source and
+  // the detector must flag it — proof the assertion can actually fail.
+  const mutated = sub.replace(/applySnapshotPayload/g, "").replace(/snapshotForTier/g, "").replace(/createSubscriber\(/g, "renamed(")
+  check("mutation control: create-subscriber with its snapshot calls removed WOULD be flagged",
+    insertRe.test(mutated) && !snapshotRe.test(mutated) && !delegateRe.test(mutated))
 }
 
 async function liveLayer() {
@@ -125,6 +193,7 @@ async function liveLayer() {
 async function main() {
   pureLayer()
   sourceLayer()
+  creationPathLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

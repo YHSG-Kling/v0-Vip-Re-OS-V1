@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
@@ -16,7 +15,7 @@ export default async function LenderApprovalsPage() {
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, client_name, close_date, contract_price:purchase_price')
-    .in('status', ['pending', 'under_contract'])
+    .in('status', ['under_contract'])
     .order('close_date', { ascending: true })
     .limit(30)
 

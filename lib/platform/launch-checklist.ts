@@ -96,23 +96,70 @@ const ROWS: RowDef[] = [
   },
   {
     key: "stripe",
-    capability: "Stripe billing (secret key)",
+    // ── CORRECTED BY OWNER RULING ────────────────────────────────────────────
+    // "the stripe account will be per tenant and platform so no configuration
+    // should be hardcoded."
+    //
+    // This row used to read "Stripe billing (secret key)" and light up "Stripe
+    // Connect payouts" — i.e. it presented ONE env var as the switch for every
+    // Stripe path in the product, tenant money included. That is worse than an
+    // inaccuracy on a LAUNCH board: it goes GREEN on one key and reads as "money
+    // is wired", while every tenant-side path is still unresolvable. A go-live
+    // checklist that goes green on the wrong architecture is worse than one that
+    // fails.
+    //
+    // What this row can honestly gate is the PLATFORM half, and only that. The
+    // TENANT half is not an env var and cannot be — there are N tenants and env
+    // vars are singular. Each tenant connects their own Stripe in
+    // Settings → Connections; until they do,
+    // lib/billing/resolve-stripe-account.ts REFUSES their charges by name rather
+    // than settling them on the platform's account, which is the fail-closed
+    // behaviour a launch board should WANT and cannot itself verify.
+    capability: "Stripe billing — the PLATFORM's own account (secret key)",
     envVars: ["STRIPE_SECRET_KEY"],
-    whatLightsUp: "Signup checkout, subscriptions, dunning, vendor marketplace billing, Stripe Connect payouts.",
+    whatLightsUp:
+      "The money the PLATFORM is the payee on: signup checkout, subscriptions, dunning, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints tenant acct_… ids. A platform-owned platform_credentials row (owner_type='platform', platform='stripe') overrides this var and is the preferred home once one exists. It does NOT cover tenant-side money — a brokerage's vendor bills, client payments and agent payouts run on that brokerage's OWN Stripe account, connected per tenant in Settings → Connections.",
     tier: "launch-blocking",
   },
   {
     key: "stripe_webhook",
-    capability: "Stripe webhook verification",
+    capability: "Stripe webhook verification — PLATFORM account (tenant billing)",
     envVars: ["STRIPE_WEBHOOK_SECRET"],
-    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/webhooks/stripe in the Stripe dashboard and set the signing secret.",
+    // THE URL WAS WRONG, AND IT IS THE ONLY INSTRUCTION AN OPERATOR GETS.
+    // This row said "register https://<app>/api/webhooks/stripe". No such route
+    // exists — app/api/webhooks/stripe/ contains ONLY vendor/route.ts, so
+    // /api/webhooks/stripe is a 404. The tenant billing webhook lives at
+    // /api/billing/webhook. An operator who followed this line exactly would
+    // register a dead endpoint, every checkout.session.completed and
+    // customer.subscription.* delivery would fail, paid signups would never
+    // activate — and this very checklist would have gone GREEN, because it
+    // checks that the SECRET is set and cannot see where it was pointed.
+    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/billing/webhook in the PLATFORM's Stripe dashboard (events: checkout.session.completed, invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted, account.updated) and set its signing secret here. This is the PLATFORM account's secret only: /api/billing/webhook now identifies the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) and refuses to write the platform's billing ledger from a tenant-signed delivery, so a tenant's own webhook secret belongs on that tenant's platform_credentials row (config.webhook_secret), never here.",
+    tier: "launch-blocking",
+  },
+  {
+    // The VENDOR marketplace webhook is a SECOND Stripe endpoint with its OWN
+    // signing secret, and it was absent from this checklist entirely — so an
+    // operator could complete every launch-blocking row and still have vendor
+    // subscriptions silently unreconciled (payment_failed → past_due and
+    // cancellation → suspend never arrive).
+    key: "stripe_vendor_webhook",
+    capability: "Stripe webhook verification — PLATFORM account (vendor marketplace)",
+    envVars: ["STRIPE_VENDOR_WEBHOOK_SECRET"],
+    whatLightsUp: "Vendor subscription status stays true — register https://<app>/api/webhooks/stripe/vendor as a SEPARATE endpoint on the PLATFORM's Stripe account (events: customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed) and set its own signing secret. The vendor marketplace tier is money the vendor pays the PLATFORM (VENDOR_PLATFORM_TIER), so this endpoint accepts platform-signed deliveries only. Without a secret — here or on the platform credential's config.vendor_webhook_secret — the route refuses every delivery with a 500 naming what is missing.",
     tier: "launch-blocking",
   },
   {
     key: "ai_gateway",
-    capability: "AI model gateway (any one key)",
-    envVars: ["AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"],
-    anyOf: true,
+    capability: "AI model gateway",
+    // ONE key, not "any one of four". The provider SDKs are gone: every
+    // text/object/image/transcription call resolves through the Vercel AI Gateway,
+    // so ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY no longer reach a model
+    // and must not read as a satisfied launch requirement.
+    // (ANTHROPIC_API_KEY still has ONE job — Anthropic's Managed Agents API in
+    // lib/agents/managed-agents-egress.ts, which the gateway does not proxy — but
+    // that is an agent-session surface, not the model lane this row gates.)
+    envVars: ["AI_GATEWAY_API_KEY"],
     whatLightsUp: "Every AI manager, copilot, widget chat, and content lane — the routing table selects per feature.",
     tier: "launch-blocking",
   },
@@ -226,13 +273,6 @@ const ROWS: RowDef[] = [
     tier: "launch-degraded",
   },
   {
-    key: "vapi_legacy",
-    capability: "Vapi legacy voice lane (migration window only)",
-    envVars: ["VAPI_API_KEY"],
-    whatLightsUp: "Only tenants still on VOICE_ENGINE=vapi; new tenants bind to the Twilio-native lane.",
-    tier: "launch-degraded",
-  },
-  {
     key: "contact_enrichment",
     capability: "Contact enrichment (PeopleData)",
     envVars: ["PEOPLEDATA_API_KEY"],
@@ -251,8 +291,13 @@ const ROWS: RowDef[] = [
   },
   {
     key: "research_search",
-    capability: "Neural search / research (Exa · Tavily · Perplexity)",
-    envVars: ["EXA_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY"],
+    capability: "Neural search / research (Exa · Tavily)",
+    // PERPLEXITY_API_KEY was named here and has NO reader left in production:
+    // Perplexity's search-augmented models (perplexity-sonar / perplexity-sonar-pro
+    // in AI_TASK_ROUTING) are reached through the AI Gateway on AI_GATEWAY_API_KEY
+    // like every other model. A checklist row that green-lights on a key nothing
+    // reads is a row that lies.
+    envVars: ["EXA_API_KEY", "TAVILY_API_KEY"],
     anyOf: true,
     whatLightsUp: "Buyer-intent discovery, competitor intelligence, research-backed content lanes.",
     tier: "optional",

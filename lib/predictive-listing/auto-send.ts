@@ -8,11 +8,15 @@
  * publish gate, and either sends or blocks.
  *
  * Hard gates (any failure → ineligible):
- *   1. Brokerage capability `predictive_listing_auto_touch` enabled
- *   2. Brokerage AI ISA master switch on
+ *   1. Capability `predictive_listing_auto_touch` enabled for THIS AGENT —
+ *      resolved agent → team → brokerage → platform (the agent's own ISA
+ *      settings row wins if they have one; m552 + lib/ai-isa/resolve-isa-settings.ts)
+ *   2. AI ISA master switch on at whichever tier answered
  *   3. Agent has not opted out (users.predictive_auto_send_opt_out = false)
  *   4. Contact has TCPA consent on file
  *   5. Contact NOT on platform_suppression_list (cross-tenant DNC)
+ *  5b. Contact NOT already represented by another broker — an `active_listing`
+ *      motivated_seller_signal. NAR Article 16; a read we cannot perform refuses.
  *   6. Contact has the eligible channel available (email_opt_out=false etc.)
  *   7. Sensitive life events present → REQUIRE human review (defer to dashboard)
  *   8. Cooldown — no auto-touch for this contact in last N days
@@ -22,8 +26,21 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isCapabilityEnabled, getAIISASettings } from "@/app/actions/ai-isa-settings"
+// THE RESOLVER, not the server action. This is a background eligibility path with
+// no session, so `getAgentContext()` inside the action would answer
+// UNAUTHENTICATED and the per-user tier would never be consulted. Calling the
+// resolver directly lets THIS agent's own ISA settings govern their own
+// auto-touch — the owner's ruling ("ai customizations are also per user") applied
+// where it actually decides something.
+import { isIsaCapabilityEnabledForScope, resolveIsaSettings } from "@/lib/ai-isa/resolve-isa-settings"
 import { isSuppressedAny } from "@/lib/platform/suppression-list"
+// The representation SUPPRESSION half of the seller-signal vocabulary. Both the
+// roster and the predicate are imported rather than restated, so this gate and
+// the scorer can never disagree about what "already represented" means (§6).
+import {
+  hasRepresentationSuppression,
+  SUPPRESSION_SELLER_SIGNAL_TYPES,
+} from "@/lib/lead-governance/seller-signal-strength"
 
 interface EligibilityInput {
   contactId: string
@@ -57,14 +74,18 @@ export async function evaluateAutoSendEligibility(
     return { eligible: false, reason: "sensitive_signal_requires_human_review" }
   }
 
-  // 1+2. Capability + ISA master switch
-  const capOk = await isCapabilityEnabled(brokerageId, "predictive_listing_auto_touch")
+  // 1+2. Capability + ISA master switch — resolved for THIS AGENT, cascading
+  // agent → team → brokerage → platform. `agentId` here is agents.id (it is used
+  // as `.from("agents").eq("id", agentId)` twelve lines below), which is the id
+  // class `ai_isa_settings.agent_id` stores.
+  const isaScope = { agentId, brokerageId }
+  const capOk = await isIsaCapabilityEnabledForScope(isaScope, "predictive_listing_auto_touch")
   if (!capOk) {
     return { eligible: false, reason: "capability_disabled" }
   }
 
   // Pull settings once
-  const settings = await getAIISASettings(brokerageId)
+  const settings = await resolveIsaSettings(isaScope)
   const threshold = settings.pls_auto_send_score_threshold ?? DEFAULT_THRESHOLD
   const reviewWindowHours = settings.pls_auto_send_review_window_hours ?? DEFAULT_REVIEW_WINDOW_HOURS
   const cooldownDays = settings.pls_auto_send_cooldown_days ?? DEFAULT_COOLDOWN_DAYS
@@ -141,6 +162,47 @@ export async function evaluateAutoSendEligibility(
   const suppressed = await isSuppressedAny({ phone: c.phone_digits ?? c.phone, email: c.email })
   if (suppressed) {
     return { eligible: false, reason: "on_platform_suppression_list" }
+  }
+
+  // 5b. ALREADY REPRESENTED BY ANOTHER BROKER — refuse BEFORE the touch.
+  //
+  // This gate decides whether to send an unsolicited "thinking of selling?"
+  // check-in to a high-PLS contact. `motivated_seller_signals` already records
+  // the exact fact that forbids it: an `active_listing` row means the property is
+  // ON MARKET and NOT for sale by owner, so a listing broker holds the
+  // representation, and soliciting that seller is NAR Code of Ethics Article 16
+  // — not merely a wasted send (lib/lead-governance/seller-signal-strength.ts,
+  // SUPPRESSION_SELLER_SIGNAL_TYPES).
+  //
+  // THE FACT WAS ONLY BEING USED AFTER THE FACT. Until now its single reader was
+  // the SCORER (lib/services/lead-management.service.ts via
+  // countStrongSellerSignals), which merely declines to count a suppression row
+  // toward motivation. Declining to score it does not stop an outbound: the PLS
+  // score is computed from other signals entirely, so a represented seller could
+  // clear this gate and be contacted. Suppression has to happen at the door.
+  //
+  // ONE VOCABULARY (§6): both the roster and the predicate come from the module
+  // that owns them; this file spells neither `active_listing` nor the test.
+  //
+  // FAILS CLOSED (§4): supabase-js RESOLVES a refused read, so the error is
+  // destructured and a read we could not perform refuses the send. "Nobody
+  // checked" must never render as "checked and fine".
+  const { data: representationRows, error: representationError } = await supabase
+    .from("motivated_seller_signals")
+    .select("signal_type")
+    .eq("brokerage_id", brokerageId)
+    .eq("contact_id", contactId)
+    .in("signal_type", [...SUPPRESSION_SELLER_SIGNAL_TYPES])
+    .limit(50)
+  if (representationError) {
+    console.error(
+      "[pls-auto-send] representation check refused — refusing the touch:",
+      representationError.message,
+    )
+    return { eligible: false, reason: "representation_check_failed" }
+  }
+  if (hasRepresentationSuppression((representationRows ?? []) as Array<{ signal_type?: unknown }>)) {
+    return { eligible: false, reason: "represented_by_another_broker" }
   }
 
   // 8. Cooldown — has this contact had an auto-touch recently?

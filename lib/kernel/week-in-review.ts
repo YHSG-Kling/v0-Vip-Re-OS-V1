@@ -1,3 +1,4 @@
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // lib/kernel/week-in-review.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // VOICE WEEK-IN-REVIEW — the voice admin's OUTBOUND direction. The admin takes
@@ -77,13 +78,12 @@ export function weekReviewTag(agentId: string, isoWeek: string): string {
   return `[WEEKLY_REVIEW] [${agentId}] [${isoWeek}]`
 }
 
-export function isoWeekOf(d: Date): string {
-  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7))
-  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1))
-  const week = Math.ceil(((t.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7)
-  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
+// isoWeekOf DELETED (duplicates round 5, lane 59C) — byte-identical to
+// lib/format/dates.ts:isoWeekOf. Survivor: lib/format/dates.ts. Re-exported
+// (not folded into a bare `export … from`) because
+// scripts/orphan-export-guard.ts is blind to re-export specifiers.
+export { isoWeekOf } from "@/lib/format/dates"
+import { isoWeekOf } from "@/lib/format/dates"
 
 export interface WeekReviewResult { agents: number; briefed: number; audioRendered: number; proposalsQueued: number; skipped: number; errors: number }
 
@@ -157,7 +157,7 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
           selfHealByBrokerage.set(a.brokerage_id, facts)
         }
         const { composeSelfHealBrief } = await import("@/lib/kernel/repair-digest")
-        const isBrokerVoice = ["broker", "broker_admin", "admin"].includes(String(u?.user_type ?? ""))
+        const isBrokerVoice = isAdminOrBroker({ user_type: String(u?.user_type ?? "") })
         selfHealBrief = composeSelfHealBrief({ healed: facts.healed, openExceptions: facts.openExceptions, isBrokerVoice })
       } catch { /* the income brief still lands */ }
 

@@ -14,6 +14,7 @@ import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syncContactToFollowUpBoss } from "@/lib/crm/providers/followupboss"
 import { syncContactToLofty } from "@/lib/crm/providers/lofty"
 import { syncContactToHubSpot } from "@/lib/crm/providers/hubspot"
+import { INTEGRATION_STATUS_CONNECTED } from "@/lib/integrations/integration-status"
 
 export interface CRMContactPayload {
   firstName: string
@@ -88,7 +89,7 @@ export async function syncContactToCRM(
         .select("provider_name, status")
         .eq("brokerage_id", brokerageId)
         .eq("provider_type", "crm")
-        .eq("status", "active")
+        .eq("status", INTEGRATION_STATUS_CONNECTED)
         .maybeSingle()
       if (integration?.provider_name) {
         providerKey = integration.provider_name
@@ -136,6 +137,29 @@ export async function syncContactToCRM(
   // ── Dispatch to the resolved provider ────────────────────────────────────────
   if (providerKey === "ghl") {
     try {
+      // Resolve the TENANT's own GHL credential through the unified cascade
+      // (agent → team → brokerage → platform_credentials, legacy fallback), so a
+      // GHL connected via the Connection Center or /settings/crm dispatches with
+      // the tenant's key + locationId instead of only the platform env credential.
+      let ghlOverride: { apiKey: string; locationId: string } | undefined
+      try {
+        let agentUserId: string | null = null
+        if (payload.agentId) {
+          const supabase = await createClient()
+          const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", payload.agentId).maybeSingle()
+          agentUserId = (agentRow?.user_id as string | null) ?? null
+        }
+        const conn = await resolveScopedConnection("ghl", { agentUserId, brokerageId, agentId: payload.agentId }).catch(() => null)
+        const locationId =
+          conn?.accountId ??
+          (conn?.config?.locationId as string | undefined) ??
+          (conn?.config?.location_id as string | undefined) ??
+          null
+        if (conn?.apiKey && locationId) {
+          ghlOverride = { apiKey: conn.apiKey, locationId }
+        }
+      } catch { /* fall back to the platform env credential */ }
+
       const result = await syncContactToGHL({
         firstName: payload.firstName,
         lastName: payload.lastName,
@@ -143,7 +167,7 @@ export async function syncContactToCRM(
         phone: payload.phone,
         tags: payload.tags ?? [],
         source: payload.source ?? "kernel",
-      })
+      }, ghlOverride)
 
       if (result.requiresConfiguration) {
         // GHL not configured — soft failure, do not block the caller

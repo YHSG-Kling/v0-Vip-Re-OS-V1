@@ -42,6 +42,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateAgentScorecards, type AgentScorecard } from "@/lib/intelligence/agent-scorecard"
 import { isoWeekTag } from "@/lib/kernel/commission-forecaster"
 import { DEFAULT_STALE_DAYS } from "@/lib/ai-isa/stale-contact-detector"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -53,21 +54,28 @@ type Svc = ReturnType<typeof createServiceClient>
 
 /** A conversion/no-show metric needs at least this many events before it earns a verdict. */
 export const MIN_SAMPLE = 3
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: LEAK_PENALTY, STRONG_EDUCATION_PCT, STRONG_HEALTH, STRONG_TOUR_OFFER, WEAK_EDUCATION_PCT, WEAK_HEALTH, WEAK_TOUR_OFFER.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Tour→offer conversion at/above this is a STRENGTH (buyer-side: tours turning into offers). */
-export const STRONG_TOUR_OFFER = 0.5
+const STRONG_TOUR_OFFER = 0.5
 /** Tour→offer conversion at/below this is a LEAK (tours not converting to written offers). */
-export const WEAK_TOUR_OFFER = 0.2
+const WEAK_TOUR_OFFER = 0.2
 /** No-show RATE at/above this (of scheduled appointments) is a LEAK. */
 export const HIGH_NOSHOW_RATE = 0.25
 /** Avg deal health at/above this is a STRENGTH; at/below LOW is a LEAK. */
-export const STRONG_HEALTH = 80
-export const WEAK_HEALTH = 50
+const STRONG_HEALTH = 80
+const WEAK_HEALTH = 50
 /** This many+ stale (cold past DEFAULT_STALE_DAYS) contacts on the agent's book is a LEAK. */
 export const STALE_LEAK_COUNT = 5
 /** Education completion at/below this (with assignments on file) is a LEAK. */
-export const WEAK_EDUCATION_PCT = 50
+const WEAK_EDUCATION_PCT = 50
 /** Education completion at/above this is a STRENGTH. */
-export const STRONG_EDUCATION_PCT = 90
+const STRONG_EDUCATION_PCT = 90
 
 // ── The pure brief model ──────────────────────────────────────────────────────
 
@@ -107,7 +115,7 @@ export interface CoachingBrief {
 }
 
 const pct = (n: number) => `${Math.round(n * 100)}%`
-const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * PURE + deterministic. Compose a coaching brief from REAL agent stats.
@@ -214,7 +222,7 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
 }
 
 /** PURE. Render the brief into the manager-facing message {subject, body}. */
-export function renderCoachingMessage(stats: AgentCoachingStats, brief: CoachingBrief): { subject: string; body: string } {
+function renderCoachingMessage(stats: AgentCoachingStats, brief: CoachingBrief): { subject: string; body: string } {
   if (brief.notEnoughData) {
     return {
       subject: `📋 Coaching brief: ${stats.name} — getting started`,
@@ -268,7 +276,7 @@ export interface WeeklyCoachingReport {
 /** PURE + deterministic. A 0-100 coaching score from the brief — never a fabricated number:
  *  each real leak costs LEAK_PENALTY (capped), a clean brief with strengths sits high, and the
  *  honest not-enough-data case is a neutral 70 (a "we don't know yet" placeholder, not praise). */
-export const LEAK_PENALTY = 12
+const LEAK_PENALTY = 12
 export function coachingScore(brief: CoachingBrief): number {
   if (brief.notEnoughData) return 70
   const base = brief.strengths.length > 0 ? 92 : 80
@@ -276,7 +284,7 @@ export function coachingScore(brief: CoachingBrief): number {
 }
 
 /** PURE. Map a composed brief into the dashboard's WeeklyCoachingReport shape. */
-export function briefToWeeklyReport(stats: AgentCoachingStats, brief: CoachingBrief): WeeklyCoachingReport {
+function briefToWeeklyReport(stats: AgentCoachingStats, brief: CoachingBrief): WeeklyCoachingReport {
   if (brief.notEnoughData) {
     return {
       overall_score: coachingScore(brief),
@@ -349,7 +357,7 @@ const APPT_STATUSES = ["scheduled", "confirmed", "completed", "no_show"] as cons
  * the agent-scoped no-show / stale-book / tour→offer aggregates from the existing
  * conventions. Every number traces to a real row; missing data stays null/zero honestly.
  */
-export async function buildCoachingStats(
+async function buildCoachingStats(
   brokerageId: string, opts: { now?: Date; sinceIso?: string } = {}, client?: Svc,
 ): Promise<AgentCoachingStats[]> {
   const supabase = client ?? createServiceClient()

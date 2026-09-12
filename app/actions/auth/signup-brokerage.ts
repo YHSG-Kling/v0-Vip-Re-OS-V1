@@ -21,9 +21,11 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { provisionTenantOwner } from "@/lib/kernel/users"
+import { rollbackTenantCreation } from "@/lib/kernel/tenant-creation-rollback"
 import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
-import { validateFunnelCoupon } from "@/lib/platform/trial-funnel"
+import { validateFunnelCoupon, snapshotForTier } from "@/lib/platform/trial-funnel"
 import { headers } from "next/headers"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 
@@ -38,9 +40,19 @@ export interface SignupBrokerageInput {
   /** Solo-agent only: is the agent's managing brokerage / team also on the platform? */
   brokerageOnPlatform?: boolean
   teamOnPlatform?:      boolean
-  /** Self-serve funnel: platform_config_snapshots id to apply AFTER provisioning
-   *  (the tier's assigned template — day-one branded website). Best-effort:
-   *  a bad/missing snapshot never fails the signup. */
+  /**
+   * @deprecated NOT USED to choose the snapshot any more, and deliberately so.
+   *
+   * This is a REQUEST field on a `"use server"` action, so it is caller-supplied
+   * and cannot decide which platform_config_snapshots row a new tenant is
+   * provisioned from. The snapshot is now resolved SERVER-SIDE from `tier` via
+   * snapshotForTier() — see the block at "Step 4a" below.
+   *
+   * Still accepted on the input so the existing /get-started form (which posts
+   * it) keeps type-checking, and read for ONE thing only: to decide whether the
+   * caller expected branding, so "no snapshot is live for this tier" is reported
+   * back rather than passing silently.
+   */
   snapshotId?:     string
   /** Self-serve funnel: coupon code to redeem for the new tenant. Recorded in the
    *  redemption ledger + brokerages.billing_metadata.coupon so billing honors it
@@ -180,7 +192,22 @@ export async function signupBrokerageAction(
     callerUserId: null,
   })
   if (!owner.success || !owner.userId) {
-    await service.from("brokerages").delete().eq("id", brokerage.id)
+    // ROLL BACK THE HALF-BUILT TENANT — children first, and READ the answer.
+    // The bare `.delete()` this replaces did neither: `users.brokerage_id` is
+    // ON DELETE SET NULL, so a failed signup left a live user belonging to no
+    // tenant (the auth trigger seeds that row from the invite metadata, and
+    // provisionTenantOwner can fail after the invite has gone out), and
+    // supabase-js RESOLVES a refused delete (CLAUDE.md §3), so a blocked
+    // rollback was reported to the visitor as an ordinary provisioning failure.
+    // See lib/kernel/tenant-creation-rollback.ts.
+    const rollback = await rollbackTenantCreation(service, brokerage.id)
+    if (!rollback.ok) {
+      console.error("[signupBrokerage] tenant rollback incomplete:", rollback.error)
+      return {
+        ok: false,
+        error: `Owner provisioning failed: ${owner.error ?? "unknown"}. ${rollback.error}`,
+      }
+    }
     return { ok: false, error: `Owner provisioning failed: ${owner.error ?? "unknown"}` }
   }
   const newUser = { id: owner.userId }
@@ -188,15 +215,74 @@ export async function signupBrokerageAction(
   // Step 4 — create trial subscription. No Stripe customer at signup —
   // the billing webhook + /dashboard/admin/billing path will collect card
   // before trial_ends_at expires.
-  await service.from("subscriptions").insert({
+  //
+  // `trial_end` IS WRITTEN HERE, and was not before. This row said
+  // status='trialing' and left trial_end NULL, while the paywall
+  // (lib/billing/billing-access.ts resolveBillingAccess) reads exactly that
+  // column to decide whether the trial has run out. NULL skipped the expiry
+  // branch and the tenant classified as "trialing, not blocked" indefinitely —
+  // a 14-day trial that never ended. The only writers of trial_end were the
+  // Stripe webhook (which needs a Stripe subscription this path deliberately
+  // does not create) and the superadmin comp, so on a self-serve signup nothing
+  // ever wrote it. `current_period_end` was already carrying the same instant;
+  // the two now agree at birth instead of only after a Stripe round trip.
+  //
+  // The error is READ (§3): supabase-js RESOLVES a refused insert, so a
+  // discarded result cannot tell "the tenant has a trial" from "the trial row
+  // was rejected". It is not fatal — the brokerage is already provisioned and
+  // brokerages.trial_ends_at is written, which the paywall now reconciles
+  // against — but a silent loss here is a tenant nobody can ever bill.
+  const { error: trialSubError } = await service.from("subscriptions").insert({
     brokerage_id:        brokerage.id,
     tier_id:             tierRow.id,
     status:              "trialing",
     current_period_start: new Date().toISOString(),
     current_period_end:   trialEndsAt.toISOString(),
+    trial_end:           trialEndsAt.toISOString(),
     created_at:          new Date().toISOString(),
     updated_at:          new Date().toISOString(),
   })
+  if (trialSubError) {
+    console.error(
+      "[signupBrokerage] trial subscription INSERT rejected — this tenant has no subscription row:",
+      trialSubError.message,
+      { brokerageId: brokerage.id, tierId: tierRow.id },
+    )
+  }
+
+  // PROSPECT CONVERSION STAMP — the acquisition rail's conversion moment. If
+  // this signer-upper was a platform_prospect (hand-raise on /get-started or
+  // /demo, phone reception capture, referral, OS-intent sourcing), stamp
+  // converted_brokerage_id + status 'trial' (self-serve starts a trial, not a
+  // paid plan — the growth board / billing rail advances trial → converted).
+  // Counted + idempotent (lib/platform/prospect-conversion.ts); best-effort —
+  // a stamping problem must never cost the signup, but the loss is logged.
+  try {
+    const { stampProspectConversion } = await import("@/lib/platform/prospect-conversion")
+    const stamp = await stampProspectConversion(service, {
+      brokerageId: brokerage.id,
+      emails: [input.adminEmail],
+      outcome: "trial",
+    })
+    if (stamp.errors.length > 0) {
+      console.warn("[signupBrokerage] prospect conversion stamp incomplete:", stamp.errors.join("; "), { matched: stamp.matched, linked: stamp.linked })
+    }
+  } catch (err) { console.warn("[signupBrokerage] prospect conversion stamp failed (non-fatal):", (err as any)?.message) }
+
+  // AI-ISA SYSTEM ACTOR — provision the tenant's ISA identity at birth.
+  // Idempotent (returns the cached ai_isa_system_user_id when present). Without
+  // this call nothing in the tree ever provisioned the actor, so
+  // getIsaSystemUserId returned null for every brokerage forever and each
+  // ISA audit write fell back to the admin's user_id. Best-effort — an actor
+  // provisioning problem must never cost the signup.
+  try {
+    const { provisionIsaActorForBrokerage } = await import("@/lib/auth/provision-isa-actor")
+    await provisionIsaActorForBrokerage({
+      brokerageId: brokerage.id,
+      brokerageName: input.brokerageName.trim(),
+      brokerageSlug: (brokerage as { slug?: string | null }).slug ?? null,
+    })
+  } catch (err) { console.warn("[signupBrokerage] ISA actor provisioning failed (non-fatal):", (err as any)?.message) }
 
   // AFFILIATE ATTRIBUTION (external MRR-commission rail — NOT the rev-share tree).
   // Explicit param wins; else the 90-day /api/ref cookie. One insert, first-wins
@@ -218,29 +304,56 @@ export async function signupBrokerageAction(
   let snapshotApplied: string[] | undefined
   let snapshotError:   string | undefined
   let snapshotName:    string | null = null
-  if (input.snapshotId) {
-    try {
-      const { data: snap } = await service
-        .from("platform_config_snapshots")
-        .select("id, name, payload")
-        .eq("id", input.snapshotId)
-        .maybeSingle()
-      if (!snap) {
-        snapshotError = "Config snapshot not found — starting from platform defaults."
-      } else {
-        snapshotName = (snap as any).name ?? null
-        const { applied } = await applySnapshotPayload(
-          ((snap as any).payload ?? {}) as SnapshotPayload,
-          brokerage.id,
-          newUser.id,
-          service,
-        )
-        snapshotApplied = applied
+  try {
+    // WHICH SNAPSHOT A SELF-SERVE SIGNUP GETS IS A SERVER DECISION.
+    //
+    // This block used to read `input.snapshotId` and apply whatever row that id
+    // named. `input` arrives from the browser — app/get-started/trial-funnel-form.tsx:96
+    // posts `snapshotId: funnelSnapshots[tier]?.id` into this `"use server"`
+    // action, so the id is a REQUEST FIELD, not a server fact, and nothing
+    // checked that the snapshot it named had anything to do with the tier being
+    // signed up for. A crafted request could hand a brand-new tenant any row in
+    // platform_config_snapshots — a different tier's branding, or an internal
+    // snapshot never meant for self-serve — and applySnapshotPayload would apply
+    // it. Reading the id back from the database does not fix that: the row is
+    // real, it is simply the wrong one.
+    //
+    // lib/platform/trial-funnel.ts:75 `snapshotForTier(tier)` is the resolver
+    // written for this and never called, and that module's header names this
+    // action as one of the two surfaces meant to share it: "the newest-per-tier
+    // rule is a PURE exported function so ... server surfaces (get-started page,
+    // signup action) share one resolver". It re-derives the answer from the TIER
+    // this signup is actually for — newest snapshot whose
+    // payload.recommendedTier === tier — and returns null for a non-canonical
+    // tier, so an unrecognised value provisions from platform defaults instead
+    // of from whatever the caller asked for.
+    //
+    // The tier itself is already validated upstream in this action, so it is the
+    // safe thing to key on. `input.snapshotId` is now ignored entirely; the
+    // /get-started page keeps computing it through liveFunnelSnapshots() for
+    // DISPLAY (attaching "this is what you get" to each tier card), which is
+    // what it was for.
+    const snap = await snapshotForTier(input.tier, service)
+    if (!snap) {
+      // Not an error worth failing a signup over — the funnel still provisions,
+      // the tenant just starts from unbranded defaults. Only say so when the
+      // caller expected branding.
+      if (input.snapshotId) {
+        snapshotError = "No config snapshot is live for this tier — starting from platform defaults."
       }
-    } catch (err) {
-      snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
-      console.warn("[signupBrokerage] snapshot apply failed (non-fatal):", err)
+    } else {
+      snapshotName = snap.name
+      const { applied } = await applySnapshotPayload(
+        snap.payload as SnapshotPayload,
+        brokerage.id,
+        newUser.id,
+        service,
+      )
+      snapshotApplied = applied
     }
+  } catch (err) {
+    snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
+    console.warn("[signupBrokerage] snapshot apply failed (non-fatal):", err)
   }
 
   // Step 4b — redeem the coupon. Same rules + same two-write idiom as the
@@ -374,11 +487,16 @@ export async function signupBrokerageAction(
   } catch (err) { console.warn("[signupBrokerage] SUBSCRIPTION_CREATED emit failed:", (err as any)?.message) }
 
   // Step 5 — audit log entry (non-fatal)
-  try {
-    await service.from("activities").insert({
+  await bestEffort(
+    service.from("activities").insert({
       activity_type: "brokerage.self_serve_signup",
       brokerage_id:  brokerage.id,
-      agent_id:      newUser.id,
+      // IDENTITY CLASS (m365). activities.agent_id FKs AGENTS and newUser.id is
+      // a users id, so this insert was rejected — under a swallow marked
+      // "non-fatal", which is why the audit entry for a brokerage signing up
+      // has never once been written. No agents row exists at signup, and the
+      // column is nullable: NULL is the truthful value, not a users id.
+      agent_id:      null,
       title:         `Self-serve signup: ${input.brokerageName}`,
       notes:         JSON.stringify({
         tier:           input.tier,
@@ -397,8 +515,9 @@ export async function signupBrokerageAction(
       }),
       created_at:    new Date().toISOString(),
       updated_at:    new Date().toISOString(),
-    })
-  } catch { /* non-fatal */ }
+    }),
+    "the brokerage, its owner and its subscription are already committed above; a signup audit echo must not fail a tenant that already exists — but the loss is now logged instead of vanishing the way the m365 FK rejection did",
+  )
 
   // (The magic-link invite was sent by provisionTenantOwner in Step 2.)
 

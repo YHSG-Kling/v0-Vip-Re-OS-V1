@@ -4,7 +4,7 @@ import { useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import { SendHorizontal, RefreshCw, AlertTriangle, Loader2, ExternalLink } from "lucide-react"
+import { SendHorizontal, RefreshCw, AlertTriangle, Loader2 } from "lucide-react"
 import { SignatureStatusBadge } from "./SignatureStatusBadge"
 import {
   sendDocumentForSignature,
@@ -38,6 +38,8 @@ interface DocumentSignaturePanelProps {
   // Signers to pre-populate (contact + agent)
   defaultSigners?: Signer[]
   onSent?: () => void
+  /** optional by design: style-override passthrough onto the root element; the
+   *  one caller (transaction-detail-client.tsx) needs no non-default look. */
   className?: string
 }
 

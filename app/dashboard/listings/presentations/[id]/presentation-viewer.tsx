@@ -163,7 +163,10 @@ export default function PresentationViewer({ presentation }: { presentation: Pre
               </Link>
             </Button>
           ) : (
-            <Button disabled>End of deck</Button>
+            /* Not a control — the deck simply ends here when no listing packet
+               was generated for this presentation, so there is nothing to sign
+               yet. Rendered as the status it is rather than as a dead button. */
+            <span className="text-sm text-muted-foreground px-3">End of deck</span>
           )}
         </div>
       </div>

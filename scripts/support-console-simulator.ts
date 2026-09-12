@@ -63,7 +63,7 @@ async function liveLayer() {
   const cleanup: Array<{ table: string; id: string }> = []
   const { postTicketReply } = await import("../lib/support/support-thread")
   try {
-    const { data: ticket } = await svc.from("support_tickets").insert({ brokerage_id: brokerageId, agent_id: (ag as any)?.id ?? null, subject: "SIM ticket", description: "help", status: "open", priority: "medium" }).select("id").single()
+    const { data: ticket } = await svc.from("support_tickets").insert({ brokerage_id: brokerageId, agent_id: (ag as any)?.id ?? null, lane: "tenant_to_platform", subject: "SIM ticket", description: "help", status: "open", priority: "medium" }).select("id").single()
     if (!ticket) { console.log("  ⊘ could not seed ticket — skipping"); return }
     const ticketId = (ticket as any).id
     cleanup.push({ table: "support_tickets", id: ticketId })

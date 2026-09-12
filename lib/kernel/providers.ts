@@ -14,7 +14,6 @@
 // No side effects. Read-only.
 
 import { createClient } from "@/lib/supabase/server"
-import type { ProviderType } from "./types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +29,11 @@ export interface ResolveProviderParams {
 export interface ResolvedProvider {
   providerKey: string
   config: Record<string, any>
+  /** WHICH tier of the cascade answered — merged here 2026-08-31 from the orphaned
+   *  documentary twin (lib/kernel/types.ts ProviderChoice, deleted; this is its survivor).
+   *  'superadmin' is the DB's own scope_type spelling (provider_overrides), not the
+   *  'superadmin_personal' the twin guessed; 'system_default' means no override row won. */
+  scope: "user" | "team" | "brokerage" | "superadmin" | "system_default"
 }
 
 // ─── SYSTEM DEFAULTS ──────────────────────────────────────────────────────────
@@ -55,7 +59,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   video:        "did",
   avatar:       "did",
   voice_clone:  "elevenlabs",
-  ai_voice:     "vapi",
+  ai_voice:     "twilio",
   direct_mail:  "lob",
   scraper:      "apify",       // lead-source scraping — platform-funded keys
   enrichment:   "peopledata",  // skip-trace / contact enrichment — platform-funded
@@ -105,9 +109,10 @@ export async function resolveProvider(
       return {
         providerKey: platformOverride.provider_key,
         config: (platformOverride.config as Record<string, any>) ?? {},
+        scope: "superadmin",
       }
     }
-    return { providerKey: systemDefault, config: {} }
+    return { providerKey: systemDefault, config: {}, scope: "system_default" }
   }
 
   // ── 1. User personal override ─────────────────────────────────────────────
@@ -124,6 +129,7 @@ export async function resolveProvider(
     return {
       providerKey: userOverride.provider_key,
       config: (userOverride.config as Record<string, any>) ?? {},
+      scope: "user",
     }
   }
 
@@ -142,6 +148,7 @@ export async function resolveProvider(
       return {
         providerKey: teamOverride.provider_key,
         config: (teamOverride.config as Record<string, any>) ?? {},
+        scope: "team",
       }
     }
   }
@@ -160,6 +167,7 @@ export async function resolveProvider(
     return {
       providerKey: brokerageOverride.provider_key,
       config: (brokerageOverride.config as Record<string, any>) ?? {},
+      scope: "brokerage",
     }
   }
 
@@ -177,9 +185,10 @@ export async function resolveProvider(
     return {
       providerKey: superadminOverride.provider_key,
       config: (superadminOverride.config as Record<string, any>) ?? {},
+      scope: "superadmin",
     }
   }
 
   // ── 5. System default ─────────────────────────────────────────────────────
-  return { providerKey: systemDefault, config: {} }
+  return { providerKey: systemDefault, config: {}, scope: "system_default" }
 }

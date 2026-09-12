@@ -153,7 +153,7 @@ function consent_emailOptedOut(c: FirstTouchConsentInput): boolean {
 // No I/O — unit-testable; the server action just feeds it real rows.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const FIRST_TOUCH_SLA_SECONDS = 5 * 60 // the "speed to lead" promise: under 5 minutes
+const FIRST_TOUCH_SLA_SECONDS = 5 * 60 // the "speed to lead" promise: under 5 minutes
 
 export interface FirstTouchRow {
   createdAt: string | Date | null

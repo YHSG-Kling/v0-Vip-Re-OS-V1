@@ -8,6 +8,9 @@ import {
 import { Button } from "@/app/components/ui/button"
 import { Input } from "@/app/components/ui/input"
 import { Textarea } from "@/app/components/ui/textarea"
+import {
+  EMBED_MODES, MODE_COPY, normalizeEnabledModes, type EmbedMode,
+} from "@/lib/embed/widget-modes"
 import { Label } from "@/app/components/ui/label"
 import { toast } from "sonner"
 import {
@@ -24,7 +27,7 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
   const [label, setLabel] = useState(widget.label)
   const [welcomeMessage, setWelcomeMessage] = useState(widget.welcomeMessage ?? "")
   const [defaultTwinId, setDefaultTwinId] = useState<string | null>(widget.defaultTwinId)
-  const [enabledModes, setEnabledModes] = useState<("text" | "live")[]>(widget.enabledModes)
+  const [enabledModes, setEnabledModes] = useState<EmbedMode[]>(widget.enabledModes)
   const [leadCaptureMode, setLeadCaptureMode] = useState(widget.leadCaptureMode)
   const [routingMode, setRoutingMode] = useState(widget.routingMode)
   const [allowedDomains, setAllowedDomains] = useState<string[]>(widget.allowedDomains)
@@ -50,7 +53,11 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
     setAllowedDomains((prev) => prev.filter((x) => x !== d))
   }
 
-  function toggleMode(mode: "text" | "live") {
+  function toggleMode(mode: EmbedMode) {
+    // text is not togglable off — see normalizeEnabledModes. Every visitor can
+    // type; a widget with text disabled could refuse anyone whose browser blocks
+    // the microphone.
+    if (mode === "text") return
     setEnabledModes((prev) =>
       prev.includes(mode) ? prev.filter((m) => m !== mode) : [...prev, mode],
     )
@@ -63,7 +70,7 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
         label,
         welcomeMessage: welcomeMessage || null,
         defaultTwinId,
-        enabledModes: enabledModes.length === 0 ? ["text"] : enabledModes,
+        enabledModes: normalizeEnabledModes(enabledModes),
         leadCaptureMode,
         routingMode: widget.agentId === null ? routingMode : undefined,
         allowedDomains,
@@ -104,7 +111,15 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
               onChange={(e) => setDefaultTwinId(e.target.value || null)}
               className="w-full h-9 rounded-md border bg-background px-3 text-sm mt-1.5"
             >
-              <option value="">— Use owner agent's default —</option>
+              {/* The empty option resolves server-side to the OWNER AGENT's default
+                  twin — which only exists for a personal embed. On a
+                  brokerage-wide embed there is no owner agent, so the same
+                  option used to read as a promise the route could not keep; it
+                  now reads as the unset state it actually is, and the route
+                  refuses rather than borrowing someone's twin. */}
+              <option value="">
+                {widget.agentId ? "— Use owner agent's default —" : "— Select a twin (required) —"}
+              </option>
               {twins.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.label}{t.agentName ? ` · ${t.agentName}` : ""}
@@ -112,7 +127,9 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
               ))}
             </select>
             <p className="text-xs text-muted-foreground mt-1">
-              Only ready + approved twins are listed.
+              {widget.agentId
+                ? "Only ready + approved twins are listed."
+                : "Required — a brokerage-wide embed never borrows an agent's twin automatically. Only ready + approved twins are listed."}
             </p>
           </div>
 
@@ -126,19 +143,27 @@ export function EmbedEditor({ widget, open, onOpenChange }: Props) {
           </div>
 
           <div>
-            <Label>Enabled modes</Label>
-            <div className="flex gap-2 mt-1.5">
-              <ToggleChip
-                label="Text" active={enabledModes.includes("text")}
-                onClick={() => toggleMode("text")}
-              />
-              <ToggleChip
-                label="Talk live" active={enabledModes.includes("live")}
-                onClick={() => toggleMode("live")}
-              />
+            <Label>How visitors can reach your agent</Label>
+            {/* THREE ways in, rendered from the ONE vocabulary (EMBED_MODES) that
+                the column's CHECK and the public widget also read — so a mode
+                cannot appear here that the widget would ignore. */}
+            <div className="space-y-1.5 mt-1.5">
+              {EMBED_MODES.map((m) => (
+                <div key={m} className="flex items-start gap-2">
+                  <ToggleChip
+                    label={MODE_COPY[m].adminLabel}
+                    active={enabledModes.includes(m)}
+                    onClick={() => toggleMode(m)}
+                  />
+                  <p className="text-xs text-muted-foreground pt-1.5 flex-1">
+                    {MODE_COPY[m].adminHint}
+                  </p>
+                </div>
+              ))}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              "Talk live" uses your live AI minutes — disable on high-traffic pages to save.
+            <p className="text-xs text-muted-foreground mt-2">
+              Talk and Live avatar both use your live AI minutes — turn them off on
+              high-traffic pages to save. Type is always on.
             </p>
           </div>
 

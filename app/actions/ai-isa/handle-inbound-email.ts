@@ -14,7 +14,6 @@
  */
 
 import { generateTextRouted as generateText } from '@/lib/ai/models'
-import { resolveModel } from '@/lib/ai/resolve-model'
 import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding, haltEngagementForNegativeReply } from '@/lib/ai-isa/conversation-handler'
 import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'
@@ -119,12 +118,23 @@ export async function processInboundEmail(params: {
   }
 
   if (leadForDnc?.brokerage_id) {
-    const halted = await haltEngagementForNegativeReply({
+    const halt = await haltEngagementForNegativeReply({
       leadId: params.leadId,
       body: params.body,
       brokerageId: leadForDnc.brokerage_id,
     })
-    if (halted) {
+    if (halt.halted) {
+      // FAIL CLOSED (CLAUDE.md §4). We still stop responding either way — but if
+      // the contact-side DNC write was REFUSED, the row does not carry the
+      // opt-out, so this must not report `negative_reply_dnc_set`.
+      if (halt.contactSuppressionError) {
+        return {
+          success: false,
+          responded: false,
+          reason: 'negative_reply_dnc_write_refused',
+          error: halt.contactSuppressionError,
+        }
+      }
       return { success: true, responded: false, reason: 'negative_reply_dnc_set' }
     }
   }
@@ -191,11 +201,23 @@ export async function processInboundEmail(params: {
         brokerageId: leadForDnc.brokerage_id,
         message: params.body,
       })
+      // PROVENANCE IS PART OF THE REASON. `classifierSource` says which layer
+      // classified (the model, or the keyword floor); `classifierDegraded` says
+      // why the floor answered. A model outage now reads as an outage in the
+      // logs instead of a quietly keyword-driven day, and a conversion carries
+      // who decided it. A degraded bare positive is HELD by the classifier
+      // (outcome 'nurtured', reason 'degraded_held') and falls through to the
+      // normal nurturing reply below — never converted on a guess.
+      if (routed.classifierDegraded) {
+        console.warn(
+          `[handle-inbound-email] intent classifier DEGRADED (${routed.classifierDegraded}) for lead ${params.leadId}: outcome=${routed.outcome} reason=${routed.reason ?? '-'} source=${routed.classifierSource}`,
+        )
+      }
       if (routed.outcome === 'converted') {
         return {
           success: true,
           responded: false,
-          reason: `intent_converted:${routed.classified?.side}:${routed.classified?.reason}`,
+          reason: `intent_converted:${routed.classified?.side}:${routed.classified?.reason}:${routed.classifierSource ?? 'unknown'}`,
           contactId: routed.contactId,
         }
       }
@@ -284,9 +306,14 @@ export async function processInboundEmail(params: {
   }
 
   // ── Load brand voice for system prompt ────────────────────────────────────
+  // knowledgeQuery = the lead's actual message → the reply is grounded in the
+  // brokerage's OWN uploaded knowledge base (RAG), not generic boilerplate.
   const brandVoice = await loadBrandVoicePrompt({
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
+    knowledgeQuery: `${params.subject ?? ''} ${params.body ?? ''}`.trim(),
+    // Extend the AI's knowledge to THIS contact when the lead is linked to one.
+    contactId: lead.contact_id ?? undefined,
   })
 
   // ── Conversation context from the LEAD-class ledgers ─────────────────────
@@ -355,7 +382,7 @@ export async function processInboundEmail(params: {
   // Tools share a single context bound to (lead, brokerage, agent). Each
   // tool re-checks brokerage_id; mark_do_not_contact reuses the existing
   // TCPA halt path so the same notifications + sequence stops fire.
-  const isaTools = buildISATools({
+  const isaTools = await buildISATools({
     leadId: lead.id,
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
@@ -459,7 +486,9 @@ export async function processInboundEmail(params: {
   }).catch(() => null)
 
   // ── Activity log — entity refs carry the lead; contact_id stays honest ────
-  await supabase.from('activities').insert({
+  // THE record that the ISA replied to this lead. A lost row is a reply the
+  // assistant no longer knows it sent — read the error rather than assume.
+  const { error: isaReplyActivityError } = await supabase.from('activities').insert({
     contact_id: null, // leads are NOT contacts
     entity_type: 'lead',
     entity_id: params.leadId,
@@ -469,6 +498,9 @@ export async function processInboundEmail(params: {
     notes: JSON.stringify({ provider_key: sendResult.providerKey, source: 'ai_isa_reply', channel: 'email' }),
     created_at: new Date().toISOString(),
   })
+  if (isaReplyActivityError) {
+    console.error('[handleInboundEmail] ai_isa_conversation activity REJECTED — the reply is sent but unrecorded:', isaReplyActivityError.message)
+  }
 
   // ── Qualification signals ─────────────────────────────────────────────────
   const qualificationSignals = await evaluateLeadQualification(params.leadId).catch(() => null)

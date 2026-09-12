@@ -16,6 +16,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 /**
  * ROUND-TRIP RECEIPT: after every write, the row is read back FRESH from the
@@ -62,6 +64,36 @@ export async function requestDocument(input: {
     .select("id, document_name, status, due_date, created_at")
     .eq("id", data.id).maybeSingle()
   if (!fresh) return { success: false, error: "write_not_verifiable" }
+
+  // THE PRODUCER OF KernelEvent.DOCUMENT_REQUESTED. The portal template ("Action
+  // needed: document requested" — lib/kernel/event-fanout.ts) and the staff-bell
+  // path both existed with no emitter; this is the ONE writer of document_requests,
+  // so the fact becomes true exactly here. Best-effort: the request row is the
+  // record; a fan-out failure must not fail the voice command that placed it.
+  // The card posts only when the request names a contact (no contact → no portal).
+  try {
+    await emitKernelEvent({
+      event:         KernelEvent.DOCUMENT_REQUESTED,
+      brokerageId:   ctx.brokerageId,
+      entityType:    "document_request",
+      entityId:      fresh.id as string,
+      contactId:     input.contactId ?? undefined,
+      transactionId: input.transactionId ?? undefined,
+      actorUserId:   ctx.userId,
+      source:        "ui",
+      metadata: {
+        document_request_id: fresh.id,
+        document_name:       (fresh as any).document_name,
+        document_type:       input.documentType ?? null,
+        due_date:            (fresh as any).due_date ?? null,
+        contact_id:          input.contactId ?? null,
+        transaction_id:      input.transactionId ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[intent-writers] DOCUMENT_REQUESTED emit failed (request recorded):", err)
+  }
+
   revalidatePath("/dashboard/transactions")
   return {
     success: true,
@@ -206,7 +238,19 @@ export async function setPortalMilestonePreferences(input: {
   contactId: string
   /** e.g. { inspection: false, appraisal: true } — milestone key → visible */
   milestoneOverrides: Record<string, boolean>
-  notificationSettings?: Record<string, unknown> | null
+  // TOMBSTONE (wave H5): `notificationSettings` was removed from this input and
+  // its write to contact_portal_preferences.notification_settings deleted. It
+  // was a SECOND SPELLING of the contact's notification choices with no reader
+  // — the surviving one is contacts.metadata.notification_preferences, resolved
+  // and enforced by lib/notifications/buyer-preferences.ts:40
+  // (resolveBuyerNotificationPreferences) and consulted by every buyer-facing
+  // send path; it is written by app/components/portal/PortalSettingsPage.tsx:180.
+  // Nothing was merged onto the survivor because nothing was missing: the twin
+  // was an untyped blob, never read, and the only caller of this action
+  // (app/actions/voice-assistant.ts:322) never passed it. Live check on
+  // hrvaqgvukzxfskkcrwbt 2026-08-28: 0 rows in the table, 0 carrying a non-empty
+  // value, so no data is stranded. Column drop written as
+  // supabase/migrations/m584 (WRITTEN, NOT APPLIED).
 }): Promise<{ success: boolean; receipt?: LedgerReceipt; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
@@ -218,9 +262,6 @@ export async function setPortalMilestonePreferences(input: {
     brokerage_id: ctx.brokerageId,
     milestone_overrides: input.milestoneOverrides ?? {},
     updated_at: new Date().toISOString(),
-  }
-  if (input.notificationSettings !== undefined && input.notificationSettings !== null) {
-    row.notification_settings = input.notificationSettings
   }
   const { error } = await svc.from("contact_portal_preferences").upsert(row, { onConflict: "contact_id" })
   if (error) return { success: false, error: error.message }

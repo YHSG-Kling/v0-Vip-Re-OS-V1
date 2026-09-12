@@ -25,6 +25,16 @@ export interface FutureLensSignals {
   zip: string
   appreciation: CensusAppreciation | null
   permitCount: number
+  /**
+   * The place the ZIP sits in, when the caller knows it. BUILT (orphan doctrine
+   * §1.2) — `loadFutureLensSignals` accepted `city` and `state` from the offers
+   * page and read NEITHER, so `listing.city` / `listing.state` were threaded
+   * through the whole call and dropped on the floor. They had no reader; this is
+   * it. Optional because the ZIP alone is still a complete signal — an absent
+   * place name narrows the sentence, it never removes it.
+   */
+  city?: string | null
+  state?: string | null
 }
 
 export interface FutureLensRead {
@@ -33,6 +43,21 @@ export interface FutureLensRead {
   signals: string[]
   /** True when there is at least one real public signal (drives whether to render). */
   hasSignal: boolean
+}
+
+/**
+ * PURE: how the composed sentences name the place the permits were pulled in.
+ * City + state when the caller knew them, city alone when the state is missing,
+ * and the ZIP-neutral "nearby" when neither is known — the sentence that shipped
+ * before these two values had any reader at all.
+ */
+function placeName(s: Pick<FutureLensSignals, "city" | "state">): string {
+  const city = (s.city ?? "").trim()
+  const state = (s.state ?? "").trim()
+  if (city && state) return `in ${city}, ${state}`
+  if (city) return `in ${city}`
+  if (state) return `in ${state}`
+  return "nearby"
 }
 
 /** PURE: turn public signals into honest, source-cited sentences. */
@@ -47,13 +72,16 @@ export function composeFutureLens(s: FutureLensSignals): FutureLensRead {
     )
   }
 
+  // "nearby" is what this said when the composer had no place name to use. It has
+  // one now — see the city/state note on FutureLensSignals.
+  const place = placeName(s)
   if (s.permitCount >= PERMIT_HOT_COUNT) {
     out.push(
-      `${s.permitCount} building permits have been pulled nearby in the last year (public records) — active construction and remodeling usually signals investment flowing into an area.`,
+      `${s.permitCount} building permits have been pulled ${place} in the last year (public records) — active construction and remodeling usually signals investment flowing into an area.`,
     )
   } else if (s.permitCount > 0) {
     out.push(
-      `A few building permits (${s.permitCount}) were pulled nearby this year — modest activity, worth watching.`,
+      `A few building permits (${s.permitCount}) were pulled ${place} this year — modest activity, worth watching.`,
     )
   }
 
@@ -77,7 +105,7 @@ export async function loadFutureLensSignals(svc: Svc, zip: string, city: string 
       .then((r: any) => r, () => ({ count: 0 })),
   ])
 
-  return { zip, appreciation, permitCount: (permitRes as any)?.count ?? 0 }
+  return { zip, appreciation, permitCount: (permitRes as any)?.count ?? 0, city, state }
 }
 
 /** PURE: the cold-start seller line for a NEW agent with no closed-deal band. */

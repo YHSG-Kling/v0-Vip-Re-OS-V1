@@ -14,6 +14,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
 import { connectionScopeForUserType } from "@/lib/connections/field-spec"
+import { readRoleGrants, selectVendorGrant } from "@/lib/auth/role-grants"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -389,15 +390,32 @@ export async function GET(
         last_tested_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
-      // Owner-keyed update-or-insert (the unique key is (owner_type, owner_id, platform)).
+      // Owner-keyed update-or-insert. The unique key is (owner_type, owner_id,
+      // platform) and it is REAL — VERIFIED LIVE, not assumed: m104 created it as
+      // `platform_credentials_owner_uniq`, a PARTIAL UNIQUE INDEX
+      // `WHERE owner_type IS NOT NULL`, and a duplicate insert is refused with 23505.
+      // It is spelled out here because it lives in pg_index and NOT in pg_constraint:
+      // a check that dumps pg_constraint for this table sees only the two FKs and the
+      // three CHECKs, reads the key as absent, and reports this comment as a lie. It
+      // is not. A concurrent OAuth callback racing this read-then-write cannot
+      // duplicate the credential — the second writer gets 23505, not a second row.
       const { data: existingCred } = await supabase
         .from("platform_credentials")
         .select("id")
         .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", storedPlatform)
         .maybeSingle()
-      const { error: credError } = existingCred
-        ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
-        : await supabase.from("platform_credentials").insert(credRow)
+      // Split from a ternary so each branch's error capture sits next to its own
+      // write: in the ternary form the `const { error: credError }` was far
+      // enough from the INSERT branch that no reviewer (and no guard) could see
+      // that branch was covered. Behaviour is unchanged.
+      let credError: { message: string } | null = null
+      if (existingCred) {
+        const { error } = await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
+        credError = error
+      } else {
+        const { error } = await supabase.from("platform_credentials").insert(credRow)
+        credError = error
+      }
 
       if (credError) {
         console.error("[OAuth] Failed to store credentials:", credError)
@@ -486,27 +504,50 @@ export async function GET(
     // Resolve the connecting actor's OWNER scope so the callback stores tokens owner-scoped
     // (agent/team/brokerage/staff/vendor/contact) — not always brokerage. This is what lets a
     // vendor/contact connect their OWN email/calendar and have it resolve via the owner cascade.
-    const { data: userData } = await supabase
+    // BOTH identity columns (§4). On user_type alone the platform's one human
+    // staff row (user_type='admin', platform_role='superadmin') resolved to
+    // "brokerage", so the company's own Zoom/QuickBooks were stored as a tenant
+    // row under 'zoom'/'quickbooks' and the 'platform_zoom'/'platform_quickbooks'
+    // arms in the callback (storedPlatform above) were unreachable — the
+    // platform cards read a row this route could never write. A refused read
+    // leaves platform_role null, which fails closed toward the tenant scopes.
+    const { data: userData, error: userError } = await supabase
       .from("users")
-      .select("brokerage_id, user_type, team_id")
+      .select("brokerage_id, user_type, platform_role, team_id")
       .eq("id", user.id)
       .maybeSingle()
+    if (userError) console.error("[OAuth] identity read failed:", userError.message)
 
-    const { scope } = connectionScopeForUserType((userData?.user_type as string) ?? "")
+    const { scope } = connectionScopeForUserType(
+      (userData?.user_type as string) ?? "",
+      (userData?.platform_role as string | null) ?? null,
+    )
     let ownerType: string = scope
     let ownerId: string | null = null
     let brokerageId: string | null = (userData?.brokerage_id as string | null) ?? null
 
     if (scope === "vendor") {
-      // canonical vendor linkage: user_role_assignments.vendor_id (vendors has no user_id)
-      const { data: ra } = await supabase
-        .from("user_role_assignments")
-        .select("vendor_id, brokerage_id")
-        .eq("user_id", user.id)
-        .not("vendor_id", "is", null)
-        .maybeSingle()
-      ownerId = (ra?.vendor_id as string | null) ?? null
-      brokerageId = brokerageId ?? ((ra?.brokerage_id as string | null) ?? null)
+      // canonical vendor linkage: user_role_assignments.vendor_id (vendors has no user_id).
+      //
+      // This resolves the OWNER that the OAuth tokens will be stored under, so a
+      // wrong or missing answer here misfiles a vendor's own calendar/email
+      // credentials. `.maybeSingle()` over the vendor-bearing grants ERRORS the
+      // moment there are two (the table is UNIQUE on (user_id, role), not user_id)
+      // and the discarded error read as "no vendor" → the flow aborted with
+      // "Could not resolve your account for this connection" for a real vendor.
+      const grantsResult = await readRoleGrants(supabase, user.id)
+      if (!grantsResult.ok) {
+        console.error("[OAuth] role grant read failed:", grantsResult.error)
+        return redirectWithResult(baseUrl, false, provider, "Could not verify your vendor account — please try again")
+      }
+      const { grant: vendorGrant, ambiguous } = selectVendorGrant(grantsResult.grants)
+      if (ambiguous) {
+        return redirectWithResult(baseUrl, false, provider, "Your account is linked to more than one vendor — ask the brokerage to correct it")
+      }
+      ownerId = vendorGrant?.vendor_id ?? null
+      // The tenant anchor comes off the SAME grant that supplied the owner, so the
+      // credential can never be filed under one vendor and one other tenant.
+      brokerageId = brokerageId ?? (vendorGrant?.brokerage_id ?? null)
     } else if (scope === "contact") {
       const { data: c } = await supabase.from("contacts").select("id, brokerage_id").eq("contact_user_id", user.id).maybeSingle()
       ownerId = (c?.id as string | null) ?? null

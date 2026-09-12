@@ -17,7 +17,15 @@
  * surface = adding one entry here + a preview in the Command Center client.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { applyTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
+import {
+  BLOG_PENDING_PUBLISH_STATUS,
+  NEWSLETTER_PENDING_APPROVAL_STATUSES,
+  AD_CREATIVE_PENDING_APPROVAL_STATUSES,
+  PODCAST_PENDING_STATUS,
+  PODCAST_PENDING_APPROVAL_STATUS,
+} from "./approval-pending"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -86,7 +94,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     queue: "newsletter",
     table: "newsletter_campaigns",
     select: "id, brokerage_id, campaign_name, subject_line, content, send_date, is_ai_generated, status, created_at",
-    pending: (q) => q.eq("approval_status", "pending_review").not("status", "in", "(sent,sending)"),
+    pending: (q) => q.in("approval_status", [...NEWSLETTER_PENDING_APPROVAL_STATUSES]).not("status", "in", "(sent,sending)"),
     toAction: (n, now) => {
       const sla = evaluateApprovalSla(n.created_at ?? null, now, { deadlineIso: (n.send_date as string | null) ?? null })
       const body = String(n.content ?? "")
@@ -102,7 +110,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
       }
     },
     approve: () => ({ approval_status: "approved" }),
-    approveGuard: (q) => q.eq("approval_status", "pending_review"),
+    approveGuard: (q) => q.in("approval_status", [...NEWSLETTER_PENDING_APPROVAL_STATUSES]),
     reject: () => ({ approval_status: "rejected" }),
   },
 
@@ -135,7 +143,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     queue: "ad_creative",
     table: "ad_creative_variations",
     select: "id, brokerage_id, ad_campaign_id, variation_name, headline, primary_text, description, call_to_action, media_asset_url, destination_url, created_at",
-    pending: (q) => q.in("approval_status", ["draft", "pending_review"]),
+    pending: (q) => q.in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES]),
     toAction: (c, now) => {
       const sla = evaluateApprovalSla(c.created_at ?? null, now)
       return {
@@ -150,7 +158,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
       }
     },
     approve: () => ({ approval_status: "approved" }),
-    approveGuard: (q) => q.in("approval_status", ["draft", "pending_review"]),
+    approveGuard: (q) => q.in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES]),
     reject: () => ({ approval_status: "rejected" }),
   },
 
@@ -271,8 +279,11 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
   blog: {
     queue: "blog",
     table: "blog_posts",
+    // Canonical: the stager writes publish_status='draft' (marketing.ts) — the
+    // prior 'pending_review' filter matched nothing, so B's blog source was dark
+    // AND its approve-guard could never fire. Both now use the shared constant.
     select: "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, created_at",
-    pending: (q) => q.eq("publish_status", "pending_review"),
+    pending: (q) => q.eq("publish_status", BLOG_PENDING_PUBLISH_STATUS),
     toAction: (b, now) => {
       const sla = evaluateApprovalSla(b.created_at ?? null, now)
       const body = String(b.content ?? b.excerpt ?? "")
@@ -284,17 +295,25 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
       }
     },
     approve: () => ({ publish_status: "approved" }),
-    approveGuard: (q) => q.eq("publish_status", "pending_review"),
+    approveGuard: (q) => q.eq("publish_status", BLOG_PENDING_PUBLISH_STATUS),
     reject: () => ({ publish_status: "archived" }),
   },
 
   // ── Podcast episodes — generated, then deliverable-gated before distribution.
-  // Approve → 'scheduled' (the Transistor distributor ships it); reject → 'draft'.
+  // Canonical: the auto-producer stages status='completed' + approval_status=
+  // 'pending_review'; the distributor ships status='completed' AND approval_status
+  // ='approved'. So the REVIEW gate is approval_status (NOT status). The prior
+  // filter (status='completed') matched approved+un-approved alike, and the prior
+  // approve (status='scheduled') stranded the episode — it never set approval_status
+  // ='approved' and set a status the distributor ignores. Approve/reject now DELEGATE
+  // to the ONE canonical marketing transition (see approveContentSource) which sets
+  // approval_status + defaults publish_channels; the patches below are the
+  // column-correct fallback (approval_status-based, never the status column).
   podcast: {
     queue: "podcast",
     table: "podcast_episodes",
-    select: "id, brokerage_id, title, description, audio_url, status, created_at",
-    pending: (q) => q.eq("status", "completed"),
+    select: "id, brokerage_id, title, description, audio_url, status, approval_status, created_at",
+    pending: (q) => q.eq("status", PODCAST_PENDING_STATUS).eq("approval_status", PODCAST_PENDING_APPROVAL_STATUS),
     toAction: (p, now) => {
       const sla = evaluateApprovalSla(p.created_at ?? null, now)
       return {
@@ -304,9 +323,9 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
         status: "proposed", proposedAt: p.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
       }
     },
-    approve: () => ({ status: "scheduled" }),
-    approveGuard: (q) => q.eq("status", "completed"),
-    reject: () => ({ status: "draft" }),
+    approve: () => ({ approval_status: "approved" }),
+    approveGuard: (q) => q.eq("approval_status", PODCAST_PENDING_APPROVAL_STATUS),
+    reject: () => ({ approval_status: "rejected" }),
   },
 }
 
@@ -317,14 +336,19 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
  */
 export async function loadContentApprovalActions(
   supabase: Svc,
-  params: { brokerageId?: string; limit: number; now: Date },
+  // SCOPE, NOT AN OPTIONAL ID. `brokerageId?: string` used to mean "filter when I
+  // happen to have one", so an absent id silently loaded every brokerage's pending
+  // social posts, newsletters and direct-mail campaigns onto one Command Center —
+  // on the service client, where RLS is not there to catch it. A TenantScope makes
+  // the platform case something a caller writes down.
+  params: { scope: TenantScope; limit: number; now: Date },
 ): Promise<ContentApprovalAction[]> {
   const sources = Object.values(CONTENT_SOURCES)
   const results = await Promise.all(sources.map(async (src) => {
     try {
       let q = supabase.from(src.table).select(src.select).order("created_at", { ascending: true }).limit(params.limit)
       q = src.pending(q)
-      if (params.brokerageId) q = q.eq("brokerage_id", params.brokerageId)
+      q = applyTenantScope(q, params.scope)
       const { data } = await q
       return (data ?? []).map((row: any) => src.toAction(row, params.now))
     } catch { return [] as ContentApprovalAction[] }
@@ -348,6 +372,14 @@ export async function loadOneContentAction(
 
 export interface ContentApprovalResult { ok: boolean; status?: string; error?: string }
 
+/** Content queues whose approve/reject ride the ONE canonical marketing-asset
+ *  transition (applyMarketingAssetApproval/Rejection). They map 1:1 to
+ *  MarketingAssetKind, and each SENDER gates on a kind-specific lifecycle column
+ *  (newsletter→status='scheduled'+send_date; blog→publish_status; podcast→
+ *  publish_channels; direct_mail→status='approved'). Delegating here is what keeps
+ *  the Command Center and /approvals from writing different columns. */
+const MARKETING_ASSET_QUEUES = new Set<ContentQueue>(["newsletter", "blog", "podcast", "direct_mail"])
+
 /**
  * Approve (RELEASE) a content item from the Command Center. Brokerage-scoped
  * unless superadmin; idempotent via the source's pending guard. Returns the new
@@ -364,6 +396,20 @@ export async function approveContentSource(
   const { data: row } = await svc.from(src.table).select("id, brokerage_id").eq("id", id).maybeSingle()
   if (!row) return { ok: false, error: "not found" }
   if (!ctx.isSuperadmin && ctx.brokerageId && (row as any).brokerage_id !== ctx.brokerageId) return { ok: false, error: "outside your brokerage" }
+
+  // Marketing-asset releases (newsletter/blog/podcast/direct_mail) ride the ONE
+  // canonical transition (applyMarketingAssetApproval) — the SAME function A's
+  // /approvals cascade and the marketing-approvals surface use. It sets
+  // approval_status AND the kind-specific lifecycle each SENDER actually gates on
+  // (newsletter→status='scheduled'+send_date; blog→publish_status='approved';
+  // podcast→publish_channels defaulted; direct_mail→status='approved'). A bare
+  // approval_status patch strands the asset — nothing ships. Tenant scope is
+  // already enforced above.
+  if (MARKETING_ASSET_QUEUES.has(queue)) {
+    const { applyMarketingAssetApproval } = await import("./approval-queue-aggregator")
+    const res = await applyMarketingAssetApproval(queue as any, id)
+    return res.ok ? { ok: true, status: "approved" } : { ok: false, error: res.error }
+  }
 
   let q = svc.from(src.table).update(src.approve(ctx.userId)).eq("id", id)
   q = src.approveGuard(q)
@@ -383,6 +429,14 @@ export async function rejectContentSource(
   const { data: row } = await svc.from(src.table).select("id, brokerage_id").eq("id", id).maybeSingle()
   if (!row) return { ok: false, error: "not found" }
   if (!ctx.isSuperadmin && ctx.brokerageId && (row as any).brokerage_id !== ctx.brokerageId) return { ok: false, error: "outside your brokerage" }
+
+  // Marketing-asset rejections ride the same canonical transition, so the two
+  // surfaces can't write different columns.
+  if (MARKETING_ASSET_QUEUES.has(queue)) {
+    const { applyMarketingAssetRejection } = await import("./approval-queue-aggregator")
+    const res = await applyMarketingAssetRejection(queue as any, id, "Rejected in Command Center")
+    return res.ok ? { ok: true, status: "rejected" } : { ok: false, error: res.error }
+  }
 
   const { error } = await svc.from(src.table).update(src.reject(ctx.userId)).eq("id", id)
   if (error) return { ok: false, error: error.message }

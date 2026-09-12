@@ -32,16 +32,13 @@
  * competitor codifies into their content engine.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AffordabilityExample {
   /** Property address line — terse. */
@@ -80,6 +77,12 @@ export interface AffordabilitySnapshotReelProps {
   qrCaption?:     string
   mlsClean?:      boolean
   contextCues?: string[]
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from real narration alignment — preferred. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -121,10 +124,10 @@ const ExampleCard: React.FC<{
           width: "55%", borderRadius: 16, overflow: "hidden",
           backgroundColor: "#E5E7EB",
           boxShadow: `0 16px 32px rgba(0,0,0,0.4)`,
-          opacity: interpolate(frame, [0, 14], [0, 1]),
+          opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}>
           {ex.photoUrl ? (
-            <Img src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <div style={{
               width: "100%", height: 540, display: "flex",
@@ -138,7 +141,7 @@ const ExampleCard: React.FC<{
         <div style={{
           width: "45%", display: "flex", flexDirection: "column",
           justifyContent: "center", color: "#fff",
-          opacity: interpolate(frame, [10, 28], [0, 1]),
+          opacity: interpolate(frame, [10, 28], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}>
           <div style={{
             fontSize: 80, fontWeight: 900, color: accentColor, lineHeight: 0.95, marginBottom: 12,
@@ -163,7 +166,7 @@ const ExampleCard: React.FC<{
 export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps> = ({
   monthlyHeadline, areaName, period, examples, ratesAssumption,
   ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues, brand,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
 }) => {
   const frame     = useCurrentFrame()
   const showEho   = brand.showEhoMark ?? true
@@ -184,28 +187,28 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             What your budget actually buys
           </div>
           <div style={{
             fontSize: 88, fontWeight: 900, color: "#fff", lineHeight: 1.0,
-            opacity: interpolate(frame, [12, 30], [0, 1]),
+            opacity: interpolate(frame, [12, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             maxWidth: 940,
           }}>
             {monthlyHeadline}
           </div>
           <div style={{
-            fontSize: 28, color: "#fff", opacity: interpolate(frame, [22, 42], [0, 0.7]),
+            fontSize: 28, color: "#fff", opacity: interpolate(frame, [22, 42], [0, 0.7], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16, letterSpacing: 3,
           }}>
             {areaName} · {period}
@@ -264,6 +267,15 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA/QR tile at COVER + PER * 3. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + PER * 3}
+      />
     </AbsoluteFill>
   )
 }

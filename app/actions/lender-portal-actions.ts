@@ -4,14 +4,10 @@ import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { revalidatePath } from "next/cache"
 import { requireLenderVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
-
-const LENDER_VISIBLE_MILESTONES = [
-  "appraisal_ordered",
-  "appraisal_completed",
-  "loan_approved",
-  "clear_to_close",
-  "clear_to_close_received",
-] as const
+// TOMBSTONE: the module-private copy of this list is gone. SURVIVOR:
+// lib/lenders/visible-milestones.ts:25 — the same five names, now shared with the
+// lender portal's display so the entitlement and the query cannot drift (§6).
+import { LENDER_VISIBLE_MILESTONES } from "@/lib/lenders/visible-milestones"
 
 // ─── GET LENDER TRANSACTION DETAIL ───────────────────────────────────────────
 export async function getLenderTransactionDetail(transactionId: string, _lenderId?: string) {
@@ -36,6 +32,13 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
     .eq("transaction_id", transactionId)
     .maybeSingle()
 
+  // `agents` has NO first_name / last_name / email / phone (verified against
+  // information_schema) — those live on `users`, reached through
+  // agents_user_id_fkey, the ONLY FK from agents to users, so the embed is an
+  // OBJECT. Naming them here made PostgREST reject the ENTIRE select, so
+  // getLenderTransactionDetail always threw "Transaction not found" and the
+  // whole lender portal page was dead, not just the agent card.
+  // `contacts` genuinely HAS first_name/last_name/email/phone — left as is.
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .select(`
@@ -49,7 +52,10 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
       buyer_contact_id,
       agent_id,
       contacts:buyer_contact_id(id, first_name, last_name, email, phone),
-      agents:agent_id(id, first_name, last_name, email, phone)
+      agents:agent_id(
+        id, phone_mobile, phone_office,
+        users:user_id(first_name, last_name, email, phone)
+      )
     `)
     .eq("id", transactionId)
     .single()
@@ -77,8 +83,28 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
     daysUntilClose = Math.ceil((closeDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
   }
 
+  // Flattened to the shape the page already renders
+  // (app/portal/lender/[transactionId]/page.tsx:345-359 reads
+  // transaction.agents.first_name / last_name / email / phone), so no consumer
+  // changes — but the values are now real. Phone prefers the agent's own
+  // client-facing numbers; users.phone is the fallback.
+  const a = (transaction as any).agents as Record<string, any> | null
+  const u = (a?.users ?? null) as Record<string, any> | null
+  const transactionWithAgent = {
+    ...(transaction as any),
+    agents: a
+      ? {
+          id: a.id,
+          first_name: u?.first_name ?? null,
+          last_name: u?.last_name ?? null,
+          email: u?.email ?? null,
+          phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+        }
+      : null,
+  }
+
   return {
-    transaction,
+    transaction: transactionWithAgent,
     lenderAssignment,
     milestones: milestones || [],
     documents: documents || [],
@@ -146,14 +172,14 @@ export async function issueClearToClose(data: {
 
   const supabase = await createClient()
 
-  const { data: transaction } = await supabase
+  const { data: transaction, error: transactionError } = await supabase
     .from("transactions")
     .select("id, property_address, buyer_contact_id, agent_id, brokerage_id")
     .eq("id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId)
     .single()
 
-  if (!transaction) throw new Error("Transaction not found")
+  if (transactionError || !transaction) throw new Error("Transaction not found")
 
   const { error: milestoneError } = await supabase
     .from("transaction_milestones")
@@ -187,15 +213,31 @@ export async function issueClearToClose(data: {
     .eq("transaction_id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId)
 
-  if (transaction.buyer_contact_id) {
-    await supabase.from("client_portal_messages").insert({
+  // Buyer-facing CTC message. Measured live (client_portal_messages,
+  // 2026-08-18): agent_id is NOT NULL (FK agents.id) and transaction_id exists
+  // and is nullable — the old insert set neither, so it was refused 23502 on
+  // every Clear to Close and the discarded result swallowed the refusal.
+  // transaction_id is stamped so the m482 vendor lane can later narrow from
+  // has_vendor_seat() to is_assigned_vendor_on_transaction(transaction_id).
+  if (transaction.buyer_contact_id && transaction.agent_id) {
+    const { error: ctcMessageError } = await supabase.from("client_portal_messages").insert({
       brokerage_id: actor.brokerageId,
       contact_id: transaction.buyer_contact_id,
+      agent_id: transaction.agent_id,
+      transaction_id: data.transactionId,
       direction: "agent_to_client",
       channel: "portal",
       body: `Great news! ${actor.lenderCompany || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
       created_at: new Date().toISOString(),
     })
+    if (ctcMessageError) {
+      console.error("[lenderPortal:CTC] buyer CTC message refused:", ctcMessageError.message)
+    }
+  } else {
+    console.error(
+      `[lenderPortal:CTC] buyer CTC message NOT sent for transaction ${data.transactionId}: ` +
+      `${!transaction.buyer_contact_id ? "no buyer_contact_id" : "no agent_id"} on the transaction, and client_portal_messages requires both (NOT NULL)`,
+    )
   }
 
   try {
@@ -215,6 +257,30 @@ export async function issueClearToClose(data: {
     })
   } catch (err) {
     console.error("[lenderPortal:CTC] fan-out failed (non-blocking)", err)
+  }
+
+  // FINANCING_CLEAR_TO_CLOSE — declared in lib/kernel/events.ts with a live
+  // event-fanout.ts template ("You're clear to close!") but zero emitters anywhere
+  // (CLAUDE.md §1.2: BUILD the missing half). This IS the clear-to-close moment:
+  // the lender vendor issuing CTC, right after transaction_lenders.clear_to_close_date
+  // is stamped above. Separate from the generic MILESTONE_COMPLETED emit above (kept
+  // for its own consumers) so the specific, higher-signal event reaches its own
+  // fanout template and the portal's "financing.cleared" alias. Best-effort.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:        KernelEvent.FINANCING_CLEAR_TO_CLOSE,
+      brokerageId:  actor.brokerageId,
+      entityId:     data.transactionId,
+      actorUserId:  actor.userId,
+      metadata: {
+        issued_by_vendor_id: actor.vendorId,
+        lender_company:      actor.lenderCompany ?? null,
+        property_address:    transaction.property_address ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[lenderPortal:CTC] emitTransactionEvent(FINANCING_CLEAR_TO_CLOSE) failed (non-blocking)", err)
   }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
@@ -238,27 +304,51 @@ export async function flagLenderIssue(data: {
   const supabase = await createClient()
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("id, property_address, agent_id, brokerage_id")
+    .select("id, property_address, agent_id, buyer_contact_id, brokerage_id")
     .eq("id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId) // scope to actor brokerage
     .maybeSingle()
 
   if (!transaction) return { success: false, error: "Transaction not found in your brokerage" }
 
-  const { error: messageError } = await supabase.from("client_portal_messages").insert({
-    contact_id: transaction.agent_id,
-    direction: "agent_to_client",
-    channel: "portal",
-    body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
-    metadata: {
-      type:           "lender_issue",
-      vendor_id:      actor.vendorId,
+  // SHAPE FIX, from the live schema (measured 2026-08-18, project
+  // hrvaqgvukzxfskkcrwbt): client_portal_messages carries contact_id (NOT NULL,
+  // FK contacts.id), agent_id (NOT NULL, FK agents.id), brokerage_id (NOT
+  // NULL), nullable transaction_id, and direction CHECK
+  // (agent_to_client | client_to_agent). There is NO users-keyed column. The
+  // old insert stuffed transactions.agent_id (an agents.id) into contact_id —
+  // an FK violation — and set neither agent_id nor brokerage_id (both NOT
+  // NULL), so every lender issue flag was refused. The message addresses the
+  // AGENT: agent_id = the transaction's agent (already an agents.id, the
+  // column's own FK class — no users.id resolution exists for this table),
+  // direction = client_to_agent (portal-side → agent, the same lane
+  // vendor/portal senders use), threaded on the transaction's buyer contact
+  // and stamped with transaction_id.
+  if (transaction.agent_id && transaction.buyer_contact_id) {
+    const { error: messageError } = await supabase.from("client_portal_messages").insert({
+      brokerage_id: actor.brokerageId,
+      contact_id: transaction.buyer_contact_id,
+      agent_id: transaction.agent_id,
       transaction_id: data.transactionId,
-    },
-    created_at: new Date().toISOString(),
-  })
+      direction: "client_to_agent",
+      channel: "portal",
+      body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
+      metadata: {
+        type:      "lender_issue",
+        vendor_id: actor.vendorId,
+      },
+      created_at: new Date().toISOString(),
+    })
 
-  if (messageError) return { success: false, error: messageError.message }
+    if (messageError) return { success: false, error: messageError.message }
+  } else {
+    // client_portal_messages cannot hold this row (both anchors are NOT NULL).
+    // Say so and still emit the kernel event below — the issue itself is not lost.
+    console.error(
+      `[flagLenderIssue] portal message NOT written for transaction ${data.transactionId}: ` +
+      `${!transaction.agent_id ? "no agent_id" : "no buyer_contact_id"} on the transaction; the JOURNEY_STAGE_UPDATED event still carries the issue`,
+    )
+  }
 
   try {
     const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
@@ -335,5 +425,76 @@ export async function updateLenderLoanStatus(data: {
   }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
+  return { success: true }
+}
+
+// ─── SEND MESSAGE TO AGENT ───────────────────────────────────────────────────
+// Backs ExternalCommunicationPanel.onSendMessage on /lender/dashboard. Vendor
+// and title each already have a sendXMessageToAgent (vendor-portal.ts,
+// title-portal.ts); the lender lane had only flagLenderIssue and
+// issueClearToClose — both a specific, structured event, not a free-text
+// message box. This is the missing general lane, gated and shaped exactly
+// like flagLenderIssue's own client_portal_messages insert (contact_id =
+// the transaction's buyer contact, agent_id = the transaction's agent — the
+// column's own FK class, no users.id resolution exists for this table).
+//
+// Signature matches ExternalCommunicationPanel's onSendMessage exactly so it
+// can be passed as the prop directly — the panel supplies `transactionId` in
+// `context` from whatever the mount passed it as a panel prop.
+export async function sendLenderMessageToAgent(
+  body: string,
+  context: { partnerId: string; partnerType: string; transactionId?: string },
+): Promise<{ success: boolean; error?: string }> {
+  if (!context.transactionId) {
+    return { success: false, error: "No active transaction to message — open a specific deal to send a message." }
+  }
+  let actor
+  try {
+    actor = await requireLenderVendorActor(context.transactionId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
+  const supabase = await createClient()
+  const { data: transaction } = await supabase
+    .from("transactions")
+    .select("id, property_address, agent_id, buyer_contact_id, brokerage_id")
+    .eq("id", context.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
+    .maybeSingle()
+
+  if (!transaction) return { success: false, error: "Transaction not found in your brokerage" }
+  if (!transaction.agent_id || !transaction.buyer_contact_id) {
+    return { success: false, error: "This transaction has no agent/buyer thread to message yet" }
+  }
+
+  const { error: messageError } = await supabase.from("client_portal_messages").insert({
+    brokerage_id: actor.brokerageId,
+    contact_id: transaction.buyer_contact_id,
+    agent_id: transaction.agent_id,
+    transaction_id: context.transactionId,
+    direction: "client_to_agent",
+    channel: "portal",
+    body: `[LENDER] ${actor.lenderCompany ?? "Lender"} re: ${transaction.property_address ?? "transaction"}:\n\n${body}`,
+    metadata: { type: "lender_message", vendor_id: actor.vendorId },
+    created_at: new Date().toISOString(),
+  })
+  if (messageError) return { success: false, error: messageError.message }
+
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.MESSAGE_CREATED,
+      brokerageId: actor.brokerageId,
+      entityId:    context.transactionId,
+      actorUserId: actor.userId,
+      metadata: { actor_role: "lender", lender_company: actor.lenderCompany },
+    })
+  } catch (err) {
+    console.error("[sendLenderMessageToAgent] fan-out failed (non-blocking)", err)
+  }
+
+  revalidatePath(`/portal/lender/${context.transactionId}`)
   return { success: true }
 }

@@ -39,7 +39,12 @@ export interface ScrapeTerritoryLike {
   counties?: string[] | null
 }
 
-export type ScrapeNoOpReason = "ok" | "no_active_subscribers" | "no_active_territories"
+export type ScrapeNoOpReason =
+  | "ok"
+  | "no_active_subscribers"
+  | "no_active_territories"
+  /** The territory query itself failed — distinct from "nobody configured one". */
+  | "territory_query_failed"
 
 export interface ScrapeTerritoryResolution<M extends ScrapeTerritoryLike = ScrapeTerritoryLike> {
   /** Active-subscriber-owned, is_active territories — the ONLY areas any scraper may scrape. */
@@ -50,6 +55,8 @@ export interface ScrapeTerritoryResolution<M extends ScrapeTerritoryLike = Scrap
   noOp: boolean
   /** Honest stated reason ("ok" when territories exist). */
   reason: ScrapeNoOpReason
+  /** Present only when reason is "territory_query_failed". */
+  error?: string
 }
 
 /**
@@ -102,7 +109,8 @@ export const SCRAPE_TERRITORY_SELECT = `
   id, brokerage_id, team_id, agent_id, territory_scope, name, city, state,
   zip_codes, counties, enabled_sources, monthly_budget_usd, spend_this_month,
   max_records_per_run, priority, last_scraped_at,
-  lead_scraping_property_params (id, is_active, target_sites, min_price, max_price),
+  lead_scraping_property_params (id, min_price, max_price, min_beds, max_beds,
+    property_types, days_on_market_min),
   lead_scraping_motivated_params (id, is_active, signal_types, lookback_days,
     facebook_group_urls, reddit_subreddits)
 `
@@ -123,12 +131,29 @@ export async function resolveActiveScrapeTerritories(
     return { territories: [], activeBrokerageIds: [], noOp: true, reason: "no_active_subscribers" }
   }
 
-  const { data: markets } = await supabase
+  const { data: markets, error: marketsError } = await supabase
     .from("lead_scraping_markets")
     .select(SCRAPE_TERRITORY_SELECT)
     .eq("is_active", true)
     .in("brokerage_id", [...activeIds])
     .order("priority", { ascending: false })
+
+  // A failed select is NOT an empty market list. This error was previously discarded,
+  // and PostgREST rejects the WHOLE query when an embedded select names a column the
+  // embedded table lacks — which it did: lead_scraping_property_params has neither
+  // `is_active` nor `target_sites`. Every scrape run therefore resolved zero
+  // territories and reported "no_active_territories", which reads as "nobody has set
+  // one up" rather than "this query cannot succeed". Surfacing it as its own reason
+  // means a broken select can never again look like an idle pipeline.
+  if (marketsError) {
+    return {
+      territories: [],
+      activeBrokerageIds: [...activeIds],
+      noOp: true,
+      reason: "territory_query_failed",
+      error: marketsError.message,
+    }
+  }
 
   return resolveScrapeTerritoriesFrom(
     (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>,

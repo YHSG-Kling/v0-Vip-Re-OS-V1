@@ -14,8 +14,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -32,7 +31,7 @@ async function requireAdmin(): Promise<
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   const userType = row.user_type as string
-  if (!ADMIN_ROLES.has(userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: userType })) return { ok: false, error: "Forbidden" }
   return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
 }
 
@@ -80,6 +79,71 @@ export async function listPendingApprovalModulesAction(): Promise<
     milestone_key:     (r.milestone_key as string | null) ?? null,
     created_at:        r.created_at as string,
   }))
+  return { ok: true, rows }
+}
+
+export interface RecentDecisionRow {
+  id:                string
+  title:             string
+  status:            string
+  approved_by:       string | null
+  approved_at:       string | null
+  rejected_by:       string | null
+  rejected_at:       string | null
+  rejection_reason:  string | null
+  decided_by_name:   string | null
+}
+
+/**
+ * Approve/reject provenance for recently-decided modules. approved_by /
+ * approved_at / rejected_by / rejected_at / rejection_reason are stamped by
+ * approveLearningModuleAction / rejectLearningModuleAction above and, before
+ * this reader, went nowhere — the approvals page's own copy claims "the
+ * kernel records who decided and when" with no surface that ever showed it.
+ */
+export async function listRecentModuleDecisionsAction(): Promise<
+  | { ok: true; rows: RecentDecisionRow[] }
+  | { ok: false; error: string }
+> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth
+
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("learning_modules")
+    .select("id, title, status, approved_by, approved_at, rejected_by, rejected_at, rejection_reason")
+    .eq("brokerage_id", auth.brokerageId)
+    .in("status", ["published", "rejected"])
+    .or("approved_at.not.is.null,rejected_at.not.is.null")
+    .order("updated_at", { ascending: false })
+    .limit(20)
+  if (error) return { ok: false, error: error.message }
+
+  const deciderIds = [...new Set(
+    (data ?? []).map(r => (r.approved_by ?? r.rejected_by) as string | null).filter((v): v is string => !!v),
+  )]
+  const names = new Map<string, string>()
+  if (deciderIds.length > 0) {
+    const { data: users } = await svc.from("users").select("id, first_name, last_name").in("id", deciderIds)
+    for (const u of users ?? []) {
+      names.set(u.id as string, [u.first_name, u.last_name].filter(Boolean).join(" ") || "—")
+    }
+  }
+
+  const rows: RecentDecisionRow[] = (data ?? []).map(r => {
+    const deciderId = (r.approved_by ?? r.rejected_by) as string | null
+    return {
+      id:               r.id as string,
+      title:            r.title as string,
+      status:           r.status as string,
+      approved_by:      (r.approved_by as string | null) ?? null,
+      approved_at:      (r.approved_at as string | null) ?? null,
+      rejected_by:      (r.rejected_by as string | null) ?? null,
+      rejected_at:      (r.rejected_at as string | null) ?? null,
+      rejection_reason: (r.rejection_reason as string | null) ?? null,
+      decided_by_name:  deciderId ? (names.get(deciderId) ?? null) : null,
+    }
+  })
   return { ok: true, rows }
 }
 

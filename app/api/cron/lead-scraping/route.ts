@@ -827,6 +827,21 @@ export async function GET(request: Request) {
       created_at:   new Date().toISOString(),
     }).then(() => {}, () => {})
 
+    // RELIST DETECTION — a property de-listed (expired/withdrawn) and back on the
+    // market is a textbook motivated-seller signal. The detector joins this run's
+    // fresh active-listing raw records against the expired rows we already hold
+    // and emits LISTING_RELISTED kernel events for the standard reactor fan-out.
+    // Read-only over raw_scraped_leads; best-effort.
+    let relistMatches = 0
+    try {
+      const { detectRelistedListings } = await import("@/lib/lead-pipeline/relisting-detector")
+      const relist = await detectRelistedListings()
+      relistMatches = relist.matches.length
+      if (relist.error) results.errors.push(`relist-detector: ${relist.error}`)
+    } catch (e) {
+      console.error("[lead-scraping] relist detection failed (non-fatal):", e)
+    }
+
     // THE PLATFORM HUNTS ITS OWN CUSTOMERS — same scraping heartbeat, pointed
     // at OS-BUYING intent (agents/teams/brokerages shopping for tech). Weekly
     // ISO-gated inside the sourcer; provider-gated; staff digest only, never
@@ -841,7 +856,7 @@ export async function GET(request: Request) {
       console.error("[lead-scraping] platform prospect hunt failed (non-fatal):", e)
     }
 
-    return NextResponse.json({ message: "Lead scraping completed", platformProspects, results })
+    return NextResponse.json({ message: "Lead scraping completed", platformProspects, relistMatches, results })
   } catch (error) {
     const durationMs = Date.now() - cronStartedAt
     console.error("[Lead Scraping Cron] Fatal error:", error)

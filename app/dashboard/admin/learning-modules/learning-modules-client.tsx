@@ -11,6 +11,9 @@ import { Checkbox } from "@/components/ui/checkbox"
 import {
   createLearningModuleAction,
   publishLearningModuleAction,
+  updateLearningModuleAction,
+  getModulePublicationsAction,
+  type ModulePublicationRow,
 } from "@/app/actions/learning-modules"
 
 type Channel =
@@ -70,13 +73,41 @@ interface ModuleRow {
 
 interface Props {
   initialModules: ModuleRow[]
+  /** learning_module_channel_publications rows for this brokerage — the
+   *  per-channel publish ledger the fan-out writes on every attempt. */
+  initialPublications?: ModulePublicationRow[]
+  /** Non-null when the ledger READ was refused — rendered as a refusal,
+   *  never as "no publications". */
+  initialPublicationsError?: string | null
 }
 
-export function LearningModulesClient({ initialModules }: Props) {
+export function LearningModulesClient({
+  initialModules,
+  initialPublications = [],
+  initialPublicationsError = null,
+}: Props) {
   const [modules, setModules] = useState<ModuleRow[]>(initialModules)
   const [showForm, setShowForm] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [feedback, setFeedback] = useState<string | null>(null)
+
+  // ── PUBLISH LEDGER ────────────────────────────────────────────────────────
+  // Every fan-out writes a learning_module_channel_publications row — status
+  // 'published' (external_url / published_at) or 'failed' (error_message).
+  // Until this ledger the only reader was a cron picking module_id, so a failed
+  // publish was invisible the moment the request returned.
+  const [publications, setPublications] = useState<ModulePublicationRow[]>(initialPublications)
+  const [publicationsError, setPublicationsError] = useState<string | null>(initialPublicationsError)
+
+  async function refreshPublications(): Promise<void> {
+    const res = await getModulePublicationsAction()
+    if (!res.ok) {
+      setPublicationsError(res.error)
+      return
+    }
+    setPublicationsError(null)
+    setPublications(res.publications)
+  }
 
   // form state
   const [title, setTitle] = useState("")
@@ -85,7 +116,22 @@ export function LearningModulesClient({ initialModules }: Props) {
   const [coverImageUrl, setCoverImageUrl] = useState("")
   const [estimatedMinutes, setEstimatedMinutes] = useState<string>("")
   const [displayPriority, setDisplayPriority] = useState<string>("0")
+  // Academy (staff training) vs Client Education (customer content) — the same
+  // learning_modules rail, switched by whether 'customer' is in audience_roles.
+  // This framing makes the split explicit at authoring time.
+  const [audienceType, setAudienceType] = useState<"academy" | "client" | "">("")
   const [audienceRoles, setAudienceRoles] = useState<string[]>([])
+
+  const STAFF_ROLES = ["agent", "tc", "compliance_officer", "team_lead"]
+  function chooseAudienceType(type: "academy" | "client") {
+    setAudienceType(type)
+    if (type === "academy") {
+      // default to all staff; the admin can narrow below
+      setAudienceRoles((prev) => prev.filter((r) => r !== "customer").length ? prev.filter((r) => r !== "customer") : ["agent"])
+    } else {
+      setAudienceRoles(["customer"])
+    }
+  }
   const [audiencePersonas, setAudiencePersonas] = useState<string[]>([])
   const [audienceGenerations, setAudienceGenerations] = useState<string[]>([])
   const [audienceAgeSegs, setAudienceAgeSegs] = useState<string[]>([])
@@ -100,13 +146,81 @@ export function LearningModulesClient({ initialModules }: Props) {
   function reset(): void {
     setTitle(""); setSummary(""); setBody(""); setCoverImageUrl("")
     setEstimatedMinutes(""); setDisplayPriority("0")
-    setAudienceRoles([]); setAudiencePersonas([])
+    setAudienceType(""); setAudienceRoles([]); setAudiencePersonas([])
     setAudienceGenerations([]); setAudienceAgeSegs([])
     setStageTagsCsv(""); setGapTagsCsv(""); setChannels([])
   }
 
   function csvToArr(s: string): string[] {
     return s.split(",").map((x) => x.trim()).filter(Boolean)
+  }
+
+  // ── EDIT / ARCHIVE ────────────────────────────────────────────────────────
+  // `updateLearningModuleAction` — the edit half of the authoring rail — had no
+  // caller: a module could be CREATED and PUBLISHED from this screen but never
+  // corrected and never retired. A typo in a title fanned out to every channel
+  // with no way back, and `learning_modules.status` could only ever move
+  // forward to 'published' even though the column's CHECK admits 'archived'.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState("")
+  const [editSummary, setEditSummary] = useState("")
+  const [editPriority, setEditPriority] = useState("0")
+
+  function beginEdit(m: ModuleRow): void {
+    setEditingId(m.id)
+    setEditTitle(m.title)
+    setEditSummary(m.summary ?? "")
+    setEditPriority(String(m.displayPriority ?? 0))
+    setFeedback(null)
+  }
+
+  function handleSaveEdit(id: string): void {
+    if (!editTitle.trim()) {
+      setFeedback("Title is required.")
+      return
+    }
+    startTransition(async () => {
+      setFeedback(null)
+      const result = await updateLearningModuleAction(id, {
+        title:           editTitle.trim(),
+        summary:         editSummary.trim() || null,
+        displayPriority: Number(editPriority) || 0,
+      })
+      // The action RETURNS { ok:false, error } for a non-admin caller and for a
+      // refused write, and its update is scoped `.eq("brokerage_id", …)` so a
+      // module outside the caller's tenant simply matches nothing. Painting the
+      // new title into the list on a refusal would show an edit that did not
+      // land.
+      if (!result.ok) {
+        setFeedback(result.error)
+        return
+      }
+      setModules((prev) =>
+        prev.map((row) =>
+          row.id === id
+            ? { ...row, title: editTitle.trim(), summary: editSummary.trim() || null, displayPriority: Number(editPriority) || 0 }
+            : row,
+        ),
+      )
+      setEditingId(null)
+      setFeedback("Module updated.")
+    })
+  }
+
+  function handleSetStatus(id: string, status: "draft" | "archived"): void {
+    startTransition(async () => {
+      setFeedback(null)
+      // 'draft' | 'published' | 'archived' are three of the five values
+      // learning_modules_status_check admits — verified against the live
+      // constraint, not assumed.
+      const result = await updateLearningModuleAction(id, { status })
+      if (!result.ok) {
+        setFeedback(result.error)
+        return
+      }
+      setModules((prev) => prev.map((row) => (row.id === id ? { ...row, status } : row)))
+      setFeedback(status === "archived" ? "Module archived." : "Module restored to draft.")
+    })
   }
 
   function handleCreate(): void {
@@ -169,6 +283,10 @@ export function LearningModulesClient({ initialModules }: Props) {
       )
       const failMsg = fail.length > 0 ? ` — ${fail.length} failed: ${fail.map((f) => `${f.channel}(${f.error ?? "?"})`).join(", ")}` : ""
       setFeedback(`Published to ${ok} channel${ok === 1 ? "" : "s"}.${failMsg}`)
+      // Re-read the ledger so the per-channel rows below show what the fan-out
+      // actually recorded (external_url / published_at / error_message), not an
+      // optimistic reconstruction.
+      await refreshPublications()
     })
   }
 
@@ -232,9 +350,38 @@ export function LearningModulesClient({ initialModules }: Props) {
             </div>
 
             <div>
-              <Label className="text-sm font-medium">Audience roles</Label>
+              <Label className="text-sm font-medium">Who is this for?</Label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => chooseAudienceType("academy")}
+                  className={`rounded-md border p-3 text-left text-sm ${audienceType === "academy" ? "border-blue-500 bg-blue-50" : "border-border"}`}
+                >
+                  <div className="font-medium">Academy — my agents &amp; staff</div>
+                  <div className="text-xs text-muted-foreground">Training that shows in the team’s Academy (/academy).</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => chooseAudienceType("client")}
+                  className={`rounded-md border p-3 text-left text-sm ${audienceType === "client" ? "border-blue-500 bg-blue-50" : "border-border"}`}
+                >
+                  <div className="font-medium">Client Education — my customers</div>
+                  <div className="text-xs text-muted-foreground">Content that shows in your buyers’ &amp; sellers’ portal.</div>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-sm font-medium">
+                {audienceType === "client" ? "Customer audience" : "Audience roles"}
+              </Label>
               <div className="flex flex-wrap gap-3 mt-2">
-                {AUDIENCE_ROLE_OPTIONS.map((r) => (
+                {(audienceType === "client"
+                  ? AUDIENCE_ROLE_OPTIONS.filter((r) => r.value === "customer")
+                  : audienceType === "academy"
+                  ? AUDIENCE_ROLE_OPTIONS.filter((r) => r.value !== "customer")
+                  : AUDIENCE_ROLE_OPTIONS
+                ).map((r) => (
                   <label key={r.value} className="flex items-center gap-2 text-sm">
                     <Checkbox
                       checked={audienceRoles.includes(r.value)}
@@ -335,43 +482,179 @@ export function LearningModulesClient({ initialModules }: Props) {
       )}
 
       <div className="grid grid-cols-1 gap-3">
+        {/* A refused ledger read renders as a refusal — the per-module rows
+            below would otherwise read as "never published anywhere". */}
+        {publicationsError && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            The publish ledger could not be read: {publicationsError} — per-channel publication
+            status below is unavailable, not empty.
+          </div>
+        )}
+
         {modules.length === 0 && (
           <div className="text-sm text-muted-foreground border rounded-md p-6 text-center">
             No modules yet. Click <span className="font-medium">New module</span> to author the first one.
           </div>
         )}
 
-        {modules.map((m) => (
+        {modules.map((m) => {
+          const modulePubs = publications.filter((p) => p.moduleId === m.id)
+          return (
           <Card key={m.id}>
-            <CardContent className="py-4 flex items-center justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium truncate">{m.title}</span>
-                  <Badge variant={m.status === "published" ? "default" : m.status === "archived" ? "secondary" : "outline"}>
-                    {m.status}
-                  </Badge>
-                  {m.displayPriority > 0 && <Badge variant="outline">priority {m.displayPriority}</Badge>}
+            <CardContent className="py-4">
+            <div className="flex items-center justify-between gap-4">
+              {editingId === m.id ? (
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="space-y-1">
+                    <Label htmlFor={`edit-title-${m.id}`}>Title</Label>
+                    <Input
+                      id={`edit-title-${m.id}`}
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor={`edit-summary-${m.id}`}>Summary</Label>
+                    <Textarea
+                      id={`edit-summary-${m.id}`}
+                      rows={2}
+                      value={editSummary}
+                      onChange={(e) => setEditSummary(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1 max-w-40">
+                    <Label htmlFor={`edit-priority-${m.id}`}>Display priority</Label>
+                    <Input
+                      id={`edit-priority-${m.id}`}
+                      type="number"
+                      value={editPriority}
+                      onChange={(e) => setEditPriority(e.target.value)}
+                    />
+                  </div>
                 </div>
-                {m.summary && <p className="text-sm text-muted-foreground truncate mt-0.5">{m.summary}</p>}
-                <div className="flex flex-wrap gap-1 mt-1.5">
-                  {m.channels.map((c) => (
-                    <Badge key={c} variant="secondary">{c}</Badge>
+              ) : (
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium truncate">{m.title}</span>
+                    <Badge variant={m.status === "published" ? "default" : m.status === "archived" ? "secondary" : "outline"}>
+                      {m.status}
+                    </Badge>
+                    {m.displayPriority > 0 && <Badge variant="outline">priority {m.displayPriority}</Badge>}
+                  </div>
+                  {m.summary && <p className="text-sm text-muted-foreground truncate mt-0.5">{m.summary}</p>}
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {m.channels.map((c) => (
+                      <Badge key={c} variant="secondary">{c}</Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2 shrink-0">
+                {editingId === m.id ? (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => setEditingId(null)} disabled={isPending}>
+                      Cancel
+                    </Button>
+                    <Button size="sm" onClick={() => handleSaveEdit(m.id)} disabled={isPending}>
+                      Save changes
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => beginEdit(m)} disabled={isPending}>
+                      Edit
+                    </Button>
+                    {m.status === "archived" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleSetStatus(m.id, "draft")}
+                        disabled={isPending}
+                      >
+                        Restore to draft
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleSetStatus(m.id, "archived")}
+                        disabled={isPending}
+                      >
+                        Archive
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="default"
+                      onClick={() => handlePublish(m.id, m.channels as Channel[])}
+                      disabled={isPending || m.channels.length === 0 || m.status === "archived"}
+                    >
+                      Publish to {m.channels.length} channel{m.channels.length === 1 ? "" : "s"}
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* ── Publish ledger — what the fan-out actually recorded ─────────
+                One learning_module_channel_publications row per channel:
+                'published' with the external row it landed in, or 'failed' with
+                the error the channel returned. Before this list, a failed
+                publish was invisible the moment the request returned. */}
+            {!publicationsError && modulePubs.length > 0 && (
+              <div className="mt-3 border-t pt-3">
+                <div className="text-xs font-medium text-muted-foreground mb-1.5">
+                  Publications ({modulePubs.length})
+                </div>
+                <ul className="space-y-1.5">
+                  {modulePubs.map((p) => (
+                    <li
+                      key={`${p.moduleId}:${p.channel}`}
+                      className="flex items-start gap-2 text-xs flex-wrap"
+                    >
+                      <Badge
+                        variant={p.status === "published" ? "default" : "destructive"}
+                        className="capitalize"
+                      >
+                        {p.channel}: {p.status === "published" ? "live" : p.status}
+                      </Badge>
+                      {p.publishedAt && (
+                        <span className="text-muted-foreground">
+                          {new Date(p.publishedAt).toLocaleString()}
+                        </span>
+                      )}
+                      {p.externalUrl && (
+                        <a
+                          href={p.externalUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-700 hover:underline break-all"
+                        >
+                          {p.externalUrl}
+                        </a>
+                      )}
+                      {/* WHICH ROW. external_table alone named a table and no record in
+                          it — the id has always been stored beside it and never read. */}
+                      {!p.externalUrl && p.externalTable && (
+                        <span className="text-muted-foreground break-all">
+                          → {p.externalTable}
+                          {p.externalId ? ` #${p.externalId}` : " (no record id returned)"}
+                        </span>
+                      )}
+                      {p.status === "failed" && (
+                        <span className="text-destructive break-words">
+                          {p.errorMessage ?? "no error recorded"}
+                        </span>
+                      )}
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="default"
-                  onClick={() => handlePublish(m.id, m.channels as Channel[])}
-                  disabled={isPending || m.channels.length === 0}
-                >
-                  Publish to {m.channels.length} channel{m.channels.length === 1 ? "" : "s"}
-                </Button>
-              </div>
+            )}
             </CardContent>
           </Card>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

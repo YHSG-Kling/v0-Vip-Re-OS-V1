@@ -10,37 +10,17 @@
 // migrate subscribers too, GHL model). Every run — success or failure — is
 // written to superadmin_audit_log with the honest counts.
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolvePlatformRole } from "@/lib/platform/require-capability"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { gateStaffAction, auditStaffAction } from "@/lib/platform/staff-action-gate"
 import { importContacts, importListings, type ImportDedupeMode, type TenantImportResult } from "@/lib/platform/tenant-import"
-import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
 const MAX_CSV_BYTES = 5 * 1024 * 1024 // 5MB of CSV text per run — white-glove scale, not ETL
 
-async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
-  try {
-    const svc = createServiceClient()
-    const hdrs = await headers()
-    await svc.from("superadmin_audit_log").insert({
-      actor_user_id: actorUserId, actor_email: actorEmail, action, target_type: "brokerage", target_id: targetId,
-      details, ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"), user_agent: hdrs.get("user-agent"),
-    })
-  } catch (err) { console.error("[tenant-import audit] failed:", err) }
-}
-
-async function gate(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data: profile } = await supabase
-    .from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = resolvePlatformRole(profile as any)
-  if (!platformStaffCan(role, "tenants")) return { ok: false, error: "Forbidden — requires platform 'tenants' capability" }
-  return { ok: true, userId: user.id, email: (profile as any)?.email ?? user.email ?? "" }
-}
+// The gate + audit pair this file used to define privately now lives in
+// lib/platform/staff-action-gate.ts, shared with the CRM-pull half of the same
+// white-glove migration — one definition of "platform staff acting on a tenant".
+const gate = () => gateStaffAction("tenants")
 
 export interface TenantImportActionResult extends TenantImportResult {}
 
@@ -86,7 +66,7 @@ export async function importTenantContactsAction(params: {
     importedBy: auth.userId,
   })
 
-  await audit(auth.userId, auth.email,
+  await auditStaffAction(auth,
     result.ok ? "tenant.contacts_imported" : "tenant.contacts_import_failed",
     params.brokerageId,
     {
@@ -126,7 +106,7 @@ export async function importTenantListingsAction(params: {
     importedBy: auth.userId,
   })
 
-  await audit(auth.userId, auth.email,
+  await auditStaffAction(auth,
     result.ok ? "tenant.listings_imported" : "tenant.listings_import_failed",
     params.brokerageId,
     {

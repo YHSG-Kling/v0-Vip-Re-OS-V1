@@ -1,7 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Building2, ArrowLeft, Users, Clock } from "lucide-react"
+import { Building2, ArrowLeft, Clock, KeyRound } from "lucide-react"
 import Link from "next/link"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
@@ -14,6 +13,7 @@ import { TenantEntitlementsPanel } from "./tenant-entitlements-panel"
 import { TenantAutonomyPanel } from "./tenant-autonomy-panel"
 import { TenantSnapshotsPanel } from "./tenant-snapshots-panel"
 import { TenantImportPanel } from "./tenant-import-panel"
+import { TenantCrmPullPanel } from "./tenant-crm-pull-panel"
 import { PortalClientsPanel } from "./portal-clients-panel"
 
 export const dynamic = "force-dynamic"
@@ -41,7 +41,25 @@ export default async function SuperadminBrokerageDetailPage(
   const r = await getBrokerageDetailAction(id)
   if (!r.ok) return <div className="p-6 text-red-600">Failed: {r.error}</div>
 
-  const { brokerage, users, subscriptions, auditEntries } = r
+  const { brokerage, users, subscriptions, auditEntries, accessSessions, aiEntitlement } = r
+
+  // AI ENTITLEMENT TENURE (ai_subscription_tier.subscribed_at). Whole months only, and
+  // only when there IS a date — an entitlement whose start was never recorded says so
+  // rather than reporting "0 months", which would read as "signed up today".
+  const aiTenureLabel = (() => {
+    if (!aiEntitlement) return "no AI entitlement row on record"
+    const tier = aiEntitlement.tierName ?? "unnamed tier"
+    const state = aiEntitlement.cancelledAt
+      ? `cancelled ${new Date(aiEntitlement.cancelledAt).toLocaleDateString()}`
+      : aiEntitlement.isActive ? "active" : "inactive"
+    if (!aiEntitlement.subscribedAt) return `${tier} · ${state} · start date not recorded`
+    const started = new Date(aiEntitlement.subscribedAt)
+    const months = Math.max(
+      0,
+      (new Date().getFullYear() - started.getFullYear()) * 12 + (new Date().getMonth() - started.getMonth()),
+    )
+    return `${tier} · ${state} · since ${started.toLocaleDateString()} (${months} month${months === 1 ? "" : "s"})`
+  })()
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -59,6 +77,12 @@ export default async function SuperadminBrokerageDetailPage(
               {brokerage.city && brokerage.state ? `${brokerage.city}, ${brokerage.state}` : "Location not set"} ·
               created {new Date(brokerage.created_at).toLocaleDateString()} ·
               source <span className="font-medium">{brokerage.signup_source}</span>
+            </div>
+            {/* AI ENTITLEMENT — the tier the AI gates read, and how long this tenant has
+                held it. §5: AI is platform-covered with per-tier overage, so this is the
+                tenure behind every overage number on this account. */}
+            <div className="mt-1 text-xs text-muted-foreground">
+              AI entitlement: <span className="font-medium">{aiTenureLabel}</span>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -99,6 +123,9 @@ export default async function SuperadminBrokerageDetailPage(
           export card below. */}
       <TenantImportPanel brokerageId={brokerage.id} />
 
+      {/* The API half of the same white-glove migration — CSV above, vendor pull here. */}
+      <TenantCrmPullPanel brokerageId={brokerage.id} />
+
       {/* Offboarding — the tenant's data, downloadable. Export never deletes;
           retention-law records stay put regardless of tenancy. */}
       <Card>
@@ -112,9 +139,19 @@ export default async function SuperadminBrokerageDetailPage(
             subscription (above) → archive. Nothing is deleted by exporting; transaction and communication
             records remain under their legal retention window.
           </p>
-          <a href={`/api/superadmin/tenant-export/${brokerage.id}`} className="rounded-md border px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-50">
-            Download tenant export
-          </a>
+          {/* This page admits the 'tenants' capability (all four staff roles);
+              the export route is superadmin-only — a tenant's whole book leaving
+              the platform as a file is not marketing's or support's authority.
+              Show the link only to the role the route will actually serve. */}
+          {gate.role === "superadmin" ? (
+            <a href={`/api/superadmin/tenant-export/${brokerage.id}`} className="rounded-md border px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-50">
+              Download tenant export
+            </a>
+          ) : (
+            <span className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground">
+              Export is superadmin-only
+            </span>
+          )}
         </CardContent>
       </Card>
 
@@ -150,6 +187,70 @@ export default async function SuperadminBrokerageDetailPage(
           </CardContent>
         </Card>
       )}
+
+      {/* Staff account access — the impersonation grant ledger for THIS tenant.
+          Reads platform_impersonation_sessions: who entered, under what stated
+          reason, in which mode, from where, and whether they exited or the
+          grant simply expired. A grant walks the account and never exceeds it
+          (CLAUDE.md §5); this is where that is checked after the fact. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-primary" />
+            Staff account access
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {accessSessions.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">No platform staff has entered this tenant.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/10">
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Staff</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Mode</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Stated reason</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Origin</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Started</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Ended</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accessSessions.map((s: any) => (
+                    <tr key={s.id} className="border-b last:border-0 align-top">
+                      <td className="px-4 py-2.5 text-xs">{s.actor_email ?? s.actor_user_id ?? "—"}</td>
+                      <td className="px-4 py-2.5 text-xs">
+                        <Badge variant={s.mode === "read_only" ? "secondary" : "destructive"}>{s.mode ?? "—"}</Badge>
+                        {s.target_user_id ? <span className="ml-2 text-[10px] text-muted-foreground">as one user</span> : null}
+                      </td>
+                      {/* An entry with NO stated reason is shown as exactly that
+                          — never blanked into looking routine. */}
+                      <td className="px-4 py-2.5 text-xs max-w-xs">
+                        {s.reason ? s.reason : <span className="text-amber-600">no reason recorded</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-[10px] text-muted-foreground font-mono max-w-[14rem] truncate" title={s.user_agent ?? ""}>
+                        {s.ip_address ?? "ip not recorded"}
+                        {s.user_agent ? ` · ${s.user_agent}` : ""}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                        {s.started_at ? new Date(s.started_at).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                        {s.ended_at
+                          ? new Date(s.ended_at).toLocaleString()
+                          : s.expires_at && Date.parse(s.expires_at) < Date.now()
+                          ? `expired ${new Date(s.expires_at).toLocaleString()}`
+                          : "ACTIVE NOW"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Audit log */}
       <Card>

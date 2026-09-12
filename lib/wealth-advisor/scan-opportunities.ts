@@ -26,8 +26,10 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 import { generateTextRouted } from "@/lib/ai/models"
 import { getCurrentAvm } from "@/lib/avm/provider-chain"
+import { WEALTH_STATUS_DEFAULT } from "@/lib/wealth-advisor/recommendation-status"
 
 const REFI_OPPORTUNITY_BPS_THRESHOLD = 100   // 1.0% rate drop
 const EQUITY_MILESTONES = [100_000, 250_000, 500_000, 1_000_000]
@@ -187,6 +189,8 @@ async function processBrokerageWealthScan(
           contact: c,
           opportunity: opp,
           marketRate,
+          // §4 — the brokerage this scan is running for, not a caller value.
+          brokerageId,
         })
         opp.aiNarrative = narrative
 
@@ -194,8 +198,13 @@ async function processBrokerageWealthScan(
           .from("wealth_advisor_recommendations")
           .insert({
             contact_id: c.id,
+            // contacts.agent_id → agents(id); every reader of this table filters
+            // on an agents.id, so the class matches.
             agent_id: c.agent_id,
             brokerage_id: brokerageId,
+            // Explicit rather than leaning on the column default, so the one
+            // place that owns this vocabulary is the same one the readers use.
+            status: WEALTH_STATUS_DEFAULT,
             opportunity_type: opp.type,
             current_avm_value: opp.currentAvm,
             estimated_equity: opp.estimatedEquity,
@@ -214,10 +223,13 @@ async function processBrokerageWealthScan(
       }
 
       // Stamp last_pls_scored_at so the round-robin moves forward
-      await supabase
-        .from("contacts")
-        .update({ last_pls_scored_at: new Date().toISOString() })
-        .eq("id", c.id)
+      await bestEffort(
+        supabase
+          .from("contacts")
+          .update({ last_pls_scored_at: new Date().toISOString() })
+          .eq("id", c.id),
+        "round-robin cursor for the wealth-advisor sweep; the opportunities themselves are already written and the sweep is idempotent, so a lost cursor costs an early re-scan",
+      )
     } catch {
       errors++
     }
@@ -322,13 +334,16 @@ async function detectOpportunities(input: {
       refreshedAvm = true
       // Persist back to contact row
       const supabase = createServiceClient()
-      await supabase
-        .from("contacts")
-        .update({
-          home_value_estimate: fresh.value,
-          last_enriched_at: new Date().toISOString(),
-        })
-        .eq("id", contact.id)
+      await bestEffort(
+        supabase
+          .from("contacts")
+          .update({
+            home_value_estimate: fresh.value,
+            last_enriched_at: new Date().toISOString(),
+          })
+          .eq("id", contact.id),
+        "caches a refreshed AVM back onto the contact; the value in hand is used for this scan regardless and the 14-day cache check simply re-fetches next time, so a lost cache costs an AVM call, not a result",
+      )
     }
   }
 
@@ -570,6 +585,9 @@ async function generateOpportunityNarrative(input: {
   contact: { age_range: string | null; contact_persona: string | null }
   opportunity: DetectedOpportunity
   marketRate: MarketRate
+  /** Tenant for the AI cost ledger — the brokerage this scan is running for,
+   *  threaded down from scanBrokerageOpportunities (§4). */
+  brokerageId: string | null
 }): Promise<string> {
   const { contact, opportunity, marketRate } = input
   const personaContext = [
@@ -604,6 +622,7 @@ Return the message text only, no preamble.`
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId,
       feature: "smart_suggestions",
       prompt,
       temperature: 0.6,

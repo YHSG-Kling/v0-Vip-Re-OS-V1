@@ -36,8 +36,9 @@ import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 export * from "@/lib/offers/net-sheet-calc"
 import {
   fmtUsd, defaultSellerCosts, offerSetSignature, rankOffersByNet, composeComparisonFallback,
-  defaultProvenance, decideNetSheetPolicy,
+  defaultProvenance, decideNetSheetPolicy, resolveAgreedCommission,
   type OfferNetInput, type SellerCosts, type OfferNetSheetResult,
+  type AgreementCommissionFields,
 } from "@/lib/offers/net-sheet-calc"
 // The seller closing-cost model (round 36) — pure, supplies the net sheet's
 // closing-cost section from the same 50-state convention table the buyer
@@ -129,9 +130,24 @@ export async function runOfferNetSheets(
       }
     }
 
-    // Resolve seller-responsible costs (commission from the listing rate when set).
-    const commissionRateDecimal =
-      lst.commission_rate != null ? Number(lst.commission_rate) / 100 : 0.06
+    // Agreed commission terms for this listing.
+    const { data: agreementRow } = await supabase
+      .from("listing_agreements")
+      .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
+      .eq("listing_id", lst.id)
+      .eq("brokerage_id", brokerageId)
+      .order("fully_executed_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+
+    // The seller pays BOTH sides. A listing-side-only rate understates the
+    // commission and overstates the net on the seller's own portal card.
+    const agreed = resolveAgreedCommission({
+      agreement: agreementRow as AgreementCommissionFields | null,
+      listingCommissionRatePercent: lst.commission_rate ?? null,
+      referencePrice: lst.list_price != null ? Number(lst.list_price) : null,
+    })
+    const commissionRateDecimal = agreed.rate
     let costs = opts.costsResolver
       ? await opts.costsResolver({
           listingId: lst.id,
@@ -143,12 +159,30 @@ export async function runOfferNetSheets(
           listPrice: lst.list_price != null ? Number(lst.list_price) : null,
           commissionRateDecimal,
           hoaDuesMonthly: lst.hoa_dues != null ? Number(lst.hoa_dues) : null,
+          transactionFee: (agreementRow as any)?.seller_transaction_fee ?? null,
         })
 
     // PROVENANCE — every line knows where its number came from. HOA from the
     // listing row counts as confirmed data; an injected costsResolver (the
     // simulator / a live agent session) supplies KNOWN figures.
     const provenance = defaultProvenance()
+    // The commission line carries the agreement's own provenance: "confirmed" when
+    // an executed agreement backed it, "template"/"default" when it did not.
+    provenance.commissionRate = agreed.source
+    // A NEGOTIATED CONCESSION THAT COULD NOT BE PRICED IS NOT A CONFIRMED RATE.
+    // resolveAgreedCommission refuses to guess the unit of adjustment_value when
+    // adjustment_value_type is missing or outside the live CHECK, and returns the
+    // UNDISCOUNTED rate — which overstates the commission and UNDERSTATES the
+    // seller's net. Demoting the provenance is what carries that into the policy
+    // decision below, so the sheet cannot be labelled presentation-grade while a
+    // discount the agent already promised is missing from it.
+    if (agreed.adjustmentUnpriced) {
+      provenance.commissionRate = "template"
+      console.warn(
+        `[offer-net-sheet] listing ${lst.id}: a commission concession is recorded on the listing agreement ` +
+        `but could not be priced (${agreed.adjustmentState}) — the commission line is the UNDISCOUNTED figure.`,
+      )
+    }
     if (opts.costsResolver) {
       provenance.mortgagePayoff = "confirmed"
       provenance.countyCityTaxes = "confirmed"

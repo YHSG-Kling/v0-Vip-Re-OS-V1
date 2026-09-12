@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -14,13 +14,24 @@ import {
 } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { CheckCircle2, Loader2, Plus, Trash2, ClipboardList } from "lucide-react"
-import { submitLoanConditions } from "@/app/actions/multi-persona"
+import { submitLoanConditions, trackConditionClearance } from "@/app/actions/multi-persona"
 import { useToast } from "@/hooks/use-toast"
 import { useRouter } from "next/navigation"
 
+/**
+ * "Cleared" is the status the SERVER side of this feature has always keyed on:
+ * trackConditionClearance measures the clearance rate off `status === "cleared"`
+ * and promotes the loan to clear_to_close at 100%, and submitLoanConditions
+ * treats anything not "cleared" as still outstanding when it decides whether to
+ * task the agent and draft the buyer's document request. This panel offered only
+ * pending / received / waived, so no condition could ever reach the status the
+ * server was waiting for: the clearance tracker was unreachable and every save
+ * re-notified about conditions the lender had already collected. Adding it here
+ * is what connects the two halves.
+ */
 interface Condition {
   condition: string
-  status: "pending" | "received" | "waived"
+  status: "pending" | "received" | "waived" | "cleared"
   documents: string[]
 }
 
@@ -33,6 +44,7 @@ const STATUS_LABELS: Record<string, { label: string; variant: "default" | "secon
   pending: { label: "Pending", variant: "secondary" },
   received: { label: "Received", variant: "default" },
   waived: { label: "Waived", variant: "outline" },
+  cleared: { label: "Cleared", variant: "default" },
 }
 
 export function LenderConditionsPanel({ loanId, initialConditions }: LenderConditionsPanelProps) {
@@ -42,6 +54,30 @@ export function LenderConditionsPanel({ loanId, initialConditions }: LenderCondi
   const [saved, setSaved] = useState(false)
   const { toast } = useToast()
   const router = useRouter()
+
+  // Server-side clearance verdict for this loan. Read from the persisted
+  // conditions, not from local edits, so it reports what the file actually says.
+  const [clearance, setClearance] = useState<{
+    pendingConditions: any[]
+    clearedConditions: any[]
+    clearanceRate: number
+  } | null>(null)
+
+  async function refreshClearance() {
+    try {
+      setClearance(await trackConditionClearance(loanId))
+    } catch {
+      setClearance(null)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    trackConditionClearance(loanId)
+      .then((c) => { if (!cancelled) setClearance(c) })
+      .catch(() => { if (!cancelled) setClearance(null) })
+    return () => { cancelled = true }
+  }, [loanId])
 
   const addCondition = () => {
     if (!newCondition.trim()) return
@@ -71,6 +107,9 @@ export function LenderConditionsPanel({ loanId, initialConditions }: LenderCondi
         await submitLoanConditions({ loanId, conditions })
         setSaved(true)
         toast({ title: "Conditions saved", description: "Loan conditions have been submitted." })
+        // Re-measure clearance against what was just persisted — at 100% cleared
+        // this is also what advances the loan's underwriting status.
+        await refreshClearance()
         router.refresh()
       } catch (err: any) {
         toast({ title: "Error", description: err.message || "Failed to save conditions.", variant: "destructive" })
@@ -95,6 +134,35 @@ export function LenderConditionsPanel({ loanId, initialConditions }: LenderCondi
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Clearance verdict — measured server-side from the saved file */}
+        {clearance && (clearance.clearedConditions.length + clearance.pendingConditions.length) > 0 && (
+          <div className="rounded-lg border bg-muted/20 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium">Condition clearance</span>
+              <span className="text-muted-foreground">
+                {clearance.clearedConditions.length} of{" "}
+                {clearance.clearedConditions.length + clearance.pendingConditions.length} cleared
+              </span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+              <div
+                className={`h-full rounded-full ${clearance.clearanceRate === 100 ? "bg-emerald-500" : "bg-amber-500"}`}
+                style={{ width: `${Math.min(100, Math.max(0, clearance.clearanceRate))}%` }}
+              />
+            </div>
+            {clearance.clearanceRate === 100 ? (
+              <p className="text-xs text-emerald-700">
+                All conditions cleared — the loan has been advanced to clear to close.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {clearance.pendingConditions.length} condition
+                {clearance.pendingConditions.length === 1 ? "" : "s"} still outstanding.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Conditions List */}
         {conditions.length > 0 && (
           <div className="space-y-2">
@@ -127,6 +195,7 @@ export function LenderConditionsPanel({ loanId, initialConditions }: LenderCondi
                     <SelectItem value="pending">Pending</SelectItem>
                     <SelectItem value="received">Received</SelectItem>
                     <SelectItem value="waived">Waived</SelectItem>
+                    <SelectItem value="cleared">Cleared</SelectItem>
                   </SelectContent>
                 </Select>
                 <Badge

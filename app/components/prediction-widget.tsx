@@ -38,8 +38,14 @@ export interface PredictionWidgetProps {
   // Whether the predict button should be shown
   showPredictButton?: boolean
   // Additional CSS classes
+  /** optional by design: style-override passthrough onto the root Card; none
+   *  of the three current callers (social/marketing-studio/ads dashboards)
+   *  need a non-default look. */
   className?: string
   // Compact mode for inline usage
+  /** optional by design: an inline/dense variant for a future embedding (a
+   *  sidebar widget, a table cell); the three current callers all render this
+   *  full-size inside their own card section. */
   compact?: boolean
 }
 

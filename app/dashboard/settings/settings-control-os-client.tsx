@@ -13,6 +13,10 @@ import {
 } from "./components/os"
 import { IsaAutoRespondSettings } from "@/app/components/isa/IsaAutoRespondSettings"
 import { VoiceAccessSettings } from "@/app/components/settings/VoiceAccessSettings"
+import { LeadRoutingPanel } from "./components/lead-routing-panel"
+import { ShowingFinancialGatePanel } from "./components/showing-financial-gate-panel"
+import { ProhibitedPhrasesPanel } from "./components/prohibited-phrases-panel"
+import type { CapAnniversaryBasis } from "@/lib/commission/cap-resolver"
 
 interface ProviderData {
   id: string
@@ -33,6 +37,11 @@ interface SetupItem {
 
 interface UserStats {
   totalUsers: number
+  /** Plan SEATS in use — partners and the system actor never consume one. */
+  seatCount: number
+  seatLimit: number | null
+  seatOverridden: boolean
+  planTier: string | null
   activeUsers: number
   adminCount: number
   brokerCount: number
@@ -67,7 +76,15 @@ interface AccountingStatus {
 
 interface CommissionSettings {
   defaultSplitPct: number
+  /**
+   * `brokerages.default_cap_amount` (m461) in dollars, or null for UNCAPPED.
+   * This was a hardcoded `null` on the server page until the cap setting existed,
+   * so the panel's Cap Amount tile could never draw. See the note in page.tsx.
+   */
   capAmount?: number | null
+  /** `brokerages.default_cap_anniversary_basis` — which 12-month window the cap
+   *  resets on. A cap amount without its reset schedule is only half a setting. */
+  capAnniversaryBasis: CapAnniversaryBasis
   hasStructures: boolean
   structureCount: number
 }
@@ -202,6 +219,33 @@ export function SettingsControlOSClient({
 
         {/* Voice Assistant Access — management-controlled staff expansion */}
         <VoiceAccessSettings />
+
+        {/* Lead Routing — the DEFAULT assignment method (m305). Per-rule methods
+            live on the assignment-rules page; this is the one that decides every
+            contact no rule matches, which is most of them, and it used to be
+            hardcoded. Broker + admin only, which is already this page's gate. */}
+        <LeadRoutingPanel />
+
+        {/* Showing Requirements — whether the buyer financial gate applies before
+            a showing is set or scheduled (m377). Off for every brokerage until a
+            broker turns it on here; the engine that enforces it was already built
+            and, until m377, ran on no path at all. Broker + admin only, which is
+            already this page's gate. */}
+        <ShowingFinancialGatePanel />
+
+        {/* Prohibited Words — the brokerage's OWN additions to the federal Fair
+            Housing catalogue (m454 added prohibited_phrases.brokerage_id; NULL is
+            the platform list, a set id is a tenant's own words). The federal rows
+            are listed read-only because RLS refuses a tenant write against them.
+            Two columns wide: it carries a list and a form, not a single control.
+            The same panel also renders on /compliance/settings, which is where the
+            settings command strip's "Compliance" button goes and the only such
+            surface a COMPLIANCE OFFICER can reach — this page is broker + admin
+            only, while RLS grants phrase writes to is_compliance_officer_role()
+            as well. */}
+        <div className="md:col-span-2">
+          <ProhibitedPhrasesPanel />
+        </div>
       </div>
     </div>
   )

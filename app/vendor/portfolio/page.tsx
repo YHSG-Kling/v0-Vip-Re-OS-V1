@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { readRoleGrants, selectVendorId } from '@/lib/auth/role-grants'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Image, ArrowLeft, Plus } from 'lucide-react'
@@ -12,18 +13,23 @@ export default async function VendorPortfolioPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: ra } = await supabase
-    .from('user_role_assignments')
-    .select('vendor_id')
-    .eq('user_id', user.id)
-    .not('vendor_id', 'is', null)
-    .maybeSingle()
+  // Same vendor-resolution shape as the rest of /vendor — read every grant and
+  // choose, because user_role_assignments is UNIQUE on (user_id, role), not on
+  // user_id, and `.maybeSingle()` over two vendor-bearing grants is an error that
+  // supabase-js resolves into a silent "no vendor".
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error('[vendor/portfolio] role grant read failed:', grantsResult.error)
+  }
+  const { vendorId: portfolioVendorId } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null }
 
-  const { data: vendor } = ra?.vendor_id
+  const { data: vendor } = portfolioVendorId
     ? await supabase
         .from('vendors')
         .select('id, name, category, notes, rating, website')
-        .eq('id', ra.vendor_id)
+        .eq('id', portfolioVendorId)
         .maybeSingle()
     : { data: null }
 

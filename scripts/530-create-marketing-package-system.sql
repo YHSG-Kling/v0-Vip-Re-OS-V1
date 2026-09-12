@@ -1,3 +1,12 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ DEAD — DO NOT RE-RUN. The `vendor_directory` table this file touches no   ║
+-- ║ longer exists: m355 folded its curation columns onto `vendors` and        ║
+-- ║ dropped it (one vendor system, per the owner's ruling on drift).          ║
+-- ║ Re-running would DROP ... CASCADE, recreate a different shape, AND point  ║
+-- ║ listing_marketing_services.vendor_id at it — that FK targets vendors(id).║
+-- ║ Kept only as the historical record of how the schema got here.           ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
 -- =====================================================
 -- LISTING MARKETING PACKAGE AUTOMATION SYSTEM
 -- Automated vendor booking, multi-platform syndication, AI optimization

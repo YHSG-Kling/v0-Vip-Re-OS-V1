@@ -18,15 +18,23 @@
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
 import type { RoiLedger } from "@/lib/intelligence/roi-ledger"
 import type { ReelBrand } from "@/lib/video/reel-brand"
+import { geometryFor } from "@/lib/remotion/composition-geometry"
+// PURE (no DB, no server-only) — the companion-card gate, the hint cutter and
+// the sentence the refusal log names.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
+import { compactCentsMoney } from "@/lib/format/money"
 
 export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
 
-const money = (cents: number) => {
-  const v = Math.round(Math.max(0, cents) / 100)
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (v >= 10_000) return `$${Math.round(v / 1000).toLocaleString("en-US")}K`
-  return `$${v.toLocaleString("en-US")}`
-}
+/**
+ * The composition this reel rides, named ONCE (§6) — the dedupe probe, the
+ * caption timeline and the queued render all have to mean the same video.
+ */
+const LISTING_PITCH_COMPOSITION = "PartnersMeetingReel"
+
+// TOMBSTONE (§1.1, 2026-09-08): the local `money` (cents → "$1.2M"/"$45K"/"$900")
+// lived here; survivor lib/format/money.ts:compactCentsMoney.
 
 /** PURE: the pitch props — earned proof only (a young brokerage gets a shorter,
  *  still-honest pitch; zero-proof tenants get the team-promise card alone). */
@@ -40,7 +48,7 @@ export function buildListingPitchReelProps(
   })
   if (p.roi.attributedGciCents > 0) {
     cards.push({
-      value: money(p.roi.attributedGciCents), label: "CLOSED VOLUME OUR MARKETING PRODUCED",
+      value: compactCentsMoney(p.roi.attributedGciCents), label: "CLOSED VOLUME OUR MARKETING PRODUCED",
       sub: `across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} in ${p.roi.periodDays} days — attribution-measured, not claimed`,
       kind: "finance",
     })
@@ -63,11 +71,19 @@ export function buildListingPitchReelProps(
     weekLabel: p.address,
     cards,
     oneAsk: `Let's put this team to work on ${p.address}`,
+    // Wave 56 realism (owner ruling: the finished video must not read as a
+    // canned AI creation) — SPOKEN_REALISM_DIRECTIVE rule 5 ("open with the
+    // fact, never a self-introduction") applies just as much to an AUTHORED
+    // template as a model draft: "Hi, I'm X with Y" is the exact self-intro
+    // opener the research names as the #1 tell, even though scanForAiTells'
+    // pattern (built for model-drafted "from" openers) never saw it here — the
+    // agent's identity is already on screen via the composition's own chrome,
+    // so the spoken line leads with the hook instead of restating it.
     narration: [
-      `Hi, I'm ${p.agentName} with ${p.brand.brokerageName}. Here's what listing ${p.address} with us looks like.`,
+      `Here's what listing ${p.address} with ${p.brand.brokerageName} actually looks like.`,
       `From day one, an AI team works your listing around the clock — every inquiry answered, every showing followed up.`,
       p.roi.attributedGciCents > 0
-        ? `In the last ${p.roi.periodDays} days, our marketing produced ${money(p.roi.attributedGciCents)} in closed volume across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`
+        ? `In the last ${p.roi.periodDays} days, our marketing produced ${compactCentsMoney(p.roi.attributedGciCents)} in closed volume across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`
         : null,
       p.roi.callsAnswered > 0
         ? `${p.roi.callsAnswered} buyer call${p.roi.callsAnswered === 1 ? "" : "s"} answered live${p.roi.appointmentsBooked > 0 ? `, ${p.roi.appointmentsBooked} appointment${p.roi.appointmentsBooked === 1 ? "" : "s"} booked on the call` : ""} — no buyer goes to voicemail.`
@@ -88,10 +104,21 @@ export function buildListingPitchReelProps(
  *  ledger). Fronted by the AGENT (contact-facing identity). Best-effort. */
 export async function queueListingPitchReel(
   svc: any,
-  p: { brokerageId: string; agentUserId: string | null; appointmentId: string; address: string },
+  p: {
+    brokerageId: string; agentUserId: string | null; appointmentId: string; address: string
+    /**
+     * The SELLER's contact id, when the listing appointment already has one
+     * (app/api/cron/listing-presentation-prep/route.ts's `contactId`, from
+     * appointment.metadata.contact_id — null for a home-value prospect who
+     * hasn't converted yet). Resolves the seller's language for the pitch's
+     * narration (owner ruling, wave 51/52) — null skips resolution and the
+     * reel narrates in DEFAULT_LANGUAGE, same as before this field existed.
+     */
+    contactId?: string | null
+  },
 ): Promise<boolean> {
   const { data: existing } = await svc.from("remotion_composition_renders").select("id")
-    .eq("brokerage_id", p.brokerageId).eq("composition_id", "PartnersMeetingReel")
+    .eq("brokerage_id", p.brokerageId).eq("composition_id", LISTING_PITCH_COMPOSITION)
     .eq("entity_type", LISTING_PITCH_REEL_ENTITY).eq("entity_id", p.appointmentId)
     .limit(1).maybeSingle()
   if (existing) return false
@@ -107,21 +134,63 @@ export async function queueListingPitchReel(
   const props = buildListingPitchReelProps({
     address: p.address, agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl, brand, roi,
   }) as unknown as Record<string, unknown>
+  // CONTACT-FACING LANGUAGE (owner ruling, wave 51/52): this plays on the
+  // SELLER's own kitchen table — resolve THEIR language (the ONE resolver,
+  // §6) when a contact id is already known, and translate the narration
+  // BEFORE synthesis (language_code alone does not translate; see
+  // lib/voice/elevenlabs-tts.ts header). A translation failure degrades to
+  // the English narration already built above, never a blocked pitch video.
+  const { resolveContactLanguageFromDb, translateReelScript, languageName, DEFAULT_LANGUAGE } =
+    await import("@/lib/video/multilingual-reel")
+  const sellerLanguage = p.contactId ? await resolveContactLanguageFromDb(svc, p.contactId) : DEFAULT_LANGUAGE
+  if (sellerLanguage !== DEFAULT_LANGUAGE) {
+    const { gatewayChat } = await import("@/lib/ai/gateway-chat")
+    const translation = await translateReelScript(
+      { script: (props as any).narration as string, targetLocale: sellerLanguage, targetLanguageName: languageName(sellerLanguage) },
+      gatewayChat,
+    )
+    if (translation.ok && translation.translatedScript) {
+      props.narration = translation.translatedScript
+    } else {
+      console.warn(`[listing-pitch-reel] appointment ${p.appointmentId} — translation to ${sellerLanguage} failed, narrating in English: ${translation.error ?? "unknown error"}`)
+    }
+  }
   // Voice on every video: the AGENT's cloned voice narrates their own pitch
   // (contact-facing rule — the licensed human speaks to clients). Best-effort.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
   const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: (props as any).narration,
     voiceId: identity.voiceId, renderKey: `pitch-${p.appointmentId.slice(0, 8)}`,
+    languageCode: sellerLanguage,
   })
   if (vo) {
     props.voiceover_url = vo.url
     // WORD-SYNCED CAPTIONS (finish-spec: client-facing report shows carry
     // captions) — real alignment when the timestamped path succeeded, honest
     // even-distribution from the script otherwise.
+    //
+    // THE TIMELINE IS DERIVED. `900, 30` used to be typed here: correct against
+    // PartnersMeetingReel today and silently wrong the moment its
+    // durationInFrames changes — the captions would end at second 30 of a
+    // longer reel with every assertion still green (§2: assert the rule, derive
+    // the number; never pin to a waypoint).
     const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
-    const plan = buildCaptionPlan(vo.alignment ?? (props as any).narration, 900, 30, { tailPaddingFrames: 45 })
-    if (plan.cues.length > 0) props.captionsCues = plan.cues
+    const geo = geometryFor(LISTING_PITCH_COMPOSITION)
+    if (!geo) {
+      // REFUSE rather than fall back to a remembered 900/30: a composition that
+      // left the registry has no timeline to cue against.
+      console.error(
+        `[listing-pitch-reel] ${LISTING_PITCH_COMPOSITION} is not in the composition registry — `
+        + `captions REFUSED rather than timed against a hardcoded frame count. The video still ships.`,
+      )
+    } else {
+      const plan = buildCaptionPlan(
+        vo.alignment ?? (props as any).narration,
+        geo.duration_frames, geo.fps,
+        { tailPaddingFrames: 45 },
+      )
+      if (plan.cues.length > 0) props.captionsCues = plan.cues
+    }
   }
   // Finish-spec: the pitch is CLIENT-FACING → tracked outro QR (scan to book).
   try {
@@ -131,14 +200,27 @@ export async function queueListingPitchReel(
       if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to get started" }
     }
   } catch { /* QR is additive */ }
-  props.thumbnail_props = {
+  // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
+  // producer omitted it, so a listing-pitch card printed the just-listed
+  // composition's SAMPLE sentence as its summary line and as the hero image's
+  // alt text. Cut verbatim from the pitch's own narration.
+  //
+  // CAPPED AT TWO SENTENCES (§5). buildListingPitchReelProps' third sentence is
+  // the ROI line — "…in closed volume across N deals" — brokerage money spoken
+  // to a prospective seller in the room, not something to publish as the page
+  // summary if this render is ever put on /v/[slug]. The first two sentences
+  // are the introduction and the promise, which is what the card is for.
+  const card = companionCard(VIDEO_COVER_THUMB, {
     kind: "presentation", title: p.address, subtitle: `Listed with ${brand.brokerageName}`, eyebrow: "LISTING PRESENTATION",
     agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-  }
+    seoHint: seoHintFromNarration((props as { narration?: unknown }).narration as string | null, SEO_HINT_MAX_CHARS, 2),
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[listing-pitch-reel] no companion share card for appointment ${p.appointmentId} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
-    brokerageId: p.brokerageId, compositionId: "PartnersMeetingReel",
+    brokerageId: p.brokerageId, compositionId: LISTING_PITCH_COMPOSITION,
     agentUserId: p.agentUserId,
     entityType: LISTING_PITCH_REEL_ENTITY, entityId: p.appointmentId,
     inputProps: props, scopeType: "brokerage", scopeId: p.brokerageId, requestedVia: "cron",

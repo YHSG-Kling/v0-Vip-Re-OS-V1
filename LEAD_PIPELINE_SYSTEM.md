@@ -34,9 +34,9 @@ Production-ready lead scraping, deduplication, enrichment, and lifecycle managem
 
 #### API Routes (`app/api/`)
 - **GET /api/leads** - Fetch leads with filtering
-- **GET /api/leads/raw** - Fetch raw scraped leads
-- **POST /api/leads/process-pipeline** - Process raw leads through enrichment
-- **GET /api/leads/deduplication-log** - View deduplication decisions
+- **PATCH /api/leads/raw** - Platform-staff repair verb on a raw record's processing_status / error_message. (The former GET listing was retired; the raw bench is read through the `listRawLeadsForReview` server action in `app/actions/lead-promotion/promote-lead.ts`, which the Lead Intake Cockpit renders.)
+- **GET /api/leads/process-pipeline** - Raw-lead pipeline statistics (read-only; brokerage-level, refuses a team scope). Promotion is automatic — the former POST trigger was removed; the numbers are computed by `app/dashboard/admin/lead-intake/pipeline-stats.ts` and also rendered in-process on the Lead Intake Cockpit.
+- **GET /api/leads/deduplication-log** - View deduplication decisions (`?raw_record_id=` is what the cockpit's per-row "Why" expander reads)
 - **GET /api/vendor-costs** - Track vendor API costs
 
 #### Cron Jobs (`app/api/cron/`)

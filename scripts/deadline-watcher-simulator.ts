@@ -14,7 +14,18 @@
  *
  * Run: npx tsx scripts/deadline-watcher-simulator.ts  (npm run test:deadline-watcher)
  */
-import { checkUpcomingDeadlines } from "../lib/kernel/calendar-deadline-watcher"
+// calendar-deadline-watcher is `server-only` since it fires through the kernel
+// spine (lib/kernel/emit.ts, wave 26). Neutralize the marker in the require
+// cache BEFORE importing anything that transitively pulls it — the
+// accounting-scopes / buyer-intent-conversion simulators' established idiom.
+import { createRequire } from "node:module"
+const _require = createRequire(import.meta.url)
+try {
+  const soPath = _require.resolve("server-only")
+  _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
+} catch { /* server-only not resolvable — nothing to shim */ }
+// Dynamic import: a static ESM import would hoist above the shim.
+const { checkUpcomingDeadlines } = await import("../lib/kernel/calendar-deadline-watcher")
 
 let passed = 0, failed = 0
 const failures: string[] = []

@@ -1,43 +1,55 @@
-import Link from "next/link"
-import { SignupForm } from "./signup-form"
-import { createServiceClient } from "@/lib/supabase/service"
-import { loadPublicTiers } from "@/lib/platform/public-tiers"
+import { permanentRedirect } from "next/navigation"
 import { cleanCarriedZip } from "@/lib/platform/territory-marketplace"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "Start your free trial — VIP RE OS" }
 
-// Prices are the SINGLE SOURCE OF TRUTH in subscription_tiers (loadPublicTiers —
-// the same loader /pricing renders from) — never hardcoded, so a production price
-// change is a DB update, not a code change. /pricing?→/signup?tier=X preselects.
-export default async function SignupPage({ searchParams }: { searchParams: Promise<{ tier?: string; zip?: string }> }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// TWO PUBLIC SIGNUP FUNNELS → ONE. /signup now redirects to /get-started.
+//
+// Both pages sold the same 14-day trial, loaded the same subscription_tiers rows
+// through the same loadPublicTiers, and ended in the same signupBrokerageAction.
+// They were not two products — they were two front doors to one, and only one of
+// them was wired for how the platform actually acquires customers.
+//
+// /get-started is the keeper because it is strictly the superset:
+//   · UTM attribution (?utm_source / ?utm_campaign, stamped as the tenant's
+//     source) — without it paid and organic acquisition are indistinguishable;
+//   · affiliate / referral capture (?ref → refCaptureRedirect), which /api/ref
+//     already redirects into, so a prospect arriving on a referral link could
+//     never have landed here in the first place;
+//   · coupon validation + redemption;
+//   · the tier's LIVE funnel snapshot, so a new tenant's website comes up
+//     branded on day one;
+//   · the prospect-capture form for visitors not ready to sign up.
+//
+// A signup through /signup got NONE of that: same money in, no attribution, no
+// referral credit, no coupon, no branded provisioning. The acquisition record
+// simply did not exist for anyone who came through this door.
+//
+// PORTED BEFORE RETIRING — the one thing /signup had that /get-started lacked:
+// the territory-marketplace carry. /pricing's territory CTA hands off with
+// ?zip=, which now rides through /get-started into signupBrokerageAction's
+// territoryZip (a field it already accepted) and is shown in the form. Both
+// ?tier= and ?zip= are preserved across this redirect, so /pricing's existing
+// hand-offs keep working unchanged.
+//
+// KEPT AS A ROUTE rather than deleted: /signup is a PUBLIC url. It is named in
+// robots.ts, revalidated by the plan-catalog actions, and may sit in bookmarks,
+// ad copy or inbound links this repo cannot see. A permanent redirect preserves
+// every one of those; deleting the route would 404 them.
+export default async function SignupPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tier?: string; zip?: string }>
+}) {
   const params = await searchParams
-  const svc = createServiceClient()
-  const tiers = await loadPublicTiers(svc)
-  const initialTier = tiers.some((t) => t.tierName === params.tier) ? params.tier! : null
-  // TERRITORY MARKETPLACE carry (round 40, rec 4): /pricing's territory CTA
-  // hands off with ?zip= — a validated 5-digit zip rides through signup as a
-  // SUGGESTED first market for onboarding. Never auto-claimed, never required.
-  const initialZip = cleanCarriedZip(params.zip)
+  const keep = new URLSearchParams()
+  if (params.tier) keep.set("tier", params.tier)
+  const zip = cleanCarriedZip(params.zip)
+  if (zip) keep.set("zip", zip)
+  const qs = keep.toString()
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
-      <div className="max-w-5xl mx-auto px-6 py-12">
-        <div className="flex justify-end gap-4 text-sm text-muted-foreground mb-4">
-          <Link href="/pricing" className="underline underline-offset-2 hover:text-foreground">See full pricing</Link>
-          <Link href="/demo" className="underline underline-offset-2 hover:text-foreground">Book a 15-min demo</Link>
-        </div>
-        <div className="text-center mb-10">
-          <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
-            Start your 14-day free trial
-          </h1>
-          <p className="text-muted-foreground mt-3 max-w-2xl mx-auto">
-            No credit card required. Pick the plan that fits your shape — you can change it any time.
-            AI features, marketing automation, and the kernel-driven workflow OS are all included.
-          </p>
-        </div>
-        <SignupForm tiers={tiers} initialTier={initialTier} initialZip={initialZip} />
-      </div>
-    </div>
-  )
+  // 308 — the move is permanent, so clients and crawlers should update.
+  permanentRedirect(`/get-started${qs ? `?${qs}` : ""}`)
 }

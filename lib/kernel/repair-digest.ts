@@ -127,7 +127,19 @@ export async function runRepairPatternDigest(svc: Svc, now: Date = new Date()): 
     const { loadRecentShapeChanges } = await import("@/lib/kernel/schema-memory")
     const changes = await loadRecentShapeChanges(svc, since)
     for (const c of changes.slice(0, 3)) {
-      extraLines.push(`SHAPE CHANGE: ${c.connector}/${c.entity} started sending a new payload shape — check the contract before anything quarantines.`)
+      // WHICH FIELDS — from the stored shape_keys, diffed against the prior shape. A
+      // fingerprint alone tells an operator nothing they can act on. A dropped key is
+      // named first: that is the half that breaks a parser.
+      const removed = c.removedKeys.slice(0, 4).join(", ")
+      const added = c.addedKeys.slice(0, 4).join(", ")
+      const detail = c.diffUnavailable
+        ? "the changed fields could not be determined (an earlier shape recorded no key list)"
+        : [
+            removed ? `dropped ${removed}${c.removedKeys.length > 4 ? ` +${c.removedKeys.length - 4} more` : ""}` : null,
+            added ? `added ${added}${c.addedKeys.length > 4 ? ` +${c.addedKeys.length - 4} more` : ""}` : null,
+          ].filter(Boolean).join("; ") || "no key paths differ (values-only change)"
+      const stillArriving = c.lastSeenAt ? ` Still arriving as of ${c.lastSeenAt}.` : ""
+      extraLines.push(`SHAPE CHANGE: ${c.connector}/${c.entity} started sending a new payload shape — ${detail}.${stillArriving} Check the contract before anything quarantines.`)
     }
     const { count: quarantined } = await svc.from("ingress_dead_letters")
       .select("id", { count: "exact", head: true })

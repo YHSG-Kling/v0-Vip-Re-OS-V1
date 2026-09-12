@@ -67,6 +67,26 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
     }
   }
 
+  // MOUNTED (§1 orphan doctrine — scripts/handler-parity-census.ts,
+  // 2026-09-11): the PATCH endpoint at /api/admin/transaction-forms already
+  // accepts `is_active`, but nothing in the tree ever called PATCH — a
+  // deactivated form (DELETE above only ever sets is_active=false; there is
+  // no hard delete) had no way back. This is the missing CALLER for the
+  // reactivate half of that same toggle, not a new endpoint.
+  async function reactivateForm(id: string) {
+    const res = await fetch("/api/admin/transaction-forms", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, is_active: true }),
+    })
+    if (res.ok) {
+      toast.success("Form reactivated")
+      reload()
+    } else {
+      toast.error("Could not reactivate")
+    }
+  }
+
   return (
     <>
       {/* Filters + Create button */}
@@ -140,9 +160,15 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
                       </a>
                     </Button>
                   )}
-                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive ml-auto" onClick={() => deleteForm(f.id)}>
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  {f.is_active ? (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive ml-auto" onClick={() => deleteForm(f.id)}>
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline" className="h-7 text-xs ml-auto" onClick={() => reactivateForm(f.id)}>
+                      Reactivate
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>

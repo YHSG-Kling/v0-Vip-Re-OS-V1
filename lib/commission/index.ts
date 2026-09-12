@@ -10,6 +10,10 @@ export { CURRENT_ENGINE_VERSION } from "./types"
 // ─── ENGINE (entry point) ─────────────────────────────────────────────────────
 export { calculateCommission } from "./engine"
 
+// ─── TEAM-LEAD OVERRIDE + TEAM CAP (pure money math, DB-free and testable) ────
+export type { TeamLeadAgreement, TeamLeadSplitResult, TeamCapStatus, TeamCapLedger, TeamCapResult } from "./team-lead-split"
+export { resolveTeamLeadOverride, isAgreementEffective, applyTeamCap } from "./team-lead-split"
+
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 export { dollarsToCents, centsToDollars, calculatePercentAmount, validatePositive } from "./utils"
 

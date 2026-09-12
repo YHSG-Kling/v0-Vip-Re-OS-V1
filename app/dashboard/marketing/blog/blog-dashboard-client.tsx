@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -39,8 +39,11 @@ import {
   PenLine,
   Lightbulb,
   X,
+  RefreshCw,
+  AlertCircle,
 } from "lucide-react"
-import { generateBlogPost, generateTopicIdeas, saveBlogPost } from "@/app/actions/blog"
+import { generateBlogPost, generateTopicIdeas, saveBlogPost, getBlogPosts, getBlogTrafficOverview, type BlogTrafficOverview } from "@/app/actions/blog"
+import { getMyBlogCadencePolicy } from "@/app/actions/blog-cadence-policy"
 import type { TopicIdea } from "@/app/actions/blog"
 import { format } from "date-fns"
 
@@ -55,6 +58,7 @@ interface BlogPost {
   created_at: string
   published_at: string | null
   agent_user_id: string | null
+  visibility_scope?: string | null
 }
 
 interface Keyword {
@@ -124,6 +128,46 @@ export function BlogDashboardClient({
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("All")
+  // ── SERVER-SIDE FILTER AXES ────────────────────────────────────────────────
+  // Search, status and category narrow the rows ALREADY IN MEMORY. Author and
+  // date range cannot: the page's server read is unfiltered and unpaginated, and
+  // neither axis exists anywhere in this client. They go back to
+  // app/actions/blog.ts:getBlogPosts, which is the filtered counterpart of that
+  // read — same projection, same session-derived tenant, plus publish_status /
+  // agent_user_id / created_at predicates applied in Postgres.
+  //
+  // `statusFilter` is sent as well as applied locally. The two agree by
+  // construction (identical predicate on the identical column), so the second
+  // pass is a no-op on a refreshed list and keeps the instant-filter behaviour
+  // on the server-rendered one.
+  const [authorFilter, setAuthorFilter] = useState<"all" | "mine">("all")
+  const [startDate, setStartDate] = useState<string>("")
+  const [endDate, setEndDate] = useState<string>("")
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+  // The agent's own blog cadence (wave 4 slice 2). The cadence cron publishes
+  // on this schedule; before this the only place it appeared was the settings
+  // page you had to already know about, so an agent on this dashboard had no
+  // idea whether anything was scheduled to publish at all.
+  const [cadence, setCadence] = useState<{ cadence: string; fireDay: number | null } | null>(null)
+  const [cadenceUnset, setCadenceUnset] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    getMyBlogCadencePolicy()
+      .then((r) => {
+        if (cancelled) return
+        // A refused read is NOT "no cadence configured" — leave both pieces of
+        // state alone so the chip simply does not render, rather than telling
+        // the agent nothing is scheduled when we could not check.
+        if (!r.success) return
+        if (r.policy) setCadence({ cadence: r.policy.cadence, fireDay: r.policy.fire_day })
+        else setCadenceUnset(true)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
   const [isGenerateOpen, setIsGenerateOpen] = useState(false)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [isTopicsOpen, setIsTopicsOpen] = useState(false)
@@ -149,7 +193,76 @@ export function BlogDashboardClient({
   const publishedPosts = posts.filter((p) => p.publish_status === "published").length
   const draftPosts = posts.filter((p) => p.publish_status === "draft").length
   const avgWordsPerPost = 800 // industry estimate for generated posts
-  const estimatedMonthlyReaders = publishedPosts * 150 // rough estimate: 150 readers/post/month
+
+  // REAL readership — blog_post_views (written on every page load, previously
+  // read by nothing). Replaces the "publishedPosts * 150" guess this card
+  // used to show, which moved with post count alone and never with actual
+  // traffic. Loaded once on mount; null while loading so the card can say so
+  // rather than flash a stale/zero number.
+  const [traffic, setTraffic] = useState<BlogTrafficOverview | null>(null)
+  useEffect(() => {
+    void getBlogTrafficOverview().then((r) => {
+      if (r.success && r.overview) setTraffic(r.overview)
+    })
+  }, [])
+
+  // ── THE SERVER-FILTERED RELOAD ─────────────────────────────────────────────
+  // One request at a time wins: responses can land out of order, and a slow
+  // request for a filter the agent has already changed must not overwrite the
+  // list with rows for the OLD filter. Each call takes a ticket and only the
+  // newest ticket is allowed to write state.
+  const reloadTicket = useRef(0)
+  const didMount = useRef(false)
+
+  async function reloadPosts() {
+    const ticket = ++reloadTicket.current
+    setIsRefreshing(true)
+    setRefreshError(null)
+    try {
+      const result = await getBlogPosts({
+        publishStatus: statusFilter === "all" ? undefined : statusFilter,
+        agentUserId: authorFilter === "mine" ? userId : undefined,
+        startDate: startDate || undefined,
+        // Inclusive of the whole end day. `created_at` is a timestamp, so a bare
+        // date compares as that day's midnight and would drop everything written
+        // during the day the agent picked.
+        endDate: endDate ? `${endDate}T23:59:59.999Z` : undefined,
+      })
+      if (ticket !== reloadTicket.current) return
+      if (!result.success) {
+        // A refused read is NOT an empty result. Keep the rows already on screen
+        // and say what happened, rather than rendering "no posts match your
+        // filters" over a query that never ran.
+        setRefreshError(result.error ?? "The filtered blog list could not be loaded")
+        return
+      }
+      setPosts(result.posts ?? [])
+    } catch (err) {
+      if (ticket !== reloadTicket.current) return
+      setRefreshError(
+        err instanceof Error ? `The filtered blog list could not be loaded: ${err.message}` : "The filtered blog list could not be loaded",
+      )
+    } finally {
+      if (ticket === reloadTicket.current) setIsRefreshing(false)
+    }
+  }
+
+  // Re-query whenever a SERVER-ONLY axis moves. Skipped on mount: the page
+  // already server-rendered the unfiltered list, and refetching it immediately
+  // would double every page load for an identical answer.
+  useEffect(() => {
+    if (!didMount.current) {
+      didMount.current = true
+      return
+    }
+    void reloadPosts()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, authorFilter, startDate, endDate])
+
+  const serverFiltersActive = statusFilter !== "all" || authorFilter !== "all" || !!startDate || !!endDate
+  // Every axis, client-side and server-side, for the empty state to speak accurately.
+  const anyFilterActive =
+    serverFiltersActive || !!searchQuery || (!!categoryFilter && categoryFilter !== "All")
 
   // Filter posts
   const filteredPosts = posts.filter((post) => {
@@ -272,6 +385,20 @@ export function BlogDashboardClient({
             <p className="text-muted-foreground">
               Generate and manage SEO-optimized blog content for your market
             </p>
+            {(cadence || cadenceUnset) && (
+              <p className="text-xs text-muted-foreground mt-1">
+                {cadence && cadence.cadence !== "off"
+                  ? `Auto-publishing ${cadence.cadence}${
+                      cadence.fireDay !== null ? ` (day ${cadence.fireDay})` : ""
+                    }.`
+                  : cadence
+                    ? "Auto-publishing is off."
+                    : "No posting cadence set yet — nothing publishes automatically."}{" "}
+                <a href="/settings/blog-cadence" className="text-blue-600 hover:underline">
+                  Change
+                </a>
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {/* AI Topic Ideas */}
@@ -601,16 +728,72 @@ export function BlogDashboardClient({
                 </div>
                 <div>
                   <p className="text-2xl font-bold">
-                    {estimatedMonthlyReaders > 999
-                      ? `${Math.round(estimatedMonthlyReaders / 1000)}k`
-                      : estimatedMonthlyReaders}
+                    {traffic == null
+                      ? "—"
+                      : traffic.uniqueViewers > 999
+                        ? `${Math.round(traffic.uniqueViewers / 1000)}k`
+                        : traffic.uniqueViewers}
                   </p>
-                  <p className="text-xs text-muted-foreground">Est. Monthly Readers</p>
+                  <p className="text-xs text-muted-foreground">Unique Readers</p>
                 </div>
               </div>
             </CardContent>
           </Card>
         </div>
+
+        {/* Traffic sources — real blog_post_views.source/referrer, not an estimate */}
+        {traffic && traffic.totalViews > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                Traffic sources
+                <span className="font-normal text-xs text-muted-foreground">
+                  {traffic.totalViews.toLocaleString()} views · {traffic.uniqueViewers.toLocaleString()} unique readers
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">By source</p>
+                  {traffic.topSources.map((s) => (
+                    <div key={s.source} className="flex items-center justify-between text-xs">
+                      <span className="capitalize">{s.source}</span>
+                      <span className="text-muted-foreground">{s.count.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Top referrers</p>
+                  {traffic.topReferrers.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No referrer data yet</p>
+                  ) : (
+                    traffic.topReferrers.map((r) => (
+                      <div key={r.referrer} className="flex items-center justify-between text-xs">
+                        <span className="truncate">{r.referrer}</span>
+                        <span className="text-muted-foreground shrink-0 ml-2">{r.count.toLocaleString()}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Shares by channel</p>
+                  {traffic.sharesByChannel.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No shares recorded yet</p>
+                  ) : (
+                    traffic.sharesByChannel.map((s) => (
+                      <div key={s.channel} className="flex items-center justify-between text-xs">
+                        <span className="capitalize">{s.channel}</span>
+                        <span className="text-muted-foreground">{s.count.toLocaleString()}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Category Filter Tabs */}
         <div className="flex flex-wrap gap-2">
@@ -656,6 +839,86 @@ export function BlogDashboardClient({
           </div>
         </div>
 
+        {/* Author + date range — the axes the page's own read cannot narrow.
+            Changing any of these re-queries the server through getBlogPosts. */}
+        <div className="flex flex-col sm:flex-row sm:items-end gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="blog-author-filter" className="text-xs text-muted-foreground">
+              Author
+            </Label>
+            <Select value={authorFilter} onValueChange={(v) => setAuthorFilter(v as "all" | "mine")}>
+              <SelectTrigger id="blog-author-filter" className="w-[180px]">
+                <SelectValue placeholder="Filter by author" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Everyone</SelectItem>
+                <SelectItem value="mine">Only mine</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="blog-start-date" className="text-xs text-muted-foreground">
+              Created from
+            </Label>
+            <Input
+              id="blog-start-date"
+              type="date"
+              value={startDate}
+              max={endDate || undefined}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="w-[170px]"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="blog-end-date" className="text-xs text-muted-foreground">
+              Created to
+            </Label>
+            <Input
+              id="blog-end-date"
+              type="date"
+              value={endDate}
+              min={startDate || undefined}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="w-[170px]"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => void reloadPosts()} disabled={isRefreshing}>
+              {isRefreshing ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Refresh
+            </Button>
+            {serverFiltersActive && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setStatusFilter("all")
+                  setAuthorFilter("all")
+                  setStartDate("")
+                  setEndDate("")
+                }}
+              >
+                <X className="h-4 w-4 mr-2" />
+                Reset
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* A refused reload leaves the previous rows on screen — say so, rather
+            than letting the list read as an up-to-date answer. */}
+        {refreshError && (
+          <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>
+              {refreshError} — the posts below are the last list that loaded successfully, not the filtered one.
+            </span>
+          </div>
+        )}
+
         {/* Posts Grid */}
         {filteredPosts.length === 0 ? (
           <Card>
@@ -664,16 +927,16 @@ export function BlogDashboardClient({
                 <Sparkles className="h-10 w-10 text-primary" />
               </div>
               <h3 className="text-lg font-semibold mb-2">
-                {searchQuery || statusFilter !== "all" || (categoryFilter && categoryFilter !== "All" && categoryFilter !== "")
+                {anyFilterActive
                   ? "No posts match your filters"
                   : "Create your first blog post"}
               </h3>
               <p className="text-muted-foreground text-sm text-center max-w-sm mb-6">
-                {searchQuery || statusFilter !== "all" || (categoryFilter && categoryFilter !== "All" && categoryFilter !== "")
+                {anyFilterActive
                   ? "Try adjusting your search or filter to find what you're looking for."
                   : "AI will help you write SEO-optimized content in minutes — just pick some keywords and let it do the work."}
               </p>
-              {!searchQuery && statusFilter === "all" && (!categoryFilter || categoryFilter === "All" || categoryFilter === "") && (
+              {!anyFilterActive && (
                 <div className="flex flex-wrap gap-3 justify-center">
                   <Button onClick={() => setIsTopicsOpen(true)} variant="outline">
                     <Lightbulb className="h-4 w-4 mr-2" />
@@ -685,10 +948,10 @@ export function BlogDashboardClient({
                   </Button>
                 </div>
               )}
-              {(searchQuery || statusFilter !== "all" || (categoryFilter && categoryFilter !== "All" && categoryFilter !== "")) && (
+              {(anyFilterActive) && (
                 <Button
                   variant="outline"
-                  onClick={() => { setSearchQuery(""); setStatusFilter("all"); setCategoryFilter("All") }}
+                  onClick={() => { setSearchQuery(""); setStatusFilter("all"); setCategoryFilter("All"); setAuthorFilter("all"); setStartDate(""); setEndDate("") }}
                 >
                   <X className="h-4 w-4 mr-2" />
                   Clear Filters
@@ -726,6 +989,11 @@ export function BlogDashboardClient({
                       <ExternalLink className="h-3 w-3" />
                       <span>Published {format(new Date(post.published_at), "MMM d, yyyy")}</span>
                     </div>
+                  )}
+                  {post.visibility_scope && post.visibility_scope !== "brokerage" && (
+                    <Badge variant="outline" className="mt-2 text-[10px]">
+                      {post.visibility_scope === "agent" ? "Private draft" : post.visibility_scope}
+                    </Badge>
                   )}
                 </CardContent>
               </Card>

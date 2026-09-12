@@ -25,13 +25,27 @@
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /**
  * Record the packet of record (signature_requests) for a successful send —
  * this is the row the client portal's Sign button gates on (owner rule: the
  * button only appears when an ACTIVE packet exists, and routes to the invite
- * via signing_url when the provider returned one; l54-s01). Best-effort:
- * a packet-record failure never fails the send itself.
+ * via signing_url when the provider returned one; l54-s01).
+ *
+ * WHY IT STAYS NON-FATAL, AND WHY IT IS NO LONGER SILENCED:
+ * every caller below reaches this only AFTER the provider has already accepted
+ * the envelope. Throwing or returning an error at this point would mark a step
+ * that really did send as failed, and the workflow retry would cut a SECOND
+ * envelope against the same document. So the send result stands — but the loss
+ * is now OBSERVABLE two ways instead of discarded by `.then(() => {}, () => {})`:
+ *   1. sentinelWrite ledgers the failure to self_heal_events (data_flow /
+ *      best_effort_write) where the repair digest and Exception Center rank it;
+ *   2. the boolean returned here rides out on the step's own output as
+ *      `packet_recorded`, so the workflow ledger records that the send happened
+ *      without a portal-visible packet rather than implying one exists.
+ * Note supabase-js RESOLVES a rejected write, so the old silencer swallowed the
+ * common case (FK/CHECK rejection), not just network faults.
  */
 async function recordSignaturePacket(supabase: StepContext["supabase"], p: {
   brokerageId: string
@@ -40,24 +54,28 @@ async function recordSignaturePacket(supabase: StepContext["supabase"], p: {
   transactionId: string | null
   signingUrl: string | null
   envelopeId?: string | null
-}): Promise<void> {
+}): Promise<boolean> {
   // LIVE-SCHEMA CONTRACT: signature_requests.document_id FKs to
   // client_documents — this adapter sends AI-drafted `documents` rows, so
   // the id only goes on the packet when it actually exists there; otherwise
   // the packet anchors on (contact, transaction) and the portal's
   // single-active-packet fallback resolves it.
   const { data: cd } = await supabase.from("client_documents").select("id").eq("id", p.documentId).maybeSingle()
-  await supabase.from("signature_requests").insert({
-    brokerage_id: p.brokerageId,
-    document_id: cd ? p.documentId : null,
-    contact_id: p.contactId,
-    transaction_id: p.transactionId,
-    request_status: "pending",
-    sent_at: new Date().toISOString(),
-    expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
-    signing_url: p.signingUrl,
-    provider_envelope_id: p.envelopeId ?? null,
-  }).then(() => {}, () => {})
+  return sentinelWrite(
+    supabase,
+    supabase.from("signature_requests").insert({
+      brokerage_id: p.brokerageId,
+      document_id: cd ? p.documentId : null,
+      contact_id: p.contactId,
+      transaction_id: p.transactionId,
+      request_status: "pending",
+      sent_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+      signing_url: p.signingUrl,
+      provider_envelope_id: p.envelopeId ?? null,
+    }),
+    { table: "signature_requests", flow: "workflow_send_for_esign", brokerageId: p.brokerageId },
+  )
 }
 
 export const sendForEsignAdapter: ChannelAdapter = {
@@ -186,7 +204,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
             await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
-            await recordSignaturePacket(supabase, {
+            const packetRecorded = await recordSignaturePacket(supabase, {
               brokerageId, documentId,
               contactId: contact?.id ?? null,
               transactionId: (document as any).transaction_id ?? null,
@@ -202,6 +220,9 @@ export const sendForEsignAdapter: ChannelAdapter = {
                 loop_id: result?.loopId,
                 signing_url: result?.signingUrl ?? null,
                 status: "sent_for_signature",
+                // false ⇒ the envelope went out but no portal-visible packet exists
+                // (loss is on the sentinel ledger). Never implied to be true.
+                packet_recorded: packetRecorded,
               },
             }
           }
@@ -220,7 +241,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
             await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
-            await recordSignaturePacket(supabase, {
+            const packetRecorded = await recordSignaturePacket(supabase, {
               brokerageId, documentId,
               contactId: contact?.id ?? null,
               transactionId: (document as any).transaction_id ?? null,
@@ -236,6 +257,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
                 loop_id: result?.loopId,
                 signing_url: result?.signingUrl ?? null,
                 status: "sent_for_signature",
+                packet_recorded: packetRecorded,
               },
             }
           }
@@ -290,7 +312,6 @@ export const sendForEsignAdapter: ChannelAdapter = {
         const txResult = await esignProv.createTransaction({
           propertyAddress,
           transactionType: document.document_type === "listing_agreement" ? "listing" : "purchase",
-          agentId: agentUserId ?? "",
           contactId: contact?.id,
           listingId: (document as any).listing_id ?? undefined,
           transactionId: (document as any).transaction_id ?? undefined,
@@ -344,8 +365,9 @@ export const sendForEsignAdapter: ChannelAdapter = {
           })
           .eq("id", documentId)
 
+        let packetRecorded = false
         if (signers.length > 0) {
-          await recordSignaturePacket(supabase, {
+          packetRecorded = await recordSignaturePacket(supabase, {
             brokerageId, documentId,
             contactId: contact?.id ?? null,
             transactionId: (document as any).transaction_id ?? null,
@@ -364,6 +386,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
             signing_url: null,
             status: "sent_for_signature",
             signers_count: signers.length,
+            packet_recorded: packetRecorded,
           },
         }
       } catch (err: unknown) {

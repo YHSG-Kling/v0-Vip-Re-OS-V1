@@ -113,7 +113,6 @@ export async function dispatchCdaSignerEsign(
         const tx = await dotloop.createTransaction({
           propertyAddress: args.propertyAddress ?? "Commission Disbursement Authorization",
           transactionType: "purchase",
-          agentId: args.signerUserId,
           transactionId: args.transactionId,
         })
         if (tx.success && tx.externalTransactionId) {

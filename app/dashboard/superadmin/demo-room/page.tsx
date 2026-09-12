@@ -14,14 +14,41 @@
 //
 // Access: the superadmin layout gates the subtree to platform staff; the
 // mutating actions additionally require the 'tenants' capability with write.
+//
+// READ GATE TIGHTENED (wave 4 slice 2). This page used to call the raw library
+// read `getDealRoomDemoStatus()` directly, which applies NO capability check —
+// so the layout's "platform staff" gate was the whole boundary on the read,
+// while both mutations on the same page require `requirePlatformCapability
+// ("tenants")`. A staff member without the tenants capability could therefore
+// see the demo tenant's id, brokerage name, lead id and contact id, and be shown
+// Seed / Tear down controls that would refuse. It now reads through
+// getDealRoomDemoStatusAction, which carries the SAME 'tenants' capability gate
+// the mutations do — read and write finally agree. (The action was NOT deleted
+// as a "thin duplicate" of the library function: this gate is exactly the thing
+// it adds.)
 
-import { getDealRoomDemoStatus, buildDealRoomRunbook } from "@/lib/platform/deal-room-demo"
+import { buildDealRoomRunbook } from "@/lib/platform/deal-room-demo"
+import { getDealRoomDemoStatusAction } from "@/app/actions/superadmin/deal-room-demo"
 import { DemoRoomClient } from "./demo-room-client"
 
 export const dynamic = "force-dynamic"
 
 export default async function DemoRoomPage() {
-  const status = await getDealRoomDemoStatus()
+  const res = await getDealRoomDemoStatusAction()
+  if (!res.ok || !res.status) {
+    // Say WHY, and render nothing else. A capability refusal must not fall
+    // through to an empty runbook that reads as "the demo is not seeded".
+    return (
+      <div className="p-6 text-sm text-muted-foreground">
+        <p className="font-medium text-foreground">Deal Room demo unavailable</p>
+        <p className="mt-1">
+          {res.error ?? "The demo status could not be read."} The Deal Room needs the
+          platform <code>tenants</code> capability.
+        </p>
+      </div>
+    )
+  }
+  const status = res.status
   const runbook = buildDealRoomRunbook({
     leadId: status.leadId,
     contactId: status.contactId,

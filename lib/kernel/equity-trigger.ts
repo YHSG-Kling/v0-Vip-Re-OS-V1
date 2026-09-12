@@ -54,27 +54,34 @@ type Svc = ReturnType<typeof createServiceClient>
 /** CASH-OUT: estimated equity must be at least this many dollars to be worth the call. */
 export const CASH_OUT_MIN_EQUITY = 150_000
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: CASH_OUT_MIN_PCT, CASH_OUT_PULL_PCT, REFI_MIN_MONTHLY_SAVINGS.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** CASH-OUT: estimated equity must also be at least this FRACTION of estimated value
  *  (a high-value home with a fresh large mortgage shouldn't trigger on dollars alone). */
-export const CASH_OUT_MIN_PCT = 0.35
+const CASH_OUT_MIN_PCT = 0.35
 
 /** CASH-OUT: the conservative slice of equity we model as pullable (banks cap cash-out
  *  refis well under 100% LTV; this keeps the headline number honest, not aspirational). */
-export const CASH_OUT_PULL_PCT = 0.5
+const CASH_OUT_PULL_PCT = 0.5
 
 /** REFI: current market rate must be at least this many bps BELOW the client's original
  *  rate (75 bps ≈ the rule-of-thumb floor where a refi starts to pencil out). */
 export const REFI_MIN_RATE_DELTA_BPS = 75
 
 /** REFI: the modeled monthly saving on the remaining balance must clear this floor. */
-export const REFI_MIN_MONTHLY_SAVINGS = 150
+const REFI_MIN_MONTHLY_SAVINGS = 150
 
 /** The rationale tag prefix that carries the per-(contact, type, quarter) idempotency key. */
 export const EQUITY_TRIGGER_TAG = "EQUITY TRIGGER"
 
 /** Non-authoritative rate source sentinel (matches the Wealth Advisor's cold-start guard):
  *  a placeholder benchmark is NOT a market quote — the refi dollar-claim is suppressed for it. */
-export const NON_AUTHORITATIVE_RATE_SOURCE = "seed_default"
+const NON_AUTHORITATIVE_RATE_SOURCE = "seed_default"
 
 export type EquityTriggerType = "cash_out" | "refi"
 
@@ -651,6 +658,58 @@ export async function runEquityTrigger(
       now,
     }, supabase)
     if (card.pushed) result.portalCardsPushed += 1
+
+    // (2b) KERNEL EVENTS — EQUITY_MILESTONE / REFINANCE_OPPORTUNITY. Declared in
+    // lib/kernel/events.ts but the producer (this decision, right here) only ever
+    // wrote the transparency_updates card above — a separate table the portal-stream
+    // projector never reads. That left wealth.equity_milestone and
+    // wealth.refinance_opportunity (event-translator.ts) genuinely writer-less
+    // (CLAUDE.md §1.2: BUILD the missing half). entityType "contact" + the resolved
+    // contactId so the projector's resolveEntityContext needs no extra lookup.
+    // metadata keys match exactly what the translator reads: estimated_equity for
+    // wealth.equity_milestone, monthly_savings_estimate for
+    // wealth.refinance_opportunity. Best-effort — never blocks the note/card above.
+    try {
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      if (signal.triggerTypes.includes("cash_out")) {
+        await emitKernelEvent({
+          event:       KernelEvent.EQUITY_MILESTONE,
+          brokerageId,
+          entityType:  "contact",
+          entityId:    contactId,
+          contactId,
+          actorUserId: null,
+          dedupeKey:   `equity_milestone:${qKey}`,
+          dedupeWindowSec: 7 * 86_400,
+          metadata: {
+            estimated_equity: signal.line.estimatedEquity,
+            transaction_id:   t.id,
+            quarter:          qKey,
+          },
+        })
+      }
+      if (signal.triggerTypes.includes("refi")) {
+        await emitKernelEvent({
+          event:       KernelEvent.REFINANCE_OPPORTUNITY,
+          brokerageId,
+          entityType:  "contact",
+          entityId:    contactId,
+          contactId,
+          actorUserId: null,
+          dedupeKey:   `refinance_opportunity:${qKey}`,
+          dedupeWindowSec: 7 * 86_400,
+          metadata: {
+            monthly_savings_estimate: signal.refiMonthlySavings,
+            rate_delta_bps:           signal.rateDeltaBps,
+            transaction_id:           t.id,
+            quarter:                  qKey,
+          },
+        })
+      }
+    } catch (err) {
+      console.error("[equity-trigger] wealth kernel event emit failed (non-blocking)", err)
+    }
 
     // (3) Director-commissioned equity/refi reel — EquityReportReel via commissionVideo
     // (D-ID + ElevenLabs, NEVER HeyGen). Requires an agent on the transaction to attribute

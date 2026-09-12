@@ -13,15 +13,10 @@
  * pulse) · CTA 330–450.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  spring,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface ProductPromoReelProps {
   hook: string
@@ -32,6 +27,15 @@ export interface ProductPromoReelProps {
   imageUrls?: string[]
   brand?: { primaryColor?: string; accentColor?: string; name?: string; tagline?: string }
   ctaDomain?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61 caption-consolidation
+   *  audit). Precomputed word-accurate cues built upstream from REAL alignment —
+   *  preferred. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text (composeProductVideoSpec's
+   *  own `script` — hook + beats + CTA, the SAME text this composition already
+   *  renders on screen, §6); CaptionLayer estimates timing in-composition when no
+   *  cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 /** Staggered word-by-word reveal — the "system thinking out loud" feel. */
@@ -44,7 +48,7 @@ const WordReveal: React.FC<{ text: string; size: number; weight?: number; delay?
       {words.map((w, i) => {
         const t = spring({ frame: frame - delay - i * 3, fps, config: { damping: 200 } })
         return (
-          <span key={i} style={{ opacity: t, transform: `translateY(${interpolate(t, [0, 1], [26, 0])}px)`, display: "inline-block" }}>
+          <span key={i} style={{ opacity: t, translate: `0 ${interpolate(t, [0, 1], [26, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`, display: "inline-block" }}>
             {w}
           </span>
         )
@@ -95,7 +99,7 @@ const CapabilityChip: React.FC<{ label: string; index: number; accent: string; w
   const { fps } = useVideoConfig()
   const t = spring({ frame: frame - 20 - index * 4, fps, config: { damping: 200 } })
   return (
-    <span style={{ opacity: t, transform: `scale(${0.8 + 0.2 * t})`, border: `1.5px solid ${accent}66`, color: "#ffffffcc", borderRadius: 999, padding: `${height * 0.006}px ${width * 0.02}px`, fontSize: width * 0.018, fontWeight: 600 }}>
+    <span style={{ opacity: t, scale: 0.8 + 0.2 * t, border: `1.5px solid ${accent}66`, color: "#ffffffcc", borderRadius: 999, padding: `${height * 0.006}px ${width * 0.02}px`, fontSize: width * 0.018, fontWeight: 600 }}>
       {label}
     </span>
   )
@@ -106,13 +110,15 @@ const KenBurnsShot: React.FC<{ src: string; primary: string }> = ({ src, primary
   const scale = 1.06 + 0.10 * (frame / 120)
   return (
     <AbsoluteFill>
-      <Img src={src} style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})`, opacity: 0.34 }} />
+      <SafeImg src={src} style={{ width: "100%", height: "100%", objectFit: "cover", scale, opacity: 0.34 }} />
       <AbsoluteFill style={{ background: `linear-gradient(${primary}d9, ${primary}f0)` }} />
     </AbsoluteFill>
   )
 }
 
-export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs, cta, brand, ctaDomain, imageUrls }) => {
+export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
+  hook, proofs, cta, brand, ctaDomain, imageUrls, captionsCues, captionScript,
+}) => {
   const primary = brand?.primaryColor ?? "#0F172A"
   const accent = brand?.accentColor ?? "#F59E0B"
   const name = (brand?.name ?? "VIP Agents").toUpperCase()
@@ -121,9 +127,21 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
   const frame = useCurrentFrame()
   const { width, height } = useVideoConfig()
   const pad = Math.round(width * 0.09)
+  // FONT: the stack every other composition in remotion/ uses (§6, one
+  // vocabulary). This used to lead with "Inter", which NOTHING in this repo
+  // loads — no @remotion/google-fonts, no @font-face, no <link> in the bundle —
+  // so the renderer silently fell through to the next entry and this reel was
+  // the one composition rendering in a different typeface from the other 32
+  // while the code claimed otherwise. The canonical fix is
+  // `loadFont()` from @remotion/google-fonts/Inter (see the skill at
+  // .claude/skills/remotion-best-practices/remotion-markup/google-fonts.md);
+  // that package is NOT installed and adding a dependency is not this change's
+  // call, so the declaration is made TRUTHFUL instead of left lying. To adopt
+  // Inter for real, install @remotion/google-fonts and set the stack from
+  // loadFont().fontFamily here — do not re-add the bare name.
   const base: React.CSSProperties = {
     backgroundColor: primary, color: "white",
-    fontFamily: "Inter, Helvetica, Arial, sans-serif", padding: pad, justifyContent: "center",
+    fontFamily: "system-ui, -apple-system, sans-serif", padding: pad, justifyContent: "center",
   }
   const beats = (proofs ?? []).slice(0, 3)
   const grid = Math.round(width / 14)
@@ -146,7 +164,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
           <KenBurnsShot src={imageUrls![idx % imageUrls!.length]} primary={primary} />
         </Sequence>
       ))}
-      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, 450], [15, 85])}% 12%, ${accent}26, transparent 55%)` }} />
+      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, 450], [15, 85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}% 12%, ${accent}26, transparent 55%)` }} />
 
       {/* persistent brand eyebrow + live-status dot */}
       <div style={{ position: "absolute", top: pad, left: pad, right: pad, display: "flex", alignItems: "center", gap: 12 }}>
@@ -158,7 +176,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
       <Sequence from={0} durationInFrames={90}>
         <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
           <WordReveal text={hook} size={width * 0.06} />
-          <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
+          <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
             {tagline}
           </div>
         </AbsoluteFill>
@@ -190,6 +208,15 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
           </div>
         </AbsoluteFill>
       </Sequence>
+
+      {/* NO CAPTION OVER THE CTA/DOMAIN TILE (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA scene at frame 330. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={accent}
+        hiddenFromFrame={330}
+      />
     </AbsoluteFill>
   )
 }

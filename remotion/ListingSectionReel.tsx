@@ -13,9 +13,12 @@
  * it falls back to the agent's photo. 1920×1080.
  */
 import React from "react"
-import { AbsoluteFill, Audio, useVideoConfig } from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, useVideoConfig } from "remotion"
 import { ListingPresentationSlide, type SlideKind } from "./ListingPresentationSlide"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 const SECTION_KIND: Record<string, SlideKind> = {
   intro:       "title",
@@ -41,6 +44,14 @@ export interface ListingSectionReelProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to start". */
   qrCaption?:     string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. See CaptionLayer.
+   *  section-render.ts stages captionScript from the SAME narration.script that
+   *  becomes the avatar/voice-clone narration below (§6 — one narration, not two). */
+  captionsCues?:  CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw narration script text; CaptionLayer
+   *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
   brand: {
     primaryColor:  string
     accentColor:   string
@@ -79,6 +90,16 @@ export const ListingSectionReel: React.FC<ListingSectionReelProps> = (props) => 
           qrCodeDataUrl={props.qrCodeDataUrl}
           caption={props.qrCaption ?? "Scan to start"}
           primaryColor={props.brand.primaryColor}
+          accentColor={props.brand.accentColor}
+        />
+      )}
+      {/* NO CAPTION OVER THE CLOSING SECTION'S QR (wave 61, mirrors JustListedReel.tsx) —
+          every non-closing section narrates for its full duration with no late
+          branding reveal, so the caption runs the whole section there. */}
+      {!isOutroSection && (
+        <CaptionLayer
+          cues={props.captionsCues}
+          script={props.captionScript}
           accentColor={props.brand.accentColor}
         />
       )}

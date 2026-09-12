@@ -18,15 +18,23 @@ export default async function PortalPage() {
     redirect(`/portal/${contactId}`)
   }
 
-  // Try to find a contact by email
-  const { data: contactByEmail } = await supabase
+  // Try to find a contact by email.
+  //
+  // An email address is not unique across tenants: the same person can be a client of
+  // two brokerages. This used .single(), which both picked an arbitrary tenant's row
+  // AND hard-errored when there was more than one — so a genuinely dual-tenant client
+  // saw a crash rather than a portal. Take the match only when it is unambiguous; the
+  // id-based lookups below (contact_user_id / user_id) are the reliable paths and run
+  // either way.
+  const { data: emailMatches } = await supabase
     .from('contacts')
-    .select('id')
+    .select('id, brokerage_id')
     .eq('email', user.email)
-    .single()
+    .limit(2)
 
-  if (contactByEmail) {
-    redirect(`/portal/${contactByEmail.id}`)
+  const emailRows = (emailMatches ?? []) as Array<{ id: string; brokerage_id: string | null }>
+  if (emailRows.length === 1) {
+    redirect(`/portal/${emailRows[0].id}`)
   }
 
   // Fallback 1: look up by contact_user_id
@@ -51,13 +59,33 @@ export default async function PortalPage() {
     redirect(`/portal/${contactByUserId.id}`)
   }
 
-  // No contact found — fetch brokerage branding for a helpful error state
-  // We try global_settings for any brokerage contact info to surface to the user
-  const { data: branding } = await supabase
-    .from('global_settings')
-    .select('app_name')
-    .limit(1)
+  // No contact found — fetch brokerage branding for a helpful error state.
+  //
+  // SCOPED TO THIS USER'S BROKERAGE. This read used to be
+  // `.select('app_name').limit(1).maybeSingle()` with NO tenant filter, i.e.
+  // "whichever settings row the database hands back first". The repo already
+  // knew better one file over: app/actions/seller-open-house.ts:1113 carries the
+  // comment "never 'the first settings row in the table'" and filters by
+  // brokerage_id.
+  //
+  // It was latent only because global_settings had zero rows and because m457
+  // has since removed the tenant-free "Admins and brokers can view settings"
+  // policy that let an admin or broker read EVERY tenant's row. Relying on RLS
+  // to scope a query the query itself declined to scope is how a leak survives a
+  // policy change — so the filter is stated here too, in the query.
+  const { data: viewer } = await supabase
+    .from('users')
+    .select('brokerage_id')
+    .eq('id', user.id)
     .maybeSingle()
+
+  const { data: branding } = viewer?.brokerage_id
+    ? await supabase
+        .from('global_settings')
+        .select('app_name')
+        .eq('brokerage_id', viewer.brokerage_id)
+        .maybeSingle()
+    : { data: null }
 
   const brokerageName = branding?.app_name ?? null
 

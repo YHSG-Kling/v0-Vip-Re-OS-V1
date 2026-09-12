@@ -84,7 +84,9 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
   }
 
   // Log the home-value-specific activity (carries the AVM context the generic capture doesn't).
-  await svc.from("activities").insert({
+  // Read the result: this row is the only record that the valuation was what
+  // brought the lead in, and the follow-up copy keys off it.
+  const { error: avmActivityError } = await svc.from("activities").insert({
     contact_id: contactId,
     brokerage_id: input.brokerageId,
     agent_user_id: input.agentUserId,
@@ -95,6 +97,10 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     }`,
     metadata: { property: input.property },
   })
+
+  if (avmActivityError) {
+    console.error("[home-value-lead] AVM activity NOT recorded:", avmActivityError.message)
+  }
 
   // Notify the agent — surfaces in their morning brief with the AVM context.
   await svc.from("notifications").insert({

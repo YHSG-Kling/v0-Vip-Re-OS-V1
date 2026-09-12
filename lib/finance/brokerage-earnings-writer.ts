@@ -14,16 +14,19 @@
 // buckets by category (marketing/office/technology→tech, rest→operating) and
 // subtract from net_profit. Team expenses stay on the team's own book. When a
 // tenant has logged NOTHING, the buckets stay honest-NULL and net_profit
-// remains GCI minus splits — never a fabricated 0 pretending expenses were
-// tracked.
+// remains the brokerage's commission net (the net-preference fold below) —
+// never a fabricated 0 pretending expenses were tracked.
 
 import "server-only"
 
 type Svc = { from: (table: string) => any }
 
-interface CommissionRow {
+export interface CommissionRow {
   gross_commission: number | null
   agent_commission: number | null
+  brokerage_commission: number | null
+  net_to_agent: number | null
+  net_to_brokerage: number | null
   transaction_id: string | null
   agent_id: string
   close_date: string | null
@@ -31,13 +34,25 @@ interface CommissionRow {
 
 export interface BrokerageEarningsResult { brokerages: number; rowsWritten: number }
 
-function fold(rows: CommissionRow[]) {
+// THE NET-PREFERENCE RULE (owner ruling 2026-08-28, the cap ruling's rollup
+// sibling): agent_commission / brokerage_commission are GENERATED pre-cap
+// splits (gross × split% and its complement) — the waterfall's ACTUAL results
+// live in net_to_agent / net_to_brokerage (post-cap, post-fee; step 11 writes
+// them). On a post-cap deal the two DISAGREE ON PURPOSE (agent keeps 100%,
+// brokerage takes $0), so folding the generated column overstates the
+// brokerage and understates the agent on every capped deal. Prefer the stored
+// net when non-null; fall back to the generated split only for manually
+// entered rows that carry a split percent and no net.
+export function foldCommissionRows(rows: CommissionRow[]) {
   const gci = rows.reduce((s, r) => s + (Number(r.gross_commission) || 0), 0)
-  const splits = rows.reduce((s, r) => s + (Number(r.agent_commission) || 0), 0)
+  const splits = rows.reduce(
+    (s, r) => s + (r.net_to_agent != null ? Number(r.net_to_agent) || 0 : Number(r.agent_commission) || 0), 0)
+  const net = rows.reduce(
+    (s, r) => s + (r.net_to_brokerage != null ? Number(r.net_to_brokerage) || 0 : Number(r.brokerage_commission) || 0), 0)
   return {
     gci,
     splits,
-    net: gci - splits,
+    net,
     txCount: new Set(rows.map((r) => r.transaction_id).filter(Boolean)).size,
     agentCount: new Set(rows.map((r) => r.agent_id)).size,
   }
@@ -54,7 +69,7 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
     try {
       const { data: ytdRows } = await svc
         .from("agent_commissions")
-        .select("gross_commission, agent_commission, transaction_id, agent_id, close_date")
+        .select("gross_commission, agent_commission, brokerage_commission, net_to_agent, net_to_brokerage, transaction_id, agent_id, close_date")
         .eq("brokerage_id", b.id)
         .gte("close_date", yearStart)
         .limit(5000)
@@ -63,11 +78,11 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
       out.brokerages++
 
       const mtd = ytd.filter((r) => (r.close_date ?? "") >= monthStart)
-      const periods: Array<{ period_type: string; period_label: string; f: ReturnType<typeof fold> }> = [
+      const periods: Array<{ period_type: string; period_label: string; f: ReturnType<typeof foldCommissionRows> }> = [
         // live CHECK vocabulary: monthly / quarterly / annual (caught by fire —
         // 'mtd'/'ytd' can never exist; the page reads were fixed to match)
-        { period_type: "monthly", period_label: monthLabel, f: fold(mtd) },
-        { period_type: "annual", period_label: String(now.getFullYear()), f: fold(ytd) },
+        { period_type: "monthly", period_label: monthLabel, f: foldCommissionRows(mtd) },
+        { period_type: "annual", period_label: String(now.getFullYear()), f: foldCommissionRows(ytd) },
       ]
 
       // No unique index exists on (brokerage_id, period_type) — pass-10 rule:

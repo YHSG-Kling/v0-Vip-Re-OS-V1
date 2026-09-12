@@ -72,6 +72,36 @@ function sourceLayer() {
   check("agent_tax_profile is owned by the Finance Manager", /agent_tax_profile:\s*"finance_manager"/.test(reg))
 }
 
+/** TENANT OPTION (m574) — "tax assistance tech is an option for tenants built out."
+ *  The gate is proved BEHAVIORALLY (stub clients through the real resolver — a broken
+ *  regex can't fake these) plus source checks that every entry point actually calls it. */
+async function tenantOptionLayer() {
+  console.log("\n[tenant option — tax assistance gated on brokerages.tax_assistance_enabled, fail-closed]")
+  const { resolveTaxAssistanceEnabled } = await import("../lib/finance/tax-assistance")
+  const stub = (row: unknown, error: unknown = null) => ({
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: row, error }) }) }) }),
+  })
+  const on = await resolveTaxAssistanceEnabled(stub({ tax_assistance_enabled: true }), "b1")
+  check("enabled brokerage → enabled", on.enabled === true && on.reason === "enabled")
+  const off = await resolveTaxAssistanceEnabled(stub({ tax_assistance_enabled: false }), "b1")
+  check("disabled brokerage → refused (disabled_by_brokerage)", off.enabled === false && off.reason === "disabled_by_brokerage")
+  const unset = await resolveTaxAssistanceEnabled(stub({}), "b1")
+  check("UNSET column → refused, never defaulted to offered", unset.enabled === false)
+  const errd = await resolveTaxAssistanceEnabled(stub(null, { message: "boom" }), "b1")
+  check("FAIL-CLOSED — a read error refuses (read_failed), never passes", errd.enabled === false && errd.reason === "read_failed")
+  const noB = await resolveTaxAssistanceEnabled(stub({ tax_assistance_enabled: true }), null)
+  check("no brokerage → refused", noB.enabled === false && noB.reason === "no_brokerage")
+
+  const actions = src("app/actions/tax-planning.ts")
+  const gateCalls = actions.match(/await resolveTaxAssistanceEnabled\(/g) ?? []
+  check("ALL THREE tax actions gate on the tenant option (3 call sites)", gateCalls.length === 3)
+  check("a refused gate returns the disabled sentinel, not a silent pass", /TAX_ASSISTANCE_DISABLED_ERROR/.test(actions))
+  const panel = src("app/dashboard/financials/components/planning/tax-setaside-panel.tsx")
+  check("the set-aside panel explains a disabled tenant instead of rendering dead tools", /tax_assistance_disabled/.test(panel) && /disabledByBrokerage/.test(panel))
+  const settings = src("app/actions/settings/revenue-share-setting.ts")
+  check("the enablement is written from the ONE offerings settings home (tax_assistance → tax_assistance_enabled)", /tax_assistance:\s*"tax_assistance_enabled"/.test(settings))
+}
+
 async function liveLayer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
@@ -101,6 +131,7 @@ async function liveLayer() {
 async function main() {
   pureLayer()
   sourceLayer()
+  await tenantOptionLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

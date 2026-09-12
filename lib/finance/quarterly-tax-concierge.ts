@@ -9,6 +9,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { buildTaxPlan, sumDeductibleExpenses, quarterlyDueDates } from "./tax-planning"
+import { usd } from "@/lib/format/money"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -38,7 +39,7 @@ export function upcomingQuarterlyDue(today: string, windowDays = 12): UpcomingDu
   return best
 }
 
-const usd = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * Run the concierge for one brokerage. No-op unless a quarterly due date is within the window. For each

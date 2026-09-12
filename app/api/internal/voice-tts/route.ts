@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { synthesizeSpeechStream } from "@/lib/voice/elevenlabs-tts"
 import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
+import { elevenLabsModelForLane, ELEVENLABS_REALISM_VOICE_SETTINGS } from "@/lib/video/realism-profile"
 
 /**
  * Voice TTS endpoint — streams ElevenLabs mp3 in the agent's cloned voice.
@@ -40,10 +41,19 @@ export async function POST(req: NextRequest) {
   // Resolve self-voice (honors voice_preference: clone vs generic choice)
   const resolved = await resolveSelfVoice(user.id)
 
+  // WAVE 58: model + voice_settings resolved via the ONE selectors (§6) —
+  // elevenLabsModelForLane("phone_realtime") (this is real-time, interactive
+  // TTS: the agent is waiting for the assistant to start talking, same
+  // register as the phone receptionist's live turn) and
+  // ELEVENLABS_REALISM_VOICE_SETTINGS (lib/video/realism-profile.ts) — instead
+  // of a hand-rolled literal that SILENTLY OVERRODE the tuned realism default
+  // synthesizeSpeechStream already falls back to (its own DEFAULT_VOICE_SETTINGS
+  // IS ELEVENLABS_REALISM_VOICE_SETTINGS) with the untuned, pre-wave-55 numbers.
   const result = await synthesizeSpeechStream({
     text,
     voiceId: resolved.voiceId,
-    voiceSettings: { stability: 0.5, similarity_boost: 0.78, style: 0.1 },
+    modelId: elevenLabsModelForLane("phone_realtime"),
+    voiceSettings: ELEVENLABS_REALISM_VOICE_SETTINGS,
   })
 
   if (!result.success || !result.response) {

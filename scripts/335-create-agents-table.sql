@@ -106,74 +106,39 @@ CREATE POLICY "Service role manages agents" ON agents
   FOR ALL USING (true) WITH CHECK (true);
 
 -- ============================================================================
--- AGENT GAMIFICATION TABLES
+-- AGENT GAMIFICATION TABLES — REMOVED. THIS SECTION WAS A LOADED GUN.
 -- ============================================================================
-
--- Agent Points History
-CREATE TABLE IF NOT EXISTS agent_points_history (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
-  points INTEGER NOT NULL,
-  action_type TEXT NOT NULL, -- listing_created, deal_closed, lead_converted, showing_completed, review_received, etc.
-  description TEXT,
-  reference_id UUID, -- ID of the related entity (transaction, contact, etc.)
-  reference_type TEXT, -- transaction, contact, listing, etc.
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_points_agent_id ON agent_points_history(agent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_points_created_at ON agent_points_history(created_at);
-
-ALTER TABLE agent_points_history ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Service role manages agent points" ON agent_points_history;
-CREATE POLICY "Service role manages agent points" ON agent_points_history
-  FOR ALL USING (true) WITH CHECK (true);
-
--- Agent Badges
-CREATE TABLE IF NOT EXISTS agent_badges (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL UNIQUE,
-  description TEXT,
-  icon TEXT,
-  points_required INTEGER,
-  criteria JSONB, -- Flexible criteria for earning badge
-  tier TEXT DEFAULT 'bronze', -- bronze, silver, gold, platinum
-  category TEXT, -- performance, milestone, special, seasonal
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Seed default badges
-INSERT INTO agent_badges (name, description, icon, points_required, tier, category) VALUES
-  ('Fast Starter', 'Close your first deal within 90 days', 'rocket', 100, 'bronze', 'milestone'),
-  ('Top Closer', 'Close 10+ deals in a year', 'trophy', 500, 'gold', 'performance'),
-  ('Five Star', 'Receive 5 five-star reviews', 'star', 250, 'silver', 'performance'),
-  ('Volume Titan', 'Exceed $10M in annual volume', 'trending-up', 1000, 'platinum', 'performance'),
-  ('Lead Machine', 'Convert 50+ leads', 'users', 300, 'silver', 'performance'),
-  ('Speed Demon', 'Average response time under 5 minutes', 'zap', 200, 'bronze', 'performance'),
-  ('Mentor', 'Help onboard 3 new agents', 'heart', 400, 'gold', 'special'),
-  ('Legend', 'Reach Level 10', 'crown', 2000, 'platinum', 'milestone')
-ON CONFLICT (name) DO NOTHING;
-
-ALTER TABLE agent_badges ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Service role manages agent badges" ON agent_badges;
-CREATE POLICY "Service role manages agent badges" ON agent_badges
-  FOR ALL USING (true) WITH CHECK (true);
-
--- Agent Earned Badges
-CREATE TABLE IF NOT EXISTS agent_earned_badges (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
-  badge_id UUID REFERENCES agent_badges(id) ON DELETE CASCADE,
-  earned_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(agent_id, badge_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_earned_badges_agent_id ON agent_earned_badges(agent_id);
-
-ALTER TABLE agent_earned_badges ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Service role manages earned badges" ON agent_earned_badges;
-CREATE POLICY "Service role manages earned badges" ON agent_earned_badges
-  FOR ALL USING (true) WITH CHECK (true);
+--
+-- It defined three tables. Measured against the live database (project
+-- hrvaqgvukzxfskkcrwbt) before removal:
+--
+--   agent_points_history   DOES NOT EXIST. The live points ledger is
+--                          `agent_points_log` (agent_id, brokerage_id, points,
+--                          reason, reference_type, reference_id) — a different
+--                          table with a different column set and a tenant column
+--                          this one had no equivalent of.
+--   agent_earned_badges    DOES NOT EXIST. The live award ledger is
+--                          `agent_badges` (agent_id, badge_id, awarded_at,
+--                          awarded_reason, brokerage_id).
+--   agent_badges           EXISTS LIVE, AND WITH A DIFFERENT, INCOMPATIBLE SHAPE.
+--                          Live it is the per-agent AWARD LEDGER keyed
+--                          (agent_id, badge_id). Here it was declared as the
+--                          badge CATALOG — name/description/icon/points_required/
+--                          criteria/tier/category with UNIQUE(name) — the role the
+--                          live schema gives `gamification_badges`.
+--
+-- `CREATE TABLE IF NOT EXISTS agent_badges` would have silently skipped the live
+-- table, and the eight-row `INSERT INTO agent_badges (name, description, icon,
+-- points_required, tier, category)` that followed would then have been run against
+-- the AWARD LEDGER, whose columns are agent_id and badge_id. Every one of those
+-- columns is absent there and agent_id/badge_id are NOT NULL, so the insert fails —
+-- and the two `CREATE POLICY ... FOR ALL USING (true) WITH CHECK (true)` statements
+-- around it would have landed FIRST, opening the live agent_badges table to every
+-- authenticated caller in every tenant on a script that never finished.
+--
+-- The canonical gamification schema is the live one, and the badge catalog is
+-- seeded as platform defaults (brokerage_id IS NULL) by
+-- supabase/migrations/m484-*.sql. Nothing about gamification belongs in this file.
 
 -- ============================================================================
 -- AGENT COMMISSION & EXPENSES TABLES

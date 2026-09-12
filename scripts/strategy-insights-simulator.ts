@@ -58,6 +58,24 @@ async function main() {
   check("conservative win rate = 0 (0 accepted / 1 rejected)", ins.byStrategyType.find((s) => s.type === "conservative")?.winRate === 0)
   check("prompt context names a winning strategy", /aggressive/.test(ins.promptContext) && /acceptance rate/.test(ins.promptContext))
 
+  // strategy_outcomes.notes — written by every closer, read by nothing until w26.
+  const noted = computeStrategyInsights([
+    { outcome: "rejected", deviation_from_recommendation: null, recommendation_id: "n1", strategyType: "standard", notes: "Seller took a cash offer $10k lower — speed beat price here." },
+    { outcome: "accepted", deviation_from_recommendation: 1000, recommendation_id: "n2", strategyType: "standard", notes: "Auto-closed on offer accepted" },
+    { outcome: "accepted", deviation_from_recommendation: 1000, recommendation_id: "n3", strategyType: "standard", notes: "Seller took a cash offer $10k lower — speed beat price here." },
+    { outcome: "countered", deviation_from_recommendation: null, recommendation_id: "n4", strategyType: "standard", notes: "   " },
+    { outcome: "withdrawn", deviation_from_recommendation: null, recommendation_id: "n5", strategyType: "standard" },
+  ], 90)
+  check("human note surfaces", noted.recentNotes.length === 1 && /speed beat price/.test(noted.recentNotes[0]))
+  check("auto-close template is NOT a human note", !noted.recentNotes.some((n) => /Auto-closed/.test(n)))
+  check("duplicate notes collapse to one", noted.recentNotes.length === 1)
+  check("blank + absent notes are not counted", noted.notesRecorded === 3)
+  // POSITIVE CONTROL: the filter must still let an auto-close row COUNT (it carries a
+  // note) while keeping it out of the human list — a filter that dropped both would
+  // report the same empty list on a corpus that has real notes.
+  check("auto-close row still counts toward notesRecorded", noted.notesRecorded > noted.recentNotes.length)
+  check("no notes at all → empty list AND zero denominator", ins.recentNotes.length === 0 && ins.notesRecorded === 0)
+
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) {

@@ -18,12 +18,23 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+// Client-agnostic resolver: this runs against the CALLER's client so the
+// agents lookup stays RLS-scoped exactly like every other read in here.
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
 export interface AgentLearningContext {
   userId:              string
   brokerageId:         string
   tenureDays:          number | null
   completedModuleIds:  string[]
+  /** Modules the agent explicitly dismissed ("not now") — excluded from new
+   *  recommendations same as completed ones, so a dismiss actually sticks
+   *  instead of the same module reappearing on the next composer run.
+   *  Filtered on dismissed_at rather than status='dismissed' alone: a row
+   *  the retake-reset clears (onboarding/progress.ts) sets dismissed_at back
+   *  to null, so the timestamp is the honest "still dismissed" signal even
+   *  if a future writer ever moves status without touching the timestamp. */
+  dismissedModuleIds:  string[]
   /** Performance gap tags this agent currently exhibits. Used to match
    *  against learning_modules.gap_tags. Possible values are open-ended
    *  but the canonical set is documented in the migration: 'low_close_rate',
@@ -63,17 +74,24 @@ export async function resolveAgentLearningContext(
   const completedModuleIds = (completedRows ?? [])
     .map((r: Record<string, unknown>) => (r as { module_id: string }).module_id)
 
+  // Dismissed modules ("not now") — see the field doc above for why this
+  // filters on dismissed_at rather than status.
+  const { data: dismissedRows } = await supabase
+    .from("learning_assignments")
+    .select("module_id")
+    .eq("agent_user_id", userId)
+    .not("dismissed_at", "is", null)
+  const dismissedModuleIds = (dismissedRows ?? [])
+    .map((r: Record<string, unknown>) => (r as { module_id: string }).module_id)
+
   // ─── Performance gaps ────────────────────────────────────────────────
   const gapTags: string[] = []
 
   // 1. Open deal-health interventions on this agent's transactions?
-  //    transactions.agent_id is FK to agents(id) — resolve first.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle()
-  const agentsId = (agentRow?.id as string | null) ?? null
+  //    Brokerage is already known here, so use the SCOPED resolve — a user
+  //    carrying agents rows in two brokerages must not be answered with the
+  //    other tenant's row.
+  const agentsId = await resolveAgentIdInBrokerage(supabase, userId, brokerageId)
 
   if (agentsId) {
     const { count: openDealIv } = await supabase
@@ -89,13 +107,16 @@ export async function resolveAgentLearningContext(
   }
 
   // 2. Open listing-health interventions on this agent's listings?
-  const { count: openListingIv } = await supabase
-    .from("listing_health_interventions")
-    .select("id", { count: "exact", head: true })
-    .eq("resolved", false)
-    .eq("agent_id", userId)
-    .eq("brokerage_id", brokerageId)
-  if ((openListingIv ?? 0) >= 1) gapTags.push("open_listing_interventions")
+  //    No agents row → no listings of their own → no gap to tag.
+  if (agentsId) {
+    const { count: openListingIv } = await supabase
+      .from("listing_health_interventions")
+      .select("id", { count: "exact", head: true })
+      .eq("resolved", false)
+      .eq("agent_id", agentsId)
+      .eq("brokerage_id", brokerageId)
+    if ((openListingIv ?? 0) >= 1) gapTags.push("open_listing_interventions")
+  }
 
   // 3. NPV touchpoints overdue (>0)? Sphere neglect.
   const today = new Date().toISOString().slice(0, 10)
@@ -136,6 +157,7 @@ export async function resolveAgentLearningContext(
     brokerageId,
     tenureDays,
     completedModuleIds,
+    dismissedModuleIds,
     gapTags:             Array.from(new Set(gapTags)),
     unadoptedInsightIds,
   }

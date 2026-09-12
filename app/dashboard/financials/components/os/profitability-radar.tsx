@@ -12,6 +12,7 @@ import {
   PieChart,
   BarChart3,
 } from "lucide-react"
+import { marginColorClass } from "@/lib/format/style"
 
 interface ProfitabilityRadarProps {
   metrics: {
@@ -23,7 +24,16 @@ interface ProfitabilityRadarProps {
     targetProgress?: number // % to goal
   }
   period: "mtd" | "ytd" | "custom"
+  /** optional by design: getPeriodTitle() already derives a correct label from
+   *  `period` ("Month to Date" / "Year to Date"), which every current caller
+   *  passes. Only needed to override for a genuinely custom range. */
   periodLabel?: string
+  /** optional by design: only rendered next to `metrics.revenueGrowth`, which
+   *  no caller computes today (no prior-period comparison source exists yet in
+   *  the agent/brokerage financial-kernel loaders — hidden-wire census category
+   *  c, 2026-09-10 wave 50). Wiring a real YoY/MoM figure needs a genuine
+   *  prior-period query, not a placeholder; tracked for a follow-up rather than
+   *  fabricated here. */
   comparisonLabel?: string
 }
 
@@ -42,12 +52,10 @@ export function ProfitabilityRadar({
 
   const formatPercent = (val: number) => `${val.toFixed(1)}%`
 
-  const getMarginColor = (margin: number) => {
-    if (margin >= 40) return "text-green-600"
-    if (margin >= 25) return "text-emerald-600"
-    if (margin >= 15) return "text-amber-600"
-    return "text-red-600"
-  }
+  // `getMarginColor` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to lib/format/style.ts `marginColorClass`
+  // (imported above).
+  const getMarginColor = marginColorClass
 
   const getGrowthIcon = (growth?: number) => {
     if (growth === undefined) return null

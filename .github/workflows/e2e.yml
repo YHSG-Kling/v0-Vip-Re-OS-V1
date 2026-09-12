@@ -16,24 +16,22 @@ jobs:
     timeout-minutes: 30
     env:
       # `npm run type-check` (tsc --noEmit) on this app peaks above the default
-      # ~4 GB Node heap and OOM-crashes (exit 134, "Reached heap limit"). The
-      # guards workflow already runs the identical type-check with an 8 GB heap
-      # and passes; this job ran it with the default heap and crashed flakily
-      # (it sits right at the 4 GB edge). Match the proven guards config so the
-      # type-check step is memory-stable here too.
-      NODE_OPTIONS: --max-old-space-size=8192
+      # ~4 GB Node heap and OOM-crashes (exit 134, "Reached heap limit"). This
+      # job runs the IDENTICAL type-check as the guards workflow, so it must
+      # carry the identical heap — 8192 stopped being enough once the program
+      # measured 8.45 GB and guards died with exit 134. Kept in lockstep with
+      # guards.yml deliberately: the two drifting apart is how one workflow goes
+      # green while the other OOMs on the same commit.
+      NODE_OPTIONS: --max-old-space-size=12288
       # Provided via repo Secrets; empty → simulators skip the live layer (still exit 0).
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
+      # Node + `npm ci` live in ONE composite action for all four workflows —
+      # see .github/actions/node-deps/action.yml.
+      - uses: ./.github/actions/node-deps
       - name: Type-check
         run: npm run type-check
       - name: Run end-to-end business-process flows (live DB seed/assert/cleanup)
@@ -44,6 +42,13 @@ jobs:
       # Creds-gated: skips exit-0 without secrets.
       - name: Live-schema drift check (committed snapshot vs live DDL)
         run: npx tsx scripts/check-live-schema-drift.ts
+      # A MIGRATION FILE IS NOT A MIGRATION (wave 27): m392-m397 — the entire
+      # waves-20/22 RLS remediation — sat in supabase/migrations/ unapplied while
+      # six waves recorded them as done, because nothing in this repo applies
+      # migrations. No filesystem check can see that; this asks the ledger.
+      # Creds-gated like the drift check above: stated skip, exit 0, without them.
+      - name: Migration ledger check (every migration file actually applied)
+        run: npx tsx scripts/migration-ledger-guard.ts
       # The FULL guard chain against main nightly — per-push runs cover PRs;
       # this catches anything that landed on main between deploys.
       - name: Full guard chain

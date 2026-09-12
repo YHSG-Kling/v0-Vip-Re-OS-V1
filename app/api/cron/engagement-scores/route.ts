@@ -8,6 +8,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function GET(req: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
@@ -56,10 +57,13 @@ export async function GET(req: NextRequest) {
 
         const score = Math.min(100, (count ?? 0) * 10)
 
-        await supabase
-          .from("contacts")
-          .update({ engagement_score: score, updated_at: new Date().toISOString() })
-          .eq("id", contactId)
+        await bestEffort(
+          supabase
+            .from("contacts")
+            .update({ engagement_score: score, updated_at: new Date().toISOString() })
+            .eq("id", contactId),
+          "derived engagement score recomputed from scratch on every cron pass; the activities count it is derived from is the record of fact, so one contact's refused stamp must not abort the remaining 99 in the batch",
+        )
 
         processed++
       } catch (err: any) {
@@ -68,9 +72,37 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Engagement scores cron failed: ${err.message}`)
-    void supabase
+    // PLATFORM-WIDE FAILURE, WRITTEN DELIBERATELY UNTENANTED — the one place in
+    // this wave where no tenant is the honest answer, and it is defended rather
+    // than assumed.
+    //
+    // This catch is the OUTER catch of a sweep that runs across EVERY brokerage
+    // (the per-item failures are caught inside the loop and pushed to `errors`).
+    // What failed is the job, not one tenant's work, so there is no record to
+    // resolve a tenant through and inventing one would attribute a platform
+    // outage to whichever brokerage happened to be first.
+    //
+    // Writing it untenanted is not "a row nobody can read", which is the rule
+    // this wave otherwise follows. Measured, not assumed: `lib/platform/ai-ops.ts:73`
+    // reads `automation_errors` CROSS-TENANT on the service client with NO
+    // brokerage predicate (`.not("status","in","(resolved,dismissed)")`), its row
+    // type carries `brokerageId: string | null` explicitly, and
+    // `app/actions/superadmin/ai-ops.ts:resolveAutomationErrorAction` resolves by
+    // id with no brokerage predicate either. So this row IS visible and IS
+    // resolvable — on the platform AI-ops console, which is exactly the audience
+    // a platform-wide cron failure belongs to, and is invisible to tenants, which
+    // is exactly right for a failure that is not theirs.
+    //
+    // The `void` fire-and-forget it replaces discarded the insert's own outcome,
+    // so a refused error-log looked identical to a filed one.
+    const { error: engagement_scores_log_error } = await supabase
       .from("automation_errors")
-      .insert({ workflow_name: "engagement-scores", error_message: err.message, severity: "error", created_at: ranAt })
+      .insert({ brokerage_id: null, workflow_name: "engagement-scores", error_message: err.message, severity: "error", created_at: ranAt })
+    if (engagement_scores_log_error) {
+      // The ORIGINAL failure is already in `errors` and in the response body, so a
+      // failure to FILE it is reported beside it and never replaces it.
+      console.error("[EngagementScores] automation_errors insert refused:", engagement_scores_log_error.message)
+    }
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

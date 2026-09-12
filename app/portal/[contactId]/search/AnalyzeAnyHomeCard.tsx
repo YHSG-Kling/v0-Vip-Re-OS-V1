@@ -65,9 +65,11 @@ export function AnalyzeAnyHomeCard({
         price: analysis.estimatedValue ?? 0, monthlyEstimate: payment?.total ?? 0,
         verdict: framing ? framing.label : "researching",
       })
+      // r.success now MEANS the agent's alert was written. When it wasn't, the server's sentence
+      // names the route that does not depend on the rail that just failed — never a bare "Try again".
       toast(r.success
         ? { title: "Your agent has been notified", description: "They'll follow up on this home with you." }
-        : { title: "Couldn't notify your agent", description: r.error ?? "Try again", variant: "destructive" })
+        : { title: "Your agent wasn't notified", description: r.error ?? "Try again", variant: "destructive" })
     })
   }
 

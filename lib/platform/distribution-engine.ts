@@ -193,6 +193,74 @@ export async function distributePlatformLead(params: {
   }
 }
 
+export interface DistributionLedgerEntry {
+  id: string
+  zip_code: string | null
+  brokerage_id: string
+  brokerage_name: string | null
+  lead_id: string | null
+  raw_lead_id: string | null
+  distributed_at: string | null
+  rotation_position: number | null
+  source_family: string | null
+  motivation_type: string | null
+  urgency_level: string | null
+}
+
+/**
+ * The distribution ledger, read back — the READER half of
+ * `platform_lead_distributions`.
+ *
+ * Every placement writes which lead went to which subscriber, when, at which
+ * rotation slot, and what the lead looked like (source_family / motivation /
+ * urgency). The engine itself only ever counts rows per zip for rotation; the
+ * record of WHO received WHAT — the platform's answer when a subscriber asks
+ * "are we actually getting our turn in this zip?" — had no reader until this.
+ *
+ * PLATFORM-ONLY by design: the ledger spans every tenant, so this loader is
+ * for the superadmin platform board (behind requireSuperadmin), never a tenant
+ * surface. Callers must gate before calling — this uses the service client.
+ */
+export async function loadRecentPlatformDistributions(limit = 50): Promise<
+  { ok: true; entries: DistributionLedgerEntry[] } | { ok: false; error: string }
+> {
+  const supabase = createServiceClient()
+
+  const { data, error } = await supabase
+    .from("platform_lead_distributions")
+    .select(
+      "id, zip_code, brokerage_id, lead_id, raw_lead_id, distributed_at, rotation_position, source_family, motivation_type, urgency_level"
+    )
+    .order("distributed_at", { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 200))
+
+  // supabase-js RESOLVES a refused read — an error here must not render as
+  // "no distributions yet" on the board.
+  if (error) return { ok: false, error: error.message }
+
+  const rows = (data ?? []) as Array<Omit<DistributionLedgerEntry, "brokerage_name">>
+
+  // Recipient names, best-effort: a failed name read degrades to the id, it
+  // never hides a ledger row.
+  const brokerageIds = [...new Set(rows.map((r) => r.brokerage_id).filter(Boolean))]
+  const nameById = new Map<string, string>()
+  if (brokerageIds.length > 0) {
+    const { data: brokerages, error: bErr } = await supabase
+      .from("brokerages")
+      .select("id, name")
+      .in("id", brokerageIds)
+    if (bErr) console.error("[distribution-engine] brokerage name read failed:", bErr.message)
+    for (const b of brokerages ?? []) {
+      if ((b as { name?: string }).name) nameById.set((b as { id: string }).id, (b as { name: string }).name)
+    }
+  }
+
+  return {
+    ok: true,
+    entries: rows.map((r) => ({ ...r, brokerage_name: nameById.get(r.brokerage_id) ?? null })),
+  }
+}
+
 /**
  * Batch entry point — call after a scrape execution completes (and every 2 hours
  * from the platform-lead-distribution cron).

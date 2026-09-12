@@ -1,8 +1,12 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
+// bestEffort → sentinelWrite (2026-09-09): once the local requireContactAccess merged away
+// this file holds ONLY the service-role client, and the write-sentinel ruling is that a client
+// which can reach the self-heal ledger must ledger its losses rather than console.warn them.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { validateTestimonialSubmission, type TestimonialKind } from "@/lib/testimonials/testimonial-policy"
 import { isNextMoveIntent, nextStepForIntent, type NextMoveIntent } from "@/lib/portal/next-move"
@@ -14,50 +18,14 @@ import {
 } from "@/lib/portal/home-assistant"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { normalizeLifetimeSegment, type LifetimeSegment } from "@/lib/portal/lifetime-segment"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 
-// ─── Auth helper ──────────────────────────────────────────────────────────────
-// Previously this file was missing "use server" yet was imported from
-// client components (referral forms, etc.) — so it was both a build-
-// inconsistency AND every function ran without auth, trusting a caller-
-// supplied contactId to scope everything. Any signed-in (or unauth'd
-// during server render) caller could enumerate any contact's referrals,
-// transaction history, home value estimates, brokerage vendor list, and
-// even SUBMIT referrals attributed to another tenant's contact.
-//
-// requireContactAccess() allows the contact themselves (portal session)
-// or any agent/admin in the contact's brokerage.
-async function requireContactAccess(contactId: string): Promise<
-  | { ok: true; userId: string; brokerageId: string; isContactSelf: boolean }
-  | { ok: false }
-> {
-  const authClient = await createClient()
-  const { data: { user: authUser } } = await authClient.auth.getUser()
-  if (!authUser) return { ok: false }
-
-  const svc = createServiceClient()
-  const { data: contact } = await svc
-    .from("contacts")
-    .select("brokerage_id, contact_user_id, email")
-    .eq("id", contactId)
-    .maybeSingle()
-  if (!contact || !contact.brokerage_id) return { ok: false }
-
-  const isContactSelf =
-    contact.contact_user_id === authUser.id ||
-    !!(contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
-
-  if (isContactSelf) {
-    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: true }
-  }
-
-  const { data: callerRow } = await svc
-    .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
-  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")) {
-    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
-  }
-
-  return { ok: false }
-}
+// TOMBSTONE: local requireContactAccess merged onto
+// lib/portal/require-contact-access.ts:107 requireContactAccess (imported
+// above) — §1/§6 SAME BODY census round 3, 2026-09-09. The survivor also
+// destructures `error` on both reads (§3) and additionally recognises an
+// accepted, unexpired portal_contact_invites row as "the contact themselves",
+// which this copy did not.
 
 // ─── SUBMIT CLIENT TESTIMONIAL (text or video) ───────────────────────────────
 // The newly-closed / lifetime client leaves a testimonial IN THE PORTAL — a few words OR a short video —
@@ -88,7 +56,7 @@ export async function submitClientTestimonial(params: {
     .eq("contact_id", params.contactId).eq("brokerage_id", access.brokerageId).eq("status", "closed")
     .order("close_date", { ascending: false }).limit(1).maybeSingle()
 
-  const { error: insErr } = await svc.from("agent_reviews").insert({
+  const { data: insertedReview, error: insErr } = await svc.from("agent_reviews").insert({
     brokerage_id:   access.brokerageId,
     agent_id:       contact.agent_id ?? null,
     contact_id:     params.contactId,
@@ -101,7 +69,30 @@ export async function submitClientTestimonial(params: {
     platform:       "internal",
     is_published:   false, // the agent approves before using it in marketing
   })
+    // The id is needed to announce the review below; without .select() the
+    // insert returns null data and the lifecycle event has nothing to point at.
+    .select("id")
+    .single()
   if (insErr) return { ok: false, error: insErr.message }
+
+  // MERGED IN (§1.1, BURN-C 2026-09-04) from the deleted
+  // app/actions/reputation-kernel.ts:recordReviewAction — see
+  // lib/reputation/review-landed.ts. This writer notified the AGENT (below) but
+  // never closed the review_requests row the testimonial answers and never
+  // emitted REVIEW_RECEIVED, so a client who was ASKED for a review and gave one
+  // stayed on the outstanding-asks list and in the follow-up cadence.
+  if (insertedReview) {
+    const { onReviewLanded } = await import("@/lib/reputation/review-landed")
+    await onReviewLanded({
+      supabase:    svc,
+      reviewId:    (insertedReview as { id: string }).id,
+      brokerageId: access.brokerageId,
+      agentId:     contact.agent_id ?? null,
+      contactId:   params.contactId,
+      platform:    "internal",
+      rating:      null,
+    })
+  }
 
   // Surface to the agent so they can approve + use it.
   try {
@@ -187,12 +178,17 @@ export async function submitNextMoveIntent(params: {
         }).then(() => {}, () => {})
       }
 
-      await svc.from("lifecycle_events").insert({
-        brokerage_id: access.brokerageId,
-        event_type: KernelEvent.MESSAGE_FROM_CONTACT,
-        entity_type: "contact",
-        entity_id: params.contactId,
-        actor_user_id: contact.agent_id,
+      // Audit row + reactor (MESSAGE_FROM_CONTACT has a staff-bell label — the
+      // bare insert never rang it). contact.agent_id is an agents.id: it goes to
+      // the agents-class agent_id column, NOT actor_user_id (FK users) — that
+      // FK refusal is why this row never landed before.
+      await emitKernelEvent({
+        brokerageId: access.brokerageId,
+        event: KernelEvent.MESSAGE_FROM_CONTACT,
+        entityType: "contact",
+        entityId: params.contactId,
+        contactId: params.contactId,
+        agentId: contact.agent_id,
         metadata: { contact_id: params.contactId, agent_id: contact.agent_id, type: "next_move_intent", intent: params.intent, note },
       }).then(() => {}, () => {})
     }
@@ -381,9 +377,12 @@ export async function setLifetimeSegment(params: {
         },
       })
       const meta = ((c as { metadata?: Record<string, unknown> } | null)?.metadata ?? {}) as Record<string, unknown>
-      await svc.from("contacts").update({
-        metadata: { ...meta, relocated_welcome: { subject: welcome.subject, body: welcome.body, generated: welcome.generated } },
-      }).eq("id", params.contactId).eq("brokerage_id", access.brokerageId)
+      await sentinelWrite(svc,
+        svc.from("contacts").update({
+          metadata: { ...meta, relocated_welcome: { subject: welcome.subject, body: welcome.body, generated: welcome.generated } },
+        }).eq("id", params.contactId).eq("brokerage_id", access.brokerageId),
+        { table: "contacts", flow: "portal_lifetime_relocated_welcome_cache", brokerageId: access.brokerageId, reason: "caches a generated relocation welcome draft on contact metadata; the card renders its own fallback copy when the draft is absent, so a lost cache costs a regeneration and never blocks the segment change (the enclosing catch already said this — it just could not see a RESOLVED refusal)", }
+      )
     } catch { /* floor lives in the card — never block the segment change */ }
   }
 
@@ -539,17 +538,21 @@ export async function getLifetimeContext(contactId: string) {
     .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
 
-  // Vendors from caller's brokerage (already auth-scoped) — vendors replaced vendor_directory —
-  // vendor_directory was a writer-less legacy twin (burn-down round 4 repoint). No `preferred`
-  // column on vendors; broker approval (status='active') is the closest real flag, ranked by rating.
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("id, name, category, phone, email, website, rating")
-    .eq("brokerage_id", access.brokerageId)
-    .eq("status", "active")
-    .order("rating", { ascending: false })
-    .limit(3)
-  const preferredVendors = vendors || []
+  // THE PREFERRED VENDORS A LIFETIME CLIENT SEES. This ran its own `vendors`
+  // query and ranked by rating, because `vendors` has no preferred column — but
+  // the flag it needed lives on vendor_directory, which premium-placement writes
+  // when a vendor PAYS the brokerage for featured placement. Ranking by rating
+  // here meant the paid vendor was simply one of the list, in whatever order
+  // their star average happened to fall. Same shared resolver as the portal
+  // vendors page (m303), so "preferred" means one thing across the product.
+  const { resolveContactVendors: resolveLifetimeVendors } = await import("@/lib/vendor-marketplace/resolve-contact-vendors")
+  const preferredVendors = (await resolveLifetimeVendors(supabase as never, {
+    contactId,
+    brokerageId: access.brokerageId,
+    teamId: null,
+    stage: "forever",
+    audienceTags: ["lifetime_customer"],
+  })).slice(0, 3)
 
   // All vendor categories the brokerage marketplace carries (not just preferred) —
   // lets the maintenance card decide "request an intro" vs "browse pros".
@@ -605,11 +608,30 @@ export async function submitReferral(data: {
   referredName: string
   referredContact: string
   relationship?: string
+  /** Free-text context from the referring client ("relocating in spring, wants
+   *  a yard"). Optional; capped and control-character-stripped below. */
+  notes?: string
 }) {
   const access = await requireContactAccess(data.contactId)
   if (!access.ok) throw new Error("Forbidden")
 
   const supabase = createServiceClient()
+
+  // THE CLIENT'S OWN WORDS. The portal form held a `notes` field that was never
+  // rendered and never sent, and this action had no parameter for it, so the
+  // qualifying context the brokerage's routing wants (§5 — leads belong to the
+  // brokerage) was lost on both sides. It lands in `referrals.notes` (TEXT,
+  // scripts/180-create-past-client-referral-system.sql:53) behind the
+  // contact-line this action already wrote there, and in the agent's portal
+  // message, so app/referrals/pipeline/page.tsx:165 and the inbox both show it.
+  // Sanitized: control characters out, trimmed, hard cap — a "use server"
+  // export is a public endpoint and the body is not trusted for length.
+  const REFERRAL_NOTE_MAX = 500
+  const clientNote = String(data.notes ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim()
+    .slice(0, REFERRAL_NOTE_MAX)
 
   // Get contact's agent. Note: agent_id can legitimately be NULL when the contact came
   // through the public listing page disclosing they're already represented by another
@@ -633,7 +655,10 @@ export async function submitReferral(data: {
       referred_by: data.contactId,
       referral_name: data.referredName,
       source_contact_name: data.referredName,
-      notes: data.referredContact + (data.relationship ? ` (${data.relationship})` : ""),
+      notes:
+        data.referredContact +
+        (data.relationship ? ` (${data.relationship})` : "") +
+        (clientNote ? `\n${clientNote}` : ""),
       status: "received", // CHECK: received|contacted|qualified|assigned|under_contract|closed|lost (no 'new')
       agent_id: contact.agent_id,
       brokerage_id: contact.brokerage_id,
@@ -655,17 +680,22 @@ export async function submitReferral(data: {
       direction: "client_to_agent",
       channel: "portal",
       read: false,
-      body: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
+      body:
+        `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}` +
+        (clientNote ? `\nTheir note: ${clientNote}` : ""),
     })
 
-    // Emit kernel event - resolve agent via kernel identity function
+    // Emit kernel event - resolve agent via kernel identity function. Audit row +
+    // reactor; contact.agent_id is agents-class → agent_id, never actor_user_id
+    // (FK users — the refusal that kept this row from landing).
     const agentData = await resolveContactOwnerAgent(supabase, contact.agent_id)
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: agentData?.brokerage_id,
-      event_type: KernelEvent.MESSAGE_FROM_CONTACT,
-      entity_type: "contact",
-      entity_id: data.contactId,
-      actor_user_id: contact.agent_id,
+    await emitKernelEvent({
+      brokerageId: agentData?.brokerage_id ?? contact.brokerage_id,
+      event: KernelEvent.MESSAGE_FROM_CONTACT,
+      entityType: "contact",
+      entityId: data.contactId,
+      contactId: data.contactId,
+      agentId: contact.agent_id,
       metadata: {
         contact_id: data.contactId,
         referred_name: data.referredName,
@@ -774,7 +804,8 @@ export async function getMarketUpdates(contactId: string) {
     .select("*")
     .eq("contact_id", contactId)
     .eq("brokerage_id", access.brokerageId)
-    .in("touchpoint_type", ["market_update", "anniversary"])
+    // lifetime_customer_touchpoints has no 'anniversary' — it says home_anniversary.
+    .in("touchpoint_type", ["market_update"])
     .order("sent_date", { ascending: false })
 
   return {
@@ -798,7 +829,15 @@ export async function requestValueUpdate(contactId: string) {
     .eq("brokerage_id", access.brokerageId)
     .single()
 
-  if (!contact?.agent_id) throw new Error("Contact not found")
+  // Two distinct failures wore one message. `!contact` means the row is absent
+  // (or belongs to another brokerage) — "not found" is true. `!contact.agent_id`
+  // means the row IS here and simply has nobody assigned to receive the request,
+  // and telling that client "not found" sends them looking for a record that is
+  // sitting right in front of them. Separate the checks; name the real gap.
+  if (!contact) throw new Error("Contact not found")
+  if (!contact.agent_id) {
+    throw new Error("This contact has no assigned agent yet, so there is nobody to send the request to.")
+  }
 
   // Send message to agent
   await supabase.from("client_portal_messages").insert({
@@ -822,15 +861,95 @@ export async function getVendorResources(contactId: string) {
 
   const supabase = createServiceClient()
 
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // No preferred/display_priority/visible_in_portal on vendors: portal visibility → broker approval
-  // (status='active'), ranking → rating.
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("id, category, name, phone, email, website, rating")
-    .eq("brokerage_id", access.brokerageId)
-    .eq("status", "active")
-    .order("rating", { ascending: false, nullsFirst: false })
+  // ONE RESOLVER (m303). This ran its own `vendors` query and noted that the
+  // curation columns did not exist there — which was true of `vendors` and not
+  // true of the system: they live on vendor_directory, which premium-placement
+  // writes when a vendor PAYS for featured placement. Reading the bench meant
+  // portal visibility, display priority and the preferred badge were all
+  // ignored on the surface the placement was sold for. Now routed through the
+  // shared resolver so this page and /portal/[contactId]/vendors cannot
+  // disagree about who a client should see.
+  const { resolveContactVendors } = await import("@/lib/vendor-marketplace/resolve-contact-vendors")
+  const curated = await resolveContactVendors(supabase as never, {
+    contactId,
+    brokerageId: access.brokerageId,
+    teamId: null,
+    // No transaction context on this surface — the lifetime toolkit is the
+    // "forever" stage by definition, and audience tags are unfiltered here.
+    stage: "forever",
+    audienceTags: ["lifetime_customer"],
+  })
+  return curated
+}
 
-  return vendors || []
+// ─── PROPERTY FEEDBACK (portal) ──────────────────────────────────────────────
+/**
+ * The buyer's own verdict on a property, from the persona portal.
+ *
+ * THIS EXISTED AS A LIE. The rating dialog collected a vote AND a comment, then
+ * handleRateProperty toasted "Your feedback has been recorded" and closed —
+ * calling nothing. Both values were dropped on the floor. That is the most
+ * expensive possible place to lose data: a buyer telling their agent, in their
+ * own words, why a house does or does not work is the highest-signal input in
+ * the whole buyer journey, and the OS threw it away while thanking them for it.
+ *
+ * The sibling surface (CollaborativeSearchDashboard) already did this properly
+ * via rateProperty(), but that lane writes property_family_ratings and needs a
+ * collaborative_search_id, which the persona portal has no concept of. The
+ * right home is property_feedback, keyed by contact — which is exactly what the
+ * agent-side matcher already reads to learn preferences, so a portal rating now
+ * feeds the same brain.
+ */
+export async function submitPropertyFeedback(params: {
+  contactId: string
+  propertyId: string
+  vote: "love" | "like" | "neutral" | "dislike" | "pass"
+  comments?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok) return { success: false, error: "Forbidden" }
+
+  // A 1-5 scale so the agent-side preference learner can rank, alongside the
+  // word the buyer actually chose.
+  const INTEREST: Record<string, number> = { love: 5, like: 4, neutral: 3, dislike: 2, pass: 1 }
+
+  const supabase = createServiceClient()
+
+  // Prove the voted id against the brokerage's own listings so listing_id can be
+  // stamped. This portal is an in-house inventory surface, but its cards can also
+  // hold non-listings rows (external search results), so the proof is conditional
+  // rather than a refusal: an unproven id keeps listing_id NULL and the vote still
+  // records, same as before. Scoped to access.brokerageId — a foreign tenant's
+  // listing id must not be stamped into this brokerage's feedback (§4).
+  // With listing_id stamped, the agent-side preference learner's `listings(*)`
+  // embed (app/actions/ai-property-matching.ts) finally resolves for portal votes
+  // — the brain gets the house with the vote instead of "- loved: undefined".
+  // property_id stays: a "property_id" holding a listings.id is not a property id
+  // (m542 precedent) and now has zero readers — a future-drop candidate for a
+  // migration, not an application-code decision.
+  const { data: provenListing, error: listingProofError } = await supabase
+    .from("listings")
+    .select("id")
+    .eq("id", params.propertyId)
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle()
+  if (listingProofError) {
+    // §3: a refused read resolves — log it; the vote still records, unstamped.
+    console.error("[portal-lifetime] submitPropertyFeedback: listings proof refused:", listingProofError.message)
+  }
+
+  const { error } = await supabase.from("property_feedback").insert({
+    contact_id: params.contactId,
+    property_id: params.propertyId,
+    listing_id: provenListing ? params.propertyId : null,
+    brokerage_id: access.brokerageId,
+    feedback_type: params.vote,
+    interest_level: INTEREST[params.vote] ?? 3,
+    notes: params.comments?.trim() || null,
+    source: "portal",
+    created_at: new Date().toISOString(),
+  })
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
 }

@@ -64,6 +64,7 @@ export async function scoreAllComps(
 
   let scored = 0
   const riskFlagsToInsert: Array<{
+    brokerage_id: string
     cma_id: string
     listing_id: string
     risk_type: string
@@ -167,6 +168,15 @@ Respond ONLY with valid JSON (no markdown):
       // Collect risk flags for bulk insert into comp_risk_flags
       for (const flag of riskFlags) {
         riskFlagsToInsert.push({
+          // STAMP THE TENANT. This insert omitted brokerage_id while the two
+          // sibling inserts in this same function (lines 148 and 211) carried it,
+          // from the very same `brokerageId` parameter — so comp_risk_flags was a
+          // column READ BY CODE AND WRITTEN BY NOBODY. The reader that suffered is
+          // resolveCompRiskFlagService, which has to establish a flag's ownership
+          // through its CMA precisely because it could not trust this column; that
+          // fallback stays (a flag from before this fix still has NULL here), but
+          // new rows now answer the ownership question directly.
+          brokerage_id: brokerageId,
           cma_id: cmaId,
           listing_id: listingId,
           risk_type: "comp_quality",
@@ -185,7 +195,17 @@ Respond ONLY with valid JSON (no markdown):
 
   // Bulk insert risk flags
   if (riskFlagsToInsert.length > 0) {
-    await supabase.from("comp_risk_flags").insert(riskFlagsToInsert)
+    // READ THE ERROR. supabase-js RESOLVES a refusal, so the bare `await` this
+    // replaced reported success whatever happened. That matters more now that the
+    // row carries brokerage_id: under PGRST204 an INSERT naming an absent column
+    // is refused ENTIRELY — not partially — so a single wrong column name here
+    // would silently drop EVERY risk flag for the CMA while the caller counted
+    // them as filed, and the compliance panel would show a clean report for a
+    // comp set that had actually raised flags.
+    const { error: flagsError } = await supabase.from("comp_risk_flags").insert(riskFlagsToInsert)
+    if (flagsError) {
+      console.error("[ai-cma-engine] comp_risk_flags insert refused:", flagsError.message)
+    }
   }
 
   // Update CMA quality_score based on average ai_score

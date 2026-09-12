@@ -2,8 +2,15 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported here and never called. This file's event rail is the ORCHESTRATOR,
+// not the notification engine: the hero-photo fan-out at :113 emits through
+// `emitEventFromCron` (lib/orchestrator/internal.ts) with event_type
+// "image.generated", which is a dotted orchestrator type and deliberately not a
+// KernelEvent member. There is no KernelEvent for listing-media approval either
+// — `LISTING_MEDIA_SCHEDULED` (lib/kernel/events.ts:62) is the only media member
+// and it belongs to the scheduler, not to this file — so there is no missing
+// emission here to build, only a pair of imports naming the wrong rail.
 
 // ─────────────────────────────────────────────────────────────
 // LISTING MEDIA
@@ -23,7 +30,15 @@ export async function getListingMedia(listingId: string) {
 export async function uploadListingMedia(params: {
   listingId: string
   brokerageId: string
-  mediaType: "photo" | "video" | "floor_plan" | "virtual_tour" | "document"
+  // MIRRORS the live listing_media_media_type_check exactly. This union said
+  // "floor_plan" — one underscore the column does not have — so a floor plan
+  // typed here could never store, and it omitted graphic / reel / story, three
+  // types the column accepts and no caller could name. The picker in
+  // media-grid.tsx was already corrected to the real vocabulary; this signature
+  // was left behind, so the screen and the action disagreed about what a media
+  // type is. A value the CHECK rejects fails SILENTLY — supabase-js resolves a
+  // refused insert — so the upload would report success and store nothing.
+  mediaType: "photo" | "video" | "floorplan" | "virtual_tour" | "graphic" | "reel" | "story" | "document"
   fileUrl: string
   thumbnailUrl?: string
   caption?: string
@@ -213,70 +228,19 @@ export async function getVideoTemplates() {
   return error ? { data: null, error: error.message } : { data, error: null }
 }
 
-export async function createVideoProject(params: {
-  listingId: string
-  brokerageId: string
-  title: string
-  scriptContent: string
-  videoType: string
-  avatarId?: string
-  voiceId?: string
-  templateId?: string
-}) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { data: null, error: "Not authenticated" }
-
-  // Resolve agent record for agent_id (NOT NULL)
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!agent?.id) return { data: null, error: "No agent record found" }
-
-  // Migration 1052: resolve the actual provider (D-ID default, with agent
-  // + brokerage overrides). Listing videos are customer-facing by default
-  // and must pass compliance at distribute time.
-  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
-  const provider = await resolveVideoProvider(supabase, {
-    brokerageId: params.brokerageId,
-    agentUserId: user.id,
-  })
-  const providerCols = initialProviderColumns(provider)
-
-  const { data, error } = await supabase
-    .from("ai_video_projects")
-    .insert({
-      listing_id:          params.listingId,
-      brokerage_id:        params.brokerageId,
-      agent_id:            agent.id,
-      title:               params.title,
-      script_content:      params.scriptContent,
-      video_type:          params.videoType,
-      video_provider:      provider,
-      ...providerCols,
-      status:              "planning",
-      audience_type:       "customer_facing",
-      provider_avatar_id:  params.avatarId ?? null,
-      provider_voice_id:   params.voiceId ?? null,
-      provider_template_id: params.templateId ?? null,
-    })
-    .select("id")
-    .single()
-
-  if (error) return { data: null, error: error.message }
-
-  // Emit brand compliance check
-  await checkBrandCompliance({
-    contentType: "video",
-    contentId:   data.id,
-    brokerageId: params.brokerageId,
-  })
-
-  return { data, error: null }
-}
+// ── DELETED: createVideoProject (wave 56, orphan doctrine §1.1 — duplicate) ──
+//
+// SURVIVOR: app/actions/video/create-video-project.ts:305 createVideoProject —
+// the CANONICAL creator (session-gated tenant, the fair-housing render hold
+// BEFORE the row exists, the scriptPending shell lane, campaign attribution).
+// What THIS copy had that the survivor lacked was merged there first:
+// templateId → provider_template_id, audienceType → audience_type
+// ('customer_facing' for listing videos), and brandComplianceCheck →
+// lib/kernel/brand-compliance.ts checkBrandCompliance after insert. This copy
+// did a raw ai_video_projects insert with NO compliance/render hold at all.
+// Its one caller, app/dashboard/listings/[id]/media/components/video-panel.tsx,
+// now calls the survivor with agentUserId = the session user (the survivor
+// resolves users→agents itself).
 
 export async function deleteVideoProject(projectId: string) {
   const supabase = await createClient()
@@ -312,61 +276,33 @@ export async function getSocialAccounts(brokerageId: string) {
   return error ? { data: null, error: error.message } : { data, error: null }
 }
 
-export async function createSocialPost(params: {
-  listingId: string
-  brokerageId: string
-  platform: string
-  postType: string
-  content: string
-  hashtags?: string[]
-  mediaUrls?: string[]
-  scheduledFor?: string
-  socialAccountId?: string
-}) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { data: null, error: "Not authenticated" }
-
-  // Resolve agent_id
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-
-  const { data, error } = await supabase
-    .from("social_posts")
-    .insert({
-      listing_id:          params.listingId,
-      brokerage_id:        params.brokerageId,
-      user_id:             user.id,
-      agent_id:            agent?.id ?? null,
-      platform:            params.platform,
-      post_type:           params.postType,
-      content:             params.content,
-      hashtags:            params.hashtags ?? [],
-      media_urls:          params.mediaUrls ?? [],
-      scheduled_for:       params.scheduledFor ?? null,
-      social_account_id:   params.socialAccountId ?? null,
-      status:              params.scheduledFor ? "scheduled" : "draft",
-      approval_status:     "pending",
-      brand_compliance_passed: false,
-    })
-    .select("id")
-    .single()
-
-  if (error) return { data: null, error: error.message }
-
-  // Run compliance check
-  await checkBrandCompliance({
-    contentType: "social_post",
-    contentId:   data.id,
-    brokerageId: params.brokerageId,
-  })
-
-  return { data, error: null }
-}
+// ── DELETED: createSocialPost (wave 56, lane OC, Task C duplicates sweep) ──
+//
+// SURVIVOR: app/actions/social-publishing.ts:265 createSocialPost.
+//
+// This was a SECOND parallel writer to social_posts with no fair-housing /
+// real-estate compliance gate at all — it ran checkBrandCompliance (brand
+// VOICE compliance) AFTER the insert, best-effort, never blocking the post;
+// the survivor runs runComplianceGate (real-estate/fair-housing rules)
+// BEFORE the insert and HOLDS the post (approval_status='pending',
+// brand_compliance_passed=false) on a violation. Session-derived brokerage
+// too: this version took brokerageId directly from the request body (the
+// IDOR shape CLAUDE.md §4 names) rather than from resolveCaller().
+//
+// MERGED ONTO THE SURVIVOR FIRST (this version had it, the survivor didn't):
+// agent_id resolution (via resolveAgentIdInBrokerage, same helper this file
+// used) and a socialAccountId param writing social_account_id — both now on
+// app/actions/social-publishing.ts:265.
+//
+// ONE real caller — app/dashboard/listings/[id]/media/components/social-panel.tsx
+// — repointed to the survivor (param shape: listingId→linkedListingId,
+// platform→platforms:[platform], postType→contentType; scheduledFor
+// defaults to now since the survivor requires it).
+//
+// approveSocialPost/deleteSocialPost below are UNTOUCHED — social-publishing.ts
+// has its own approve/delete pair for ITS callers; the listing-media panel
+// still uses these ones and they were not part of this duplicate (only the
+// create verb was examined for wave 56 Task C).
 
 export async function approveSocialPost(postId: string) {
   const supabase = await createClient()

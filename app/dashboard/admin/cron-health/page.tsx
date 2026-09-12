@@ -4,6 +4,8 @@ import { redirect } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertTriangle, CheckCircle2, Clock, XCircle, Activity, Zap } from "lucide-react"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { ReprojectPortalButton } from "./reproject-portal-button"
 
 export const dynamic = "force-dynamic"
 
@@ -50,7 +52,7 @@ export default async function CronHealthPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(profile?.user_type ?? "")) {
+  if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) {
     redirect("/dashboard")
   }
 
@@ -86,6 +88,10 @@ export default async function CronHealthPage() {
         <p className="text-sm text-muted-foreground mt-1">
           {rows.length} registered crons · last updated live
         </p>
+        {/* On-demand projector re-run — see reproject-portal-button.tsx. */}
+        <div className="mt-3">
+          <ReprojectPortalButton />
+        </div>
       </div>
 
       {/* Summary strip */}
@@ -169,6 +175,16 @@ export default async function CronHealthPage() {
                         {r.last_error_message && (
                           <p className="text-xs text-red-600 mt-0.5 truncate max-w-[280px]">
                             {r.last_error_message}
+                          </p>
+                        )}
+                        {/* WITHHELD IS NOT THE SAME AS CLEAN. cron_health_snapshot
+                            has no tenant column, so its free-text failure message
+                            can carry another tenant's data and is shown only to
+                            platform admins. Rendering nothing here would let a
+                            failing cron read as a healthy one. */}
+                        {r.error_message_redacted && (
+                          <p className="text-xs text-muted-foreground mt-0.5 italic">
+                            failure detail withheld — platform admin only
                           </p>
                         )}
                       </td>

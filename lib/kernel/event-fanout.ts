@@ -1,34 +1,37 @@
 /**
  * lib/kernel/event-fanout.ts
  *
- * Single canonical "what happens when a kernel event fires" router. Three
- * fan-out channels per event:
+ * The reactor's CLIENT-SIDE channels, called by lib/kernel/event-reactor.ts for
+ * every kernel event:
  *
- *   1. Internal notifications (existing processKernelEvent — staff bell)
- *   2. Campaign sequence auto-enrollment (campaign_sequences.trigger_event)
- *   3. Client-facing portal updates (transparency_updates +
- *      client_portal_messages + contact-targeted notifications)
+ *   1. Campaign sequence auto-enrollment (campaign_sequences.trigger_event)
+ *   2. Client-facing portal updates (transparency_updates +
+ *      client_portal_messages + contact-targeted notifications), template-gated
+ *      by PORTAL_UPDATE_TEMPLATES below.
  *
  * The contact is the center: every meaningful state change should reach
  * their portal so seller/buyer/lifetime always know where their deal stands.
  *
- * Why this layer:
- *   - processKernelEvent is intentionally narrow (notifications only).
- *   - Adding portal/sequence logic into every emitter at every call site
- *     created drift; fan-out lives here so additions to one channel benefit
- *     every event uniformly.
- *
- * Event emitters call fanOutKernelEvent(...) instead of processKernelEvent
- * directly. This wrapper invokes processKernelEvent for staff notifications
- * AND fires the two new channels.
+ * TOMBSTONE (orphan doctrine §1.1, 2026-09-03) — `fanOutKernelEvent(ctx)` stood
+ * here. It was the SECOND of four spellings of "fire a kernel event": a thin
+ * forwarder into processKernelEvent for callers that had already inserted
+ * their own lifecycle_events row, and it silently dropped `suppressEnrollment`
+ * because its context type never carried it. SURVIVOR: `emitKernelEvent` at
+ * lib/kernel/emit.ts:112 — its `skipInsert: true` option IS the old
+ * fanOutKernelEvent contract (row already written → fan out only), and its
+ * `KernelEventContext`-shaped fields (contactId / buyerContactId /
+ * sellerContactId / transactionId / listingId / agentUserId / metadata /
+ * lifecycleEventId) are accepted one-for-one. All 15 call sites were repointed;
+ * this file no longer imports the notification engine.
  */
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { processKernelEvent } from "./notification-engine"
 import { renderTemplateText } from "./portal-template-render"
 import { sentinelWrite } from "./write-sentinel"
+import { resolveUserIdToAgentRecord } from "./agent-identity-resolver"
+import { isLifetimeCustomerType } from "@/lib/contact-types"
 
 export interface KernelEventContext {
   event:          KernelEvent
@@ -53,33 +56,6 @@ export interface KernelEventContext {
   metadata?:      Record<string, any>
   /** Lifecycle event id for cross-linking (already inserted by caller). */
   lifecycleEventId?: string
-}
-
-// Thin forwarder. All three fan-out channels (staff notifications + campaign_sequences enrollment +
-// client portal) now live behind processKernelEvent → the kernel reactor, so EVERY emitter gets them
-// uniformly — not just the handful that call this wrapper. fanOutKernelEvent simply forwards its
-// richer client context (buyer/seller/transaction/listing/agent) so the reactor doesn't have to
-// re-resolve it. The reactor's portal writer is template-gated + idempotent, so routing through it
-// here adds no duplicate cards.
-export async function fanOutKernelEvent(ctx: KernelEventContext): Promise<void> {
-  try {
-    await processKernelEvent({
-      event:            ctx.event,
-      brokerageId:      ctx.brokerageId,
-      entityType:       ctx.entityType,
-      entityId:         ctx.entityId,
-      lifecycleEventId: ctx.lifecycleEventId,
-      contactId:        ctx.contactId,
-      buyerContactId:   ctx.buyerContactId,
-      sellerContactId:  ctx.sellerContactId,
-      transactionId:    ctx.transactionId,
-      listingId:        ctx.listingId,
-      agentUserId:      ctx.agentUserId,
-      metadata:         ctx.metadata ?? null,
-    })
-  } catch (e) {
-    console.error("[fanOutKernelEvent] processKernelEvent failed", e)
-  }
 }
 
 // ─── 2. Sequence auto-enrollment ─────────────────────────────────────────────
@@ -477,6 +453,20 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "Review matches and tell your agent which to tour.",
     chatBody: "Fresh matches for your search just came up — take a look and let me know which you'd like to tour.",
   },
+  // UNRESOLVED, NOT A DUPLICATE TO DELETE (CLAUDE.md §1/§6, 2026-09-08 lane AB
+  // hidden-wire hunt) — this describes the exact same real-world moment as
+  // KernelEvent.PROPERTY_ALERT_MATCHED below (lib/property-alerts/alert-engine.ts,
+  // the ONE live saved-search/IDX-alert matcher), and neither
+  // 'search_alert_triggered' nor 'property_alert_matched' is a value
+  // campaign_sequences.trigger_event's live CHECK admits (only
+  // 'property_match_found' is — see the PROPERTY_MATCH_FOUND enrollment added
+  // there). Left as its own template rather than grep-verified as dead: no write
+  // site was found for it anywhere in the tree, but a second, narrower "search
+  // alert" concept distinct from a "property alert" (e.g. a saved SEARCH as
+  // opposed to a configured ALERT) may still be intended and simply unbuilt.
+  // Building a second emitter here would duplicate the portal card
+  // PROPERTY_ALERT_MATCHED already renders for the identical match — so this
+  // stays unresolved rather than guessed.
   [KernelEvent.SEARCH_ALERT_TRIGGERED]: {
     title: "New homes for you",
     plainLanguageSummary:
@@ -540,7 +530,14 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "Offer is delivered to the other side.",
     chatBody: "Your offer is fully signed — sending it over now.",
   },
-  [KernelEvent.ESIGN_SIGNED_COMPLETED]: {
+  // TOMBSTONE (orphan doctrine §1.1 + §6, 2026-09-03) — this "Document signed"
+  // template was keyed on KernelEvent.ESIGN_SIGNED_COMPLETED, a spelling NOTHING
+  // in the tree emits. The fact it describes — an e-sign envelope completed on a
+  // document — is emitted as KernelEvent.ESIGN_PACKET_SIGNED by
+  // lib/esign-webhooks/finalize-packet.ts:106 (every provider webhook). The
+  // template moved onto that survivor; the enum member stays (events.ts:6 — it may
+  // be live as a notification_rules.trigger_event row; the integrator checks).
+  [KernelEvent.ESIGN_PACKET_SIGNED]: {
     title: "Document signed",
     plainLanguageSummary:
       "A document you needed to sign is now complete. A copy is saved to your portal for your records.",
@@ -554,6 +551,62 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     responsibleParty: "client",
     nextStep: "Upload the requested document in your portal.",
     chatBody: "When you have a moment, I need a quick document from you — details are in your portal.",
+  },
+
+  // ── Offer intake + due-diligence vendor quotes (kernel-event-census-z1, lane BB,
+  // 2026-09-08) — all five were EMITTED with zero portal consumer: entityType
+  // "offer"/"transaction" already resolves buyer + seller via resolveEventContacts,
+  // so a template is the whole fix. (CONTRACT_SENT_FOR_SIGNATURE's "transaction_document"
+  // entityType needed the resolver branch too — added by lane CB, 2026-09-08; see its
+  // template further down with LISTING_AGREEMENT_SIGNED.) ──────────────────────
+  [KernelEvent.OFFER_UPLOADED]: {
+    title: "New offer uploaded",
+    plainLanguageSummary:
+      "An offer document was uploaded for review. Your agent is looking it over now.",
+    responsibleParty: "agent",
+    audience: "both",
+    perRole: {
+      seller: {
+        title: "A new offer came in",
+        plainLanguageSummary: "An offer document was just uploaded on your listing. Your agent is reviewing it now.",
+        chatBody: "A new offer just came in — reviewing it now and I'll walk you through it.",
+      },
+      buyer: {
+        title: "Your offer was uploaded",
+        plainLanguageSummary: "Your offer document was uploaded and is on its way to the seller's side.",
+        chatBody: "Your offer is uploaded and headed to the seller's agent.",
+      },
+    },
+  },
+  [KernelEvent.INSPECTION_QUOTE_REQUESTED]: {
+    title: "Inspection quote requested",
+    plainLanguageSummary:
+      "Your agent requested a quote from an inspector for {quote_amount}. We'll confirm once it's approved.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    chatBody: "I requested an inspection quote — I'll confirm the amount with you shortly.",
+  },
+  [KernelEvent.INSPECTION_QUOTE_APPROVED]: {
+    title: "Inspection quote approved",
+    plainLanguageSummary: "The inspection quote from {vendor_name} was approved and scheduling can move forward.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    nextStep: "Inspector will be scheduled.",
+    chatBody: "Inspection quote approved — getting it scheduled with {vendor_name}.",
+  },
+  [KernelEvent.INSURANCE_QUOTE_REQUESTED]: {
+    title: "Insurance quote requested",
+    plainLanguageSummary: "A homeowner's insurance quote was requested from {vendor_name}. We'll share it once it's back.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    chatBody: "I requested an insurance quote from {vendor_name} — I'll pass it along as soon as it's in.",
+  },
+  [KernelEvent.INSURANCE_QUOTE_APPROVED]: {
+    title: "Insurance quote approved",
+    plainLanguageSummary: "The insurance quote from {vendor_name} was approved.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    chatBody: "Insurance quote from {vendor_name} is approved — one more box checked toward closing.",
   },
 
   // ── Lifetime / post-close touchpoints ────────────────────────────────────────
@@ -585,6 +638,65 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     responsibleParty: "agent",
     chatBody: "I posted your latest listing activity update — showings and feedback are summarized for you.",
   },
+
+  // ── Kernel-event-census-z1 burn-down (lane CB, 2026-09-08) — newly-wired
+  // emitters below whose events are client-facing. ──────────────────────────
+  [KernelEvent.BUYER_VERIFIED]: {
+    title: "You're verified!",
+    plainLanguageSummary:
+      "Your financial verification is complete. You're clear to tour homes and submit offers.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    nextStep: "Start touring homes that fit your budget.",
+    chatBody: "You're verified — ready to tour and make offers whenever you find the right home!",
+  },
+  [KernelEvent.DECISION_PENDING]: {
+    title: "Your decision is ready for review",
+    plainLanguageSummary:
+      "Your custom listing presentation is complete. When you're ready, let your agent know how you'd like to proceed.",
+    responsibleParty: "client",
+    audience: "seller",
+    nextStep: "Review the presentation and let your agent know your decision.",
+    chatBody: "Your listing presentation is ready — take a look and let me know what you'd like to do next.",
+  },
+  [KernelEvent.PRICE_DETERMINED]: {
+    title: "Your list price is set",
+    plainLanguageSummary:
+      "A list price has been set for your home. Your agent will walk you through the strategy behind it.",
+    responsibleParty: "agent",
+    audience: "seller",
+    chatBody: "Your list price is set — happy to walk you through the strategy behind the number.",
+  },
+  [KernelEvent.SHOWING_COMPLETED]: {
+    title: "A showing on your listing wrapped up",
+    plainLanguageSummary:
+      "A buyer's agent just finished showing your home. We'll share feedback as soon as it comes in.",
+    responsibleParty: "agent",
+    audience: "seller",
+    chatBody: "A showing on your home just wrapped up — I'll pass along feedback as soon as it's in.",
+  },
+
+  // ── Task B (lane CB, 2026-09-08): both events now resolve a contact via the
+  // resolve-event-contacts.ts branches added above — the plumbing gap is closed,
+  // so a template is the whole rest of the fix (same pattern the OFFER_UPLOADED
+  // block above documents for the earlier hunt). ────────────────────────────
+  [KernelEvent.CONTRACT_SENT_FOR_SIGNATURE]: {
+    title: "A document is ready for your signature",
+    plainLanguageSummary:
+      "A document was sent to you for e-signature. Open it, review the terms, and sign when ready.",
+    responsibleParty: "client",
+    nextStep: "Review and sign the document.",
+    chatBody: "Sent a document your way for signature — let me know if anything needs explaining.",
+  },
+  [KernelEvent.LISTING_AGREEMENT_SIGNED]: {
+    title: "Listing agreement signed!",
+    plainLanguageSummary:
+      "Your listing agreement is fully executed. Next up: photography, marketing prep, and getting your home ready to go live.",
+    responsibleParty: "agent",
+    audience: "seller",
+    nextStep: "Photography + marketing prep begins.",
+    chatBody: "Your listing agreement is signed — we're officially underway! I'll keep you posted as we prep for launch.",
+  },
 }
 
 // Exported so the kernel reactor (lib/kernel/event-reactor) runs the SAME template-gated portal
@@ -602,12 +714,39 @@ export async function writePortalUpdate(
   const supabase = createServiceClient()
   let wrote = false
 
+  // MILESTONE_COMPLETED lost the single-emitter assumption the template above documents
+  // (CLAUDE.md §1, hunt 1 forwarded-metadata sweep, lane Z1 2026-09-08): title-portal's
+  // closing-prep items, the lender's clear-to-close, and milestone-service's generic
+  // completions (appraisal / walkthrough / financing / repair / earnest money / closing)
+  // all emit it too, each with its OWN milestone_name and none carrying inspection_type —
+  // so this template's inspection-worded copy rendered "The TBD inspection is finished"
+  // and mislabeled every non-inspection milestone as "Inspection complete". The lender's
+  // clear-to-close already gets its own correctly-worded card from a dedicated event
+  // (FINANCING_CLEAR_TO_CLOSE, emitted right after this one at its call site in
+  // app/actions/lender-portal-actions.ts) — this generic card is skipped there so it
+  // doesn't duplicate that card with the wrong copy. Everything else gets neutral,
+  // milestone_name-driven copy instead of borrowed inspection wording.
+  const rawMilestoneName = ctx.event === KernelEvent.MILESTONE_COMPLETED && typeof ctx.metadata?.milestone_name === "string"
+    ? (ctx.metadata.milestone_name as string)
+    : undefined
+  if (rawMilestoneName === "clear_to_close_received") return false
+  const genericMilestoneTemplate: PortalUpdateTemplate | undefined =
+    rawMilestoneName && rawMilestoneName !== "inspection_completed"
+      ? {
+          title: "Milestone complete",
+          plainLanguageSummary:
+            `A key milestone — ${rawMilestoneName.replace(/_/g, " ")} — is complete. Your agent will review next steps with you.`,
+          responsibleParty: "agent",
+          nextStep: "Check in with your agent about what's next.",
+        }
+      : undefined
+
   for (const contactId of contactIds) {
     // Resolve role — buyer / seller / lifetime — so per-role overrides apply.
     const role = await resolveContactRole(supabase, contactId, ctx)
     const merged: PortalUpdateTemplate = {
-      ...tpl,
-      ...(role && tpl.perRole?.[role] ? tpl.perRole[role]! : {}),
+      ...(genericMilestoneTemplate ?? tpl),
+      ...(!genericMilestoneTemplate && role && tpl.perRole?.[role] ? tpl.perRole[role]! : {}),
     }
 
     // Audience gating (representation + domain semantics): a seller-side notice (our listing /
@@ -628,14 +767,32 @@ export async function writePortalUpdate(
     // Resolve the agents.id for the (optional) companion chat. client_portal_messages.agent_id is
     // NOT NULL with an FK to *agents* (not users), and contacts.agent_id is the agents.id — so use
     // that. ctx.agentUserId is a users.id (the actor) and is the WRONG id space here; feeding it in
-    // is why every prior chat insert silently failed the FK. Used ONLY for the chat ping — the
-    // transparency card's agent_id is a separate FK to users (ctx.agentUserId).
+    // is why every prior chat insert silently failed the FK.
     const { data: chatAgentRow } = await supabase
       .from("contacts")
       .select("agent_id")
       .eq("id", contactId)
       .maybeSingle()
     const chatAgentId: string | null = chatAgentRow?.agent_id ?? null
+
+    // The transparency card records the ACTOR, and its agent_id is an agents.id now — so the
+    // actor's users.id has to be resolved, not stamped. Server-only resolver: this module is
+    // already `import "server-only"`, it's brokerage-scoped, and it memoises — fan-out calls it
+    // once per contact per event, which is the read pattern that cache exists for.
+    // Empty agentUserId = a system actor, which is a legitimate null (the column is nullable).
+    // A NON-empty id that fails to resolve is a real user with no agents row in this brokerage:
+    // the card still posts (the client needs it) but it must say so, because nothing downstream
+    // of an unattended fan-out will.
+    let actorAgentId: string | null = null
+    if (ctx.agentUserId) {
+      actorAgentId = await resolveUserIdToAgentRecord(ctx.agentUserId, ctx.brokerageId)
+      if (!actorAgentId) {
+        console.warn(
+          `[event-fanout] no agent profile for users.id=${ctx.agentUserId} in brokerage=${ctx.brokerageId}` +
+          ` — transparency_updates card for event=${ctx.event} contact=${contactId} posts unattributed`,
+        )
+      }
+    }
 
     // Idempotency — TWO layers:
     //   1. App-layer dedupe SELECT (fast-path skip without a DB write). Skips when an identical
@@ -670,9 +827,7 @@ export async function writePortalUpdate(
         contact_id:               contactId,
         transaction_id:           ctx.transactionId ?? null,
         listing_id:               ctx.listingId ?? null,
-        // `|| null` (not `?? null`): a system actor passes agentUserId="" — an empty string would fail
-        // the uuid FK to users and the swallowed insert would silently drop the whole card.
-        agent_id:                 ctx.agentUserId || null,
+        agent_id:                 actorAgentId,
         title:                    title,
         plain_language_summary:   summary,
         stage:                    merged.stage ?? null,
@@ -763,6 +918,6 @@ async function resolveContactRole(
   const t = (data?.contact_type ?? "").toLowerCase()
   if (t.includes("buyer"))             return "buyer"
   if (t.includes("seller"))            return "seller"
-  if (t === "lifetime_customer")       return "lifetime"
+  if (isLifetimeCustomerType(t))       return "lifetime"
   return null
 }

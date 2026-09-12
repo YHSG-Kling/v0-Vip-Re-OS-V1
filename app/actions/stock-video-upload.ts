@@ -3,8 +3,9 @@
 /**
  * Stock video clip uploader — lets agents and team leads add their own
  * intros, outros, b-roll, and avatar backgrounds into video_assets so the
- * BrollPicker / BackgroundPicker can offer them as one-click choices in
- * the video wizard.
+ * BrollPicker / the wizard's background step can offer them as one-click
+ * choices in the video wizard. (BackgroundPicker deleted 2026-09-01 —
+ * survivor: app/dashboard/videos/create/video-create-client.tsx.)
  *
  * Scope choices:
  *   - 'agent'      → visible only to the uploading agent
@@ -19,6 +20,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const ALLOWED_CATEGORIES = ["intro", "outro", "b_roll", "avatar_background"] as const
 type AllowedCategory = typeof ALLOWED_CATEGORIES[number]
@@ -79,7 +81,11 @@ export async function uploadStockClip(input: UploadStockClipInput): Promise<Uplo
   //   - brokerage scope requires broker / admin / superadmin
   //   - team scope requires the uploader to be on a team
   //   - agent scope requires an agents row
-  if (input.scope === "brokerage" && !["broker", "admin", "superadmin"].includes(role)) {
+  // TRUE ADMIN GATE (operational: marketing clips) — repointed to the ONE tenant
+  // roster, asked of the raw user_type (the predicate accepts every legacy input
+  // spelling the canonicalizer does). 'superadmin' was dead: 0 live rows store
+  // that users.user_type.
+  if (input.scope === "brokerage" && !isAdminOrBroker({ user_type: profile.user_type })) {
     return { success: false, error: "Only brokers and admins can publish brokerage-wide clips" }
   }
   if (input.scope === "team" && !agentRow?.team_id) {
@@ -120,18 +126,48 @@ export async function uploadStockClip(input: UploadStockClipInput): Promise<Uplo
   return { success: true, assetId: data.id }
 }
 
-/** Soft delete — only the uploader (or a broker/admin) can remove a clip. */
+/**
+ * Remove a clip from the stock library — only the uploader, or a broker/admin in
+ * the SAME brokerage, can remove one.
+ *
+ * WIRED (w4s1) — `app/dashboard/videos/components/BrollPicker.tsx`. That picker
+ * could upload clips (`uploadStockClip`) but nothing could ever remove one, so a
+ * mistyped title, a wrong-scope upload, or an unusable take was permanent and kept
+ * being offered as a one-click choice in the video wizard.
+ *
+ * This is a HARD delete. The doc comment used to say "soft delete", which was
+ * simply untrue — `video_assets` has no `deleted_at` column (verified live), and
+ * the statement below is `.delete()`. Saying "soft" invited a caller to assume the
+ * row was recoverable.
+ *
+ * NOT a duplicate of `app/actions/stock-library.ts:deleteStockAsset`, despite both
+ * deleting from `video_assets`. The two lanes use DIFFERENT scope models that both
+ * exist on the live table: this one scopes by `created_by` / `agent_id` / `team_id`
+ * / `brokerage_id` (what `uploadStockClip` and the BrollPicker write), while
+ * `deleteStockAsset` scopes by `scope_type` / `scope_id` (what
+ * `registerStockAsset` and the stock-library settings page write). A row written by
+ * one lane has NULLs in the other lane's scope columns, so `deleteStockAsset`
+ * evaluates every branch of its `canEditScope` to false on a BrollPicker clip and
+ * always answers "scope_forbidden". Neither can delete the other's rows; deleting
+ * either function would strand its lane's assets permanently.
+ */
 export async function deleteStockClip(assetId: string): Promise<{ success: boolean; error?: string }> {
+  if (!assetId) return { success: false, error: "assetId required" }
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: clip } = await svc
+  // `error` is destructured deliberately: supabase-js RESOLVES a refused read, and
+  // treating a refusal as "clip not found" is only correct because we then refuse.
+  // Reported separately so a real failure is not mislabeled as a missing row.
+  const { data: clip, error: readErr } = await svc
     .from("video_assets")
     .select("created_by, brokerage_id")
     .eq("id", assetId)
     .maybeSingle()
+  if (readErr) return { success: false, error: "Could not verify this clip" }
   if (!clip) return { success: false, error: "Clip not found" }
 
   const isOwner = clip.created_by === user.id
@@ -142,8 +178,8 @@ export async function deleteStockClip(assetId: string): Promise<{ success: boole
       .select("user_type, brokerage_id")
       .eq("id", user.id)
       .maybeSingle()
-    const role = toCanonicalRoleOrDefault(profile?.user_type, "agent")
-    isAdmin = ["broker", "admin", "superadmin"].includes(role) && profile?.brokerage_id === clip.brokerage_id
+    // TRUE ADMIN GATE — same repoint as the upload gate above.
+    isAdmin = isAdminOrBroker({ user_type: profile?.user_type }) && profile?.brokerage_id === clip.brokerage_id
   }
   if (!isOwner && !isAdmin) {
     return { success: false, error: "Only the uploader or a broker/admin can delete this clip" }

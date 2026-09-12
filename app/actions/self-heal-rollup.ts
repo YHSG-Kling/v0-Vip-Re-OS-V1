@@ -13,7 +13,9 @@ import { loadSelfHealRollup, loadFlowActionStats, composeRepairAutonomy, type Se
 // broker on brokerage tiers, the solo agent on a solo tier, the team lead on
 // a team tier. Overseen seats (team members, brokerage staff agents) don't
 // carry the OS-maintenance surfaces — their principal does.
-const PRINCIPAL_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin", "solo_agent", "team_lead"])
+// SCOPE LADDER (kept inline): 'superadmin' removed — dead as users.user_type
+// (0 live rows); broker_owner added — storable seat that OWNS the subscription.
+const PRINCIPAL_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin", "solo_agent", "team_lead"])
 
 export async function getSelfHealRollup(): Promise<
   { success: true; rollup: SelfHealRollup } | { success: false; error: string }

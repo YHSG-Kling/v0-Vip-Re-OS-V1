@@ -20,7 +20,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { sendSMS, sendEmail } from "@/lib/providers/messaging"
-import { REQUESTABLE_ITEMS, ITEM_LABEL, type RequestableItem } from "@/lib/lenders/status-request-items"
+import { ITEM_LABEL, type RequestableItem } from "@/lib/lenders/status-request-items"
 
 export async function requestLenderStatusUpdateAction(input: {
   transactionId: string
@@ -113,7 +113,9 @@ export async function requestLenderStatusUpdateAction(input: {
     }
   }
 
-  await supabase.from("activities").insert({
+  // This row carries `channels_sent` and `errors` — it is the ONLY record of
+  // which channels the request actually went out on. Losing it loses that.
+  const { error: lenderRequestActivityError } = await supabase.from("activities").insert({
     brokerage_id: txn.brokerage_id,
     agent_id: auth.agentId,
     transaction_id: txn.id,
@@ -128,6 +130,9 @@ export async function requestLenderStatusUpdateAction(input: {
     status: "completed",
     channel: sent[0] ?? "email",
   })
+  if (lenderRequestActivityError) {
+    console.error("[lenderStatusRequest] lender_status_requested activity REJECTED — the request was sent but which channels carried it is now unrecorded:", lenderRequestActivityError.message)
+  }
 
   if (sent.length === 0) {
     return { success: false as const, error: "no_delivery_channel_succeeded", errors }

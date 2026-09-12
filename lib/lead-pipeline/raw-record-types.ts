@@ -2,11 +2,13 @@
  * Canonical shape for every scraped record before it enters the pipeline.
  * Sources: Zillow, Realtor, Craigslist, BatchData, Nextdoor, Facebook, Reddit.
  *
- * isViableRecord  → allowed to exist as a raw_scraped_leads row
- * hasPromotionEligibleIdentity → required before promotion to a leads row
- *
- * This distinction matters: some raw records are useful for enrichment or
- * pattern analysis but only promotion-eligible records may become leads.
+ * isViableRecord  → allowed to exist as a raw_scraped_leads row (WIRED — the
+ *                   sourcers and the ingest cron filter on it)
+ * hasPromotionEligibleIdentity → SAME PREDICATE, byte for byte. The distinction
+ *                   this header used to assert does not exist in the code, and
+ *                   the real promotion gate lives in
+ *                   lib/lead-pipeline/canonical-lead-eligibility.ts. See the
+ *                   note on the function itself before wiring it anywhere.
  */
 export interface NormalizedScrapedRecord {
   /** Stable dedup key unique within the source (not a DB uuid). */
@@ -80,8 +82,30 @@ export function isViableRecord(r: NormalizedScrapedRecord): boolean {
 
 /**
  * Gate 2 — record may be promoted to a leads row.
- * Same criteria as isViableRecord but semantically distinct: only records that
- * pass this gate should drive lead creation or CRM contact upsert.
+ *
+ * ── READ THIS BEFORE GIVING IT A PRODUCTION CALLER (2026-09-03, lane L2) ─────
+ * IT IS NOT A SECOND GATE. Its body is BYTE-IDENTICAL to `isViableRecord`
+ * immediately above — same six clauses, same order — so the "semantically
+ * distinct" the previous comment claimed was a claim, not a difference: a record
+ * this admits is exactly a record that one admits. Wiring it into a promotion
+ * path would add a check that cannot ever refuse anything the ingest gate
+ * already let through.
+ *
+ * THE PROMOTION GATE IT DESCRIBES ALREADY EXISTS SOMEWHERE ELSE, and it is
+ * stricter by owner ruling: lib/lead-pipeline/canonical-lead-eligibility.ts is
+ * the "SINGLE source of truth for the raw record → lead CONVERSION GATE" (first
+ * name AND last name, plus one of email / phone / VERIFIED mailing address), and
+ * BOTH promotion paths — lib/lead-pipeline/pipeline-processor.ts and
+ * lib/lead-promotion/eligibility-evaluator.ts — already delegate to it. That is
+ * the survivor for this function's stated job.
+ *
+ * SO WHY IS IT STILL HERE. Deleting it is blocked, not declined: it is imported
+ * by scripts/scraper-simulator.ts:32,262,270, which is inside the owner's
+ * SCRAPING FENCE and may not be edited by this lane, and by
+ * scripts/lead-flow-e2e.ts:28,262. The delete has to move together with those
+ * two proofs. Until then this comment is the record, so the next reader does not
+ * re-derive the duplication or, worse, wire the weaker gate believing it adds
+ * something.
  */
 export function hasPromotionEligibleIdentity(r: NormalizedScrapedRecord): boolean {
   return !!(

@@ -30,7 +30,6 @@ import {
   PlayCircle,
   X,
   ArrowRight,
-  Inbox,
   TrendingUp,
   AlertCircle,
   Activity,

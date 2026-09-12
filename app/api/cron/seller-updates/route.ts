@@ -44,7 +44,10 @@ export async function GET(req: NextRequest) {
     const { data: listings, error } = await supabase
       .from("listings")
       .select("id, agent_id, brokerage_id, seller_contact_id, contact_id, address, city, state, lifecycle_stage")
-      .in("lifecycle_stage", ["active", "under_contract"])
+      // listings.lifecycle_stage is UPPER_SNAKE. This read ["active","under_contract"],
+      // neither of which is in the CHECK vocabulary, so this cron selected ZERO
+      // listings on every run and no seller ever received an update.
+      .in("lifecycle_stage", ["MLS_ACTIVE", "UNDER_CONTRACT"])
       .limit(50)
 
     if (error) {
@@ -71,7 +74,14 @@ export async function GET(req: NextRequest) {
           // Build the heat-map summary from the past week's showing feedback.
           // Surfaced via the activity description so the agent's CRM picks it
           // up without an extra side-table.
-          const sentiment = await buildShowingSentimentSummary(listing.id).catch((err) => {
+          const sentiment = await buildShowingSentimentSummary(listing.id, {
+            // The listing row this cron is iterating carries the tenant; the
+            // cron has no human actor, so the AI ledger row lands on the
+            // brokerage with a null user (allowed by
+            // ai_tool_usage_anon_rows_carry_tenant, verified live).
+            brokerageId: listing.brokerage_id ?? null,
+            userId: null,
+          }).catch((err) => {
             console.warn(`[seller-updates] sentiment failed for ${listing.id}:`, err)
             return null
           })
@@ -79,7 +89,10 @@ export async function GET(req: NextRequest) {
           const sellerContactId = listing.seller_contact_id ?? listing.contact_id ?? null
           const propertyAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
 
-          await supabase.from("activities").insert({
+          // This row IS the task — nothing else tells the agent an update is
+          // due, so a rejected row means the cron ran and produced nothing
+          // while reporting a processed listing.
+          const { error: sellerUpdateActivityError } = await supabase.from("activities").insert({
             agent_id: listing.agent_id,
             brokerage_id: listing.brokerage_id,
             contact_id: sellerContactId,
@@ -93,6 +106,9 @@ export async function GET(req: NextRequest) {
             priority: "medium",
             notes: sentiment ? JSON.stringify(sentiment) : null,
           })
+          if (sellerUpdateActivityError) {
+            console.error(`[seller-updates] seller_update_due activity REJECTED for listing ${listing.id} — no task was created:`, sellerUpdateActivityError.message)
+          }
 
           // MANAGER-ORCHESTRATED, NOT LINEAR — when the feedback points at a play (price pressure /
           // strong interest / presentation), hand it to the Listing Concierge over the bus so it
@@ -147,9 +163,37 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Seller updates cron failed: ${err.message}`)
-    void supabase
+    // PLATFORM-WIDE FAILURE, WRITTEN DELIBERATELY UNTENANTED — the one place in
+    // this wave where no tenant is the honest answer, and it is defended rather
+    // than assumed.
+    //
+    // This catch is the OUTER catch of a sweep that runs across EVERY brokerage
+    // (the per-item failures are caught inside the loop and pushed to `errors`).
+    // What failed is the job, not one tenant's work, so there is no record to
+    // resolve a tenant through and inventing one would attribute a platform
+    // outage to whichever brokerage happened to be first.
+    //
+    // Writing it untenanted is not "a row nobody can read", which is the rule
+    // this wave otherwise follows. Measured, not assumed: `lib/platform/ai-ops.ts:73`
+    // reads `automation_errors` CROSS-TENANT on the service client with NO
+    // brokerage predicate (`.not("status","in","(resolved,dismissed)")`), its row
+    // type carries `brokerageId: string | null` explicitly, and
+    // `app/actions/superadmin/ai-ops.ts:resolveAutomationErrorAction` resolves by
+    // id with no brokerage predicate either. So this row IS visible and IS
+    // resolvable — on the platform AI-ops console, which is exactly the audience
+    // a platform-wide cron failure belongs to, and is invisible to tenants, which
+    // is exactly right for a failure that is not theirs.
+    //
+    // The `void` fire-and-forget it replaces discarded the insert's own outcome,
+    // so a refused error-log looked identical to a filed one.
+    const { error: seller_updates_log_error } = await supabase
       .from("automation_errors")
-      .insert({ workflow_name: "seller-updates", error_message: err.message, severity: "error", created_at: ranAt })
+      .insert({ brokerage_id: null, workflow_name: "seller-updates", error_message: err.message, severity: "error", created_at: ranAt })
+    if (seller_updates_log_error) {
+      // The ORIGINAL failure is already in `errors` and in the response body, so a
+      // failure to FILE it is reported beside it and never replaces it.
+      console.error("[SellerUpdates] automation_errors insert refused:", seller_updates_log_error.message)
+    }
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

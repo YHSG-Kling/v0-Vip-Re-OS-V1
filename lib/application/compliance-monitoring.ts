@@ -1,51 +1,23 @@
 import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// (generateText/resolveModel imports left with the deleted
+// analyzeFairHousingRiskService — see its tombstone below.)
 import { businessDaysInclusive } from "@/lib/compliance/trid-disclosure-clock"
+import { resolveBrokerageComplianceIdentity } from "@/lib/brokerage/compliance-identity"
+import { getAgentContext } from "@/lib/identity"
 
 // ============================================
 // AUDIT LOGGING
 // ============================================
 
-export async function logAuditEventService(params: {
-  userId: string
-  action: string
-  entityType: string
-  entityId: string
-  changes?: any
-  ipAddress?: string
-  userAgent?: string
-  complianceRelevant?: boolean
-}) {
-  const supabase = await createClient()
-
-  const { error } = await supabase.from("audit_log").insert({
-    user_id: params.userId,
-    action: params.action,
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    // audit_log carries before/after JSONB. The legacy `audit_logs` callsite
-    // passed a single `changes` payload; we put it in `after` and fold the
-    // request-context (ip / UA / compliance flag) into the same JSONB so we
-    // don't lose the data on the schema unification.
-    before: null,
-    after: {
-      changes: params.changes ?? null,
-      ip_address: params.ipAddress ?? null,
-      user_agent: params.userAgent ?? null,
-      compliance_relevant: params.complianceRelevant ?? false,
-    },
-  })
-
-  if (error) {
-    console.error("[ComplianceMonitoring] Error logging audit event:", error)
-    throw new Error("Failed to log audit event")
-  }
-
-  return { success: true }
-}
+// TOMBSTONE (§1, lane E2 2026-08-28) — `logAuditEventService` deleted with its
+// only caller, the app/actions/compliance-monitoring.ts:logAuditEvent wrapper
+// (zero callers outside the importer-less the actions barrel (app/actions/index, deleted this wave) barrel).
+// Audit logging lives at the call sites as direct
+// `supabase.from("audit_log").insert(...)` writes — e.g.
+// app/actions/billing.ts:633, lib/kernel/transactions.ts:1457 — and at
+// app/actions/workflows.ts:logUserActivity for session-derived user activity.
 
 // ============================================
 // COMPLIANCE STATUS
@@ -82,6 +54,234 @@ export async function checkComplianceStatusService(transactionId: string) {
           ? "compliant"
           : "pending",
   }
+}
+
+// ============================================
+// RESOLVING A RAISED FLAG
+// ============================================
+//
+// `compliance_alerts.resolved` and `comp_risk_flags.is_resolved` both DEFAULT
+// false, are both read as `.eq(…, false)`, and were both written by NOBODY. The
+// consequence on the alerts side is above: `overallStatus` is 'at_risk' the
+// moment any alert exists and can never come back, because there was no way to
+// clear one. On the CMA side (app/actions/seller-cma.ts:243) a comp risk the
+// agent has already dealt with keeps rendering on the report forever.
+//
+// Neither failed OPEN — nothing ever showed a green light it had not earned —
+// but a light that cannot go out is a light nobody reads.
+//
+// WHO AND WHEN ARE PART OF THE FACT. A compliance record marked "cleared" with
+// no actor and no timestamp asserts a human judgement that cannot be attributed
+// or dated — the same defect class as a call stamped `compliance_passed` by a
+// gate that never ran (m510). So neither path below writes the boolean alone:
+//
+//   compliance_alerts  already HAS `resolved_at` + `resolved_by` (live, and never
+//                      written until now). All three go in ONE statement, so a
+//                      cleared alert cannot exist without its actor and moment.
+//
+//   comp_risk_flags    has `is_resolved` alone. Rather than adding three new
+//                      columns — which would be three brand-new writerless
+//                      columns until the migration landed, the exact defect this
+//                      wave is burning down — the attribution is written to
+//                      public.audit_log, the ONE audit ledger this file already
+//                      owns (logAuditEventService, top of this module). BOTH
+//                      paths write it, so the two sides are attributable in the
+//                      same place and the same vocabulary.
+//
+// THE AUDIT ENTRY IS WRITTEN FIRST, ON THE RISK-FLAG PATH. If the ledger write
+// fails, the flag is NOT cleared — a cleared flag with no audit row is precisely
+// the unattributable state; an audit row for a clear that was then refused is
+// merely a recorded attempt, which is harmless and true.
+const AUDIT_ALERT_RESOLVED = "compliance_alert.resolved"
+const AUDIT_RISK_FLAG_RESOLVED = "comp_risk_flag.resolved"
+
+export interface ResolveFlagResult {
+  success: boolean
+  error?: string
+}
+
+/**
+ * users.id + brokerage of the caller, from the SESSION — the one identity
+ * resolver (lib/identity), never a parameter. A body-supplied brokerageId on a
+ * compliance write is the IDOR shape this codebase has paid for repeatedly.
+ *
+ * FAILS CLOSED: a gate that cannot RUN refuses. `getAgentContext` throws when the
+ * session cannot be read, and that throw becomes a refusal here rather than an
+ * unauthenticated pass.
+ */
+async function resolveComplianceActor(): Promise<
+  { ok: true; userId: string; brokerageId: string } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext().catch(() => null)
+  if (!ctx?.isAuthenticated || !ctx.userId) return { ok: false, error: "Not signed in" }
+  if (!ctx.brokerageId) return { ok: false, error: "Your account has no brokerage" }
+  return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId }
+}
+
+/**
+ * Clear one compliance alert. The tenant predicate is the caller's OWN brokerage,
+ * so an id belonging to another tenant matches no row and clears nothing.
+ */
+export async function resolveComplianceAlertService(params: {
+  alertId: string
+  note?: string
+}): Promise<ResolveFlagResult> {
+  const supabase = await createClient()
+  const actor = await resolveComplianceActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+
+  const resolvedAt = new Date().toISOString()
+  const { data, error } = await supabase
+    .from("compliance_alerts")
+    .update({
+      resolved: true,
+      resolved_at: resolvedAt,
+      // users.id — the column FKs users, and agents.id is a DISJOINT id space (23503).
+      resolved_by: actor.userId,
+    })
+    .eq("id", params.alertId)
+    .eq("brokerage_id", actor.brokerageId)
+    // Only ever clears an OPEN alert, so a second click cannot rewrite the first
+    // person's name and time off a flag they already dealt with.
+    .eq("resolved", false)
+    .select("id")
+
+  // supabase-js RESOLVES a refusal — read the error before reading the rows.
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) {
+    return { success: false, error: "That alert is not in your brokerage, or is already resolved" }
+  }
+
+  await writeResolutionAudit(supabase, {
+    action: AUDIT_ALERT_RESOLVED,
+    entityType: "compliance_alert",
+    entityId: params.alertId,
+    userId: actor.userId,
+    brokerageId: actor.brokerageId,
+    resolvedAt,
+    note: params.note,
+  })
+
+  revalidatePath("/dashboard/compliance")
+  return { success: true }
+}
+
+/**
+ * The clearing, in the ONE audit ledger. Deliberately NOT
+ * `logAuditEventService`: that one THROWS on a failed insert, and a throw here
+ * would fail the caller's whole action after the flag had already been cleared —
+ * turning a lost audit line into a lost operation. The failure is returned so
+ * each path can decide (the alert path has its own resolved_by column and only
+ * logs; the risk-flag path has none and REFUSES).
+ */
+async function writeResolutionAudit(
+  supabase: SupabaseClient,
+  params: {
+    action: string
+    entityType: string
+    entityId: string
+    userId: string
+    brokerageId: string
+    resolvedAt: string
+    note?: string
+  },
+): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from("audit_log").insert({
+    user_id: params.userId,
+    action: params.action,
+    entity_type: params.entityType,
+    entity_id: params.entityId,
+    before: { resolved: false },
+    after: {
+      resolved: true,
+      resolved_at: params.resolvedAt,
+      resolved_by: params.userId,
+      brokerage_id: params.brokerageId,
+      note: params.note?.trim() || null,
+      compliance_relevant: true,
+    },
+  })
+  if (error) {
+    console.error(`[ComplianceMonitoring] ${params.action} audit write failed:`, error)
+    return { ok: false, error: error.message }
+  }
+  return { ok: true }
+}
+
+/**
+ * Clear one comp risk flag raised by the CMA engine (lib/cma/ai-cma-engine.ts:188).
+ *
+ * comp_risk_flags.brokerage_id is NULLABLE and the engine's bulk insert does not
+ * always carry it, so the tenant predicate cannot be a bare `.eq("brokerage_id", …)`
+ * — that would silently refuse to clear every legitimately-untenanted flag. The
+ * row's OWNERSHIP is established through its CMA instead, which is tenanted, and
+ * the flag is only then cleared by id.
+ */
+export async function resolveCompRiskFlagService(params: {
+  flagId: string
+  note?: string
+}): Promise<ResolveFlagResult> {
+  const supabase = await createClient()
+  const actor = await resolveComplianceActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+
+  const { data: flag, error: flagError } = await supabase
+    .from("comp_risk_flags")
+    .select("id, cma_id, brokerage_id")
+    .eq("id", params.flagId)
+    .maybeSingle()
+  if (flagError) return { success: false, error: flagError.message }
+  if (!flag) return { success: false, error: "Comp risk flag not found" }
+
+  let owned = flag.brokerage_id === actor.brokerageId
+  if (!owned && flag.cma_id) {
+    const { data: cma, error: cmaError } = await supabase
+      .from("cma_reports")
+      .select("id")
+      .eq("id", flag.cma_id)
+      .eq("brokerage_id", actor.brokerageId)
+      .maybeSingle()
+    if (cmaError) return { success: false, error: cmaError.message }
+    owned = !!cma
+  }
+  // No tenant on the row AND no tenant on its CMA → we cannot establish that this
+  // flag belongs to the caller. Refuse; do not guess in the permissive direction.
+  if (!owned) return { success: false, error: "That comp risk flag is not in your brokerage" }
+
+  // ATTRIBUTION FIRST. comp_risk_flags has no resolved_by/resolved_at column, so
+  // the audit row IS the record of who cleared this and when. Writing the boolean
+  // first and the ledger second would leave a cleared flag nobody owns whenever
+  // the second write failed — which is the state this whole path exists to
+  // prevent. An audit row for a clear that is then refused is harmless: it says
+  // an attempt was made, which is true.
+  const resolvedAt = new Date().toISOString()
+  const audit = await writeResolutionAudit(supabase, {
+    action: AUDIT_RISK_FLAG_RESOLVED,
+    entityType: "comp_risk_flag",
+    entityId: params.flagId,
+    userId: actor.userId,
+    brokerageId: actor.brokerageId,
+    resolvedAt,
+    note: params.note,
+  })
+  if (!audit.ok) {
+    return {
+      success: false,
+      error: `Could not record who cleared this flag, so it was left open: ${audit.error ?? "audit write refused"}`,
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("comp_risk_flags")
+    .update({ is_resolved: true })
+    .eq("id", params.flagId)
+    // A second click must not re-clear a flag someone else already closed.
+    .eq("is_resolved", false)
+    .select("id")
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "That flag is already resolved" }
+
+  return { success: true }
 }
 
 // ============================================
@@ -126,38 +326,139 @@ export async function trackCertificationExpirationService(agentId: string, clien
 // FAIR HOUSING
 // ============================================
 
+// RESTORED (owner ruling, lane F2 2026-08-28) — `analyzeFairHousingRiskService`
+// is back. The earlier deletion note (lane E2 2026-08-28) named three wired
+// fair-housing scanners as survivors, but on the owner's compare-the-process
+// rule none of them is THIS process:
+//   · lib/ai/models.ts:checkCompliance gates AI GENERATIONS at generation time;
+//   · evaluateOutboundCompliance gates OUTBOUND SENDS before they leave;
+//   · scanContentComplianceService scans ad-hoc MARKETING CONTENT for the
+//     approval flow.
+// This one is the CONTACT-LINKED POST-HOC review: a specific communication
+// that already happened with a specific contact, reviewed after the fact for
+// coaching/audit, with the finding filed against that contact and agent.
+// Same-sounding capability, different business process — not a duplicate.
+//
+// Restored WITH THE FIXES the deletion named:
+//   · SEVERITY MATH — the old copy compared a 0–1 model score against 75/40,
+//     so every flag it would ever write was "medium". The score is now
+//     NORMALIZED to 0–1 (a model answering on a 0–100 scale is divided down)
+//     and severity thresholds live on the same scale (≥0.75 critical,
+//     ≥0.4 high), so severities actually trigger.
+//   · IDENTITY — agent and tenant come from the SESSION (§4); the caller
+//     supplies only WHICH contact and WHAT was said, and the contact read is
+//     pinned to the session brokerage.
+//   · ROUTING — the model call rides generateTextRouted, so the spend reaches
+//     the ai_tool_usage cost ledger (§5) instead of running off-router.
+//   · ONE LEDGER, ONE VOCABULARY (§6) — the old body wrote compliance_flags
+//     TWICE with two violation_type spellings ("fair_housing_violation" always
+//     + "fair_housing" above 0.6) and a compliance_alerts row with
+//     transaction_id null that no reader reads (compliance_alerts readers key
+//     on transaction_id). It now writes ONE compliance_flags row with
+//     "fair_housing_violation" — the spelling the wired writers
+//     (lib/ai/models.ts) already use and the compliance command center's
+//     Flagged Content Queue (getComplianceOfficerDashboard → compliance_flags,
+//     status "flagged") already reads and can resolve. compliance_checks was
+//     evaluated and rejected: its shape is contract_review_id-linked document
+//     scans, with no contact/agent columns to file this finding against.
+// Wired at app/dashboard/communications/intelligence (the Risk & Compliance
+// tab's Fair-Housing Review card).
+
+// (getAgentContext is already imported at the top of this file — the restored
+// service below uses the same session resolver as its siblings.
+// generateTextRouted is imported LAZILY inside the service: a static import
+// would pull lib/ai/models' `server-only` chain into every importer of this
+// module, and the fair-housing-phrase-gate simulator imports this file under
+// tsx, where `server-only` throws.)
+
+/** The closed set of communication kinds a post-hoc review can be filed under. */
+export const FAIR_HOUSING_INTERACTION_TYPES = ["email", "sms", "call_transcript", "note", "other"] as const
+export type FairHousingInteractionType = (typeof FAIR_HOUSING_INTERACTION_TYPES)[number]
+
+/** Severity from a NORMALIZED 0–1 risk score — the fixed math. */
+function fairHousingSeverity(score01: number): "critical" | "high" | "medium" {
+  if (score01 >= 0.75) return "critical"
+  if (score01 >= 0.4) return "high"
+  return "medium"
+}
+
 export async function analyzeFairHousingRiskService(params: {
   contactId: string
-  agentId: string
-  interactionType: string
+  interactionType: FairHousingInteractionType
   communicationText: string
-}) {
+}): Promise<
+  | {
+      success: true
+      riskScore: number
+      severity: "critical" | "high" | "medium"
+      flagged: boolean
+      protectedClassMentioned: boolean
+      steeringDetected: boolean
+      flaggedPhrases: string[]
+      explanation: string
+      recommendation: string
+    }
+  | { success: false; error: string }
+> {
+  // ── Identity and tenant come from the SESSION (§4) ─────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { success: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+
   const supabase = await createClient()
+
+  // The contact must be IN the session brokerage — pinned read, so a
+  // cross-tenant contacts.id matches nothing. (contacts.id is the PK the
+  // compliance_flags.contact_id FK references — NOT the secondary contact_id
+  // uuid column, §3.)
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("id, brokerage_id")
+    .eq("id", params.contactId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (contactError) return { success: false, error: `Could not read the contact: ${contactError.message}` }
+  if (!contact) return { success: false, error: "That contact is not in your brokerage." }
 
   const protectedClasses = [
     "race", "color", "religion", "national origin",
     "sex", "disability", "familial status", "age",
   ]
 
+  // Deterministic red-flag phrases — kept as the AI-independent floor: even a
+  // failed model call still catches the classic steering vocabulary.
   const redFlagPhrases = [
     "perfect for families", "great for retirees", "quiet neighborhood",
     "young professional area", "walk to church", "good schools",
     "safe area", "changing neighborhood",
   ]
-
   const foundPhrases = redFlagPhrases.filter((phrase) =>
     params.communicationText.toLowerCase().includes(phrase.toLowerCase()),
   )
 
-  const { text } = await generateText({
-    model: resolveModel("openai/gpt-4o-mini"),
-    prompt: `Analyze this real estate communication for potential Fair Housing Act violations.
+  // ROUTED — the spend is booked to the session tenant on the ai_tool_usage
+  // ledger, like every other model call in the tree (§5).
+  let aiAnalysis: {
+    risk_score: number
+    protected_class_mentioned: boolean
+    steering_detected: boolean
+    flagged_content: string[]
+    explanation: string
+    recommendation: string
+  }
+  try {
+    const { generateTextRouted } = await import("@/lib/ai/models")
+    const { text } = await generateTextRouted({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      model: "openai/gpt-4o-mini",
+      prompt: `Analyze this real estate communication for potential Fair Housing Act violations.
 
 Communication: "${params.communicationText}"
 
 Protected classes: ${protectedClasses.join(", ")}
 
-Return a JSON object with:
+Return ONLY a JSON object with:
 - risk_score: 0.0 to 1.0 (0 = no risk, 1 = high risk)
 - protected_class_mentioned: boolean
 - steering_detected: boolean
@@ -170,89 +471,72 @@ Focus on detecting:
 2. Steering language that suggests or discourages based on demographics
 3. Coded language that implies discrimination
 4. Familial status violations (families with children)`,
-  })
-
-  let aiAnalysis
-  try {
-    aiAnalysis = JSON.parse(text)
+    })
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    aiAnalysis = JSON.parse(jsonMatch ? jsonMatch[0] : text)
   } catch {
     aiAnalysis = {
       risk_score: foundPhrases.length > 0 ? 0.7 : 0.3,
       protected_class_mentioned: false,
       steering_detected: foundPhrases.length > 0,
       flagged_content: foundPhrases,
-      explanation: "Manual review needed",
+      explanation: "The AI review did not return a usable verdict — manual review needed.",
       recommendation: "Review with compliance officer",
     }
   }
 
-  // Resolve brokerage from the contact (fallback to agent) so every audit row is
-  // tenant-scoped and visible to brokerage-scoped reads / RLS.
-  const { data: fhContact } = await supabase
-    .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
-  let brokerageId: string | null = fhContact?.brokerage_id ?? null
-  if (!brokerageId && params.agentId) {
-    const { data: fhAgent } = await supabase
-      .from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
-    brokerageId = fhAgent?.brokerage_id ?? null
-  }
+  // ── NORMALIZE THE SCALE, then apply severity on that one scale ─────────────
+  // The prompt asks for 0–1, but a model that answers 0–100 must not turn a 72
+  // into "72x maximum risk" — anything above 1 is treated as a percentage.
+  const rawScore = Number(aiAnalysis.risk_score)
+  const score01 = Math.min(1, Math.max(0, Number.isFinite(rawScore) ? (rawScore > 1 ? rawScore / 100 : rawScore) : 0))
+  const severity = fairHousingSeverity(score01)
 
-  // compliance_flags is the CANONICAL compliance ledger (the compliance UI
-  // reads it and explicitly ignores fair_housing_logs — that table was a
-  // write-only twin nothing consumed; keep-one repoint, open-loop sweep).
-  const allFlagged = [...foundPhrases, ...aiAnalysis.flagged_content]
-  const { error } = await supabase
+  const aiPhrases = Array.isArray(aiAnalysis.flagged_content)
+    ? aiAnalysis.flagged_content.filter((p): p is string => typeof p === "string")
+    : []
+  const allFlagged = Array.from(new Set([...foundPhrases, ...aiPhrases]))
+
+  // ── ONE flag row, on the ledger the compliance officer actually reads ──────
+  // compliance_flags status='flagged' is what the command center's Flagged
+  // Content Queue lists and submitComplianceReviewDecision resolves. The write
+  // is checked and REPORTED on failure: a fair-housing finding that lands
+  // nowhere a compliance officer can see it is the defect this restore fixes.
+  const { data: flagRows, error: flagError } = await supabase
     .from("compliance_flags")
     .insert({
-      brokerage_id: brokerageId,
+      brokerage_id: ctx.brokerageId,
       contact_id: params.contactId,
-      agent_id: params.agentId,
+      agent_id: ctx.agentId ?? null,
+      user_id: ctx.userId,
       violation_type: "fair_housing_violation",
-      severity: aiAnalysis.risk_score >= 75 ? "critical" : aiAnalysis.risk_score >= 40 ? "high" : "medium",
+      severity,
       content_type: params.interactionType,
       flagged_content: `${allFlagged.join("; ").slice(0, 300)} :: ${params.communicationText.slice(0, 400)}`,
       detected_at: new Date().toISOString(),
       status: "flagged",
     })
-
-  if (error) {
-    console.error("[ComplianceMonitoring] Error logging fair housing analysis:", error)
+    .select("id")
+  if (flagError) {
+    return { success: false, error: `The review ran but could not be filed to the compliance queue: ${flagError.message}` }
+  }
+  if (!flagRows || flagRows.length === 0) {
+    return { success: false, error: "The review ran but the database stored no compliance flag — nothing reached the queue." }
   }
 
-  if (aiAnalysis.risk_score >= 0.6) {
-    await supabase.from("compliance_alerts").insert({
-      brokerage_id: brokerageId,
-      transaction_id: null,
-      alert_type: "FAIR_HOUSING_RISK",
-      severity: aiAnalysis.risk_score >= 0.8 ? "critical" : "high",
-      message: `Potential fair housing violation detected in ${params.interactionType}`,
-      details: {
-        contact_id: params.contactId,
-        agent_id: params.agentId,
-        risk_score: aiAnalysis.risk_score,
-        flagged_phrases: aiAnalysis.flagged_content,
-        recommendation: aiAnalysis.recommendation,
-      },
-    })
+  revalidatePath("/dashboard/compliance")
 
-    // Surface to compliance_flags — the table the compliance dashboard reads
-    // (filtered by violation_type='fair_housing' + brokerage_id). Without this,
-    // the analysis is invisible to the UI.
-    await supabase.from("compliance_flags").insert({
-      brokerage_id: brokerageId,
-      agent_id: params.agentId,
-      contact_id: params.contactId,
-      content_type: params.interactionType,
-      violation_type: "fair_housing",
-      flagged_content: { text: params.communicationText, ...aiAnalysis },
-      severity: aiAnalysis.risk_score >= 0.8 ? "critical" : "high",
-      status: "flagged",
-      detected_at: new Date().toISOString(),
-    })
+  return {
+    success: true,
+    riskScore: score01,
+    severity,
+    flagged: true,
+    protectedClassMentioned: aiAnalysis.protected_class_mentioned === true,
+    steeringDetected: aiAnalysis.steering_detected === true,
+    flaggedPhrases: allFlagged,
+    explanation: typeof aiAnalysis.explanation === "string" ? aiAnalysis.explanation : "",
+    recommendation: typeof aiAnalysis.recommendation === "string" ? aiAnalysis.recommendation : "",
   }
-
-  revalidatePath("/compliance")
-  return aiAnalysis
 }
 
 // ============================================
@@ -382,8 +666,11 @@ export async function updateTRIDMilestoneService(params: {
 // DOCUMENT RETENTION
 // ============================================
 
-export async function applyDocumentRetentionService(transactionId: string) {
-  const supabase = await createClient()
+export async function applyDocumentRetentionService(transactionId: string, client?: SupabaseClient) {
+  // Accept a caller-supplied client so the daily compliance cron can pass a
+  // service-role client (no session there); UI/action callers default to the
+  // request-scoped client. Same shape as trackCertificationExpirationService.
+  const supabase = client ?? await createClient()
 
   const { data: transaction } = await supabase
     .from("transactions")
@@ -446,14 +733,78 @@ export async function exportAuditTrailService(params: {
     query = query.eq("entity_type", "transaction").eq("entity_id", params.transactionId)
   }
 
-  const { data: logs } = await query
+  const { data: logs, error } = await query
 
-  return { logs: logs || [], count: logs?.length || 0 }
+  // An audit-trail EXPORT that silently returns zero rows is worse than one
+  // that fails: the empty file is the artifact someone files as evidence.
+  if (error) {
+    return { logs: [], count: 0, error: `Audit trail could not be read: ${error.message}` }
+  }
+
+  return { logs: logs || [], count: logs?.length || 0, error: null as string | null }
 }
 
 // ============================================
 // CONTENT COMPLIANCE
 // ============================================
+
+export type ProhibitedPhraseRow = {
+  phrase: string
+  phrase_pattern?: string | null
+  category?: string | null
+  severity?: string | null
+  suggested_alternative?: string | null
+}
+
+// TWO VOCABULARIES MEET HERE, AND THEY DO NOT INTERSECT ON THE VALUE THAT
+// DECIDES PASS/FAIL. Normalise at this boundary or the gate silently passes.
+//
+//   the COLUMN stores  {info, warning, critical}
+//     — the live CHECK, and exactly what scripts/check-vocabularies.ts:1190
+//       declares for prohibited_phrases.severity.
+//   scanContentComplianceService grades {info, warning, blocking}
+//     — its own literals for the three non-DB issue types, and `passed` is
+//       computed as `issues.filter(i => i.severity === "blocking").length === 0`.
+//
+// So a stored 'critical' row pushed through unmapped lands in `issues` but is
+// invisible to that filter, and `passed` comes back TRUE with a Fair Housing
+// violation sitting in the list. Seeding the catalogue (m450) without this
+// mapping would have fixed nothing — the scan would find the phrase and still
+// clear the content.
+//
+// 'critical' is the CHECK's severest value and is what m450 stores for the 17
+// phrases the authored catalogue marked "blocking", so it maps to blocking
+// here. Anything else passes through unchanged.
+export const DB_SEVERITY_TO_ISSUE_GRADE: Record<string, string> = { critical: "blocking" }
+
+/**
+ * The prohibited-phrase scan, as a pure function over rows the caller has
+ * already read. Extracted from scanContentComplianceService so the Fair Housing
+ * gate can be exercised against the REAL seeded catalogue without a session —
+ * see scripts/fair-housing-phrase-gate-simulator.ts. The service calls this; the
+ * two do not carry separate copies of the logic.
+ *
+ * A malformed stored pattern throws out of `new RegExp` and aborts the whole
+ * scan. That is deliberate and is left as-is: a scan that cannot compile its own
+ * catalogue must fail loudly, not skip the phrase and report the content clean.
+ */
+export function scanForProhibitedPhrases(phrases: ProhibitedPhraseRow[], contentBody: string) {
+  const found: any[] = []
+  for (const phrase of phrases) {
+    const regex = new RegExp(phrase.phrase_pattern || phrase.phrase, "gi")
+    if (regex.test(contentBody)) {
+      found.push({
+        type: "prohibited_phrase",
+        category: phrase.category,
+        severity: DB_SEVERITY_TO_ISSUE_GRADE[phrase.severity as string] ?? phrase.severity,
+        found: phrase.phrase,
+        suggestedAlternative: phrase.suggested_alternative,
+        location: "content_body",
+      })
+    }
+  }
+  return found
+}
 
 export async function scanContentComplianceService(content: {
   contentBody: string
@@ -467,24 +818,50 @@ export async function scanContentComplianceService(content: {
   const issues: any[] = []
   const warnings: any[] = []
 
-  const { data: prohibitedPhrases } = await supabase
+  // A COMPLIANCE SCAN THAT COULD NOT READ ITS CATALOGUE IS NOT A CLEAN SCAN.
+  //
+  // supabase-js RESOLVES a failed query: without destructuring `error`, a
+  // permission denial arrives here as `data: null` and the loop below reads it
+  // as "no prohibited phrases found" — the caller then stores the content with
+  // status "pending" (see submitContentForApprovalService), i.e. APPROVED. The
+  // same is true of a genuinely empty table, which is how this gate spent its
+  // whole life: prohibited_phrases held zero rows until m450 seeded it, so every
+  // piece of listing and marketing copy ever scanned came back passed:true.
+  //
+  // Both cases fail CLOSED now. m450 guarantees the rows exist and m451 asserts
+  // it in the database, so neither branch fires in normal operation — but if one
+  // ever does, the scan says so instead of quietly clearing the content.
+  const { data: prohibitedPhrases, error: phrasesError } = await supabase
     .from("prohibited_phrases")
     .select("*")
+    // ORDERING IS A CAPABILITY, NOT A DETAIL. The deleted
+    // lib/seed-compliance-rules.ts:getProhibitedPhrases ordered by category, and
+    // nothing that replaced it did — so issues surfaced in physical row order on
+    // submit-content-form.tsx and pending-approvals-list.tsx, meaning an agent's
+    // fair_housing violation could sit below a them_first nitpick. Restored here,
+    // with `phrase` as a deterministic tiebreak so the same content always
+    // produces the same report. NOTE: no .eq("brokerage_id", …) — m454 unions the
+    // federal catalogue with this tenant's own words through RLS, and a filter
+    // here would hide all 25 federal phrases (NULL = <uuid> is never true).
     .eq("is_active", true)
+    .order("category", { ascending: true })
+    .order("phrase", { ascending: true })
 
-  for (const phrase of prohibitedPhrases || []) {
-    const regex = new RegExp(phrase.phrase_pattern || phrase.phrase, "gi")
-    if (regex.test(content.contentBody)) {
-      issues.push({
-        type: "prohibited_phrase",
-        category: phrase.category,
-        severity: phrase.severity,
-        found: phrase.phrase,
-        suggestedAlternative: phrase.suggested_alternative,
-        location: "content_body",
-      })
-    }
+  if (phrasesError) {
+    throw new Error(
+      `Compliance scan could not read the prohibited-phrase catalogue: ${phrasesError.message}. ` +
+        "Refusing to report content as compliant against a catalogue that was never read.",
+    )
   }
+  if (!prohibitedPhrases || prohibitedPhrases.length === 0) {
+    throw new Error(
+      "Compliance scan aborted: the prohibited-phrase catalogue holds no active phrases, so the " +
+        "Fair Housing scan would pass every piece of content. Apply the phrase-catalogue migration " +
+        "(supabase/migrations/m450-*) before scanning content.",
+    )
+  }
+
+  issues.push(...scanForProhibitedPhrases(prohibitedPhrases, content.contentBody))
 
   if (content.targetAudience === "cold_lead") {
     const allowedChannels = ["email", "print"]
@@ -518,6 +895,142 @@ export async function scanContentComplianceService(content: {
         disclosureType: disclosure.disclosure_type,
         requiredText: disclosure.disclosure_text,
         placement: disclosure.placement_requirement,
+      })
+    }
+  }
+
+  // ── TENANT IDENTITY DISCLOSURES — brokerage name + licence number ──────────
+  //
+  // These two are required disclosures, but they are NOT catalogue rows and
+  // never could be. `required_disclosures` is checked with a LITERAL substring
+  // test (`contentBody.includes(disclosure_text)`), and the authored catalogue
+  // carried two rows whose "text" was a LABEL, not a disclosure:
+  //
+  //   brokerage_name  → "Brokerage Name Required"
+  //   license_number  → "Licensed Real Estate Agent"
+  //
+  // No real advertisement contains either string, so both would have warned on
+  // 100% of content forever while never once checking the thing they name. m452
+  // left them out of the seed on purpose. The requirement is real — the VALUE is
+  // per-tenant and per-agent, and it lives in the user's own settings — so it is
+  // checked here, against the tenant's actual recorded identity.
+  //
+  // IDENTITY COMES FROM THE SESSION. Not from an argument: a caller-supplied
+  // brokerage or agent id would let content be graded against someone else's
+  // licence number.
+  const { data: { user: scanUser }, error: scanUserError } = await supabase.auth.getUser()
+  const identity = await resolveBrokerageComplianceIdentity(supabase, scanUser?.id ?? null)
+  if (!scanUser) {
+    // No session means no tenant, which means there is nothing to check the
+    // content against. Every caller of this service is a server action that has
+    // one; if that ever stops being true the scan says so rather than reporting
+    // two unchecked requirements as merely "unset".
+    identity.unreadable.push(
+      scanUserError
+        ? `signed-in user (${scanUserError.message})`
+        : "no signed-in user — the brokerage and agent identity could not be resolved",
+    )
+  }
+
+  // Case-insensitive, whitespace-collapsed containment for names.
+  const haystackText = content.contentBody.toLowerCase().replace(/\s+/g, " ")
+  const namePresent = (value: string | null) => {
+    if (!value) return false
+    const needle = value.toLowerCase().replace(/\s+/g, " ").trim()
+    // A one-character "name" would match nearly any text — that is a data
+    // problem, not a compliant advertisement, so it never counts as satisfied.
+    return needle.length >= 2 && haystackText.includes(needle)
+  }
+
+  // Licence numbers are written a dozen ways in real copy — "FL-SL3456789",
+  // "Lic #FL SL3456789", "License No. FLSL3456789". Compare on alphanumerics
+  // only so formatting never decides compliance.
+  const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "")
+  const haystackAlnum = alnum(content.contentBody)
+  const licensePresent = (value: string | null) => {
+    if (!value) return false
+    const needle = alnum(value)
+    return needle.length >= 3 && haystackAlnum.includes(needle)
+  }
+
+  // A READ THAT FAILED IS NOT AN EMPTY RECORD. supabase-js resolves a denial as
+  // `data: null`; the resolver reports those separately so this never grades a
+  // permission error as "the brokerage has no licence".
+  if (identity.unreadable.length > 0) {
+    warnings.push({
+      type: "missing_disclosure",
+      severity: "warning",
+      disclosureType: "identity_unverifiable",
+      message:
+        `The brokerage-name and license-number disclosures could not be checked: ` +
+        `${identity.unreadable.join("; ")}. This content has NOT been checked against ` +
+        `either requirement — treat both as unverified, not as satisfied.`,
+      placement: "footer",
+    })
+  } else {
+    // ── Brokerage name ──────────────────────────────────────────────────────
+    // The DBA satisfies it too: a brokerage advertising under its registered
+    // trade name is identified. This matches the rendered attribution band,
+    // which prefers DBA → legal name (lib/ai/image-generation.ts).
+    const brokerageNames = [identity.brokerageName, identity.brokerageDba].filter(Boolean) as string[]
+    if (brokerageNames.length === 0) {
+      // THE CHECK CANNOT RUN. Say so — do not skip, and do not call it passed.
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "brokerage_name",
+        message:
+          "No brokerage name is recorded for your account, so this content could not be checked " +
+          "for the required brokerage identification. Add the brokerage's legal name (and DBA, if " +
+          "it advertises under one) on the brokerage record — Superadmin → Brokerages " +
+          "(/dashboard/superadmin/brokerages) — or ask your broker or platform admin to.",
+        placement: "footer",
+      })
+    } else if (!brokerageNames.some(namePresent)) {
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "brokerage_name",
+        requiredText: identity.brokerageDba ?? identity.brokerageName,
+        message:
+          `This content does not identify the brokerage. Advertising must name ` +
+          `"${identity.brokerageDba ?? identity.brokerageName}".`,
+        placement: "footer",
+      })
+    }
+
+    // ── Licence number ──────────────────────────────────────────────────────
+    // EITHER licence satisfies it. That is the distinction the rendered
+    // attribution band already draws: it prints the brokerage licence, and adds
+    // the agent's own only when it differs. Many states accept either on an
+    // advertisement, so requiring both here would fail compliant copy.
+    const licenses = [identity.agentLicense, identity.brokerageLicense].filter(Boolean) as string[]
+    if (licenses.length === 0) {
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "license_number",
+        message:
+          "No license number is recorded — neither yours nor your brokerage's — so this content " +
+          "could not be checked for the required license disclosure. Set your own license number " +
+          "and state on My Profile (/dashboard/profile); it then shows under Settings → License & CE. " +
+          "The brokerage license is set on the brokerage record by your broker or platform admin.",
+        placement: "footer",
+      })
+    } else if (!licenses.some(licensePresent)) {
+      const shown = identity.agentLicense ?? identity.brokerageLicense
+      const state = identity.agentLicense
+        ? identity.agentLicenseState
+        : identity.brokerageLicenseState
+      warnings.push({
+        type: "missing_disclosure",
+        severity: "warning",
+        disclosureType: "license_number",
+        requiredText: state ? `Lic #${shown} (${state})` : `Lic #${shown}`,
+        message:
+          `This content does not carry a license number. Include your license (#${shown}) ` +
+          `or your brokerage's.`,
+        placement: "footer",
       })
     }
   }
@@ -606,7 +1119,7 @@ export async function submitContentForApprovalService(data: {
 
   if (error) throw error
 
-  revalidatePath("/compliance")
+  revalidatePath("/dashboard/compliance")
   return approval
 }
 
@@ -664,96 +1177,60 @@ export async function reviewContentApprovalService(data: {
       .single()
 
     if (approval && approval.metadata) {
-      await supabase.from("approved_content_library").insert({
+      // THE EXPIRY IS A COLUMN, NOT A NOTE. `expiresInDays` was folded into the
+      // activity's metadata blob and NOWHERE ELSE, while the nightly sweep
+      // (app/api/cron/compliance-monitoring/route.ts:130) deactivates approved
+      // content by `expires_at < now()` on THIS table. A column no writer ever
+      // set means that sweep has never expired anything: an approval granted
+      // "for 30 days" stayed usable forever, which is the whole point of a
+      // time-boxed approval inverted.
+      //
+      // Two more defects in the same six lines, both silent:
+      //   · brokerage_id is NOT NULL on this table and was not named at all, so
+      //     PostgREST refused the row ENTIRELY (23502) — the library was never
+      //     populated, and the error was never read.
+      //   · created_by FKs users(id) and was handed a BROKERAGE id. Those id
+      //     spaces are disjoint; the value could only ever have been a dangling
+      //     reference. The reviewer is who created this entry, and reviewerId is
+      //     already in hand.
+      const expiresAt = data.status === "approved" && data.expiresInDays
+        ? new Date(Date.now() + data.expiresInDays * 86_400_000).toISOString()
+        : null
+      const { error: libraryError } = await supabase.from("approved_content_library").insert({
+        brokerage_id: approval.brokerage_id,
         approval_id: approval.id,
         content_category: approval.metadata.content_type,
         content_template: approval.description,
         allowed_channels: approval.metadata.distribution_channels,
         allowed_lead_types: [approval.metadata.target_audience],
-        created_by: approval.brokerage_id,
+        expires_at: expiresAt,
+        created_by: data.reviewerId,
       })
+      // A refused write here means the approved content is NOT in the library the
+      // send path checks against. Reported, never swallowed — a compliance
+      // library that silently failed to record an approval is the failure mode
+      // this whole module exists to prevent.
+      if (libraryError) {
+        throw new Error(`[ComplianceMonitoring] Approved content could not be recorded in the library: ${libraryError.message}`)
+      }
     }
   }
 
-  revalidatePath("/compliance")
+  revalidatePath("/dashboard/compliance")
   return { success: true }
 }
 
-export async function logCommunicationWithComplianceService(data: {
-  userId: string
-  agentId?: string
-  contactId?: string
-  leadId?: string
-  communicationType: string
-  leadTemperature: string
-  contentId?: string
-  contentSnapshot: string
-  sentVia?: string
-}) {
-  const supabase = await createClient()
-
-  // Resolve brokerage from the acting user so audit rows are tenant-scoped.
-  const { data: logUser } = await supabase
-    .from("users").select("brokerage_id").eq("id", data.userId).maybeSingle()
-  const logBrokerageId: string | null = logUser?.brokerage_id ?? null
-
-  let complianceCheck = { passed: true, warnings: [] as any[] }
-
-  if (data.leadTemperature === "cold" && !["email", "print"].includes(data.communicationType)) {
-    complianceCheck = {
-      passed: false,
-      warnings: [
-        {
-          type: "channel_violation",
-          message: "Cold leads can only be contacted via email or print mail",
-        },
-      ],
-    }
-
-    await supabase.from("compliance_flags").insert({
-      brokerage_id: logBrokerageId,
-      user_id: data.userId,
-      agent_id: data.agentId,
-      contact_id: data.contactId ?? null,
-      content_type: data.communicationType,
-      violation_type: "cold_lead_channel_violation",
-      flagged_content: {
-        channel_used: data.communicationType,
-        lead_temperature: data.leadTemperature,
-        allowed_channels: ["email", "print"],
-      },
-      severity: "high",
-      status: "flagged",
-      detected_at: new Date().toISOString(),
-    })
-  }
-
-  const { data: log, error } = await supabase
-    .from("communication_audit_log")
-    .insert({
-      brokerage_id: logBrokerageId,
-      user_id: data.userId,
-      agent_id: data.agentId,
-      contact_id: data.contactId,
-      lead_id: data.leadId,
-      communication_type: data.communicationType,
-      lead_temperature: data.leadTemperature,
-      was_approved_content: !!data.contentId,
-      channel: data.sentVia,
-      body_snippet: data.contentSnapshot?.slice(0, 500),
-      compliance_passed: complianceCheck.passed,
-      sent_at: new Date().toISOString(),
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("[ComplianceMonitoring] Error logging communication:", error)
-    throw error
-  }
-
-  return { success: true, compliancePassed: complianceCheck.passed, log }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) —
+// `logCommunicationWithComplianceService` deleted with its only caller, the
+// app/actions/compliance-monitoring.ts wrapper (zero callers outside the
+// importer-less the actions barrel (app/actions/index, deleted this wave) barrel). SURVIVOR:
+// lib/services/communication.service.tsx:logCommunication — the
+// communication_audit_log writer real sends reach. Merged onto the survivor
+// before deleting: lead_temperature + was_approved_content on the audit row,
+// and the cold-lead channel rule (compliance_passed=false + a
+// compliance_flags `cold_lead_channel_violation` row when a cold lead is
+// reached outside email/print) — the exact columns the daily compliance
+// cron's cold-lead and unapproved-content sweeps read.
 
 export async function getApprovedContentLibraryService(filters?: {
   category?: string
@@ -878,7 +1355,12 @@ export async function generateComplianceReportService(filters: {
   if (filters.agentId) logsQuery = logsQuery.eq("agent_id", filters.agentId)
   if (filters.userId)  logsQuery = logsQuery.eq("user_id", filters.userId)
 
-  const { data: logs } = await logsQuery
+  // supabase-js RESOLVES a failed query with { data: null, error }. Both reads
+  // below used to drop the error, so an unreadable communication_audit_log or
+  // compliance_flags produced "0 communications, 0 violations" — which this
+  // report then presents as a clean brokerage. A compliance report that cannot
+  // read its sources must say so; silence here is the most dangerous kind.
+  const { data: logs, error: logsError } = await logsQuery
 
   let violationsQuery = supabase
     .from("compliance_flags")
@@ -889,9 +1371,19 @@ export async function generateComplianceReportService(filters: {
   if (filters.agentId) violationsQuery = violationsQuery.eq("agent_id", filters.agentId)
   if (filters.userId)  violationsQuery = violationsQuery.eq("user_id", filters.userId)
 
-  const { data: violations } = await violationsQuery
+  const { data: violations, error: violationsError } = await violationsQuery
+
+  const unreadable = [
+    logsError ? `communications (${logsError.message})` : null,
+    violationsError ? `violations (${violationsError.message})` : null,
+  ].filter(Boolean) as string[]
 
   return {
+    /**
+     * Non-empty when a source could not be read. Every count below is then a
+     * FLOOR over whatever did load, not a finding — render this before them.
+     */
+    unreadableSources: unreadable,
     totalCommunications: logs?.length || 0,
     compliantCommunications: logs?.filter((l) => l.compliance_check_passed).length || 0,
     totalViolations: violations?.length || 0,
@@ -906,9 +1398,12 @@ export async function generateComplianceReportService(filters: {
         acc[l.communication_type] = (acc[l.communication_type] || 0) + 1
         return acc
       }, {} as Record<string, number>) || {},
-    coldLeadChannelCompliance:
-      logs
-        ?.filter((l) => l.lead_temperature === "cold")
-        .every((l) => ["email", "print"].includes(l.communication_type)) ?? true,
+    // `?? true` here asserted cold-lead channel compliance from a null read —
+    // an unreadable log claimed a clean record. null means "not established".
+    coldLeadChannelCompliance: logsError
+      ? null
+      : (logs
+          ?.filter((l) => l.lead_temperature === "cold")
+          .every((l) => ["email", "print"].includes(l.communication_type)) ?? true),
   }
 }

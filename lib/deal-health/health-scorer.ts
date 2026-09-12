@@ -43,17 +43,9 @@ import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type HealthCategory =
-  | "EARNEST_MONEY"
-  | "INSPECTION"
-  | "LENDER"
-  | "TITLE"
-  | "MILESTONES"
-  | "DEADLINES"
-  | "COMPLIANCE"
-  | "COMMUNICATION"
-  | "DOCUMENTS"
-  | "PARTICIPANTS"
+export type { HealthCategory } from "./category-weights"
+import { CATEGORY_WEIGHTS, type HealthCategory } from "./category-weights"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 export interface ComponentScore {
   category:    HealthCategory
@@ -93,18 +85,8 @@ export interface DealHealthResult {
 // ─── Category Weights (sum = 100) ─────────────────────────────────────────────
 
 // Weights adjusted to sum to 100 with 10 categories
-const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
-  EARNEST_MONEY:   14,
-  INSPECTION:      12,
-  LENDER:          14,
-  TITLE:           10,
-  MILESTONES:      10,
-  DEADLINES:       10,
-  COMPLIANCE:      10,
-  COMMUNICATION:    6,
-  DOCUMENTS:        8,
-  PARTICIPANTS:     6,
-}
+// Weights + vocabulary now live in the client-safe sibling so the UI can rank the
+// same shortfall without importing this server module. One source, no copy.
 
 // ─── Scorer Functions ─────────────────────────────────────────────────────────
 
@@ -503,6 +485,17 @@ async function scoreDeadlines(
 
 /**
  * COMPLIANCE: Maps to transaction_compliance_log and compliance_checklists
+ *
+ * ── `brokerageId` WAS ACCEPTED AND NEVER READ ───────────────────────────────
+ *
+ * This is the ONLY one of the ten category scorers calculateDealHealth hands a
+ * tenant to — the other nine take `transactionId` alone — so the argument was
+ * not decoration, it was a wire somebody started and did not finish. Both
+ * tables carry `brokerage_id` (scripts/schema-snapshot.ts), the client is
+ * `createServiceClient()` with RLS bypassed, and every read below was keyed on
+ * `transaction_id` alone: a transaction id from one tenant would have scored
+ * against whatever compliance rows any tenant had filed under it. The
+ * predicate is now applied, which is what the parameter was for.
  */
 async function scoreCompliance(
   supabase: ReturnType<typeof createServiceClient>,
@@ -516,6 +509,7 @@ async function scoreCompliance(
   const { data: complianceLog } = await supabase
     .from("transaction_compliance_log")
     .select("id, check_type, check_label, status, is_blocking, failure_reason, checked_at, resolved_at")
+    .eq("brokerage_id", brokerageId)
     .eq("transaction_id", transactionId)
 
   if (complianceLog && complianceLog.length > 0) {
@@ -549,6 +543,7 @@ async function scoreCompliance(
   const { data: checklists } = await supabase
     .from("compliance_checklists")
     .select("id, checklist_type, items, compliance_score, ai_recommendations")
+    .eq("brokerage_id", brokerageId)
     .eq("transaction_id", transactionId)
 
   if (checklists && checklists.length > 0) {
@@ -883,6 +878,11 @@ export async function calculateDealHealth(params: {
     // component categories — map each component to its canonical factor kind
     // (caught by live-fire before this write ever shipped; detail keeps the
     // original category for fidelity).
+    // All TEN categories map now. deal_health_factors.factor_type already admitted
+    // communication_recency and party_responsiveness — COMMUNICATION (6),
+    // PARTICIPANTS (6) and DOCUMENTS (8) simply had no entry here, so 20 of the
+    // 100 weight was scored in memory and then dropped on the floor at persist
+    // time. Nothing about the constraint had to change.
     const FACTOR_TYPE: Record<string, string> = {
       EARNEST_MONEY: "financing_status",
       LENDER:        "financing_status",
@@ -891,6 +891,9 @@ export async function calculateDealHealth(params: {
       MILESTONES:    "timeline_adherence",
       TITLE:         "document_completeness",
       COMPLIANCE:    "document_completeness",
+      DOCUMENTS:     "document_completeness",
+      COMMUNICATION: "communication_recency",
+      PARTICIPANTS:  "party_responsiveness",
     }
     await supabase.from("deal_health_factors").delete().eq("transaction_id", transactionId)
     if (components.length > 0) {
@@ -960,6 +963,20 @@ export async function calculateDealHealth(params: {
   // emitKernelEvent does BOTH the lifecycle_events insert AND fans into the reactor (staff
   // notifications + marketing-trigger enrollment + canonical campaign_sequences enrollment +
   // client-portal cards). Bare lifecycle_events inserts silently dropped all four channels.
+  //
+  // CADENCE vs DEAL_HEALTH_SCORE_UPDATED (census wave 48 — CLAUDE.md §6 review): these are
+  // TWO MOMENTS, not two spellings of one. DEAL_HEALTH_SCORE_UPDATED (app/actions/
+  // deal-health-actions.ts, app/api/cron/deal-health-scan/route.ts) fires on EVERY scan of
+  // THIS SAME calculateDealHealth run, unconditionally — a cadence pulse the reactor
+  // (D-octies) already gates to "not healthy" before signaling deal_coordinator.
+  // DEAL_HEALTH_CHANGED fires HERE ONLY, and only `if (tierChanged)` — an edge trigger on
+  // the risk TIER flipping in EITHER direction, including a RECOVERY (critical → healthy)
+  // that DEAL_HEALTH_SCORE_UPDATED's "not healthy" gate never reports and DEAL_AT_RISK_
+  // DETECTED (fired below, only on worsening INTO danger) never reports either. So the three
+  // together read as: SCORE_UPDATED = "a scan happened", AT_RISK_DETECTED = "still bad",
+  // CHANGED = "the tier just moved, any direction" — kept as three distinct signals rather
+  // than merged, because a reader that only wants the edge (this one) would otherwise have
+  // to re-derive it by diffing consecutive SCORE_UPDATED rows itself.
   if (tierChanged) {
     await emitKernelEvent({
       event:        KernelEvent.DEAL_HEALTH_CHANGED,
@@ -1059,7 +1076,7 @@ Write a concise, actionable summary for the agent/broker. Focus on what needs at
 
   try {
     const response = await gatewayChat({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("claude-sonnet") as string, // one alias table (lib/ai/resolve-model.ts), never a dated literal
       maxTokens: 200,
       temperature: 0.3,
       messages: [{ role: "user", content: prompt }],

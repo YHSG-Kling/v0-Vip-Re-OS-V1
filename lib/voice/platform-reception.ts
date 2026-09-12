@@ -15,6 +15,7 @@
 // (voice_calls is tenant-shaped: NOT NULL brokerage/contact/agent).
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
+import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
 
 // ── Number routing ────────────────────────────────────────────────────────────
 
@@ -109,7 +110,12 @@ export function buildPlatformReceptionPrompt(id: {
 
 // ── Turn planning (platform contract: continue | prospect | transfer | hangup) ─
 
-export const PROSPECT_ROLE_INTERESTS = ["solo_agent", "team", "brokerage", "multi_location", "unknown"] as const
+// TOMBSTONE (2026-08-27, §6 one-vocabulary): PROSPECT_ROLE_INTERESTS was a
+// second spelling of the SAME five-value role vocabulary the growth funnel
+// owns. Survivor: lib/platform/growth-funnel.ts:13 PROSPECT_ROLES — the list
+// the DB CHECK (role_interest), validateProspectInput and the proposal tier
+// mapping already key on. One list, so a new tier value cannot land in one
+// speller and not the other (imported at the top of this file).
 
 export type PlatformTurnAction =
   | { kind: "say" }
@@ -160,7 +166,7 @@ export function parsePlatformTurnPlan(raw: string): PlatformTurnPlan {
           name: (p.name ?? "").trim().slice(0, 120) || null,
           email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email.slice(0, 200) : null,
           company: (p.company ?? "").trim().slice(0, 160) || null,
-          roleInterest: (PROSPECT_ROLE_INTERESTS as readonly string[]).includes(role) ? role : "unknown",
+          roleInterest: (PROSPECT_ROLES as readonly string[]).includes(role) ? role : "unknown",
           note: (p.note ?? "").trim().slice(0, 400) || null,
         },
       }
@@ -213,7 +219,7 @@ export async function capturePhoneProspect(svc: any, input: {
 }): Promise<{ id: string } | null> {
   const phone = input.phone.trim()
   if (!phone) return null
-  const role = (PROSPECT_ROLE_INTERESTS as readonly string[]).includes(input.roleInterest ?? "") ? input.roleInterest : "unknown"
+  const role = (PROSPECT_ROLES as readonly string[]).includes(input.roleInterest ?? "") ? input.roleInterest : "unknown"
   const fields = {
     name: input.name?.trim() || null,
     company: input.company?.trim() || null,

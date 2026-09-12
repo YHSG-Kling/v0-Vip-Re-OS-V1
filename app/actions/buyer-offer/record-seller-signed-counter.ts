@@ -32,7 +32,9 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
+import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
 import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export interface RecordSellerSignedCounterParams {
   /** The buyer's original offer (or prior counter) being countered. */
@@ -110,8 +112,13 @@ export async function recordSellerSignedCounter(
   // Stamp the seller-signed fields on the new counter row. The webhook
   // (finalizeMatchingOffer) reads seller_signed_at to detect "both sides
   // signed" the moment the buyer's signature lands.
+  // CHECKED, not fire-and-forget: supabase-js RESOLVES a rejected update, so an
+  // unread { error } here silently drops the record of a LEGALLY EXECUTED seller
+  // signature. Without seller_signed_at the webhook's "both sides signed" test
+  // (finalizeMatchingOffer) never fires when the buyer signs, so a fully executed
+  // counter never converts to a transaction. This is reported, never swallowed.
   const now = sellerSignedAt ?? new Date().toISOString()
-  await supabase
+  const { error: stampError } = await supabase
     .from("offers")
     .update({
       seller_signed_at:            now,
@@ -121,6 +128,17 @@ export async function recordSellerSignedCounter(
       esign_status:                "partially_signed",
     })
     .eq("id", counterId)
+
+  if (stampError) {
+    return {
+      success: false,
+      // The counter row DOES exist — hand its id back so the agent/support can
+      // finish the stamp rather than re-issuing a duplicate counter.
+      counterOfferId: counterId,
+      round,
+      error: `Counter ${counterId} (round ${round}) was created, but the seller's signature could not be recorded on it (${stampError.message}). Do NOT send it to the buyer — the executed counter would not be detected. Re-record the seller signature.`,
+    }
+  }
 
   // Route the seller-signed PDF through the universal uploader so it lands
   // as a documents row with the classifier kicked off (counter_offer
@@ -147,16 +165,37 @@ export async function recordSellerSignedCounter(
     }
   }
 
-  // Activity for the buyer-side agent's queue
-  await supabase.from("activities").insert({
+  // Activity for the buyer-side agent's queue.
+  // Best-effort BY DESIGN and safe to lose: this is a FEED entry, a duplicate
+  // view of state already durable on the counter offer row (seller_signed_at,
+  // seller_signed_document_url, esign_status) — and the load-bearing human alert
+  // is the notifyComplianceFlag fan-out immediately below, which is checked via
+  // its returned notified_count. Losing the feed row degrades the timeline, not
+  // the deal. NOT silenced: sentinelWrite ledgers the loss to self_heal_events so
+  // a feed that has quietly stopped recording counters shows up in the digest.
+  //
+  // THE KEY. This row carried the tenant but no `entity_id` — and `entity_id` is
+  // NULLABLE, so it inserted fine and was invisible to every keyed reader. The
+  // subject of this row is the NEW COUNTER offer (`notes.offer_id` and
+  // `metadata.offer_id` already said `counterId`), so that is its entity_id.
+  //
+  // Its two activity_type values (`buyer.offer.counter.external_received` /
+  // `.counter.seller_signed`) are PROVENANCE labels — which door the seller's
+  // signature came through — and no reader knows them, so they cannot move the
+  // parent's lifecycle on their own. They are kept as the human/audit record and
+  // the canonical `buyer.offer.counter.received` is emitted separately below,
+  // against the PARENT, which is the offer that has actually been countered.
+  const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+  const provenanceRowLanded = await sentinelWrite(supabase, supabase.from("activities").insert({
     brokerage_id:   brokerageId,
     agent_user_id:  raiserUserId,
     agent_id:       parentOffer.agent_id,
     contact_id:     parentOffer.contact_id,
     entity_type:    "offer",
+    entity_id:      counterId,
     activity_type:  source === "external"
-                     ? "buyer.offer.counter.external_received"
-                     : "buyer.offer.counter.seller_signed",
+                     ? OFFER_AUDIT_EVENT.COUNTER_EXTERNAL_RECEIVED
+                     : OFFER_AUDIT_EVENT.COUNTER_SELLER_SIGNED,
     title:          `Counter received from seller${source === "external" ? " (external)" : ""}`,
     description:    `Round ${round} counter — seller has signed; awaiting buyer signature.`,
     notes:          JSON.stringify({
@@ -175,7 +214,45 @@ export async function recordSellerSignedCounter(
     },
     status:    "completed",
     priority:  "high",
+  }), { table: "activities", flow: "record_seller_signed_counter", brokerageId })
+  // sentinelWrite ledgers the loss to self_heal_events and returns false; read
+  // it, because this row is the human/audit record of a SIGNED document and a
+  // silent gap in it is the thing a broker would be asked to produce.
+  if (!provenanceRowLanded) {
+    console.error(`[recordSellerSignedCounter] provenance activity was NOT written for counter ${counterId} — the signature is recorded on the offer but not on the audit rail`)
+  }
+
+  // ── THE PARENT'S LIFECYCLE EVENT ───────────────────────────────────────────
+  // A seller-signed counter arriving IS the parent offer being countered, and
+  // `buyer.offer.counter.received` is the canonical name for that (it is already
+  // in lib/buyer-offer/status-sync.ts's map → offers.status='countered', and in
+  // offer-lifecycle.ts's EVENT_TO_STATE → COUNTERED). Nothing in the tree ever
+  // emitted it: `issueCounterOffer` moves the parent's `status` COLUMN but
+  // writes no activity, so the parent's DERIVED state never left wherever it
+  // was, and the expiry sweep kept treating a countered offer as live.
+  //
+  // Keyed to the PARENT offer — the counter row gets its own provenance row
+  // above. CHECKED: this is the row the derivation reads.
+  const { error: parentCounterEventError } = await supabase.from("activities").insert({
+    brokerage_id:   brokerageId,
+    agent_user_id:  raiserUserId,
+    agent_id:       parentOffer.agent_id,
+    contact_id:     parentOffer.contact_id,
+    entity_type:    "offer",
+    entity_id:      parentOfferId,
+    activity_type:  OFFER_EVENT.COUNTER_RECEIVED,
+    title:          `Counter received from seller (round ${round})`,
+    description:    `Seller countered offer ${parentOfferId}; counter ${counterId} is on file and awaiting the buyer's signature.`,
+    notes:          JSON.stringify({ offer_id: parentOfferId, counter_offer_id: counterId, round, source, seller_signed_at: now }),
+    metadata:       { offer_id: parentOfferId, counter_offer_id: counterId, round, source, seller_signed_at: now },
+    status:         "completed",
+    priority:       "high",
   })
+  if (parentCounterEventError) {
+    console.error(
+      `[record-seller-signed-counter] counter ${counterId} recorded, but the parent offer ${parentOfferId} could not be marked COUNTERED (${parentCounterEventError.message}) — its derived lifecycle state will not reflect this counter.`,
+    )
+  }
 
   // Notification fan-out (medium severity → in-app bell only; deal is moving,
   // not a compliance issue, so no email/SMS noise).
@@ -184,7 +261,7 @@ export async function recordSellerSignedCounter(
     agentUserId:   raiserUserId,
     transactionId: null,
     flag: {
-      type:        "buyer.offer.counter.seller_signed",
+      type:        OFFER_AUDIT_EVENT.COUNTER_SELLER_SIGNED,
       severity:    "medium",
       title:       `Seller-signed counter on file — buyer signature needed`,
       body:        `Round ${round} counter has come back from the seller side. Open the offer, review terms, and dispatch to the buyer for signature.`,

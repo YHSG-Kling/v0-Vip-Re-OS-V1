@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useTransition } from "react"
-import { Plus, Globe, Copy, Trash2, Settings, Power, ExternalLink, Check, BarChart2 } from "lucide-react"
+import { useState, useTransition, useEffect } from "react"
+import { Plus, Globe, Copy, Trash2, Settings, Power, Check, BarChart2 } from "lucide-react"
 import { Card } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -12,7 +12,7 @@ import { Input } from "@/app/components/ui/input"
 import { Label } from "@/app/components/ui/label"
 import { toast } from "sonner"
 import {
-  createEmbed, deleteEmbed, updateEmbed, type EmbedWidget,
+  createEmbed, deleteEmbed, updateEmbed, listTwinsForEmbed, type EmbedWidget,
 } from "@/app/actions/embed-widgets"
 import { EmbedEditor } from "./embed-editor"
 
@@ -192,11 +192,32 @@ function CreateDialog({
 }) {
   const [label, setLabel] = useState("My Website")
   const [scope, setScope] = useState<"personal" | "brokerage">("personal")
+  const [twins, setTwins] = useState<{ id: string; label: string; agentName: string | null }[]>([])
+  const [twinId, setTwinId] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+
+  // A BROKERAGE-WIDE EMBED MUST NAME ITS TWIN, HERE. This dialog already told
+  // the admin brokerage-wide means "pick a twin from any agent" — but it never
+  // collected one, and the session route filled the gap by silently selecting
+  // the brokerage's longest-tenured active agent and putting their face and
+  // cloned voice on a public website. The picker the copy promised now exists
+  // at the moment of the promise; the route's refusal is the backstop, not the
+  // first thing an admin meets.
+  useEffect(() => {
+    if (!open || scope !== "brokerage") return
+    let live = true
+    listTwinsForEmbed("brokerage").then((res) => { if (live) setTwins(res.twins) })
+    return () => { live = false }
+  }, [open, scope])
+
+  // A personal embed resolves to the owner agent's own default twin server-side,
+  // so only the brokerage-wide scope needs an explicit pick.
+  const needsTwin = scope === "brokerage"
+  const canCreate = !pending && label.trim().length > 0 && (!needsTwin || !!twinId)
 
   function handleCreate() {
     startTransition(async () => {
-      const res = await createEmbed({ label, scope })
+      const res = await createEmbed({ label, scope, defaultTwinId: needsTwin ? twinId : null })
       if (res.ok && res.widget) {
         toast.success("Embed created")
         onCreated(res.widget)
@@ -251,11 +272,35 @@ function CreateDialog({
               </div>
             </div>
           )}
+
+          {needsTwin && (
+            <div>
+              <Label htmlFor="embed-twin">Twin</Label>
+              <select
+                id="embed-twin"
+                value={twinId ?? ""}
+                onChange={(e) => setTwinId(e.target.value || null)}
+                className="w-full h-9 rounded-md border bg-background px-3 text-sm mt-1.5"
+              >
+                <option value="">— Select a twin —</option>
+                {twins.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}{t.agentName ? ` · ${t.agentName}` : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground mt-1">
+                {twins.length === 0
+                  ? "No ready, approved twins in this brokerage yet — an agent needs to finish Settings → Voice & Avatar first."
+                  : "Whose face and voice greets visitors. Only ready + approved twins are listed, and a brokerage-wide embed never borrows one automatically."}
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex justify-end gap-2 mt-4">
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
-          <Button onClick={handleCreate} disabled={pending}>Create</Button>
+          <Button onClick={handleCreate} disabled={!canCreate}>Create</Button>
         </div>
       </DialogContent>
     </Dialog>

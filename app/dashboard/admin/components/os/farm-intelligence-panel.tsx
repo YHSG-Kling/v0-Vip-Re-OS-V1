@@ -7,8 +7,6 @@ import { Button } from "@/components/ui/button"
 import { 
   MapPin, 
   ChevronRight,
-  TrendingUp,
-  Users,
   Loader2,
   Target
 } from "lucide-react"

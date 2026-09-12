@@ -2,7 +2,11 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { ShieldCheck } from "lucide-react"
 import { VendorApprovalClient, type PendingVendor } from "./approval-client"
+import { ReviewModerationClient } from "./review-moderation-client"
+import { getVendorReviewModerationQueue } from "@/app/actions/vendor-marketplace"
 import { resolveVendorTiers, type VendorTier } from "@/lib/kernel/vendor-subscription"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -16,6 +20,13 @@ export default async function VendorApprovalsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users")
     .select("brokerage_id, user_type, role")
@@ -24,14 +35,16 @@ export default async function VendorApprovalsPage() {
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
   const isAdmin =
-    ["broker", "admin", "broker_admin", "superadmin"].includes(String(profile.user_type)) ||
-    ["broker", "admin", "owner"].includes(String((profile as { role?: string }).role))
+    isAdminOrBroker({ user_type: String(profile.user_type) }) ||
+    isAdminOrBroker({ user_type: String((profile as { role?: string }).role) })
   if (!isAdmin) redirect("/dashboard")
 
   const [{ data: pending }, { data: settingsRow }] = await Promise.all([
     supabase
       .from("vendors")
-      .select("id, name, category, email, phone, website, ai_verification_score, verification_flags")
+      // compliance_credentials (m376) so the approver can see whether liability
+      // coverage is actually live before putting this vendor in front of a client.
+      .select("id, name, category, email, phone, website, ai_verification_score, verification_flags, compliance_credentials")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("status", "pending")
       .order("ai_verification_score", { ascending: false, nullsFirst: false })
@@ -56,6 +69,10 @@ export default async function VendorApprovalsPage() {
         </p>
       </div>
       <VendorApprovalClient vendors={vendors} pricing={pricing} />
+
+      {/* The other half of vendor governance: reviews the moderation brain
+          routed to a human. Same admin gate as the approval queue above. */}
+      <ReviewModerationClient initialQueue={await getVendorReviewModerationQueue()} />
     </div>
   )
 }

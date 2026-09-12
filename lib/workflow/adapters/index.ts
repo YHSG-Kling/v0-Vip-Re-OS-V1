@@ -26,7 +26,7 @@ import { adCampaignAdapter }        from "./ad-campaign"
 import { listingLandingPageAdapter } from "./listing-landing-page"
 import { sendForEsignAdapter }       from "./send-for-esign"
 import { sendGiftAdapter }           from "./send-gift"
-import { addToSegmentAdapter, removeFromCampaignAdapter } from "./segment-ops"
+import { addToSegmentAdapter, removeFromSegmentAdapter, removeFromCampaignAdapter } from "./segment-ops"
 
 // In-app message adapter (inline — simple enough to not need its own file)
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
@@ -103,9 +103,8 @@ const aiCallAdapter: ChannelAdapter = {
       return { status: "error", providerKey: "ai_call", error: "No contact phone for ai_call" }
     }
     const { initiateVoiceCall } = await import("@/lib/voice-engine/call-executor")
-    const vendor = process.env.VAPI_API_KEY ? "vapi_isa" : "twilio"
     const r = await initiateVoiceCall(
-      { contactId: contact.id as string, initiatorRole: "ai", callType: "outbound", vendor, agentId: agentId ?? undefined },
+      { contactId: contact.id as string, initiatorRole: "ai", callType: "outbound", vendor: "twilio", agentId: agentId ?? undefined },
       contact.phone as string,
     )
     return {
@@ -178,6 +177,7 @@ registry.register(listingLandingPageAdapter)
 registry.register(sendForEsignAdapter)
 registry.register(sendGiftAdapter)
 registry.register(addToSegmentAdapter)
+registry.register(removeFromSegmentAdapter)
 registry.register(removeFromCampaignAdapter)
 registry.register(inAppAdapter)
 registry.register(aiCallAdapter)

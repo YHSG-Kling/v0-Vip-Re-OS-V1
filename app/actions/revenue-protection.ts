@@ -11,10 +11,18 @@
  * by brokerage_id (migration 1034 + Sprint 1 tenant safety). The rescan
  * action is admin/agent-self triggered and POSTs to the rollup cron
  * endpoint with CRON_SECRET.
+ *
+ * IDENTITY CLASS. revenue_protection_snapshots.agent_id FKs agents(id)
+ * (scripts/schema-fk-map.ts:635). The public door of getAgentRevenueProtection
+ * keeps taking the SESSION's users id — that is what app/dashboard/agent/page.tsx
+ * holds — and resolves it to the agents row inside, under the cookie client so
+ * RLS bounds the lookup to the caller's tenant. Filtering the snapshot table by
+ * the users id (what this file did before 2026-09-03) matched nothing, ever.
  */
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
+import { resolveActorNamesEitherClass } from "@/lib/kernel/actor-attribution"
 import { revalidatePath } from "next/cache"
 
 export interface AgentRevenueProtection {
@@ -74,6 +82,7 @@ function rowToAgentResult(row: Record<string, unknown>): AgentRevenueProtection 
 }
 
 export async function getAgentRevenueProtection(params: {
+  /** A USERS id (the session's user.id). Resolved to the agents row here. */
   agentId: string
 }): Promise<{ success: boolean; error?: string; data?: AgentRevenueProtection | null }> {
   if (!isValidUUID(params.agentId)) {
@@ -83,10 +92,24 @@ export async function getAgentRevenueProtection(params: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
 
+  // users.id → agents.id, through the cookie client: RLS on `agents` bounds
+  // this to the caller's tenant, so a users id from another brokerage resolves
+  // to nothing rather than to a row. The error is read — a refused lookup is
+  // not "this user has no agent record".
+  const { data: agentRow, error: agentError } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", params.agentId)
+    .maybeSingle()
+  if (agentError) return { success: false, error: agentError.message }
+  // No agents row → no per-agent snapshot can exist (the scorer refuses to
+  // write one). `data: null` is the honest "no snapshot yet" the hero renders.
+  if (!agentRow?.id) return { success: true, data: null }
+
   const { data, error } = await supabase
     .from("revenue_protection_snapshots")
     .select("*")
-    .eq("agent_id", params.agentId)
+    .eq("agent_id", agentRow.id as string)
     .eq("snapshot_type", "quarterly")
     .order("period_end", { ascending: false })
     .limit(1)
@@ -106,8 +129,10 @@ export async function getBrokerageRevenueProtection(params: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
 
-  // Brokerage-wide snapshot (agent_id IS NULL)
-  const { data: brokerageRow } = await supabase
+  // Brokerage-wide snapshot (agent_id IS NULL). A refused read is an error,
+  // not "no rollup yet" — the widget would otherwise render the empty state
+  // over a refusal forever.
+  const { data: brokerageRow, error: brokerageError } = await supabase
     .from("revenue_protection_snapshots")
     .select("*")
     .eq("brokerage_id", params.brokerageId)
@@ -116,11 +141,12 @@ export async function getBrokerageRevenueProtection(params: {
     .order("period_end", { ascending: false })
     .limit(1)
     .maybeSingle()
+  if (brokerageError) return { success: false, error: brokerageError.message }
 
   if (!brokerageRow) return { success: true, data: null }
 
   // Per-agent snapshots from the same period
-  const { data: perAgentRows } = await supabase
+  const { data: perAgentRows, error: perAgentError } = await supabase
     .from("revenue_protection_snapshots")
     .select("agent_id, protected_gci, saved_gci, saves_count")
     .eq("brokerage_id", params.brokerageId)
@@ -129,20 +155,23 @@ export async function getBrokerageRevenueProtection(params: {
     .not("agent_id", "is", null)
     .order("protected_gci", { ascending: false })
     .limit(20)
+  if (perAgentError) return { success: false, error: perAgentError.message }
 
-  // Hydrate agent names. Live users schema has first_name/last_name (no
-  // full_name column on this DB), so we compose.
+  // Hydrate agent names. `agent_id` here is an AGENTS id (the snapshot table
+  // FKs agents), so a name is two hops away: agents.id → agents.user_id →
+  // users. This used to query `users .in("id", agentIds)` directly — the
+  // users-class assumption — and could never have named anyone. The survivor
+  // for the two-hop shape is lib/kernel/actor-attribution.ts; a refused hop
+  // yields an EMPTY map plus the reason, never a partial one, and the render
+  // fallback (null → the widget's own "unnamed" state) stays here.
   const agentIds = ((perAgentRows ?? []) as Array<{ agent_id: string }>).map((r) => r.agent_id)
-  const nameMap = new Map<string, string>()
-  if (agentIds.length > 0) {
-    const { data: users } = await supabase
-      .from("users")
-      .select("id, first_name, last_name")
-      .in("id", agentIds)
-    for (const u of (users ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
-      const name = `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim()
-      if (name) nameMap.set(u.id, name)
-    }
+  const { names: nameMap, error: nameError } = await resolveActorNamesEitherClass(
+    supabase,
+    agentIds,
+    { brokerageId: params.brokerageId },
+  )
+  if (nameError) {
+    console.error(`[revenue-protection] per-agent name hydration refused for brokerage ${params.brokerageId}:`, nameError)
   }
 
   const base = rowToAgentResult(brokerageRow)

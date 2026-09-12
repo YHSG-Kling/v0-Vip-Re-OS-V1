@@ -60,17 +60,55 @@ export async function POST(request: NextRequest) {
   // THIS callback actually closed the row (no double-fire with the turn-route
   // hangup path, which closes the row first on a normal goodbye).
   const { data: closed } = await svc.from("voice_calls").update(patch)
-    .eq("vapi_call_id", callSid).in("status", ["initiated", "in_progress"])
+    .eq("vendor_call_id", callSid).in("status", ["initiated", "in_progress"])
     .select("id, lead_id")
     .then((r: any) => r, () => ({ data: null }))
 
-  // A LEAD's call that ended mid-conversation still gets intent-classified:
-  // positive direction converts the lead to a contact (canonical handoff).
-  const leadRow = (closed ?? []).find((r: any) => r.lead_id)
-  if (leadRow && callStatus === "completed") {
+  // Post-call brain — fires ONLY when THIS callback actually closed the row (no
+  // double-fire with the turn route's goodbye path, which closes first). A LEAD
+  // gets intent-classified (positive → canonical handoff); EVERY completed call
+  // gets the automatic outcome routing (contact DNC on negative, agent notify +
+  // auto-drafted follow-up on positive, scoring + rolling qualification).
+  const closedRow = (closed ?? [])[0]
+  if (closedRow && callStatus === "completed") {
     try {
-      const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
-      await routeLeadCallIntent(svc, leadRow.id)
+      if (closedRow.lead_id) {
+        const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+        await routeLeadCallIntent(svc, closedRow.id)
+      }
+      const { routePostCallOutcome } = await import("@/lib/ai-isa/post-call-outcome")
+      await routePostCallOutcome(svc, closedRow.id)
+    } catch { /* best-effort — never 500 a Twilio callback */ }
+  }
+
+  // ── BILLING — the canonical usage_logs rail ─────────────────────────────────
+  // Close the pre-existing metering gap: the Twilio-native lane wrote NO per-call
+  // billing row, so tenant voice minutes were invisible to the phone-settings card,
+  // the finance P&L, and the provisioning quota (all of which meter from usage_logs).
+  // Record ONE 'voice_call' row per completed tenant call, idempotent on the CallSid
+  // so a re-posted callback can never double-bill. Best-effort — never 500 Twilio.
+  if (callStatus === "completed" && Number.isFinite(duration) && duration > 0) {
+    try {
+      const { data: vc } = await svc.from("voice_calls").select("id, agent_id").eq("vendor_call_id", callSid).maybeSingle()
+      if (vc) {
+        const { data: already } = await svc.from("usage_logs").select("id")
+          .eq("brokerage_id", ctx.brokerageId).eq("usage_type", "voice_call")
+          .contains("metadata", { call_sid: callSid }).maybeSingle()
+        if (!already) {
+          const minutesBilled = Math.max(1, Math.ceil(duration / 60))
+          const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+          const costCents = Math.round(estimatePlatformVendorCost("twilio_voice", minutesBilled) * 100)
+          await svc.from("usage_logs").insert({
+            brokerage_id: ctx.brokerageId,
+            agent_id: (vc as any).agent_id ?? null,
+            usage_type: "voice_call",
+            units_used: minutesBilled,
+            cost_cents: costCents,
+            recorded_at: new Date().toISOString(),
+            metadata: { call_sid: callSid, duration_seconds: duration, engine: "twilio", voice_call_id: (vc as any).id },
+          })
+        }
+      }
     } catch { /* best-effort — never 500 a Twilio callback */ }
   }
   return NextResponse.json({ ok: true })

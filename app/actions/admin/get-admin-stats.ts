@@ -60,7 +60,7 @@ export async function getAdminDashboardStats() {
       .from('agent_onboarding')
       .select('id', { count: 'exact' })
       .eq('brokerage_id', brokerageId)
-      .in('status', ['pending', 'in_progress']),
+      .in('status', ['in_progress']),
 
     // Active transactions
     supabase

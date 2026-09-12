@@ -10,7 +10,7 @@ import type { TransitionLifecycleParams } from "./types"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
-import { statusForStage } from "@/lib/listings/listing-status-sync"
+import { statusForStage, isGatedStage, type ListingStatusGate } from "@/lib/listings/listing-status-sync"
 
 // ─── LIFECYCLE → KERNEL EVENT MAP ────────────────────────────────────────────
 // Map lifecycle transitions to kernel events (explicit, not derived)
@@ -59,6 +59,10 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'buyer_disengaged':      KernelEvent.BUYER_DISENGAGED,
   'buyer_lifetime':        KernelEvent.LIFETIME_CUSTOMER,
   // ── Buyer lifecycle — BuyerState values (uppercase, from lifecycle-definitions.ts) ──
+  // BUYER_CONTACT_CREATED is the 13th BuyerState (lib/buyer-lifecycle/
+  // lifecycle-definitions.ts:14) and was the only one this map did not name, so
+  // the first transition of every buyer's journey resolved to no kernel event.
+  'BUYER_CONTACT_CREATED':       KernelEvent.CONTACT_CREATED,
   'BUYER_FINANCIALLY_VERIFIED':  KernelEvent.BUYER_FINANCIALLY_VERIFIED,
   'BUYER_SEARCH_CONFIGURED':     KernelEvent.BUYER_SEARCH_CONFIGURED,
   'BUYER_SEARCHING':             KernelEvent.BUYER_SEARCH_EXECUTED,
@@ -93,6 +97,9 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'completed':                 KernelEvent.ONBOARDING_COMPLETED,
 }
 
+/** Every canonical KernelEvent VALUE, for the identity arm of the lookup below. */
+const KERNEL_EVENT_VALUES: ReadonlySet<string> = new Set<string>(Object.values(KernelEvent))
+
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
 // Derived from live schema. Each EntityType maps to one table and its state column.
 
@@ -113,7 +120,8 @@ const ENTITY_MAP: Record<
   offer:       { table: "offers",         stateColumn: "status"        },
   tour:        { table: "tours",          stateColumn: "status"        },
   repair:      { table: "property_upgrades", stateColumn: "status"    },
-  financial:   { table: "commissions",    stateColumn: "status"        },
+  // KEEP-ONE (m283/m284): agent_commissions is the one commission ledger.
+  financial:   { table: "agent_commissions", stateColumn: "status"      },
   lead:        { table: "leads",          stateColumn: "lifecycle_state" },
   journey:     { table: "journey_states", stateColumn: "current_stage" },
   showing:     { table: "showings",       stateColumn: "status"        },
@@ -193,7 +201,40 @@ export async function transitionLifecycle(
   // MLS_ACTIVE but status still 'coming_soon'). Only market-state boundaries map; intermediate stages
   // leave status untouched. See lib/listings/listing-status-sync.ts.
   if (entityType.toLowerCase() === "listing_stage_machine") {
-    const syncedStatus = statusForStage(toState)
+    // A GATED STAGE COSTS A READ; NOTHING ELSE DOES. isGatedStage is derived from the map itself,
+    // so this stays correct if a second gated stage is ever added and never pays for a verdict the
+    // map would ignore. Every ungated boundary below behaves exactly as it did before wiring.
+    let gate: ListingStatusGate | undefined
+    if (isGatedStage(toState)) {
+      const { data: row, error: rowErr } = await (supabase as any)
+        .from("listings")
+        .select("brokerage_id")
+        .eq("id", entityId)
+        .maybeSingle()
+      // TENANCY: the brokerage comes from the LISTING ROW, not from a caller's parameter (§4). This
+      // is a self-consistency read — the agreement must belong to the listing's own brokerage — and
+      // the authorization to move this stage already happened upstream. A wrong or missing value
+      // can only NARROW the agreement query to nothing, i.e. to a refusal, never widen it.
+      const brokerageId = (row as { brokerage_id?: string } | null)?.brokerage_id ?? null
+      let state: "passed" | "not_passed" | "unknown" = "unknown"
+      if (rowErr || !brokerageId) {
+        console.error(
+          `[lifecycle] listing ${entityId} → ${toState} is a GATED stage but its brokerage could not be read (${rowErr?.message ?? "no brokerage_id on the row"}); the compliance verdict is UNKNOWN and listings.status is left untouched`,
+        )
+      } else {
+        const { listingAgreementComplianceState } = await import("@/lib/listings/listing-activation-gate")
+        state = await listingAgreementComplianceState(supabase as any, { listingId: entityId, brokerageId })
+        if (state === "unknown") {
+          console.error(
+            `[lifecycle] listing ${entityId} → ${toState}: the listing-agreement compliance read was REFUSED, so the gate could not run. status left untouched — this is NOT the same as "compliance has not passed" and must not be chased as one`,
+          )
+        }
+      }
+      // FAIL CLOSED (§4). Only an explicit pass yields the gated status; not_passed and unknown both
+      // leave listings.status exactly as it was. "Nobody checked" never renders as "checked and fine".
+      gate = { listingAgreementCompliancePassed: state === "passed" }
+    }
+    const syncedStatus = statusForStage(toState, gate)
     if (syncedStatus) updatePayload.status = syncedStatus
   }
   const { error: updateError } = await (supabase as any)
@@ -232,7 +273,30 @@ export async function transitionLifecycle(
   }
 
   if (event) {
-    const kernelEvent = LIFECYCLE_TO_KERNEL_EVENT[params.eventType]
+    // ── THE IDENTITY ARM ────────────────────────────────────────────────────
+    //
+    // `eventType` carries TWO different vocabularies from two groups of callers,
+    // and only one of them was ever resolvable here:
+    //
+    //   · STATE NAMES — 'MLS_ACTIVE', 'BUYER_UNDER_CONTRACT', 'closed'. Those are
+    //     the keys of the table above, and they resolve.
+    //   · KERNEL EVENT VALUES — `KernelEvent.LISTING_STAGE_CHANGED`
+    //     ('listing_stage_changed'), passed by every transition in
+    //     app/actions/seller-listing/execution-engine.ts (20+ call sites) and by
+    //     lib/buyer-lifecycle/lifecycle-logger.ts. NONE of those are keys of the
+    //     table — its listing entries are spelled 'LISTING_STAGE_CHANGED' — so
+    //     the lookup returned undefined and `processKernelEvent` was NEVER
+    //     CALLED for them. The state transition landed, the lifecycle_events row
+    //     landed, and the notification/portal/sequence fan-out silently did not.
+    //
+    // A caller that already names the canonical event is the least ambiguous
+    // caller there is, so the value is accepted as ITSELF when the table misses.
+    // STRICTLY ADDITIVE — this arm can only fire where the primary lookup
+    // returned undefined, i.e. where nothing fired at all before, so it cannot
+    // change any transition that already worked.
+    const kernelEvent: KernelEvent | undefined =
+      LIFECYCLE_TO_KERNEL_EVENT[params.eventType] ??
+      (KERNEL_EVENT_VALUES.has(params.eventType) ? (params.eventType as KernelEvent) : undefined)
 
     if (kernelEvent) {
       // FAILURE ISOLATION: Notification processing is non-blocking

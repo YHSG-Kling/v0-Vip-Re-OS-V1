@@ -49,7 +49,8 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   formsimplicity: { name: "formsimplicity", label: "Form Simplicity", implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
 }
 
-export function isKnownProvider(name?: string | null): name is ProviderName {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isKnownProvider(name?: string | null): name is ProviderName {
   return !!name && name.toLowerCase() in PROVIDER_CATALOG
 }
 
@@ -85,9 +86,9 @@ export function providerPortalMode(name?: string | null): { url: string; label: 
   }
 }
 
-export function isProviderImplemented(name?: string | null): boolean {
-  return getCatalogEntry(name)?.implemented === true
-}
+// TOMBSTONE (orphan tranche 4): isProviderImplemented deleted. The survivor is
+// getCatalogEntry above — `getCatalogEntry(name)?.implemented === true` is the
+// whole body it held — plus getImplementedProviders below for the set form.
 
 /** All providers that have a working class (instantiable, dispatchable). */
 export function getImplementedProviders(): ProviderCatalogEntry[] {

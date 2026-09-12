@@ -52,7 +52,7 @@ export const ASSIGNMENT_OUTCOME_HORIZON_DAYS = 30
 /** Both rules need at least this many fully-graded observations before divergence is argued. */
 export const ASSIGNMENT_POLICY_MIN_OBSERVATIONS = 8
 /** Material divergence: the measured outcome-rate gap (0..1) that triggers the referral. */
-export const ASSIGNMENT_POLICY_DIVERGENCE = 0.2
+const ASSIGNMENT_POLICY_DIVERGENCE = 0.2
 
 // ─── Shapes ──────────────────────────────────────────────────────────────────
 
@@ -69,6 +69,14 @@ export interface AssignedCohortRow {
   /** The recorded assignment method ('round_robin', 'load_balance', 'owner', …). */
   method: string
   assignedAt: string | null
+  /** assignment_log.claimed_at — when the assigned agent actually claimed the
+   *  lead. Null for rows not yet claimed (or for Track-B contact assignments,
+   *  which carry no claim step). Feeds the speed-to-claim breakdown. */
+  claimedAt: string | null
+  /** assignment_log.score_at_assignment — the lead score AT the moment of
+   *  routing, so a policy's outcome rate can be read against how "hot" the
+   *  leads it received actually were. */
+  scoreAtAssignment: number | null
 }
 
 export interface AssignmentRuleInfo {
@@ -99,6 +107,14 @@ export interface PolicyOutcomeStat {
   rate: number | null
   /** Assignments still inside the open window — never graded early. */
   pending: number
+  /** Median minutes from assignment to assignment_log.claimed_at, across this
+   *  policy's assignments that HAVE been claimed. Null when none have. */
+  medianClaimMinutes: number | null
+  /** How many of this policy's assignments were claimed at all. */
+  claimedCount: number
+  /** Average assignment_log.score_at_assignment across this policy's
+   *  assignments that carry a score. Null when none do. */
+  avgScoreAtAssignment: number | null
 }
 
 export interface PolicyOutcomeReport {
@@ -113,6 +129,17 @@ export interface PolicyOutcomeReport {
 // ─── Pure helpers ────────────────────────────────────────────────────────────
 
 const round2 = (n: number) => Math.round(n * 100) / 100
+
+/** Median of a value array, fractional for even lengths — same convention as
+ *  the shared rail helper (prediction-accuracy.ts's fractionalMedian), kept
+ *  local so this module gains no static dependency on a rail that dynamically
+ *  imports IT (lib/analytics/prediction-accuracy.ts's getPredictionAccuracyReport). */
+function medianOf(sortedValues: number[]): number {
+  const n = sortedValues.length
+  if (n === 0) return 0
+  const mid = Math.floor(n / 2)
+  return n % 2 === 1 ? sortedValues[mid] : (sortedValues[mid - 1] + sortedValues[mid]) / 2
+}
 
 const METHOD_LABELS: Record<string, string> = {
   load_balance: "Load-balance fallback (no rule matched)",
@@ -169,7 +196,10 @@ export function computePolicyOutcomes(
     if (e.leadId) byLead.set(e.leadId, [...(byLead.get(e.leadId) ?? []), t])
   }
 
-  const acc = new Map<string, { ruleId: string | null; method: string; hits: number; misses: number; pending: number }>()
+  const acc = new Map<string, {
+    ruleId: string | null; method: string; hits: number; misses: number; pending: number
+    claimMinutes: number[]; scores: number[]
+  }>()
   let refusedPreexisting = 0
   const gradedDates: string[] = []
 
@@ -184,7 +214,7 @@ export function computePolicyOutcomes(
     if (ts.some((t) => t <= t0)) { refusedPreexisting += 1; continue } // pre-existing appointment — not the policy's doing
 
     const policyKey = row.ruleId ? `rule:${row.ruleId}` : `method:${row.method}`
-    const bucket = acc.get(policyKey) ?? { ruleId: row.ruleId, method: row.method, hits: 0, misses: 0, pending: 0 }
+    const bucket = acc.get(policyKey) ?? { ruleId: row.ruleId, method: row.method, hits: 0, misses: 0, pending: 0, claimMinutes: [], scores: [] }
 
     const firstAfter = ts.find((t) => t > t0)
     if (firstAfter != null) {
@@ -197,6 +227,18 @@ export function computePolicyOutcomes(
     } else {
       bucket.pending += 1 // window still open — never graded early
     }
+
+    // Speed-to-claim and score-at-assignment are about ROUTING behavior, not
+    // the appointment outcome, so every graded-or-pending row (never a
+    // refused one — that assignment never really counted) contributes.
+    if (row.claimedAt) {
+      const claimT = new Date(row.claimedAt).getTime()
+      if (Number.isFinite(claimT) && claimT >= t0) bucket.claimMinutes.push((claimT - t0) / 60_000)
+    }
+    if (row.scoreAtAssignment != null && Number.isFinite(row.scoreAtAssignment)) {
+      bucket.scores.push(row.scoreAtAssignment)
+    }
+
     acc.set(policyKey, bucket)
   }
 
@@ -204,6 +246,13 @@ export function computePolicyOutcomes(
     .map(([policyKey, b]) => {
       const graded = b.hits + b.misses
       const rule = b.ruleId ? rules.find((r) => r.id === b.ruleId) : undefined
+      const sortedClaims = [...b.claimMinutes].sort((x, y) => x - y)
+      const medianClaimMinutes = sortedClaims.length > 0
+        ? round2(medianOf(sortedClaims))
+        : null
+      const avgScoreAtAssignment = b.scores.length > 0
+        ? round2(b.scores.reduce((s, v) => s + v, 0) / b.scores.length)
+        : null
       return {
         policyKey,
         ruleId: b.ruleId,
@@ -213,6 +262,9 @@ export function computePolicyOutcomes(
         hits: b.hits,
         rate: graded > 0 ? round2(b.hits / graded) : null,
         pending: b.pending,
+        medianClaimMinutes,
+        claimedCount: b.claimMinutes.length,
+        avgScoreAtAssignment,
       }
     })
     .sort((a, b) => b.observations - a.observations || a.label.localeCompare(b.label))
@@ -225,6 +277,21 @@ export function computePolicyOutcomes(
     refusedPreexisting,
     gradedDates,
   }
+}
+
+/** Speed-to-claim + score-at-assignment as one breakdown-row note, honest
+ *  about which half is missing when a policy has claims but no scores (or
+ *  vice versa) rather than silently dropping either half. */
+function speedAndScoreNote(s: PolicyOutcomeStat): string | undefined {
+  const parts: string[] = []
+  if (s.medianClaimMinutes != null) {
+    const hrs = s.medianClaimMinutes / 60
+    parts.push(`claimed in ${hrs >= 1 ? `${round2(hrs)}h` : `${Math.round(s.medianClaimMinutes)}m`} (median, n=${s.claimedCount})`)
+  }
+  if (s.avgScoreAtAssignment != null) {
+    parts.push(`avg lead score at routing: ${s.avgScoreAtAssignment}`)
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined
 }
 
 // ─── The rail shape (prediction-accuracy adapter contract) ───────────────────
@@ -270,7 +337,10 @@ export function summarizeAssignmentPolicyRows(
   }
   const breakdown: RailBreakdownRow[] = rep.stats
     .filter((s) => s.observations > 0)
-    .map((s) => ({ group: s.label, observations: s.observations, withinRate: s.rate, medianError: null }))
+    .map((s) => ({
+      group: s.label, observations: s.observations, withinRate: s.rate, medianError: null,
+      note: speedAndScoreNote(s),
+    }))
   return {
     ...ASSIGNMENT_POLICY_BASE,
     available: true,
@@ -341,13 +411,16 @@ interface PolicyOutcomeInputs {
 async function loadPolicyOutcomeInputs(svc: Svc, brokerageId?: string): Promise<PolicyOutcomeInputs | { error: string }> {
   // 1) Lead-path attribution — assignment_log, the ledger written at assignment time.
   let aq = svc.from("assignment_log")
-    .select("lead_id, brokerage_id, rule_id, assignment_method, created_at")
+    .select("lead_id, brokerage_id, rule_id, assignment_method, created_at, claimed_at, score_at_assignment")
     .order("created_at", { ascending: false })
     .limit(500)
   if (brokerageId) aq = aq.eq("brokerage_id", brokerageId)
   const { data: logRows, error: aErr } = await aq
   if (aErr) return { error: aErr.message }
-  const logs = (logRows ?? []) as Array<{ lead_id: string; brokerage_id: string | null; rule_id: string | null; assignment_method: string | null; created_at: string | null }>
+  const logs = (logRows ?? []) as Array<{
+    lead_id: string; brokerage_id: string | null; rule_id: string | null; assignment_method: string | null; created_at: string | null
+    claimed_at: string | null; score_at_assignment: number | null
+  }>
 
   // 2) The lead → contact join (leads.contact_id lands at conversion).
   const leadIds = [...new Set(logs.map((l) => l.lead_id).filter(Boolean))]
@@ -365,6 +438,8 @@ async function loadPolicyOutcomeInputs(svc: Svc, brokerageId?: string): Promise<
     ruleId: l.rule_id ?? null,
     method: l.assignment_method ?? "unknown",
     assignedAt: l.created_at ?? null,
+    claimedAt: l.claimed_at ?? null,
+    scoreAtAssignment: l.score_at_assignment ?? null,
   }))
 
   // 3) Track-B attribution — CONTACT_CAPTURED events stamped with
@@ -392,6 +467,10 @@ async function loadPolicyOutcomeInputs(svc: Svc, brokerageId?: string): Promise<
       ruleId: assignment.rule_id,
       method: assignment.method ?? "rule",
       assignedAt: e.created_at ?? null,
+      // Track-B (form/import) contact assignments carry no claim step and no
+      // routing-time lead score — honest null, not a fabricated zero.
+      claimedAt: null,
+      scoreAtAssignment: null,
     })
   }
 

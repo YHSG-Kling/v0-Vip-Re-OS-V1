@@ -4,8 +4,13 @@
  * Generates AI-powered market analysis for agents
  */
 
-import { generateObject } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+// ROUTED, was raw — see lib/ai/models.ts:market_insight_narrative. The key is
+// pinned to claude-sonnet, the model this call site already passed. Deliberately
+// NOT market_insight_generation (perplexity-sonar-pro): that lane exists for
+// LIVE WEB RESEARCH, and this call narrates rows already fetched above, so
+// routing it there would have changed the model — which is a behaviour change,
+// not accounting.
+import { generateObjectRouted } from '@/lib/ai/models'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -388,10 +393,12 @@ export async function generateMarketInsight(
         : 'balanced'
 
   // STEP 4: Generate AI insight
-  const { object: insight } = await generateObject({
-    model: resolveModel('anthropic/claude-sonnet-4-20250514'),
+  const { object: insight } = await generateObjectRouted({
+    feature: 'market_insight_narrative',
+    brokerageId: req.brokerageId,
+    agentId: req.agentId || undefined,
     schema: MarketInsightSchema,
-    maxOutputTokens: 600,
+    maxTokens: 600,
     system:
       'You are a real estate market analyst. Generate a concise market insight report for an agent. Be specific and actionable.',
     prompt: `Generate a market insight for ${req.marketArea}.

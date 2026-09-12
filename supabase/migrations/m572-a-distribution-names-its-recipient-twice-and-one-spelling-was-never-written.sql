@@ -1,0 +1,73 @@
+-- ═════════════════════════════════════════════════════════════════════════════
+-- ⚠  THE "NOT APPLIED" CLAIM BELOW IS STALE. THIS MIGRATION *IS* APPLIED.
+--
+--    MEASURED 2026-09-04 against hrvaqgvukzxfskkcrwbt's own migration ledger,
+--    `supabase_migrations.schema_migrations`, which carries a row named
+--    `m572_…`. It was one of TWENTY files in this directory whose header said
+--    it had never run; all twenty were in the ledger. Nobody came back to
+--    update the headers after applying them.
+--
+--    THE EVIDENCE IS ONE-DIRECTIONAL, AND THAT IS STATED RATHER THAN GLOSSED:
+--    presence in the ledger PROVES a migration ran. ABSENCE PROVES NOTHING —
+--    the ledger only records migrations applied through the migration tool, and
+--    m599 and m602–m605 are all applied and all absent from it, because they
+--    were executed as direct SQL. So this banner is written only onto files the
+--    ledger positively vouches for.
+--
+--    The original header is preserved below unedited. It is the record of what
+--    its author believed when they wrote it, and CLAUDE.md §3 is the reason the
+--    belief was wrong: "a migration that exists as a .sql file has not been
+--    applied" — which is true, and cuts both ways. A file cannot tell you it
+--    ran, and it cannot tell you it did not.
+--
+--    scripts/migration-claim-guard.ts now holds this class shut.
+-- ═════════════════════════════════════════════════════════════════════════════
+
+-- m572-a-distribution-names-its-recipient-twice-and-one-spelling-was-never-written.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+-- DROP commission_distributions.recipient_id — a second spelling of "who gets
+-- this money" that no writer has ever filled.
+--
+-- WRITTEN 2026-08-27, NOT APPLIED (integrator applies; lanes only write).
+-- Apply ONLY after the same-branch code change lands (the one reader is
+-- repointed in this change set — see below), and regenerate the schema caches
+-- afterwards (schema-snapshot.ts, schema-fk-map.ts, check-vocabularies.ts,
+-- live-tables.ts — all generated, never hand-edited).
+--
+-- THE EVIDENCE (verified live on hrvaqgvukzxfskkcrwbt, 2026-08-27):
+--   · commission_distributions: 0 rows; recipient_id non-null in 0 of them.
+--   · No trigger on the table (pg_trigger, tgisinternal = false: none).
+--   · No pg_proc body names commission_distributions at all.
+--   · No FK involves recipient_id (pg_constraint: none) — it referenced
+--     nothing, so it could not even say WHICH identity class its uuid was
+--     (agents.id and users.id are DISJOINT here, CLAUDE.md §3).
+--   · No view names recipient_id (pg_views: none).
+--   · WRITERS (stripped-source scan of every file naming the table, 24 files,
+--     scripts/strip-comments.ts per §2): the engine's only insert —
+--     lib/commission/waterfall/11-validate-persist.ts distributionRows —
+--     writes distribution_type + agent_id (agent row) / distribution_type
+--     alone (brokerage row); team split rides team_id. NOTHING names
+--     recipient_id in an insert or update.
+--   · READER (the half that made the earlier "reader-less" note wrong, and
+--     the reason this migration ships WITH a code fix instead of alone):
+--     lib/kernel/financial.ts loadCommissionDistributions selected "*" and
+--     mapped d.recipient_id → recipientId, rendered by
+--     app/dashboard/financials/agent/agent-financials-client.tsx as
+--     `recipientName ?? recipientId ?? "—"`. That read could only ever
+--     produce NULL — and it was masked anyway, because the same mapper read
+--     d.recipient_name, WHICH IS NOT A COLUMN ON THIS TABLE, coalesced the
+--     resulting undefined to "" and blanked the cell. Both phantom reads are
+--     repointed in this change set onto the SURVIVORS.
+--
+-- THE SURVIVORS (§1.1): distribution_type + agent_id / team_id — the columns
+-- the engine actually stamps the recipient with, already NOT NULL-ly written
+-- on every row the waterfall persists. The sibling column on
+-- transaction_commissions (transaction_commissions.recipient_id) is LIVE —
+-- written by addCommission and read by the ledger sync
+-- (lib/application/transactions.ts, scripts/commission-ledger-sync-simulator)
+-- — and is deliberately untouched: this migration retires one dead spelling
+-- on one table, not the concept.
+--
+-- No backfill: there has never been a row to move (0 rows total).
+
+alter table public.commission_distributions drop column if exists recipient_id;

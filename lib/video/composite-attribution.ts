@@ -35,6 +35,7 @@ import path from "node:path"
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { MAX_BRAND_BOOKEND_SECONDS } from "@/lib/video/realism-profile"
 
 export interface VideoAttributionBrand {
   brokerageName?: string | null
@@ -375,20 +376,33 @@ export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<Com
     // Build the input order: intro? -> main -> outro?
     const inputs: string[] = []
     if (introPath) inputs.push(introPath)
+    const mainIdx = inputs.length
     inputs.push(mainPath)
     if (outroPath) inputs.push(outroPath)
+    // Every index that is a BRAND BOOKEND (intro or outro), never the main
+    // video — wave 56 realism ruling: a brokerage-curated bookend longer than
+    // MAX_BRAND_BOOKEND_SECONDS reads as a canned corporate sting, not a
+    // person. The main video is a talking-head/voiceover reel and must never
+    // be truncated by this cap.
+    const bookendIdx = new Set(inputs.map((_, i) => i).filter((i) => i !== mainIdx))
 
     // Build the filter graph. Each input segment gets scaled+padded to (W,H)
-    // and re-encoded audio to stereo AAC so concat doesn't choke.
+    // and re-encoded audio to stereo AAC so concat doesn't choke. A bookend
+    // segment is ALSO trimmed to MAX_BRAND_BOOKEND_SECONDS first (§realism,
+    // wave 56) — a clip shorter than the cap is untouched (trim only ever
+    // shortens, never pads).
     const normalised: string[] = []
     inputs.forEach((_, i) => {
+      const isBookend = bookendIdx.has(i)
+      const vTrim = isBookend ? `trim=duration=${MAX_BRAND_BOOKEND_SECONDS},setpts=PTS-STARTPTS,` : ""
+      const aTrim = isBookend ? `atrim=duration=${MAX_BRAND_BOOKEND_SECONDS},asetpts=PTS-STARTPTS,` : ""
       // Normalise video: scale to fit inside W:H, then pad to exact W:H with black bars,
       // setsar=1 to avoid aspect-ratio mismatch warnings.
-      normalised.push(`[${i}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`)
+      normalised.push(`[${i}:v]${vTrim}scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`)
       // Normalise audio: take whatever the input has (or generate silence) and
       // resample to a common rate. anullsrc creates a silent track when
       // the segment has no audio so concat=...a=1 doesn't fail.
-      normalised.push(`[${i}:a]aresample=async=1:first_pts=0,aformat=channel_layouts=stereo:sample_rates=48000[a${i}]`)
+      normalised.push(`[${i}:a]${aTrim}aresample=async=1:first_pts=0,aformat=channel_layouts=stereo:sample_rates=48000[a${i}]`)
     })
     const concatList = inputs.map((_, i) => `[v${i}][a${i}]`).join("")
     const filter = `${normalised.join(";")};${concatList}concat=n=${inputs.length}:v=1:a=1[outv][outa]`

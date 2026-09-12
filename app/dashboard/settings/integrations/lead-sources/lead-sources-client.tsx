@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { saveTenantConnectionAction, type TenantConnectionStatus } from "@/app/actions/tenant-connections"
 
 const FIELD_LABEL: Record<string, string> = {
-  api_key: "API key / token", api_url: "API base URL", account_id: "Account / publisher ID",
+  api_key: "API key / token", api_secret: "API secret / client secret", api_url: "API base URL", account_id: "Account / publisher ID",
 }
 
 export function LeadSourcesClient({
@@ -24,7 +24,7 @@ export function LeadSourcesClient({
     const v = values[key] ?? {}
     start(async () => {
       const r = await saveTenantConnectionAction({
-        platform: key, apiKey: v.api_key, apiUrl: v.api_url, accountId: v.account_id,
+        platform: key, apiKey: v.api_key, apiSecret: v.api_secret, apiUrl: v.api_url, accountId: v.account_id,
       })
       setMsg((m) => ({ ...m, [key]: r.ok ? "Connected ✓" : (r.error ?? "Failed") }))
     })
@@ -82,7 +82,7 @@ export function LeadSourcesClient({
               {c.fields.map((f) => (
                 <Input
                   key={f}
-                  type={f === "api_key" ? "password" : "text"}
+                  type={f === "api_key" || f === "api_secret" ? "password" : "text"}
                   placeholder={FIELD_LABEL[f] ?? f}
                   value={values[c.key]?.[f] ?? ""}
                   onChange={(e) => setValues((v) => ({ ...v, [c.key]: { ...(v[c.key] ?? {}), [f]: e.target.value } }))}

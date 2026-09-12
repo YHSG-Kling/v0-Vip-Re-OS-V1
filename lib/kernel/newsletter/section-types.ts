@@ -183,6 +183,8 @@ export function defaultOrderFor(type: string | null | undefined): number {
   return NEWSLETTER_SECTION_TYPES[normalizeSectionType(type)].defaultOrder
 }
 
-export function displayLabelFor(type: string | null | undefined): string {
-  return NEWSLETTER_SECTION_TYPES[normalizeSectionType(type)].label
-}
+// TOMBSTONE (orphan tranche 4): displayLabelFor deleted. Its whole body was
+// `NEWSLETTER_SECTION_TYPES[normalizeSectionType(type)].label` — both halves are
+// live survivors in this file (normalizeSectionType is wired via assemble.ts and
+// template-blueprint.ts, and the template builder reads each def's .label off
+// ALL_SECTION_TYPES directly).

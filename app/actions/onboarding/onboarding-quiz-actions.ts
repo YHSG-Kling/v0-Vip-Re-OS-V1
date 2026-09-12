@@ -27,7 +27,15 @@ export async function fetchQuiz(stepId: string): Promise<{
 export async function submitQuiz(
   quizId: string,
   answers: Record<string, unknown>
-): Promise<{ score: number; passed: boolean }> {
+): Promise<{
+  score: number
+  passed: boolean
+  correctCount: number
+  totalQuestions: number
+  attemptNumber: number
+  passingScore: number
+  message: string
+}> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.id) throw new Error("Unauthorized")

@@ -1,6 +1,6 @@
 /**
  * WorkflowReportsWidget — broker-admin surface for the Workflow OS
- * analytics layer (lib/workflow/intelligence + workflow_step_runs).
+ * analytics layer (lib/workflow/intelligence + sequence_step_executions).
  *
  * Server component. Calls getWorkflowReport({ scope: 'brokerage', ... }).
  * Renders an at-a-glance summary card of the last 30 days:
@@ -41,11 +41,9 @@ export default async function WorkflowReportsWidget({ brokerageId }: Props) {
   const completionPct = report.totalEnrollments > 0
     ? Math.round((report.completedEnrollments / report.totalEnrollments) * 100)
     : 0
-  const conversionValue = (report.totalConversionValueCents / 100).toLocaleString(undefined, {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  })
+  const conversionPct = report.totalEnrollments > 0
+    ? Math.round((report.totalConversions / report.totalEnrollments) * 100)
+    : 0
 
   return (
     <Card className="border-violet-200 bg-gradient-to-br from-violet-50/30 to-transparent dark:from-violet-950/10">
@@ -76,11 +74,17 @@ export default async function WorkflowReportsWidget({ brokerageId }: Props) {
             value={report.failedSteps.toLocaleString()}
             sublabel={`${report.blockedSteps.toLocaleString()} blocked`}
           />
+          {/* "Attributed revenue" used to render here from a column nothing has
+              ever written, so every brokerage saw $0 in the same typeface as a
+              real measurement. Deal DOLLARS are split by lib/marketing/
+              attribution.ts across four models — that is the campaign ROI
+              surface, not this one. What this page can honestly say is how many
+              enrolled contacts went on to transact. */}
           <Metric
             icon={<DollarSign className="h-4 w-4 text-amber-600" />}
-            label="Attributed revenue"
-            value={conversionValue}
-            sublabel={`${report.totalConversions} conversions`}
+            label="Converted"
+            value={report.totalConversions.toLocaleString()}
+            sublabel={`${conversionPct}% of enrollments reached a deal`}
           />
         </div>
 

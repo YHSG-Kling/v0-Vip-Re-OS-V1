@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = 'force-dynamic'
 
@@ -18,7 +19,7 @@ export async function PATCH(
     .eq('id', user.id)
     .single()
 
-  if (!profile || !['admin', 'broker', 'superadmin'].includes(profile.user_type)) {
+  if (!profile || !isAdminOrBroker({ user_type: profile.user_type })) {
     return NextResponse.json({ success: false, error: 'Forbidden' }, { status: 403 })
   }
 

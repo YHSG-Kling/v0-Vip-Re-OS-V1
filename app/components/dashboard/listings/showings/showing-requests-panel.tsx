@@ -42,6 +42,7 @@ export default function ShowingRequestsPanel({
   const [suggestedDate, setSuggestedDate] = useState("")
   const [suggestedStart, setSuggestedStart] = useState("")
   const [suggestedEnd, setSuggestedEnd] = useState("")
+  const [actionError, setActionError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
   if (requests.length === 0) {
@@ -55,6 +56,7 @@ export default function ShowingRequestsPanel({
   function openModal(requestId: string, mode: ModalMode) {
     setActiveRequestId(requestId)
     setModalMode(mode)
+    setActionError(null)
     setDenyReason("")
     setSuggestedDate("")
     setSuggestedStart("")
@@ -64,8 +66,13 @@ export default function ShowingRequestsPanel({
   function closeModal() {
     setModalMode(null)
     setActiveRequestId(null)
+    setActionError(null)
   }
 
+  // Every handler below used to be `if (res.success) { … }` with NO else — a
+  // refusal from the server left the modal open with no explanation, which is
+  // indistinguishable from a slow network. The actions now also refuse a
+  // zero-row update instead of reporting success, so these messages are real.
   function removeRequest(requestId: string) {
     onUpdate(requests.filter((r) => r.id !== requestId))
   }
@@ -82,6 +89,8 @@ export default function ShowingRequestsPanel({
       if (res.success) {
         removeRequest(activeRequestId)
         closeModal()
+      } else {
+        setActionError(res.error ?? "Could not approve that request")
       }
     })
   }
@@ -94,7 +103,14 @@ export default function ShowingRequestsPanel({
         listingId: listing.id,
         proposedTimes: [{ date: suggestedDate, start_time: suggestedStart, end_time: suggestedEnd }],
       })
-      if (res.success) closeModal()
+      if (res.success) {
+        // The request now carries status 'needs_reschedule', so it leaves the
+        // pending queue this panel renders.
+        removeRequest(activeRequestId)
+        closeModal()
+      } else {
+        setActionError(res.error ?? "Could not send those alternative times")
+      }
     })
   }
 
@@ -109,6 +125,8 @@ export default function ShowingRequestsPanel({
       if (res.success) {
         removeRequest(activeRequestId)
         closeModal()
+      } else {
+        setActionError(res.error ?? "Could not deny that request")
       }
     })
   }
@@ -185,6 +203,11 @@ export default function ShowingRequestsPanel({
           <p className="text-sm text-muted-foreground">
             This will approve the request and create a confirmed showing. A confirmation email will be sent to the buyer's agent.
           </p>
+          {actionError && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              {actionError}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={closeModal} disabled={isPending}>Cancel</Button>
             <Button onClick={handleApprove} disabled={isPending}>
@@ -216,6 +239,11 @@ export default function ShowingRequestsPanel({
               </div>
             </div>
           </div>
+          {actionError && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              {actionError}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={closeModal} disabled={isPending}>Cancel</Button>
             <Button onClick={handleSuggest} disabled={isPending || !suggestedDate || !suggestedStart}>
@@ -240,6 +268,11 @@ export default function ShowingRequestsPanel({
               rows={3}
             />
           </div>
+          {actionError && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              {actionError}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={closeModal} disabled={isPending}>Cancel</Button>
             <Button variant="destructive" onClick={handleDeny} disabled={isPending}>

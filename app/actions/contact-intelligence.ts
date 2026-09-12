@@ -2,6 +2,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { bestEffort } from "@/lib/db/best-effort"
+import { getLeadScore } from "@/app/actions/ai-auto-response"
 
 export interface ContactIntelligence {
   // Scores
@@ -87,14 +89,22 @@ export async function getContactIntelligence(contactId: string): Promise<{
     return { success: false, error: "Not authorized for this contact." }
   }
 
-  // Most recent lead_scores row for this contact, if any.
-  const { data: leadScore } = await service
-    .from("lead_scores")
-    .select("score, score_factors, ai_confidence, computed_at")
-    .eq("contact_id", contactId)
-    .order("computed_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  // Most recent lead_scores row for this contact — WIRED to getLeadScore
+  // (app/actions/ai-auto-response.ts) so a contact with no snapshot yet gets
+  // one computed through the canonical scorer instead of reading back null
+  // forever (that action's own auto-compute-on-miss branch). Falls back to a
+  // direct read if the action call fails for any reason (best-effort).
+  const scoreResult = await getLeadScore(contactId).catch(() => null)
+  const leadScore = scoreResult?.success
+    ? (scoreResult.score as { score: number | null; score_factors: unknown; ai_confidence: number | null; computed_at: string | null } | null)
+    : await service
+        .from("lead_scores")
+        .select("score, score_factors, ai_confidence, computed_at")
+        .eq("contact_id", contactId)
+        .order("computed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+        .then((r) => r.data)
 
   return {
     success: true,
@@ -152,7 +162,14 @@ export async function setContactAIPilot(params: {
 
   const enabled = params.level !== "off"
   const supabase = createServiceClient()
-  const { error } = await supabase
+  // .select() so a ZERO-ROW update is distinguishable from a successful one.
+  // The brokerage_id filter is a real tenant boundary: a contact from another
+  // tenancy (or a deleted one) matches nothing, and an update that matches
+  // nothing returns error: null. The CRM then toasted "AI Pilot: Aggressive"
+  // for a contact whose autonomy setting had not moved — which, on the control
+  // that governs whether an AI messages a client unattended, is the worst
+  // possible thing to be wrong about.
+  const { data: updated, error } = await supabase
     .from("contacts")
     .update({
       ai_autopilot_level: params.level,
@@ -160,26 +177,44 @@ export async function setContactAIPilot(params: {
     })
     .eq("id", params.contactId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!updated?.length) return { success: false, error: "Contact not found in your brokerage" }
 
   // Activity log for audit trail
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    agent_id: agentId,
-    contact_id: params.contactId,
-    activity_type: "ai_pilot_changed",
-    title: `AI Pilot set to ${params.level}`,
-    metadata: { level: params.level, enabled },
-  }).then(() => {}, () => {})
+  await bestEffort(
+    supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: params.contactId,
+      activity_type: "ai_pilot_changed",
+      title: `AI Pilot set to ${params.level}`,
+      metadata: { level: params.level, enabled },
+    }),
+    "the autopilot level is already set on contacts above and that write's error IS checked and returned; this row only narrates the change on the timeline and must not turn a setting that took effect into an error the agent sees",
+  )
 
   return { success: true, level: params.level }
 }
 
-/** Legacy entry — routes to the unified pilot setter. */
-export async function toggleAIISA(contactId: string, enabled: boolean) {
-  return setContactAIPilot({
-    contactId,
-    level: enabled ? "moderate" : "off",
-  })
-}
+// TOMBSTONE: `toggleAIISA(contactId, enabled)` — DELETED as a legacy alias.
+// SURVIVOR: `setContactAIPilot`, app/actions/contact-intelligence.ts:146.
+//
+// Its own comment called it "Legacy entry — routes to the unified pilot setter",
+// and that was its entire body: it mapped a boolean onto `level: "moderate" |
+// "off"` and called the survivor. The survivor carries every level the product
+// actually offers, the tenant-scoped `.select()`-checked update that
+// distinguishes a zero-row write from a real one, and the `ai_pilot_changed`
+// activity row — none of which this alias added to or could.
+//
+// NOTHING WAS LOST IN THE MERGE. The two-state toggle is a strict subset of the
+// survivor's level vocabulary, and the live surface is already the survivor's:
+// app/crm/components/ai-pilot-control.tsx:63 calls setContactAIPilot directly,
+// and app/crm/page.tsx renders that control. This alias's only importer was
+// that same page, which imported it and never called it.
+//
+// A boolean alias over a four-level control is also the §6 defect in miniature:
+// it can only ever express two of the levels, so any caller reaching for it
+// silently loses "conservative"/"aggressive" — and reads back a contact whose
+// autonomy setting it cannot describe.

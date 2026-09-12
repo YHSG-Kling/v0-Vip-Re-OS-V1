@@ -30,8 +30,10 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -55,11 +57,33 @@ export interface BrokerageInsight {
   severity:              "low" | "medium" | "high" | "critical"
   status:                "open" | "dismissed" | "superseded" | "expired"
   computedAt:            string
+  /**
+   * WHICH MINING RUN PRODUCED THIS INSIGHT.
+   *
+   * app/api/cron/brokerage-intelligence-mine/route.ts:104 stamps one uuid across every
+   * insight a single run writes, and nothing read it. Insights are SUPERSEDED per
+   * pattern_key (route.ts:93-98), not per run, so an open board legitimately mixes
+   * patterns from several runs — and a pattern that stopped being mined (its miner
+   * errored, or the pattern no longer clears its sample threshold) keeps its last row
+   * OPEN forever, looking exactly as current as one written this morning. Grouping by
+   * run is the only way to see that. Null on a row written before the column existed.
+   */
+  miningRunId:           string | null
+  /**
+   * WHO KILLED THIS INSIGHT, WHEN, AND WHY.
+   *
+   * dismissInsightAction has always written dismissed_at / dismissed_by /
+   * dismissal_reason and the reader selected none of them — so the "Recently
+   * dismissed" list on /dashboard/admin/intelligence-mesh could say a
+   * brokerage-wide pattern had been waved away but not by whom or on what
+   * grounds. That is the one thing a second reviewer needs in order to reopen
+   * it. Null on an open insight, and null on a dismissal whose actor id no
+   * longer resolves to a user.
+   */
+  dismissedAt:           string | null
+  dismissedByName:       string | null
+  dismissalReason:       string | null
 }
-
-const ADMIN_USER_TYPES = new Set([
-  "superadmin", "broker", "broker_admin", "admin", "team_lead",
-])
 
 async function requireAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -74,7 +98,7 @@ async function requireAdmin(): Promise<
     .eq("id", user.id)
     .maybeSingle()
   const userType = (profile?.user_type as string | undefined) ?? ""
-  if (!ADMIN_USER_TYPES.has(userType)) return { ok: false, error: "Insufficient privileges" }
+  if (!isAdminOrBroker({ user_type: userType })) return { ok: false, error: "Insufficient privileges" }
   if (!profile?.brokerage_id) return { ok: false, error: "No brokerage" }
   return { ok: true, userId: user.id, brokerageId: profile.brokerage_id as string, userType }
 }
@@ -92,13 +116,32 @@ export async function getBrokerageInsights(params?: {
   const status = params?.status ?? "open"
   const { data, error } = await supabase
     .from("brokerage_intelligence_insights")
-    .select("id, pattern_key, headline, metric_label, top_quartile_value, median_value, bottom_quartile_value, outcome_label, top_quartile_outcome, median_outcome, bottom_quartile_outcome, lift_pct, sample_size, supporting_agent_count, playbook, playbook_actions, severity, status, computed_at")
+    .select("id, pattern_key, headline, metric_label, top_quartile_value, median_value, bottom_quartile_value, outcome_label, top_quartile_outcome, median_outcome, bottom_quartile_outcome, lift_pct, sample_size, supporting_agent_count, playbook, playbook_actions, severity, status, computed_at, mining_run_id, dismissed_at, dismissed_by, dismissal_reason")
     .eq("brokerage_id", auth.brokerageId)
     .eq("status", status)
     .order("lift_pct", { ascending: false })
     .limit(params?.limit ?? 20)
 
   if (error) return { success: false, error: error.message }
+
+  // dismissed_by is a users.id (written from the admin gate's auth user), never
+  // an agents.id — the classes are disjoint (CLAUDE.md §3). Brokerage-scoped,
+  // because a dismissal is always made by someone inside the tenant. A failed
+  // lookup leaves the name null; the dismissal record still renders.
+  const dismisserIds = [...new Set((data ?? []).map((r: any) => r.dismissed_by).filter(Boolean) as string[])]
+  const dismisserNameById = new Map<string, string>()
+  if (dismisserIds.length > 0) {
+    const { data: dismissers, error: dismisserErr } = await supabase
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", dismisserIds)
+      .eq("brokerage_id", auth.brokerageId)
+    if (dismisserErr) console.error("[brokerage-intelligence] dismisser lookup failed:", dismisserErr.message)
+    for (const u of (dismissers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) dismisserNameById.set(u.id as string, label as string)
+    }
+  }
 
   return {
     success: true,
@@ -122,6 +165,10 @@ export async function getBrokerageInsights(params?: {
       severity:              r.severity as BrokerageInsight["severity"],
       status:                r.status as BrokerageInsight["status"],
       computedAt:            r.computed_at as string,
+      miningRunId:           (r.mining_run_id as string | null) ?? null,
+      dismissedAt:           (r.dismissed_at as string | null) ?? null,
+      dismissedByName:       r.dismissed_by ? dismisserNameById.get(r.dismissed_by as string) ?? null : null,
+      dismissalReason:       (r.dismissal_reason as string | null) ?? null,
     })),
   }
 }
@@ -132,8 +179,10 @@ export async function adoptInsightAction(params: {
   insightId: string
   /** Agent user_ids to push the playbook to. Empty array → all agents
    *  in the brokerage. */
+  /** users.id values. `agentIds` is accepted as the older parameter name. */
+  agentUserIds?: string[]
   agentIds?: string[]
-}): Promise<{ success: boolean; error?: string; adopted?: number }> {
+}): Promise<{ success: boolean; error?: string; adopted?: number; skippedNoAgentProfile?: number }> {
   if (!isValidUUID(params.insightId)) return { success: false, error: "Invalid insight id" }
   const auth = await requireAdmin()
   if (!auth.ok) return { success: false, error: auth.error }
@@ -141,10 +190,11 @@ export async function adoptInsightAction(params: {
   const supabase = await createClient()
   const svc = createServiceClient()
 
-  // Load insight + verify it's in this brokerage
+  // Load insight + verify it's in this brokerage. median_outcome rides along as
+  // the adoption's baseline_metric (see the stamp below).
   const { data: insight } = await supabase
     .from("brokerage_intelligence_insights")
-    .select("id, brokerage_id, playbook_actions, pattern_key")
+    .select("id, brokerage_id, playbook_actions, pattern_key, median_outcome")
     .eq("id", params.insightId)
     .maybeSingle()
   if (!insight) return { success: false, error: "Insight not found" }
@@ -153,71 +203,123 @@ export async function adoptInsightAction(params: {
   }
 
   // Resolve target agent list — if empty, broadcast to all agents
-  let agentIds = (params.agentIds ?? []).filter(Boolean)
-  if (agentIds.length === 0) {
+  // NAMED agentUserIds, not agentIds (m352). These are `users.id` — the query
+  // below reads the users table — and the name has to say so, because every
+  // agent-scoped write in this action (pattern_adoptions, and the contacts
+  // update inside applyAction) is agents-class and must resolve first.
+  let agentUserIds = (params.agentUserIds ?? params.agentIds ?? []).filter(Boolean)
+  if (agentUserIds.length === 0) {
     const { data: allAgents } = await svc
       .from("users")
       .select("id")
       .eq("brokerage_id", auth.brokerageId)
       .eq("user_type", "agent")
-    agentIds = ((allAgents ?? []) as Array<{ id: string }>).map((a) => a.id)
+    agentUserIds = ((allAgents ?? []) as Array<{ id: string }>).map((a) => a.id)
   }
 
   const actions = (insight.playbook_actions as Array<{ type: string; [k: string]: unknown }>) ?? []
   let appliedCount = 0
+  let skippedNoAgentProfile = 0
 
-  for (const agentId of agentIds) {
+  for (const agentUserId of agentUserIds) {
     try {
+      // Scoped resolve: this is a broker adopting a playbook onto members of ONE
+      // brokerage, and a user can hold agents rows in several.
+      const agentRecordId = await resolveAgentIdInBrokerage(svc, agentUserId, auth.brokerageId)
+      if (!agentRecordId) {
+        // No agent profile in this brokerage means there is nothing to adopt
+        // against and no id pattern_adoptions.agent_id would accept. Counted,
+        // never papered over with the users id.
+        skippedNoAgentProfile += 1
+        continue
+      }
+
       const applied: typeof actions = []
       for (const action of actions) {
-        const ok = await applyAction({ svc, agentId, brokerageId: auth.brokerageId, action })
+        const ok = await applyAction({ svc, agentUserId, brokerageId: auth.brokerageId, action })
         if (ok) applied.push(action)
       }
-      await svc.from("pattern_adoptions").insert({
+      const { error: adoptionError } = await svc.from("pattern_adoptions").insert({
         insight_id:       insight.id,
         brokerage_id:     auth.brokerageId,
-        agent_id:         agentId,
+        agent_id:         agentRecordId,
         adopted_by:       auth.userId,
         applied_actions:  applied,
         status:           applied.length === actions.length ? "applied" : (applied.length === 0 ? "failed" : "applied"),
+        // BASELINE AT ADOPTION (orphan tranche X4, 2026-09-01): the mesh page
+        // renders baseline/follow-up/lift per adoption and no writer ever set
+        // them. The honest baseline available at adoption time is the insight's
+        // own median_outcome — the brokerage-median value of the very metric the
+        // miner measured (outcome_label names it). The +30d follow-up pass in
+        // app/api/cron/brokerage-intelligence-mine compares the SAME metric from
+        // a fresh mining run and derives observed_lift_pct from the two — the
+        // number is derived, never pinned (§2). NULL when the insight predates
+        // outcome columns or carried none.
+        baseline_metric:  insight.median_outcome == null ? null : Number(insight.median_outcome),
       })
+      if (adoptionError) {
+        console.error(`[adoptInsight] adoption row for agent ${agentUserId}:`, adoptionError.message)
+        continue
+      }
       appliedCount += 1
     } catch (e) {
-      console.error(`[adoptInsight] agent ${agentId}:`, e)
+      console.error(`[adoptInsight] agent ${agentUserId}:`, e)
     }
   }
 
   revalidatePath("/dashboard/admin")
-  return { success: true, adopted: appliedCount }
+  return { success: true, adopted: appliedCount, skippedNoAgentProfile }
 }
 
 async function applyAction(input: {
   svc:         ReturnType<typeof createServiceClient>
-  agentId:     string
+  /** users.id — resolved to an agents id below for the contacts write. */
+  agentUserId: string
   brokerageId: string
   action:      { type: string; [k: string]: unknown }
 }): Promise<boolean> {
-  const { svc, agentId, brokerageId, action } = input
+  const { svc, agentUserId, brokerageId, action } = input
 
   switch (action.type) {
     case "enable_ai_isa_on_new_leads":
     case "enable_ai_isa_on_existing_leads": {
       // Flip ai_isa_enabled=true on the agent's contacts where eligibility
       // is met (not dnc, not opted out). Bounded write to avoid surprise.
-      const onlyExisting = action.type === "enable_ai_isa_on_existing_leads"
-      let q = svc.from("contacts")
+      // Both arms flip the SAME set. For "new leads" we still only flip current
+      // leads — net effect is the same; future leads inherit the agent's default
+      // elsewhere (a separate brokerage default flag is a v2 surface). The
+      // `let q = …` builder that used to stand here existed only to hold the
+      // query across an `if (!onlyExisting) { }` block with an empty body, and it
+      // hid the write from review: the error check sat far enough below the
+      // `.from(` that neither a reader nor scripts/silent-write-guard.ts could
+      // see the two belong together.
+      //
+      // IDENTITY CLASS (m352). agentUserId is a users id —
+      // adoptInsightAction reads the target list straight out of `users`. But
+      // contacts.agent_id FKs AGENTS, so this update matched ZERO rows for every
+      // agent, every time, and still returned true: the playbook reported
+      // "applied" and no contact ever had ai_isa_enabled flipped. The two ids
+      // sat in the same variable under the same name, which is the whole reason
+      // the users-class columns are being renamed.
+      const { data: agentRow } = await svc
+        .from("agents").select("id").eq("user_id", agentUserId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (!agentRow?.id) return false
+      // FAIL CLOSED (CLAUDE.md §4). `ai_isa_enabled` is an AUTONOMY flag — it
+      // decides whether the AI may reach out to these people on its own. This
+      // discarded its result, so a refusal returned true and the playbook told
+      // the broker the pattern was "applied" (exactly the shape the id-class bug
+      // above already produced once).
+      const { error: enableError } = await svc.from("contacts")
         .update({ ai_isa_enabled: true })
         .eq("brokerage_id", brokerageId)
-        .eq("agent_id", agentId)
+        .eq("agent_id", agentRow.id)
         .neq("dnc_status", true)
         .neq("ai_outreach_paused", true)
         .neq("ai_isa_enabled", true)
-      if (!onlyExisting) {
-        // For "new leads" we still only flip current leads — net effect
-        // is the same; future leads inherit the agent's default elsewhere
-        // (a separate brokerage default flag is a v2 surface).
+      if (enableError) {
+        console.error("[brokerage-intelligence] ai_isa_enabled bulk write REFUSED:", enableError.message)
+        return false
       }
-      await q
       return true
     }
     case "first_touch_target_minutes":

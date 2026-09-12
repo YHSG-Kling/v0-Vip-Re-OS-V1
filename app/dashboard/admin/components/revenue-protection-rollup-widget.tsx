@@ -84,7 +84,12 @@ export async function RevenueProtectionRollupWidget({ brokerageId }: Props) {
             <ul className="space-y-1.5">
               {data.perAgent.slice(0, 5).map((a) => (
                 <li key={a.agentId} className="flex items-center justify-between text-xs gap-3">
-                  <Link href={`/dashboard/admin/agents/${a.agentId}`} className="flex-1 min-w-0 truncate hover:underline">
+                  {/* REPOINTED (dangling-link sweep, 2026-09-02): was
+                      `/dashboard/admin/agents/${id}` — app/dashboard/admin/agents is the
+                      offboarding page with no [id] child. `agentId` is the users.id the
+                      action resolves names from (revenue-protection.ts:139 `.from("users")
+                      .in("id", agentIds)`), so the per-user admin page is the survivor. */}
+                  <Link href={`/dashboard/admin/users/${a.agentId}`} className="flex-1 min-w-0 truncate hover:underline">
                     {a.agentName ?? "Unknown agent"}
                   </Link>
                   <span className="text-muted-foreground tabular-nums w-24 text-right">{formatUsd(a.protectedGci)}</span>

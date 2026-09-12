@@ -5,7 +5,6 @@
  * Parses natural language voice input into structured intent using LLM
  */
 
-import { createClient } from '@/lib/supabase/server'
 import { resolveEntities } from './resolve-entities'
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 

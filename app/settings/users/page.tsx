@@ -2,6 +2,10 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { UsersManagementClient } from "./users-management-client"
 import { SsoConnectionCard } from "./sso-connection-card"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// Read on the SERVER so the ~1600-line generated vocabulary cache stays out of
+// the client bundle; only the ~15 admissible user_type strings cross.
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 
 export const dynamic = "force-dynamic"
 
@@ -22,7 +26,7 @@ export default async function SettingsUsersPage() {
   const userType = profile?.user_type ?? "agent"
 
   // Only admin/broker/superadmin can manage users
-  if (!["admin", "broker", "superadmin", "broker_admin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     redirect("/dashboard")
   }
 
@@ -35,17 +39,28 @@ export default async function SettingsUsersPage() {
     : { data: null }
   const planTier = (tenant as { plan_tier?: string | null } | null)?.plan_tier ?? null
 
-  // Fetch all users in the brokerage
+  // Fetch all users in the brokerage.
+  //
+  // ── THE FALSE ARM USED TO BE THE SAME QUERY WITHOUT THE TENANT PREDICATE ────
+  // This read:
+  //
+  //     brokerageId ? …select(…).eq("brokerage_id", brokerageId)… : …select(…)…
+  //
+  // so an admin/broker whose users.brokerage_id is NULL — the entry gate above is
+  // isAdminOrBroker(user_type), which never consults brokerage_id — was handed the
+  // name, email and role of EVERY user on the platform, on a user-management screen
+  // that also offers role edits. The two arms were the same query; only the tenant
+  // boundary differed. CLAUDE.md §4: "a gate that cannot run must refuse, not pass".
+  //
+  // Fail closed: no tenant, no roster. Nothing here changes identity semantics on
+  // public.users — the absent brokerage_id simply stops meaning "every tenant".
   const { data: users } = brokerageId
     ? await supabase
         .from("users")
         .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
         .eq("brokerage_id", brokerageId)
         .order("created_at", { ascending: false })
-    : await supabase
-        .from("users")
-        .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
-        .order("created_at", { ascending: false })
+    : { data: null }
 
   return (
     <div className="space-y-6">
@@ -55,6 +70,7 @@ export default async function SettingsUsersPage() {
         brokerageId={brokerageId}
         callerRole={userType}
         tier={planTier}
+        storableUserTypes={CHECK_VOCABULARIES.users?.user_type}
       />
       {/* SSO / SAML — team access policy lives with team management. */}
       <SsoConnectionCard />

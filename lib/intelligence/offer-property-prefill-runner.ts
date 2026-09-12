@@ -68,6 +68,11 @@ export async function resolveKnownPropertyFacts(args: ResolvePropertyPrefillArgs
 }
 
 /** Resolve known property facts and map them onto the form's fillable fields. Read-only. */
+/** @proofSeam a resolve+map convenience combinator; every live caller needs a step BETWEEN the two
+ *  (app/actions/buyer-offer/prefill-storage-form.ts calls resolveKnownPropertyFacts alone to merge in
+ *  agent-typed city/state before mapping; lib/forms/prefill-property-into-pdf.ts takes facts as an
+ *  argument and calls buildPropertyPrefill itself). Both halves ARE wired independently — see
+ *  scripts/offer-property-prefill-simulator.ts for the combined-call proof. */
 export async function prefillOfferFormProperty(
   formFields: string[], args: ResolvePropertyPrefillArgs, client?: Svc,
 ): Promise<PropertyPrefillResult & { facts: KnownPropertyFacts }> {

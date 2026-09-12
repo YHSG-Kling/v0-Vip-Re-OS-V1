@@ -30,14 +30,19 @@ function report() {
   process.exit(0)
 }
 
-const NEWLY_COVERED = ["deal_coordinator", "ads_manager", "marketing_agent", "sphere_of_influence", "recruiting_manager"] as const
+// m618: "marketing_agent" dropped from this list — retired as a ManagerKey (owner: "we
+// don't have a marketing agent manager"); MANAGERS no longer has that key at all, so
+// checking it here would always fail. Its standup card merged onto campaign_orchestrator's
+// (lib/intelligence/manager-standup.ts), already covered by the standup's own registry-key
+// invariant checked in Layer 2 below rather than restated here.
+const NEWLY_COVERED = ["deal_coordinator", "ads_manager", "sphere_of_influence", "recruiting_manager"] as const
 
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Manager standup simulator")
   console.log("══════════════════════════════════════════════════")
 
-  console.log("\n[Layer 1 · the 5 newly-covered managers resolve to labels]")
+  console.log("\n[Layer 1 · the newly-covered managers resolve to labels]")
   for (const k of NEWLY_COVERED) {
     check(`${k} has a registry label`, !!(MANAGERS as any)[k]?.label, `MANAGERS.${k} missing`)
   }

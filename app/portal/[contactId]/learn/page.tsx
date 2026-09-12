@@ -1,3 +1,25 @@
+// ─── TOMBSTONE (orphan-route sweep, lane G) ──────────────────────────────────
+// `/portal/[contactId]/education` — app/portal/[contactId]/education/page.tsx —
+// IS DELETED. THIS PAGE IS THE SURVIVOR.
+//
+// It was a strict, weaker SUBSET of this route, and it was reachable from
+// nothing (test:orphan-routes listed it; the portal nav's "Learn" item —
+// lib/kernel/portal.ts:504/521/536, moduleKey "education" — points HERE).
+//
+// What the duplicate did and what the survivor already does better:
+//   · lessons — it called `getEducationPlan` directly with a hardcoded
+//     `journeyPhase: "active"` and `ageSegment: "30-50"`. This page calls
+//     `getLessonFeed` (app/actions/portal-education.ts:191), which calls the SAME
+//     `getEducationPlan` with the REAL age segment, the real journey phase and the
+//     real current milestone, then folds in completion state.
+//   · access — it gated on `getAgentContext()` and then read any contactId off
+//     the URL. `getLessonFeed` gates on portal contact access.
+//   · portal_access_logs — it wrote none; this page calls `logPortalAccess`.
+// Nothing was merged onto the survivor because nothing was missing from it: the
+// duplicate's one dependency, `getEducationPlan`, is reached through
+// `getLessonFeed` and remains referenced (also app/actions/education-kernel.ts:46,
+// app/api/education/*).
+// ─────────────────────────────────────────────────────────────────────────────
 import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"

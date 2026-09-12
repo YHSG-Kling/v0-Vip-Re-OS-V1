@@ -29,6 +29,7 @@ import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2, Zap, Mic, MicOff, Phone, Volume2 } from "lucide-react"
+import { useEnterToSubmit } from "@/hooks/use-enter-to-submit"
 
 // ─── Suggested questions by role ─────────────────────────────────────────────
 
@@ -894,12 +895,10 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     setInput("")
   }, [input, isStreaming, sendMessage, prepareNote])
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
+  // `handleKeyDown` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to hooks/use-enter-to-submit.ts `useEnterToSubmit`
+  // (used below).
+  const handleKeyDown = useEnterToSubmit<HTMLTextAreaElement>(handleSend)
 
   // ── Note draft helpers ──────────────────────────────────────────────────────
   const updateDraft = useCallback((cardId: string, updates: Partial<NoteDraft>) => {

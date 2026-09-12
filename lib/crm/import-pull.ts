@@ -98,7 +98,8 @@ export function ghlToRow(c: any): Record<string, unknown> {
 
 // ── Fetchers (one page each; cursor-resumable) ────────────────────────────────
 
-export async function pullFollowUpBoss(apiKey: string, cursor: string | null): Promise<CrmPullPage> {
+// internal helper — called in-file by pullCrmPage
+async function pullFollowUpBoss(apiKey: string, cursor: string | null): Promise<CrmPullPage> {
   const offset = Number(cursor ?? 0)
   const res = await callConnector<{ people?: any[] }>({
     connector: "followupboss", baseUrl: "https://api.followupboss.com/v1",
@@ -111,7 +112,8 @@ export async function pullFollowUpBoss(apiKey: string, cursor: string | null): P
   return { rows: people.map(fubToRow), nextCursor: people.length === PAGE_SIZE ? String(offset + PAGE_SIZE) : null }
 }
 
-export async function pullHubSpot(token: string, cursor: string | null): Promise<CrmPullPage> {
+// internal helper — called in-file by pullCrmPage
+async function pullHubSpot(token: string, cursor: string | null): Promise<CrmPullPage> {
   const res = await callConnector<{ results?: any[]; paging?: { next?: { after?: string } } }>({
     connector: "hubspot", baseUrl: "https://api.hubapi.com",
     path: "/crm/v3/objects/contacts", method: "GET",
@@ -126,7 +128,8 @@ export async function pullHubSpot(token: string, cursor: string | null): Promise
   return { rows: (res.data?.results ?? []).map(hubspotToRow), nextCursor: res.data?.paging?.next?.after ?? null }
 }
 
-export async function pullLofty(apiKey: string, baseUrl: string | null, cursor: string | null): Promise<CrmPullPage> {
+// internal helper — called in-file by pullCrmPage
+async function pullLofty(apiKey: string, baseUrl: string | null, cursor: string | null): Promise<CrmPullPage> {
   const offset = Number(cursor ?? 0)
   const res = await callConnector<{ contacts?: any[]; data?: any[] }>({
     connector: "lofty", baseUrl: baseUrl || "https://api.lofty.com/v1",
@@ -139,7 +142,8 @@ export async function pullLofty(apiKey: string, baseUrl: string | null, cursor: 
   return { rows: contacts.map(loftyToRow), nextCursor: contacts.length === PAGE_SIZE ? String(offset + PAGE_SIZE) : null }
 }
 
-export async function pullGoHighLevel(apiKey: string, locationId: string | null, cursor: string | null): Promise<CrmPullPage> {
+// internal helper — called in-file by pullCrmPage
+async function pullGoHighLevel(apiKey: string, locationId: string | null, cursor: string | null): Promise<CrmPullPage> {
   const res = await callConnector<{ contacts?: any[]; meta?: { nextPageUrl?: string; startAfterId?: string } }>({
     connector: "ghl", baseUrl: "https://rest.gohighlevel.com/v1",
     path: "/contacts/", method: "GET",

@@ -14,8 +14,36 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { KernelEvent } from "@/lib/kernel/events"
+
+/**
+ * "Is this caller the platform superadmin?" — BOTH identity columns.
+ *
+ * WriteContext carries only `user_type`, and `ctx.userType !== "superadmin"` is
+ * TRUE for the platform's only superadmin, whose row is
+ * (user_type='admin', platform_role='superadmin'). Both cross-tenant escape
+ * hatches below were therefore dead: the platform owner could neither read nor
+ * seed another brokerage's default sequences, and got "Cannot seed for another
+ * brokerage" on the one account that is allowed to. This mirrors
+ * public.is_platform_admin() in RLS and requireSuperadmin() in
+ * lib/auth/platform-guard.ts — see app/actions/vendor-budget.ts:136-147.
+ *
+ * Deliberately superadmin-ONLY, not the four-role platform-staff roster: seeding
+ * writes campaign automation INTO a tenant, which support/marketing staff do not do.
+ *
+ * Called only on the branch that would otherwise refuse (caller asked for a
+ * brokerage that is not their own), so the common path costs no extra query.
+ */
+async function callerIsSuperadmin(userId: string, userType: string): Promise<boolean> {
+  if (userType === "superadmin") return true
+  const { data } = await createServiceClient()
+    .from("users")
+    .select("platform_role")
+    .eq("id", userId)
+    .maybeSingle()
+  return (data as { platform_role?: string | null } | null)?.platform_role === "superadmin"
+}
 
 interface SeqSeed {
   name:         string
@@ -175,14 +203,59 @@ const DEFAULT_SEQUENCES: SeqSeed[] = [
   },
 ]
 
-export async function seedDefaultSequences(brokerageId?: string): Promise<{
+/**
+ * The default-sequence catalog with its install state for a brokerage, so the
+ * UI can SHOW the defaults and let the user pick which to install (instead of a
+ * blind "install all"). Read-only; auth-gated + brokerage-scoped.
+ */
+export async function getDefaultSequenceCatalog(brokerageId?: string): Promise<{
+  success: boolean
+  error?: string
+  items: Array<{ name: string; description: string; sequenceType: string; triggerLabel: string; stepCount: number; installed: boolean }>
+}> {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { success: false, error: "Unauthorized", items: [] }
+  const targetBrokerageId = brokerageId ?? ctx.brokerageId
+  if (!targetBrokerageId) return { success: false, error: "No brokerage in scope", items: [] }
+  // Same tenant boundary as seedDefaultSequences: a client-supplied brokerageId
+  // must be the caller's own (service client bypasses RLS) — only superadmin may
+  // read another tenant's install state.
+  if (brokerageId && brokerageId !== ctx.brokerageId && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) {
+    return { success: false, error: "Cannot read another brokerage", items: [] }
+  }
+
+  const supabase = createServiceClient()
+  const { data: existing } = await supabase
+    .from("campaign_sequences")
+    .select("name")
+    .eq("brokerage_id", targetBrokerageId)
+    .in("name", DEFAULT_SEQUENCES.map((s) => s.name))
+  const installedNames = new Set((existing ?? []).map((r: { name: string }) => r.name))
+
+  const { findTrigger } = await import("@/lib/workflow/triggers")
+  const items = DEFAULT_SEQUENCES.map((s) => ({
+    name: s.name,
+    description: s.description,
+    sequenceType: s.sequenceType,
+    triggerLabel: findTrigger(s.triggerEvent)?.label ?? s.triggerEvent,
+    stepCount: s.steps.length,
+    installed: installedNames.has(s.name),
+  }))
+  return { success: true, items }
+}
+
+export async function seedDefaultSequences(
+  brokerageId?: string,
+  /** When provided, install ONLY these catalog names; otherwise install all. */
+  names?: string[],
+): Promise<{
   success: boolean
   error?: string
   created: number
   skipped: number
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) {
     return { success: false, error: "Unauthorized", created: 0, skipped: 0 }
   }
   // Default to caller's brokerage; allow superadmin to seed any.
@@ -190,7 +263,7 @@ export async function seedDefaultSequences(brokerageId?: string): Promise<{
   if (!targetBrokerageId) {
     return { success: false, error: "No brokerage in scope", created: 0, skipped: 0 }
   }
-  if (brokerageId && brokerageId !== ctx.brokerageId && ctx.userType !== "superadmin") {
+  if (brokerageId && brokerageId !== ctx.brokerageId && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) {
     return { success: false, error: "Cannot seed for another brokerage", created: 0, skipped: 0 }
   }
 
@@ -198,7 +271,11 @@ export async function seedDefaultSequences(brokerageId?: string): Promise<{
   let created = 0
   let skipped = 0
 
-  for (const seed of DEFAULT_SEQUENCES) {
+  // Optionally narrow to a selected subset (the picker passes chosen names).
+  const selected = names && names.length > 0 ? new Set(names) : null
+  const catalog = selected ? DEFAULT_SEQUENCES.filter((s) => selected.has(s.name)) : DEFAULT_SEQUENCES
+
+  for (const seed of catalog) {
     // Idempotency — skip if name already exists for the brokerage.
     const { data: existing } = await supabase
       .from("campaign_sequences")

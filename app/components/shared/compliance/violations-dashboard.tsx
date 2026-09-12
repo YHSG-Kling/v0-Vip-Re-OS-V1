@@ -18,7 +18,9 @@ interface ViolationsDashboardProps {
     criticalViolations: number
     violationsByType: Record<string, number>
     communicationsByChannel: Record<string, number>
-    coldLeadChannelCompliance: boolean
+    /** null = the communication log could not be read, so nothing is established. */
+    coldLeadChannelCompliance: boolean | null
+    unreadableSources?: string[]
   }
 }
 
@@ -67,10 +69,18 @@ export default function ViolationsDashboard({ initialViolations, report }: Viola
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-2">
-              {report.coldLeadChannelCompliance ? (
+              {report.coldLeadChannelCompliance === null ? (
+                // Three states, not two. "The log could not be read" is not a
+                // pass and is not a violation — showing it as either would be a
+                // finding we did not make.
+                <>
+                  <AlertTriangle className="w-5 h-5 text-amber-600" />
+                  <span className="text-2xl font-bold text-amber-600">Not established</span>
+                </>
+              ) : report.coldLeadChannelCompliance ? (
                 <>
                   <CheckCircle className="w-5 h-5 text-green-600" />
-                  <span className="text-2xl font-bold text-green-600">100%</span>
+                  <span className="text-2xl font-bold text-green-600">Compliant</span>
                 </>
               ) : (
                 <>

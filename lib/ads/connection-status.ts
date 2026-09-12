@@ -8,6 +8,7 @@
  * (business rule #9: provider account connection required before launch).
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { PROVIDER_CONNECTED_AD_PLATFORMS } from "@/lib/integrations/ad-campaign-vocabulary"
 
 // The platform value an ad campaign uses → the platform_credentials row the
 // connector loads (instagram ads run through the Meta/facebook credential).
@@ -40,6 +41,21 @@ export async function getAdConnections(
 export async function isAdPlatformConnected(
   brokerageId: string, campaignPlatform: string, client?: ReturnType<typeof createServiceClient>,
 ): Promise<{ connected: boolean; reason?: string }> {
+  // Streaming TV is connected through the Connection OS provider 'vibe'
+  // (PROVIDER_CONNECTED_AD_PLATFORMS), never a platform_credentials ad account —
+  // asking that table for 'vibe_ctv' always answered "not connected".
+  const provider = (PROVIDER_CONNECTED_AD_PLATFORMS as Record<string, string | undefined>)[campaignPlatform]
+  if (provider === "vibe") {
+    const { resolveVibeCredential } = await import("@/lib/providers/vibe")
+    const r = await resolveVibeCredential(brokerageId)
+    return r.status === "connected" ? { connected: true } : { connected: false, reason: `${r.reason} — connect Vibe in Settings → Connections` }
+  }
+  if (provider === "openai_ads") {
+    const { resolveOpenaiAdsCredential } = await import("@/lib/providers/openai-ads")
+    const r = await resolveOpenaiAdsCredential(brokerageId)
+    return r.status === "connected" ? { connected: true } : { connected: false, reason: `${r.reason} — add the Ads API key (ads.openai.com → Settings) in Settings → Connections` }
+  }
+  if (provider) return { connected: false, reason: `${campaignPlatform} is connected through provider '${provider}', which this precheck does not resolve yet` }
   const platform = adCredentialPlatform(campaignPlatform)
   const conns = await getAdConnections(brokerageId, client)
   const conn = conns.find((c) => c.platform === platform)

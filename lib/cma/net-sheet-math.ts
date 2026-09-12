@@ -9,6 +9,9 @@
 
 export interface NetSheetCostInputs {
   closingCosts?: number
+  /** Flat brokerage transaction fee charged to the SELLER (m286/m287). Does NOT
+   *  scale with price — it is the same dollars at any sale price. */
+  transactionFee?: number
   mortgagePayoffAmount?: number
   mortgageBalance?: number
   propertyTaxes?: number
@@ -33,6 +36,7 @@ export interface NetSheetScenarioMath {
     hoaFees: number
     repairCredits: number
     sellerConcessions: number
+    transactionFee: number
     otherCosts: number
   }
 }
@@ -54,9 +58,14 @@ export function computeNetSheetScenario(
   listingSideRate: number,
   buyerSideRate: number,
   closingCostPercent: number,
+  /** When set, the agreed commission is this many dollars regardless of price. */
+  flatCommissionAmount?: number | null,
 ): NetSheetScenarioMath {
-  const listingCommission = salePrice * (listingSideRate ?? 0)
-  const buyerCommission = salePrice * (buyerSideRate ?? 0)
+  // A flat-fee agreement is charged as-is and folds the buyer side in, so the
+  // caller passes it as a fixed listing-side amount via flatCommissionAmount.
+  const listingCommission =
+    flatCommissionAmount != null ? Number(flatCommissionAmount) : salePrice * (listingSideRate ?? 0)
+  const buyerCommission = flatCommissionAmount != null ? 0 : salePrice * (buyerSideRate ?? 0)
 
   // Fixed dollar closing costs take precedence; otherwise derive from percent.
   const closingCosts = costs.closingCosts ?? salePrice * closingCostPercent
@@ -65,6 +74,7 @@ export function computeNetSheetScenario(
   const hoaFees = costs.hoaFees || 0
   const repairCredits = costs.repairCredits || 0
   const sellerConcessions = costs.sellerConcessions || 0
+  const transactionFee = costs.transactionFee || 0
 
   const totalCosts =
     listingCommission +
@@ -74,7 +84,8 @@ export function computeNetSheetScenario(
     propertyTaxes +
     hoaFees +
     repairCredits +
-    sellerConcessions
+    sellerConcessions +
+    transactionFee
 
   const netProceeds = salePrice - totalCosts
 
@@ -94,6 +105,7 @@ export function computeNetSheetScenario(
       hoaFees,
       repairCredits,
       sellerConcessions,
+      transactionFee,
       otherCosts: 0,
     },
   }

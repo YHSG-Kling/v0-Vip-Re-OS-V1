@@ -128,7 +128,7 @@ export async function buildCallContext(params: {
       .select(
         'scope_type, scope_id, assistant_name, persona_label, tone, formality_level, ' +
           'faq_knowledge, objection_library, escalation_rules, prohibited_language, ' +
-          'voice_provider, voice_mode, elevenlabs_voice_id, vapi_assistant_id'
+          'voice_provider, voice_mode, elevenlabs_voice_id'
       )
       .eq('brokerage_id', params.brokerageId)
       .eq('active', true)
@@ -138,6 +138,8 @@ export async function buildCallContext(params: {
       brokerageId: params.brokerageId,
       agentId: params.agentId ?? null,
       teamId: params.teamId ?? null,
+      // Extend the AI's knowledge to cover THIS contact on the voice rail too.
+      contactId: params.contactId ?? undefined,
     }),
 
     // Brokerage row — name (display) + default_isa_voice_id (voice fallback)

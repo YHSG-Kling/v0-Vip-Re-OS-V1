@@ -1,0 +1,49 @@
+-- m584 — the contact's notification choices were spelled twice, and the second
+-- spelling had no reader.
+--
+-- ⚠ APPLIED 2026-08-28 hrvaqgvukzxfskkcrwbt (integrator re-verified the live row count first: 0 rows, 0 non-empty values, so nothing was lost). Lanes write migrations; only the integrator applies
+-- them (CLAUDE.md §3). Nothing in this repo runs migrations.
+--
+-- WHAT WAS WRONG
+-- `contact_portal_preferences.notification_settings` was written by exactly one
+-- writer — app/actions/intent-writers.ts (setPortalMilestonePreferences), and
+-- only when an optional `notificationSettings` argument was supplied — and read
+-- by NOTHING. The opposite-missing census reported it as a one-sided write
+-- (col-write-no-read).
+--
+-- WHY IT IS A DUPLICATE, NOT A MISSING READER
+-- The contact's notification choices already have ONE typed home that the whole
+-- system honours: `contacts.metadata.notification_preferences`, resolved by
+-- lib/notifications/buyer-preferences.ts (resolveBuyerNotificationPreferences →
+-- BuyerNotificationPreferences: email/sms/push/marketing plus the four content
+-- categories) and consulted by every buyer-facing send path before an automated
+-- touch. Its writer is the buyer's own settings panel,
+-- app/components/portal/PortalSettingsPage.tsx. Building a reader for the twin
+-- would have created a SECOND vocabulary for one fact (CLAUDE.md §6) — the
+-- defect that has already bitten timeline, video status and vendor category —
+-- and the send paths could not have matched a writer across both.
+--
+-- WHAT WAS MERGED FIRST: nothing, because nothing was missing. The twin was an
+-- untyped `Record<string, unknown>` blob with no schema, no defaults and no
+-- consulting code; the survivor is total, typed and enforced. The action's only
+-- caller (app/actions/voice-assistant.ts, the `set_portal_milestones` intent)
+-- never passed the argument, so no caller loses a capability.
+--
+-- DATA SAFETY, MEASURED — live on hrvaqgvukzxfskkcrwbt, 2026-08-28:
+--     SELECT count(*) AS rows_total,
+--            count(*) FILTER (WHERE notification_settings <> '{}'::jsonb)
+--       FROM contact_portal_preferences;
+--     → rows_total = 0, rows_with_settings = 0
+-- There is nothing to back up and nothing to carry forward. Re-run that query
+-- before applying: if it is no longer 0, STOP and carry the values onto
+-- contacts.metadata.notification_preferences first.
+--
+-- The writer is already gone (tombstone at app/actions/intent-writers.ts, in the
+-- setPortalMilestonePreferences input type), so this migration only removes a
+-- column that no code touches in either direction. Idempotent.
+
+ALTER TABLE public.contact_portal_preferences
+  DROP COLUMN IF EXISTS notification_settings;
+
+-- AFTER APPLYING: regenerate scripts/schema-snapshot.ts so the schema-drift
+-- guard stops expecting the column (see that file's header for the exact SQL).

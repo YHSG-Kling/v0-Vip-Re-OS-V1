@@ -1,4 +1,6 @@
 import { redirect } from 'next/navigation'
+import { resolveIsaCallingReadiness } from "@/lib/voice/isa-readiness"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 import { createClient } from '@/lib/supabase/server'
 import {
   listISACampaigns,
@@ -16,7 +18,6 @@ import {
   TrendingUp,
   PhoneCall,
   CheckCircle2,
-  Radio,
   Brain,
   Ghost,
   ShieldAlert,
@@ -25,7 +26,6 @@ import {
   UserCheck,
   AlertTriangle,
   Mic,
-  ChevronDown,
   ChevronRight,
   Clock,
   Zap,
@@ -43,11 +43,44 @@ import {
   RetrainingSignalsPanel,
 } from './components/qualification-os'
 import { HandoffQueuePanel } from '@/app/dashboard/voice/isa/handoff-queue-panel'
-import { AIISAConsoleClient } from './ai-isa-console-client'
+import { AIISAConsoleClient, type IsaLedgerHandoff } from './ai-isa-console-client'
+import { loadAiIsaWorkspace } from '@/lib/kernel'
+// COMPLETED_HANDOFFS_BOUND is not re-exported by lib/kernel/index.ts (not this
+// lane's file); the kernel module is imported directly for that one constant.
+import { COMPLETED_HANDOFFS_BOUND } from '@/lib/kernel/ai-isa'
+import type { ActorRole } from '@/lib/kernel/types'
 import { SpeedToLeadPanel } from './components/speed-to-lead-panel'
+import { ISALeadQueuePanel } from './components/isa-lead-queue-panel'
 import { getSpeedToLeadMetrics } from '@/app/actions/ai-isa/speed-to-lead-metrics'
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { resolveLeadVisibility } from "@/lib/auth/lead-visibility"
 
 export const dynamic = 'force-dynamic'
+
+/**
+ * users.user_type → the kernel's ActorRole. The two vocabularies overlap but
+ * are not equal: broker_owner / broker_admin are tenant roster spellings the
+ * kernel folds into "broker"; support / superadmin are platform staff (their
+ * real identity is platform_role, CLAUDE.md §4) and are treated as admin here
+ * because loadAiIsaWorkspace scopes by brokerage_id, not by role.
+ */
+function toActorRole(userType: string | null | undefined): ActorRole {
+  switch (userType) {
+    case 'broker': case 'broker_owner': case 'broker_admin': return 'broker'
+    case 'admin': case 'superadmin': case 'support': return 'admin'
+    case 'team_lead': return 'team_lead'
+    case 'isa': return 'isa'
+    case 'tc': return 'tc'
+    case 'compliance_officer': return 'compliance_officer'
+    default: return 'agent'
+  }
+}
+
+function personName(u: { first_name?: string | null; last_name?: string | null } | null | undefined): string | null {
+  if (!u) return null
+  const n = `${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()
+  return n || null
+}
 
 export const metadata = {
   title: 'AI-ISA Operations Console | VIP Real Estate AI OS',
@@ -59,9 +92,19 @@ export default async function AIISAOperationsConsolePage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from('users')
-    .select('brokerage_id, first_name, user_type')
+    // platform_role joins the select so the lead-visibility gate below is not
+    // forced to re-read this row. Staff identity is dual-column and "unknown" is
+    // not "absent" — see lib/auth/lead-visibility.ts#LeadVisibilitySession.
+    .select('brokerage_id, first_name, user_type, platform_role')
     .eq('id', user.id)
     .maybeSingle()
 
@@ -77,6 +120,34 @@ export default async function AIISAOperationsConsolePage() {
 
   // Role-based agent filter: agent sees own calls; broker/admin sees all brokerage calls
   const isAgentOnly = profile?.user_type === 'agent'
+
+  // TOMBSTONE (lead-visibility consolidation): the inline
+  // ['admin','broker','broker_admin','superadmin','isa'] array is DELETED. The
+  // survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility.
+  //
+  // This roster was the WORST of the fifteen, and measurably so: it was the only
+  // one that also omitted `broker_owner`, so a brokerage OWNER was shown no ISA
+  // queue tab on a console whose server actions would have honoured every call
+  // they made. It also carried two values that can never match a live row —
+  // 'broker_admin' (not a storable user_type; canonicalizes to `broker`) and
+  // 'superadmin' (0 live rows; platform staff carry platform_role) — so three of
+  // its five entries were wrong in one direction or the other.
+  //
+  // Asking the survivor fixes all three at once and adds team_lead per the
+  // owner's ruling. The queue tab is a MOUNT decision, so it must agree with the
+  // server gate exactly or it shows a control that can only refuse; deriving it
+  // from the same answer is the only way that agreement survives.
+  //
+  // The SCOPE is used, not discarded: the console's own lead query below is
+  // scoped with it, so a team lead sees their team's leads rather than the
+  // brokerage's. The server-side gate remains the real one.
+  const leadVisibility = await resolveLeadVisibility(supabase, {
+    userId: user.id,
+    userType: profile?.user_type ?? null,
+    platformRole: (profile as { platform_role?: string | null } | null)?.platform_role ?? null,
+    brokerageId,
+  })
+  const canWorkRawLeads = leadVisibility.allowed
   const { data: agentRow } = isAgentOnly
     ? await supabase.from('agents').select('id').eq('user_id', user.id).maybeSingle()
     : { data: null }
@@ -99,6 +170,14 @@ export default async function AIISAOperationsConsolePage() {
     .eq('brokerage_id', brokerageId)
     .order('updated_at', { ascending: false })
     .limit(50)
+
+  // TEAM ROW SCOPE on the console's own lead read. Admitting a team lead to this
+  // console without narrowing this query would put the brokerage's whole lead
+  // board on their screen — the exact failure the scope half exists to prevent.
+  if (leadVisibility.allowed && leadVisibility.scope.kind === 'team') {
+    const teamAgentIds = leadVisibility.scope.agentIds
+    leadsQuery.in('agent_id', teamAgentIds.length ? teamAgentIds : ['00000000-0000-0000-0000-000000000000'])
+  }
 
   if (isAgentOnly && agentRow?.id) {
     leadsQuery.eq('agent_id', agentRow.id)
@@ -178,7 +257,7 @@ export default async function AIISAOperationsConsolePage() {
         .from('voice_calls')
         .select(`
           id,
-          vapi_call_id,
+          vendor_call_id,
           contact_id,
           agent_id,
           direction,
@@ -236,10 +315,108 @@ export default async function AIISAOperationsConsolePage() {
   const voiceCalls = (voiceCallsResult?.data || []) as any[]
   const handoffQueue = (handoffResult?.data || []) as any[]
 
+  // ── THE HANDOFF LEDGER — agent_handoffs via the kernel loader ─────────────
+  // Survivor decision recorded at lib/kernel/ai-isa.ts (above COMMAND 1's
+  // types): the console's per-lead state is a FORECAST of readiness; the
+  // ledger is the RECORD of handoffs the ISA issued, and the only home of the
+  // context package written for the receiving human. loadAiIsaWorkspace had
+  // no caller until this page; it reads by brokerage_id with the service
+  // client, so the visibility narrowing this page already applies to its lead
+  // read is applied to the ledger too:
+  //   · broker/admin-class (raw leads allowed, brokerage scope) → the whole ledger
+  //   · team lead (team scope)      → handoffs on the team's leads or to a team agent
+  //   · everyone else (agent-class) → only handoffs addressed to THEIR agents.id —
+  //     §5: a lead reaches an agent once qualified, which is what a handoff is.
+  const workspaceRes = await loadAiIsaWorkspace({
+    ctx: { userId: user.id, brokerageId, role: toActorRole(profile.user_type) },
+    limit: 50,
+  })
+  if (!workspaceRes.success) console.error('[isa console] loadAiIsaWorkspace refused:', workspaceRes.error)
+  const ledgerPendingRaw = workspaceRes.data?.pendingHandoffs ?? []
+  const ledgerCompletedRaw = workspaceRes.data?.completedHandoffs ?? []
+  const completedBound = workspaceRes.data?.stats.completedHandoffsBound ?? COMPLETED_HANDOFFS_BOUND
+
+  const ownAgentId: string | null = agentRow?.id
+    ?? (await supabase.from('agents').select('id').eq('user_id', user.id).eq('brokerage_id', brokerageId).maybeSingle()).data?.id
+    ?? null
+
+  const uniq = (xs: (string | null | undefined)[]) => [...new Set(xs.filter((x): x is string => !!x))]
+  const allLedger = [...ledgerPendingRaw, ...ledgerCompletedRaw]
+  const ledgerUserIds = uniq(ledgerPendingRaw.map((h) => h.context_package.from_user_id))
+  const ledgerAgentIds = uniq(allLedger.map((h) => h.human_agent_id))
+  const ledgerLeadIds = uniq(allLedger.filter((h) => h.entity_type === 'lead').map((h) => h.entity_id))
+
+  // Every id → name lookup is anchored on the session brokerage. users.id and
+  // agents.id are disjoint classes (§3): from_user_id resolves against users,
+  // human_agent_id against agents (through agents.user_id → users for the name).
+  const [ledgerUsersRes, ledgerAgentsRes, ledgerLeadsRes] = await Promise.all([
+    ledgerUserIds.length
+      ? supabase.from('users').select('id, first_name, last_name').eq('brokerage_id', brokerageId).in('id', ledgerUserIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    ledgerAgentIds.length
+      ? supabase.from('agents').select('id, users(first_name, last_name)').eq('brokerage_id', brokerageId).in('id', ledgerAgentIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    ledgerLeadIds.length
+      ? supabase.from('leads').select('id, first_name, last_name, agent_id').eq('brokerage_id', brokerageId).in('id', ledgerLeadIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+  ])
+  for (const [lane, res] of [['users', ledgerUsersRes], ['agents', ledgerAgentsRes], ['leads', ledgerLeadsRes]] as const) {
+    if (res.error) console.error(`[isa console] ledger ${lane} name resolve refused:`, res.error.message)
+  }
+  const userNameById = new Map<string, string | null>((ledgerUsersRes.data ?? []).map((u: any) => [u.id, personName(u)]))
+  const agentNameById = new Map<string, string | null>(
+    (ledgerAgentsRes.data ?? []).map((a: any) => [a.id, personName(Array.isArray(a.users) ? a.users[0] : a.users)]),
+  )
+  const leadById = new Map<string, { name: string; agent_id: string | null }>(
+    (ledgerLeadsRes.data ?? []).map((l: any) => [l.id, { name: personName(l) ?? 'Lead', agent_id: l.agent_id ?? null }]),
+  )
+
+  const ledgerInScope = (h: { entity_id: string; human_agent_id: string | null }): boolean => {
+    if (leadVisibility.allowed && leadVisibility.scope.kind !== 'team') return true
+    if (leadVisibility.allowed && leadVisibility.scope.kind === 'team') {
+      const ids = leadVisibility.scope.agentIds
+      const leadAgent = leadById.get(h.entity_id)?.agent_id ?? null
+      return (!!h.human_agent_id && ids.includes(h.human_agent_id)) || (!!leadAgent && ids.includes(leadAgent))
+    }
+    return !!ownAgentId && h.human_agent_id === ownAgentId
+  }
+
+  const ledgerHandoffs: IsaLedgerHandoff[] = ledgerPendingRaw
+    .filter((h) => h.entity_type === 'lead' && ledgerInScope(h))
+    .map((h) => ({
+      id: h.id,
+      leadId: h.entity_id,
+      reason: h.handoff_reason,
+      issuedAt: h.created_at,
+      toAgentType: h.to_agent_type,
+      fromUserName: h.context_package.from_user_id ? (userNameById.get(h.context_package.from_user_id) ?? null) : null,
+      contactId: h.context_package.contact_id ?? null,
+      assignedAgentName: h.human_agent_id ? (agentNameById.get(h.human_agent_id) ?? null) : null,
+      assignedAgentId: h.human_agent_id,
+    }))
+  // Pending handoffs whose lead is not among the console's 50 most recently
+  // updated leads would otherwise be invisible — they are listed in the
+  // Handoff tab, not silently dropped.
+  const consoleLeadIds = new Set(records.map((r: any) => r.id))
+  const ledgerOffConsole = ledgerHandoffs.filter((h) => !consoleLeadIds.has(h.leadId))
+  const ledgerCompleted = ledgerCompletedRaw
+    .filter((h) => ledgerInScope(h))
+    .map((h) => ({
+      id: h.id,
+      leadName: h.entity_type === 'lead' ? (leadById.get(h.entity_id)?.name ?? 'Lead') : `${h.entity_type} ${h.entity_id.slice(0, 8)}`,
+      reason: h.handoff_reason,
+      toAgentType: h.to_agent_type,
+      assignedAgentName: h.human_agent_id ? (agentNameById.get(h.human_agent_id) ?? null) : null,
+      completedAt: h.completed_at,
+    }))
+
   const activeCampaigns = campaigns.filter((c: any) => c.status === 'active')
 
-  // Server-side VAPI config check — no client env leak required
-  const vapiConfigured = !!(process.env.VAPI_ISA_ASSISTANT_ID && process.env.VAPI_API_KEY)
+  // CAN THIS BROKERAGE ACTUALLY PLACE AN AI CALL? This probed
+  // VAPI_ISA_ASSISTANT_ID + VAPI_API_KEY — env vars for a vendor the voice lane
+  // retired, which placeOutboundAiCall never reads. One answer, from the gates
+  // the executor really enforces: lib/voice/isa-readiness.ts.
+  const callingReadiness = await resolveIsaCallingReadiness(supabase, brokerageId)
 
   // Calculate Qualification Radar metrics from real data
   const totalContacted = qualOutcomes.outcomes?.length || 0
@@ -380,19 +557,24 @@ export default async function AIISAOperationsConsolePage() {
         pendingDrafts={pendingDrafts}
         userId={user.id}
         brokerageId={brokerageId}
-        vapiConfigured={vapiConfigured}
+        ledgerHandoffs={ledgerHandoffs}
+        callingReady={callingReadiness.canPlaceAiCalls}
+        callingBlockedReason={callingReadiness.reason}
       />
 
-      {/* VAPI configuration warning — shown only when AI calling is not set up */}
-      {!vapiConfigured && (
-        <Alert variant="destructive" className="border-amber-300 bg-amber-50 text-amber-900 [&>svg]:text-amber-600">
+      {/* Shown only when AI calling genuinely cannot run, naming the one thing
+          the agent has to do — not a retired vendor's integration page. */}
+      {!callingReadiness.canPlaceAiCalls && (
+        <Alert className="border-amber-300 bg-amber-50 text-amber-900 [&>svg]:text-amber-600">
           <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>AI Calling Not Configured</AlertTitle>
+          <AlertTitle>AI calling isn&apos;t ready yet</AlertTitle>
           <AlertDescription>
-            VAPI is not configured. AI outbound calls will not execute.{' '}
-            <Link href="/settings/integrations" className="underline font-medium ml-1">
-              Configure in Admin Integrations →
-            </Link>
+            {callingReadiness.reason}{' '}
+            {callingReadiness.ctaHref && (
+              <Link href={callingReadiness.ctaHref} className="underline font-medium ml-1">
+                {callingReadiness.ctaLabel} →
+              </Link>
+            )}
           </AlertDescription>
         </Alert>
       )}
@@ -402,11 +584,17 @@ export default async function AIISAOperationsConsolePage() {
 
       {/* Main Tabs */}
       <Tabs defaultValue="handoff" className="w-full">
-        <TabsList className="grid w-full grid-cols-4 md:grid-cols-8 h-auto">
+        <TabsList className={`grid w-full grid-cols-4 ${canWorkRawLeads ? 'md:grid-cols-9' : 'md:grid-cols-8'} h-auto`}>
           <TabsTrigger value="handoff" className="flex items-center gap-1.5 text-xs py-2">
             <UserCheck className="h-3.5 w-3.5" />
             Handoff Queue
           </TabsTrigger>
+          {canWorkRawLeads && (
+            <TabsTrigger value="lead-queue" className="flex items-center gap-1.5 text-xs py-2">
+              <Users className="h-3.5 w-3.5" />
+              ISA Queue
+            </TabsTrigger>
+          )}
           <TabsTrigger value="voice-calls" className="flex items-center gap-1.5 text-xs py-2">
             <Mic className="h-3.5 w-3.5" />
             Voice Calls
@@ -443,13 +631,93 @@ export default async function AIISAOperationsConsolePage() {
         </TabsList>
 
         {/* Handoff Queue Tab - Qualified leads ready for agent */}
-        <TabsContent value="handoff" className="mt-4">
-          <HandoffQueuePanel
-            queue={handoffQueue}
-            brokerageId={brokerageId}
-            agentId={user.id}
-          />
+        <TabsContent value="handoff" className="mt-4 space-y-4">
+          {/* The LEDGER (agent_handoffs) — issued handoffs awaiting a human that
+              are not on a console card above, and the recently completed list.
+              The qualification queue below is the forecast; this is the record. */}
+          {ledgerOffConsole.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <UserCheck className="h-4 w-4 text-indigo-600" />
+                  Handoffs issued by the ISA, awaiting a human ({ledgerOffConsole.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {ledgerOffConsole.map((h) => (
+                  <div key={h.id} className="rounded border border-indigo-200 bg-indigo-50 p-2 text-xs space-y-0.5">
+                    <p className="font-medium text-indigo-900">
+                      {leadById.get(h.leadId)?.name ?? 'Lead'}
+                      <span className="font-normal text-indigo-700"> · issued {new Date(h.issuedAt).toLocaleString()}</span>
+                    </p>
+                    {h.reason && <p className="text-indigo-800">{h.reason}</p>}
+                    <p className="text-indigo-700">
+                      Handed off by {h.fromUserName ?? 'the AI-ISA'} ·{' '}
+                      {h.assignedAgentName ? `assigned to ${h.assignedAgentName}` : 'unassigned — route manually'}
+                    </p>
+                    <div className="flex gap-3">
+                      <Link href={`/leads/${h.leadId}`} className="text-indigo-700 underline">Open lead</Link>
+                      {h.contactId && (
+                        <Link href={`/crm?contact=${h.contactId}`} className="text-indigo-700 underline">Contact already on file</Link>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                Recently completed handoffs
+                <span className="text-xs font-normal text-muted-foreground">
+                  — showing {ledgerCompleted.length}, at most the last {completedBound}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {ledgerCompleted.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No completed handoffs in scope yet.</p>
+              ) : (
+                <ul className="divide-y">
+                  {ledgerCompleted.map((h) => (
+                    <li key={h.id} className="py-1.5 flex items-center justify-between gap-2 text-xs">
+                      <div className="min-w-0">
+                        <span className="font-medium">{h.leadName}</span>
+                        <span className="text-muted-foreground"> · {h.reason?.replace(/_/g, ' ') ?? 'handoff'}</span>
+                        {h.toAgentType && h.toAgentType !== 'human' && (
+                          <Badge variant="outline" className="text-[10px] ml-1">to {h.toAgentType.replace(/_/g, ' ')}</Badge>
+                        )}
+                        <span className="text-muted-foreground"> · {h.assignedAgentName ? `to ${h.assignedAgentName}` : 'unassigned'}</span>
+                      </div>
+                      <span className="text-muted-foreground shrink-0">
+                        {h.completedAt ? new Date(h.completedAt).toLocaleString() : 'completed (no timestamp)'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* `user.id` is a `users.id`, which is what every column the panel
+              writes actually FKs — this caller was already passing the right
+              VALUE under a prop name that claimed otherwise. Only the name
+              changed here; the sibling console at /dashboard/voice/isa was the
+              one passing an `agents.id`. */}
+          <HandoffQueuePanel queue={handoffQueue} />
         </TabsContent>
+
+        {/* ISA Queue Tab — the raw lead queue behind everything else on this
+            console: qualify, start/pause AI outreach, hand to a human agent,
+            and read the per-lead outreach history. Broker/admin/ISA only. */}
+        {canWorkRawLeads && (
+          <TabsContent value="lead-queue" className="mt-4">
+            <ISALeadQueuePanel />
+          </TabsContent>
+        )}
 
         {/* Voice Calls Tab — transcripts, intent, suggestions */}
         <TabsContent value="voice-calls" className="mt-4">
@@ -504,9 +772,9 @@ export default async function AIISAOperationsConsolePage() {
                 <CardContent className="py-12 text-center">
                   <Mic className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                   <p className="text-sm text-muted-foreground">No AI voice calls recorded yet.</p>
-                  {!vapiConfigured && (
-                    <Link href="/settings/integrations" className="text-xs text-indigo-600 underline mt-1 block">
-                      Configure VAPI to enable AI calling
+                  {!callingReadiness.canPlaceAiCalls && callingReadiness.ctaHref && (
+                    <Link href={callingReadiness.ctaHref} className="text-xs text-indigo-600 underline mt-1 block">
+                      {callingReadiness.ctaLabel} to enable AI calling
                     </Link>
                   )}
                 </CardContent>
@@ -653,10 +921,14 @@ export default async function AIISAOperationsConsolePage() {
                           </details>
                         )}
 
-                        {/* Recording link */}
-                        {call.recording_url && (
+                        {/* Recording link — recording_url holds the api.twilio.com
+                            media URL, which is behind HTTP Basic auth, so linking
+                            to it directly hands the agent a 401. Playback goes
+                            through the authenticated same-origin proxy, keyed by
+                            voice_calls.id. */}
+                        {call.recording_url ? (
                           <a
-                            href={call.recording_url}
+                            href={recordingPlaybackPath(call.id)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 text-xs text-indigo-600 hover:underline"
@@ -664,6 +936,8 @@ export default async function AIISAOperationsConsolePage() {
                             <Mic className="w-3 h-3" />
                             Listen to Recording
                           </a>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No recording for this call.</p>
                         )}
                       </CardContent>
                     </Card>

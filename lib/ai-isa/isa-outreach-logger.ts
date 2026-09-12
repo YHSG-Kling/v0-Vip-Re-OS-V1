@@ -4,6 +4,23 @@ import { CalendarEventType } from '@/lib/kernel/calendar-types'
 import { processKernelEvent } from '@/lib/kernel'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 
+// ── The touch cap, in ONE place ───────────────────────────────────────────────
+// `ai_isa_campaigns.max_touches` is what the governor below enforces. It carries
+// a DDL default of 5, and this constant is the same number so a campaign row
+// that predates the create-drawer wiring behaves identically to one that sets it
+// explicitly. The bounds exist because the value is broker-supplied: 0 would
+// suppress a campaign silently (it looks identical to "nobody replied"), and an
+// unbounded number is a harassment cap, not a cap.
+export const ISA_DEFAULT_MAX_TOUCHES = 5
+export const ISA_MIN_MAX_TOUCHES = 1
+export const ISA_MAX_MAX_TOUCHES = 20
+
+/** PURE: broker-supplied touch cap → the value the column may hold. */
+export function clampMaxTouches(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return ISA_DEFAULT_MAX_TOUCHES
+  return Math.min(ISA_MAX_MAX_TOUCHES, Math.max(ISA_MIN_MAX_TOUCHES, Math.round(value)))
+}
+
 // ── Entity discriminated union ────────────────────────────────────────────────
 export type Entity =
   | { entityType: 'lead'; leadId: string }
@@ -106,6 +123,79 @@ export async function logISAOutreach(params: {
     }), { table: 'isa_outreach_log', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
   }
 
+  // 3b. STAMP THE QUALIFICATION'S LAST TOUCH.
+  //
+  // `ai_isa_qualifications.last_outreach_at` was read by code and written by
+  // nobody (census 1b), and the reader does not degrade quietly: the lead
+  // lineage board's staleness test is
+  //
+  //     const lastTouch = …last_outreach_at… ; if (!lastTouch) return true
+  //     (app/dashboard/admin/lead-lineage/lead-lineage-client.tsx:127-131)
+  //
+  // so EVERY lead that had a qualification row was flagged STALE — including
+  // one the ISA had emailed minutes earlier. A board whose whole job is to show
+  // which leads are going cold was marking all of them cold.
+  //
+  // This is the moment the fact becomes known: a touch has just been sent. The
+  // stamp goes on the qualification rows for this entity (open or not — the
+  // column records when we last reached out, not whether we are still working
+  // it). Best-effort: the outreach itself is the deliverable, but a refusal is
+  // never silent, because a silent refusal is what the board was already
+  // showing.
+  {
+    const qualFilter = entityType === 'lead' ? 'lead_id' : 'contact_id'
+    const { error: touchErr } = await supabase
+      .from('ai_isa_qualifications')
+      .update({ last_outreach_at: now.toISOString() })
+      .eq('brokerage_id', params.brokerageId)
+      .eq(qualFilter, entityId)
+    if (touchErr) {
+      console.error('[ISA] last_outreach_at NOT stamped — the lineage board will read this lead as stale:', touchErr.message)
+    }
+  }
+
+  // 3c. ENGAGEMENT TRACKING — the provider job ids the feed reads back.
+  //
+  // `ai_isa_engagement_tracking.metadata` was read by code and written by nobody
+  // (census 1b): app/actions/ai-isa.ts:628-629 pulls `did_video_id` /
+  // `heygen_video_id` / `lob_letter_id` OUT of it for every row of the
+  // engagement feed, so the feed's video and direct-mail columns were blank on
+  // every row — and worse, no video or direct-mail send had ever landed an
+  // engagement row at all (the only four writers of that table are the
+  // email-only ghost-recovery actions), so those channels were invisible on the
+  // feed entirely. This function already receives both provider ids; this is
+  // where they become known.
+  //
+  // CONTACT ENTITIES ONLY: the feed is contact-keyed (it embeds
+  // `contacts (first_name, last_name)`), and the lead side already has its own
+  // ledger in `isa_outreach_log` above. Writing a lead id into contact_id would
+  // be the FK violation supabase-js resolves silently.
+  //
+  // `channel` is a live CHECK — {direct_mail, email, phone, sms, system, video}
+  // (scripts/check-vocabularies.ts:202) — and the caller's wider vocabulary is
+  // normalized onto it here for the same reason steps 2 and 3 normalize theirs:
+  // a value outside the CHECK is refused ENTIRELY, not partially.
+  if (entityType === 'contact') {
+    const ENGAGEMENT_CHANNEL: Record<string, string> = {
+      facebook: 'system', instagram: 'system', linkedin: 'system', twitter: 'system', social: 'system',
+    }
+    await sentinelWrite(supabase, supabase.from('ai_isa_engagement_tracking').insert({
+      brokerage_id: params.brokerageId,
+      contact_id:   entityId,
+      channel:      ENGAGEMENT_CHANNEL[params.channel] ?? params.channel,
+      event_type:   'sent',
+      event_at:     now.toISOString(),
+      // Only ids we actually hold. An absent provider id is omitted rather than
+      // stored as null, so `metadata.did_video_id` means "there is a video job"
+      // and its absence means "there is not" — never "we forgot to look".
+      metadata: {
+        ...(params.providerVideoId ? { did_video_id: params.providerVideoId } : {}),
+        ...(params.lobLetterId ? { lob_letter_id: params.lobLetterId } : {}),
+        source_channel: params.channel,
+      },
+    }), { table: 'ai_isa_engagement_tracking', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
+  }
+
   // 4. INSERT lifecycle_events — brokerage_id is NOT NULL (pass 5 live
   // catch): without it this insert ALWAYS failed and the ISA's outreach
   // never reached the lifecycle stream.
@@ -180,7 +270,7 @@ export async function checkMaxTouches(
     .limit(1)
     .maybeSingle()
 
-  const maxTouches = campaign?.max_touches ?? 5
+  const maxTouches = campaign?.max_touches ?? ISA_DEFAULT_MAX_TOUCHES
 
   if (touchCount >= maxTouches) {
     await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({

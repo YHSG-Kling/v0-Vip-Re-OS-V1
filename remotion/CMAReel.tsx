@@ -13,12 +13,15 @@
  * producer supply it). Charts are deterministic SVG (lib/charts/geometry).
  */
 import React from "react"
-import { AbsoluteFill, Sequence, useCurrentFrame, interpolate, Audio } from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion"
 import { PriceTrendLine } from "./charts/PriceTrendLine"
 import { CompsBar, type CompRow } from "./charts/CompsBar"
 import { DaysOnMarketBars } from "./charts/DaysOnMarketBars"
 import { AffordabilityDonut, type DonutSegmentInput } from "./charts/AffordabilityDonut"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 interface Brand {
   primaryColor:  string
@@ -42,6 +45,15 @@ export interface CMAReelProps {
   qrCodeDataUrl?: string | null
   qrCaption?:     string
   mlsClean?:      boolean
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL narration alignment — preferred. See CaptionLayer.
+   *  Unset today: cma-reel-orchestrator.ts stages a voiceoverUrl AUDIO track but no
+   *  narration TEXT (charts, not narration — see the tombstone there), so there is
+   *  nothing honest to caption from until a script exists upstream. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
 }
 
 const Slide: React.FC<{ from: number; durationInFrames: number; title: string; accent: string; children: React.ReactNode }> = ({
@@ -58,7 +70,7 @@ const SlideBody: React.FC<{ title: string; accent: string; children: React.React
   const op = interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ padding: 70, justifyContent: "flex-start" }}>
-      <div style={{ transform: `translateY(${titleY}px)`, opacity: op, marginBottom: 24 }}>
+      <div style={{ translate: `0 ${titleY}px`, opacity: op, marginBottom: 24 }}>
         <div style={{ width: 56, height: 6, background: accent, borderRadius: 3, marginBottom: 16 }} />
         <div style={{ color: "#fff", fontSize: 40, fontWeight: 800, fontFamily: "system-ui", letterSpacing: -0.5 }}>{title}</div>
       </div>
@@ -115,6 +127,15 @@ export const CMAReel: React.FC<CMAReelProps> = (props) => {
           {brand.showEhoMark && <span>Equal Housing Opportunity</span>}
         </div>
       </AbsoluteFill>
+
+      {/* NO CAPTION OVER THE CTA/QR TILE (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA slide at frame 690. */}
+      <CaptionLayer
+        cues={props.captionsCues}
+        script={props.captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={690}
+      />
     </AbsoluteFill>
   )
 }

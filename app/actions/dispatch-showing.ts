@@ -7,7 +7,9 @@
  * Routing (all egress goes through the connector-gateway, never bespoke fetch):
  *   - channel='showingtime' → ShowingTime API; key resolved via the unified
  *                             ownership cascade (resolveScopedConnection)
- *   - channel='sms'         → Twilio (integration_credentials) / agent deep-link
+ *   - channel='sms'         → the ONE SMS resolution (resolveSMSProviderForActor:
+ *                             overrides → ownership cascade → tenant number → env)
+ *                             / agent deep-link fallback
  *   - channel='email'       → agent Gmail/Outlook OAuth → SendGrid → mailto
  *
  * If the brokerage doesn't have credentials for the chosen channel, returns
@@ -17,8 +19,9 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { resolveSMSProviderForActor } from "@/lib/providers/messaging/resolve-sms-provider"
 import {
   dispatchViaShowingTime, dispatchViaSms, dispatchViaEmail,
   type DispatchChannel, type DispatchResult,
@@ -38,8 +41,8 @@ export interface DispatchStopSchedulingResult extends DispatchResult {
 export async function dispatchStopScheduling(
   input: DispatchStopSchedulingInput,
 ): Promise<DispatchStopSchedulingResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return {
       success: false, error: "Unauthorized",
       providerRef: null, draft: { to: "", body: "" }, sent: false,
@@ -146,17 +149,36 @@ export async function dispatchStopScheduling(
     const apiKey = conn?.apiKey ?? process.env.SHOWINGTIME_API_KEY ?? null
     result = await dispatchViaShowingTime(dispatchCtx, apiKey)
   } else if (input.channel === "sms") {
-    const [accountSid, authToken, fromNumber] = await Promise.all([
-      loadBrokerageCredential(supabase, ctx.brokerageId, "twilio", "account_sid"),
-      loadBrokerageCredential(supabase, ctx.brokerageId, "twilio", "auth_token"),
-      loadBrokerageCredential(supabase, ctx.brokerageId, "twilio", "from_number"),
-    ])
-    const twilio = (accountSid && authToken && fromNumber)
-      ? { accountSid, authToken, fromNumber }
-      : null
+    // REPOINTED onto the SURVIVOR — see the tombstone where loadBrokerageCredential
+    // used to be. resolveSMSProviderForActor is the one SMS credential resolution in
+    // the tree: it walks provider_overrides (user → team → brokerage), then the
+    // unified ownership cascade, then the platform-managed tenant number, then env.
+    // It THROWS when nothing is configured, which is the honest answer and is exactly
+    // what the manual deep-link fallback below is for.
+    const teamId = await loadTeamId(supabase, ctx.userId)
+    const twilio = await resolveSMSProviderForActor({
+      brokerageId: ctx.brokerageId,
+      userId:      ctx.userId ?? null,
+      teamId,
+    })
+      .then((r) =>
+        r.credentials.apiKey && r.credentials.apiSecret && r.credentials.fromNumber
+          ? { accountSid: r.credentials.apiKey, authToken: r.credentials.apiSecret, fromNumber: r.credentials.fromNumber }
+          : null,
+      )
+      .catch(() => null)
     result = await dispatchViaSms(dispatchCtx, twilio)
   } else {
-    const sendgridKey = await loadBrokerageCredential(supabase, ctx.brokerageId, "sendgrid", "api_key") ?? process.env.SENDGRID_API_KEY ?? null
+    // Same cascade the ShowingTime branch above already used. The old private
+    // loader read integration_credentials directly, which is the LAST tier of
+    // that cascade and skipped the agent's/team's own SendGrid key entirely.
+    const teamId = await loadTeamId(supabase, ctx.userId)
+    const sendgridConn = await resolveScopedConnection("sendgrid", {
+      agentUserId: ctx.userId ?? null,
+      teamId,
+      brokerageId: ctx.brokerageId,
+    })
+    const sendgridKey = sendgridConn?.apiKey ?? process.env.SENDGRID_API_KEY ?? null
     // Pass agentUserId so the email dispatcher tries the agent's connected
     // Gmail/Outlook OAuth account first (sends from their real address +
     // replies threads in their inbox).
@@ -194,33 +216,32 @@ async function loadTeamId(
   }
 }
 
-async function loadBrokerageCredential(
-  supabase: ReturnType<typeof createServiceClient>,
-  brokerageId: string,
-  provider: string,
-  field: string,
-): Promise<string | null> {
-  try {
-    // integration_credentials stores discrete columns (api_key/api_secret/webhook_url),
-    // not a `credentials` jsonb, and keys by provider_name. Map the requested field;
-    // fields with no real column (e.g. twilio from_number) return null → caller falls
-    // back to env/manual send.
-    const { data } = await supabase
-      .from("integration_credentials")
-      .select("api_key, api_secret, webhook_url")
-      .eq("brokerage_id", brokerageId)
-      .eq("provider_name", provider)
-      .maybeSingle()
-    if (!data) return null
-    const map: Record<string, string | null> = {
-      api_key: data.api_key,
-      account_sid: data.api_key,
-      api_secret: data.api_secret,
-      auth_token: data.api_secret,
-      webhook_url: data.webhook_url,
-    }
-    return map[field] ?? null
-  } catch {
-    return null
-  }
-}
+// ─── TOMBSTONE — `loadBrokerageCredential` (wave 14) ─────────────────────────
+//
+// SURVIVORS:
+//   SMS   lib/providers/messaging/resolve-sms-provider.ts:76 resolveSMSProviderForActor
+//   key   lib/connections/resolve-scoped.ts resolveScopedConnection (already used
+//         by the ShowingTime branch twenty lines above this one)
+//
+// DELETED AS A DUPLICATE, AND IT COULD NEVER HAVE WORKED. It read the Twilio pair
+// out of `integration_credentials.api_secret`, a column NOTHING in the tree writes
+// (the writerless-read census found it at :209), and asked that same table for
+// `from_number`, which is not a column on it AT ALL — the map returned null for it
+// unconditionally. Since the SMS branch required all three to be non-null, the
+// `twilio` object was ALWAYS null and this dispatcher has never once sent an SMS
+// through a provider; every call silently took the manual deep-link fallback.
+//
+// Meanwhile the credential it was looking for HAS a writer and a form, in a
+// different shape: app/actions/phone-connect.ts:33 connectPhoneAction and
+// app/actions/connections/connection-center.ts:215 connectApiKeyProvider both write
+// `platform_credentials` with api_key = Account SID, config.auth_token and
+// config.from_number — the exact three fields this needed. So this was not a
+// missing writer; it was a second reader pointed at the wrong store.
+//
+// Building the missing api_secret WRITER for this reader would have been the wrong
+// repair: it would have created a SECOND place a brokerage's Twilio credentials
+// live, and the one the actual send path (sendSMS) reads would still be the other
+// one. Merged onto the survivor instead, per CLAUDE.md §1.1.
+//
+// The api_secret COLUMN is not orphaned by this deletion — connection-manager.ts
+// still reads it for both legacy stores, and connectCrmAction now writes it.

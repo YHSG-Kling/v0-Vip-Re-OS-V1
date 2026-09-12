@@ -11,9 +11,14 @@
  *   • sphere-weekly       Sun 22:00 UTC (sphere opportunities ready)
  *   • campaign-orchestrator-weekly Mon 07:00 UTC (1:1 contact plan ready)
  *
- * The marketing_agent reads BOTH of the above as inputs (no overlap; this
- * agent owns the 1:many brand lane only). Spawn is idempotent via the
- * spawn-helper's unique-active session guard.
+ * This job reads BOTH of the above as inputs (no overlap; it owns the 1:many
+ * brand lane only). Spawn is idempotent via the spawn-helper's unique-active
+ * session guard. m618: the MANAGER accountable for this lane is now
+ * campaign_orchestrator (retired ManagerKey "marketing_agent" — owner: "we
+ * don't have a marketing agent manager"); the spawned session still runs
+ * under managed_agents.agent_kind='marketing_agent' as a distinct
+ * EXECUTION-identity from campaign-orchestrator-weekly's own session — see
+ * lib/agents/marketing-agent.ts's header comment for why that stays split.
  *
  * Auth: CRON_SECRET.
  */

@@ -16,6 +16,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { timelineLabel } from "@/constants/crm-standards"
 
 export interface IsaHandoffBrief {
   generatedAt: string
@@ -226,7 +227,7 @@ export async function generateAndStoreHandoffBrief(params: {
   const motivationLabel = (lead.motivation_type ?? "").replace(/_/g, " ").trim()
   const summary =
     motivationLabel && lead.timeline
-      ? `${fullName} — ${motivationLabel}, ${lead.timeline}`
+      ? `${fullName} — ${motivationLabel}, ${timelineLabel(lead.timeline)}`
       : motivationLabel
       ? `${fullName} — ${motivationLabel}`
       : `${fullName} — qualified by ISA`
@@ -244,7 +245,10 @@ export async function generateAndStoreHandoffBrief(params: {
       detail: (qualRow as { notes: string | null } | null)?.notes ?? null,
     },
     timeline: {
-      label: lead.timeline,
+      // The canonical bucket label (constants/crm-standards.ts TIMELINE_LABELS) — this field is
+      // rendered verbatim by the qualification summary card, and it used to carry the raw DB
+      // value ("1-3_months"). `raw` keeps the stored value for anything that parses it.
+      label: timelineLabel(lead.timeline),
       months: parseTimelineMonths(lead.timeline),
       raw: lead.timeline,
     },

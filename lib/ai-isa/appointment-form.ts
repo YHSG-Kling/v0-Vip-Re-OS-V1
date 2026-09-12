@@ -13,7 +13,10 @@ export const APPOINTMENT_TYPES = [
   { value: 'phone_followup', label: 'Phone Follow-up', defaultMinutes: 20 },
 ] as const
 
-export type AppointmentTypeValue = (typeof APPOINTMENT_TYPES)[number]['value']
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `AppointmentTypeValue`
+// deleted — no consumer ever named it; callers pass strings and
+// defaultDurationMinutes below deliberately accepts any string with a safe
+// fallback. Re-derive from APPOINTMENT_TYPES when a typed consumer arrives.
 
 export function defaultDurationMinutes(type: string): number {
   const found = APPOINTMENT_TYPES.find((t) => t.value === type)

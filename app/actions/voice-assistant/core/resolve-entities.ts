@@ -137,7 +137,8 @@ async function resolveContactName(
   // Query contacts
   let query = supabase
     .from('contacts')
-    .select('id, first_name, last_name, email')
+    // agent_id is selected so the speaker's own book can break a tie below.
+    .select('id, first_name, last_name, email, agent_id')
     .eq('brokerage_id', brokerageId)
 
   // Match first name
@@ -163,11 +164,42 @@ async function resolveContactName(
 
   // Multiple matches - require disambiguation
   if (contacts.length > 1) {
+    // `userId` WAS ACCEPTED BY THIS FUNCTION AND READ BY NOTHING until 2026-08-24 —
+    // its sibling `resolveAddress` does not even take one — so a spoken "call Sarah"
+    // was matched against EVERY Sarah in the brokerage and the speaker was asked to
+    // disambiguate between contacts that were never theirs. The speaker's own book is
+    // the obvious tiebreak, and it is the only thing `userId` is here to provide.
+    //
+    // agents.id and users.id are DISJOINT (CLAUDE.md §3) — the crossing is
+    // agents.user_id, and contacts.agent_id FKs agents.id. A refused or empty agent
+    // lookup falls through to the brokerage-wide question rather than guessing.
+    let ownMatches: any[] = []
+    if (userId) {
+      const { data: agentRow, error: agentError } = await supabase
+        .from('agents')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('brokerage_id', brokerageId)
+        .maybeSingle()
+      if (agentError) {
+        console.warn('[resolve-entities] agent lookup refused; disambiguating brokerage-wide:', agentError.message)
+      } else if (agentRow?.id) {
+        ownMatches = contacts.filter((c: any) => c.agent_id === agentRow.id)
+      }
+    }
+
+    if (ownMatches.length === 1) {
+      return { success: true, contact_id: ownMatches[0].id }
+    }
+
+    const options = ownMatches.length > 1 ? ownMatches : contacts
     return {
       success: false,
       requires_clarification: true,
-      disambiguation_options: contacts.map((c: any) => `${c.first_name} ${c.last_name} (${c.email || 'no email'})`),
-      clarification_message: `I found ${contacts.length} contacts matching "${name}". Which one did you mean?`
+      disambiguation_options: options.map((c: any) => `${c.first_name} ${c.last_name} (${c.email || 'no email'})`),
+      clarification_message: ownMatches.length > 1
+        ? `I found ${options.length} of your contacts matching "${name}". Which one did you mean?`
+        : `I found ${options.length} contacts matching "${name}". Which one did you mean?`
     }
   }
 

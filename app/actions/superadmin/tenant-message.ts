@@ -149,7 +149,11 @@ export async function draftTenantAdminMessageAction(params: {
     loadProductBrand(svc),
     svc.from("brokerages").select("name, plan_tier, status, created_at").eq("id", params.brokerageId).maybeSingle(),
     svc.from("users").select("first_name, last_name, user_type, brokerage_id").eq("id", params.targetUserId).maybeSingle(),
-    svc.from("support_tickets").select("subject, status").eq("brokerage_id", params.brokerageId).order("updated_at", { ascending: false }).limit(3),
+    // LANE-FILTERED: this brief is what the PLATFORM knows about this tenant, and
+    // the platform's knowledge of a tenant's support is its tenant_to_platform
+    // tickets. A brokerage's internal agent/vendor tickets are not the platform's
+    // to summarise back at it.
+    svc.from("support_tickets").select("subject, status").eq("brokerage_id", params.brokerageId).eq("lane", "tenant_to_platform").order("updated_at", { ascending: false }).limit(3),
     svc.from("platform_sentinel_actions").select("title, status").eq("brokerage_id", params.brokerageId).order("created_at", { ascending: false }).limit(3),
   ])
   if (!target || (target as any).brokerage_id !== params.brokerageId) {

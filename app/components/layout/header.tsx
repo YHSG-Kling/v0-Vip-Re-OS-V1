@@ -1,6 +1,5 @@
 'use client'
 
-import React from 'react'
 import { Button } from '@/components/ui/button'
 import { NavigationConfig } from '@/app/types/navigation'
 import { UserContext } from '@/app/types/roles'

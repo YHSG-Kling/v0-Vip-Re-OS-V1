@@ -9,7 +9,6 @@ import {
   Activity,
   Heart,
   TrendingUp,
-  DollarSign,
   ChevronRight,
 } from "lucide-react"
 

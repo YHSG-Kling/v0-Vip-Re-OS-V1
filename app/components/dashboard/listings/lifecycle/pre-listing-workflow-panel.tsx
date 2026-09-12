@@ -22,9 +22,26 @@ interface PreListingWorkflowPanelProps {
   currentStage: string
   vendorBookings: { service_type: string | null; status: string }[]
   tasks: { title: string; status: string }[]
+  /**
+   * RECORDED lifecycle activity_types for this listing. Two of these steps used
+   * to be inferred by string-matching — a repair counted as done if some vendor
+   * booking's service_type contained "repair" OR some task TITLE contained the
+   * word, and photography counted as ordered on the same kind of guess. That
+   * asserted things to the agent that had never been recorded anywhere, while
+   * the recorders that would have made them true had no caller. A recorded fact
+   * now wins; the old inference is kept only as a fallback for listings that
+   * pre-date the recording UI, and a step resting on it says so.
+   */
+  recordedEvents?: string[]
   goLiveDate?: string | null
-  /** Show "Go Live on MLS" CTA when all steps complete */
-  onGoLiveMls?: () => void
+  // TOMBSTONE (hidden-wire census category c, 2026-09-10): `onGoLiveMls?: () => void` stood
+  // here — declared, never passed by the one caller (app/dashboard/listings/[id]/lifecycle/
+  // page.tsx), and not even destructured in this component's own params, so the "All Steps
+  // Complete — Go Live on MLS" CTA below just linked back to this same lifecycle page (a dead
+  // self-link). The real go-live action already lives at LaunchActionsPanel's "Launch Listing
+  // Campaign" button (app/dashboard/listings/[id]/components/launch/launch-actions-panel.tsx:102,
+  // `/dashboard/listings/${listingId}/marketing-tier`) — SURVIVOR. This CTA now links there
+  // instead of duplicating a second go-live mechanism.
 }
 
 const PRE_LISTING_STAGES = new Set([
@@ -40,8 +57,10 @@ export function PreListingWorkflowPanel({
   currentStage,
   vendorBookings,
   tasks,
+  recordedEvents = [],
   goLiveDate,
 }: PreListingWorkflowPanelProps) {
+  const recorded = (type: string) => recordedEvents.includes(type)
   if (!PRE_LISTING_STAGES.has(currentStage)) return null
 
   const hasVendor = (type: string) =>
@@ -92,14 +111,18 @@ export function PreListingWorkflowPanel({
     {
       id: "repairs_completed",
       label: "Repairs Completed",
-      description: "TC coordinates all required repairs from inspection",
-      completed: hasCompletedVendor("repair") || hasTask("repair"),
+      description: recorded("seller.repair.completed")
+        ? "Recorded complete on this listing"
+        : "TC coordinates all required repairs from inspection",
+      completed: recorded("seller.repair.completed") || hasCompletedVendor("repair") || hasTask("repair"),
     },
     {
       id: "photography_ordered",
       label: "Photography Ordered",
-      description: "Professional photos + video scheduled by TC",
-      completed: hasVendor("photo") || hasVendor("photograph"),
+      description: recorded("seller.media.captured")
+        ? "Shoot recorded as delivered"
+        : "Professional photos + video scheduled by TC",
+      completed: recorded("seller.media.captured") || hasVendor("photo") || hasVendor("photograph"),
       actionHref: `/dashboard/vendors`,
       actionLabel: "Book Photographer",
     },
@@ -188,7 +211,7 @@ export function PreListingWorkflowPanel({
         {allComplete && (
           <div className="mt-3 pt-3 border-t">
             <Button asChild className="w-full gap-2">
-              <Link href={`/dashboard/listings/${listingId}/lifecycle`}>
+              <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
                 <CheckCircle2 className="h-4 w-4" />
                 All Steps Complete — Go Live on MLS
               </Link>

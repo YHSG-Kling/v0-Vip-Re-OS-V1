@@ -15,13 +15,15 @@ import {
   saveFormDraft,
   loadFormDraft,
   launchEsignEnvelope,
-  getEsignStatus,
-  syncEsignDocuments,
   recordBuyerPropertyAction,
   loadBuyerSavedProperties,
   type FormContextType,
   type BuyerPropertyInterestLevel,
 } from "@/lib/kernel/forms"
+import {
+  syncTransactionDocumentsFromProvider,
+  syncListingDocumentsFromProvider,
+} from "@/lib/transactions/sync-from-provider"
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 
@@ -145,38 +147,82 @@ export async function launchEsignAction(input: {
   })
 }
 
-// ─── ACTION: getEsignStatusAction ───────────────────────────────────────────
-
-export async function getEsignStatusAction(input: {
-  external_transaction_id: string
-}) {
-  const ctx = await resolveActorContext()
-  if (!ctx) return { success: false, error: "Unauthorized" }
-
-  return getEsignStatus({
-    brokerage_id:            ctx.brokerage_id,
-    external_transaction_id: input.external_transaction_id,
-  })
-}
+// ─── (REMOVED) getEsignStatusAction ─────────────────────────────────────────
+//
+// DELETED as an exact duplicate. The signature-status capability lives entirely
+// in lib/kernel/forms.ts:getEsignStatus; this action was a pass-through that
+// resolved the actor (session -> agents.brokerage_id) and delegated. The SAME
+// kernel function is already reached, with the SAME actor resolution, by
+//   app/api/esign/status/[transactionId]/route.ts:GET
+// which is the wired path: app/components/forms/EsignStatusTracker.tsx polls it
+// via SWR and is mounted at app/portal/[contactId]/offers/page.tsx. The route is
+// the more complete copy — identical inputs plus HTTP status semantics (401/403/
+// 500) and a live polling contract. Nothing had to be ported: the deleted body
+// held no logic of its own, only the delegating call.
 
 // ─── ACTION: syncEsignDocs ───────────────────────────────────────────────────
+//
+// WIRED (orphan doctrine §1.2, this lane — m614). This wrapper used to delegate
+// to lib/kernel/forms.ts:syncEsignDocuments, which FETCHES the provider's
+// document list and explicitly does NOT write to DB — so calling this action
+// could show documents once and never persist them, and the identical capability
+// already lived, WRITING, in lib/transactions/sync-from-provider.ts. That
+// duplication is why the prior pass left this wrapper unwired rather than
+// pointing it at a dead end: the one thing it had that the writer did not was
+// listing_id scoping for a pre-contract packet (a listing agreement or seller
+// disclosure sent before any `transactions` row exists), and porting that
+// required a schema this table did not have (transaction_id NOT NULL, no
+// listing_id, no provider-tracking columns on `listings`) — recorded as
+// "needs schema change" and left for m614 to supply.
+//
+// Now that m614 exists (written, not applied — CLAUDE.md §3) and
+// lib/transactions/sync-from-provider.ts carries the listing twin
+// (syncListingDocumentsFromProvider), this action is a THIN CALLER of whichever
+// persisting core matches its input — never the fetch-only kernel function,
+// which is now gone (tombstone at its former home, lib/kernel/forms.ts,
+// naming this file as one of its two survivors). transaction_id wins when both
+// are supplied, matching the two-lane split m614's CHECK constraint enforces
+// (a document row names ONE parent). The same two cores are what
+// /api/cron/esign-doc-sync (CRON_REGISTRY, deal_coordinator) calls on a
+// schedule, so a click here and an autonomous sweep run the identical path —
+// one vocabulary (§6), not two.
+//
+// external_transaction_id is no longer read: both cores resolve the provider's
+// envelope id from the DATABASE ROW (transactions.external_provider_transaction_id
+// / listings.external_provider_transaction_id, with the transaction lane's
+// offers-linked fallback), never from caller input — the same posture as every
+// tenant boundary in this file (brokerage_id from ctx, never from `input`). The
+// parameter stays on the input type so an existing caller does not fail to
+// compile; passing it is a no-op.
 
 export async function syncEsignDocsAction(input: {
-  external_transaction_id: string
-  contact_id:              string
-  transaction_id?:         string
-  listing_id?:             string
+  external_transaction_id?: string
+  contact_id:               string
+  transaction_id?:          string
+  listing_id?:              string
 }) {
   const ctx = await resolveActorContext()
   if (!ctx) return { success: false, error: "Unauthorized" }
 
-  return syncEsignDocuments({
-    brokerage_id:            ctx.brokerage_id,
-    external_transaction_id: input.external_transaction_id,
-    contact_id:              input.contact_id,
-    transaction_id:          input.transaction_id,
-    listing_id:              input.listing_id,
-  })
+  if (input.transaction_id) {
+    const result = await syncTransactionDocumentsFromProvider({
+      brokerageId:   ctx.brokerage_id,
+      transactionId: input.transaction_id,
+      contactId:     input.contact_id,
+    })
+    return { success: result.ok, synced: result.synced, skipped: result.skipped, error: result.error }
+  }
+
+  if (input.listing_id) {
+    const result = await syncListingDocumentsFromProvider({
+      brokerageId: ctx.brokerage_id,
+      listingId:   input.listing_id,
+      contactId:   input.contact_id,
+    })
+    return { success: result.ok, synced: result.synced, skipped: result.skipped, error: result.error }
+  }
+
+  return { success: false, error: "syncEsignDocsAction requires either transaction_id or listing_id" }
 }
 
 // ─── ACTION: recordPropertyAction (buyer portal server action) ───────────────
@@ -277,7 +323,39 @@ export async function getFormFieldsAction(formId: string): Promise<{
     .or(`brokerage_id.eq.${ctx.brokerage_id},brokerage_id.is.null`)
     .maybeSingle()
 
-  if (!form) return { success: false, error: "Form not found" }
+  // The agent-visible template list merges broker-uploaded library forms
+  // (brokerage_form_library) alongside brokerage_forms, so a form id may point
+  // at either table. If it isn't a brokerage_forms row, resolve it from the
+  // library — otherwise those forms hang forever on "Loading form fields…".
+  if (!form) {
+    const { data: libForm } = await supabase
+      .from("brokerage_form_library")
+      .select("field_schema, packet_type")
+      .eq("id", formId)
+      .or(`brokerage_id.eq.${ctx.brokerage_id},brokerage_id.is.null`)
+      .maybeSingle()
+
+    if (!libForm) return { success: false, error: "Form not found" }
+
+    // Library forms store field_schema as a text[] of field-LABEL strings
+    // (what the admin PDF-upload captures), not FormFieldDef objects. Lift each
+    // label into a real FormFieldDef so the renderer gets the shape it expects.
+    const libLabels = (libForm.field_schema as unknown as string[] | null) ?? []
+    const libFields: FormFieldDef[] = libLabels
+      .filter((l) => typeof l === "string" && l.trim().length > 0)
+      .map((label): FormFieldDef => ({
+        key: label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""),
+        label: label.trim(),
+        type: "text",
+        section: "Fields",
+      }))
+    if (libFields.length > 0) {
+      return { success: true, fields: libFields }
+    }
+    const libCategory = (libForm.packet_type ?? "").toLowerCase().replace(/\s+/g, "_")
+    const libDefaults = CATEGORY_DEFAULT_FIELDS[libCategory] ?? CATEGORY_DEFAULT_FIELDS.purchase_agreement
+    return { success: true, fields: libDefaults }
+  }
 
   const schema = form.field_schema as FormFieldDef[] | null
   if (schema && Array.isArray(schema) && schema.length > 0) {
