@@ -1233,21 +1233,35 @@ export function estimateAvatarRenderCostUsd(script: string): number {
   return Math.round(usd * 10000) / 10000
 }
 
-// ─── Live D-ID Agents streaming minutes (wave 60, live-agent-provider- ───────
-// recommendation-2026-09.md §3.1/§5) ────────────────────────────────────────
+// ─── Live D-ID Agents streaming minutes (wave 60/61, live-agent-provider- ────
+// recommendation-2026-09.md §2/§3.1/§5) ─────────────────────────────────────
 //
 // DIFFERENT LEG FROM THE RENDER ABOVE. `estimateAvatarRenderCostUsd` prices a
 // one-shot /talks or /clips or /expressives RENDER (async avatar video).
 // D-ID's Agents/streams product — the LIVE conversational avatar this OS runs
 // on portal/embed/site (lib/did/agents.ts, app/api/did/agents/session,
-// app/api/embed/session) — is a WebRTC session billed per STREAMING MINUTE,
-// a separate D-ID product line with its own rate. Blended 2026 third-party
-// estimate (docs/live-agent-provider-recommendation-2026-09.md §2/§5 — D-ID's
-// own per-plan streaming-minute rate is not published anywhere
-// machine-readable, so this is explicitly NOT a contract rate): ~$0.35/min.
+// app/api/embed/session) — is a WebRTC session billed per STREAMING MINUTE
+// out of the same credit balance.
+//
+// WAVE 61: the owner supplied D-ID's OFFICIAL API pricing page
+// (https://www.d-id.com/pricing/api/, 2026-09-12). The plan table (mirrored
+// verbatim by the 2026-09-07 Spatius breakdown because the page renders
+// client-side): Build $18/mo = 64 credits; Launch $50/$99/$149 = 180/360/540;
+// Scale $198/$248/$297 = 800/1,000/1,200; Enterprise custom. ONE CREDIT = 15 s
+// of offline video or 30 s of streaming (streaming is half the offline rate);
+// credits renew monthly and unused credits are VOID. The metering rate is
+// therefore DERIVED, not guessed: the Scale 1,200-credit monthly plan at full
+// utilization — $297 / 600 streaming minutes = $0.495/min. Annual billing
+// ($207.90/mo) makes it ≈ $0.35; low utilization makes it HIGHER, because the
+// credits expire. Until the contract tier is known this is the rate booked to
+// the tenant (§5: platform pays, tenant is metered — overestimating is the
+// safer wrong).
 // ONE constant (§6) — never re-guess this inline; the vocabulary of "what a
 // live D-ID minute costs" lives here, next to the render-second rate above.
-export const DID_USD_PER_STREAMING_MINUTE = 0.35
+export const DID_SCALE_MONTHLY_PLAN_USD = 297
+export const DID_SCALE_MONTHLY_STREAMING_MINUTES = 600
+export const DID_USD_PER_STREAMING_MINUTE =
+  Math.round((DID_SCALE_MONTHLY_PLAN_USD / DID_SCALE_MONTHLY_STREAMING_MINUTES) * 10000) / 10000
 
 /**
  * PURE: seconds rounded UP to the nearest 15s, the increment D-ID's own
@@ -1260,8 +1274,8 @@ export function roundUpToNearest15Seconds(seconds: number): number {
   return Math.ceil(seconds / 15) * 15
 }
 
-/** PURE: USD for `seconds` of live D-ID Agents streaming, at the list-rate
- *  blended estimate above. Seconds are rounded up to the nearest 15s first. */
+/** PURE: USD for `seconds` of live D-ID Agents streaming, at the official
+ *  plan-derived rate above. Seconds are rounded up to the nearest 15s first. */
 export function estimateStreamingMinutesCostUsd(seconds: number): number {
   const minutes = roundUpToNearest15Seconds(seconds) / 60
   return Math.round(minutes * DID_USD_PER_STREAMING_MINUTE * 10000) / 10000

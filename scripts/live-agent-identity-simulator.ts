@@ -58,7 +58,7 @@ import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import { CRON_MANAGER } from "../lib/kernel/manager-registry"
-import { DID_USD_PER_STREAMING_MINUTE, roundUpToNearest15Seconds, estimateStreamingMinutesCostUsd } from "../lib/video/realism-profile"
+import { DID_SCALE_MONTHLY_PLAN_USD, DID_SCALE_MONTHLY_STREAMING_MINUTES, DID_USD_PER_STREAMING_MINUTE, roundUpToNearest15Seconds, estimateStreamingMinutesCostUsd } from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const readStripped = (rel: string): string => stripComments(readFileSync(join(root, rel), "utf8"))
@@ -333,19 +333,22 @@ function identitySection() {
 // ═══════════════════════════════════════════════════════════════════════════
 function pureMathSection() {
   console.log("\n── §pureMath — round-up-to-15s + streaming-minute cost, exercised directly ──")
-  check("DID_USD_PER_STREAMING_MINUTE is the documented 2026 blended estimate (0.35)",
-    DID_USD_PER_STREAMING_MINUTE === 0.35)
+  // DERIVED, NOT PINNED (§2): the rate is the official Scale-monthly plan at
+  // full utilization (wave 61, d-id.com/pricing/api) — assert the derivation,
+  // not a literal that goes stale the day the contract tier is known.
+  check("DID_USD_PER_STREAMING_MINUTE derives from the official plan table (Scale monthly $ / streaming minutes)",
+    DID_USD_PER_STREAMING_MINUTE === Math.round((DID_SCALE_MONTHLY_PLAN_USD / DID_SCALE_MONTHLY_STREAMING_MINUTES) * 10000) / 10000
+      && DID_SCALE_MONTHLY_STREAMING_MINUTES > 0 && DID_USD_PER_STREAMING_MINUTE > 0.3 && DID_USD_PER_STREAMING_MINUTE < 1)
   check("61s rounds UP to 75s (1.25 min) — the tail is never undercounted",
     roundUpToNearest15Seconds(61) === 75)
   check("exactly 60s stays 60s (no phantom rounding on an exact boundary)",
     roundUpToNearest15Seconds(60) === 60)
   check("0/negative seconds floor to 0 (never a negative or NaN minute billed)",
     roundUpToNearest15Seconds(0) === 0 && roundUpToNearest15Seconds(-5) === 0)
-  check("estimateStreamingMinutesCostUsd(75s) = 1.25min × $0.35 = $0.4375",
-    estimateStreamingMinutesCostUsd(75) === 0.4375)
+  check("estimateStreamingMinutesCostUsd(75s) = 1.25 min × the one rate (derived, never a literal)",
+    estimateStreamingMinutesCostUsd(75) === Math.round(1.25 * DID_USD_PER_STREAMING_MINUTE * 10000) / 10000)
 
-  // CONTROL: a rate that is NOT 0.35 would fail the first check — proving the
-  // constant is actually read from the module, not hardcoded in this test.
+  // CONTROL: the constant is read from the module, not hardcoded in this test.
   const renderSecondRate: number = 0.05
   check("[control] the constant is not accidentally the render-second rate (0.05) misapplied here",
     (DID_USD_PER_STREAMING_MINUTE as number) !== renderSecondRate)
