@@ -116,6 +116,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
           overlayColor={overlay}
           loop
           filmGrain
+          handheldDrift
         />
       )}
 

@@ -89,6 +89,16 @@ function check(name: string, cond: boolean, detail?: string): boolean {
 const STUBS: Record<string, string> = {
   "@/lib/supabase/server":
     "export const createClient = (...a) => globalThis.__SCF.createClient(...a)",
+  // lib/video/script-compliance.ts's Gate 1 block now reaches brand voice
+  // through the ONE cascade (lib/ai-isa/brand-voice-prompt.ts
+  // loadBrandVoicePrompt), which reads through its OWN `createServiceClient()`
+  // — SYNCHRONOUS, unlike the session `createClient()` above — rather than
+  // `@/lib/supabase/server`. Without this stub the cascade would reach the
+  // REAL Supabase service client (real env creds, real network), which is
+  // exactly what this simulator exists to avoid: BEHAVIOUR FIRST against a
+  // world this file controls, not a live database.
+  "@/lib/supabase/service":
+    "export const createServiceClient = (...a) => globalThis.__SCF.createServiceClient(...a)",
   "@/lib/kernel/compliance":
     "export const evaluateOutbound = (...a) => globalThis.__SCF.evaluateOutbound(...a)",
   "@/lib/kernel/agent-identity":
@@ -197,6 +207,19 @@ function query(resolve: () => Promise<Answer>): any {
         }
         return q
       }
+      return query(async () => ({ data: null, error: null }))
+    },
+  }),
+  // SYNCHRONOUS, matching the real createServiceClient() — the cascade calls
+  // it without awaiting. Same table routing as createClient's mock above
+  // (brand_voice_profile → W.brandVoice; everything else this cascade reads —
+  // ai_identity_profiles, tenant_ai_teammates — is not exercised by any
+  // scenario here, so the shared unmatched-table default of { data: null,
+  // error: null } is what the cascade sees, exactly like a brokerage with none
+  // of those rows configured).
+  createServiceClient: () => ({
+    from(table: string) {
+      if (table === "brand_voice_profile") return query(async () => W.brandVoice)
       return query(async () => ({ data: null, error: null }))
     },
   }),

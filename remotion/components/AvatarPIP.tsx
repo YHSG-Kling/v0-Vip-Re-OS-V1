@@ -74,8 +74,10 @@ export const AvatarPIP: React.FC<{
    *  360 rather than forking a second component. */
   size?: number
   /** Corner the ring sits in. Defaults to "top-right" (the original
-   *  EquityReportReel/MarketUpdateReel placement). */
-  position?: "top-right" | "top-left"
+   *  EquityReportReel/MarketUpdateReel placement). "bottom-right" is the
+   *  ListingPresentationSlide/BuyerConsultationSlide placement — see the
+   *  tombstones on their former private duplicates. */
+  position?: "top-right" | "top-left" | "bottom-right"
   /** Ring boxShadow width in px. Defaults to 4. */
   ringWidth?: number
 }> = ({
@@ -84,7 +86,9 @@ export const AvatarPIP: React.FC<{
 }) => {
   const frame = useCurrentFrame()
   const corner: React.CSSProperties =
-    position === "top-left" ? { top: 32, left: 32 } : { top: 32, right: 32 }
+    position === "top-left" ? { top: 32, left: 32 }
+    : position === "bottom-right" ? { bottom: 64, right: 56 }
+    : { top: 32, right: 32 }
   const ring: React.CSSProperties = {
     position: "absolute", ...corner,
     width: size, height: size, borderRadius: size / 2,

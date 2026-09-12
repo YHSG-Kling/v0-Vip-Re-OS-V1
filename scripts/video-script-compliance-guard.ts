@@ -77,16 +77,41 @@ check(
 check(
   "GATE-CARRIES-ALL-THREE-BLOCKS",
   /\bconst\s+THEM_FIRST_BLOCK\s*=/.test(gate) &&
-    /\bconst\s+FAIR_HOUSING_BLOCK\s*=/.test(gate) &&
-    /\.from\(\s*["']brand_voice_profile["']\s*\)/.test(gate),
-  "the shared gate must carry brand voice, ThemFirst and Fair Housing — not a subset",
+    /\bconst\s+FAIR_HOUSING_BLOCK\s*=/.test(gate),
+  "the shared gate must carry ThemFirst and Fair Housing — not a subset",
 )
 
-// A failed brand-voice read must not read as "no brand voice configured".
+// ── Brand voice: ONE CASCADE, not a private read (§1/§6, wave 61) ───────────
+// This gate used to run its OWN brand_voice_profile read (loadBrandVoiceBlock,
+// tone-only, brokerage-scoped) — a second spelling of the SAME lookup
+// lib/ai-isa/brand-voice-prompt.ts loadBrandVoicePrompt already runs for every
+// other AI-agent surface. DUPLICATE merged onto that survivor; the private
+// read is gone. A bare /brand_voice_profile/ test would still match a comment
+// or a specimen string, so the positive control below proves the regex itself
+// still recognises a live read before trusting its absence here.
 check(
-  "GATE-BRAND-VOICE-CHECKS-ERROR",
-  /const\s*\{\s*data:\s*bvp,\s*error\s*\}/.test(gate) && /if\s*\(\s*error\s*\|\|\s*!bvp\s*\)/.test(gate),
-  "loadBrandVoiceBlock must destructure `error` and branch on it — supabase-js resolves a refused read",
+  "GATE-NO-PRIVATE-BRAND-VOICE-READ",
+  !/\.from\(\s*["']brand_voice_profile["']\s*\)/.test(gate),
+  "lib/video/script-compliance.ts must not run its own brand_voice_profile read — merge onto the ONE cascade (lib/ai-isa/brand-voice-prompt.ts:110 loadBrandVoicePrompt)",
+)
+check(
+  "GATE-USES-BRAND-VOICE-CASCADE",
+  /loadBrandVoicePrompt/.test(gate) && /@\/lib\/ai-isa\/brand-voice-prompt/.test(gate),
+  "lib/video/script-compliance.ts's Gate 1 block must import/call loadBrandVoicePrompt from lib/ai-isa/brand-voice-prompt.ts",
+)
+// A failed cascade call must not read as "no brand voice configured" — it must
+// be guarded so an outage degrades to "say nothing" (filtered out of the
+// prompt), never to a thrown exception that takes the whole gate down with it.
+check(
+  "GATE-BRAND-VOICE-CASCADE-FAILS-SAFE",
+  /try\s*\{[\s\S]{0,200}loadBrandVoicePrompt\(/.test(gate),
+  "the loadBrandVoicePrompt call must be wrapped so a cascade outage degrades to no brand-voice block, never a thrown exception",
+)
+check(
+  "POSITIVE CONTROL: the brand_voice_profile scanner still catches a direct read (a tombstone naming it must not un-catch it)",
+  /\.from\(\s*["']brand_voice_profile["']\s*\)/.test('  const { data } = await supabase\n    .from("brand_voice_profile")\n    .select("tone")')
+  && !/\.from\(\s*["']brand_voice_profile["']\s*\)/.test(stripComments('  // .from("brand_voice_profile") — TOMBSTONE, merged onto loadBrandVoicePrompt\n')),
+  "the finder must still catch a live specimen and still ignore a stripped comment quoting it",
 )
 
 // The pre-check blocks on Fair Housing ONLY. If it ever blocks on the whole

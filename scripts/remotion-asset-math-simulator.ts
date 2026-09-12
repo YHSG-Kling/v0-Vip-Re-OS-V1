@@ -52,6 +52,13 @@ import {
   MUSIC_SIDECHAIN_DUCK_SETTINGS,
   MAX_BRAND_BOOKEND_SECONDS,
   estimateAvatarRenderCostUsd,
+  inferScriptSentiment,
+  SCRIPT_SENTIMENT_POSITIVE_CONTROLS,
+  SCRIPT_SENTIMENT_NEGATIVE_CONTROL,
+  varyingSceneWeights,
+  SCENE_DURATION_VARIANCE_PCT,
+  handheldDriftOffset,
+  HANDHELD_DRIFT_MAX_PX,
 } from "../lib/video/realism-profile"
 import {
   buildCaptionPlan,
@@ -463,6 +470,33 @@ function kenBurnsSection() {
   }
   // POSITIVE CONTROL — zero photos is an HONEST empty plan, not a fabricated clip.
   check("[control] zero photos → an honest empty plan (no fabricated clip)", kenBurnsPlan([], 20 * fps, { fps: 30 }).length === 0)
+
+  // ── WAVE 61 REALISM ADVANCEMENT — anti-metronome scene duration variance ──
+  console.log("\n── §kenBurns · WAVE 61 scene duration variance (anti-metronome) ──")
+  for (const secs of FIXTURE_SECONDS) {
+    const windowFrames = secs * fps
+    const photos = Array.from({ length: 6 }, (_, i) => `https://example.com/p${i}.jpg`)
+    const clips = kenBurnsPlan(photos, windowFrames, { fps })
+    const durations = clips.map((c) => c.durationFrames)
+    check(`@ ${secs}s window, 6 photos: adjacent clip durations differ (no two consecutive clips share the exact same slot — not a metronome)`,
+      durations.slice(1).some((d, i) => d !== durations[i]))
+    check(`@ ${secs}s window, 6 photos: clips STILL tile the window exactly (variance changes rhythm, never total runtime)`,
+      clips[clips.length - 1].fromFrame + clips[clips.length - 1].durationFrames === windowFrames)
+  }
+  // PURE unit checks on varyingSceneWeights itself.
+  check("varyingSceneWeights(1) has no variance — a single clip has nothing to feel metronomic against",
+    JSON.stringify(varyingSceneWeights(1)) === JSON.stringify([1]))
+  check("varyingSceneWeights(0) is empty (honest no-op)", varyingSceneWeights(0).length === 0)
+  for (const n of [2, 3, 6, 7, 10]) {
+    const w = varyingSceneWeights(n)
+    const sum = w.reduce((a, b) => a + b, 0)
+    check(`varyingSceneWeights(${n}): ${w.length} weights summing to exactly ${n} (total runtime unchanged)`,
+      w.length === n && Math.abs(sum - n) < 1e-9)
+  }
+  check(`[control] SCENE_DURATION_VARIANCE_PCT (${SCENE_DURATION_VARIANCE_PCT}) matches the task's own +/-15% ask`,
+    Math.abs(SCENE_DURATION_VARIANCE_PCT - 0.15) < 1e-9)
+  check("[control] the weight pattern actually swings +/-variance (not silently clamped to 1 everywhere)",
+    varyingSceneWeights(4).some((w) => Math.abs(w - 1) > 0.01))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -503,6 +537,57 @@ function bookendSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// § scriptSentiment · WAVE 61 realism advancement — inferScriptSentiment,
+//   the script-level half of "per-scene expression hints" (the /expressives
+//   API takes ONE sentiment_id per render — see realism-profile.ts's own
+//   header note on why true per-scene timing is not reachable on V4 today).
+// ═══════════════════════════════════════════════════════════════════════════
+
+function scriptSentimentSection() {
+  console.log("\n── §scriptSentiment · WAVE 61 script-derived D-ID expression ──")
+  for (const c of SCRIPT_SENTIMENT_POSITIVE_CONTROLS) {
+    check(`[control] "${c.label}" script infers "${c.expected}" (not the hardcoded "happy" default)`,
+      inferScriptSentiment(c.text) === c.expected)
+  }
+  check("[control] a script with no band keywords resolves to neutral — the scanner does not fire on everything",
+    inferScriptSentiment(SCRIPT_SENTIMENT_NEGATIVE_CONTROL) === "neutral")
+  check("an empty/null script resolves to neutral, never throws", inferScriptSentiment("") === "neutral" && inferScriptSentiment(null) === "neutral")
+  // A script hitting two DIFFERENT bands equally hard resolves to neutral —
+  // never guessed toward "happy" (the defect this function replaces).
+  const tied = "We reduced the price. Congrats to the buyers on the other place."
+  check("[control] a genuinely ambiguous script (serious + happy hits tied) resolves to neutral, never guessed",
+    inferScriptSentiment(tied) === "neutral")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// § handheldDrift · WAVE 61 realism advancement — opt-in b-roll drift bounds.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function handheldDriftSection() {
+  console.log("\n── §handheldDrift · WAVE 61 opt-in b-roll drift stays subtle and non-repeating ──")
+  const fps = 30
+  for (const secs of FIXTURE_SECONDS) {
+    const frames = secs * fps
+    let maxAbsX = 0, maxAbsY = 0
+    const samples: Array<[number, number]> = []
+    for (let f = 0; f < frames; f += 5) {
+      const [x, y] = handheldDriftOffset(f, fps, 0)
+      maxAbsX = Math.max(maxAbsX, Math.abs(x))
+      maxAbsY = Math.max(maxAbsY, Math.abs(y))
+      samples.push([x, y])
+    }
+    check(`@ ${secs}s: handheld drift never exceeds +/-HANDHELD_DRIFT_MAX_PX (${HANDHELD_DRIFT_MAX_PX}px) on either axis`,
+      maxAbsX <= HANDHELD_DRIFT_MAX_PX + 1e-9 && maxAbsY <= HANDHELD_DRIFT_MAX_PX + 1e-9)
+    check(`@ ${secs}s: the drift path is non-constant (real motion, not a frozen offset)`,
+      new Set(samples.map(([x]) => x.toFixed(2))).size > 1)
+  }
+  check("[control] frame=0 is a valid, finite offset", handheldDriftOffset(0, 30, 0).every((v) => Number.isFinite(v)))
+  check("[control] an invalid fps (0) degrades honestly to [0,0] rather than a NaN/Infinity", handheldDriftOffset(10, 0, 0).every((v) => v === 0))
+  check("different seeds phase-shift the path (consecutive b-roll clips don't drift in lockstep)",
+    JSON.stringify(handheldDriftOffset(15, 30, 0)) !== JSON.stringify(handheldDriftOffset(15, 30, 5)))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log("══════════════════════════════════════════════════════════════")
@@ -516,6 +601,8 @@ async function main() {
   kenBurnsSection()
   costLedgerSection()
   bookendSection()
+  scriptSentimentSection()
+  handheldDriftSection()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {

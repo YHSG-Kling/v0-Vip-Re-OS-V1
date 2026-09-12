@@ -89,6 +89,7 @@ import {
   FILM_GRAIN_OVERLAY_OPACITY,
   KEN_BURNS_REALISM_AUDIT_NOTE,
   COVER_CTA_CONTENT_BEAT_RULING,
+  PARALLAX_STILL_IMAGE_DEFERRAL_REASON,
 } from "../lib/video/realism-profile"
 import { clipCaptionCuesBeforeFrame, clipCaptionCuesFromFrame, shiftCaptionCues, buildCaptionPlan, type CaptionCue } from "../lib/video/caption-plan"
 import { shouldAutoRequeueFailedRender, MAX_AUTO_REQUEUE_ATTEMPTS } from "../lib/remotion/render-decision"
@@ -959,6 +960,28 @@ function avatarSection() {
       !!start && !!end && Number(start[1]) < Number(end[1]))
   }
 
+  // WAVE 61 RE-AUDIT — same-body census: BuyerConsultationSlide.tsx and
+  // ListingPresentationSlide.tsx each carried a private `AvatarPIP` duplicate
+  // (byte-identical to each other, a `position`-less subset of the shared
+  // survivor) with NO avatarPipWindowFade freeze guard. Merged onto
+  // remotion/components/AvatarPIP.tsx this wave (position="bottom-right").
+  // Regression-guard: neither file defines its own `AvatarPIP` anymore, and
+  // both import the shared survivor.
+  for (const id of ["BuyerConsultationSlide", "ListingPresentationSlide"]) {
+    const file = VIDEO_COMPOSITION_FILES[id]
+    const src = readStripped(file)
+    check(`${id}: imports the SHARED AvatarPIP survivor (./components/AvatarPIP), not a private duplicate`,
+      /import \{ AvatarPIP \} from "\.\/components\/AvatarPIP"/.test(src))
+    check(`${id}: no private "const AvatarPIP" redefinition remains (the tombstone names the survivor, it doesn't shadow it)`,
+      !/const AvatarPIP:/.test(src))
+    check(`${id}: passes position="bottom-right" to the shared AvatarPIP (preserves its original corner placement)`,
+      /position="bottom-right"/.test(src))
+  }
+  // CONTROL — the private-duplicate regex still recognises the exact shape it
+  // was written to catch (a composition-local AvatarPIP redefinition).
+  check("CONTROL: the private-AvatarPIP regex still catches its own historical shape",
+    /const AvatarPIP:/.test('const AvatarPIP: React.FC<{ x: number }> = () => null'))
+
   // Captions align to the composition's own duration/fps via useVideoConfig()
   // — never a second, independently-timed estimate. Source-checked once,
   // fleet-wide, since CaptionLayer is the ONE shared reader every voiced
@@ -1068,6 +1091,11 @@ function aiVideoRealismSection() {
     "MarketUpdateReel", "AgentExplainerReel", "ExplainerAnimReel", "JustListedReel",
     "JustListedReelSquare", "JustSoldReelSquare", "NeighborhoodSpotlightReel",
     "PartnersMeetingReel", "PhotoWalkthroughReel", "TeammateExplainerReel",
+    // WAVE 61 RE-AUDIT — EquityReportReel gained its CaptionLayer in wave 60
+    // but was never added to this proof's own host list, so the wave-59
+    // caption-cover-tile guarantee this list exists to enforce was silently
+    // blind to it. Added, not a new build.
+    "EquityReportReel",
   ]
   for (const id of CAPTION_HOSTS) {
     const file = VIDEO_COMPOSITION_FILES[id]
@@ -1137,7 +1165,22 @@ function aiVideoRealismSection() {
     const src = readStripped(f)
     check(`${f}: <BrollLayer> passes filmGrain (the constant this wave added is a live call site, not orphaned)`,
       /<BrollLayer[\s\S]{0,200}filmGrain/.test(src))
+    // WAVE 61 ADVANCEMENT — handheldDrift is opt-in and wired onto the SAME
+    // "look real" call sites as filmGrain (still-photo b-roll only, inside
+    // _BrollLayer.tsx — see lib/video/realism-profile.ts's research note on
+    // why it does not also apply to a Ken Burns still or a b-roll video clip).
+    check(`${f}: <BrollLayer> passes handheldDrift (WAVE 61 opt-in still-photo drift, not orphaned)`,
+      /<BrollLayer[\s\S]{0,200}handheldDrift/.test(src))
   }
+
+  // ── WAVE 61 REALISM ADVANCEMENTS — wired, not just declared ───────────────
+  const didSrc = readStripped("lib/did/index.ts")
+  check("lib/did/index.ts: the expression cascade calls inferScriptSentiment BEFORE falling to the hardcoded default — a live call site, not orphaned",
+    /input\.expression \?\? inferScriptSentiment\(input\.script\)/.test(didSrc))
+  check("lib/did/index.ts: an explicit caller override still wins (inferScriptSentiment is the FALLBACK rung, never overrides an explicit choice)",
+    /input\.expression \?\?/.test(didSrc))
+  check("PARALLAX_STILL_IMAGE_DEFERRAL_REASON documents WHY it wasn't built (§2 — 'unresolved' beats a guess), not left unstated",
+    /depth/.test(PARALLAX_STILL_IMAGE_DEFERRAL_REASON) && /Ken Burns/.test(PARALLAX_STILL_IMAGE_DEFERRAL_REASON))
 
   // ── Autonomous failed-render requeue — shouldAutoRequeueFailedRender ─────
   const composeContractProps = { agentPhotoUrl: "https://x/y.jpg" } // arbitrary — only shape matters below

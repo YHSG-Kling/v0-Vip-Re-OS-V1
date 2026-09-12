@@ -185,6 +185,45 @@ check("the marketing-approvals queue selects brand_voice_context off ai_video_pr
 check("…and maps it onto the row the client renders (PendingAssetRow.brand_voice)", /brand_voice:\s*\(\(\)\s*=>/.test(APPROVALS_ACTION))
 check("…and the review card actually displays tone/tagline to the human approver", /r\.brand_voice\.tone/.test(APPROVALS_CLIENT) && /r\.brand_voice\.tagline/.test(APPROVALS_CLIENT))
 
+console.log("\n── 12 · EquityReportReel's AvatarPIP path: BUILT, not left dark (owner ruling, wave 61) ──")
+// CARRY (state after wave 60): "EquityReportReel has no CaptionLayer (flagged,
+// not built)... EquityReportReel AvatarPIP path never exercised by the
+// Director (presenter:'none')". The composition already mounted AvatarPIP +
+// CaptionLayer (remotion/EquityReportReel.tsx) — the Director just never asked
+// for the clip. DECISION: BUILD, not "write the ruling and leave it dark" —
+// the anniversary equity reel now PREFERS an avatar (like MarketUpdateReel)
+// but the composition's avatar is OPTIONAL (m218), so a per-commission
+// readiness check decides, reusing the SAME resolver MarketUpdateReel's
+// mandatory lane already runs at render time (resolveAgentPresenterMedia) —
+// ONE resolver (§6), not a second consent/readiness implementation.
+const FINISH = src("lib/video/finish-spec.ts")
+check(
+  "anniversary situation PREFERS the avatar (needsAvatar:true) — the AvatarPIP capability is now actually requested",
+  /case "anniversary":[\s\S]{0,500}needsAvatar: true/.test(DIRECTOR),
+)
+check(
+  "finish-spec now describes EquityReportReel's real capability (circle_pip), matching MarketUpdateReel's pattern instead of claiming 'none'",
+  /EquityReportReel:\s*\{\s*\.\.\.CHART_REEL,\s*qr:\s*true,\s*presenter:\s*["']circle_pip["']\s*\}/.test(FINISH),
+)
+check(
+  "ONE resolver (§6) decides whether to actually request the clip, shared by BOTH commission paths (commissionVideo + commissionVideoExperiment)",
+  (DIRECTOR.match(/requiresAvatar\s*=\s*await\s+resolveAvatarRequirement\(format,\s*registryRequiresAvatar,\s*opts\.agentUserId,\s*opts\.brokerageId\)/g) ?? []).length === 2,
+)
+check(
+  "the resolver reuses the SAME readiness check the mandatory avatar lane (MarketUpdateReel) already runs — no second consent/readiness implementation",
+  /async function resolveAvatarRequirement[\s\S]{0,600}resolveAgentPresenterMedia\(\{ agentUserId, brokerageId \}\)/.test(DIRECTOR),
+)
+check(
+  "MANDATORY compositions are UNCHANGED: registry requires_did_avatar still short-circuits to true — render-time readiness stays director-reel-render's job",
+  /function resolveAvatarRequirement\([\s\S]{0,400}\{\s*if \(registryRequiresAvatar\) return true/.test(DIRECTOR),
+)
+check(
+  "POSITIVE CONTROL: the anniversary-needsAvatar finder still catches the OLD defect shape (needsAvatar:false reads as false, not a false positive)",
+  !/case "anniversary":[\s\S]{0,500}needsAvatar: true/.test(
+    stripComments('    case "anniversary":\n      return { compositionId: "EquityReportReel", needsAvatar: false, needsBroll: false, needsCharts: true, needsSlides: false, aspect: "square", targetChannels: ["email", "portal"] }\n'),
+  ),
+)
+
 console.log("\n── CONTROLS ──")
 check("POSITIVE CONTROL: the brand_voice_profile scanner still catches a direct read (a tombstone naming it must not un-catch it)",
   /\.from\(\s*["']brand_voice_profile["']\s*\)/.test('  const { data } = await supabase\n    .from("brand_voice_profile")\n    .select("tone")')

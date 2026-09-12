@@ -9,7 +9,8 @@
  * four enforce the same thing instead of one enforcing it privately.
  *
  * Three pieces, used in this order:
- *   1. loadBrandVoiceBlock + THEM_FIRST_BLOCK + FAIR_HOUSING_BLOCK
+ *   1. brandVoiceCascadeBlock (lib/ai-isa/brand-voice-prompt.ts loadBrandVoicePrompt)
+ *      + THEM_FIRST_BLOCK + FAIR_HOUSING_BLOCK
  *      — injected into the AI system prompt so the model complies proactively.
  *   2. precheckBriefForFairHousing — hard block on the human's raw brief.
  *   3. postcheckScript — advisory warnings on what the model produced.
@@ -220,45 +221,69 @@ export function detectFairHousingRedFlags(
 /**
  * Brand voice guidelines for the AI system prompt (Gate 1, proactive).
  *
- * `toneOverride` short-circuits the profile read — the wizard lets the agent
- * pick a tone per script, and that choice wins over the brokerage default.
- * Returns "" when the brokerage has no active profile, so it can be dropped
- * from the prompt with .filter(Boolean).
+ * ONE CASCADE (§1/§6, wave 61). This function used to be `loadBrandVoiceBlock`
+ * — a PRIVATE `brand_voice_profile` read, brokerage-scoped, tone-only: no
+ * `ai_identity_profiles`, no chartered AI-teammate charter, no agent-level
+ * override. That was a second spelling of the exact lookup every other
+ * AI-agent surface (live avatar, phone receptionist, widget, portal, in-app
+ * copilot, and — since wave 60E — this file's OWN five other callers'
+ * sibling app/actions/video/generate-script.ts) already runs through the FULL
+ * cascade. DUPLICATE merged onto the survivor: SURVIVOR
+ * lib/ai-isa/brand-voice-prompt.ts:110 `loadBrandVoicePrompt`.
+ *
+ * TOMBSTONE: the deleted private read was
+ *   `await supabase.from("brand_voice_profile").select(...).eq("brokerage_id", brokerageId).eq("is_active", true).maybeSingle()`
+ * — see the survivor above.
+ *
+ * WHY THE SESSION-LESS CRON PATH IS STILL FINE. This module is reached with NO
+ * session by lib/listing-presentation/section-narration.ts and
+ * lib/video/chapter-video-generator.ts (both pass their own service `client`).
+ * The OLD code used that `client` for exactly this reason — a session client
+ * has no brokerage to read `current_user_brokerage_id()` against. The cascade
+ * needs no such rescue: `loadBrandVoicePrompt` reads through its OWN
+ * `createServiceClient()` unconditionally and takes the tenant as an explicit
+ * `brokerageId` PARAMETER (never RLS/session-derived) — exactly the §4 shape
+ * this file's callers already require, so the cron path was already safe
+ * under it. `client` is kept on this function's signature only because
+ * `buildComplianceSystemBlocks` below still threads it to the (unrelated)
+ * prohibited-phrase catalogue read.
+ *
+ * `toneOverride` still short-circuits the cascade entirely — the wizard lets
+ * the agent pick a tone per script, and that choice wins over everything the
+ * cascade would resolve. Returns "" when the cascade resolves no brand voice
+ * at all (or the cascade itself is unreachable), so it can be dropped from the
+ * prompt with .filter(Boolean) — a failed/absent read is not "this brokerage
+ * has no brand voice", so nothing is said rather than writing the prompt
+ * off-brand under a fabricated default.
  */
-async function loadBrandVoiceBlock(
+async function brandVoiceCascadeBlock(
   brokerageId: string,
   toneOverride?: string,
-  client?: QueryableClient | null,
 ): Promise<string> {
   if (toneOverride) return `\nBrand voice tone: ${toneOverride}`
 
-  // The read is already `.eq("brokerage_id", …)`, so it is tenant-correct under
-  // either client; what a caller's own client buys is a read that WORKS where
-  // there is no session (the cron-reached chapter generator), instead of
-  // returning "" and writing the prompt off-brand.
-  const supabase: QueryableClient = client ?? (await createClient())
-  const { data: bvp, error } = await supabase
-    .from("brand_voice_profile")
-    .select(
-      "tone, formality_level, key_brand_messages, preferred_words, prohibited_words, tagline, mission_statement",
-    )
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
-    .maybeSingle()
+  let result: Awaited<ReturnType<typeof import("@/lib/ai-isa/brand-voice-prompt").loadBrandVoicePrompt>>
+  try {
+    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")
+    result = await loadBrandVoicePrompt({ brokerageId })
+  } catch {
+    return ""
+  }
 
-  // A refused or failed read is not "this brokerage has no brand voice" — say
-  // nothing rather than silently generating off-brand copy under a default.
-  if (error || !bvp) return ""
+  if (!result.tone && !result.formalityLevel && result.prohibitedWords.length === 0 && result.preferredWords.length === 0 && !result.tagline) {
+    return ""
+  }
 
-  return `
-Brand voice guidelines (Gate 1 — follow strictly):
-- Tone: ${bvp.tone ?? "professional"}
-- Formality: ${bvp.formality_level ?? "moderate"}
-${bvp.key_brand_messages?.length ? `- Key messages to reinforce: ${bvp.key_brand_messages.join("; ")}` : ""}
-${bvp.preferred_words?.length ? `- Preferred words/phrases: ${bvp.preferred_words.join(", ")}` : ""}
-${bvp.prohibited_words?.length ? `- NEVER use these words/phrases: ${bvp.prohibited_words.join(", ")}` : ""}
-${bvp.tagline ? `- Brand tagline (may reference): ${bvp.tagline}` : ""}
-${bvp.mission_statement ? `- Mission (may reference): ${bvp.mission_statement}` : ""}`
+  return [
+    `\nBrand voice guidelines (Gate 1 — follow strictly):`,
+    `- Tone: ${result.tone ?? "professional"}`,
+    result.formalityLevel ? `- Formality: ${result.formalityLevel}` : "",
+    result.preferredWords.length ? `- Preferred words/phrases: ${result.preferredWords.join(", ")}` : "",
+    result.prohibitedWords.length ? `- NEVER use these words/phrases: ${result.prohibitedWords.join(", ")}` : "",
+    result.tagline ? `- Brand tagline (may reference): ${result.tagline}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
 }
 
 // ─── THE BROKERAGE'S OWN PROHIBITED WORDS ────────────────────────────────────
@@ -600,19 +625,22 @@ Fair Housing compliance (Gate 4 — mandatory):
  * Return type is unchanged (string[]) on purpose: six callers spread this into
  * their prompt arrays and none of them has to change to get the new block.
  *
- * `client` is the same seam as everywhere else in this file: omitted, the
- * session client (every server-action caller, unchanged); supplied, the
- * caller's own — and the tenant is then the `brokerageId` parameter, written
- * into the catalogue read explicitly rather than left to an RLS policy that has
- * no session to evaluate. The phrase read carries the brokerage either way, so
- * Gate 6 names the same tenant under both clients.
+ * `client` now feeds ONLY the prohibited-phrase catalogue read (Gate 6):
+ * omitted, the session client (every server-action caller, unchanged);
+ * supplied, the caller's own — and the tenant is then the `brokerageId`
+ * parameter, written into the catalogue read explicitly rather than left to an
+ * RLS policy that has no session to evaluate. The phrase read carries the
+ * brokerage either way, so Gate 6 names the same tenant under both clients.
+ * Brand voice (Gate 1) no longer reads `client` at all — see
+ * brandVoiceCascadeBlock's header for why the cascade's own service client
+ * already covers the session-less case this parameter used to rescue.
  */
 export async function buildComplianceSystemBlocks(
   brokerageId: string,
   toneOverride?: string,
   client?: QueryableClient | null,
 ): Promise<string[]> {
-  const brandVoiceBlock = await loadBrandVoiceBlock(brokerageId, toneOverride, client)
+  const brandVoiceBlock = await brandVoiceCascadeBlock(brokerageId, toneOverride)
   const phraseBlock = buildProhibitedPhraseBlock(await loadProhibitedPhraseCatalogue({ brokerageId, client }))
   return [brandVoiceBlock, THEM_FIRST_BLOCK, FAIR_HOUSING_BLOCK, phraseBlock].filter(Boolean)
 }

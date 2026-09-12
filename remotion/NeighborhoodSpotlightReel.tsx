@@ -114,7 +114,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           When no clips are passed, the layer returns null and the
           brand background carries through. */}
       {brollClips.length > 0 && (
-        <BrollLayer clips={brollClips} totalFrames={TOTAL} overlayColor={overlay} loop filmGrain />
+        <BrollLayer clips={brollClips} totalFrames={TOTAL} overlayColor={overlay} loop filmGrain handheldDrift />
       )}
 
       {/* COVER — 0-3s. Neighborhood name + tagline. */}

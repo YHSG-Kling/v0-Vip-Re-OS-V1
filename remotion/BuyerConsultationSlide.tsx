@@ -28,10 +28,10 @@
  * composition registry (m168 + lib/remotion/registry.ts).
  */
 import React from "react"
-import { Video } from "@remotion/media"
 import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { AvatarPIP } from "./components/AvatarPIP"
 
 export type BuyerSlideKind =
   | "title"
@@ -161,6 +161,9 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         endFrame={avatarEndFrame}
         accentColor={brand.accentColor}
         primaryColor={brand.primaryColor}
+        position="bottom-right"
+        size={280}
+        ringWidth={5}
       />
 
       <div style={{
@@ -410,45 +413,12 @@ const ClosingSlideBody: React.FC<{
   </div>
 )
 
-/* ─────────── avatar PIP (shared shape) ─────────── */
-
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  startFrame:     number
-  endFrame:       number
-  accentColor:    string
-  primaryColor:   string
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", bottom: 64, right: 56,
-    width: 280, height: 280, borderRadius: 140,
-    boxShadow: `0 0 0 5px ${accentColor}, 0 24px 48px rgba(0,0,0,0.18)`,
-    overflow: "hidden", backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video src={avatarVideoUrl} objectFit="cover" trimBefore={startFrame} trimAfter={endFrame}
-          style={{ width: "100%", height: "100%" }} />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring, backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 100, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// TOMBSTONE (§1 orphan doctrine — duplicate exists, merge onto survivor
+// first): the private `AvatarPIP` that stood here (bottom-right, 280×280,
+// `trimBefore={startFrame} trimAfter={endFrame}` with NO freeze/fade guard)
+// was byte-identical to ListingPresentationSlide.tsx's own private duplicate
+// and a `position`-less subset of the shared survivor. Wave 61 re-audit:
+// merged its "bottom-right" geometry onto remotion/components/AvatarPIP.tsx
+// (position="bottom-right" | size=280 | ringWidth=5), which also gives this
+// slide the avatarPipWindowFade freeze guard the private copy never had.
+// Survivor: remotion/components/AvatarPIP.tsx:52.

@@ -1280,3 +1280,175 @@ export function estimateStreamingMinutesCostUsd(seconds: number): number {
   const minutes = roundUpToNearest15Seconds(seconds) / 60
   return Math.round(minutes * DID_USD_PER_STREAMING_MINUTE * 10000) / 10000
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// § WAVE 61 — SCRIPT-DERIVED SENTIMENT (per-scene expression hint candidate)
+// ═════════════════════════════════════════════════════════════════════════
+//
+// TASK ASK: "per-scene expression hints for `/expressives` sentiment ids from
+// the script's emotional beat." RESEARCHED LIMIT, restating this file's own
+// D-ID V4 EXPRESSIVE section above: V4's one-shot `POST /expressives` render
+// (lib/did/index.ts) takes exactly ONE `sentiment_id` for the WHOLE clip —
+// there is no per-scene/timed sentiment field on that request shape (unlike
+// `/talks`' `driver_expressions.expressions[]`, which genuinely accepts an
+// array of `{expression, intensity, start_frame}` and could vary mid-clip).
+// True per-SCENE timing is therefore not reachable on the V4 engine today —
+// recorded here rather than faked with a config field V4 would ignore.
+//
+// WHAT WAS BUILDABLE AND WASN'T BUILT: lib/did/index.ts resolved `expression`
+// from caller-override > the agent's STATIC `agent_voice_profiles.
+// default_expression` > a hardcoded "happy" — never once reading what the
+// SCRIPT ITSELF says. A price-drop announcement and a closing-day celebration
+// got the IDENTICAL avatar expression whenever the agent had no profile
+// override set. `inferScriptSentiment` closes that gap as the step BEFORE
+// the hardcoded "happy" fallback — an agent's own explicit choice (a call-site
+// override, or their saved profile default) is NEVER second-guessed; only the
+// "nobody chose one" case stops defaulting to a constant and starts reading
+// the actual narration.
+//
+// PURE, keyword-band heuristic (no model call) tuned to this repo's OWN
+// script vocabulary (grep across lib/video/*-reactor.ts / lib/agents/
+// *-reel-producer.ts generated scripts) — mapped onto D-ID's closed 4-value
+// /expressives vocabulary (happy/neutral/serious/surprise, verbatim from
+// lib/did/index.ts's own `sentimentFor` map — ONE vocabulary, §6, never a
+// second spelling here). A tie between two bands, or zero hits, resolves to
+// "neutral" — never guessed toward "happy", which would just re-create the
+// defect this function replaces with extra steps.
+export type DidExpressiveSentiment = "happy" | "neutral" | "serious" | "surprise"
+
+const SENTIMENT_SERIOUS_PATTERNS: RegExp[] = [
+  /\bprice (?:drop|cut|reduc)/i, /\breduced\b/i, /\bforeclosure\b/i, /\bshort sale\b/i,
+  /\bmarket(?:'s| is)? (?:cooling|slowing|softening)\b/i, /\brates? (?:went up|rose|climbing|increased)\b/i,
+  /\bfell through\b/i, /\bexpired\b/i, /\bwithdrawn\b/i, /\bbelow asking\b/i,
+]
+const SENTIMENT_HAPPY_PATTERNS: RegExp[] = [
+  /\bsold\b/i, /\bclosed\b/i, /\bcongrat/i, /\bgreat news\b/i, /\bwe did it\b/i,
+  /\babove asking\b/i, /\bmultiple offers\b/i, /\bcelebrat/i, /\brecord(?:-| )(?:high|breaking)\b/i,
+]
+const SENTIMENT_SURPRISE_PATTERNS: RegExp[] = [
+  /\byou (?:won'?t|will not) believe\b/i, /\bguess what\b/i, /\bforty people\b/i,
+  /\bjumped (?:to|by)\b/i, /\bdoubled\b/i, /\bout of nowhere\b/i,
+]
+
+/**
+ * inferScriptSentiment — PURE. Reads the SPOKEN script for the D-ID
+ * expression cascade's "nobody chose one" rung. Counts pattern hits per band
+ * and returns the band with the strictly most hits; a genuine tie or zero
+ * hits returns "neutral".
+ */
+export function inferScriptSentiment(script: string | null | undefined): DidExpressiveSentiment {
+  const text = (script ?? "").trim()
+  if (!text) return "neutral"
+  const seriousHits = SENTIMENT_SERIOUS_PATTERNS.filter((p) => p.test(text)).length
+  const happyHits = SENTIMENT_HAPPY_PATTERNS.filter((p) => p.test(text)).length
+  const surpriseHits = SENTIMENT_SURPRISE_PATTERNS.filter((p) => p.test(text)).length
+  const max = Math.max(seriousHits, happyHits, surpriseHits)
+  if (max === 0) return "neutral"
+  const winners = (
+    [["serious", seriousHits], ["happy", happyHits], ["surprise", surpriseHits]] as [DidExpressiveSentiment, number][]
+  ).filter(([, hits]) => hits === max)
+  return winners.length === 1 ? winners[0][0] : "neutral"
+}
+
+/** POSITIVE CONTROLS (§2) — one per non-neutral band, each MUST resolve to
+ *  its own band and no other's. */
+export const SCRIPT_SENTIMENT_POSITIVE_CONTROLS: ReadonlyArray<{
+  label: string; text: string; expected: DidExpressiveSentiment
+}> = [
+  { label: "price_drop", text: "We just reduced the price on Maple Street — it's priced right for today's buyers.", expected: "serious" },
+  { label: "sold_celebration", text: "We sold it above asking with multiple offers. Congrats to the Hendersons!", expected: "happy" },
+  { label: "surprise_stat", text: "Forty people came through the open house — you won't believe the turnout.", expected: "surprise" },
+]
+
+/** NEGATIVE CONTROL — an ordinary script with no band keywords at all. Must
+ *  resolve to "neutral", proving the function does not fire on everything. */
+export const SCRIPT_SENTIMENT_NEGATIVE_CONTROL =
+  "Here's what's happening in your neighborhood this month. Reach out if you have questions."
+
+// ═════════════════════════════════════════════════════════════════════════
+// § WAVE 61 — SCENE DURATION VARIANCE (anti-metronome)
+// ═════════════════════════════════════════════════════════════════════════
+//
+// TASK ASK: "avoid uniform cut cadence (vary scene durations ±15% around the
+// narration beat so the edit does not feel machine-metronomic)." THE DEFECT:
+// lib/video/ken-burns-plan.ts's `kenBurnsPlan` gave EVERY photo clip the
+// exact same stride (`(totalFrames - crossfade) / n`) — an n-photo tour cuts
+// on a perfectly even beat, the "metronome" tell a real editor's cut rhythm
+// never has.
+//
+// `varyingSceneWeights` is the redistribution `kenBurnsPlan` applies to that
+// stride: alternating (1+v, 1-v) weight pairs whose SUM is always exactly
+// `n` — so the total timeline length is UNCHANGED (this reshapes the cut
+// RHYTHM, never the reel's runtime) — with an unpaired final clip (odd n)
+// held at weight 1 so the invariant holds exactly rather than approximately.
+// n<=1 gets no variance (a single clip / no clips — nothing to feel
+// metronomic against).
+export const SCENE_DURATION_VARIANCE_PCT = 0.15
+
+/**
+ * varyingSceneWeights — PURE. Returns `n` multipliers summing to exactly `n`
+ * (so a caller scaling a uniform per-clip duration by `weights[i]` keeps the
+ * SAME total) with adjacent weights alternating (1+v, 1-v) so no two
+ * consecutive clips land on the same duration.
+ */
+export function varyingSceneWeights(n: number, variancePct: number = SCENE_DURATION_VARIANCE_PCT): number[] {
+  if (!Number.isFinite(n) || n <= 0) return []
+  const count = Math.floor(n)
+  if (count <= 1) return new Array(Math.max(count, 0)).fill(1)
+  const v = Math.max(0, Math.min(0.4, variancePct))
+  const weights: number[] = []
+  for (let i = 0; i < count; i += 2) {
+    if (i + 1 < count) weights.push(1 + v, 1 - v)
+    else weights.push(1)
+  }
+  return weights
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// § WAVE 61 — HANDHELD-STYLE B-ROLL DRIFT (opt-in)
+// ═════════════════════════════════════════════════════════════════════════
+//
+// TASK ASK: "handheld-style subtle drift on b-roll (opt-in)." A locked-off,
+// perfectly static b-roll frame is itself a "too clean to be real" tell
+// alongside the film-grain/vignette pair above — real handheld coverage
+// carries a tiny, slow, non-repeating drift even on a "static" shot.
+// Deliberately NOT wired unconditionally: a Ken Burns still already carries
+// its own pan/zoom, and a b-roll VIDEO clip already carries its own real
+// camera motion — stacking a synthetic drift on top of either is the
+// over-animating tell this file's Ken Burns research note already warns
+// against. Opt-in so a caller applies it to the ONE case that actually reads
+// as too-clean-to-be-real: a completely static image with no Ken Burns move
+// at all (remotion/_BrollLayer.tsx's still-photo branch).
+export const HANDHELD_DRIFT_MAX_PX = 3
+
+/**
+ * handheldDriftOffset — PURE. A tiny, slow, non-repeating [x, y] pixel drift
+ * for `frame`, bounded to +/-HANDHELD_DRIFT_MAX_PX. Two different slow sine
+ * periods on X and Y so the path never repeats within a normal clip length,
+ * never reads as a mechanical loop. `seed` offsets the phase per clip so
+ * consecutive b-roll clips don't drift in lockstep.
+ */
+export function handheldDriftOffset(frame: number, fps: number, seed = 0): [number, number] {
+  if (!Number.isFinite(frame) || !Number.isFinite(fps) || fps <= 0) return [0, 0]
+  const t = frame / fps
+  const x = HANDHELD_DRIFT_MAX_PX * Math.sin((t + seed) * 0.35)
+  const y = HANDHELD_DRIFT_MAX_PX * 0.6 * Math.sin((t + seed) * 0.23 + 1.1)
+  return [x, y]
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// § WAVE 61 — DEFERRED CANDIDATES (documented per LANE_RULES rather than guessed)
+// ═════════════════════════════════════════════════════════════════════════
+//
+// PARALLAX LAYERS ON STILL IMAGES — deferred. Task framing: "where a depth
+// cue exists." listing_media stores a single flat photo with no depth map,
+// segmentation mask, or foreground/background layer split — a parallax
+// effect needs at least two independently-movable layers, and moving one flat
+// image at two different rates is indistinguishable from Ken Burns (already
+// built, ken-burns-plan.ts) with extra arithmetic. Building it would require
+// a NEW upstream capability (a depth-estimation or subject-cutout pass on
+// listing photos) this wave has no budget or model call to add responsibly.
+export const PARALLAX_STILL_IMAGE_DEFERRAL_REASON =
+  "listing_media carries flat photos with no depth/segmentation layer — a parallax effect needs 2+ " +
+  "independently-movable layers, which this repo has no upstream pass to produce; would degrade to Ken Burns " +
+  "with extra steps. Deferred pending a depth-cue-producing pipeline stage."

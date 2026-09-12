@@ -30,7 +30,10 @@ import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remo
 import { SafeImg } from "./components/SafeImg"
 import { selectBrollPlan } from "../lib/video/broll-plan"
 import { isVideoUrl } from "../lib/video/broll-url"
-import { FILM_GRAIN_BACKGROUND_IMAGE, FILM_GRAIN_OVERLAY_OPACITY, VIGNETTE_BACKGROUND_IMAGE } from "../lib/video/realism-profile"
+import {
+  FILM_GRAIN_BACKGROUND_IMAGE, FILM_GRAIN_OVERLAY_OPACITY, VIGNETTE_BACKGROUND_IMAGE,
+  handheldDriftOffset,
+} from "../lib/video/realism-profile"
 
 export interface BrollClip {
   /** Either an image URL OR a video URL. The helper detects by
@@ -99,6 +102,16 @@ export interface BrollLayerProps {
    * — the B-roll-heavy formats that most read as "stock footage" without
    * it). */
   filmGrain?:          boolean
+  /**
+   * WAVE 61 REALISM — a tiny, slow, non-repeating drift on every STILL-PHOTO
+   * clip in this layer (see lib/video/realism-profile.ts's
+   * handheldDriftOffset). Opt-in and false by default (no change to any
+   * existing render): a b-roll VIDEO clip already carries its own real
+   * camera motion, so this only ever applies to the `<SafeImg>` branch — a
+   * perfectly locked-off still is the one shape that reads as "too clean to
+   * be a real photo."
+   */
+  handheldDrift?:      boolean
 }
 
 /**
@@ -367,7 +380,7 @@ export function brollDrawAt(
 }
 
 export const BrollLayer: React.FC<BrollLayerProps> = ({
-  clips, totalFrames, crossfadeFrames, overlayColor, loop, filmGrain,
+  clips, totalFrames, crossfadeFrames, overlayColor, loop, filmGrain, handheldDrift,
 }) => {
   const frame   = useCurrentFrame()
   const { fps } = useVideoConfig()
@@ -384,6 +397,7 @@ export const BrollLayer: React.FC<BrollLayerProps> = ({
           overlayColor={overlayColor}
           startFrame={d.startFrame}
           spanFrames={d.spanFrames}
+          handheldDrift={handheldDrift}
         />
       ))}
       {/* WAVE 57 REALISM — subtle grain + vignette over the WHOLE layer (not
@@ -414,8 +428,16 @@ const ClipFrame: React.FC<{
   startFrame:   number
   /** How long the slot runs — the media's timeline window. */
   spanFrames:   number
-}> = ({ clip, opacity, overlayColor, startFrame, spanFrames }) => {
+  /** Opt-in handheld drift for the still-photo branch only — see
+   *  BrollLayerProps.handheldDrift. */
+  handheldDrift?: boolean
+}> = ({ clip, opacity, overlayColor, startFrame, spanFrames, handheldDrift }) => {
   const isVideo = isVideoUrl(clip.url)
+  const frame = useCurrentFrame()
+  const { fps } = useVideoConfig()
+  // Seeded off startFrame so consecutive clips in the same layer don't drift
+  // in lockstep with each other.
+  const [driftX, driftY] = handheldDrift && !isVideo ? handheldDriftOffset(frame, fps, startFrame) : [0, 0]
   return (
     <AbsoluteFill style={{ opacity }}>
       {isVideo ? (
@@ -453,9 +475,20 @@ const ClipFrame: React.FC<{
           style={{ width: "100%", height: "100%" }}
         />
       ) : (
+        // `translate`/`scale` as individual CSS properties, NOT a `transform`
+        // STRING (.claude/skills/remotion-best-practices/remotion-markup/
+        // REFERENCE.md:50) — Remotion Studio can read/write each property
+        // individually, and the browser composes translate → scale in the
+        // same fixed order either spelling would give here, so there is no
+        // ordering reason to reach for a string (unlike PhotoWalkthroughReel's
+        // Ken Burns pan, which genuinely needs one).
         <SafeImg
           src={clip.url}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          style={{
+            width: "100%", height: "100%", objectFit: "cover",
+            translate: handheldDrift ? `${driftX}px ${driftY}px` : undefined,
+            scale: handheldDrift ? 1.01 : undefined,
+          }}
         />
       )}
       {overlayColor && (

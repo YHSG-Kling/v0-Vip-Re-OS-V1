@@ -368,10 +368,21 @@ export async function generateVideo(
     }
   }
 
-  // Resolve facial expression — caller > agent profile > platform default.
-  // agent_voice_profiles.agent_id FKs to agents(id); resolve users.id
-  // through the canonical helper before querying.
-  let expression: string = input.expression ?? "happy"
+  // Resolve facial expression — caller > agent profile > SCRIPT-INFERRED
+  // sentiment > platform default. agent_voice_profiles.agent_id FKs to
+  // agents(id); resolve users.id through the canonical helper before
+  // querying.
+  //
+  // WAVE 61 REALISM FIX — the SCRIPT-INFERRED rung. Before this, an agent
+  // with no `default_expression` saved got a hardcoded "happy" for every
+  // render regardless of what the script actually said — a price-drop
+  // announcement and a closing-day celebration wore the identical avatar
+  // expression. `inferScriptSentiment` (lib/video/realism-profile.ts) reads
+  // the ACTUAL narration and only runs when neither the caller nor the
+  // agent's own saved preference chose one — an explicit choice at either
+  // level is never second-guessed.
+  const { inferScriptSentiment } = await import("@/lib/video/realism-profile")
+  let expression: string = input.expression ?? inferScriptSentiment(input.script)
   let intensity: number  = input.expressionIntensity ?? 0.7
   if (!input.expression && input.agentUserId) {
     try {

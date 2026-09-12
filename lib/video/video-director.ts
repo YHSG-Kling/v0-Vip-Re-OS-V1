@@ -287,9 +287,17 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "anniversary":
       // EquityReportReel is registered by the sibling agent — referenced by ID
       // string only so the Director never hard-deps the composition module.
+      // needsAvatar:true is a PREFERENCE, not a requirement — the composition's
+      // own AvatarPIP is OPTIONAL (m218: requires_did_avatar=false) and renders
+      // an honest reel with a photo/monogram fallback when there is none.
+      // commissionVideo's resolveAvatarRequirement checks the agent's twin
+      // readiness (the SAME resolveAgentPresenterMedia check MarketUpdateReel's
+      // mandatory avatar lane uses) before actually requesting a D-ID clip —
+      // ready twin → avatar-presented equity reel; no twin → the same reel
+      // without one. See resolveAvatarRequirement's header for the full ruling.
       return {
         compositionId: "EquityReportReel",
-        needsAvatar: false, needsBroll: false,
+        needsAvatar: true, needsBroll: false,
         needsCharts: true,   // equity vs purchase price report
         needsSlides: false,
         aspect: "square",
@@ -741,6 +749,63 @@ function formatForAspect(aspect: VideoAspect): string {
   }
 }
 
+/**
+ * resolveAvatarRequirement — ONE resolver (§6) shared by commissionVideo and
+ * commissionVideoExperiment for whether THIS commission should actually
+ * request a D-ID avatar clip.
+ *
+ * TWO REGIMES, because remotion_compositions.requires_did_avatar encodes two
+ * different things depending on the composition:
+ *
+ *   MANDATORY (registry row found, requires_did_avatar=true — MarketUpdateReel,
+ *   AgentExplainerReel, the presentation slides, TeammateExplainerReel): the
+ *   avatar IS the format. Always request one; readiness is checked at RENDER
+ *   time by app/api/cron/director-reel-render (resolveAgentPresenterMedia +
+ *   the graceful `awaiting_presenter_setup` park) — unchanged by this
+ *   resolver, which just returns true and lets that existing gate do its job.
+ *
+ *   OPTIONAL (requires_did_avatar=false, e.g. EquityReportReel — m218: "the
+ *   avatar PIP is OPTIONAL"): the composition renders a complete, honest video
+ *   with NO avatar (remotion/EquityReportReel.tsx's avatarVideoUrl null path
+ *   falls back to the agent's photo, then a monogram) — so parking the whole
+ *   reel on presenter setup would be WRONG here; an anniversary equity update
+ *   is a real deliverable with or without a talking head. When the SITUATION
+ *   nonetheless PREFERS one (selectVideoFormat's `anniversary` case sets
+ *   needsAvatar:true for exactly this), this resolver checks READINESS NOW —
+ *   reusing the SAME resolveAgentPresenterMedia readiness check
+ *   director-reel-render already runs for the mandatory lanes — and only
+ *   requests the avatar clip when the agent's twin is actually ready. No twin
+ *   → no request; the composition's own no-avatar fallback is what "falls
+ *   back to presenter:none" means for an optional-avatar composition (there is
+ *   no per-commission finish-spec to flip; finish-spec's EquityReportReel entry
+ *   is `circle_pip` because the capability genuinely exists, not because every
+ *   commission uses it).
+ *
+ * D-ID CONSENT is untouched by this resolver: whichever path ends up
+ * requesting the avatar (director-reel-render → lib/did generateVideo) already
+ * enforces the 428 consent gate exactly as it does for every mandatory-avatar
+ * situation — nothing here weakens or duplicates it.
+ */
+async function resolveAvatarRequirement(
+  format: SelectedFormat,
+  registryRequiresAvatar: boolean,
+  agentUserId: string,
+  brokerageId: string,
+): Promise<boolean> {
+  if (registryRequiresAvatar) return true
+  if (!format.needsAvatar) return false
+  try {
+    const { resolveAgentPresenterMedia } = await import("@/lib/video/presenter-media")
+    const presenter = await resolveAgentPresenterMedia({ agentUserId, brokerageId })
+    return presenter.canRender
+  } catch {
+    // A readiness-check failure is not a reason to fabricate an avatar
+    // request the render step would just park anyway — fall back to no-avatar,
+    // which this composition already renders honestly.
+    return false
+  }
+}
+
 export interface CommissionOpts {
   brokerageId: string
   /** users.id of the agent. Resolved to the agents.id that
@@ -919,15 +984,22 @@ export async function commissionVideo(
   // If the Director ever needs to know, the call is
   // `consumesVoiceover(format.compositionId)` — pure, no registry round-trip.
   let supportsBookends = finish.bookends
-  let requiresAvatar = format.needsAvatar
+  let registryRequiresAvatar = format.needsAvatar
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
-      requiresAvatar = comp.requires_did_avatar
+      registryRequiresAvatar = comp.requires_did_avatar
     }
   } catch { /* registry read is best-effort — the format flags are the fallback */ }
+  // resolveAvatarRequirement (§6, one resolver shared with commissionVideoExperiment):
+  // MANDATORY compositions (registry requires_did_avatar=true) always request
+  // one — render-time readiness is director-reel-render's job, unchanged.
+  // OPTIONAL compositions the SITUATION nonetheless prefers (EquityReportReel
+  // via anniversary's needsAvatar:true) only request one when the agent's twin
+  // is actually ready right now — reusing the same readiness check.
+  const requiresAvatar = await resolveAvatarRequirement(format, registryRequiresAvatar, opts.agentUserId, opts.brokerageId)
 
   // 3. Idempotency key — one commission per (entity, situation kind). The entity
   //    is the listing (most kinds), then the contact (anniversary), then the
@@ -1447,15 +1519,17 @@ export async function commissionVideoExperiment(
   // was the `void requiresVoiceover` on the line after the try, written to
   // silence the unused-variable error rather than to do anything.
   let supportsBookends = finish.bookends
-  let requiresAvatar = format.needsAvatar
+  let registryRequiresAvatar = format.needsAvatar
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
-      requiresAvatar = comp.requires_did_avatar
+      registryRequiresAvatar = comp.requires_did_avatar
     }
   } catch { /* registry read best-effort */ }
+  // resolveAvatarRequirement — the SAME resolver commissionVideo uses (§6).
+  const requiresAvatar = await resolveAvatarRequirement(format, registryRequiresAvatar, opts.agentUserId, opts.brokerageId)
 
   // 3. Idempotency — one experiment per (entity, situation kind). Deterministic
   //    experiment_id so a re-run reuses the staged experiment instead of duplicating.
