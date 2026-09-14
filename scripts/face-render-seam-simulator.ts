@@ -302,11 +302,14 @@ function importScopeSection() {
     "lib/providers/simli/faces.ts",
     "lib/live-agent/face-render.ts",
   ]
-  const importers = candidates.filter((f) => /from ["']simli-client["']|import\(["']simli-client["']\)/.test(readStripped(f)))
+  // The runtime import targets the package's dist/client module directly
+  // (simli-client@3.0.2's index.js has a case-mismatched "./Client" require
+  // that fails on Linux) — still the ONE real import of the SDK.
+  const importers = candidates.filter((f) => /from ["']simli-client(\/dist\/client)?["']|import\(["']simli-client(\/dist\/client)?["']\)/.test(readStripped(f)))
   check("exactly ONE file imports the real 'simli-client' package (SimliFaceSession.tsx, dynamically)",
     importers.length === 1 && importers[0] === "app/components/features/ai-avatar-chat/SimliFaceSession.tsx")
-  check("the import is DYNAMIC (import(\"simli-client\")), not a static top-level import (bundle stays out of the primary path)",
-    /await import\(["']simli-client["']\)/.test(readStripped("app/components/features/ai-avatar-chat/SimliFaceSession.tsx")))
+  check("the import is DYNAMIC (import(\"simli-client/dist/client\")), not a static top-level import (bundle stays out of the primary path)",
+    /await import\(["']simli-client\/dist\/client["']\)/.test(readStripped("app/components/features/ai-avatar-chat/SimliFaceSession.tsx")))
   check("the server-side Simli modules (client.ts/faces.ts) do NOT import 'simli-client' (that's a browser SDK, not a server one)",
     !/from ["']simli-client["']/.test(readStripped("lib/providers/simli/client.ts")) &&
     !/from ["']simli-client["']/.test(readStripped("lib/providers/simli/faces.ts")))

@@ -82,7 +82,7 @@ export function SimliFaceSession({
 }: SimliFaceSessionProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
-  const clientRef = useRef<InstanceType<typeof import("simli-client").SimliClient> | null>(null)
+  const clientRef = useRef<InstanceType<typeof import("simli-client/dist/client").SimliClient> | null>(null)
   const recognitionRef = useRef<any>(null)
   const startedAtRef = useRef<number>(Date.now())
   const usageReportedRef = useRef(false)
@@ -104,7 +104,13 @@ export function SimliFaceSession({
 
     const boot = async () => {
       try {
-        const mod = await import("simli-client")
+        // DEEP PATH, NOT THE PACKAGE INDEX: simli-client@3.0.2's dist/index.js
+        // requires "./Client" while the shipped file is dist/client.js — a
+        // case mismatch that resolves on macOS and fails on Linux (CI build
+        // 2026-09-14: "Module not found: Can't resolve './Client'"). The
+        // class module itself has case-correct requires, so it is imported
+        // directly; revisit when a simli-client release fixes the index.
+        const mod = await import("simli-client/dist/client")
         if (cancelled) return
         if (!videoRef.current || !audioRef.current) return
 
@@ -143,7 +149,7 @@ export function SimliFaceSession({
         if (cancelled) { client.stop(); return }
         setStatus("ready")
       } catch (e) {
-        console.error("Simli boot failed (simli-client not installed yet?)", e)
+        console.error("Simli boot failed (SDK import or session start threw)", e)
         fail("Live Agent unavailable — switching to chat")
       }
     }
