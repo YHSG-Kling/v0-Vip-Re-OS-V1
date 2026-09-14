@@ -190,29 +190,16 @@ export async function bookMarketingService(params: {
     const vendor = pick.vendor
 
     // Create service booking.
-    // UNRESOLVED (lane 63B, CLAUDE.md §1 — "write null and document it as
-    // unresolved" branch, re-checked this wave against every candidate source):
-    //   · lib/marketing/package-catalog.ts PACKAGE_COSTS prices a whole TIER
-    //     ($0/$500/$1500/$3500), not any one service — splitting it evenly across
-    //     a package's services would weigh a social-media post the same as a
-    //     drone video, which is not a real number, it is an invented one wearing
-    //     the tier price's clothes.
-    //   · vendors (scripts/schema-snapshot.ts:709) carries NO price column
-    //     (base_price / quoted_price / rate) — confirmed against the live schema
-    //     cache, not assumed. lib/marketing/vendor-ranking.ts's own
-    //     UNMEASURED_RANKING_INPUTS already documents price as unweighable for
-    //     the same reason.
-    //   · vendor_price_intelligence (deal_coordinator's domain, per
-    //     lib/kernel/manager-registry.ts:1000) prices realized vendor_bookings,
-    //     which does not cover marketing services.
-    // No honest per-service figure exists anywhere in the schema, so
-    // `estimated_cost: null` is written EXPLICITLY (as a literal key, not
-    // omitted) — the deliberate value CLAUDE.md §1 sanctions, and it is what
-    // opposite-missing-census.ts's col-read-no-write check reads as a real
-    // writer (it looks for the column name as an insert/update key, not for a
-    // non-null value). Revisit if a real per-service quote source is ever added
-    // (e.g. a vendor_id-scoped quote on the booking, or a per-service line item
-    // on the package).
+    // estimated_cost is deliberately omitted (stays NULL): the bench carries no
+    // price for a vendor and the package catalog prices a whole TIER, not one
+    // service, so there is no honest per-service figure to persist here. A number
+    // invented at booking time would be indistinguishable from a quote.
+    // DO NOT ADD `estimated_cost` TO THIS INSERT (even as null): this column is
+    // scripts/writerless-gate-simulator.ts's live CANARY (its "1b still reports a
+    // genuine writerless read" positive control, ~line 396). Writing the key
+    // blinds that control and turns the guard chain red (wave 63 paid for it).
+    // The only sanctioned change is repointing this writer onto a REAL
+    // per-service quote source once one exists in the schema, and saying so there.
     const { data: service, error } = await supabase
       .from("listing_marketing_services")
       .insert({
@@ -222,7 +209,6 @@ export async function bookMarketingService(params: {
         vendor_id: vendor.id,
         scheduled_date: params.preferredDate || null,
         status: "scheduled",
-        estimated_cost: null,
       })
       .select()
       .single()
