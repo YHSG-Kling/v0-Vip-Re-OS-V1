@@ -104,7 +104,7 @@
     "lib/contact-promotion/conversion-welcome.ts": 1,
     "lib/crm/import-pull.ts": 4,
     "lib/data-guard/index.ts": 1,
-    "lib/did/avatar-completion.ts": 3,
+    "lib/did/avatar-completion.ts": 2,
     "lib/direct-mail/address-suppression.ts": 2,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
@@ -437,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9457,
+  "census": 9465,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1128,6 +1128,7 @@
     "app/api/cron/deal-health-scan/route.ts": 2,
     "app/api/cron/deal-killer-radar/route.ts": 1,
     "app/api/cron/did-agent-sync/route.ts": 1,
+    "app/api/cron/did-result-url-rehost-sweep/route.ts": 1,
     "app/api/cron/director-reel-render/route.ts": 1,
     "app/api/cron/dispatch/route.ts": 1,
     "app/api/cron/distribute-podcast-episodes/route.ts": 1,
@@ -1173,7 +1174,6 @@
     "app/api/cron/listing-promo-social-publish/route.ts": 1,
     "app/api/cron/listing-propensity/route.ts": 1,
     "app/api/cron/listing-seller-update-video/route.ts": 1,
-    "app/api/cron/live-agent-session-sweep/route.ts": 1,
     "app/api/cron/long-term-nurture/route.ts": 1,
     "app/api/cron/lookalike-audience/route.ts": 1,
     "app/api/cron/manager-eval/route.ts": 1,
@@ -1331,6 +1331,7 @@
     "app/api/leads/raw/route.ts": 1,
     "app/api/leads/route.ts": 1,
     "app/api/listings/[listingId]/upload-document/route.ts": 1,
+    "app/api/live-agent/simli-turn/route.ts": 1,
     "app/api/meetings/sdk-signature/route.ts": 1,
     "app/api/migrate/verify/route.ts": 1,
     "app/api/objection-training/voice-session/route.ts": 1,
@@ -1525,6 +1526,7 @@
     "app/components/features/admin/subscription-tier-card.tsx": 1,
     "app/components/features/agent-assistant/voice-assistant-overlay.tsx": 1,
     "app/components/features/ai-avatar-chat/AgentsWidget.tsx": 1,
+    "app/components/features/ai-avatar-chat/SimliFaceSession.tsx": 1,
     "app/components/features/dashboard/brokerage/compliance-overview.tsx": 1,
     "app/components/features/dashboard/brokerage/revenue-chart.tsx": 1,
     "app/components/features/education/EducationEditor.tsx": 1,
@@ -3017,7 +3019,8 @@
     "lib/did/contract.ts": 8,
     "lib/did/gateway.ts": 2,
     "lib/did/index.ts": 1,
-    "lib/did/live-session-metering.ts": 6,
+    "lib/did/live-session-metering.ts": 7,
+    "lib/did/result-url-rehost-sweep.ts": 1,
     "lib/did/webhook.ts": 3,
     "lib/direct-mail/address-suppression.ts": 4,
     "lib/direct-mail/campaign-drain.ts": 1,
@@ -3162,7 +3165,7 @@
     "lib/forms/pdf-form-fill.ts": 2,
     "lib/forms/prefill-property-into-pdf.ts": 1,
     "lib/gamification/award-points.ts": 1,
-    "lib/gamification/leaderboard-vocabulary.ts": 6,
+    "lib/gamification/leaderboard-vocabulary.ts": 5,
     "lib/gamification/tiers.ts": 4,
     "lib/geo/citation-scope.ts": 4,
     "lib/geo/citation-share.ts": 3,
@@ -3674,6 +3677,7 @@
     "lib/listings/seller-weekly-report-runner.ts": 1,
     "lib/listings/seller-weekly-report.ts": 4,
     "lib/listings/tier-assigner.ts": 10,
+    "lib/live-agent/face-render.ts": 1,
     "lib/managers/accuracy-gate.ts": 10,
     "lib/managers/autonomy-gate.ts": 5,
     "lib/managers/cross-referral.ts": 6,
@@ -3905,6 +3909,8 @@
     "lib/providers/openai-ads.ts": 4,
     "lib/providers/outbound-sender.ts": 7,
     "lib/providers/payment/index.ts": 7,
+    "lib/providers/simli/client.ts": 2,
+    "lib/providers/simli/faces.ts": 1,
     "lib/providers/tenancy-matrix.ts": 1,
     "lib/providers/vibe.ts": 5,
     "lib/providers/web-push.ts": 2,
@@ -4127,7 +4133,7 @@
     "lib/video/chapter-video-generator.ts": 1,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
-    "lib/video/composite-attribution.ts": 5,
+    "lib/video/composite-attribution.ts": 6,
     "lib/video/comps-animation-spec.ts": 1,
     "lib/video/director-content.ts": 16,
     "lib/video/director-eval-harness.ts": 5,
@@ -8453,6 +8459,9 @@
     "app/api/cron/did-agent-sync/route.ts": [
       "GET"
     ],
+    "app/api/cron/did-result-url-rehost-sweep/route.ts": [
+      "GET"
+    ],
     "app/api/cron/director-reel-render/route.ts": [
       "GET"
     ],
@@ -8590,9 +8599,6 @@
       "GET"
     ],
     "app/api/cron/listing-seller-update-video/route.ts": [
-      "GET"
-    ],
-    "app/api/cron/live-agent-session-sweep/route.ts": [
       "GET"
     ],
     "app/api/cron/long-term-nurture/route.ts": [
@@ -9072,6 +9078,9 @@
       "GET"
     ],
     "app/api/listings/[listingId]/upload-document/route.ts": [
+      "POST"
+    ],
+    "app/api/live-agent/simli-turn/route.ts": [
       "POST"
     ],
     "app/api/meetings/sdk-signature/route.ts": [
@@ -9671,6 +9680,9 @@
     ],
     "app/components/features/ai-avatar-chat/AgentsWidget.tsx": [
       "AgentsWidget"
+    ],
+    "app/components/features/ai-avatar-chat/SimliFaceSession.tsx": [
+      "SimliFaceSession"
     ],
     "app/components/features/dashboard/brokerage/compliance-overview.tsx": [
       "BrokerageComplianceOverview"
@@ -15163,8 +15175,12 @@
       "startLiveAgentSession",
       "heartbeatLiveAgentSession",
       "endLiveAgentSession",
+      "resolveOpenSimliSession",
       "sweepStaleLiveAgentSessions",
       "listLiveAgentSessionsForBrokerage"
+    ],
+    "lib/did/result-url-rehost-sweep.ts": [
+      "runDidResultUrlRehostSweep"
     ],
     "lib/did/webhook.ts": [
       "didWebhookUrl",
@@ -15875,7 +15891,6 @@
     "lib/gamification/leaderboard-vocabulary.ts": [
       "isLeaderboardScope",
       "isLeaderboardMetric",
-      "isoWeekLabel",
       "periodWindows",
       "isCanonicalPeriodLabel",
       "defaultPeriodLabel"
@@ -18520,6 +18535,9 @@
       "deleteTierBudget",
       "deleteTierDistribution"
     ],
+    "lib/live-agent/face-render.ts": [
+      "resolveFaceRenderProvider"
+    ],
     "lib/managers/accuracy-gate.ts": [
       "accuracyGateVerdict",
       "accuracyHold",
@@ -19693,6 +19711,13 @@
       "createAccountLink",
       "getStripeBalance"
     ],
+    "lib/providers/simli/client.ts": [
+      "simliConfigured",
+      "mintSimliSessionToken"
+    ],
+    "lib/providers/simli/faces.ts": [
+      "ensureSimliFaceForAgent"
+    ],
     "lib/providers/tenancy-matrix.ts": [
       "providerTenancy"
     ],
@@ -20708,6 +20733,7 @@
       "concatIntroOutro",
       "compositeExplainerVideo",
       "planBrollCutaways",
+      "probeRemoteVideoDurationSeconds",
       "compositeBrollCutaways"
     ],
     "lib/video/comps-animation-spec.ts": [

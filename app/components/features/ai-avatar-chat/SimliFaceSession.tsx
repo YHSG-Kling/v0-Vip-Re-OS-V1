@@ -227,13 +227,21 @@ export function SimliFaceSession({
       setMessages((m) => [...m, { role: "agent", text: replyText }])
 
       // PCM16 mono 16kHz — the SAME ElevenLabs voice clone every other
-      // surface speaks in (resolveSelfVoice), just a different output_format.
+      // surface speaks in. liveSessionId (lane 63B) lets the route resolve
+      // the assigned agent's voice OFF the live_agent_sessions row instead
+      // of requiring a Supabase session — the anonymous embed/site visitor
+      // leg has none; the portal contact leg is covered by the same branch
+      // rather than a second one.
       const ttsRes = await fetch("/api/internal/voice-tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: replyText, format: "pcm_16000" }),
+        body: JSON.stringify({ text: replyText, format: "pcm_16000", liveSessionId }),
       })
-      if (!ttsRes.ok || !ttsRes.body) throw new Error(`voice-tts failed (${ttsRes.status})`)
+      if (!ttsRes.ok || !ttsRes.body) {
+        // Read the refusal reason by name (never silent) — census: route-response-field.
+        const { error, code } = await ttsRes.json().catch(() => ({}))
+        throw new Error(`voice-tts failed (${ttsRes.status})${error ? `: ${error}` : ""}${code ? ` [${code}]` : ""}`)
+      }
 
       setStatus("speaking")
       const reader = ttsRes.body.getReader()

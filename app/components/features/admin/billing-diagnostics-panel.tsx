@@ -116,6 +116,10 @@ export function BillingDiagnosticsPanel({ defaultBrokerageId }: BillingDiagnosti
         `/api/admin/billing/entitlements/${brokerageId.trim()}?featureKey=${encodeURIComponent(featureKey.trim())}`
       )
       const data = await res.json()
+      // data.error carries through to featureResult.error below (rendered at
+      // line ~208) — read here too so a refused lookup is traceable in the
+      // console the moment it happens, not only if the panel re-renders.
+      if (!data.success && data.error) console.warn(`[billing-diagnostics] entitlement lookup refused: ${data.error}`)
       setFeatureResult(data)
     } catch (err) {
       setFeatureResult({ success: false, error: err instanceof Error ? err.message : "Unknown error" })

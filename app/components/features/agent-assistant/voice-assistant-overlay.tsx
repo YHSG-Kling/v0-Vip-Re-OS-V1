@@ -87,7 +87,15 @@ function closeAssistantSession(sessionId: string | null) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId }),
       keepalive: true,
-    }).catch(() => {})
+    })
+      .then(async (res) => {
+        const { ok, closed } = await res.json().catch(() => ({}))
+        // `closed: 0` means already-closed or wrong-owner (§3) — neither is
+        // actionable from a torn-down overlay, but it is worth a trace rather
+        // than a swallowed promise.
+        if (!ok || closed === 0) console.debug(`[agent-assistant] close ${sessionId}: ok=${ok} closed=${closed}`)
+      })
+      .catch(() => {})
   } catch {
     // The conversation is already torn down; a failed close is recoverable by
     // the session's own staleness bound in the tool-call webhook.
@@ -120,14 +128,19 @@ export function VoiceAssistantOverlay() {
   useEffect(() => {
     if (!voiceOverlayOpen) return
     let cancelled = false
-    fetch("/api/agent-assistant/session")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((body) => {
-        if (!cancelled && body && Array.isArray(body.sessions)) {
+    ;(async () => {
+      try {
+        const res = await fetch("/api/agent-assistant/session")
+        if (!res.ok) return
+        const body = await res.json()
+        if (!cancelled && Array.isArray(body.sessions)) {
           setRecent(body.sessions as RecentSession[])
         }
-      })
-      .catch(() => {})
+      } catch {
+        // A refused/failed read must not paint as "no recent sessions" —
+        // `recent` stays null and the panel simply doesn't render.
+      }
+    })()
     return () => {
       cancelled = true
     }
@@ -168,7 +181,12 @@ export function VoiceAssistantOverlay() {
           setStatus("error")
           return
         }
-        const session = (await res.json()) as SessionResult
+        const session = await res.json() as SessionResult
+        // Correlate this browser session with the ElevenLabs Conv-AI agent it
+        // was minted against — the one field of the envelope with no UI use,
+        // kept visible in diagnostics so a signed-url failure can be traced
+        // back to which agent record issued it.
+        console.debug(`[agent-assistant] session ${session.sessionId ?? "?"} on conv-ai agent ${session.convAiAgentId}`)
         if (cancelled) {
           // The overlay closed while the session was minting. The row exists on
           // the server whether or not this component still wants it, so it is

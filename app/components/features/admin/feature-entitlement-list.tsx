@@ -35,10 +35,10 @@ export function FeatureEntitlementList({ brokerageId }: FeatureEntitlementListPr
     try {
       setLoading(true)
       const response = await fetch(`/api/admin/billing/dashboard?brokerageId=${brokerageId}`)
+      const data = await response.json().catch(() => ({}))
 
-      if (!response.ok) throw new Error("Failed to fetch features")
+      if (!response.ok) throw new Error(data.error ?? "Failed to fetch features")
 
-      const data = await response.json()
       setFeatures(data.features || [])
       setError(null)
     } catch (err) {
@@ -68,7 +68,10 @@ export function FeatureEntitlementList({ brokerageId }: FeatureEntitlementListPr
         }
       )
 
-      if (!response.ok) throw new Error("Failed to apply trial")
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error ?? "Failed to apply trial")
+      }
 
       await fetchFeatures()
     } catch (err) {

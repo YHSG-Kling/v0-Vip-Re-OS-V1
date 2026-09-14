@@ -104,7 +104,7 @@ export default function ApprovalsPage() {
       if (response.ok) {
         setItems(data.items || [])
       } else {
-        toast.error("Failed to load approvals")
+        toast.error(data.error ?? "Failed to load approvals")
       }
     } catch (error) {
       console.error("[v0] Error fetching approvals:", error)
@@ -137,11 +137,14 @@ export default function ApprovalsPage() {
         }),
       })
 
-      if (response.ok) {
+      const data = await response.json().catch(() => ({}))
+      if (response.ok && data.success) {
         setItems((prev) => prev.filter((i) => i.id !== item.id))
+        // data.type/data.target_id confirm WHICH row the cascade actually
+        // touched — logged so a mismatch (wrong table/id) is never silent.
+        console.log(`[approvals] approved ${data.type ?? item.type}:${data.target_id ?? item.id}`)
         toast.success(item.type === "offer" ? "Offer accepted" : "Item approved successfully")
       } else {
-        const data = await response.json().catch(() => ({}))
         toast.error(data.error ?? "Failed to approve item")
       }
     } catch (error) {
@@ -166,11 +169,12 @@ export default function ApprovalsPage() {
         }),
       })
 
-      if (response.ok) {
+      const data = await response.json().catch(() => ({}))
+      if (response.ok && data.success) {
         setItems((prev) => prev.filter((i) => i.id !== item.id))
+        console.log(`[approvals] rejected ${data.type ?? item.type}:${data.target_id ?? item.id}`)
         toast.success(item.type === "offer" ? "Offer declined" : "Item rejected successfully")
       } else {
-        const data = await response.json().catch(() => ({}))
         toast.error(data.error ?? "Failed to reject item")
       }
     } catch (error) {

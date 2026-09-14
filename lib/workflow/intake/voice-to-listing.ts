@@ -248,6 +248,20 @@ function summarizeIntake(intake: ListingIntake): string {
 // generic over the two intake types would trade a real behavioral
 // difference (the offer twin reads `intake.listingId.value`) for a thinner
 // abstraction, which §1.1 forbids.
+//
+// RE-VERIFIED — duplicates round 9, 2026-09-14, lane 63C: the census still
+// flags this pair as "SAME BODY" every run. It is a scanner false positive,
+// not a fresh regression: `diff` on the two functions' real text shows three
+// live differences (the input type name, the "listing agreement"/"offer"
+// error string, and the `listingId: null` vs
+// `listingId: input.intake.listingId.value ?? null` line) that a
+// whitespace/comment-only normalization cannot erase. The likely cause is
+// scripts/duplicate-function-census.ts's own documented blind spot: this
+// function's return type is itself an object literal (`): { brokerageId:
+// string; ...; listingId?: string | null }`), so its `{` can be misread as
+// the body-open brace, hashing the (identical) return-type shape instead of
+// the (different) body. Do not merge these on a future SAME BODY hit without
+// re-diffing them first — see the rationale above, which still holds.
 export function intakeToListingDraftParams(input: {
   intake:       ListingIntake
   brokerageId:  string

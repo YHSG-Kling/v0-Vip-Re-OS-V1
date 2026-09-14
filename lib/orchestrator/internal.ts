@@ -156,7 +156,12 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
     // message naming exactly what it tested still scored as naming a different
     // noun. It is also plainly better for the person reading the throw.
     if (!listingId) throw new Error("No listingId on the transaction.closing_soon payload — scheduleClosingGift needs one (payload key: listing_id)")
-    return (await import("@/app/actions/listing-lifecycle")).scheduleClosingGift(String(listingId))
+    // Repointed to the lib survivor (lane 63B, CLAUDE.md §1): the only consumer of
+    // app/actions/listing-lifecycle.ts's `export { scheduleClosingGift }` forwarding
+    // re-export was this dynamic import — a "use server" file may only export async
+    // functions (§4), so the bare re-export was itself a hazard. Import the real
+    // implementation directly instead.
+    return (await import("@/lib/application/listing-lifecycle")).scheduleClosingGift(String(listingId))
   },
   "transaction.closed": async (e) => (await import("@/app/actions/listing-lifecycle")).triggerReviewSequence(e.payload),
 

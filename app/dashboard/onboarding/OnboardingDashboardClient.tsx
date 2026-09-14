@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import confetti from 'canvas-confetti'
+import { toast } from 'sonner'
 import { 
   Check, 
   Lock, 
@@ -171,6 +172,14 @@ export function OnboardingDashboardClient({
     setGeneratingReport(true)
     try {
       const res = await fetch('/api/onboarding/performance-report', { method: 'POST' })
+      if (!res.ok) {
+        // A refusal (fair-use cap, no agent profile, …) has no stream body —
+        // read the reason by name instead of letting the reader fall through
+        // silently (§2: a swallowed refusal degrades silently).
+        const { error } = await res.json().catch(() => ({}))
+        toast.error(error ?? 'Could not generate performance report')
+        return
+      }
       const reader = res.body?.getReader()
       if (!reader) return
 

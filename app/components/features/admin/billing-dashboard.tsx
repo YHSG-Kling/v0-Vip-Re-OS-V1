@@ -79,11 +79,15 @@ export function BillingDashboard({ brokerageId }: BillingDashboardProps) {
           { method: "GET" }
         )
 
+        const data = await response.json().catch(() => ({}))
+
         if (!response.ok) {
-          throw new Error("Failed to load billing data")
+          // The endpoint names the actual refusal (auth vs. a kernel-level
+          // error) — the UNRESOLVED note above still applies to WHICH seats
+          // get refused, but the reason itself must reach the card.
+          throw new Error(data.error ?? "Failed to load billing data")
         }
 
-        const data = await response.json()
         setBillingData(data)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error")

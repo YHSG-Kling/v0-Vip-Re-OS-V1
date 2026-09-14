@@ -226,8 +226,66 @@ export async function endLiveAgentSession(
  *  crashed, lost network, or the visitor just closed the laptop lid. Billed
  *  at the HEARTBEAT-DERIVED duration (last_seen_at − started_at): an
  *  underestimate of true wall time by at most one heartbeat interval, which
- *  is the honest number when the accurate one never arrives. */
-const STALE_AFTER_MS = 10 * 60 * 1000
+ *  is the honest number when the accurate one never arrives.
+ *
+ *  Exported (lane 63B) so every consumer of "is this session's heartbeat
+ *  still fresh" — the sweeper here, and resolveOpenSimliSession below — reads
+ *  the SAME threshold rather than a second hand-rolled 10-minute literal. */
+export const STALE_AFTER_MS = 10 * 60 * 1000
+
+/**
+ * THE ONE SESSION-ROW RESOLVER for a Simli face-render TURN (lane 63B).
+ * Both app/api/live-agent/simli-turn/route.ts (the brain relay) and
+ * app/api/internal/voice-tts/route.ts (the anonymous TTS fail-over leg) need
+ * the identical proof before doing anything on a caller-supplied
+ * `liveSessionId`: the row exists, is OPEN ('active'), is a SIMLI session
+ * (never D-ID's — a Simli client has no business driving a D-ID session's
+ * usage), and its heartbeat is still fresh (an id from a tab that died 20
+ * minutes ago must not keep minting brain replies or paid TTS audio). One
+ * resolver, never a second copy of this same four-part check (§6).
+ *
+ * TENANT NEVER FROM THE BODY (CLAUDE.md §4): brokerage_id/agent_id/contact_id
+ * are read OFF THIS ROW, by an id the caller does not get to interpret —
+ * they only get to name which row, not what it says.
+ */
+export interface OpenSimliSession {
+  id: string
+  brokerageId: string
+  agentId: string | null
+  contactId: string | null
+}
+export type ResolveOpenSimliSessionResult =
+  | { ok: true; session: OpenSimliSession }
+  | { ok: false; status: 404 | 409; error: string }
+
+export async function resolveOpenSimliSession(
+  svc: Svc,
+  liveSessionId: string,
+): Promise<ResolveOpenSimliSessionResult> {
+  const { data: row, error } = await svc
+    .from("live_agent_sessions")
+    .select("id, brokerage_id, agent_id, contact_id, provider, status, last_seen_at")
+    .eq("id", liveSessionId)
+    .maybeSingle()
+
+  if (error || !row) return { ok: false, status: 404, error: "session not found" }
+  if (row.provider !== "simli" || row.status !== "active") {
+    return { ok: false, status: 409, error: "session is not an active Simli session" }
+  }
+  const lastSeenMs = new Date(row.last_seen_at as string).getTime()
+  if (!Number.isFinite(lastSeenMs) || Date.now() - lastSeenMs > STALE_AFTER_MS) {
+    return { ok: false, status: 409, error: "session heartbeat is stale" }
+  }
+  return {
+    ok: true,
+    session: {
+      id: row.id as string,
+      brokerageId: row.brokerage_id as string,
+      agentId: (row.agent_id as string | null) ?? null,
+      contactId: (row.contact_id as string | null) ?? null,
+    },
+  }
+}
 
 export async function sweepStaleLiveAgentSessions(
   svc: Svc = createServiceClient(),

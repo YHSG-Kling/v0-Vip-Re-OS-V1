@@ -14,8 +14,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
-import { rankPoints, partitionByTeam, isoWeekLabel, monthLabel, POPULATED_METRICS, CLOSED_STATES_ARE_REAL, type LedgerRow } from "../lib/recruiting/leaderboard"
-import { LEADERBOARD_SCOPES, LEADERBOARD_METRICS, periodWindows, isCanonicalPeriodLabel } from "../lib/gamification/leaderboard-vocabulary"
+import { rankPoints, partitionByTeam, POPULATED_METRICS, CLOSED_STATES_ARE_REAL, type LedgerRow } from "../lib/recruiting/leaderboard"
+import { LEADERBOARD_SCOPES, LEADERBOARD_METRICS, periodWindows, isCanonicalPeriodLabel, monthLabel } from "../lib/gamification/leaderboard-vocabulary"
+import { isoWeekOf as isoWeekLabel } from "../lib/format/dates"
 import { tierForPoints, nextTierForPoints } from "../lib/gamification/tiers"
 import { computeRetentionScore, type RetentionSignals } from "../lib/recruiting/retention-score"
 

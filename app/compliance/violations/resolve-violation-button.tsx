@@ -11,6 +11,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2 } from "lucide-react"
+import { toast } from "sonner"
 
 export function ResolveViolationButton({ flagId }: { flagId: string }) {
   const router = useRouter()
@@ -24,10 +25,17 @@ export function ResolveViolationButton({ flagId }: { flagId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ flagId, status: "resolved" }),
       })
-      if (res.ok) router.refresh()
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        router.refresh()
+      } else {
+        // best-effort UI action — a failed resolve just leaves the flag open,
+        // which is the fail-closed outcome (CLAUDE.md §4), but the reason it
+        // refused must not be silent.
+        toast.error(data.error ?? "Could not resolve the flag")
+      }
     } catch {
-      // best-effort UI action — a failed resolve just leaves the flag open,
-      // which is the fail-closed outcome (CLAUDE.md §4)
+      toast.error("Could not resolve the flag")
     } finally {
       setLoading(false)
     }

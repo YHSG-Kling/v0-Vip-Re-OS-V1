@@ -34,6 +34,7 @@
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveOpenSimliSession } from "@/lib/did/live-session-metering"
 
 export const runtime = "nodejs"
 
@@ -58,30 +59,26 @@ export async function POST(request: NextRequest) {
   }
 
   const svc = createServiceClient()
-  const { data: session, error: sessionError } = await svc
-    .from("live_agent_sessions")
-    .select("id, brokerage_id, contact_id, provider, status")
-    .eq("id", liveSessionId)
-    .maybeSingle()
-
-  if (sessionError || !session) {
-    return NextResponse.json({ error: "session not found" }, { status: 404 })
+  // THE ONE SESSION-ROW RESOLVER (lane 63B, §6) — open + heartbeat-fresh +
+  // provider==='simli', shared with app/api/internal/voice-tts/route.ts's
+  // anonymous TTS fail-over leg. Never a second copy of this check.
+  const resolved = await resolveOpenSimliSession(svc, liveSessionId)
+  if (!resolved.ok) {
+    return NextResponse.json({ error: resolved.error }, { status: resolved.status })
   }
-  if (session.provider !== "simli" || session.status !== "active") {
-    return NextResponse.json({ error: "session is not an active Simli session" }, { status: 409 })
-  }
+  const session = resolved.session
 
   // ── Resolve the SAME [[CTX:...]] marker custom-llm already parses ───────
   let marker: string
-  if (session.contact_id) {
-    marker = `[[CTX:contactId=${session.contact_id}]] `
+  if (session.contactId) {
+    marker = `[[CTX:contactId=${session.contactId}]] `
   } else if (body?.embedSessionId) {
     const { data: embedSession } = await svc
       .from("embed_sessions")
       .select("id, brokerage_id")
       .eq("id", body.embedSessionId)
       .maybeSingle()
-    if (!embedSession || embedSession.brokerage_id !== session.brokerage_id) {
+    if (!embedSession || embedSession.brokerage_id !== session.brokerageId) {
       return NextResponse.json({ error: "embedSessionId does not match this session's tenant" }, { status: 403 })
     }
     marker = `[[CTX:embedSessionId=${body.embedSessionId}]] `

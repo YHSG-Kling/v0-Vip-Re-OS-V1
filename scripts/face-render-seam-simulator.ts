@@ -285,6 +285,51 @@ function pcm16kSection() {
   const unchunkedSpecimen = `clientRef.current?.sendAudioData(fullBuffer)`
   check("[control] an unchunked specimen has no PCM_CHUNK_BYTES reference (this check can fail)",
     !/PCM_CHUNK_BYTES/.test(unchunkedSpecimen))
+
+  // ── ANONYMOUS FAIL-OVER BRANCH (lane 63B) ──────────────────────────────
+  // Before this landed, voice-tts was gated on a Supabase session with no
+  // other door in — an anonymous embed/site visitor's Simli leg 401'd. The
+  // fix is session-SCOPED, not session-LESS: liveSessionId names a row, and
+  // every fact used to synthesize (tenant, agent, voice) is read OFF THAT
+  // ROW, never trusted from the body (CLAUDE.md §4).
+  const metering = readStripped("lib/did/live-session-metering.ts")
+  const simliTurn = readStripped("app/api/live-agent/simli-turn/route.ts")
+
+  check("SimliFaceSession sends liveSessionId to voice-tts (the anonymous leg has no Supabase session to authenticate with)",
+    /voice-tts["'][\s\S]{0,200}?body:\s*JSON\.stringify\(\{[^}]*liveSessionId/.test(session))
+  check("voice-tts branches on a liveSessionId in the body before requiring a Supabase session",
+    /if\s*\(liveSessionId\)/.test(tts))
+  check("voice-tts resolves the open Simli session through the ONE shared resolver (never a second inline lookup)",
+    /resolveOpenSimliSession\(/.test(tts) && /from ["']@\/lib\/did\/live-session-metering["']/.test(tts))
+  check("the SAME resolveOpenSimliSession is exported from lib/did/live-session-metering.ts",
+    /export async function resolveOpenSimliSession\(/.test(metering))
+  check("simli-turn/route.ts was repointed onto the SAME shared resolver (no duplicate session-row lookup left behind)",
+    /resolveOpenSimliSession\(/.test(simliTurn) && !/\.from\(["']live_agent_sessions["']\)\s*\n\s*\.select\(["']id, brokerage_id, contact_id, provider, status["']\)/.test(simliTurn))
+  check("voice-tts resolves the agent's VOICE via resolveVideoIdentity(purpose:'contact_facing') — the client-facing survivor, never resolveSelfVoice for this branch",
+    /resolveVideoIdentity\(svc,\s*\{[\s\S]{0,120}?purpose:\s*["']contact_facing["']/.test(tts))
+  check("[control] voice-tts's liveSessionId branch never reads brokerageId/agentId literally off `body.` (tenant comes off the row, not the caller's claim)",
+    !/body\.(brokerageId|agentId)\b/.test(tts))
+
+  // resolveOpenSimliSession itself: proves the three refusals exist in source
+  // (open, fresh, simli-only) — not merely that some check runs.
+  check("resolveOpenSimliSession refuses a NON-SIMLI or non-active session (row.provider/row.status)",
+    /row\.provider !== ["']simli["'] \|\| row\.status !== ["']active["']/.test(metering))
+  check("resolveOpenSimliSession refuses a STALE heartbeat against the shared STALE_AFTER_MS (not a second hand-rolled window)",
+    /Date\.now\(\) - lastSeenMs > STALE_AFTER_MS/.test(metering) && /export const STALE_AFTER_MS/.test(metering))
+  check("resolveOpenSimliSession refuses a session id that does not resolve to a row (404, not a silent pass)",
+    /error \|\| !row\) return \{ ok: false, status: 404/.test(metering))
+
+  // CONTROL: a specimen resolver that skips the freshness check is NOT
+  // recognized as fresh-gated — proves the regex above isn't vacuously true
+  // on any function merely named resolveOpenSimliSession.
+  const staleBlindSpecimen = `
+    export async function resolveOpenSimliSession(svc, liveSessionId) {
+      const { data: row } = await svc.from("live_agent_sessions").select("*").eq("id", liveSessionId).maybeSingle()
+      if (!row || row.provider !== "simli" || row.status !== "active") return { ok: false, status: 409, error: "bad" }
+      return { ok: true, session: row }
+    }`
+  check("[control] a resolver missing the heartbeat check does NOT match the freshness assertion (proves it isn't a no-op)",
+    !/Date\.now\(\) - lastSeenMs > STALE_AFTER_MS/.test(staleBlindSpecimen))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

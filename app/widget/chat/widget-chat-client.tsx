@@ -89,25 +89,39 @@ export default function WidgetChatClient({
       return
     }
     const stored = typeof window !== "undefined" ? sessionStorage.getItem(SESSION_KEY) : null
-    fetch("/api/widget/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        brokerage_slug: brokerageSlug,
-        agent_id: agentId ?? null,
-        source: "website_widget",
-        visitor_fingerprint: getFingerprint(),
-        resume_token: stored ?? null,
-      }),
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((data) => {
+    ;(async () => {
+      try {
+        const res = await fetch("/api/widget/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            brokerage_slug: brokerageSlug,
+            agent_id: agentId ?? null,
+            source: "website_widget",
+            visitor_fingerprint: getFingerprint(),
+            resume_token: stored ?? null,
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setSessionError(data.error ?? "Could not connect. Please try again later.")
+          return
+        }
         setSessionToken(data.session_token)
         setIdentity(data.identity)
+        // A resumed session that already captured the visitor's details must
+        // not re-prompt intake — capture_state mirrors chat_sessions' own
+        // state (§1: a returned field with no reader was silently ignored).
+        if (data.capture_state === "captured" || data.capture_state === "signals_captured") {
+          setIntakeSubmitted(true)
+        }
+        console.debug(`[widget] session ${data.session_id} ready (capture_state=${data.capture_state})`)
         sessionStorage.setItem(SESSION_KEY, data.session_token)
         setSessionReady(true)
-      })
-      .catch(() => setSessionError("Could not connect. Please try again later."))
+      } catch {
+        setSessionError("Could not connect. Please try again later.")
+      }
+    })()
   }, [brokerageSlug, agentId])
 
   const [inputValue, setInputValue] = useState("")

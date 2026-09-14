@@ -24,8 +24,6 @@ import type { createServiceClient } from "@/lib/supabase/service"
 import {
   LEADERBOARD_METRICS,
   periodWindows,
-  isoWeekLabel,
-  monthLabel,
   ALL_TIME_PERIOD,
   type LeaderboardMetric,
 } from "@/lib/gamification/leaderboard-vocabulary"
@@ -33,9 +31,13 @@ import { TRANSACTION_STATUSES, type TransactionStatus } from "@/lib/transactions
 
 type Svc = ReturnType<typeof createServiceClient>
 
-// Re-exported: the period vocabulary is shared, and callers of this module (the cron, the
-// simulator) have always reached for the labels here.
-export { isoWeekLabel, monthLabel, ALL_TIME_PERIOD }
+// TOMBSTONE (lane 63B, CLAUDE.md §1) — `export { isoWeekLabel, monthLabel }` was
+// REMOVED here (forwarded-only re-export, no in-tree app/lib/hooks importer of the
+// re-export). Survivor: lib/gamification/leaderboard-vocabulary.ts (isoWeekLabel,
+// monthLabel), which itself wraps lib/format/dates.ts. scripts/leaderboard-simulator.ts
+// still imports both names directly from this module's own import binding, which is
+// unaffected by removing the re-export line.
+export { ALL_TIME_PERIOD }
 
 /**
  * A deal in one of these states has closed — `closed` is recorded, `funded` is disbursed. Typed

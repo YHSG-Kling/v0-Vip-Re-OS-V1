@@ -644,6 +644,12 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     })
       .then(async (res) => {
         if (!res.ok || !res.body) {
+          // Surface the refusal reason (never silent) before the graceful
+          // browser-TTS fallback — census: route-response-field.
+          try {
+            const { error, code } = await res.json()
+            if (error) console.warn(`voice-tts refused: ${error}${code ? ` (${code})` : ""}`)
+          } catch {}
           speakViaBrowser()
           return
         }
@@ -672,6 +678,18 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
         body: JSON.stringify({ transcript, sessionId }),
       })
       const data = await res.json()
+
+      if (!res.ok) {
+        // A refusal (unauthorized / no agent profile / bad transcript) has no
+        // spokenResponse — data.ok is false only on the "not ready yet" 409,
+        // data.error on every other refusal. Either way the assistant must
+        // SAY something, never process silently as if nothing came back.
+        const refusalMsg = data.ok === false ? data.spoken : data.error
+        const msg = refusalMsg ?? "Sorry, I couldn't process that command. Please try again."
+        setVoiceResponse(msg)
+        speakText(msg)
+        return
+      }
 
       if (data.spokenResponse) {
         setVoiceResponse(data.spokenResponse)

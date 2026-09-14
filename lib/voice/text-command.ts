@@ -166,7 +166,7 @@ export async function runStaffTextCommand(
       },
       body: JSON.stringify({ transcript: text, surface: "sms" }),
     })
-    const payload = (await res.json().catch(() => null)) as { spokenResponse?: string; intent?: string; spoken?: string; error?: string } | null
+    const payload = await res.json().catch(() => null)
     if (res.ok && payload?.spokenResponse) {
       spoken = payload.spokenResponse
       intent = payload.intent ?? null

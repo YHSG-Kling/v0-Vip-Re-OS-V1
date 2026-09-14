@@ -16,7 +16,6 @@ import {
   handleClosingApproachingService,
   triggerReviewSequenceService,
   sendReviewRequestService,
-  scheduleClosingGift,
 } from "@/lib/application/listing-lifecycle"
 
 // TOMBSTONE — `export { getListings, createListing }` was REMOVED here.
@@ -410,8 +409,11 @@ export async function sendReviewRequest(requestId: string, platform: string) {
   return sendReviewRequestService(requestId, platform)
 }
 
-// Export for orchestrator
-export { scheduleClosingGift }
+// TOMBSTONE (lane 63B, CLAUDE.md §1) — `export { scheduleClosingGift }` was REMOVED
+// here. This file is `"use server"`, so a bare re-export was itself a §4 hazard
+// (every export is a public HTTP endpoint and must be async). Its only consumer,
+// lib/orchestrator/internal.ts:159, now imports the survivor directly:
+// scheduleClosingGift lives at lib/application/listing-lifecycle.ts:820.
 
 // ─── Portal Visibility ────────────────────────────────────────────────────────
 

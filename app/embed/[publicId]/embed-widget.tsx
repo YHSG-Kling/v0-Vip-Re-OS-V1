@@ -720,19 +720,32 @@ function EmbedTextFallback(props: {
 }) {
   const { brokerageSlug, agentId, label, colorBg, colorFg, notice, onClose } = props
   const [sessionToken, setSessionToken] = useState<string | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
   const [input, setInput] = useState("")
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
-    fetch("/api/widget/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brokerage_slug: brokerageSlug, agent_id: agentId, source: "embed_did_failover" }),
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((data) => { if (!cancelled) setSessionToken(data.session_token) })
-      .catch(() => {})
+    ;(async () => {
+      try {
+        const res = await fetch("/api/widget/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brokerage_slug: brokerageSlug, agent_id: agentId, source: "embed_did_failover" }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (cancelled) return
+        if (!res.ok) {
+          // Both the D-ID leg AND its text fallback failed — the visitor must
+          // see SOMETHING rather than a chat box that silently never sends.
+          setSessionError(data.error ?? "Chat is unavailable right now.")
+          return
+        }
+        setSessionToken(data.session_token)
+      } catch {
+        if (!cancelled) setSessionError("Chat is unavailable right now.")
+      }
+    })()
     return () => { cancelled = true }
   }, [brokerageSlug, agentId])
 
@@ -763,6 +776,9 @@ function EmbedTextFallback(props: {
         </button>
       </div>
       <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800">{notice}</div>
+      {sessionError && (
+        <div className="px-3 py-2 bg-red-50 border-b border-red-200 text-xs text-red-700">{sessionError}</div>
+      )}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
         {messages.map((m) => {
           const text = m.parts?.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("") ?? ""

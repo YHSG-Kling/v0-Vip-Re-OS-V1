@@ -39,7 +39,6 @@ import { compositionSeconds } from "./composition-geometry"
 import {
   getComposition,
   recordRenderCompleted,
-  estimateCompositionCost,
   type CompositionTier,
 } from "./registry"
 import { concatIntroOutro } from "@/lib/video/composite-attribution"
@@ -406,4 +405,7 @@ export async function finalizeCoordinatedRender(
   }
 }
 
-export { estimateCompositionCost }
+// TOMBSTONE (lane 63B, CLAUDE.md §1) — `export { estimateCompositionCost }` was
+// REMOVED here (forwarded-only re-export, no importer). Survivor:
+// lib/remotion/registry.ts:182 — app/actions/composition-library.ts already
+// imports estimateCompositionCost from there directly.

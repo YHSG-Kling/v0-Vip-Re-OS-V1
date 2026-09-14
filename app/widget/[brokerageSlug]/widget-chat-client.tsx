@@ -59,23 +59,33 @@ export function WidgetChatClient({
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/widget/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        brokerage_slug: brokerageSlug,
-        agent_id: agentId,
-        source: 'website_widget',
-      }),
-    })
-      .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then(data => {
+    ;(async () => {
+      try {
+        const res = await fetch('/api/widget/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            brokerage_slug: brokerageSlug,
+            agent_id: agentId,
+            source: 'website_widget',
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
         if (cancelled) return
+        if (!res.ok) {
+          setSessionError(data.error ?? 'Chat is unavailable right now. Please try again later.')
+          return
+        }
         setSessionToken(data.session_token)
-      })
-      .catch(() => {
+        // session_id / identity not otherwise surfaced by this entry point —
+        // this page already carries identity as server-resolved config props
+        // (app/widget/[brokerageSlug]/page.tsx), so the session-scoped copy is
+        // a cross-check only, logged rather than repainting the UI a second time.
+        console.debug(`[widget] session ${data.session_id} ready (capture_state=${data.capture_state})`)
+      } catch {
         if (!cancelled) setSessionError('Chat is unavailable right now. Please try again later.')
-      })
+      }
+    })()
     return () => { cancelled = true }
   }, [brokerageSlug, agentId])
 

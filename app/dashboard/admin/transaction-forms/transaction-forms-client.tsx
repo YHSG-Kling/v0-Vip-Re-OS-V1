@@ -59,11 +59,12 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
   async function deleteForm(id: string) {
     if (!confirm("Deactivate this form? Agents will no longer see it on packet assembly.")) return
     const res = await fetch(`/api/admin/transaction-forms?id=${id}`, { method: "DELETE" })
-    if (res.ok) {
+    const { success, error } = await res.json().catch(() => ({}))
+    if (res.ok && success) {
       toast.success("Form deactivated")
       reload()
     } else {
-      toast.error("Could not deactivate")
+      toast.error(error ?? "Could not deactivate")
     }
   }
 
@@ -79,11 +80,12 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, is_active: true }),
     })
-    if (res.ok) {
+    const { success, error } = await res.json().catch(() => ({}))
+    if (res.ok && success) {
       toast.success("Form reactivated")
       reload()
     } else {
-      toast.error("Could not reactivate")
+      toast.error(error ?? "Could not reactivate")
     }
   }
 
@@ -219,12 +221,12 @@ function CreateFormDialog({
       if (file) fd.append("file", file)
 
       const res = await fetch("/api/admin/transaction-forms", { method: "POST", body: fd })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        toast.error((err as { error?: string }).error ?? "Upload failed")
+      const body = await res.json().catch(() => ({})) as { error?: string; form?: { name?: string } }
+      if (!res.ok || !body.form) {
+        toast.error(body.error ?? "Upload failed")
         return
       }
-      toast.success("Form uploaded")
+      toast.success(`"${body.form.name ?? name}" uploaded`)
       onOpenChange(false)
       // Reset form
       setName(""); setDescription(""); setState(""); setPacketType("offer")

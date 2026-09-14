@@ -151,9 +151,9 @@ function RecordVoice({
           twin_id: twinId,
         }),
       })
-      if (!cloneRes.ok) {
-        const err = await cloneRes.json().catch(() => ({}))
-        toast.error(err.error ?? "Voice clone failed")
+      const cloneData = await cloneRes.json().catch(() => ({}))
+      if (!cloneRes.ok || !cloneData.success) {
+        toast.error(cloneData.capExceeded ? (cloneData.error ?? "Voice clone limit reached for your plan.") : (cloneData.error ?? "Voice clone failed"))
         return
       }
       toast.success("Your voice clone is ready")

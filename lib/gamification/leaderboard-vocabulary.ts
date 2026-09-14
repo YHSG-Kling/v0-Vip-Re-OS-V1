@@ -69,7 +69,11 @@ export function isLeaderboardMetric(v: unknown): v is LeaderboardMetric {
 export { monthLabel } from "@/lib/format/dates"
 import { monthLabel, isoWeekOf as _isoWeekOf } from "@/lib/format/dates"
 /** PURE: ISO-week label like "2026-W27". Survivor: lib/format/dates.ts:isoWeekOf. */
-export function isoWeekLabel(now: Date): string {
+// Module-private since wave 63: the only production reader is periodWindows()
+// below; the exported wrapper's last importer (lib/recruiting/leaderboard.ts's
+// forwarding re-export) was deleted, and scripts/leaderboard-simulator.ts now
+// proves the survivor, lib/format/dates.ts:isoWeekOf, directly.
+function isoWeekLabel(now: Date): string {
   return _isoWeekOf(now)
 }
 

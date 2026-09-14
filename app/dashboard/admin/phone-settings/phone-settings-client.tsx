@@ -142,10 +142,12 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
         body: JSON.stringify({ name: "Custom ISA Voice", sample_audio_urls: [up.url], isa_default: true }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
+      if (!res.ok || !data.success) {
         setVoiceError(
           res.status === 503
             ? "Voice cloning isn't available yet (ElevenLabs isn't configured for the platform)."
+            : data?.capExceeded
+            ? (data.error ?? "Voice clone limit reached for your plan.")
             : (data?.error ?? "Voice clone failed"),
         )
         return
