@@ -378,10 +378,12 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
     // so audio is piped to the client with low latency (no full buffer). The connector-gateway
     // buffers responses and can't express streaming; the buffered TTS path in this file uses
     // callConnector, only this low-latency stream stays a direct fetch.
-    const streamUrl = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`)
-    if (input.outputFormat) streamUrl.searchParams.set("output_format", input.outputFormat)
+    // The query suffix stays INSIDE the one fetch literal so
+    // scripts/elevenlabs-egress-guard.ts keeps counting exactly one raw
+    // /stream fetch (its shape, not a URL object it cannot see).
+    const outputFormatQuery = input.outputFormat ? `?output_format=${input.outputFormat}` : ""
     const response = await fetch(
-      streamUrl.toString(),
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream${outputFormatQuery}`,
       {
         method: "POST",
         headers: {

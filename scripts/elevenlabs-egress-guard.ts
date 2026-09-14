@@ -106,7 +106,9 @@ console.log("\n═══ 4. One caller per capability ═══")
   // an exception with a reason — asserted present so nobody "fixes" it into a
   // buffered call and silently kills streaming playback.
   const t = code(TTS_LIB)
-  const rawStream = (t.match(/fetch\(\s*\n?\s*`https:\/\/api\.elevenlabs\.io[^`]*\/stream`/g) ?? []).length
+  // The literal may carry ONE trailing interpolated query suffix (wave 62:
+  // `${outputFormatQuery}` for the Simli PCM leg) — still one raw /stream fetch.
+  const rawStream = (t.match(/fetch\(\s*\n?\s*`https:\/\/api\.elevenlabs\.io[^`]*\/stream(\$\{[^}`]*\})?`/g) ?? []).length
   ok("the streaming path is the single remaining raw fetch in the TTS library,\n    because a gateway response is buffered and cannot be streamed",
     rawStream === 1, `found ${rawStream}`)
   // Two call sites: the buffered synthesizeSpeech, and the timestamped variant
