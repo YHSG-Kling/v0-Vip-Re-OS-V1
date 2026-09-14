@@ -63,11 +63,26 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   TestimonialReel: { ...CHART_REEL, broll: "optional" },
   NeighborhoodSpotlightReel: { ...MARKETING, broll: "required" },
   // ── Chart/data reels ──
-  CMAReel: CHART_REEL,
+  // captions:false (wave 62 — decided with the code, not asserted in prose):
+  // CMAReel "holds charts, not narration: no script passes through here"
+  // (lib/video/cma-reel-orchestrator.ts's own comment, beside the identical
+  // share-card-skip ruling it mirrors) — a genuinely silent data reel, so the
+  // idle CaptionLayer mount + never-fed captionsCues/captionScript props were
+  // removed from remotion/CMAReel.tsx rather than left as a declared-but-
+  // unread promise (scripts/remotion-setup-guard.ts already refuses that
+  // shape). CHART_REEL's captions:true stays the default for every OTHER
+  // chart/data reel that does carry a real narration script.
+  CMAReel: { ...CHART_REEL, captions: false },
   // OWNER RULE: explainers/market updates present with the CIRCLE avatar —
   // the person rides as a floating presenter; the content stays the star.
   MarketUpdateReel: { ...AVATAR_LED, presenter: "circle_pip", broll: "optional" },
-  AffordabilitySnapshotReel: CHART_REEL,
+  // captions:false (wave 62) — same reasoning as CMAReel above: the only live
+  // producer, lib/agents/buyer-match-reel-producer.ts, says so explicitly
+  // ("the reel speaks on-screen copy, not a generated script" — also
+  // scripts/remotion-setup-guard.ts's own NO_PRODUCER_NOTE for this
+  // composition). Idle CaptionLayer mount + props removed from
+  // remotion/AffordabilitySnapshotReel.tsx.
+  AffordabilitySnapshotReel: { ...CHART_REEL, captions: false },
   // OWNER RULING (wave 61): the anniversary equity reel's AvatarPIP is a real,
   // used capability — video-director.ts's anniversary case now PREFERS the
   // avatar (needsAvatar:true) and requests one only when the agent's D-ID twin

@@ -19,6 +19,7 @@ import { ensureDIDAgent, issueClientKey } from "@/lib/did/agents"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { startLiveAgentSession, recordLiveAgentInitFailure, type LiveAgentSurface } from "@/lib/did/live-session-metering"
+import { resolveFaceRenderProvider, simliFaceRenderAdapter } from "@/lib/live-agent/face-render"
 
 export const runtime = "nodejs"
 
@@ -194,6 +195,59 @@ export async function POST(request: NextRequest) {
     void recordLiveAgentInitFailure({
       brokerageId: widget.brokerage_id, surface, reason: ensured.error, latencyMs: Date.now() - initStartedAt,
     })
+
+    // ── FACE-RENDER FAIL-OVER (wave 62): D-ID → Simli → text ───────────────
+    // Same posture as the portal door (app/api/did/agents/session): only
+    // reached when D-ID's init genuinely failed above; a Simli refusal falls
+    // straight through to the EXISTING 502+fallback below, which is the
+    // pre-wave-62 text fail-over (EmbedTextFallback) every embed already has.
+    const providerOrder = await resolveFaceRenderProvider({ brokerageId: widget.brokerage_id })
+    if (providerOrder.includes("simli") && simliFaceRenderAdapter.isConfigured()) {
+      const simliResult = await simliFaceRenderAdapter.startSession({
+        agentId: twin.agent_id,
+        twinId,
+        agentName: twin.label ?? "Agent",
+      })
+      if (simliResult.ok) {
+        const simliLiveSession = await startLiveAgentSession({
+          brokerageId: widget.brokerage_id,
+          agentId: twin.agent_id,
+          contactId: null,
+          surface,
+          provider: "simli",
+        }, supabase).catch((e) => { console.warn("[embed/session] simli live_agent_sessions insert threw", e); return { ok: false as const, error: String(e) } })
+
+        // SAME embed_sessions ROW the D-ID success path below creates — an
+        // anonymous visitor's `[[CTX:embedSessionId=...]]` context handle
+        // (app/api/live-agent/simli-turn reads it the same way custom-llm
+        // reads the D-ID widget's marker) and the lead-capture link target.
+        const { data: simliSessionRow } = await supabase
+          .from("embed_sessions")
+          .insert({
+            embed_widget_id: widget.id,
+            brokerage_id: widget.brokerage_id,
+            visitor_id: body.visitorId,
+            origin: body.origin ?? null,
+            referrer: body.referrer ?? null,
+            metadata: { page_url: body.pageUrl ?? null, face_render_provider: "simli" },
+            user_agent: request.headers.get("user-agent") ?? null,
+            did_session_ref: simliResult.payload.faceId ?? null,
+          })
+          .select("id")
+          .single()
+
+        return NextResponse.json({
+          provider: "simli" as const,
+          sessionToken: simliResult.payload.sessionToken,
+          faceId: simliResult.payload.faceId,
+          sessionId: simliSessionRow?.id ?? null,
+          liveSessionId: simliLiveSession.ok ? simliLiveSession.id : null,
+          fallback,
+        })
+      }
+      console.warn("[embed/session] Simli fail-over also refused:", simliResult.error)
+    }
+
     return NextResponse.json({ error: ensured.error, fallback }, { status: 502 })
   }
   if (ensured.realismWarnings?.length) {

@@ -20,8 +20,10 @@
  *                carries the exact "WRITTEN, NOT APPLIED" header line (never
  *                claims applied), and its CHECK vocabularies match what the
  *                metering module and routes actually write.
- *   §sweeper     app/api/cron/live-agent-session-sweep exists, is registered
- *                in CRON_REGISTRY, and its CRON_MANAGER owner is set.
+ *   §sweeper     sweepStaleLiveAgentSessions runs on a 5-minute cron_manager
+ *                tick — wave 62 folded its standalone CRON_REGISTRY entry
+ *                into the existing 5-minute queue-drain route (docs/
+ *                vercel-cron-usage-2026-09.md); this asserts the folded shape.
  *   §latency     lib/ai/models.ts::streamTextRouted stamps execution_time_ms
  *                (wall-clock) and an optional manager onto every routed
  *                call's ai_tool_usage row; /api/did/custom-llm passes
@@ -87,7 +89,16 @@ function meteringSection() {
   check("live-session-metering exports heartbeatLiveAgentSession", /export async function heartbeatLiveAgentSession/.test(metering))
   check("live-session-metering exports endLiveAgentSession", /export async function endLiveAgentSession/.test(metering))
   check("live-session-metering exports sweepStaleLiveAgentSessions", /export async function sweepStaleLiveAgentSessions/.test(metering))
-  check("the vendor ledger call names vendorName 'did'", /vendorName:\s*["']did["']/.test(metering))
+  // wave 62 (docs the finding — see scripts/face-render-seam-simulator.ts
+  // §meteringAware for the full provider-aware proof): the vendor ledger's
+  // vendorName is now DERIVED from row.provider (D-ID → "did", Simli →
+  // "simli"), not a hardcoded "did" literal — a Simli session must never be
+  // booked to the D-ID vendor. Re-anchored per CLAUDE.md §2 ("assert the RULE
+  // and derive the number... a count that moves is the finding").
+  check("the vendor ledger call derives vendorName from the row's own provider (provider-aware, wave 62 — never a hardcoded 'did')",
+    /vendorName:\s*provider/.test(metering) && !/vendorName:\s*["']did["']/.test(metering))
+  check("the row's provider defaults to 'did' for every pre-wave-62 row (m624 column DEFAULT 'did')",
+    /const provider: ["']did["'] \| ["']simli["'] = row\.provider === ["']simli["'] \? ["']simli["'] : ["']did["']/.test(metering))
   check("the vendor ledger call names usageType 'streaming_minutes'", /usageType:\s*["']streaming_minutes["']/.test(metering))
   check("ONE close path (closeLiveAgentSession) is shared by end AND sweep, not two copies (§6)",
     (metering.match(/closeLiveAgentSession\(/g) ?? []).length >= 3) // definition + endLiveAgentSession call + sweep call
@@ -143,17 +154,26 @@ function migrationSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §sweeper — cron registered, owner set
+// §sweeper — folded into queue-drain (wave 62, docs/vercel-cron-usage-2026-09.md)
 // ═══════════════════════════════════════════════════════════════════════════
 function sweeperSection() {
-  console.log("\n── §sweeper — live-agent-session-sweep registered in CRON_REGISTRY + CRON_MANAGER ──")
-  check("CRON_REGISTRY carries /api/cron/live-agent-session-sweep",
-    CRON_REGISTRY.some((r) => r.path === "/api/cron/live-agent-session-sweep"))
-  check("CRON_MANAGER assigns an owner to the sweep",
-    CRON_MANAGER["/api/cron/live-agent-session-sweep"] === "cron_manager")
-  const route = readStripped("app/api/cron/live-agent-session-sweep/route.ts")
-  check("the sweep route is cron-gated (verifyCronAuth)", /verifyCronAuth/.test(route))
-  check("the sweep route calls sweepStaleLiveAgentSessions (not a hand-rolled second sweep)",
+  console.log("\n── §sweeper — live-agent-session-sweep FOLDED into queue-drain (CRON_REGISTRY + CRON_MANAGER) ──")
+  // Wave 60 registered a standalone "/api/cron/live-agent-session-sweep" cron.
+  // Wave 62's cron-cost-census consolidated it into the already-*/5, already-
+  // cron_manager-owned "/api/cron/queue-drain" tick to cut one Vercel Function
+  // invocation per 5-minute tick. The standalone route file is DELETED — this
+  // now asserts the FOLDED shape rather than re-litigating the deleted one.
+  check("CRON_REGISTRY no longer carries a standalone /api/cron/live-agent-session-sweep entry (folded, tombstoned)",
+    !CRON_REGISTRY.some((r) => r.path === "/api/cron/live-agent-session-sweep"))
+  check("CRON_REGISTRY still carries /api/cron/queue-drain (the fold's survivor) on a */5 schedule",
+    CRON_REGISTRY.some((r) => r.path === "/api/cron/queue-drain" && /^\*\/[1-5]\b/.test(r.schedule)))
+  check("CRON_MANAGER assigns cron_manager to queue-drain (same owner the standalone sweep had)",
+    CRON_MANAGER["/api/cron/queue-drain"] === "cron_manager")
+  check("CRON_MANAGER no longer carries a standalone live-agent-session-sweep owner entry",
+    CRON_MANAGER["/api/cron/live-agent-session-sweep"] === undefined)
+  const route = readStripped("app/api/cron/queue-drain/route.ts")
+  check("the surviving route is cron-gated (verifyCronAuth)", /verifyCronAuth/.test(route))
+  check("queue-drain calls sweepStaleLiveAgentSessions (folded in, not a hand-rolled second sweep)",
     /sweepStaleLiveAgentSessions\(\)/.test(route))
 
   // CONTROL: a path NOT in the registry correctly reads as unregistered.

@@ -100,10 +100,15 @@ export function composePartnersMeetingScript(w: WeekInBusiness, audienceName?: s
   return parts.join(" ")
 }
 
-/** Vendor seam: turn the script into media for one user. Returns null → written memo. */
+/** Vendor seam: turn the script into media for one user. Returns null → written memo.
+ *  `durationSeconds` (video only) is the rendered clip's OWN measured length —
+ *  see defaultProducer's probeRemoteVideoDurationSeconds call — threaded
+ *  through to PartnersMeetingReel's `avatarDurationSeconds` prop so the
+ *  presenter PIP can fade out at the clip's real end instead of freezing on
+ *  its last frame (remotion/components/AvatarPIP.tsx's freeze-risk shape). */
 export type MeetingProducer = (
   script: string, agentUserId: string,
-) => Promise<{ kind: "video" | "audio"; url: string } | null>
+) => Promise<{ kind: "video" | "audio"; url: string; durationSeconds?: number | null } | null>
 
 const defaultProducer = (supabase: Svc, brokerageId: string): MeetingProducer => async (script, agentUserId) => {
   try {
@@ -126,7 +131,28 @@ const defaultProducer = (supabase: Svc, brokerageId: string): MeetingProducer =>
         : { avatarImageUrl: identity.avatarPhotoUrl, voiceOnly: !identity.avatarPhotoUrl }),
     })
     if (!res.videoUrl) return null
-    return { kind: identity.expressiveAvatarId || identity.avatarPhotoUrl ? "video" : "audio", url: res.videoUrl }
+    const kind = identity.expressiveAvatarId || identity.avatarPhotoUrl ? "video" : "audio"
+    // PARTNERS-MEETING-REEL AVATAR LENGTH (wave 62 — PartnersMeetingReel's own
+    // file-header note recorded this UNRESOLVED: the presenter PIP rides ONE
+    // continuous D-ID clip across the whole cards+ask window, and nothing
+    // carried the clip's real length, so a short render just froze on its
+    // last frame for the remainder. `res.videoUrl` here is already the
+    // RE-HOSTED clip in our own bucket (lib/did's generateVideo does the
+    // download; this file has no ffmpeg dependency of its own), so probing
+    // it is the same ffmpeg-stderr Duration measurement
+    // compositeBrollCutaways already trusts on the render coordinator's own
+    // downloaded buffer — reused here via the one exported front door
+    // instead of a second ffmpeg spawn. Best-effort: null never blocks the
+    // meeting (avatarPipWindowFade/avatarFadeOutFrame already render exactly
+    // as before when no measurement is present).
+    let durationSeconds: number | null = null
+    if (kind === "video") {
+      try {
+        const { probeRemoteVideoDurationSeconds } = await import("@/lib/video/composite-attribution")
+        durationSeconds = await probeRemoteVideoDurationSeconds(res.videoUrl)
+      } catch { /* best-effort — see comment above */ }
+    }
+    return { kind, url: res.videoUrl, durationSeconds }
   } catch { return null }
 }
 
@@ -269,6 +295,7 @@ export async function producePartnersMeeting(
 
   let meetings = 0, video = 0, audio = 0, memo = 0
   let avatarClipUrl: string | null = null
+  let avatarClipDurationSeconds: number | null = null
   let avatarUserId: string | null = null
   for (const user of audience) {
     // One meeting per user per week.
@@ -288,7 +315,11 @@ export async function producePartnersMeeting(
     })
     if (error) continue
     meetings += 1
-    if (media?.kind === "video") { video += 1; avatarClipUrl = avatarClipUrl ?? media.url; avatarUserId = avatarUserId ?? user.id }
+    if (media?.kind === "video") {
+      video += 1
+      if (avatarClipUrl == null) { avatarClipUrl = media.url; avatarClipDurationSeconds = media.durationSeconds ?? null }
+      avatarUserId = avatarUserId ?? user.id
+    }
     else if (media?.kind === "audio") audio += 1
     else memo += 1
   }
@@ -305,6 +336,7 @@ export async function producePartnersMeeting(
   try {
     reel = await queuePartnersMeetingReel(supabase, {
       brokerageId, week, avatarVideoUrl: avatarClipUrl,
+      avatarDurationSeconds: avatarClipDurationSeconds,
       agentUserId: avatarUserId ?? audience[0]?.id ?? null, now,
     })
   } catch (e) {
@@ -327,7 +359,13 @@ export const PARTNERS_MEETING_REEL_ENTITY = "partners_meeting_reel"
  *  bare boolean (see ReelQueueOutcome). */
 export async function queuePartnersMeetingReel(
   supabase: Svc,
-  p: { brokerageId: string; week: WeekInBusiness; avatarVideoUrl: string | null; agentUserId: string | null; now: Date },
+  p: {
+    brokerageId: string; week: WeekInBusiness; avatarVideoUrl: string | null
+    /** D-ID's OWN measured render duration for the avatar clip (wave 62) —
+     *  see MeetingProducer's docstring. Optional + additive. */
+    avatarDurationSeconds?: number | null
+    agentUserId: string | null; now: Date
+  },
 ): Promise<ReelQueueOutcome> {
   const sinceIso = new Date(p.now.getTime() - 6 * 86_400_000).toISOString()
   const { data: existing } = await supabase.from("remotion_composition_renders").select("id")
@@ -347,6 +385,7 @@ export async function queuePartnersMeetingReel(
   const { buildPartnersMeetingRenderRequest } = await import("@/lib/intelligence/partners-meeting-reel-props")
   const req = buildPartnersMeetingRenderRequest(p.week, {
     agentName: identity.speakerName, avatarVideoUrl: p.avatarVideoUrl,
+    avatarDurationSeconds: p.avatarDurationSeconds ?? null,
     agentPhotoUrl: identity.avatarPhotoUrl, brand,
   })
   const props = req.inputProps as unknown as Record<string, unknown>

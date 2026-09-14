@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-12
+ * generated: 2026-09-14
  * source: public.live_schema_json()
- * body-sha256: 7fee7dd1e777ce0ed0886721a9e46a382148468c7e2cd7e19028b1c3d6b819e9
+ * body-sha256: 352c8e51b4bd008c86a5ee91bd3d0b1881ac2aae8d9dbb73c9b1ed8cd44c092a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -42,7 +42,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_api_credentials: ["access_token", "agent_id", "api_key", "api_secret", "brokerage_id", "config", "created_at", "error_message", "id", "is_active", "is_verified", "last_verified_at", "refresh_token", "service_name", "service_type", "token_expires_at", "updated_at"],
   agent_assistant_sessions: ["agent_id", "brokerage_id", "context_contact_id", "context_listing_id", "context_transaction_id", "context_url", "conversation_id", "duration_seconds", "ended_at", "ended_reason", "id", "message_count", "metadata", "started_at", "tool_call_count", "user_id"],
   agent_assistant_tool_calls: ["brokerage_id", "error_message", "id", "latency_ms", "session_id", "success", "tool_input", "tool_name", "tool_output", "ts"],
-  agent_avatar_assets: ["agent_id", "approval_status", "approved_at", "approved_by", "avatar_url", "brokerage_id", "created_at", "did_agent_id", "did_avatar_id", "error_message", "greeting", "greeting_sentiment", "id", "is_default", "label", "personality", "rejection_reason", "source_type", "source_url", "status", "thumbnail_url", "updated_at", "voice_id", "voice_sample_url"],
+  agent_avatar_assets: ["agent_id", "approval_status", "approved_at", "approved_by", "avatar_url", "brokerage_id", "created_at", "did_agent_id", "did_avatar_id", "error_message", "greeting", "greeting_sentiment", "id", "is_default", "label", "personality", "rejection_reason", "simli_face_id", "source_type", "source_url", "status", "thumbnail_url", "updated_at", "voice_id", "voice_sample_url"],
   agent_badges: ["agent_id", "awarded_at", "awarded_reason", "badge_id", "brokerage_id", "id"],
   agent_cap_tracking: ["agent_id", "anniversary_end", "anniversary_start", "brokerage_id", "cap_amount", "cap_paid_to_date", "created_at", "id", "is_capped"],
   agent_ce_completions: ["agent_id", "brokerage_id", "category", "certificate_url", "completed_on", "course_name", "created_at", "hours", "id", "notes", "provider"],
@@ -145,7 +145,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   brokerage_intelligence_insights: ["bottom_quartile_outcome", "bottom_quartile_value", "brokerage_id", "computed_at", "dismissal_reason", "dismissed_at", "dismissed_by", "headline", "id", "lift_pct", "median_outcome", "median_value", "metric_label", "mining_run_id", "outcome_label", "pattern_key", "playbook", "playbook_actions", "sample_size", "severity", "status", "supporting_agent_count", "supporting_agents", "top_quartile_outcome", "top_quartile_value"],
   brokerage_p_l: ["agent_splits_paid", "brokerage_id", "computed_at", "gross_commission_income", "id", "marketing_expenses", "net_profit", "notes", "office_expenses", "operating_expenses", "period_label", "profit_margin_pct", "tech_expenses"],
   brokerage_required_documents: ["block_on_missing", "brokerage_id", "classification", "created_at", "created_by", "deal_type", "description", "id", "is_required", "scope_id", "scope_type", "state_code", "template_form_id", "updated_at"],
-  brokerage_settings: ["brokerage_id", "created_at", "dotloop_access_token", "esign_api_key", "esign_provider", "ghl_api_key", "google_calendar_token", "id", "idx_api_key", "review_request_delay_days", "settings", "social_accounts", "updated_at"],
+  brokerage_settings: ["brokerage_id", "created_at", "dotloop_access_token", "esign_api_key", "esign_provider", "ghl_api_key", "google_calendar_token", "id", "idx_api_key", "live_agent_face_provider_order", "review_request_delay_days", "settings", "social_accounts", "updated_at"],
   brokerages: ["about_text", "address", "address_line2", "ai_isa_system_user_id", "archived_at", "auto_provision_phone_numbers", "billing_metadata", "bio_text", "brokerage_on_platform", "cancelled_at", "cda_onboarding_at", "city", "created_at", "dba", "default_assignment_method", "default_cap_amount", "default_cap_anniversary_basis", "default_isa_voice_id", "deleted_at", "direct_mail_size_prefs", "email", "farm_mail_enabled", "farm_mail_max_per_week", "id", "is_active", "is_demo", "license_number", "license_state", "lob_fallback_template_id", "logo_url", "name", "non_cda_payout_default", "offers_cda", "offers_medical_benefits", "offers_retirement_benefits", "onboarding_status", "phone", "plan_tier", "primary_color", "recruiting_monthly_fee", "recruiting_pitch", "recruiting_split_to_agent", "recruiting_value_props", "require_financial_verification_for_showings", "revenue_share_default_percent", "revenue_share_duration_months", "revenue_share_enabled", "revenue_share_flat_cents", "revenue_share_rate_type", "revenue_share_source_of_funds", "signup_source", "slug", "state", "status", "suspended_at", "tax_assistance_enabled", "team_on_platform", "trial_ends_at", "twilio_subaccount_sid", "twins_require_approval", "updated_at", "website", "widget_enabled", "zip"],
   budgets: ["agent_id", "brokerage_id", "budget_data", "created_at", "id", "income_goal", "updated_at", "year"],
   business_card_scans: ["agent_id", "brokerage_id", "card_subject_type", "classified_by", "confidence_score", "contact_id", "created_at", "extracted_data", "id", "raw_image_url", "review_status", "reviewed_at", "reviewed_by", "subject_notes", "subject_user_id"],

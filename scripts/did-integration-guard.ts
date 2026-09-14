@@ -468,6 +468,57 @@ console.log("\n═══ 12. TWO RENDER LANES, ONE SLOT — the loser is decided
     /if\s*\(\s*publishError\s*\)[\s\S]{0,600}?status:\s*500/.test(route))
 }
 
+console.log("\n═══ 13. Twin Wizard BRANCHES on the create-avatar failure envelope ═══")
+{
+  // /api/did/create-avatar's failure JSON carries needs_consent, retryable,
+  // capExceeded, budgetExceeded and kind (checked directly above the 428
+  // gate and the checkUsageCap/checkVendorBudget calls). The wizard used to
+  // read only `error` and show one generic toast for all of them (carried
+  // gap, wave 61) — this section proves it now branches, WITHOUT touching
+  // the route or weakening the 428 consent gate (that route file is not
+  // read here at all — presentation-only, on purpose).
+  const wizard = code("app/dashboard/settings/twin-studio/components/twin-wizard.tsx")
+  const route = code("app/api/did/create-avatar/route.ts")
+
+  ok("the route still gates video sources on consent (428, needs_consent) — untouched by this pass",
+    /needs_consent:\s*true/.test(route) && /status:\s*428/.test(route))
+  ok("the route still refuses over the usage cap (capExceeded) — untouched",
+    /capExceeded:\s*true/.test(route))
+  ok("the route still refuses over the vendor budget (budgetExceeded) — untouched",
+    /budgetExceeded:\s*true/.test(route))
+  ok("the route still classifies provider errors with a retryable flag — untouched",
+    /retryable:\s*failure\.retryable/.test(route))
+
+  ok("the wizard reads needs_consent off the failure envelope, not just `error`",
+    /failure\.needs_consent/.test(wizard))
+  ok("...and shows a DIFFERENT message for it than the generic fallback",
+    /Consent didn't go through/.test(wizard))
+  ok("the wizard reads capExceeded and shows a PLAN-specific message",
+    /failure\.capExceeded/.test(wizard) && /plan/i.test(wizard))
+  ok("the wizard reads budgetExceeded and shows a USAGE-specific message",
+    /failure\.budgetExceeded/.test(wizard) && /usage limit/i.test(wizard))
+  ok("the wizard reads retryable and offers an actual Retry action, not just prose",
+    /failure\.retryable && opts\?\.onRetry/.test(wizard) &&
+    /action:\s*\{\s*label:\s*"Retry"/.test(wizard))
+  ok("all three submit call sites (photo-immediate, video-verified, video-skip) route through the ONE branching helper (§6 — one envelope, one handler)",
+    (wizard.match(/reportAvatarFailure\(/g) ?? []).length >= 3)
+  ok("...and all three go through the ONE fetch wrapper, not three hand-rolled fetches",
+    (wizard.match(/postCreateAvatar\(/g) ?? []).length >= 3 &&
+    (wizard.match(/fetch\("\/api\/did\/create-avatar"/g) ?? []).length === 1)
+  ok("a needs_consent failure does NOT advance past the consent step (stays for a re-record, never silently proceeds)",
+    /needs_consent[\s\S]{0,200}return\s*\n\s*\}/.test(wizard))
+
+  // CONTROL: the branching function itself resolves each flag to a DIFFERENT
+  // code path, proving this is real dispatch and not one string doing double
+  // duty for every flag (a regex that only checks for the field NAME would
+  // pass even if every branch printed the same generic toast).
+  const fnBody = wizard.slice(wizard.indexOf("function reportAvatarFailure"), wizard.indexOf("function reportAvatarFailure") + 1800)
+  const branchOrder = ["needs_consent", "capExceeded", "budgetExceeded", "retryable"]
+    .map((k) => fnBody.indexOf(`failure.${k}`))
+  ok("[control] all four flags are checked, each before the generic fallback, in one function",
+    branchOrder.every((i) => i !== -1) && branchOrder.every((i) => i < fnBody.indexOf('toast.error(failure.error ?? "Avatar processing failed")')))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`D-ID INTEGRATION — ${pass} passed, ${fail} failed`)
 if (fail > 0) {

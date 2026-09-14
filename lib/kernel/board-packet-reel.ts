@@ -34,7 +34,12 @@ const money = (cents: number) => {
  *  > 0 to appear); the finance card is the attribution receipt. */
 export function buildBoardPacketReelProps(
   d: BoardPacketData,
-  opts: { agentName?: string; avatarVideoUrl?: string | null; agentPhotoUrl?: string | null; brand?: Partial<PartnersMeetingReelProps["brand"]> } = {},
+  // avatarDurationSeconds threaded for interface parity with the weekly show
+  // (lib/intelligence/partners-meeting.ts, wave 62); no caller here ever
+  // passes avatarVideoUrl (the board packet always presents via photo/
+  // monogram — see the tombstone-adjacent "opts.avatarVideoUrl ?? null"
+  // below), so this is always null in practice — never invented.
+  opts: { agentName?: string; avatarVideoUrl?: string | null; avatarDurationSeconds?: number | null; agentPhotoUrl?: string | null; brand?: Partial<PartnersMeetingReelProps["brand"]> } = {},
 ): PartnersMeetingReelProps {
   const cards: ReelCard[] = []
   if (d.closedCount > 0) cards.push({ value: String(d.closedCount), label: "CLOSED THIS MONTH", sub: `${money(d.closedVolumeCents)} volume`, kind: "team" })
@@ -67,6 +72,7 @@ export function buildBoardPacketReelProps(
     narration: spoken.join(" "),
     agentName: opts.agentName ?? "Your AI Team",
     avatarVideoUrl: opts.avatarVideoUrl ?? null,
+    avatarDurationSeconds: opts.avatarDurationSeconds ?? null,
     agentPhotoUrl: opts.agentPhotoUrl ?? null,
     brand: {
       primaryColor: opts.brand?.primaryColor ?? "#0F172A",

@@ -188,10 +188,16 @@ console.log("\n═══ 10. Consent comes BEFORE the D-ID submit, not after ═
   ok("...and routes to the consent step", /setStep\(kind === "video" \? "consent" : "voice"\)/.test(wiz))
   ok("a PHOTO source still submits immediately — it needs no consent, so adding\n    the step would be friction with nothing behind it",
     /onComplete\(draft\.twinId, kind!, upload\.url\)/.test(wiz))
+  // wave 62: both call sites now go through the ONE postCreateAvatar wrapper
+  // (which itself owns the literal "/api/did/create-avatar" fetch, checked
+  // separately below) rather than a hand-rolled fetch inline in each — so
+  // this asserts the WRAPPER is called from each step, not the literal path.
   ok("the deferred submit happens once consent VERIFIES",
-    /onVerified=\{async \(\) => \{[\s\S]{0,400}\/api\/did\/create-avatar/.test(wiz))
+    /onVerified=\{async \(\) => \{[\s\S]{0,400}postCreateAvatar\(/.test(wiz))
   ok("...and ALSO when consent was already on file from a previous twin —\n    otherwise the second video twin an agent makes would never be submitted",
-    /onSkip=\{async \(\) => \{[\s\S]{0,500}\/api\/did\/create-avatar/.test(wiz))
+    /onSkip=\{async \(\) => \{[\s\S]{0,500}postCreateAvatar\(/.test(wiz))
+  ok("...and the wrapper itself owns the one literal create-avatar fetch (§6 — one call site, not three)",
+    (wiz.match(/fetch\("\/api\/did\/create-avatar"/g) ?? []).length === 1)
   ok("the source url is held across the step so the deferred submit has it",
     wiz.includes("const [sourceUrl, setSourceUrl]"))
   ok("the consent step appears in the stepper ONLY for a video twin",

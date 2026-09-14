@@ -30,6 +30,7 @@ import { ensureDIDAgent, issueClientKey } from "@/lib/did/agents"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { startLiveAgentSession, recordLiveAgentInitFailure } from "@/lib/did/live-session-metering"
+import { resolveFaceRenderProvider, simliFaceRenderAdapter } from "@/lib/live-agent/face-render"
 
 export const runtime = "nodejs"
 
@@ -198,6 +199,45 @@ export async function POST(request: NextRequest) {
       brokerageId: contact.brokerage_id!, surface: "portal",
       reason: ensured.error, latencyMs: Date.now() - initStartedAt,
     })
+
+    // ── FACE-RENDER FAIL-OVER (wave 62): D-ID → Simli → text ───────────────
+    // Owner ruling 2026-09-14: "building Simli as a backup makes more sense
+    // than HeyGen." Only reached when D-ID's init genuinely failed above —
+    // never a second, competing path on the success branch. A Simli refusal
+    // (not configured / no consent / no twin image / provider error) falls
+    // straight through to the EXISTING 502 below, which is exactly the
+    // pre-wave-62 behavior the text-chat fail-over (PortalAIAssistant
+    // openSignal) already handles — never a THIRD, dead-end error shape.
+    const providerOrder = await resolveFaceRenderProvider({ brokerageId: contact.brokerage_id! })
+    if (providerOrder.includes("simli") && simliFaceRenderAdapter.isConfigured()) {
+      const simliResult = await simliFaceRenderAdapter.startSession({
+        agentId: agentRow.id,
+        twinId,
+        agentName: [(agentRow.users as any)?.first_name, (agentRow.users as any)?.last_name].filter(Boolean).join(" ") || "Agent",
+      })
+      if (simliResult.ok) {
+        const simliLiveSession = await startLiveAgentSession({
+          brokerageId: contact.brokerage_id!,
+          agentId: agentRow.id,
+          contactId,
+          surface: "portal",
+          provider: "simli",
+        }).catch((e) => { console.warn("[did/agents/session] simli live_agent_sessions insert threw", e); return { ok: false as const, error: String(e) } })
+
+        return NextResponse.json({
+          provider: "simli" as const,
+          sessionToken: simliResult.payload.sessionToken,
+          faceId: simliResult.payload.faceId,
+          liveSessionId: simliLiveSession.ok ? simliLiveSession.id : null,
+        })
+      }
+      // Simli also refused — logged, not fatal; falls through to the text
+      // fail-over via the 502 below (recordLiveAgentInitFailure already ran
+      // for the D-ID leg above; a second row for the Simli leg would double
+      // count one visitor's one failed attempt at getting a live face).
+      console.warn("[did/agents/session] Simli fail-over also refused:", simliResult.error)
+    }
+
     return NextResponse.json({ error: ensured.error }, { status: 502 })
   }
   // Realism scan on the greeting is ADVISORY (CLAUDE.md §5 — warnings pass

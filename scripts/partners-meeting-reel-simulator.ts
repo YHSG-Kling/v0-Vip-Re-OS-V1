@@ -666,6 +666,62 @@ console.log("\n[23 · PRINT TOP-OF-LINE — the LISTING FLYER closes the family 
     src("lib/ai/image-generation.ts").includes("gpt-image-1"))
 }
 
+console.log("\n[24 · AVATAR CLIP LENGTH PLUMBING — the presenter fades before a short clip ends, wave 62]")
+{
+  // PURE: buildPartnersMeetingReelProps threads avatarDurationSeconds straight
+  // through into inputProps, same shape as avatarVideoUrl/agentName.
+  const withDuration = buildPartnersMeetingReelProps(FULL, { agentName: "Dana", avatarVideoUrl: "https://x/y.mp4", avatarDurationSeconds: 12.4 })
+  check("buildPartnersMeetingReelProps threads avatarDurationSeconds from opts into the reel props",
+    withDuration.avatarDurationSeconds === 12.4)
+  check("CONTROL: no opts.avatarDurationSeconds → null, never undefined (a render row round-trips through JSON)",
+    buildPartnersMeetingReelProps(FULL, {}).avatarDurationSeconds === null)
+  const reqWithDuration = buildPartnersMeetingRenderRequest(FULL, { agentName: "Dana", avatarDurationSeconds: 7.5 })
+  check("buildPartnersMeetingRenderRequest carries avatarDurationSeconds into inputProps",
+    reqWithDuration.inputProps.avatarDurationSeconds === 7.5)
+
+  // SOURCE-SCAN: the composition actually reads it and fades the PIP before a
+  // short clip's last real frame, instead of freezing on it (the same shape
+  // AgentTalkingHeadReel's single-window avatarFadeOutFrame call already
+  // proves in scripts/video-assembly-simulator.ts's avatarSection()).
+  const reel = src("remotion/PartnersMeetingReel.tsx")
+  check("PartnersMeetingReel imports avatarFadeOutFrame (the single-window fade — this composition mounts ONE continuous avatar <Video>, not per-card windows like MarketUpdateReel)",
+    reel.includes('import { avatarFadeOutFrame } from "../lib/video/script-structure"'))
+  check("the composition computes avatarFadeStart from avatarDurationSeconds over the WHOLE presenter window (cardTotal + ASK), not a per-card slice",
+    /avatarFadeOutFrame\(avatarDurationSeconds,\s*presenterWindowFrames,\s*fps\)/.test(reel))
+  check("the presenter <AvatarPIP> receives the computed opacity (fades out, never freezes on the last real frame)",
+    /<AvatarPIP[\s\S]{0,200}opacity=\{avatarOpacity\}/.test(reel))
+  check("the local AvatarPIP applies opacity to the <Video> element itself (not just accepted and dropped)",
+    /<Video src=\{avatarVideoUrl\}[\s\S]{0,120}opacity\s*\}/.test(reel))
+  check("no measurement (undefined) still renders full opacity — additive/opt-in, same contract as avatarPipWindowFade elsewhere",
+    /avatarOpacity = avatarFadeStart != null[\s\S]{0,300}:\s*1/.test(reel))
+
+  // SOURCE-SCAN: the producer measures the REHOSTED clip (not the vendor's
+  // expiring signed URL) and never blocks the meeting on a failed probe.
+  const pmSrc = src("lib/intelligence/partners-meeting.ts")
+  check("defaultProducer probes the D-ID clip's real duration via the render coordinator's own ffmpeg measurement (reused, not re-implemented)",
+    pmSrc.includes("probeRemoteVideoDurationSeconds") && pmSrc.includes('"@/lib/video/composite-attribution"'))
+  check("the probe is best-effort: wrapped in try/catch, never throws into the meeting producer",
+    /try \{\s*\n\s*const \{ probeRemoteVideoDurationSeconds \}/.test(pmSrc)
+    && /durationSeconds = await probeRemoteVideoDurationSeconds/.test(pmSrc))
+  check("MeetingProducer's contract documents durationSeconds as optional (additive — a caller with no measurement is unaffected)",
+    pmSrc.includes("durationSeconds?: number | null"))
+  check("producePartnersMeeting captures the FIRST video's duration alongside its url (same one-per-week dedupe as avatarClipUrl)",
+    /avatarClipUrl == null.*avatarClipUrl = media\.url; avatarClipDurationSeconds = media\.durationSeconds/.test(pmSrc.replace(/\n\s*/g, " ")))
+  check("queuePartnersMeetingReel forwards avatarDurationSeconds into the render request",
+    pmSrc.includes("avatarDurationSeconds: p.avatarDurationSeconds ?? null"))
+
+  // The measuring helper itself: exported, best-effort, reuses the SAME
+  // ffmpeg-stderr Duration parse compositeBrollCutaways already trusts —
+  // never a second ffmpeg spawn implementation (§6).
+  const attribution = src("lib/video/composite-attribution.ts")
+  check("probeRemoteVideoDurationSeconds is exported (a caller outside this file can measure a rehosted clip)",
+    attribution.includes("export async function probeRemoteVideoDurationSeconds"))
+  check("it reuses the SAME probeDuration()/downloadVideoBytes() the render coordinator's compositeBrollCutaways already calls — no second ffmpeg spawn",
+    /async function probeRemoteVideoDurationSeconds[\s\S]{0,400}await downloadVideoBytes\(url\)[\s\S]{0,300}await probeDuration\(filePath\)/.test(attribution))
+  check("CONTROL: no ffmpeg binary → returns null immediately rather than spawning a doomed process",
+    /export async function probeRemoteVideoDurationSeconds[\s\S]{0,150}if \(!FFMPEG_BIN\) return null/.test(attribution))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

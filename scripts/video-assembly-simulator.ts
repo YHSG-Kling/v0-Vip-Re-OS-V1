@@ -1103,7 +1103,12 @@ function aiVideoRealismSection() {
     // separate "closing"/QR slide kind rather than a late Sequence; ListingPresentationSlide
     // itself stays OUT of this host list — no live producer targets that
     // compositionId, see finish-spec.ts's captions:false override).
-    "AffordabilitySnapshotReel", "AgentTalkingHeadReel", "CMAReel", "ComingSoonReel",
+    // WAVE 62 — AffordabilitySnapshotReel and CMAReel REMOVED from this host
+    // list (they no longer mount CaptionLayer at all): both were genuinely
+    // silent data reels with the caption props declared but never fed by
+    // their only live producer — see finish-spec.ts's captions:false for
+    // each and the CaptionLayer-removal comment in both composition files.
+    "AgentTalkingHeadReel", "ComingSoonReel",
     "JustListedReelHorizontal", "NewsletterDigestVideo", "OpenHouseAnnounceReel", "TestimonialReel",
   ]
   for (const id of CAPTION_HOSTS) {
@@ -1112,6 +1117,20 @@ function aiVideoRealismSection() {
     const src = readStripped(file)
     check(`${id}: <CaptionLayer> passes hiddenFromFrame so captions never draw over the branding/CTA tile`,
       /<CaptionLayer[\s\S]{0,400}hiddenFromFrame=/.test(src))
+  }
+
+  // WAVE 62 — the removal above is the finding, not just the omission (§2: a
+  // count that moves must be shown, never silently dropped from a list). Both
+  // compositions must have genuinely stopped mounting CaptionLayer AND
+  // finish-spec.ts must agree captions:false, or the removal is a lie in one
+  // direction or the other.
+  for (const id of ["AffordabilitySnapshotReel", "CMAReel"]) {
+    const file = VIDEO_COMPOSITION_FILES[id]
+    const src = file ? readStripped(file) : ""
+    check(`${id}: no longer mounts <CaptionLayer> (wave 62 — genuinely silent data reel, no narration script exists upstream)`,
+      !!file && !/<CaptionLayer[\s>]/.test(src) && !/\bcaptionScript\b|\bcaptionsCues\b/.test(src))
+    check(`${id}: VIDEO_FINISH_SPEC agrees — captions:false`,
+      VIDEO_FINISH_SPEC[id]?.captions === false)
   }
 
   // ── WAVE 61 CAPTION-CONSOLIDATION AUDIT ───────────────────────────────────
@@ -1144,9 +1163,16 @@ function aiVideoRealismSection() {
   // alignment at staging time, only the honest fallback script; see the
   // per-case tombstone comments in lib/video/director-content.ts). Scoped to
   // the cases this wave actually touched (not every case in the switch) so
-  // this proof does not newly accuse a pre-existing, out-of-scope gap
-  // (e.g. EquityReportReel/MarketUpdateReel/NeighborhoodSpotlightReel, carried
-  // unresolved from earlier waves) of a defect this lane was not asked to fix.
+  // this proof does not newly accuse a pre-existing, out-of-scope gap of a
+  // defect this lane was not asked to fix.
+  //
+  // WAVE 62 — EquityReportReel/MarketUpdateReel/NeighborhoodSpotlightReel
+  // (carried unresolved since wave 61) are now COVERED below: marketUpdateProps
+  // and neighborhoodProps each stage captionScript from text the case already
+  // establishes (the stat-card value+label join and the report's own AI
+  // summary tagline, respectively — never invented prose); equityProps has no
+  // narration sentence of its own, so it falls back to the same gated hookLine
+  // AgentTalkingHeadReel's inline case already uses.
   //
   // Most of these cases stage captionScript INSIDE the shared pure builder
   // (listingReelProps / comingSoonProps / openHouseProps / testimonialProps),
@@ -1183,6 +1209,10 @@ function aiVideoRealismSection() {
     { id: "OpenHouseAnnounceReel", builder: "openHouseProps" },
     { id: "TestimonialReel", builder: "testimonialProps" },
     { id: "AgentTalkingHeadReel", builder: null }, // inline in the case itself
+    // WAVE 62 — the three carried-unresolved cases, now covered.
+    { id: "MarketUpdateReel", builder: "marketUpdateProps" },
+    { id: "NeighborhoodSpotlightReel", builder: "neighborhoodProps" },
+    { id: "EquityReportReel", builder: "equityProps" },
   ]
   for (const { id, builder } of DIRECTOR_CAPTION_CASES) {
     const file = VIDEO_COMPOSITION_FILES[id]

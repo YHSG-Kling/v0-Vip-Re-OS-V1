@@ -51,6 +51,20 @@
 //                               was invisible to RAG — the AI answered without
 //                               it, with no sign anything was missing. See the
 //                               section header at drainEmbeddingQueue below.
+//   6. live_agent_sessions    — FOLDED IN (wave 62, docs/vercel-cron-usage-
+//                               2026-09.md): sweepStaleLiveAgentSessions
+//                               (lib/did/live-session-metering.ts) used to be
+//                               its own standalone */5 cron
+//                               (app/api/cron/live-agent-session-sweep/route.ts,
+//                               now DELETED — the survivor is this call site).
+//                               Both this route and the sweep it replaced are
+//                               owned by cron_manager and already ran every 5
+//                               minutes, so folding the sweep in as a called
+//                               function removes one whole Vercel Function
+//                               invocation per tick (~288/day) with zero change
+//                               to the sweep's own 10-minute staleness window —
+//                               it still runs exactly as often, just inside an
+//                               existing tick instead of a second one.
 //
 // Every 5 minutes via the dispatcher; per-row error isolation; per-queue counts
 // in the response. Owner: cron_manager (CRON_MANAGER in manager-registry).
@@ -62,6 +76,7 @@ import { dispatchEmail } from "@/lib/providers/dispatch"
 import { isWebPushConfigured, sendWebPush } from "@/lib/providers/web-push"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { enrollContact } from "@/lib/campaign-sequences/enrollment-engine"
+import { sweepStaleLiveAgentSessions } from "@/lib/did/live-session-metering"
 import { isValidUUID } from "@/lib/validations"
 import {
   createCronRunContextAction,
@@ -615,6 +630,27 @@ async function drainEmbeddingQueue(): Promise<QueueCounts> {
   return counts
 }
 
+// ─── 6. live_agent_sessions (folded sweep) ───────────────────────────────────
+// FOLDED (wave 62, §1.1 orphan-doctrine merge — survivor is this call site):
+// this used to be its own registered CRON_REGISTRY entry,
+// app/api/cron/live-agent-session-sweep/route.ts (now DELETED), also on a
+// */5 schedule and also owned by cron_manager. It closes any
+// `live_agent_sessions` row (m624, WRITTEN NOT APPLIED) whose heartbeat has
+// gone silent for >10min at the heartbeat-derived duration — see
+// lib/did/live-session-metering.ts::sweepStaleLiveAgentSessions for the full
+// rationale (crashed/killed tab that never reaches its own end beacon).
+// Folding it in here removes one whole Vercel Function invocation per tick
+// (docs/vercel-cron-usage-2026-09.md) with NO change to the sweep's own
+// cadence or staleness window.
+async function drainLiveAgentSessionSweep(): Promise<QueueCounts> {
+  const counts = emptyCounts()
+  const { swept, errors } = await sweepStaleLiveAgentSessions()
+  counts.processed = swept + errors
+  counts.sent = swept
+  counts.failed = errors
+  return counts
+}
+
 // ─── Route ───────────────────────────────────────────────────────────────────
 
 export async function GET(request: Request) {
@@ -650,6 +686,7 @@ export async function GET(request: Request) {
     const tasks = await safe("orchestrator_tasks", () => drainOrchestratorTasks(supabase))
     const drips = await safe("drip_campaigns", () => drainDripCampaigns(supabase))
     const embeddings = await safe("embedding_queue", () => drainEmbeddingQueue())
+    const liveAgentSweep = await safe("live_agent_sessions", () => drainLiveAgentSessionSweep())
 
     const queues = {
       email_queue: { ...email, sent: email.sent },
@@ -658,9 +695,11 @@ export async function GET(request: Request) {
       orchestrator_tasks: { ...tasks, completed: tasks.sent },
       drip_campaigns: { ...drips, enrolled: drips.sent, paused_no_sequence: drips.failed },
       embedding_queue: { ...embeddings, embedded: embeddings.sent },
+      live_agent_sessions: { ...liveAgentSweep, swept: liveAgentSweep.sent },
     }
     const processed =
-      email.processed + push.processed + tasks.processed + drips.processed + embeddings.processed
+      email.processed + push.processed + tasks.processed + drips.processed + embeddings.processed +
+      liveAgentSweep.processed
 
     await recordCronSuccessAction({
       context_id: contextId,

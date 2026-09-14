@@ -36,6 +36,17 @@ export interface PartnersMeetingReelProps {
   narration: string
   agentName: string
   avatarVideoUrl: string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the presenter clip
+   * (wave 62 — PartnersMeetingReel's file-header note flagged this as the one
+   * unresolved carry: the PIP rides ONE continuous take across every card +
+   * the ask, and nothing threaded the clip's real length through, so a short
+   * render just held its last frame for the remainder). Optional + additive:
+   * absent renders exactly as before (the composition's own
+   * avatarFadeOutFrame call no-ops with no measurement). Same contract as
+   * AgentTalkingHeadReel's avatarDurationSeconds.
+   */
+  avatarDurationSeconds?: number | null
   agentPhotoUrl: string | null
   brand: PartnersMeetingReelBrand
 }
@@ -54,6 +65,7 @@ export function buildPartnersMeetingReelProps(
     audienceName?: string | null
     agentName?: string
     avatarVideoUrl?: string | null
+    avatarDurationSeconds?: number | null
     agentPhotoUrl?: string | null
     brand?: Partial<PartnersMeetingReelBrand>
   } = {},
@@ -98,6 +110,7 @@ export function buildPartnersMeetingReelProps(
     narration: composePartnersMeetingScript(w, opts.audienceName ?? null),
     agentName: opts.agentName ?? "Your Team",
     avatarVideoUrl: opts.avatarVideoUrl ?? null,
+    avatarDurationSeconds: opts.avatarDurationSeconds ?? null,
     agentPhotoUrl: opts.agentPhotoUrl ?? null,
     brand: {
       primaryColor: opts.brand?.primaryColor ?? "#0F172A",

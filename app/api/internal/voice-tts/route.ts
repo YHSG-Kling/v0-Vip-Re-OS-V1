@@ -5,15 +5,22 @@ import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
 import { elevenLabsModelForLane, ELEVENLABS_REALISM_VOICE_SETTINGS } from "@/lib/video/realism-profile"
 
 /**
- * Voice TTS endpoint — streams ElevenLabs mp3 in the agent's cloned voice.
+ * Voice TTS endpoint — streams ElevenLabs audio in the agent's cloned voice.
+ * Defaults to mp3; `format: "pcm_16000"` returns raw PCM16 mono 16kHz
+ * instead (wave 62 — the Simli live-agent fail-over leg feeds this straight
+ * to simli-client's sendAudioData, which requires exactly that format; no
+ * other caller sets it, so every existing caller is byte-for-byte
+ * unaffected).
  *
  * Used by the InternalAIAssistant to speak responses in the agent's own
- * voice (instead of the browser's generic SpeechSynthesis voice). Falls
- * back gracefully — caller checks status and uses browser TTS on failure.
+ * voice (instead of the browser's generic SpeechSynthesis voice), and by
+ * SimliFaceSession for the Simli fail-over leg. Falls back gracefully —
+ * caller checks status and uses browser TTS / same-brain text chat on
+ * failure.
  *
  * POST /api/internal/voice-tts
- *   body: { text: string }
- *   returns: audio/mpeg stream OR 404/500 with reason
+ *   body: { text: string, format?: "pcm_16000" }
+ *   returns: audio/mpeg (default) or audio/pcm stream OR 404/500 with reason
  */
 export async function POST(req: NextRequest) {
   // Auth
@@ -23,7 +30,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  let body: { text?: string } = {}
+  let body: { text?: string; format?: string } = {}
   try {
     body = await req.json()
   } catch {
@@ -37,8 +44,13 @@ export async function POST(req: NextRequest) {
   if (text.length > 2000) {
     return NextResponse.json({ error: "Text too long (max 2000 chars)" }, { status: 400 })
   }
+  // WHITELISTED, not passed through raw — an unrecognized format falls back
+  // to mp3 rather than forwarding an arbitrary string to ElevenLabs.
+  const outputFormat = body.format === "pcm_16000" ? ("pcm_16000" as const) : undefined
 
-  // Resolve self-voice (honors voice_preference: clone vs generic choice)
+  // Resolve self-voice (honors voice_preference: clone vs generic choice) —
+  // the SAME resolver for both formats; a Simli turn speaks in the same
+  // cloned voice the browser-TTS path already uses, never a second identity.
   const resolved = await resolveSelfVoice(user.id)
 
   // WAVE 58: model + voice_settings resolved via the ONE selectors (§6) —
@@ -54,6 +66,7 @@ export async function POST(req: NextRequest) {
     voiceId: resolved.voiceId,
     modelId: elevenLabsModelForLane("phone_realtime"),
     voiceSettings: ELEVENLABS_REALISM_VOICE_SETTINGS,
+    outputFormat,
   })
 
   if (!result.success || !result.response) {
@@ -67,7 +80,7 @@ export async function POST(req: NextRequest) {
   return new Response(result.response.body, {
     status: 200,
     headers: {
-      "Content-Type": "audio/mpeg",
+      "Content-Type": outputFormat ? "audio/pcm" : "audio/mpeg",
       "Cache-Control": "no-store",
       "X-Voice-Source": resolved.source,
     },

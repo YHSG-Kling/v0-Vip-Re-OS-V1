@@ -71,14 +71,19 @@ latency*, which is a reason to instrument, not to migrate mid-production.
    brand prompt must equal the ones the phone lane and the video lane use
    (one persona across text, voice, avatar, video).
 
-**Suggestions if D-ID's measured latency or cost proves unacceptable (not
-built; behind a `face-render` seam only if adopted):**
+**Update 2026-09-14 (wave 62, owner ruling "building Simli as a backup makes
+more sense than HeyGen"): Simli is now BUILT as the backup face renderer**
+behind `lib/live-agent/face-render.ts` — fail-over D-ID → Simli → same-brain
+text on both session doors, same consent row, same identity row, provider-
+aware metering. Full write-up: `docs/face-render-backup-simli-2026-09.md`.
 
-- **Simli Audio-to-Video** — cheapest render leg by 30–40× ($0.009/min),
-  < 300 ms, single-photo avatar, LiveKit/Pipecat plugins. Fits this OS
-  exactly because the brain and voice are already ours. Cost of adoption:
-  a LiveKit (or Daily) transport we do not run today, STT for the visitor's
-  mic, and a second consent flow.
+**Remaining suggestions (not built):**
+
+- **Simli Audio-to-Video** — BUILT as backup (above). Cheapest render leg by
+  30–40× ($0.009/min), < 300 ms, single-photo avatar; its LiveKit mode
+  needs no transport of ours, and the visitor's mic is browser
+  SpeechRecognition → our brain, so neither of the two adoption costs
+  named in wave 60 materialised.
 - **Anam Cara-4** — best quality/latency claims with BYO LLM, SOC 2/HIPAA/ZDR;
   concurrency caps are low at entry tiers.
 - **Tavus** — highest bundled quality but bundles a brain and TTS we would

@@ -414,6 +414,13 @@ export function marketUpdateProps(md: MarketDataRow, id: DirectorIdentity): Reco
     stats.push({ value: String(md.active_listings), label: "ACTIVE LISTINGS", delta: null, direction: "up_bad" })
   }
 
+  // SOUND-OFF CAPTIONS FALLBACK (wave 62) — this is a pure data reel with no
+  // narration sentence anywhere in its facts; the honest text is the exact
+  // value+label already printed on each stat card below (same "assemble
+  // already-established on-screen strings, never invent prose" rule
+  // OpenHouseAnnounceReel's dateLabel/timeLabel join already follows).
+  const captionScript = stats.length ? stats.map((s) => `${s.value} ${s.label}`).join(" · ") : null
+
   const out: Record<string, unknown> = { agentName: id.agentName }
   if (id.agentPhone.trim()) out.agentPhone = id.agentPhone.trim()
   const area = (md.market_area ?? md.city ?? "").trim()
@@ -423,6 +430,7 @@ export function marketUpdateProps(md: MarketDataRow, id: DirectorIdentity): Reco
     if (!Number.isNaN(d.getTime())) out.period = d.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
   }
   if (stats.length) out.stats = stats
+  if (captionScript) out.captionScript = captionScript
   return out
 }
 
@@ -475,6 +483,11 @@ export function neighborhoodProps(n: NeighborhoodRow, id: DirectorIdentity): Rec
   const tag = String(n.ai_summary ?? "").split(/[.\n]/).map((s) => s.trim()).find((s) => s.length > 12 && s.length < 90)
   if (tag) out.tagline = tag
   if (highlights.length) out.highlights = highlights
+  // SOUND-OFF CAPTIONS FALLBACK (wave 62) — the tagline IS the narration: it
+  // is the report's own AI summary sentence resolved just above, quoted
+  // rather than re-drafted — the same rule TestimonialReel's captionScript
+  // follows for a client's own words.
+  if (typeof out.tagline === "string") out.captionScript = out.tagline
   return out
 }
 
@@ -528,7 +541,7 @@ export function testimonialProps(r: ReviewRow, id: DirectorIdentity): Record<str
  * the one being fixed.
  */
 export function equityProps(
-  facts: Record<string, unknown>, address: string | null, id: DirectorIdentity,
+  facts: Record<string, unknown>, address: string | null, id: DirectorIdentity, hookLine?: string,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { agentName: id.agentName }
   if (id.agentPhotoUrl) out.agentPhotoUrl = id.agentPhotoUrl
@@ -538,6 +551,12 @@ export function equityProps(
     if (typeof v === "number" && Number.isFinite(v)) out[k] = k === "appreciationPct" ? Math.round(v * 10) / 10 : Math.round(v)
   }
   out.brandColors = brandBlock(id)
+  // SOUND-OFF CAPTIONS FALLBACK (wave 62) — this builder resolves only
+  // numbers, no sentence: the compliance-gated hookLine already established
+  // for this commission (resolveDirectorContentProps' own args) is the same
+  // honest fallback AgentTalkingHeadReel's captionScript uses when nothing
+  // fuller exists — never a fabricated equity narration.
+  if (hookLine?.trim()) out.captionScript = hookLine.trim()
   return out
 }
 
@@ -642,7 +661,7 @@ export async function resolveDirectorContentProps(
         const address = (typeof facts.address === "string" && facts.address.trim())
           ? facts.address
           : listing?.address ?? await readClientAddress(svc, args.brokerageId, args.contactId ?? null)
-        return { ...base, ...equityProps(facts, address, id) }
+        return { ...base, ...equityProps(facts, address, id, args.hookLine) }
       }
 
       case "AgentExplainerReel":

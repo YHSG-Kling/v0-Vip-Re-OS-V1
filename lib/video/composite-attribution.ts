@@ -686,6 +686,35 @@ async function probeDuration(filePath: string): Promise<number | null> {
   })
 }
 
+/**
+ * PUBLIC — the same ffmpeg-stderr Duration probe `compositeBrollCutaways` uses
+ * on its downloaded main-video buffer, exported so a caller OUTSIDE this file
+ * can measure a rehosted D-ID clip's real length (wave 62 — PartnersMeetingReel
+ * `avatarDurationSeconds` plumbing: lib/intelligence/partners-meeting.ts has no
+ * ffmpeg dependency of its own and must not grow one — this is the one probe
+ * the render coordinator already trusts). Downloads via the same
+ * `downloadVideoBytes` connector path every compositor in this file uses.
+ * Best-effort: null on any failure (no ffmpeg binary, a 4xx, a corrupt file) —
+ * the caller's contract (avatarPipWindowFade / avatarFadeOutFrame) already
+ * treats "no measurement" as "render exactly as before", never as "empty".
+ */
+export async function probeRemoteVideoDurationSeconds(url: string): Promise<number | null> {
+  if (!FFMPEG_BIN) return null
+  let workDir: string | null = null
+  try {
+    const dl = await downloadVideoBytes(url)
+    if (!dl.ok || !dl.bytes) return null
+    workDir = await mkdtemp(path.join(tmpdir(), "vip-dur-"))
+    const filePath = path.join(workDir, "clip.mp4")
+    await writeFile(filePath, dl.bytes)
+    return await probeDuration(filePath)
+  } catch {
+    return null
+  } finally {
+    if (workDir) { try { await rm(workDir, { recursive: true, force: true }) } catch { /* best-effort cleanup */ } }
+  }
+}
+
 export async function compositeBrollCutaways(opts: {
   mainVideoBuffer: Buffer
   brollUrls: string[]

@@ -22,6 +22,7 @@ import { AbsoluteFill, Sequence, Easing, interpolate, useCurrentFrame, useVideoC
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { avatarFadeOutFrame } from "../lib/video/script-structure"
 
 type ReelCardKind = "team" | "finance" | "compliance"
 interface ReelCard { value: string; label: string; sub?: string; kind: ReelCardKind }
@@ -54,6 +55,13 @@ export interface PartnersMeetingReelProps {
   // test:remotion-setup §5 now refuses any declared-but-unread prop.
   agentName: string
   avatarVideoUrl: string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the presenter clip
+   * (wave 62 realism fix — see the "THE PRESENTER RIDES EVERY CARD" comment
+   * below for the freeze this closes). Optional + additive: absent renders
+   * EXACTLY as before (avatarFadeOutFrame no-ops with no measurement).
+   */
+  avatarDurationSeconds?: number | null
   agentPhotoUrl: string | null
   brand: Brand
   /** Tracked outro QR — finish-spec rule: CLIENT-FACING uses of this
@@ -110,8 +118,15 @@ const SceneHeader: React.FC<{ brand: Brand; right?: React.ReactNode }> = ({ bran
 
 /** Presenter PIP: D-ID clip → assistant/agent photo → monogram, with a
  *  NAMEPLATE (the assistant's name) so the host is a character, not a circle. */
-const AvatarPIP: React.FC<{ avatarVideoUrl: string | null; agentPhotoUrl: string | null; agentName: string; accentColor: string; primaryColor: string }> = ({
-  avatarVideoUrl, agentPhotoUrl, agentName, accentColor, primaryColor,
+const AvatarPIP: React.FC<{
+  avatarVideoUrl: string | null; agentPhotoUrl: string | null; agentName: string
+  accentColor: string; primaryColor: string
+  /** Wave 62 realism fix — see file-header note. 1 = full opacity (default,
+   *  no measurement); fades to 0 once the real clip has ended so the PIP
+   *  never holds a frozen last frame for the rest of the window. */
+  opacity?: number
+}> = ({
+  avatarVideoUrl, agentPhotoUrl, agentName, accentColor, primaryColor, opacity = 1,
 }) => {
   const ring: React.CSSProperties = {
     width: 230, height: 230, borderRadius: 115, overflow: "hidden", backgroundColor: primaryColor,
@@ -120,7 +135,7 @@ const AvatarPIP: React.FC<{ avatarVideoUrl: string | null; agentPhotoUrl: string
   return (
     <div style={{ position: "absolute", bottom: 44, right: 56, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
       {avatarVideoUrl ? (
-        <div style={ring}><Video src={avatarVideoUrl} objectFit="cover" style={{ width: "100%", height: "100%" }} /></div>
+        <div style={ring}><Video src={avatarVideoUrl} objectFit="cover" style={{ width: "100%", height: "100%", opacity }} /></div>
       ) : agentPhotoUrl ? (
         <div style={ring}><SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
       ) : (
@@ -259,9 +274,10 @@ const OutroScene: React.FC<{ brand: Brand; showEho: boolean; qrCodeDataUrl?: str
 }
 
 export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
-  weekLabel, cards, oneAsk, agentName, avatarVideoUrl, agentPhotoUrl, brand, qrCodeDataUrl, qrCaption, captionsCues,
+  weekLabel, cards, oneAsk, agentName, avatarVideoUrl, avatarDurationSeconds, agentPhotoUrl, brand, qrCodeDataUrl, qrCaption, captionsCues,
 }) => {
   const { durationInFrames, fps } = useVideoConfig()
+  const frame = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
 
   const COVER = 2.5 * fps
@@ -269,6 +285,19 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
   const OUTRO = 1.5 * fps
   const cardTotal = Math.max(1, durationInFrames - COVER - ASK - OUTRO)
   const per = cards.length > 0 ? Math.floor(cardTotal / cards.length) : cardTotal
+  // Wave 62 realism fix — see the "THE PRESENTER RIDES EVERY CARD" comment
+  // below. The presenter window is [COVER, COVER + presenterWindowFrames), ONE
+  // continuous <Video> (no per-card trimBefore/trimAfter slicing like
+  // MarketUpdateReel/EquityReportReel use), so this is the single-window
+  // shape avatarFadeOutFrame already handles directly — the same call
+  // AgentTalkingHeadReel makes for its one BODY window.
+  const presenterWindowFrames = cardTotal + ASK
+  const avatarFadeStart = avatarFadeOutFrame(avatarDurationSeconds, presenterWindowFrames, fps)
+  const avatarOpacity = avatarFadeStart != null
+    ? interpolate(frame - COVER, [avatarFadeStart, avatarFadeStart + 12], [1, 0], {
+        extrapolateLeft: "clamp", extrapolateRight: "clamp",
+      })
+    : 1
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -311,13 +340,21 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
           the outro so the outro still draws on top of it. The window meets the
           outro exactly: COVER + cardTotal + ASK === durationInFrames − OUTRO.
 
-          UNRESOLVED and NOT invented here: if the D-ID clip is SHORTER than this
-          window it holds its final frame, the same class of defect the B-roll
-          layer now bounds with a measured duration. Nothing in this composition's
-          props carries the avatar clip's length, so there is no honest number to
-          bound it with — see the report, not a guess. */}
-      <Sequence from={COVER} durationInFrames={cardTotal + ASK}>
-        <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName} accentColor={brand.accentColor} primaryColor={brand.primaryColor} />
+          RESOLVED (wave 62): the D-ID clip's real length now rides
+          `avatarDurationSeconds` — lib/intelligence/partners-meeting.ts's
+          defaultProducer probes the rehosted clip with the same ffmpeg-stderr
+          Duration measurement compositeBrollCutaways already trusts
+          (lib/video/composite-attribution.ts::probeRemoteVideoDurationSeconds),
+          the same class of fix the B-roll layer already bounds with a
+          measured duration. `avatarFadeStart`/`avatarOpacity` (computed above,
+          the single-window shape avatarFadeOutFrame already handles — see
+          AgentTalkingHeadReel's identical call) fade the PIP out before a
+          short clip's last real frame instead of freezing it for the rest of
+          this window. Optional + additive: no measurement renders exactly as
+          before, full opacity throughout. */}
+      <Sequence from={COVER} durationInFrames={presenterWindowFrames}>
+        <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName}
+          accentColor={brand.accentColor} primaryColor={brand.primaryColor} opacity={avatarOpacity} />
       </Sequence>
 
       {/* OUTRO */}

@@ -63,6 +63,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
+import { SimliFaceSession } from "./SimliFaceSession"
 
 interface AgentsWidgetProps {
   contactId: string
@@ -114,6 +115,11 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   const [canInterrupt, setCanInterrupt] = useState(false)
   const [inputText, setInputText] = useState("")
   const [messages, setMessages] = useState<DisplayMessage[]>([])
+  // wave 62 — the BACKUP face-render leg (lib/live-agent/face-render.ts). Set
+  // only when the session door's D-ID init already failed server-side and
+  // Simli minted a session token instead; the D-ID SDK path below is never
+  // reached when this is set (boot() returns before createAgentManager).
+  const [simliSession, setSimliSession] = useState<{ sessionToken: string; faceId: string; liveSessionId: string | null } | null>(null)
 
   // ── Boot D-ID Agents session ─────────────────────────────────────────────
   useEffect(() => {
@@ -133,15 +139,30 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
           return
         }
 
-        const { didAgentId, clientKey, presenterType, greeting, greetingSentiment, liveSessionId } =
-          (await res.json()) as {
-            didAgentId: string
-            clientKey: string
-            presenterType?: DidPresenterType
-            greeting?: string | null
-            greetingSentiment?: string | null
-            liveSessionId?: string | null
-          }
+        const data = (await res.json()) as {
+          provider?: "simli"
+          sessionToken?: string
+          faceId?: string
+          didAgentId: string
+          clientKey: string
+          presenterType?: DidPresenterType
+          greeting?: string | null
+          greetingSentiment?: string | null
+          liveSessionId?: string | null
+        }
+
+        // ── FACE-RENDER FAIL-OVER (wave 62): D-ID already failed server-side
+        // and the session door minted a Simli session instead. Mount
+        // SimliFaceSession and STOP — the D-ID SDK path below (createAgentManager
+        // onward) is never reached for this boot. ──────────────────────────
+        if (data.provider === "simli" && data.sessionToken && data.faceId) {
+          if (cancelled) return
+          liveSessionIdRef.current = data.liveSessionId ?? null
+          setSimliSession({ sessionToken: data.sessionToken, faceId: data.faceId, liveSessionId: data.liveSessionId ?? null })
+          return
+        }
+
+        const { didAgentId, clientKey, presenterType, greeting, greetingSentiment, liveSessionId } = data
         liveSessionIdRef.current = liveSessionId ?? null
         greetingRef.current = (greeting ?? "").trim() || null
         greetingSentimentRef.current = isDidSentiment(greetingSentiment) ? greetingSentiment : null
@@ -305,6 +326,9 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   // live_agent_sessions row whose last_seen_at goes >10min stale). 2min
   // cadence comfortably clears that bar even under a slow network.
   useEffect(() => {
+    // Simli path heartbeats itself (SimliFaceSession, same url/shape) —
+    // skip here so one boot never double-beacons the same liveSessionId.
+    if (simliSession) return
     const HEARTBEAT_MS = 2 * 60 * 1000
     const id = setInterval(() => {
       const sid = liveSessionIdRef.current
@@ -316,7 +340,7 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
       }).catch(() => {})
     }, HEARTBEAT_MS)
     return () => clearInterval(id)
-  }, [contactId])
+  }, [contactId, simliSession])
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -490,6 +514,24 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   }, [canInterrupt])
 
   // ── UI ───────────────────────────────────────────────────────────────────
+
+  // wave 62 face-render fail-over — D-ID already failed server-side and this
+  // boot is running the BACKUP leg entirely; none of the D-ID SDK state/UI
+  // below this point (manager, mic caps, mode) is relevant to it.
+  if (simliSession) {
+    return (
+      <SimliFaceSession
+        sessionToken={simliSession.sessionToken}
+        faceId={simliSession.faceId}
+        liveSessionId={simliSession.liveSessionId}
+        contactId={contactId}
+        agentFirstName={agentFirstName}
+        heartbeatUrl="/api/did/agents/session/heartbeat"
+        endUrl="/api/did/agents/session/end"
+        onFallbackToText={onFallbackToText}
+      />
+    )
+  }
 
   const micUnavailable = micState === "unsupported" || micState === "no-device"
   const micLabel =

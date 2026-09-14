@@ -103,6 +103,16 @@ export interface SynthesizeSpeechInput {
   languageCode?: string | null
   /** When set, the synthesis cost is recorded to the unified vendor ledger. */
   brokerageId?: string | null
+  /**
+   * ElevenLabs' `output_format` query param — ONLY consulted by
+   * synthesizeSpeechStream (wave 62, the Simli live-agent leg needs raw
+   * PCM16 mono 16kHz to feed simli-client's sendAudioData, not mp3). Every
+   * pre-wave-62 caller leaves this unset and gets the exact same mp3 stream
+   * as before (additive, §6 — one streaming function, not a second one for
+   * PCM). synthesizeSpeech (the buffered/non-streaming variant) does not
+   * accept this — no caller of it needs raw PCM.
+   */
+  outputFormat?: "pcm_16000"
 }
 
 export interface SynthesizeSpeechResult {
@@ -368,12 +378,18 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
     // so audio is piped to the client with low latency (no full buffer). The connector-gateway
     // buffers responses and can't express streaming; the buffered TTS path in this file uses
     // callConnector, only this low-latency stream stays a direct fetch.
+    const streamUrl = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`)
+    if (input.outputFormat) streamUrl.searchParams.set("output_format", input.outputFormat)
     const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+      streamUrl.toString(),
       {
         method: "POST",
         headers: {
-          Accept: "audio/mpeg",
+          // pcm_16000 is raw signed 16-bit PCM, not an mpeg container — an
+          // Accept: audio/mpeg header on that request is simply wrong, and
+          // ElevenLabs' own response Content-Type for it is audio/pcm; the
+          // default (unset outputFormat) path is completely unchanged.
+          Accept: input.outputFormat ? "audio/pcm" : "audio/mpeg",
           "Content-Type": "application/json",
           "xi-api-key": apiKey,
         },

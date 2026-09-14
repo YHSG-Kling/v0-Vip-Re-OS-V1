@@ -91,10 +91,17 @@ export interface StartLiveAgentSessionParams {
   contactId?: string | null
   surface: LiveAgentSurface
   didAgentId?: string | null
+  /** wave 62 (lib/live-agent/face-render.ts) — which face-render provider
+   *  this session actually connected to. Defaults to "did": every pre-wave-62
+   *  caller (portal/embed session-start's PRIMARY path) passed none and must
+   *  keep booking the D-ID vendor ledger exactly as before. The Simli
+   *  fail-over branch on both session doors passes "simli" explicitly. */
+  provider?: "did" | "simli"
 }
 
 /** Opens the metering row. Called from the session-start routes right after
- *  a client_key is issued — a session that fails to mint never reaches here. */
+ *  a client_key (D-ID) or session token (Simli) is issued — a session that
+ *  fails to mint never reaches here. */
 export async function startLiveAgentSession(
   params: StartLiveAgentSessionParams,
   svc: Svc = createServiceClient(),
@@ -107,7 +114,7 @@ export async function startLiveAgentSession(
       contact_id: params.contactId ?? null,
       surface: params.surface,
       did_agent_id: params.didAgentId ?? null,
-      provider: "did",
+      provider: params.provider ?? "did",
       status: "active",
     })
     .select("id")
@@ -148,13 +155,18 @@ interface CloseResult {
  *  arithmetic (round-up, vendor ledger, tenant ledger) can never drift (§6). */
 async function closeLiveAgentSession(
   svc: Svc,
-  row: { id: string; brokerage_id: string; agent_id: string | null; contact_id: string | null; surface: string },
+  row: { id: string; brokerage_id: string; agent_id: string | null; contact_id: string | null; surface: string; provider?: string | null },
   seconds: number,
   status: "ended" | "swept",
   source: "client_report" | "sweep",
 ): Promise<CloseResult> {
   const billedSeconds = roundUpToNearest15Seconds(seconds)
   const minutes = billedSeconds / 60
+  // wave 62 — PROVIDER-AWARE (§6, ONE function: estimateStreamingMinutesCostUsd
+  // takes the provider rather than a second `closeSimliAgentSession` copy of
+  // this close path). Defaults to "did" for every row written before this
+  // wave (provider column DEFAULT 'did', m624) and for any unrecognized value.
+  const provider: "did" | "simli" = row.provider === "simli" ? "simli" : "did"
 
   const { error: updateError } = await svc
     .from("live_agent_sessions")
@@ -172,16 +184,17 @@ async function closeLiveAgentSession(
   }
 
   if (minutes > 0) {
-    // THE VENDOR LEDGER (platform-pays, §5) — what the platform owes D-ID.
+    // THE VENDOR LEDGER (platform-pays, §5) — what the platform owes the
+    // face-render provider this session actually connected to.
     void logVendorUsage({
-      vendorName: "did",
+      vendorName: provider,
       usageType: "streaming_minutes",
       unitCount: minutes,
-      estimatedCost: estimateStreamingMinutesCostUsd(billedSeconds),
+      estimatedCost: estimateStreamingMinutesCostUsd(billedSeconds, provider),
       systemSource: `live_agent_${row.surface}`,
       brokerageId: row.brokerage_id,
       agentId: row.agent_id ?? undefined,
-      metadata: { live_agent_session_id: row.id, surface: row.surface, close_source: source, seconds_reported: seconds, seconds_billed: billedSeconds },
+      metadata: { live_agent_session_id: row.id, surface: row.surface, provider, close_source: source, seconds_reported: seconds, seconds_billed: billedSeconds },
     })
   }
 
@@ -199,7 +212,7 @@ export async function endLiveAgentSession(
   if (!sessionId) return { ok: false, error: "sessionId required" }
   const { data: row, error } = await svc
     .from("live_agent_sessions")
-    .select("id, brokerage_id, agent_id, contact_id, surface, status")
+    .select("id, brokerage_id, agent_id, contact_id, surface, provider, status")
     .eq("id", sessionId)
     .maybeSingle()
   if (error || !row) return { ok: false, error: error?.message ?? "session not found" }
@@ -222,7 +235,7 @@ export async function sweepStaleLiveAgentSessions(
   const staleBefore = new Date(Date.now() - STALE_AFTER_MS).toISOString()
   const { data: stale, error } = await svc
     .from("live_agent_sessions")
-    .select("id, brokerage_id, agent_id, contact_id, surface, started_at, last_seen_at, status")
+    .select("id, brokerage_id, agent_id, contact_id, surface, provider, started_at, last_seen_at, status")
     .eq("status", "active")
     .lt("last_seen_at", staleBefore)
     .limit(200)
@@ -283,13 +296,24 @@ export async function listLiveAgentSessionsForBrokerage(params: {
   if (error) return { success: false, error: error.message }
   const sessions = (data ?? []) as LiveAgentSessionLedgerRow[]
   const minutesBilled = sessions.reduce((sum, s) => sum + Number(s.minutes_billed ?? 0), 0)
+  // PROVIDER-AWARE (wave 62): D-ID and Simli minutes are priced at DIFFERENT
+  // rates, so the total is the SUM of each row's own provider rate, not the
+  // combined minutes at one rate (which would misprice every Simli row at
+  // D-ID's ~55x-higher rate the moment a fail-over session lands in the
+  // window). estimateStreamingMinutesCostUsd is still the ONE function (§6);
+  // this just calls it per-row instead of once on the aggregate.
+  const estimatedUsd = sessions.reduce((sum, s) => {
+    const minutes = Number(s.minutes_billed ?? 0)
+    if (minutes <= 0) return sum
+    return sum + estimateStreamingMinutesCostUsd(minutes * 60, s.provider === "simli" ? "simli" : "did")
+  }, 0)
   return {
     success: true,
     sessions,
     totals: {
       sessions: sessions.length,
       minutesBilled,
-      estimatedUsd: estimateStreamingMinutesCostUsd(minutesBilled),
+      estimatedUsd: Math.round(estimatedUsd * 10000) / 10000,
       active: sessions.filter((s) => s.status === "active").length,
     },
   }

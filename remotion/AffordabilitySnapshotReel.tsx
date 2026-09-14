@@ -37,8 +37,6 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
-import { CaptionLayer } from "./components/CaptionLayer"
-import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AffordabilityExample {
   /** Property address line — terse. */
@@ -77,12 +75,20 @@ export interface AffordabilitySnapshotReelProps {
   qrCaption?:     string
   mlsClean?:      boolean
   contextCues?: string[]
-  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
-   *  cues built upstream from real narration alignment — preferred. See CaptionLayer. */
-  captionsCues?: CaptionCue[] | null
-  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
-   *  timing in-composition when no cues are supplied. Absent → no captions. */
-  captionScript?: string | null
+  // NO CAPTIONS (wave 62 — decided with the code, not invented here).
+  // captionsCues/captionScript were declared and mounted here since wave 61
+  // but NEVER fed by the only live producer: lib/agents/buyer-match-reel-
+  // producer.ts builds this reel's props and its own comment says so
+  // explicitly — "the reel speaks on-screen copy, not a generated script"
+  // (also the NO_PRODUCER_NOTE scripts/remotion-setup-guard.ts already
+  // carries for this composition). A declared-but-never-read caption prop is
+  // exactly the "declared-only prop is a promise the render does not keep"
+  // shape that guard refuses (test:remotion-setup), so the props are removed
+  // rather than left idle — genuinely silent data reel, finish-spec.ts now
+  // says captions:false. CaptionLayer itself is untouched
+  // (remotion/components/CaptionLayer.tsx) — every other narrated reel still
+  // mounts it; this file simply stops being one of them until a producer
+  // sizes a real gated script for the buyer-match narration.
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -166,7 +172,7 @@ const ExampleCard: React.FC<{
 export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps> = ({
   monthlyHeadline, areaName, period, examples, ratesAssumption,
   ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues, brand,
-  qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
+  qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame     = useCurrentFrame()
   const showEho   = brand.showEhoMark ?? true
@@ -268,14 +274,9 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
         <AbsoluteFill />
       </Sequence>
 
-      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
-          clip before the CTA/QR tile at COVER + PER * 3. */}
-      <CaptionLayer
-        cues={captionsCues}
-        script={captionScript}
-        accentColor={brand.accentColor}
-        hiddenFromFrame={COVER + PER * 3}
-      />
+      {/* NO CAPTION LAYER (wave 62) — see the AffordabilitySnapshotReelProps
+          note above: genuinely silent data reel, no narration script exists
+          upstream. */}
     </AbsoluteFill>
   )
 }

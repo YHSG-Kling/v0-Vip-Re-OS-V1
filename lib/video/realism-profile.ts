@@ -1263,22 +1263,56 @@ export const DID_SCALE_MONTHLY_STREAMING_MINUTES = 600
 export const DID_USD_PER_STREAMING_MINUTE =
   Math.round((DID_SCALE_MONTHLY_PLAN_USD / DID_SCALE_MONTHLY_STREAMING_MINUTES) * 10000) / 10000
 
+// ─── Simli — the BACKUP face-render provider (wave 62) ─────────────────────
+//
+// OWNER RULING (2026-09-14, verbatim): "building Simli as a backup makes more
+// sense than HeyGen." docs.simli.com (fetched 2026-09-14, handed to this
+// lane as verified facts): Audio-to-Video render leg, pay-as-you-go, "≈
+// $0.009 per streamed minute (render leg only)" — STT/LLM/TTS/transport are
+// OURS already (this OS's own brain + ElevenLabs voice), so unlike D-ID's
+// bundled-Agent rate above, this is a pure render-only number, not a plan
+// blend. $10 signup credit and volume discounts exist but are not modeled
+// here (same "until the contract tier is known" posture DID_USD_PER_
+// STREAMING_MINUTE documents). lib/live-agent/face-render.ts is the seam
+// this backs; see docs/live-agent-provider-recommendation-2026-09.md §3 for
+// why D-ID stays PRIMARY and this is fail-over only.
+export const SIMLI_USD_PER_STREAMING_MINUTE = 0.009
+
+/** The two face-render providers this OS meters live streaming minutes for.
+ *  Kept as a plain literal union (not imported from lib/live-agent/
+ *  face-render.ts) so this pricing module never depends on the seam that
+ *  depends on it — lib/live-agent/face-render.ts's own FaceRenderProvider
+ *  type is structurally identical and the two are proved to match by
+ *  scripts/face-render-seam-simulator.ts, never re-declared as a third
+ *  spelling (§6). */
+export type StreamingFaceProvider = "did" | "simli"
+
 /**
  * PURE: seconds rounded UP to the nearest 15s, the increment D-ID's own
  * billing rounds live-session minutes to (docs, §2). Used by
  * lib/did/live-session-metering.ts so a 61s call books 75s (1.25 min), not
  * 60s — matching what D-ID itself would invoice, not undercounting the tail.
+ * Simli bills per-minute-streamed with no published rounding increment, so
+ * the SAME 15s ceiling is applied to it too — the safer-wrong direction
+ * (never undercounts a vendor-cost row) rather than inventing a finer one.
  */
 export function roundUpToNearest15Seconds(seconds: number): number {
   if (!Number.isFinite(seconds) || seconds <= 0) return 0
   return Math.ceil(seconds / 15) * 15
 }
 
-/** PURE: USD for `seconds` of live D-ID Agents streaming, at the official
- *  plan-derived rate above. Seconds are rounded up to the nearest 15s first. */
-export function estimateStreamingMinutesCostUsd(seconds: number): number {
+/** PURE: USD for `seconds` of live streaming, at the given provider's
+ *  plan-derived rate. Seconds are rounded up to the nearest 15s first.
+ *  `provider` defaults to "did" — every pre-wave-62 caller passed one
+ *  argument and must keep pricing D-ID exactly as before (additive, §6 one
+ *  function instead of a second `estimateSimliStreamingMinutesCostUsd`). */
+export function estimateStreamingMinutesCostUsd(
+  seconds: number,
+  provider: StreamingFaceProvider = "did",
+): number {
   const minutes = roundUpToNearest15Seconds(seconds) / 60
-  return Math.round(minutes * DID_USD_PER_STREAMING_MINUTE * 10000) / 10000
+  const rate = provider === "simli" ? SIMLI_USD_PER_STREAMING_MINUTE : DID_USD_PER_STREAMING_MINUTE
+  return Math.round(minutes * rate * 10000) / 10000
 }
 
 // ═════════════════════════════════════════════════════════════════════════

@@ -141,6 +141,12 @@ export const CRON_REGISTRY: CronEntry[] = [
   // Speed-to-lead — micro-personalized first touch on promotion + 5-min agent-grace ISA jump-in.
   { path: "/api/cron/speed-to-lead"                       , schedule: "*/2 * * * *" },
   { path: "/api/cron/poll-did-avatars"                    , schedule: "*/3 * * * *" },
+  // Wave 62 — safety net for a d-id.com result URL left on a row (both happy
+  // paths already re-host at completion time and fail closed on refusal; see
+  // lib/did/result-url-rehost-sweep.ts). Daily, not sub-5-minute (owner
+  // ruling: cron cost must justify itself) — a slipped-through URL has a
+  // multi-hour window before it expires.
+  { path: "/api/cron/did-result-url-rehost-sweep"         , schedule: "0 9 * * *" },
   { path: "/api/cron/fire-drill"                          , schedule: "27,57 * * * *" }, // (staggered r43)
   { path: "/api/cron/manager-signals"                     , schedule: "23,53 * * * *" }, // (staggered r43)
   { path: "/api/cron/campaign-sequence-steps"             , schedule: "*/5 * * * *" },
@@ -283,11 +289,14 @@ export const CRON_REGISTRY: CronEntry[] = [
   // idempotent and cheap, this is eventual-consistency maintenance, not a
   // latency-sensitive loop.
   { path: "/api/cron/did-agent-sync"                      , schedule: "0 */4 * * *" },
-  // Wave 60 — closes any live_agent_sessions row (m624, WRITTEN NOT APPLIED)
-  // whose heartbeat has gone silent for >10min (crashed/killed tab that never
-  // reached its own beacon), billing the heartbeat-derived duration. 5min
-  // cadence keeps the worst-case unbilled/unclosed window under 15min.
-  { path: "/api/cron/live-agent-session-sweep"            , schedule: "*/5 * * * *" },
+  // Wave 60 built /api/cron/live-agent-session-sweep here on its own */5
+  // schedule (closes any live_agent_sessions row, m624 WRITTEN NOT APPLIED,
+  // whose heartbeat has gone silent for >10min). Wave 62
+  // (docs/vercel-cron-usage-2026-09.md) FOLDED it into the existing */5
+  // queue-drain tick below — same owner (cron_manager), same cadence, one
+  // fewer Vercel Function invocation per tick. Survivor:
+  // app/api/cron/queue-drain/route.ts:drainLiveAgentSessionSweep (registered
+  // at "/api/cron/queue-drain" a few lines down this file).
   { path: "/api/cron/message-needs-response"               , schedule: "35 * * * *" }, // MESSAGE_NEEDS_RESPONSE had live notification_rules and no emitter (lane CB, 2026-09-08)
   // ── Wave 26: five runners that existed, were proved, and had NO trigger ────
   // Each was reachable only from its own simulator; the capability had never run

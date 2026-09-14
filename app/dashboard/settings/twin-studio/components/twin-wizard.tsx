@@ -19,6 +19,91 @@ import { ConsentRecorder } from "./consent-recorder"
 
 type Step = "look" | "consent" | "voice" | "personality" | "done"
 
+/**
+ * The FAILURE SHAPE /api/did/create-avatar actually sends (app/api/did/
+ * create-avatar/route.ts). It carries `needs_consent`, `retryable`,
+ * `capExceeded`, `budgetExceeded` and `kind` — this wizard used to read only
+ * `error` and drop the rest (carried gap, wave 61), so a 428 consent race, a
+ * plan-cap 429, a vendor-budget 402 and a genuinely retryable 503 all landed
+ * on the agent as the exact same shrug of a toast. None of that touches the
+ * route or the 428 gate itself — this is presentation only.
+ */
+interface AvatarApiFailure {
+  error?: string
+  kind?: string
+  needs_consent?: boolean
+  needs_human_action?: boolean
+  retryable?: boolean
+  capExceeded?: boolean
+  budgetExceeded?: boolean
+}
+
+/**
+ * POST /api/did/create-avatar and normalize the result — ONE call site for
+ * all three places in this wizard that submit a source (photo-immediate,
+ * video-after-consent-verified, video-after-consent-skipped) so the failure
+ * envelope can never drift between them (CLAUDE.md §6).
+ */
+async function postCreateAvatar(payload: {
+  source_url: string
+  source_type: "photo" | "video"
+  twin_id: string
+  label: string
+}): Promise<{ ok: true } | { ok: false; failure: AvatarApiFailure }> {
+  try {
+    const res = await fetch("/api/did/create-avatar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+    if (res.ok) return { ok: true }
+    const failure: AvatarApiFailure = await res.json().catch(() => ({}))
+    return { ok: false, failure }
+  } catch {
+    // Network-level failure — no structured envelope to read, but the same
+    // shape as a 503: worth another try.
+    return { ok: false, failure: { error: "Couldn't start avatar processing — try again.", retryable: true } }
+  }
+}
+
+/**
+ * Turn a create-avatar failure into the right UI reaction instead of the one
+ * generic toast every branch used to share:
+ *   · needs_consent  — tell the agent consent didn't go through; the caller
+ *     is responsible for staying ON (or returning to) the consent step —
+ *     every call site below already does that by simply not advancing.
+ *   · capExceeded / budgetExceeded — a PLAN/USAGE message, distinguishable
+ *     from a transient failure, since retrying changes nothing until the
+ *     plan or the period resets.
+ *   · retryable — a toast with an actual Retry action, not just prose
+ *     telling the agent to do it themselves.
+ *   · anything else — the provider's own classified message (kind-specific,
+ *     e.g. InvalidFaceError / CelebrityRecognizedError), never overwritten.
+ */
+function reportAvatarFailure(failure: AvatarApiFailure, opts?: { onRetry?: () => void }) {
+  if (failure.needs_consent) {
+    toast.error(failure.error ?? "Consent didn't go through — record it again to continue.")
+    return
+  }
+  if (failure.capExceeded) {
+    toast.error(failure.error ?? "You've reached this month's twin-creation limit for your plan.", {
+      description: "Ask your brokerage admin to raise the plan limit.",
+    })
+    return
+  }
+  if (failure.budgetExceeded) {
+    toast.error(failure.error ?? "Monthly AI video usage limit reached — avatar creation is paused until next period.")
+    return
+  }
+  if (failure.retryable && opts?.onRetry) {
+    toast.error(failure.error ?? "Avatar processing failed — this looks temporary.", {
+      action: { label: "Retry", onClick: opts.onRetry },
+    })
+    return
+  }
+  toast.error(failure.error ?? "Avatar processing failed")
+}
+
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -110,53 +195,43 @@ export function TwinWizard({ open, onOpenChange }: Props) {
             // be created without the consent that just completed.
             onVerified={async () => {
               if (!twinId || !sourceUrl) { setStep("voice"); return }
-              try {
-                const res = await fetch("/api/did/create-avatar", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    source_url: sourceUrl,
-                    source_type: "video",
-                    twin_id: twinId,
-                    label: label.trim() || "My Twin",
-                  }),
+              const submit = async () => {
+                const result = await postCreateAvatar({
+                  source_url: sourceUrl,
+                  source_type: "video",
+                  twin_id: twinId,
+                  label: label.trim() || "My Twin",
                 })
-                if (!res.ok) {
-                  const err = await res.json().catch(() => ({}))
-                  toast.error(err.error ?? "Avatar processing failed")
+                if (!result.ok) {
+                  // needs_consent here means the consent that was JUST verified
+                  // didn't persist (a genuine race, not the common case) —
+                  // reportAvatarFailure names it; NOT calling setStep("voice")
+                  // is what keeps the agent on this consent step to retry it.
+                  reportAvatarFailure(result.failure, { onRetry: submit })
                   return
                 }
-              } catch {
-                toast.error("Couldn't start avatar processing — try again.")
-                return
+                setStep("voice")
               }
-              setStep("voice")
+              await submit()
             }}
             onSkip={async () => {
               // Consent was ALREADY on file from a previous twin, so the submit
               // that the look step deferred still has to happen.
               if (!twinId || !sourceUrl) { setStep("voice"); return }
-              try {
-                const res = await fetch("/api/did/create-avatar", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    source_url: sourceUrl,
-                    source_type: "video",
-                    twin_id: twinId,
-                    label: label.trim() || "My Twin",
-                  }),
+              const submit = async () => {
+                const result = await postCreateAvatar({
+                  source_url: sourceUrl,
+                  source_type: "video",
+                  twin_id: twinId,
+                  label: label.trim() || "My Twin",
                 })
-                if (!res.ok) {
-                  const err = await res.json().catch(() => ({}))
-                  toast.error(err.error ?? "Avatar processing failed")
+                if (!result.ok) {
+                  reportAvatarFailure(result.failure, { onRetry: submit })
                   return
                 }
-              } catch {
-                toast.error("Couldn't start avatar processing — try again.")
-                return
+                setStep("voice")
               }
-              setStep("voice")
+              await submit()
             }}
           />
         )}
@@ -272,19 +347,21 @@ function LookStep({
         return
       }
 
-      const didRes = await fetch("/api/did/create-avatar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          source_url: upload.url,
-          source_type: kind,
-          twin_id: draft.twinId,
-          label: label.trim() || "My Twin",
-        }),
+      // kind is "photo" here (video already returned above) — no consent
+      // gate applies, but capExceeded/budgetExceeded/retryable still can.
+      const submitPhoto = () => postCreateAvatar({
+        source_url: upload.url!,
+        source_type: "photo",
+        twin_id: draft.twinId!,
+        label: label.trim() || "My Twin",
       })
-      if (!didRes.ok) {
-        const err = await didRes.json().catch(() => ({}))
-        toast.error(err.error ?? "Avatar processing failed")
+      const result = await submitPhoto()
+      if (!result.ok) {
+        reportAvatarFailure(result.failure, { onRetry: async () => {
+          const retryResult = await submitPhoto()
+          if (!retryResult.ok) { reportAvatarFailure(retryResult.failure); return }
+          onComplete(draft.twinId!, kind!, upload.url!)
+        } })
         return
       }
 

@@ -22,6 +22,7 @@ import {
   usableModes, initialMode, MODE_COPY, type EmbedMode, type UsableMode,
 } from "@/lib/embed/widget-modes"
 import type { DidPresenterType } from "@/lib/did/agent-presenter"
+import { SimliFaceSession } from "@/app/components/features/ai-avatar-chat/SimliFaceSession"
 
 /** The brokerage-slug/agent handle app/api/embed/session returns on every
  *  response (success AND failure) — everything /api/widget/session needs to
@@ -98,6 +99,15 @@ export function EmbedWidget(props: Props) {
   const [micState, setMicState] = useState<MicState>("off")
   const micStreamRef = useRef<MediaStream | null>(null)
   const [contactId, setContactId] = useState<string | null>(null)
+  // wave 62 — the BACKUP face-render leg (lib/live-agent/face-render.ts). Set
+  // only when D-ID's own init already failed server-side and Simli minted a
+  // session token instead; the D-ID SDK path below is never reached for this
+  // boot when this is set.
+  const [simliSession, setSimliSession] = useState<{ sessionToken: string; faceId: string; liveSessionId: string | null; embedSessionId: string | null } | null>(null)
+  // Mirrors simliSession for the heartbeat interval below (mounted once with
+  // `[]` deps, before boot() resolves — a ref reads fresh, state in that
+  // closure would not).
+  const simliSessionRef = useRef(false)
   const [messages, setMessages] = useState<DisplayMessage[]>(
     welcomeMessage ? [{ role: "agent", text: welcomeMessage }] : [],
   )
@@ -124,15 +134,37 @@ export function EmbedWidget(props: Props) {
           setBootError(err.error ?? "Couldn't start the chat")
           return
         }
-        const { didAgentId, clientKey, sessionId, presenterType, liveSessionId, fallback } = await res.json() as {
+        const data = await res.json() as {
+          provider?: "simli"
+          sessionToken?: string
+          faceId?: string
           didAgentId: string; clientKey: string; sessionId: string
           presenterType?: DidPresenterType
           liveSessionId?: string | null
           fallback?: FailoverHandle
         }
+        if (!cancelled) setFailoverHandle(data.fallback ?? null)
+
+        // ── FACE-RENDER FAIL-OVER (wave 62): D-ID already failed server-side
+        // and the session door minted a Simli session instead. Mount
+        // SimliFaceSession and STOP — the D-ID SDK path below
+        // (createAgentManager onward) is never reached for this boot. ──────
+        if (data.provider === "simli" && data.sessionToken && data.faceId) {
+          if (cancelled) return
+          sessionIdRef.current = data.sessionId ?? null
+          liveSessionIdRef.current = data.liveSessionId ?? null
+          simliSessionRef.current = true
+          setSimliSession({
+            sessionToken: data.sessionToken, faceId: data.faceId,
+            liveSessionId: data.liveSessionId ?? null, embedSessionId: data.sessionId ?? null,
+          })
+          setPhase("ready")
+          return
+        }
+
+        const { didAgentId, clientKey, sessionId, presenterType, liveSessionId } = data
         sessionIdRef.current = sessionId
         liveSessionIdRef.current = liveSessionId ?? null
-        if (!cancelled) setFailoverHandle(fallback ?? null)
 
         // WHAT THIS VISITOR CAN ACTUALLY DO. The broker's enabled_modes says what
         // was turned on; the minted presenter family says what can run. A mode
@@ -251,7 +283,9 @@ export function EmbedWidget(props: Props) {
   useEffect(() => {
     const id = setInterval(() => {
       const sid = liveSessionIdRef.current
-      if (!sid) return
+      // Simli path heartbeats itself (SimliFaceSession, same url/shape) —
+      // skip here so one boot never double-beacons the same liveSessionId.
+      if (!sid || simliSessionRef.current) return
       void fetch("/api/embed/session/heartbeat", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ liveSessionId: sid }),
@@ -440,6 +474,39 @@ export function EmbedWidget(props: Props) {
         notice={`${bootError} — you can still chat with us here.`}
         onClose={close}
       />
+    )
+  }
+
+  // wave 62 face-render fail-over — D-ID already failed server-side and this
+  // boot is running the BACKUP leg entirely; none of the D-ID SDK state/UI
+  // below this point (manager, mode switcher, lead capture) is relevant to
+  // it this wave — the visitor still gets a working live face, just via
+  // Simli instead of D-ID.
+  if (simliSession) {
+    return (
+      <div className="flex flex-col h-screen bg-white">
+        <div className="flex items-center justify-between px-4 py-3" style={{ background: colorBg, color: colorFg }}>
+          <div className="font-semibold text-sm truncate">{label}</div>
+          <button onClick={close} aria-label="Close" className="hover:opacity-80">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex-1 p-2 min-h-0">
+          <SimliFaceSession
+            sessionToken={simliSession.sessionToken}
+            faceId={simliSession.faceId}
+            liveSessionId={simliSession.liveSessionId}
+            contactId={contactId}
+            embedSessionId={simliSession.embedSessionId}
+            heartbeatUrl="/api/embed/session/heartbeat"
+            endUrl="/api/embed/session/end"
+            onFallbackToText={() => {
+              if (failoverHandle?.brokerageSlug) setBootError("Live Agent unavailable")
+              else close()
+            }}
+          />
+        </div>
+      </div>
     )
   }
 
