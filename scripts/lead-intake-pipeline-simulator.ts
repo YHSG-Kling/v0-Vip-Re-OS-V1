@@ -300,13 +300,15 @@ const lineageClientSrc = readFileSync("app/dashboard/admin/lead-lineage/lead-lin
 check("the sibling column's only other reader in the tree uses exactly this vocabulary ('complete')",
   lineageClientSrc.includes("lead.dedupe_status === 'complete'"))
 
-// The opposite-missing census is the independent instrument that FOUND this —
-// confirm ITS baseline still names the column as the known finding (so a
-// future regression of the writer shows as a re-appearing baseline entry, not
-// a silent NEW one it would otherwise be indistinguishable from).
+// The opposite-missing census is the independent instrument that FOUND this.
+// Once the writer landed and the integrator regenerated the baseline
+// (2026-09-15), the column is GONE from col-read-no-write — that absence is
+// the permanent state the writer guarantees, and a regression of the writer
+// surfaces as a NEW census finding (which fails that guard outright). Assert
+// the rule, not the pre-fix waypoint (CLAUDE.md §2).
 const baseline = JSON.parse(readFileSync("scripts/opposite-missing-baseline.json", "utf8"))
-check("opposite-missing-baseline.json still records raw_scraped_leads.dedupe_status as the known finding (integrator regenerates with OPPOSITE_MISSING_BASELINE=1 once this lands)",
-  (baseline.keys?.["col-read-no-write"] ?? []).includes("raw_scraped_leads.dedupe_status"))
+check("opposite-missing-baseline.json no longer carries raw_scraped_leads.dedupe_status as a writer-less read (the writer exists; a regression would be a NEW census finding)",
+  !(baseline.keys?.["col-read-no-write"] ?? []).includes("raw_scraped_leads.dedupe_status"))
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n" + "─".repeat(60))
