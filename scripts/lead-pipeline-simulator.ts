@@ -550,8 +550,14 @@ function testScraperTerritoryConformance() {
     /activeSubscriberBrokerageIds/.test(resolver))
   check("territory source is the onboarding-settings work-list (lead_scraping_markets, is_active)",
     /lead_scraping_markets/.test(resolver) && /is_active/.test(resolver))
-  check("both raw writers keep the INGEST territory gate (recordMatchesTerritory)",
-    /recordMatchesTerritory\(/.test(cron) && /recordMatchesTerritory\(/.test(kernel))
+  // WAVE 64B: the cron's inline raw writer was merged onto the ONE kernel
+  // ingester (lib/kernel/scraping.ts::ingestRawSourceBatch). The rule is now
+  // "the one writer keeps the gate, and the cron only delegates to it" — a
+  // second inline `.from("raw_scraped_leads").insert` in the cron would be the
+  // duplicate coming back.
+  check("the ONE raw writer keeps the INGEST territory gate (recordMatchesTerritory) and the cron delegates to it",
+    /recordMatchesTerritory\(/.test(kernel) && /ingestRawSourceBatch\(/.test(cron) &&
+    !/\.from\(["']raw_scraped_leads["']\)\s*\.insert\(/.test(cron))
   const intentCron = src("app/api/cron/intent-campaign/route.ts")
   check("intent-campaign cron (BatchData counts + Exa buyer intent) is active-tenant gated with honest no-op",
     /activeSubscriberBrokerageIds/.test(intentCron) && /no_active_subscribers/.test(intentCron))

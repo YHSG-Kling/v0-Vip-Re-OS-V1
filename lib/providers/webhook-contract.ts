@@ -98,6 +98,20 @@ export function findWebhookContractEntry(path: string): WebhookContractEntry | n
 export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
   // ── Meta (one app shell; tenants connect their own pages/accounts) ─────────
   {
+    provider: "batchdata",
+    eventKind: "smart-search-match",
+    path: "/api/webhooks/batchdata-smart-search",
+    routeFile: "app/api/webhooks/batchdata-smart-search/route.ts",
+    scheme: "shared-secret",
+    verificationHeaders: ["x-batchdata-webhook-secret", "x-webhook-secret", "authorization"],
+    secretEnv: ["BATCHDATA_SMART_SEARCH_WEBHOOK_SECRET"],
+    implementedIn: ["app/api/webhooks/batchdata-smart-search/route.ts"],
+    protocolVersion: "BatchData Smart Search event push (docs, 2026-09-15): new property matches pushed as they appear; payload envelope not published, accepted defensively",
+    consoleField: "BatchData dashboard → Smart Search → delivery webhook URL + shared secret",
+    failureVisibility: null,
+    notes: "WAVE 64B — a DISTINCT BatchData capability beside the polled motivated-seller lane (owner: never merge look-alike scraping lanes). Timing-safe compare, fail-closed when the secret env is unset; every match enters raw_scraped_leads through lib/kernel/scraping.ts::ingestRawSourceBatch as sourceChannel batchdata_smart_search and walks dedupe -> enrich -> dedupe -> gate like every other raw lead.",
+  },
+  {
     provider: "meta",
     eventKind: "messenger-instagram-dm",
     path: "/api/webhooks/meta-dm",
