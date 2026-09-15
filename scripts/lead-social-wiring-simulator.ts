@@ -650,7 +650,9 @@ function darkCapabilityLayer() {
   // old stub shape (CLAUDE.md §2 — the rule, not a waypoint).
   check("D4", "...the gate is not theatre: the parser is real (delegates to nextdoor-extract) AND the constant is held false on a stated lawful-basis ground",
     /function parseNextdoorPosts[\s\S]{0,600}?regexFallbackPosts\(/.test(lead) &&
-    /lawful-basis/.test(lead) &&
+    // the stated ground lives in the file's own header comment — a tombstone/
+    // reason IS a comment, so this one read is deliberately RAW (§2)
+    /lawful-basis/.test(readFileSync(join(process.cwd(), LEAD), "utf8")) &&
     /NEXTDOOR_PARSER_IMPLEMENTED\s*=\s*false/.test(lead))
 
   section("[layer 6b · provenance columns state the truth]")
