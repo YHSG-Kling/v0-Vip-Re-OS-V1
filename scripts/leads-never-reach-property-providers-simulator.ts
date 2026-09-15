@@ -981,31 +981,32 @@ A.push({
 A.push({
   id: "idclass.no-write-into-the-table-whose-only-key-is-the-other-class",
   what:
-    `lead-intelligence.ts proves its subject is a contact at its entry point, so nothing in it may insert into ${LEADS_FK_TABLE} — that table's \`lead_id\` is REFERENCES leads(id) and it carries no contacts-keyed column at all (scripts/schema-snapshot.ts), so every row the old writer produced put a contacts.id into the other class's foreign key. There is no correct column to move the write to, so there is no write: recording nothing beats recording a row that misattributes one person's activity to another record`,
+    `lead-intelligence.ts proves its subject is a contact at its entry point. Since m630 (applied live 2026-09-15) ${LEADS_FK_TABLE} is DUAL-keyed — contact_id REFERENCES contacts(id) beside lead_id REFERENCES leads(id), with an exactly-one CHECK — so a write from this file is lawful ONLY when it files the id under contact_id. A write that names lead_id here files a contacts-proven id in the other class's foreign key (23503 at best, a phantom lead row at worst).`,
   run: () => {
     const src = code(F.leadIntel)
     const needle = `.from("${LEADS_FK_TABLE}")`
-    const hits: string[] = []
+    const wrong: string[] = []
+    let writes = 0
     let at = src.indexOf(needle)
     while (at !== -1) {
-      const window = src.slice(at, at + 220)
-      if (/\.(insert|upsert|update)\s*\(/.test(window)) hits.push(`position ${at}`)
+      const window = src.slice(at, at + 900)
+      if (/\.(insert|upsert|update)\s*\(/.test(window)) {
+        writes++
+        const payload = window.slice(window.search(/\.(insert|upsert|update)\s*\(/))
+        if (/\blead_id\s*:/.test(payload)) wrong.push(`position ${at} (writes lead_id)`)
+        if (!/\bcontact_id\s*:\s*contactId\b/.test(payload)) wrong.push(`position ${at} (not keyed on contact_id: contactId)`)
+      }
       at = src.indexOf(needle, at + 1)
     }
-    // The read that remains is fine and is not what this guards; only writes are.
-    return hits.length === 0
-      ? { ok: true, detail: `no insert/upsert/update into ${LEADS_FK_TABLE} anywhere in ${F.leadIntel}` }
-      : { ok: false, detail: `a wrong-class write is back at ${hits.join(", ")}` }
+    return wrong.length === 0
+      ? { ok: true, detail: `${writes} write(s) into ${LEADS_FK_TABLE} in ${F.leadIntel}, every one keyed on contact_id and none naming lead_id` }
+      : { ok: false, detail: `a wrong-class write is back: ${wrong.join(", ")}` }
   },
   breaks: [
     {
       file: F.leadIntel,
-      find: `  return { synced: false, reason: "no_contacts_keyed_idx_interaction_lane" }`,
-      replace:
-        `  const svc = createServiceClient()\n` +
-        `  const { error: interactionError } = await svc.from("${LEADS_FK_TABLE}").insert({ lead_id: leadId })\n` +
-        `  if (interactionError) return { synced: false, reason: "interaction_write_refused" }\n` +
-        `  return { synced: true }`,
+      find: `      contact_id: contactId,\n      brokerage_id: ownerBrokerageId,`,
+      replace: `      lead_id: contactId,\n      brokerage_id: ownerBrokerageId,`,
     },
   ],
 })
