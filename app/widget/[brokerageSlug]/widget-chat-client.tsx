@@ -82,6 +82,33 @@ export function WidgetChatClient({
         // (app/widget/[brokerageSlug]/page.tsx), so the session-scoped copy is
         // a cross-check only, logged rather than repainting the UI a second time.
         console.debug(`[widget] session ${data.session_id} ready (capture_state=${data.capture_state})`)
+        // Behavioral intake (wave 64): the widget open is the visitor's first
+        // observed behavior. The tenant is resolved server-side from the public
+        // slug; visitor_id is a per-browser id, never an identity claim.
+        try {
+          let visitorId: string | null = null
+          try {
+            visitorId = window.localStorage.getItem('vip_visitor_id')
+            if (!visitorId) {
+              visitorId = crypto.randomUUID()
+              window.localStorage.setItem('vip_visitor_id', visitorId)
+            }
+          } catch { visitorId = crypto.randomUUID() }
+          const trackRes = await fetch('/api/track/visitor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              brokerage_slug: brokerageSlug,
+              visitor_id: visitorId,
+              page_visited: document.referrer || window.location.href,
+              time_spent: 0,
+              action_taken: 'widget_opened',
+            }),
+          })
+          const track = await trackRes.json().catch(() => ({})) as { ok?: boolean; error?: string }
+          if (!trackRes.ok || track.error) console.debug('[widget] visitor tracking refused:', track.error ?? trackRes.status)
+          else console.debug(`[widget] visitor tracked (ok=${track.ok === true})`)
+        } catch { /* tracking is best-effort; chat must never depend on it */ }
       } catch {
         if (!cancelled) setSessionError('Chat is unavailable right now. Please try again later.')
       }

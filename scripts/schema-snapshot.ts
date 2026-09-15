@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 702 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 703 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-14
+ * generated: 2026-09-15
  * source: public.live_schema_json()
- * body-sha256: 352c8e51b4bd008c86a5ee91bd3d0b1881ac2aae8d9dbb73c9b1ed8cd44c092a
+ * body-sha256: 082baec9815c04778ea34a05da45707407c44ef0284869c1b78c969f65385760
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -348,6 +348,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   lead_deduplication_log: ["action_taken", "brokerage_id", "created_at", "duplicate_of_contact_id", "duplicate_of_lead_id", "id", "lead_id", "match_details", "match_score", "new_enrichment_confidence", "old_enrichment_confidence", "raw_record_id", "skip_reason", "stage"],
   lead_engagement_scores: ["brokerage_id", "calculated_at", "created_at", "email_engagement_score", "frequency_score", "id", "lead_id", "monetary_potential_score", "overall_score", "property_interest_score", "recency_score", "response_rate_score", "score_breakdown", "website_engagement_score"],
   lead_enrichment_queue: ["brokerage_id", "completed_at", "confidence_score", "contact_id", "enrichment_cost", "enrichment_results", "enrichment_type", "enrichments_needed", "error_message", "id", "lead_id", "max_retries", "queued_at", "retry_count", "status", "trigger_type"],
+  lead_idx_property_interactions: ["brokerage_id", "contact_id", "created_at", "id", "interaction_metadata", "interaction_type", "lead_id", "mls_number", "notes", "occurred_at", "property_address", "property_details", "property_id", "requested_showing", "saved", "shared", "view_duration_seconds"],
   lead_imports: ["agent_id", "brokerage_id", "completed_at", "created_at", "created_count", "error_details", "failed_count", "field_map", "file_name", "file_url", "id", "merged_count", "skipped_count", "status", "total_rows"],
   lead_intelligence: ["ai_summary", "brokerage_id", "buyer_seller_type", "created_at", "current_housing", "data_sources", "deal_breakers", "financial_readiness", "id", "identified_interests", "last_analyzed_at", "last_enriched_at", "lead_id", "location_preferences", "motivation_score", "must_haves", "nice_to_haves", "pre_approval_amount", "pre_approved", "price_range", "property_preferences", "property_type", "qualification_score", "readiness_score", "reason_for_move", "timeline", "updated_at"],
   lead_osint_data: ["brokerage_id", "confidence_score", "data_content", "data_source", "data_type", "enriched_at", "id", "lead_id"],
@@ -526,7 +527,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   property_consensus: ["avg_rating", "collaborative_search_id", "consensus_notes", "created_at", "id", "is_finalist", "metadata", "property_id", "updated_at", "vote_count"],
   property_family_ratings: ["collaborative_search_id", "cons", "created_at", "id", "member_email", "notes", "property_id", "pros", "rating", "updated_at", "vote"],
   property_feedback: ["brokerage_id", "contact_id", "created_at", "disliked_features", "feedback_type", "id", "interest_level", "liked_features", "listing_id", "notes", "property_id", "source"],
-  property_intelligence: ["bathrooms", "bedrooms", "brokerage_id", "city", "contact_id", "data_sources", "enriched_at", "equity_estimate", "estimated_value", "id", "last_sale_date", "last_sale_price", "lot_size", "owner_name", "owner_occupied", "ownership_duration_years", "profile_id", "property_address", "property_type", "square_feet", "state", "year_built", "years_owned", "zip"],
+  property_intelligence: ["bathrooms", "bedrooms", "brokerage_id", "city", "contact_id", "data_sources", "enriched_at", "equity_estimate", "estimated_value", "id", "last_sale_date", "last_sale_price", "lot_size", "owner_name", "owner_occupied", "ownership_duration_years", "profile_id", "property_address", "property_type", "square_feet", "state", "vision_analyzed_at", "vision_condition_score", "vision_motivation_score", "vision_photo_url", "vision_rationale", "vision_signals", "vision_staging_score", "year_built", "years_owned", "zip"],
   property_interests: ["agent_user_id", "ai_preference_score", "alert_frequency", "bathrooms", "bedrooms", "brokerage_id", "contact_id", "created_at", "id", "keywords", "last_search_at", "max_days_on_market", "max_price", "min_price", "must_have_features", "notes", "preferred_locations", "property_type", "search_alert_enabled", "updated_at", "year_built_min", "zip_codes"],
   property_matches: ["ai_generated", "brokerage_id", "contact_id", "created_at", "generated_at", "id", "match_reasons", "match_score", "potential_concerns", "priority_factors", "property_id", "recommended_actions", "user_feedback"],
   property_preferences: ["agent_id", "brokerage_id", "confidence_score", "contact_id", "created_at", "id", "inferred_baths_min", "inferred_beds_min", "inferred_cities", "inferred_deal_breakers", "inferred_max_price", "inferred_min_price", "inferred_must_have_features", "inferred_property_types", "inferred_zip_codes", "last_calculated_at", "model_version", "preferred_price_max", "preferred_price_min", "signals_processed", "updated_at"],

@@ -1,7 +1,5 @@
 {
-  "a": [
-    "app/api/cron/lead-scraping/route.ts::ingestRawSourceBatch"
-  ],
+  "a": [],
   "b": [],
   "e": []
 }

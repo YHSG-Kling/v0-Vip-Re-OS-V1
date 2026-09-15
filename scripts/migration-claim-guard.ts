@@ -269,6 +269,16 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // approval-hours auto-publish. Deliberate bump, named per this guard's own
 // instruction ("raise the baseline deliberately and say which"); drops back to 0
 // once the integrator applies it and flips the header.
+//
+// 0 → 1 (wave 64, lane 64D — scraping audit): m628-scraping-child-tables.sql,
+// WRITTEN NOT APPLIED — adds the 9 lead_id -> leads foreign keys the orphaned-
+// child census's OC1 category flags on the scraping/intelligence child tables
+// (google_search_activity, lead_behavioral_data, lead_intelligence,
+// lead_osint_data, lead_people_data, lead_property_ownership,
+// lead_property_searches, motivated_seller_signals, nextdoor_activity) — the 9
+// m608 froze and m611 deliberately left untouched as the real scraping
+// surface. Deliberate bump, named per this guard's own instruction; drops
+// back to 0 once the integrator applies it and flips the header.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

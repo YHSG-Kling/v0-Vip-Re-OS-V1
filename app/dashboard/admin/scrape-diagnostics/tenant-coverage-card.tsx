@@ -39,6 +39,11 @@ export function TenantCoverageCard({
                 {coverage.markets.length} market{coverage.markets.length === 1 ? "" : "s"} · {coverage.totals.claimedZips} claimed zip{coverage.totals.claimedZips === 1 ? "" : "s"} · {coverage.totals.rawCount} raw / {coverage.totals.promotedCount} promoted / {coverage.totals.leadCount} leads in the window
               </p>
             )}
+            {coverage && coverage.markets.length > 1 && (
+              <p className="mt-1 text-xs text-zinc-600">
+                Footprint across all your markets: {coverage.areaUnion.cities.length} cit{coverage.areaUnion.cities.length === 1 ? "y" : "ies"} in {coverage.areaUnion.states.length} state{coverage.areaUnion.states.length === 1 ? "" : "s"}{coverage.areaUnion.zipCodes.length > 0 ? ` · ${coverage.areaUnion.zipCodes.length} zip${coverage.areaUnion.zipCodes.length === 1 ? "" : "s"} named` : ""}{coverage.areaUnion.states.length > 0 ? ` (${coverage.areaUnion.states.join(", ")})` : ""}
+              </p>
+            )}
           </div>
 
           {!coverage ? (

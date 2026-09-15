@@ -5,6 +5,7 @@ import { listRawLeadsForReview } from "@/app/actions/lead-promotion/promote-lead
 import { resolveLeadVisibility } from "@/lib/auth/lead-visibility"
 import { loadRawPipelineStats } from "./pipeline-stats"
 import { RawLeadsReviewPanel } from "./raw-leads-review"
+import { PipelineStatsPanel } from "./pipeline-stats-panel"
 import { SocialScrapeTrigger } from "./social-scrape-trigger"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -105,47 +106,15 @@ export default async function LeadIntakeCockpitPage() {
             ))}
           </div>
 
-          {/* ── Pipeline stats (the process-pipeline route's numbers, in-process) ── */}
-          <Card className="p-4">
-            <div className="text-xs font-medium mb-2">Pipeline stats · by processing status</div>
-            {statsRefusedForTeam ? (
-              <div className="text-sm text-muted-foreground">
-                Brokerage-level only — raw-pipeline totals cannot be scoped to a team, so they are not shown for a
-                team-scoped seat.
-              </div>
-            ) : !pipelineStats ? (
-              <div className="text-sm text-muted-foreground">Pipeline stats are unavailable for this seat.</div>
-            ) : !pipelineStats.ok ? (
-              <div className="text-sm text-red-700">Pipeline stats could not be read: {pipelineStats.error}</div>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex flex-wrap gap-1.5">
-                  <Badge className="tabular-nums">total {pipelineStats.stats.raw_scraped_leads.total}</Badge>
-                  {Object.entries(pipelineStats.stats.raw_scraped_leads)
-                    .filter(([k, n]) => k !== "total" && n > 0)
-                    .map(([status, n]) => (
-                      <Badge key={status} variant="outline" className="tabular-nums">
-                        {REJECTION_REASON_LABEL[status] ?? status} {n}
-                      </Badge>
-                    ))}
-                </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                  <span className="tabular-nums">
-                    dedup skips logged: {pipelineStats.stats.deduplication.duplicates_found}
-                  </span>
-                  {Object.keys(pipelineStats.stats.vendor_costs).length === 0 ? (
-                    <span>vendor spend: none recorded</span>
-                  ) : (
-                    Object.entries(pipelineStats.stats.vendor_costs).map(([vendor, cost]) => (
-                      <span key={vendor} className="tabular-nums">
-                        {vendor}: ${cost.toFixed(2)}
-                      </span>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
-          </Card>
+          {/* ── Pipeline stats — server-rendered first paint (in-process, per the
+              route's own header), THEN refreshable client-side against the
+              actual route (the in-tree caller GET /api/leads/process-pipeline
+              needed — lane 64D, route-no-caller 6b → 0). ── */}
+          <PipelineStatsPanel
+            initialStats={pipelineStats}
+            rejectionLabel={REJECTION_REASON_LABEL}
+            refusedForTeam={statsRefusedForTeam}
+          />
 
           {/* ── Per-source conversion table ─────────────────────────────────── */}
           <Card className="p-4">

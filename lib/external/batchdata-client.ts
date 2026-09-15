@@ -377,6 +377,81 @@ export async function searchProperties(address: string): Promise<{
   }
 }
 
+// ─── BatchRank propensity — a DISTINCT capability from the passive `intel.salePropensity`
+// read in lib/external/batchdata-seller-signals.ts (which is read off a regular Property
+// Search response when BatchData happens to include it) ────────────────────────────────
+// BatchRank is BatchData's premium AI sale-propensity product (High/Medium/Low or a
+// 0-100 numeric score, ~82% accuracy in BatchData's own Aug-Oct 2025 test per the
+// owner's research brief). This lane's research did NOT surface a confirmed dedicated
+// endpoint path or response field name for it beyond "offered as a premium REST API" —
+// unlike property/search, property/lookup and property/skip-trace, which ARE confirmed.
+// Rather than invent a path, this calls property/lookup (a confirmed endpoint) with an
+// explicit request for the BatchRank field and reads it DEFENSIVELY from every plausible
+// shape a premium add-on could arrive in; when none of them are present the call is
+// treated as "this account/response has no BatchRank," never as a fabricated score. This
+// is FAIL-CLOSED BY CONSTRUCTION: no BATCHDATA_API_KEY, no address, a network error, or a
+// response with no recognizable BatchRank field ALL return { available: false, score:
+// null }, never a guessed number. The exact wire contract is UNRESOLVED pending a
+// confirmed doc citation — see the wave report.
+export interface BatchRankResult {
+  available: boolean
+  score: number | null           // 0-100 when the provider returns a numeric score
+  category: "High" | "Medium" | "Low" | null
+  cost: number
+  /** Set when the call could not confirm BatchRank is on this account/response —
+   *  the reason the fetch fails closed, never a fabricated result. */
+  unavailableReason?: string
+}
+
+/** PURE — reads a BatchRank score/category out of a property-lookup response body in
+ *  every plausible shape (top-level, under `intel`, or under `batchRank`), never guesses.
+ *  Module-private: fetchBatchRankPropensity below is the ONE caller-facing entry point. */
+function readBatchRankFromLookup(propertyRow: Record<string, any> | null | undefined): BatchRankResult {
+  if (!propertyRow) return { available: false, score: null, category: null, cost: 0, unavailableReason: "no property row in response" }
+  const candidates = [
+    propertyRow.batchRank, propertyRow.batch_rank,
+    propertyRow.intel?.batchRank, propertyRow.intel?.batch_rank,
+  ]
+  const raw = candidates.find((c) => c !== undefined && c !== null)
+  if (raw === undefined) return { available: false, score: null, category: null, cost: 0, unavailableReason: "no batchRank field on the response — account may lack BatchRank" }
+
+  // The field can arrive as a bare number, or an object carrying score + category.
+  const scoreRaw = typeof raw === "number" ? raw : (raw as any)?.score ?? (raw as any)?.value
+  const categoryRaw: unknown = typeof raw === "object" ? (raw as any)?.category ?? (raw as any)?.label : raw
+  const score = typeof scoreRaw === "number" && Number.isFinite(scoreRaw) ? Math.min(100, Math.max(0, scoreRaw)) : null
+  const category = ["High", "Medium", "Low"].includes(String(categoryRaw)) ? (categoryRaw as "High" | "Medium" | "Low") : null
+
+  if (score === null && category === null) {
+    return { available: false, score: null, category: null, cost: 0, unavailableReason: "batchRank field present but unrecognized shape" }
+  }
+  return { available: true, score, category, cost: 0.10 }
+}
+
+/**
+ * fetchBatchRankPropensity — the BatchData credential + budget gate, fail-closed. Called
+ * only for BatchData-origin records at promotion time (bounded spend — never at raw
+ * ingest volume). Returns { available: false } rather than throwing so a missing
+ * entitlement never blocks promotion; the caller decides whether to use the score.
+ */
+export async function fetchBatchRankPropensity(address: string): Promise<BatchRankResult> {
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { available: false, score: null, category: null, cost: 0, unavailableReason: "BATCHDATA_API_KEY not configured" }
+  }
+  if (!address?.trim()) {
+    return { available: false, score: null, category: null, cost: 0, unavailableReason: "no address to look up" }
+  }
+  try {
+    const data = await batchDataPropertySearch(
+      { searchCriteria: { query: address }, options: { take: 1, skip: 0, includeBatchRank: true } },
+      "BatchRank lookup error",
+    )
+    const prop = (data?.results?.properties ?? data?.results ?? [])[0] ?? null
+    return readBatchRankFromLookup(prop)
+  } catch (e) {
+    return { available: false, score: null, category: null, cost: 0, unavailableReason: `BatchRank lookup failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
 export async function enrichPropertyWithBatchData(address: string): Promise<{
   condition: 'turnkey' | 'fixer' | 'unknown'
   estimatedValue: number

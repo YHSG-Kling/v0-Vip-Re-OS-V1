@@ -69,7 +69,11 @@ export interface ScrapingMarket {
 }
 
 export interface IngestRawSourceBatchParams {
-  brokerageId: string
+  /** null = PLATFORM-owned pool (scheduled/territory-driven scraping — brokerage_id stays
+   *  NULL until the promotion gate / Engine 1 distribution resolves an owner); a real id =
+   *  an EXPLICIT brokerage-configured/triggered scrape, owned by that brokerage immediately.
+   *  Drives raw_scraped_leads.source_origin ('platform' | 'brokerage') — never a body value. */
+  brokerageId: string | null
   marketId: string
   source: string
   sourceFamily: string        // e.g. 'property_search' | 'motivated_seller' | 'social_intent'
@@ -77,6 +81,10 @@ export interface IngestRawSourceBatchParams {
   sourceSubtype?: string      // e.g. 'fsbo' | 'motivated_owner' | 'search_signal'
   records: NormalizedScrapedRecord[]
   executionId: string | null
+  /** Caller-supplied market geography — skips the extra lead_scraping_markets round-trip
+   *  this function otherwise does per call when the caller already loaded it (the cron loads
+   *  it once per territory). Omit (undefined) to fall back to the DB lookup by marketId. */
+  marketGeo?: { city?: string | null; state?: string | null; zip_codes?: string[] | null } | null
 }
 
 export interface IngestBatchResult {
@@ -456,21 +464,31 @@ export async function ingestRawSourceBatch(
     rawIds: [],
   }
 
-  // Open scraper_executions record for this source batch
-  const execRecordResult = await supabase
-    .from('scraper_executions')
-    .insert({
-      brokerage_id:  params.brokerageId,
-      scraper_type:  params.source,
-      status:        'running',
-      started_at:    new Date().toISOString(),
-    })
-    .select('id')
-    .maybeSingle()
-    .then(r => r, () => ({ data: null }))
-  const execRecord = execRecordResult?.data
+  // PLATFORM ('platform') = scheduled, territory-driven, brokerage_id NULL until Engine 1 /
+  // the promotion gate resolves an owner. BROKERAGE ('brokerage') = an explicit brokerageId
+  // was handed in — a brokerage-configured/triggered scrape, owned immediately. Derived from
+  // which caller supplied what, never from a request body (CLAUDE.md §4).
+  const sourceOrigin: 'platform' | 'brokerage' = params.brokerageId ? 'brokerage' : 'platform'
 
-  const execId = (execRecord as any)?.id ?? params.executionId
+  // A caller that already opened a scraper_executions row for this run (the cron opens ONE
+  // per phase/source and fans multiple ingestRawSourceBatch calls into it) passes its id as
+  // executionId — reuse it instead of opening (and later stomping) a second row per call.
+  const ownsExecution = !params.executionId
+  let execId: string | null = params.executionId ?? null
+  if (ownsExecution) {
+    const execRecordResult = await supabase
+      .from('scraper_executions')
+      .insert({
+        brokerage_id:  params.brokerageId,
+        scraper_type:  params.source,
+        status:        'running',
+        started_at:    new Date().toISOString(),
+      })
+      .select('id')
+      .maybeSingle()
+      .then(r => r, () => ({ data: null }))
+    execId = (execRecordResult?.data as any)?.id ?? null
+  }
 
   // Emit SCRAPE_SOURCE_RUN_STARTED
   await supabase.from('lifecycle_events').insert({
@@ -487,14 +505,20 @@ export async function ingestRawSourceBatch(
   // Load the scraped market's geography once for the INGEST territory gate — a lead
   // must belong to the active territory it was scraped for (recordMatchesTerritory
   // passes through no-/partial-geo records; the promotion gate re-checks post-enrichment).
-  const { data: gateMarket } = await supabase
-    .from("lead_scraping_markets")
-    .select("city, state, zip_codes")
-    .eq("id", params.marketId)
-    .maybeSingle()
-  const marketGeo = gateMarket
-    ? { city: (gateMarket as any).city, state: (gateMarket as any).state, zip_codes: (gateMarket as any).zip_codes }
-    : null
+  // A caller that already loaded the market (the cron loads it once per territory) passes
+  // marketGeo directly and this skips the round-trip; `undefined` (not passed) falls back
+  // to the DB lookup so callers like the territory-gate simulator are unaffected.
+  let marketGeo = params.marketGeo
+  if (marketGeo === undefined) {
+    const { data: gateMarket } = await supabase
+      .from("lead_scraping_markets")
+      .select("city, state, zip_codes")
+      .eq("id", params.marketId)
+      .maybeSingle()
+    marketGeo = gateMarket
+      ? { city: (gateMarket as any).city, state: (gateMarket as any).state, zip_codes: (gateMarket as any).zip_codes }
+      : null
+  }
 
   try {
     for (const record of params.records) {
@@ -516,6 +540,10 @@ export async function ingestRawSourceBatch(
         .from('raw_scraped_leads')
         .insert({
           brokerage_id:         params.brokerageId,
+          // 'platform' (scheduled/territory-driven pool) | 'brokerage' (explicit brokerageId).
+          // Read downstream by pipeline-processor.ts (leads.brokerage_id/source_origin carry-
+          // forward) and lib/platform/distribution-engine.ts (Engine 1 only rotates 'platform').
+          source_origin:        sourceOrigin,
           market_id:            params.marketId,
           source:               record.source,
           source_family:        params.sourceFamily,
@@ -555,6 +583,10 @@ export async function ingestRawSourceBatch(
             mailingAddress:  record.mailingAddress  ?? null,
             sourceUrl:       record.sourceUrl       ?? null,
             leadIdentityKey: identityKey,
+            // Rich intent block (buyer/seller/investor/agent + persona + property-alert +
+            // matched phrases/addresses/prices) from the ZenRows/Exa page-level normalizers —
+            // read by the canonical lead-creation gate and the AI-ISA script selector downstream.
+            intent:          record.intent           ?? null,
           },
           processing_status:    'pending',
           scraper_execution_id: execId ?? null,
@@ -586,8 +618,11 @@ export async function ingestRawSourceBatch(
       })
     }
 
-    // Close scraper_executions — completed
-    if (execId) {
+    // Close scraper_executions — completed. Only when this call opened the row itself; a
+    // caller-supplied executionId (ownsExecution false) is a shared phase-level row the
+    // caller closes once after all its ingestRawSourceBatch calls, so it is never stomped
+    // mid-phase by an earlier sub-source batch finishing first.
+    if (execId && ownsExecution) {
       await supabase.from('scraper_executions').update({
         status:            'completed',
         total_items_found: params.records.length,
@@ -608,7 +643,7 @@ export async function ingestRawSourceBatch(
   } catch (err) {
     batchError = err instanceof Error ? err : new Error(String(err))
 
-    if (execId) {
+    if (execId && ownsExecution) {
       await supabase.from('scraper_executions').update({
         status:        'failed',
         error_message: batchError.message,

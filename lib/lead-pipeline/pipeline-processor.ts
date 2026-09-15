@@ -1,7 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import type { RawProcessingStatus } from "./processing-status"
+import { isTerminalRawProcessingStatus, type RawProcessingStatus, type DedupeStatus } from "./processing-status"
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
 import { extractPropertySpecs, leadSpecPatch, contactSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
@@ -92,13 +92,27 @@ async function setStatus(
   rawRecordId: string,
   status: ProcessingStatus,
   errorMessage?: string,
+  // dedupeComplete — pass true from every call site that is reached ONLY after
+  // both dedupe passes have run (a verdict was reached, whether duplicate or
+  // clear). See processing-status.ts's DEDUPE_STATUSES header for the full story:
+  // this is the writer the raw-lead admin bench's reader
+  // (app/actions/lead-promotion/promote-lead.ts:101,124) never had.
+  opts?: { dedupeComplete?: boolean },
 ) {
   await supabase
     .from('raw_scraped_leads')
     .update({
       processing_status: status,
       ...(errorMessage ? { error_message: errorMessage } : {}),
-      ...(status === 'promoted' || status === 'error' ? { processed_at: new Date().toISOString() } : {}),
+      // TERMINAL = every status outside IN_FLIGHT_STATUSES (processing-status.ts,
+      // derived — not a hand-picked 'promoted' | 'error' list, which used to leave
+      // duplicate_pre_enrich / duplicate_post_enrich / territory_mismatch /
+      // insufficient_identity / insufficient_identity_for_promotion /
+      // unassigned_no_market with no processed_at, even though every one of them
+      // stops the record for this attempt. relisting-detector.ts:46,55 reads this
+      // column and falls back to created_at when it's null.
+      ...(isTerminalRawProcessingStatus(status) ? { processed_at: new Date().toISOString() } : {}),
+      ...(opts?.dedupeComplete ? { dedupe_status: 'complete' satisfies DedupeStatus } : {}),
     })
     .eq('id', rawRecordId)
 }
@@ -240,7 +254,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase, dedupScope)
 
   if (preEnrichDuplicate) {
-    await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich')
+    await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich', undefined, { dedupeComplete: true })
     await logDeduplication({
       raw_record_id:             rawRecordId,
       duplicate_of_lead_id:      preEnrichDuplicate.type === 'lead'    ? preEnrichDuplicate.id : null,
@@ -274,7 +288,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // Duplicate of another (older / already-promoted) RAW record that hasn't
     // become a lead/contact yet — skip this row; the earlier raw row owns the
     // identity and will promote (or already failed a gate honestly).
-    await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
+    await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
     await logDeduplication({
       raw_record_id:             rawRecordId,
       stage:                     'post_enrichment',
@@ -341,7 +355,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         .update(mergeUpdate)
         .eq('id', postEnrichDuplicate.id)
 
-      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
+      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
       await logDeduplication({
         raw_record_id:             rawRecordId,
         lead_id:                   postEnrichDuplicate.type === 'lead'    ? postEnrichDuplicate.id : null,
@@ -378,7 +392,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
           .eq('id', postEnrichDuplicate.id)
       }
 
-      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
+      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
       await logDeduplication({
         raw_record_id:             rawRecordId,
         duplicate_of_lead_id:      postEnrichDuplicate.type === 'lead'    ? postEnrichDuplicate.id : null,
@@ -489,7 +503,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   }
 
   if (!promoEligibility.eligible) {
-    await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
+    await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion', undefined, { dedupeComplete: true })
     await logDeduplication({
       raw_record_id:             rawRecordId,
       stage:                     'promotion_identity_gate',
@@ -522,8 +536,40 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     { content: recordContent, authorName: [promoFirst, promoLast].filter(Boolean).join(" ") || undefined },
     analyzeLead,
   )
+  // ── BATCHRANK PROPENSITY (BatchData-origin records only) — a DISTINCT capability
+  // from the passive `intel.salePropensity` read in batchdata-seller-signals.ts (which
+  // reads whatever a regular Property Search response happens to include). This is an
+  // explicit premium BatchRank fetch, behind the SAME BatchData credential gate every
+  // other BatchData call uses, fail-closed when the account/response has no BatchRank
+  // (lib/external/batchdata-client.ts::fetchBatchRankPropensity never fabricates a
+  // score). Bounded to records that already cleared the promotion-identity gate above —
+  // never spent on a raw record that fails eligibility anyway. Stamped onto
+  // normalized_preview.batchrank_propensity (audit trail + the writerless-read this
+  // wave found: pipeline-processor already had a place to consume it, nothing wrote it).
+  let batchRankPropensity: number | null = null
+  if (rec.source === "batchdata_motivated" || rec.source === "expired_listing") {
+    const lookupAddress = rec.address ?? (rec.normalized_preview?.propertyAddress as string | null) ?? (rec.raw_data?.propertyAddress as string | null) ?? null
+    if (lookupAddress) {
+      try {
+        const { fetchBatchRankPropensity } = await import("@/lib/external/batchdata-client")
+        const br = await fetchBatchRankPropensity(lookupAddress)
+        if (br.available && br.score !== null) {
+          batchRankPropensity = br.score
+          await supabase.from('raw_scraped_leads').update({
+            normalized_preview: { ...(rec.normalized_preview ?? {}), batchrank_propensity: br.score, batchrank_category: br.category },
+          }).eq('id', rawRecordId).then(() => {}, () => {})
+        }
+      } catch { /* fail closed — no score, no block on promotion */ }
+    }
+  }
+
   const fusedScore = fuseLeadScore(computedScore, aiIntent)
-  const fusedUrgency = scoreToUrgencyLevel(fusedScore)
+  // BatchRank is one more signal nudging the fused score (weighted average), never the
+  // sole determinant — the AI-fused source score still anchors the number.
+  const batchRankAdjustedScore = batchRankPropensity !== null
+    ? Math.round(fusedScore * 0.7 + batchRankPropensity * 0.3)
+    : fusedScore
+  const fusedUrgency = scoreToUrgencyLevel(batchRankAdjustedScore)
   const sourceLeadType = sourceSemantics.leadType !== 'unknown'
     ? sourceSemantics.leadType
     : (rec.normalized_preview?.intentType as 'buyer' | 'seller' | 'unknown' | undefined ?? 'unknown')
@@ -565,7 +611,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       motivation_type:       (rec.raw_data?.motivation_type as string | null) ?? sourceSemantics.motivationType,
       motivation_confidence: fusedMotivationConfidence,
       urgency_level:         fusedUrgency,
-      lead_score:            fusedScore,
+      lead_score:            batchRankAdjustedScore,
       enrichment_status:     'completed',
       enrichment_confidence: enriched.enrichmentConfidence,
       last_enriched_at:      new Date().toISOString(),
@@ -605,7 +651,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     .single()
 
   if (createError || !newLead) {
-    await setStatus(supabase, rawRecordId, 'error', createError?.message)
+    await setStatus(supabase, rawRecordId, 'error', createError?.message, { dedupeComplete: true })
     throw new Error(`Failed to create lead: ${createError?.message}`)
   }
 
@@ -616,6 +662,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       lead_id:           newLead.id,
       processing_status: 'promoted' as ProcessingStatus,
       processed_at:      new Date().toISOString(),
+      // Both dedupe passes cleared to reach here — see processing-status.ts's
+      // DEDUPE_STATUSES header.
+      dedupe_status:     'complete' satisfies DedupeStatus,
     })
     .eq('id', rawRecordId)
 

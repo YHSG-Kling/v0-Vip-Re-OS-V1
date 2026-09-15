@@ -18,6 +18,7 @@ import {
   scrapeLinkedInPosts,
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
+import { parseCraigslistHtml } from "./scraper-parsers"
 
 export interface SocialMarket {
   city: string | null
@@ -184,16 +185,60 @@ export async function sourceInstagram(hashtags: string[], market: SocialMarket):
   return { records: (r.posts ?? []).map((p) => normalizeInstagramPost(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
 }
 
+// ── Craigslist Apify-lane HTML fallback ───────────────────────────────────────
+// Apify (lukaskrivka/craigslist-scraper via scrapeCraigslistPosts) is the PRIMARY
+// collector (SOURCE_VENDOR contract above). When the actor errors OR returns zero
+// items (actor down, selector drift, rate-limited), this falls back to fetching the
+// same Craigslist search page's raw HTML through ZenRows and parsing it with the
+// pure cheerio parser (scraper-parsers.ts::parseCraigslistHtml) — a distinct
+// collection PATH for the SAME Craigslist capability, not a second source (owner
+// ruling: keep each source distinct, but a fallback path for one source is not a
+// second source). Never runs when Apify already produced records — no double spend.
+function craigslistSearchUrl(city: string, query: string, section: string): string {
+  return `https://${city.toLowerCase().replace(/ /g, "")}.craigslist.org/search/${section}?query=${encodeURIComponent(query)}`
+}
+
+async function craigslistHtmlFallback(
+  city: string, query: string, section: "rea" | "hhh", market: SocialMarket,
+): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  try {
+    const { scrapeWithZenRows } = await import("@/lib/external/zenrows-client")
+    const res = await scrapeWithZenRows(craigslistSearchUrl(city, query, section), { premiumProxy: true })
+    const parsed = parseCraigslistHtml(res.body)
+    // parseCraigslistHtml hardcodes seller intent (it parses the 'rea'/for-sale shape);
+    // the 'hhh' housing-wanted section is buyer/ISO intent — remap here, same rule
+    // normalizeCraigslistItem applies to the Apify path, so both paths agree.
+    const records = section === "hhh"
+      ? parsed.map((r) => ({
+          ...r, intentType: "buyer" as const, behaviorType: "social_intent",
+          intentSignals: ["looking_to_buy"], propertyAddress: null,
+          city: market.city, state: market.state,
+        }))
+      : parsed.map((r) => ({ ...r, city: market.city, state: market.state }))
+    return { records: records.filter(isViableRecord), cost: res.cost ?? 0 }
+  } catch (e) {
+    console.warn("[social-sourcer] craigslist HTML fallback failed:", e instanceof Error ? e.message : e)
+    return { records: [], cost: 0 }
+  }
+}
+
 export async function sourceCraigslist(city: string, query: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
   const r = await scrapeCraigslistPosts({ city, query, limit: 100, section: "rea" }).catch(() => ({ posts: [], cost: 0 }))
-  return { records: (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+  const records = (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord)
+  if (records.length > 0) return { records, cost: r.cost ?? 0 }
+  const fallback = await craigslistHtmlFallback(city, query, "rea", market)
+  return { records: fallback.records, cost: (r.cost ?? 0) + fallback.cost }
 }
 
 /** Craigslist housing section — surfaces buyer "wanted"/ISO posts (buyer intent). */
 export async function sourceCraigslistWanted(city: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
-  const r = await scrapeCraigslistPosts({ city, query: "wanted to buy ISO looking to buy home", limit: 100, section: "hhh" }).catch(() => ({ posts: [], cost: 0 }))
+  const wantedQuery = "wanted to buy ISO looking to buy home"
+  const r = await scrapeCraigslistPosts({ city, query: wantedQuery, limit: 100, section: "hhh" }).catch(() => ({ posts: [], cost: 0 }))
   // normalizeCraigslistItem classifies "wanted"/ISO titles as buyer intent.
-  return { records: (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+  const records = (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord)
+  if (records.length > 0) return { records, cost: r.cost ?? 0 }
+  const fallback = await craigslistHtmlFallback(city, wantedQuery, "hhh", market)
+  return { records: fallback.records, cost: (r.cost ?? 0) + fallback.cost }
 }
 
 export async function sourceGoogle(queries: string[], market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {

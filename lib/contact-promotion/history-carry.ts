@@ -126,6 +126,13 @@ export const REPOINTED_HISTORY_TABLES = [
  * is now acted upon.
  */
 export const MOVED_HISTORY_TABLES = [
+  // WAVE 64 (m630 applied live 2026-09-15): IDX Broker property activity became
+  // dual-keyed with an exactly-one CHECK (lead_idx_property_interactions_one_entity),
+  // so a converted lead's IDX history MOVES onto the contact rather than being
+  // repointed alongside a retained lead_id. Writer: syncIDXBrokerActivity
+  // (app/actions/lead-intelligence.ts); reader: buildBehavioralIntentSummary
+  // (lib/lead-intelligence/behavioral-summary.ts).
+  "lead_idx_property_interactions",
   "motivated_seller_signals",
 ] as const
 

@@ -50,6 +50,7 @@ import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
 import { isValidUUID } from "@/lib/validations"
 import { readPreApproval } from "@/lib/leads/pre-approval"
+import { regexFallbackPosts } from "@/lib/external/nextdoor-extract"
 
 // Previously every function in this file (except `trackBehavior`, which is
 // a legitimate public visitor-tracking pixel) was unauthenticated. Some
@@ -460,33 +461,35 @@ export async function getIntelligenceDashboardStats() {
 }
 
 /**
- * DELIBERATELY NOT WIRED TO ANY SURFACE. Two independent reasons, either of
- * which is sufficient:
+ * DELIBERATELY NOT WIRED TO ANY SURFACE.
  *
- * 1. THE PARSER IS A STUB. parseNextdoorPosts (below) unconditionally returns
- *    [] and logs "not configured". This function would therefore pay for a
- *    premium-proxy, JS-rendered ZenRows fetch and then persist ZERO rows —
- *    every single call, forever. The paid call is now refused up front rather
- *    than made and thrown away.
+ * 1. THE PARSER WAS A STUB — CLOSED (wave 64C). parseNextdoorPosts (below) now
+ *    delegates to lib/external/nextdoor-extract.ts::regexFallbackPosts, a real
+ *    tested extractor, instead of unconditionally returning []. This reason
+ *    alone no longer blocks wiring — reason 3 below is why the gate
+ *    (NEXTDOOR_PARSER_IMPLEMENTED) stays off regardless.
  * 2. NAMED, WIRED, MORE COMPLETE RIVAL: the social/forum collect lane is
  *    lib/lead-pipeline/social-sourcer.ts (sourceReddit / sourceFacebook /
  *    sourceInstagram / sourceCraigslist / sourceGoogle / sourceLinkedInRelocation),
  *    driven by app/api/cron/lead-scraping/route.ts with territory resolution
  *    (lib/lead-pipeline/scrape-territories.ts), per-vendor spend metering
  *    (lib/vendor-governance/meter-vendor.ts:meterVendorSpend), scraper-health
- *    escalation and the promotion gate. That lane has real normalizers and
- *    real intent detection; this one has a `return []`.
+ *    escalation and the promotion gate. That lane has its own real normalizers
+ *    and real intent detection, independently of this file's parser fix.
  *
  * NOT DELETED. It writes social_intelligence (author_name, post_content,
  * post_url, ai_intent_score) which the rival lane does not produce in that
  * shape, so it is an independent twin rather than a proven port. It stays,
  * hardened, unwired, and honest about being dark.
  *
- * COMPLIANCE: even with a working parser this collects named individuals'
- * neighbourhood posts. There is no lawful-basis record for that anywhere in
- * this codebase — no consent artifact, no legitimate-interest assessment, and
- * social_intelligence has no subject-rights linkage. Wiring it would create
- * profiles of people who have never transacted with the brokerage.
+ * 3. COMPLIANCE — THE SURVIVING, SUFFICIENT REASON: even with a working parser
+ *    (now true — see 1) this collects named individuals' neighbourhood posts.
+ *    There is no lawful-basis record for that anywhere in this codebase — no
+ *    consent artifact, no legitimate-interest assessment, and
+ *    social_intelligence has no subject-rights linkage. Wiring it would create
+ *    profiles of people who have never transacted with the brokerage. This
+ *    lane (64C) leaves it unresolved rather than deciding a lawful-basis
+ *    question that is the owner's to make, not an audit lane's to guess.
  */
 export async function scrapeSocialSignalsWithZenRows(location: {
   city: string
@@ -585,43 +588,40 @@ export async function scrapeSocialSignalsWithZenRows(location: {
 }
 
 /**
- * Flip this to true ONLY when parseNextdoorPosts actually extracts posts.
- * It gates the paid ZenRows fetch above. Keeping the switch next to the stub
- * means the two cannot drift apart.
+ * Flip this to true ONLY when the compliance gap in the header above
+ * (reason #2 — no lawful-basis record for profiling named individuals'
+ * neighborhood posts) is closed. The PARSER gap (reason #1) is closed —
+ * parseNextdoorPosts below now delegates to the real, tested regex-fallback
+ * extractor — but that alone does not make wiring this function safe; keep the
+ * switch OFF for the surviving reason.
  */
 const NEXTDOOR_PARSER_IMPLEMENTED = false
 
-// KEEP-WITH-REASON (inert-param census exemption): `html` and `location` are unread
-// by design — this is the documented UNBUILT parser half (NEXTDOOR_PARSER_IMPLEMENTED
-// above gates the paid fetch until it reads them); the signature is the contract the
-// real parser must fill.
+// MERGED ONTO SURVIVOR (orphan doctrine §1.1, wave 64C): this used to be a stub
+// (`console.warn(...); return []`) that ignored both `html` and `location` —
+// flagged by scripts/opposite-missing-census.ts as an inert-param pair. The
+// real, tested parser already existed at
+// lib/external/nextdoor-extract.ts::regexFallbackPosts (the DEGRADED path
+// preserved from the old ZenrowsClient regex, scored deterministically via
+// scoreNextdoorPost) — it was simply never called from here. Both params are
+// now read: `html` is parsed for real, `location` seeds the permalink fallback
+// exactly as the caller (scrapeSocialSignalsWithZenRows, above) already builds
+// it for the fetch URL. Output is remapped to the shape this file's caller has
+// always read (post.url/content/author/date/intentScore/…) so nothing else in
+// this function needed to change.
 function parseNextdoorPosts(html: string, location: { city: string; state: string }): any[] {
-  // Simplified parser - in production would use cheerio or similar
-  const posts: any[] = []
-
-  // Extract real estate related keywords
-  const realEstateKeywords = [
-    "moving",
-    "selling home",
-    "buy house",
-    "realtor",
-    "agent",
-    "property",
-    "listing",
-    "foreclosure",
-    "rent",
-    "lease",
-    "downsizing",
-    "relocating",
-    "just sold",
-    "need to sell",
-  ]
-
-  // Production: Use HTML parsing to extract and score posts
-  // This function requires implementation of actual scraping/parsing logic
-  // Returns empty array until Nextdoor API integration is configured
-  console.warn("[lead-intelligence] Nextdoor scraping not configured - requires API integration")
-  return []
+  const sourceUrl = `https://nextdoor.com/city/${location.state.toLowerCase()}/${location.city.toLowerCase().replace(/\s+/g, "-")}/`
+  const posts = regexFallbackPosts(html, { keywords: [], sourceUrl })
+  return posts.map((p) => ({
+    url: p.url,
+    content: p.content,
+    author: p.author_name,
+    date: p.posted_at,
+    intentScore: p.relevance_score,
+    intentSummary: p.type,
+    urgencyLevel: (p.relevance_score ?? 0) >= 70 ? "high" : (p.relevance_score ?? 0) >= 45 ? "medium" : "low",
+    keywords: p.matched_keywords,
+  }))
 }
 
 function firstNumber(...values: unknown[]): number | null {
@@ -736,11 +736,63 @@ export async function enrichPropertyIntelligence(propertyData: {
     if (isValidUUID(propertyData.contactId)) row.contact_id = propertyData.contactId
     if (isValidUUID(propertyData.profileId)) row.profile_id = propertyData.profileId
 
-    const { data: property, error: insertError } = await supabase
+    // WIRED (orphan-export guard category A, wave 64C):
+    // lib/external/vision-property.ts::scorePropertyImage had no caller
+    // anywhere in the repo. Its own header names its intended consumer as
+    // "the lead pipeline['s] motivationScore" — lib/lead-pipeline/* is frozen
+    // this wave, so it is wired HERE instead: a Street View image for the
+    // SAME address just enriched (lib/property/enrichment-chain.ts, not
+    // frozen) is a public, non-personal image of the property itself — no
+    // named-individual profiling, unlike scrapeExternalBehavior/
+    // scrapeSocialSignalsWithZenRows above, which stay unwired for that
+    // reason. A failed vision call degrades to no vision_* columns rather
+    // than failing the whole enrichment (BatchData data is still useful with
+    // no photo signal).
+    try {
+      const { getStreetViewImageUrl } = await import("@/lib/property/enrichment-chain")
+      const streetView = getStreetViewImageUrl({ address: `${propertyData.address}, ${propertyData.city}, ${propertyData.state}` })
+      const imageUrl = streetView?.url ?? null
+      if (imageUrl) {
+        const { scorePropertyImage } = await import("@/lib/external/vision-property")
+        const vision = await scorePropertyImage({
+          imageUrl,
+          context: `${propertyData.address}, ${propertyData.city}, ${propertyData.state}`,
+        })
+        if (!vision.error) {
+          row.vision_motivation_score = vision.motivationBoost
+          row.vision_condition_score = vision.conditionScore
+          row.vision_staging_score = vision.stagingScore
+          row.vision_signals = vision.signals
+          row.vision_rationale = vision.rationale
+          row.vision_photo_url = imageUrl
+          row.vision_analyzed_at = new Date().toISOString()
+        } else {
+          console.error("[lead-intelligence] scorePropertyImage returned an error, writing without vision columns:", vision.error)
+        }
+      }
+    } catch (visionError) {
+      // Vision scoring is a bonus signal, not a requirement — never abort the
+      // property-record write over it.
+      console.error("[lead-intelligence] property-image vision scoring failed:", visionError)
+    }
+
+    let { data: property, error: insertError } = await supabase
       .from("property_intelligence")
       .insert(row)
       .select()
       .maybeSingle()
+
+    // PGRST204 refuses the WHOLE row, not just the unknown column (CLAUDE.md
+    // §3) — until m629 (WRITTEN, NOT APPLIED) lands live, `vision_*` is such a
+    // column. Retry once without the vision fields rather than losing the
+    // entire BatchData enrichment to a bonus signal that is not live yet.
+    if (insertError && insertError.code === "PGRST204" && "vision_motivation_score" in row) {
+      const { vision_motivation_score, vision_condition_score, vision_staging_score, vision_signals, vision_rationale, vision_photo_url, vision_analyzed_at, ...rowWithoutVision } = row as Record<string, unknown>
+      const retry = await supabase.from("property_intelligence").insert(rowWithoutVision).select().maybeSingle()
+      property = retry.data
+      insertError = retry.error
+      if (!insertError) console.error("[lead-intelligence] vision_* columns not live yet (m629 not applied) — property saved without them")
+    }
 
     if (insertError) {
       console.error("[lead-intelligence] Property intelligence insert error:", insertError)
@@ -1108,15 +1160,24 @@ async function searchRealEstateSites(leadId: string, lead: any, brokerageId: str
  * RETURNS ITS OUTCOME rather than swallowing it: the caller stamps an
  * "idx_broker" data source, and an unreachable tenant, an unconfigured cascade or
  * an absent storage lane must not be recorded as a source that produced data.
+ *
+ * BUILT (orphan doctrine §1.2, wave 64C): `contactId` was unread because the
+ * destination table had no contacts-keyed column — the migration below
+ * (m627, WRITTEN NOT APPLIED — see supabase/migrations/) adds
+ * `lead_idx_property_interactions.contact_id` + a CHECK requiring exactly one
+ * of lead_id/contact_id set (same shape as m517's split on
+ * motivated_seller_signals, elsewhere in this file). The fetch itself was also
+ * unbuilt ("the fetch is not made either") — it now calls
+ * `IDXBrokerClient.getLeadActivity(email)`, which already existed
+ * (lib/idxbroker-client.ts:130) and had no caller anywhere in the repo, and
+ * writes each returned activity row keyed on `contactId`.
+ *
+ * UNTIL m627 IS APPLIED LIVE, the insert below is refused with PGRST204
+ * ("contact_id" not found) — read, logged, and returned as `synced: false`,
+ * never swallowed. That is the correct, honest state for a lane that writes
+ * migrations but does not apply them (CLAUDE.md §3): the code is ready and the
+ * schema is not, and the function says so rather than pretending success.
  */
-// KEEP-WITH-REASON (inert-param census exemption): `contactId` is unread by design —
-// the write that consumed it is gone (see "THE WRITE IS GONE" block below) and the
-// contacts-keyed IDX interaction lane it would key is the documented unbuilt half.
-//
-// RENAMED leadId → contactId (lane W3 2026-09-01, owner ruling on lead/contact
-// naming): the block below has always proven the value is a contacts.id, so the
-// old name stated the wrong identity class. Behavior unchanged — the function is
-// a documented no-op with respect to this id.
 async function syncIDXBrokerActivity(
   contactId: string,
   lead: any,
@@ -1135,33 +1196,54 @@ async function syncIDXBrokerActivity(
     return { synced: false, reason: "no_idx_credential" }
   }
 
-  // ── THE WRITE IS GONE, AND NOTHING REPLACES IT. STATED PLAINLY. ────────────
-  //
-  // This function's caller PROVES, before it is ever reached, that `contactId` is a
-  // contacts.id: the enrichment entry point resolves the id against the contacts
-  // table and throws when it is absent, so nothing of the other class survives to
-  // get here. The row this used to write set `lead_id` to that value.
-  //
-  // `lead_id` on the destination table is `REFERENCES leads(id)`
-  // (scripts/320-*.sql:187), and the table has NO contacts-keyed column at all —
-  // scripts/schema-snapshot.ts lists `lead_id` and no `contact_id`. So EVERY row
-  // this writer produced put a contacts.id into the other class's foreign key,
-  // and there is no other column to move it to. There is no correct write here,
-  // only a wrong one, and recording nothing beats recording a row that violates a
-  // foreign key and misattributes one person's browsing to another record.
-  //
-  // THE FETCH IS NOT MADE EITHER. Calling the provider to discard the answer is
-  // the same defect this wave is removing elsewhere — spending before deciding.
-  // Resolving the credential above is a database read, not a vendor call, and it
-  // still tells the caller honestly whether this tenant has an IDX account.
-  //
-  // WHAT THIS COSTS, SAID OUT LOUD: IDX browsing history is not recorded for a
-  // contact anywhere in this system. `synced: false` means the caller does not
-  // stamp "idx_broker" as a consulted source, which is the truth — an absent lane
-  // must never read as "we looked and this person has done nothing". Giving
-  // contacts a browsing-history lane is a schema decision and belongs to the wave
-  // that owns this relationship, not to a guess made here.
-  return { synced: false, reason: "no_contacts_keyed_idx_interaction_lane" }
+  const email = (lead?.email as string | null | undefined) ?? null
+  if (!email) {
+    // getLeadActivity resolves the IDX-side lead BY EMAIL — there is nothing
+    // else to look this contact up by on IDX Broker's side.
+    console.error("[v0] IDX sync skipped: contact has no email to match against IDX Broker")
+    return { synced: false, reason: "no_email_on_contact" }
+  }
+
+  const activities = await idx.getLeadActivity(email).catch((err) => {
+    console.error("[v0] IDX Broker activity fetch failed:", err)
+    return [] as Awaited<ReturnType<typeof idx.getLeadActivity>>
+  })
+  if (activities.length === 0) {
+    return { synced: false, reason: "no_idx_activity_found" }
+  }
+
+  const supabase = createServiceClient()
+  let inserted = 0
+  for (const activity of activities) {
+    // supabase-js RESOLVES a refused insert (CLAUDE.md §3) — destructured and
+    // read, never swallowed. A PGRST204 here means m627 has not been applied
+    // yet, not that the sync "ran and found nothing".
+    const { error } = await supabase.from("lead_idx_property_interactions").insert({
+      contact_id: contactId,
+      brokerage_id: ownerBrokerageId,
+      // Live column names (scripts/schema-snapshot.ts lead_idx_property_interactions):
+      // mls_number / view_duration_seconds / occurred_at — the lane's first draft
+      // named property_mls_id / time_spent_seconds / interacted_at, which the
+      // table does not have (PGRST204 refuses the WHOLE insert, CLAUDE.md §3).
+      mls_number: activity.mlsID ?? null,
+      property_address: activity.address ?? null,
+      property_details: {
+        listPrice: activity.listPrice, bedrooms: activity.bedrooms,
+        bathrooms: activity.bathrooms, sqft: activity.sqft, propType: activity.propType,
+      },
+      interaction_type: activity.type ?? "viewed",
+      view_duration_seconds: activity.timeSpent ?? null,
+      interaction_metadata: activity.metadata ?? null,
+      occurred_at: activity.timestamp ?? new Date().toISOString(),
+    })
+    if (error) {
+      console.error("[v0] lead_idx_property_interactions insert refused:", error.message)
+      return { synced: false, reason: `insert refused: ${error.message}` }
+    }
+    inserted++
+  }
+
+  return { synced: inserted > 0, reason: inserted > 0 ? undefined : "no_rows_inserted" }
 }
 
 /**
@@ -2042,6 +2124,7 @@ export async function createUnifiedLeadProfile(input: { contactId: string; sourc
 
 BEHAVIORAL DATA: ${JSON.stringify(allSignals.behavioral)}
 PROPERTY DATA: ${JSON.stringify(allSignals.property)}
+EXTERNAL/SEARCH/OSINT INTENT SUMMARY: ${allSignals.behaviorSummary.narrative} (behavioral_intent_score=${allSignals.behaviorSummary.behavioralIntentScore}/100)
 
 {
   "unified_intent": "buyer|seller|both",
@@ -2198,8 +2281,17 @@ async function getAllSignalsForProfile(profileId: string, brokerageId: string, c
     .or(`contact_id.eq.${contactId},profile_id.eq.${profileId}`)
     .eq("brokerage_id", brokerageId)
 
-  const [{ data: behavioral, error: behavioralError }, { data: property, error: propertyError }] =
-    await Promise.all([behavioralQuery, propertyQuery])
+  // WIRED (readerless-write-census, wave 64C): external_behavior,
+  // nextdoor_activity, google_search_activity, google_search_intelligence,
+  // intelligence_signals_log, lead_osint_data and intelligent_outreach_log had
+  // real writers and NO reader anywhere in the codebase. This is that reader —
+  // see lib/lead-intelligence/behavioral-summary.ts for the full column-by-
+  // column accounting and the fair-housing note on what it deliberately never
+  // surfaces.
+  const { buildBehavioralIntentSummary } = await import("@/lib/lead-intelligence/behavioral-summary")
+
+  const [{ data: behavioral, error: behavioralError }, { data: property, error: propertyError }, behaviorSummary] =
+    await Promise.all([behavioralQuery, propertyQuery, buildBehavioralIntentSummary(contactId, brokerageId)])
 
   if (behavioralError) console.error("[lead-intelligence] Behavioral signal read error:", behavioralError)
   if (propertyError) console.error("[lead-intelligence] Property signal read error:", propertyError)
@@ -2207,7 +2299,9 @@ async function getAllSignalsForProfile(profileId: string, brokerageId: string, c
   return {
     behavioral: behavioral || [],
     property: property || [],
-    total_count: (behavioral?.length || 0) + (property?.length || 0),
+    behaviorSummary,
+    total_count: (behavioral?.length || 0) + (property?.length || 0) + behaviorSummary.externalBehaviorCount
+      + behaviorSummary.nextdoorActivityCount + behaviorSummary.googleSearchActivityCount + behaviorSummary.osintSignalCount,
   }
 }
 

@@ -7,7 +7,7 @@
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
     "app/actions/journey-tasks.ts": 1,
-    "app/actions/lead-intelligence.ts": 6,
+    "app/actions/lead-intelligence.ts": 5,
     "app/actions/listings.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
@@ -140,7 +140,6 @@
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
-    "lib/external/vision-property.ts": 1,
     "lib/finance/auto-dispute.ts": 1,
     "lib/finance/qb-reconciliation.ts": 3,
     "lib/finance/quarterly-tax-concierge.ts": 1,
@@ -287,9 +286,7 @@
     "lib/lead-pipeline/promotion-address-verification.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/raw-record-types.ts": 1,
-    "lib/lead-pipeline/scrape-territories.ts": 1,
-    "lib/lead-pipeline/scraper-health.ts": 3,
-    "lib/lead-pipeline/scraper-parsers.ts": 1,
+    "lib/lead-pipeline/scraper-health.ts": 2,
     "lib/lead-pipeline/social-sourcer.ts": 7,
     "lib/lead-pipeline/source-intent-map.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
@@ -437,7 +434,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9465,
+  "census": 9467,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1377,6 +1374,7 @@
     "app/api/track/dwell/route.ts": 1,
     "app/api/track/identify/route.ts": 1,
     "app/api/track/pixel/route.ts": 1,
+    "app/api/track/visitor/route.ts": 1,
     "app/api/twiml/whisper-bridge/route.ts": 2,
     "app/api/unsubscribe/route.ts": 1,
     "app/api/unsubscribe/token/route.ts": 2,
@@ -1403,6 +1401,7 @@
     "app/api/voice/twilio/whisper/route.ts": 1,
     "app/api/webhooks/anthropic-agent/route.ts": 1,
     "app/api/webhooks/authentisign/route.ts": 1,
+    "app/api/webhooks/batchdata-smart-search/route.ts": 1,
     "app/api/webhooks/ce-provider/route.ts": 1,
     "app/api/webhooks/did/route.ts": 1,
     "app/api/webhooks/docusign/route.ts": 1,
@@ -3098,7 +3097,7 @@
     "lib/external/apify-actors.ts": 3,
     "lib/external/apify-client.ts": 7,
     "lib/external/arcgis-permits.ts": 9,
-    "lib/external/batchdata-client.ts": 6,
+    "lib/external/batchdata-client.ts": 7,
     "lib/external/batchdata-mcp.ts": 2,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/census-appreciation.ts": 4,
@@ -3569,6 +3568,7 @@
     "lib/lead-governance/sla-escalation.ts": 1,
     "lib/lead-governance/sla-monitor.ts": 2,
     "lib/lead-governance/stale-lead-processor.ts": 1,
+    "lib/lead-intelligence/behavioral-summary.ts": 1,
     "lib/lead-intelligence/interest-level.ts": 1,
     "lib/lead-intelligence/signal-extensions.ts": 4,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
@@ -9220,6 +9220,9 @@
     "app/api/track/pixel/route.ts": [
       "GET"
     ],
+    "app/api/track/visitor/route.ts": [
+      "POST"
+    ],
     "app/api/twiml/whisper-bridge/route.ts": [
       "GET",
       "POST"
@@ -9300,6 +9303,9 @@
       "POST"
     ],
     "app/api/webhooks/authentisign/route.ts": [
+      "POST"
+    ],
+    "app/api/webhooks/batchdata-smart-search/route.ts": [
       "POST"
     ],
     "app/api/webhooks/ce-provider/route.ts": [
@@ -15557,6 +15563,7 @@
       "buildPropertySearchBody",
       "fetchMotivatedSellers",
       "searchProperties",
+      "fetchBatchRankPropensity",
       "enrichPropertyWithBatchData"
     ],
     "lib/external/batchdata-mcp.ts": [
@@ -18039,6 +18046,9 @@
     ],
     "lib/lead-governance/stale-lead-processor.ts": [
       "processStaleLeadsAndSLA"
+    ],
+    "lib/lead-intelligence/behavioral-summary.ts": [
+      "buildBehavioralIntentSummary"
     ],
     "lib/lead-intelligence/interest-level.ts": [
       "interestLevelToSignalScale"

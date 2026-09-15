@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 234 agents(id) columns across 225 tables, 38 agent-ish users(id) columns across 36 tables, 169 contact_id tables.
+ * MEASURED AT GENERATION: 234 agents(id) columns across 225 tables, 38 agent-ish users(id) columns across 36 tables, 170 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-12
+ * generated: 2026-09-15
  * source: public.live_foreign_keys_json()
- * body-sha256: 2df5b3b8a704b3ebbfabec29ed170d71dc35f09e9b61c0b7f43cfb7ebb958f92
+ * body-sha256: e4a0df31ebe078b82c3387baaf1f71f0ac79fa2d321266bfe17569940b880949
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -395,6 +395,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "journey_states",
   "journey_task_completions",
   "lead_enrichment_queue",
+  "lead_idx_property_interactions",
   "lead_score_history",
   "lead_scores",
   "lead_value_journey",

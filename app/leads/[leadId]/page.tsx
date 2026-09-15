@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge"
 import { LeadQuickActions } from "@/components/lead/LeadQuickActions"
 import { LeadReadinessPanel } from "@/components/lead/LeadReadinessPanel"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { getLeadIntelligenceSignals } from "@/lib/lead-pipeline/lead-intelligence-signals"
 
 export const dynamic = "force-dynamic"
 
@@ -36,7 +37,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
   await ensureAgentContextInPlace()
   const svc = createServiceClient()
   const { data: lead } = await svc.from("leads")
-    .select("id, brokerage_id, agent_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, email_verified, mailing_address_verified, lead_stage, lifecycle_state, ai_isa_owner, is_active, created_at")
+    .select("id, brokerage_id, agent_id, contact_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, email_verified, mailing_address_verified, lead_stage, lifecycle_state, ai_isa_owner, is_active, created_at")
     .eq("id", leadId).maybeSingle()
   if (!lead) {
     return <div className="p-6 text-sm text-muted-foreground">Lead not found.</div>
@@ -89,6 +90,17 @@ export default async function LeadDetailPage({ params }: PageProps) {
     .eq("brokerage_id", lead.brokerage_id)
     .order("occurred_at", { ascending: false })
     .limit(50)
+
+  // Provenance ledger + prior value-first outreach — see
+  // lib/lead-pipeline/lead-intelligence-signals.ts for the full story (both
+  // tables had a writer and no reader anywhere until this page). BROKERAGE
+  // LEAD-DESK ONLY: this page already gated on resolveLeadVisibility +
+  // leadRowInScope above, so nothing below this line ever renders for an
+  // agent — leads are never agent-facing (CLAUDE.md §5).
+  const intel = await getLeadIntelligenceSignals(svc, {
+    contactId: lead.contact_id ?? null,
+    brokerageId: lead.brokerage_id ?? null,
+  })
 
   const fullName = [lead.first_name, lead.last_name].filter(Boolean).join(" ") || "(unnamed lead)"
   const addr = [lead.mailing_address, lead.mailing_city, lead.mailing_state, lead.mailing_zip].filter(Boolean).join(", ")
@@ -151,6 +163,52 @@ export default async function LeadDetailPage({ params }: PageProps) {
           )}
         </CardContent>
       </Card>
+
+      {(lead.contact_id) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Intelligence &amp; Outreach</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm space-y-4">
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">Signals detected</div>
+              {intel.signalsError ? (
+                <div className="text-destructive">Could not load signals: {intel.signalsError}</div>
+              ) : !intel.signals.length ? (
+                <div className="text-muted-foreground">No provenance signals recorded yet.</div>
+              ) : (
+                intel.signals.map((s) => (
+                  <div key={s.id} className="border-l-2 pl-3 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                      <Badge variant="outline">{s.signal_type ?? "signal"}</Badge>
+                      {typeof s.signal_strength === "number" && <span>strength {s.signal_strength}</span>}
+                      <span>{s.detected_at ? new Date(s.detected_at).toLocaleString() : "—"}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">Value-first outreach already sent</div>
+              {intel.outreachError ? (
+                <div className="text-destructive">Could not load outreach history: {intel.outreachError}</div>
+              ) : !intel.outreach.length ? (
+                <div className="text-muted-foreground">No intelligent outreach sent yet.</div>
+              ) : (
+                intel.outreach.map((o) => (
+                  <div key={o.id} className="border-l-2 pl-3 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                      <Badge variant="outline">{o.outreach_type ?? "outreach"}</Badge>
+                      <Badge variant="outline">{o.channel ?? "—"}</Badge>
+                      <span>{o.created_at ? new Date(o.created_at).toLocaleString() : "—"}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <LeadReadinessPanel leadId={lead.id} />
 

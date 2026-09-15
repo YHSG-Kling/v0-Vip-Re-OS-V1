@@ -574,8 +574,14 @@ for (const dir of appDirs) {
   // motivated_seller_signals.lead_id is the owner's own named example: the column
   // exists, the schema agrees it means `leads`, and no FK enforces it.
   const oc1Keys = new Set(findings.filter((f) => f.cat === "oc1").map((f) => f.key))
-  control("oc1 POSITIVE: still flags motivated_seller_signals.lead_id (no FK to leads)",
-    oc1Keys.has("motivated_seller_signals.lead_id"))
+  // WAVE 64 (m628 APPLIED LIVE 2026-09-15): that FK now EXISTS, so the live
+  // specimen can no longer serve as the positive arm — a control pinned to a
+  // live defect dies the day the defect is fixed (CLAUDE.md §2, "do not pin an
+  // assertion to a waypoint"). The positive arm is the SYNTHETIC specimen below;
+  // this line now asserts the owner's example is PROTECTED, which is the
+  // permanent state the FK guarantees.
+  control("oc1: motivated_seller_signals.lead_id is PROTECTED (m628 FK to leads, applied live)",
+    !oc1Keys.has("motivated_seller_signals.lead_id"))
   // ── OC1 POSITIVE, on a SYNTHETIC tenant anchor ────────────────────────────
   // This used to assert that `transaction_documents.brokerage_id` or
   // `email_queue.brokerage_id` was still flagged. m533 gave BOTH an FK — along

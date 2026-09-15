@@ -81,3 +81,42 @@ export function isRawProcessingStatus(v: unknown): v is RawProcessingStatus {
 export function isRejectionStatus(v: unknown): v is RejectionStatus {
   return typeof v === "string" && (REJECTION_STATUSES as readonly string[]).includes(v)
 }
+
+/**
+ * TERMINAL for THIS attempt = every status outside IN_FLIGHT_STATUSES — derived
+ * from the one vocabulary above, never hand-picked. pipeline-processor.ts's
+ * setStatus() uses this (rather than a literal `status === 'promoted' ||
+ * status === 'error'`) to decide when to stamp `processed_at`, so a gate-stop
+ * status added to RAW_PROCESSING_STATUSES in the future gets `processed_at`
+ * automatically instead of silently missing it the way duplicate_pre_enrich /
+ * duplicate_post_enrich / territory_mismatch / insufficient_identity /
+ * insufficient_identity_for_promotion / unassigned_no_market did until this fix
+ * (lib/lead-pipeline/relisting-detector.ts:46,55 reads raw_scraped_leads.processed_at
+ * and falls back to created_at when it is null — every gate-stop record was
+ * silently reading the wrong timestamp).
+ */
+export function isTerminalRawProcessingStatus(v: RawProcessingStatus): boolean {
+  return !(IN_FLIGHT_STATUSES as readonly string[]).includes(v)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE VOCABULARY FOR raw_scraped_leads.dedupe_status.
+//
+// The column exists live (DEFAULT 'pending' — scripts/add-lead-lineage-columns.sql:28)
+// with NO CHECK constraint, and until this fix had a READER — the raw-lead admin
+// bench (app/actions/lead-promotion/promote-lead.ts:101,124 listRawLeadsForReview,
+// `dedupeStatus` on RawLeadReviewRow) — and NO WRITER anywhere: an opposite-missing
+// column-read-no-write (lib/lead-promotion/review-status.ts:18-24 already documents
+// this for the sibling `leads.dedupe_status` column and had to stop trusting it).
+// pipeline-processor.ts's setStatus() now writes it at every DEDUPE VERDICT point
+// (pre-enrich duplicate found, post-enrich duplicate found, or both passes cleared
+// and the record reached the promotion-identity gate) and on the final promoted
+// update. Two values, DERIVED from the sibling column's own observed vocabulary
+// rather than invented: `leads.dedupe_status` (same migration, :7 and :44) is only
+// ever seen as 'pending' (the DEFAULT) or 'complete' ("implicitly deduped on
+// entry" — the migration's own words), and
+// app/dashboard/admin/lead-lineage/lead-lineage-client.tsx:117 reads exactly those
+// two. There is no third state to derive from any reader or CHECK, so this file
+// mirrors the pair.
+export const DEDUPE_STATUSES = ["pending", "complete"] as const
+export type DedupeStatus = (typeof DEDUPE_STATUSES)[number]

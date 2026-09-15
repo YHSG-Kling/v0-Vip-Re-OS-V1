@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { runScrapeTestAction } from "@/app/actions/admin/run-scrape-test"
+import { runScrapeTestAction, verifyScrapeTestCronDoorAction } from "@/app/actions/admin/run-scrape-test"
 import { retryFailedSourceBatch } from "@/lib/kernel/scraping"
 import type { ScrapingDiagnosticsData } from "@/lib/kernel/scraping"
 
@@ -128,6 +128,8 @@ export function ScrapeDiagnosticsClient({
   const [dryRunResult,    setDryRunResult]    = useState<DryRunResult | null>(null)
   const [dryRunError,     setDryRunError]     = useState<string | null>(null)
   const [dryRunLoading,   setDryRunLoading]   = useState(false)
+  const [cronDoorResult,  setCronDoorResult]  = useState<string | null>(null)
+  const [cronDoorLoading, setCronDoorLoading] = useState(false)
   const [retryingId,      setRetryingId]      = useState<string | null>(null)
   const [retryMessages,   setRetryMessages]   = useState<Record<string, string>>({})
   const [isPending,       startTransition]    = useTransition()
@@ -165,6 +167,27 @@ export function ScrapeDiagnosticsClient({
       setDryRunError(String(err))
     } finally {
       setDryRunLoading(false)
+    }
+  }
+
+  // Platform-staff-only check that the CRON_SECRET door (GET /api/admin/
+  // scrape-test) is still live and answering — the same route the scraping
+  // cron's own operators use, exercised here through the server-side self-call
+  // in verifyScrapeTestCronDoorAction (app/actions/admin/run-scrape-test.ts).
+  async function handleVerifyCronDoor() {
+    if (!selectedMarketId) return
+    setCronDoorLoading(true)
+    setCronDoorResult(null)
+    try {
+      const result = await verifyScrapeTestCronDoorAction(selectedMarketId, selectedSource)
+      if (result.error) { setCronDoorResult(`Error: ${result.error}`); return }
+      setCronDoorResult(
+        `Door answered ${result.doorStatus} — would_insert ${result.body?.would_insert ?? "—"}, est. cost $${(result.body?.estimated_cost_usd ?? 0).toFixed(4)}`,
+      )
+    } catch (err) {
+      setCronDoorResult(`Error: ${String(err)}`)
+    } finally {
+      setCronDoorLoading(false)
     }
   }
 
@@ -655,7 +678,29 @@ export function ScrapeDiagnosticsClient({
                 >
                   {dryRunLoading ? "Running..." : "Run Dry Test"}
                 </button>
+                {isSuperadmin && (
+                  <button
+                    onClick={handleVerifyCronDoor}
+                    disabled={cronDoorLoading || !selectedMarketId}
+                    title="Exercises GET /api/admin/scrape-test — the Bearer CRON_SECRET door the scraping cron itself uses — through a server-side self-call so no secret ever reaches the browser."
+                    className="rounded border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-400 transition-colors hover:bg-zinc-800 disabled:opacity-50"
+                  >
+                    {cronDoorLoading ? "Checking..." : "Verify Cron Door"}
+                  </button>
+                )}
               </div>
+
+              {cronDoorResult && (
+                <div
+                  className={`mt-3 rounded border p-3 text-sm ${
+                    cronDoorResult.startsWith("Error")
+                      ? "border-red-800 bg-red-950 text-red-400"
+                      : "border-emerald-800 bg-emerald-950 text-emerald-400"
+                  }`}
+                >
+                  {cronDoorResult}
+                </div>
+              )}
 
               {dryRunError && (
                 <div className="mt-4 rounded border border-red-800 bg-red-950 p-3 text-sm text-red-400">{dryRunError}</div>
