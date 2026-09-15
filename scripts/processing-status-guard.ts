@@ -47,7 +47,12 @@ console.log("\n═══ 1. One list, imported — not three hand-copied ones �
 
   ok("pipeline-processor no longer declares its own union — that inline list is\n    what the cockpit was hand-copying from",
     !/type ProcessingStatus =\s*\n\s*\|/.test(proc))
-  ok("...it imports the shared type", /import type \{ RawProcessingStatus \} from ".\/processing-status"/.test(proc))
+  // The RULE is "the type comes from the vocabulary module" — not one import
+  // spelling. Wave 64 made the import carry a VALUE sibling too
+  // (isTerminalRawProcessingStatus), so the type rides as `type RawProcessingStatus`
+  // inside a combined import; either form satisfies the rule, a local
+  // declaration satisfies neither.
+  ok("...it imports the shared type", /import (?:type )?\{[^}]*\bRawProcessingStatus\b[^}]*\} from ".\/processing-status"/.test(proc))
   // The import may carry SIBLING symbols from the same vocabulary module — wave
   // 26 added `isRejectionStatus`, the module's own membership test, replacing a
   // local `new Set(REJECTION_STATUSES)` the cockpit was building to ask the same
