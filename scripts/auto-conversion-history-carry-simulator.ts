@@ -321,6 +321,43 @@ async function main(): Promise<void> {
       handlers.indexOf("carryLeadHistoryToContact(") < handlers.indexOf("deactivateLead(supabase, leadId)"))
   }
 
+  // ═══ 8. THE ACQUISITION-COST CARRY RIDES THE SAME SHARED CONVERTER ═══════
+  // Lane 65D, owner ruling: "...where they came from for lead cost tracking."
+  // leads.acquisition_cost / contacts.acquisition_cost are m632 — WRITTEN, NOT
+  // APPLIED. Both lanes call createContactFromLead (the same converter §6
+  // requires), so proving it here — once — covers both, exactly like the
+  // history carry above. The live-safety property is the finding worth a
+  // guard: naming an absent column inside the MAIN insert is a PGRST204 that
+  // refuses the WHOLE row (CLAUDE.md §3), so until m632 applies, the write
+  // MUST be an isolated statement a refusal there cannot take the contact down
+  // with it.
+  console.log("\n[8 · acquisition_cost carry is LIVE-SAFE ahead of m632 (isolated write, not in the main insert)]")
+  {
+    const creator = code("lib/contact-promotion/contact-creator.ts")
+    const acqCostModule = code("lib/contact-promotion/acquisition-cost.ts")
+
+    check("createContactFromLead resolves the acquisition cost before inserting the contact",
+      /resolveLeadAcquisitionCost\(/.test(creator))
+    check("acquisition_cost is NOT a key inside the contactData bundle passed to the main insert",
+      (() => {
+        const start = creator.indexOf("const contactData = {")
+        const end = creator.indexOf("\n    }\n", start)
+        const body = creator.slice(start, end)
+        return !/^\s*acquisition_cost:/m.test(body)
+      })())
+    check("contacts.acquisition_cost is instead written by its OWN isolated .update() after the insert succeeds",
+      /\.from\("contacts"\)\s*\.update\(\{\s*acquisition_cost:/.test(creator))
+    check("leads.acquisition_cost is written the same isolated way (own statement, own error handling)",
+      /\.from\("leads"\)\s*\.update\(\{\s*acquisition_cost:/.test(creator))
+    check("a refusal on either isolated write is logged, never thrown (never blocks the conversion)",
+      !/throw[\s\S]{0,200}acquisition_cost/.test(creator))
+    check("the pure formula lives in the ONE owned learning module, not re-derived in the live resolver",
+      acqCostModule.includes("computeLeadAcquisitionCost") &&
+        !/costPerRecord\s*\+\s*enrichmentSpend/.test(acqCostModule))
+    check("source-conversion-runner prefers acquisition_cost but falls back to cost_per_record (pre-migration rows)",
+      code("lib/lead-pipeline/source-conversion-runner.ts").includes("l.acquisition_cost ?? l.cost_per_record ?? 0"))
+  }
+
   console.log(`\n${"═".repeat(70)}`)
   console.log(`AUTO CONVERSION HISTORY CARRY — ${pass} passed, ${fail} failed`)
   if (fail > 0) {

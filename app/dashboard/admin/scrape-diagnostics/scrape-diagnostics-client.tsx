@@ -545,6 +545,45 @@ export function ScrapeDiagnosticsClient({
         {/* TAB: Cron History */}
         {activeTab === "cron" && (
           <section>
+            <SectionHeader title="BatchData Smart Search subscriptions" count={data.smartSearchSubscriptions.length} />
+            <p className="mb-4 text-xs text-zinc-600">
+              One outbound Property Subscription per market × quicklist. Reconciled on every lead-scraping tick;
+              a non-empty error column means the last registration or renewal was refused.
+            </p>
+            <TableContainer>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800">
+                    <th className="px-2 py-1 text-left">Market</th>
+                    <th className="px-2 py-1 text-left">Quicklist</th>
+                    <th className="px-2 py-1 text-left">Status</th>
+                    <th className="px-2 py-1 text-left">Subscription</th>
+                    <th className="px-2 py-1 text-left">Webhook</th>
+                    <th className="px-2 py-1 text-left">Reconciled</th>
+                    <th className="px-2 py-1 text-left">Renewed</th>
+                    <th className="px-2 py-1 text-left">Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.smartSearchSubscriptions.length === 0 && (
+                    <tr><td colSpan={8} className="px-2 py-2 text-zinc-500">No subscriptions registered yet.</td></tr>
+                  )}
+                  {data.smartSearchSubscriptions.map((sub) => (
+                    <tr key={sub.id} className="border-b border-zinc-900">
+                      <td className="px-2 py-1">{data.markets.find((m) => m.id === sub.market_id)?.name ?? sub.market_id}</td>
+                      <td className="px-2 py-1">{sub.quicklist}</td>
+                      <td className="px-2 py-1">{sub.status}</td>
+                      <td className="px-2 py-1 font-mono text-xs">{sub.subscription_id ?? "—"}</td>
+                      <td className="px-2 py-1 truncate max-w-[220px]" title={sub.webhook_url}>{sub.webhook_url}</td>
+                      <td className="px-2 py-1">{sub.last_reconciled_at ? new Date(sub.last_reconciled_at).toLocaleString() : "—"}</td>
+                      <td className="px-2 py-1">{sub.renewed_at ? new Date(sub.renewed_at).toLocaleString() : "—"}</td>
+                      <td className="px-2 py-1 text-red-400">{sub.last_error ?? ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableContainer>
+            <div className="h-6" />
             <SectionHeader title="Cron Run History" count={data.cronHistory.length} />
             <p className="mb-4 text-xs text-zinc-600">
               Each row is one execution of the lead-scraping cron job.

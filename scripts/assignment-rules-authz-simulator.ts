@@ -61,6 +61,44 @@ console.log("\n── the client page no longer writes assignment_rules directly
     p.includes("if (!res.ok)"))
 }
 
+console.log("\n── conversion invokes the rules engine — never a bare agent claim (wave 65 hand-off) ──")
+{
+  // Owner ruling: "once the ai isa qualifies or there is positive intent, then
+  // the lead converts to a contact... and gets assigned to an agent from the
+  // lead assignment rules that the brokerage/teamlead sets up in their
+  // settings." Proven at the SOURCE level (no DB): the qualification path
+  // calls the rules engine BEFORE conversion, the engine reads
+  // `assignment_rules` and honours round-robin/load-balance/geo/specialization
+  // + capacity, and claiming a lead is proven to carry NO assignment kernel
+  // event (wave 49 tombstone) — an agent cannot become "assigned" by claiming.
+  const qual = src("lib/ai-isa/qualification-evaluator.ts")
+  check("ISA qualification calls evaluateAndAssignLead BEFORE any contact exists",
+    /evaluateAndAssignLead\(\{/.test(qual))
+  check("...gated on readinessForAgent (qualification OR positive/confirmed intent, never an agent claim)",
+    /if \(!signals\.readinessForAgent\)/.test(qual) && /confirmedIntent/.test(qual))
+
+  const engine = src("lib/lead-assignment/assignment-engine.ts")
+  check("evaluateAndAssignLead delegates to the tier-aware policy with an explicit trigger",
+    /autoAssignLead\(\{/.test(engine) && /trigger:\s*["']ai_isa_qualified["']/.test(engine))
+  check("resolveAgentByRules reads the BROKERAGE/TEAM-LEAD-configured assignment_rules table",
+    /from\(["']assignment_rules["']\)/.test(engine) && /\.eq\(["']brokerage_id["']/.test(engine))
+  check("team-scoped rules resolve their pool from teams.team_lead_id's team (team lead's own settings)",
+    /team_id/.test(engine) && /eq\(["']team_id["'], rule\.team_id\)/.test(engine))
+  check("round-robin / load-balance / geo / specialization methods are all honoured (not just round-robin)",
+    /pickAgentForRule/.test(engine) && /selectAgentByCapacity/.test(engine))
+  check("a MANUAL rule holds the lead rather than silently falling through to another method",
+    /held: true/.test(engine))
+
+  // claimLead — the ONE place an agent-initiated action touches assignment_log
+  // — must carry no LEAD_CLAIMED kernel emission (wave 49 owner ruling: "no
+  // kernel event for an agent claiming a lead"). Its own tombstone records the
+  // removal; assert the RULE (no emit call in the function body) rather than
+  // grepping for a retired event name that could just be renamed.
+  const claimFn = engine.slice(engine.indexOf("export async function claimLead"))
+  check("claimLead itself never calls emitKernelEvent — claiming is not assignment",
+    !/emitKernelEvent/.test(claimFn.slice(0, claimFn.indexOf("\n}\n") + 3)))
+}
+
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ❌ ASSIGNMENT_RULES_AUTHZ_FAIL"); process.exit(1) }
 console.log(" ✅ ASSIGNMENT_RULES_AUTHZ_PASS — routing rules mutate only through the admin-gated action")

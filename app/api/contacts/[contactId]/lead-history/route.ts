@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { assertCanActOnContact } from "@/lib/auth/contact-access"
+import { buildPersonTimeline, redactForContactView } from "@/lib/lead-intelligence/person-timeline"
 
 export const dynamic = "force-dynamic"
 
@@ -143,6 +144,25 @@ export async function GET(
     assignmentsRes.error?.message ||
     null
 
+  // THE SUMMARIZED PERSON TIMELINE (owner ruling, wave 65 — "lead intelligence
+  // ... from scrape... until conversion and after"). This is the CONTACT-FACING
+  // half: redactForContactView drops raw pre-conversion scrape/behavioral
+  // provenance (source names, OSINT payload shape, cost, the raw transcript)
+  // and keeps only summarized pre-conversion touches + everything
+  // post-conversion — never the lead-desk's full view (app/leads/[leadId]),
+  // which this route's caller (an agent) cannot reach at all (migration 034).
+  // Best-effort: a timeline failure must not fail the whole lineage response,
+  // which is already RLS-safe on its own.
+  let timeline: ReturnType<typeof redactForContactView> = []
+  let timelineError: string | null = null
+  try {
+    const built = await buildPersonTimeline({ contactId, brokerageId, client: svc })
+    timeline = redactForContactView(built)
+    timelineError = built.warnings.length > 0 ? built.warnings.join("; ") : null
+  } catch (e) {
+    timelineError = e instanceof Error ? e.message : "timeline could not be built"
+  }
+
   return NextResponse.json({
     success: true,
     history: lineage,
@@ -150,6 +170,8 @@ export async function GET(
     communications: communicationsRes.data ?? [],
     outreach: outreachRes.data ?? [],
     assignments: assignmentsRes.data ?? [],
+    timeline,
+    timelineError,
     extendedError,
   })
 }

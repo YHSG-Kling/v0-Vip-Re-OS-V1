@@ -279,6 +279,14 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // m608 froze and m611 deliberately left untouched as the real scraping
 // surface. Deliberate bump, named per this guard's own instruction; drops
 // back to 0 once the integrator applies it and flips the header.
+//
+// 0 → 1 (wave 65, lane 65D — lead intelligence / lead-cost tracking):
+// m634-lead-acquisition-cost.sql, WRITTEN NOT APPLIED — adds
+// leads.acquisition_cost + contacts.acquisition_cost (cost_per_record +
+// enrichment spend + campaign cost share; lib/contact-promotion/
+// acquisition-cost.ts). Deliberate bump, named per this guard's own
+// instruction; drops back to 0 once the integrator applies it and flips the
+// header.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

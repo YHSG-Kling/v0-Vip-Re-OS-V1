@@ -210,6 +210,43 @@ export async function retryWithApifyFallback(
   }
 }
 
+// ─── Provider picker (ZenRows primary, Zyte fallback) ──────────────────────────
+// BUILT wave 65 (owner ruling): "zenrows or zyte can help find leads that are on real estate
+// sites like zillow/realtor.com/nextdoor/homes.com/reddit". docs/lead-acquisition-coverage-
+// 2026-09.md researched both providers' 2026 capability + pricing; the verdict keeps ZenRows
+// primary (predictable credit pricing, already wired) with Zyte (lib/external/zyte-client.ts)
+// as the fallback the OS reaches for by CONFIGURED KEY — never a hardcoded provider choice —
+// when ZenRows is unconfigured or its call fails. Fails CLOSED (no scrape, no cost) when
+// neither key is present, matching every other scraper lane's no-keys posture.
+export interface SiteHtmlResult {
+  ok: boolean
+  html: string
+  provider: "zenrows" | "zyte" | null
+  cost: number
+  error: string | null
+}
+
+export async function scrapeSiteWithBestProvider(
+  url: string,
+  options: { jsRender?: boolean; premiumProxy?: boolean } = {},
+): Promise<SiteHtmlResult> {
+  if (process.env.ZENROWS_API_KEY) {
+    try {
+      const r = await scrapeWithZenRows(url, { jsRender: options.jsRender, premiumProxy: options.premiumProxy })
+      if (r.body) return { ok: true, html: r.body, provider: "zenrows", cost: r.cost, error: null }
+    } catch (err) {
+      console.warn("[scrapeSiteWithBestProvider] ZenRows failed, trying Zyte:", err instanceof Error ? err.message : err)
+    }
+  }
+  const { scrapeWithZyte, zyteConfigured } = await import("./zyte-client")
+  if (zyteConfigured()) {
+    const z = await scrapeWithZyte(url, { jsRender: options.jsRender })
+    if (z.ok) return { ok: true, html: z.html, provider: "zyte", cost: z.cost, error: null }
+    return { ok: false, html: "", provider: "zyte", cost: 0, error: z.error }
+  }
+  return { ok: false, html: "", provider: null, cost: 0, error: "no scrape provider configured (ZENROWS_API_KEY / ZYTE_API_KEY both unset)" }
+}
+
 export async function extractContactsFromHtml(html: string): Promise<{
   emails: string[]
   phones: string[]

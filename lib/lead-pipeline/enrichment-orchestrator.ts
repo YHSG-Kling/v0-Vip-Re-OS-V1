@@ -7,7 +7,10 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { bestEffort } from '@/lib/db/best-effort'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
 import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
-import { peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns } from '@/lib/lead-pipeline/enrichment-column-map'
+import {
+  peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns,
+  batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
+} from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
 import {
   handleLeadScored,
@@ -54,8 +57,18 @@ type EntityType = 'lead' | 'contact'
  * `entity` as missing and fail an otherwise-enrichable row.
  */
 const ENTITY_COLUMNS: Record<EntityType, string> = {
-  lead: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, property_zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, lat, lng',
-  contact: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, mailing_address, mailing_city, mailing_state, mailing_zip',
+  lead: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, property_zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, lat, lng, source, source_channel',
+  contact: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, source, source_channel, property_records',
+}
+
+/** PURE — does this row trace back to a BatchData source? Gates the property-enrichment
+ *  step below so it only spends on records BatchData's own datasets are actually about —
+ *  the same posture lib/lead-pipeline/pipeline-processor.ts already uses for BatchRank
+ *  (`rec.source === "batchdata_motivated" || rec.source === "expired_listing"`). */
+function isBatchDataOrigin(entity: Record<string, unknown>): boolean {
+  const source = String(entity.source ?? '').toLowerCase()
+  const channel = String(entity.source_channel ?? '').toLowerCase()
+  return source.includes('batchdata') || channel.includes('batchdata') || source === 'expired_listing'
 }
 
 /**
@@ -805,8 +818,126 @@ export async function processEnrichmentQueue(
           }
         }
 
+        // ── Step 6f: BATCHDATA PROPERTY-ENRICHMENT (additive, BatchData-origin only) ──
+        // Task 4 (wave 65): valuation/mortgage-liens/foreclosure/deed/owner datasets,
+        // mapped onto EXISTING leads/contacts columns by enrichment-column-map.ts.
+        // Gated to BatchData-origin rows (isBatchDataOrigin) so this never spends on the
+        // huge non-BatchData majority of the enrichment queue — PeopleData above already
+        // answered the PERSON question for every row; this answers the PROPERTY question
+        // only where BatchData's own property facts are what the row is about. Runs
+        // AFTER a successful person-match so a failed/no-match row (which retries or
+        // terminates below) is never charged for a property lookup it may not need.
+        // Best-effort: never overturns the person-enrichment result above.
+        if (isBatchDataOrigin(entity) && process.env.BATCHDATA_API_KEY) {
+          try {
+            const propertyAddress = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
+            if (propertyAddress) {
+              const { enrichPropertyDatasetsBatchData } = await import('@/lib/external/batchdata-client')
+              const propEnrichment = await enrichPropertyDatasetsBatchData(propertyAddress)
+              if (propEnrichment.ok) {
+                const patch = entityType === 'lead'
+                  ? batchDataPropertyEnrichmentToLeadColumns(propEnrichment, profile)
+                  : batchDataPropertyEnrichmentToContactColumns(propEnrichment, (entity.property_records as Record<string, unknown> | null) ?? null)
+                if (Object.keys(patch).length > 0) {
+                  const { error: propWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
+                  if (propWriteError) {
+                    console.warn('[enrichment-orchestrator] batchdata property-enrichment write failed:', propWriteError.message)
+                  } else {
+                    await trackVendorUsageService({
+                      vendor: 'batchdata',
+                      systemSource: 'property_enrichment',
+                      unitCount: 1,
+                      brokerageId,
+                      ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }),
+                      metadata: { entityType, entityId, queueEntryId: entry.id, cost: propEnrichment.cost },
+                    })
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[enrichment-orchestrator] batchdata property-enrichment step failed (non-blocking):', e)
+          }
+        }
+
         result.succeeded++
       } else {
+        // ── BATCHDATA V3 SKIP-TRACE FALLBACK (task 4, wave 65) ──────────────────────
+        // PeopleData found nothing for this identifier. Before retrying/terminalizing,
+        // try BatchData's V3 Skip Trace ONCE — a different provider's index can hold a
+        // phone/email PeopleData's does not. Reuses the SAME DNC/TCPA scrub
+        // (scrubPhonesForPatch, lib/compliance/phone-scrub-runner.ts) every other phone
+        // candidate in this file already goes through — never a duplicate scrub path.
+        // Fail-closed: no BATCHDATA_API_KEY or no match found here falls straight
+        // through to the ORIGINAL Step 7 no-match handling below, unchanged.
+        let batchDataFallback: { phones: string[]; emails: string[] } | null = null
+        let batchDataFallbackCost = 0
+        if (process.env.BATCHDATA_API_KEY && (entity.first_name || entity.address || entity.mailing_address)) {
+          try {
+            const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
+            const { matches, cost: btCost } = await skipTraceBatchDataV3Batch([{
+              ref: entityId,
+              firstName: (entity.first_name as string | null) ?? undefined,
+              lastName: (entity.last_name as string | null) ?? undefined,
+              address: (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? undefined,
+              city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? undefined,
+              state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? undefined,
+              zip: (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? undefined,
+            }])
+            batchDataFallbackCost = btCost
+            const m = matches[0]
+            if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails }
+          } catch (e) {
+            console.warn('[enrichment-orchestrator] batchdata skip-trace fallback failed (non-blocking):', e)
+          }
+          if (batchDataFallbackCost > 0) {
+            await trackVendorUsageService({
+              vendor: 'batchdata',
+              systemSource: 'skip_trace',
+              unitCount: 1,
+              brokerageId,
+              ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }),
+              metadata: { entityType, entityId, queueEntryId: entry.id, cost: batchDataFallbackCost, result: batchDataFallback ? 'matched' : 'no_match' },
+            })
+          }
+        }
+
+        if (batchDataFallback) {
+          // Same phone-scrub discipline as the PeopleData matched path — DNC/TCPA
+          // scrubbed and the clean line elected primary, never a naive first-found.
+          const scrub = await scrubPhonesForPatch(batchDataFallback.phones)
+          const useScrub = !scrub.deferred && Object.keys(scrub.patch).length > 0
+          const phonePatch = useScrub ? scrub.patch : (batchDataFallback.phones[0] ? { phone: batchDataFallback.phones[0] } : {})
+          const patch: Record<string, unknown> = {
+            ...phonePatch,
+            ...(batchDataFallback.emails[0] && { email: batchDataFallback.emails[0] }),
+            last_enriched_at: new Date().toISOString(),
+            enrichment_provider: 'batchdata_skip_trace_fallback',
+            ...(entityType === 'lead' && { enrichment_status: 'complete' }),
+          }
+          const { error: fallbackWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
+          if (fallbackWriteError) {
+            console.error('[enrichment-orchestrator] batchdata skip-trace fallback write REFUSED — result NOT persisted:', fallbackWriteError.message)
+          }
+          const { error: fallbackQueueError } = await supabase
+            .from('lead_enrichment_queue')
+            .update({
+              status: 'completed',
+              enrichment_cost: cost + batchDataFallbackCost,
+              enrichment_results: {
+                lane: 'batchdata_skip_trace_fallback',
+                person_enrichment: 'batchdata_fallback_match',
+                free_osint: free ? freeLaneProfileBlock(free) : null,
+                note: 'PeopleData no_match; BatchData V3 skip trace fallback found a contact point',
+              },
+              completed_at: new Date().toISOString(),
+            })
+            .eq('id', entry.id)
+          if (fallbackQueueError) {
+            console.error('[enrichment-orchestrator] batchdata fallback queue close failed:', fallbackQueueError.message)
+          }
+          result.succeeded++
+        } else {
         // Step 7: No data returned — increment retry, log cost (API charged). On the
         // FINAL attempt terminalize to 'failed' (NOT 'pending') so a permanently-
         // unmatchable lead doesn't sit as a zombie 'pending' entry the fetch will never
@@ -827,7 +958,8 @@ export async function processEnrichmentQueue(
               free_osint: free ? freeLaneProfileBlock(free) : null,
             },
             error_message: 'No match found in PeopleData'
-              + (free ? ` — ${describeFreeLane(free)}` : ''),
+              + (free ? ` — ${describeFreeLane(free)}` : '')
+              + (process.env.BATCHDATA_API_KEY ? ' — BatchData V3 skip-trace fallback also found nothing' : ''),
           })
           .eq('id', entry.id)
 
@@ -855,6 +987,7 @@ export async function processEnrichmentQueue(
         })
 
         result.failed++
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

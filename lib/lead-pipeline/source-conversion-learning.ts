@@ -48,6 +48,39 @@ export interface ScoredSources {
 
 const safeRate = (num: number, den: number) => (den > 0 ? num / den : 0)
 
+/**
+ * PURE — the per-lead acquisition-cost formula (owner ruling, wave 65: "...where
+ * they came from for lead cost tracking"). Three additive parts, each honest
+ * about absence rather than fabricated as zero:
+ *
+ *   costPerRecord      — the raw scraped/purchased record's own cost
+ *                         (raw_scraped_leads.cost_per_record → leads.cost_per_record).
+ *   enrichmentSpend     — vendor spend attributed to THIS lead_id
+ *                         (sum of vendor_usage_tracking.total_cost, e.g. PeopleData/OSINT).
+ *   campaignCostShare   — this lead's slice of a paid campaign's budget
+ *                         (ad_campaigns.lifetime_budget ÷ leads sharing campaign_attribution_id).
+ *
+ * Returns null (not 0) when EVERY part is null/undefined — "unknown" and "free"
+ * are different facts, and a null total tells lib/lead-pipeline/source-conversion-runner.ts
+ * to fall back to the narrower cost_per_record rather than reporting a
+ * zero-cost lead that was never actually free.
+ */
+export interface LeadAcquisitionCostParts {
+  costPerRecord?: number | null
+  enrichmentSpend?: number | null
+  campaignCostShare?: number | null
+}
+
+export function computeLeadAcquisitionCost(parts: LeadAcquisitionCostParts): number | null {
+  const values = [parts.costPerRecord, parts.enrichmentSpend, parts.campaignCostShare]
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+  if (values.length === 0) return null
+  const total = values.reduce((sum, v) => sum + v, 0)
+  // Clamp at 0 — a negative input (a data error, never a real cost) must not
+  // produce a "this lead paid us" figure.
+  return Math.max(0, Math.round(total * 100) / 100)
+}
+
 /** Pure: fold per-source outcome rows into scored, trust-gated, max-scaled performance. */
 export function scoreSourceConversions(rows: SourceConversionRow[]): ScoredSources {
   const base = rows.map((r) => {

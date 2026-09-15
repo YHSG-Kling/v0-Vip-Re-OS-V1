@@ -55,6 +55,10 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
+// The SAME matcher app/actions/lead-intelligence.ts::resolveTargetTerritory
+// delegates to (never a reimplementation) — imported directly so LAYER 8 below
+// can prove the territory refusal is REACHABLE, not just textually present.
+import { recordMatchesTerritory } from "../lib/lead-pipeline/source-intent-map"
 
 // ─── FILES UNDER PROOF ───────────────────────────────────────────────────────
 
@@ -628,32 +632,34 @@ function crmSurfaceLayer() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function darkCapabilityLayer() {
-  section("[layer 6 · the scrapers are hardened, and NOT surfaced]")
+  section("[layer 6 · the scrapers are hardened, territory-gated, and autonomously wired]")
 
   const zen = fnBody(LEAD, "scrapeSocialSignalsWithZenRows")
   const lead = code(LEAD)
 
-  // The parser returns [] unconditionally, so the paid fetch could never
-  // produce a row. Refusing must happen BEFORE the spend.
-  check("D1", "the Nextdoor scrape refuses before it can charge for a stub parser",
-    /if\s*\(!NEXTDOOR_PARSER_IMPLEMENTED\)\s*\{[^}]{0,600}?return\s*\{[^}]{0,400}?dark:\s*true/.test(zen))
-  check("D2", "...the refusal is positioned ahead of the ZenRows call",
-    zen.indexOf("NEXTDOOR_PARSER_IMPLEMENTED") > -1 &&
-    zen.indexOf("NEXTDOOR_PARSER_IMPLEMENTED") < zen.indexOf("callConnector"))
-  check("D3", "...and the gate constant is genuinely false",
-    /const\s+NEXTDOOR_PARSER_IMPLEMENTED\s*=\s*false/.test(lead))
-  // WAVE 64C: the parser is no longer a stub — it delegates to the real
-  // extractor (lib/external/nextdoor-extract.ts::regexFallbackPosts). The gate
-  // is still not theatre, for a DIFFERENT reason the code states: no
-  // lawful-basis record exists for profiling named non-contacts, so the
-  // constant stays false on compliance grounds. Assert that reason, not the
-  // old stub shape (CLAUDE.md §2 — the rule, not a waypoint).
-  check("D4", "...the gate is not theatre: the parser is real (delegates to nextdoor-extract) AND the constant is held false on a stated lawful-basis ground",
-    /function parseNextdoorPosts[\s\S]{0,600}?regexFallbackPosts\(/.test(lead) &&
-    // the stated ground lives in the file's own header comment — a tombstone/
-    // reason IS a comment, so this one read is deliberately RAW (§2)
-    /lawful-basis/.test(readFileSync(join(process.cwd(), LEAD), "utf8")) &&
-    /NEXTDOOR_PARSER_IMPLEMENTED\s*=\s*false/.test(lead))
+  // WAVE 65A — RE-ANCHORED (CLAUDE.md §2: assert the rule, not a waypoint that
+  // was only briefly true). The lawful-basis REFUSAL gate (NEXTDOOR_PARSER_IMPLEMENTED)
+  // is GONE BY OWNER RULING (2026-09-15, verbatim: "there is no reason to use
+  // any compliance gating for these areas of intelligence… gathering
+  // information about a property or potential or current client"). What
+  // SURVIVES the ruling, and what these four now assert instead, is the
+  // wave-65 TERRITORY-CENTRIC boundary: a paid Nextdoor fetch must still be
+  // refused before it can spend when the location is outside every active
+  // territory this brokerage owns, and the parser reaching that fetch must be
+  // real, not a stub.
+  check("D1", "the Nextdoor scrape resolves + refuses on the ACTIVE-territory gate before any spend",
+    /const\s+territoryResult\s*=\s*await\s+resolveTargetTerritory\(/.test(zen) &&
+    /if\s*\(!territoryResult\.ok\)\s*\{[^}]{0,200}?return\s*\{[^}]{0,200}?territoryRefused:\s*true/.test(zen))
+  check("D2", "...the territory refusal is positioned ahead of the ZenRows call",
+    zen.indexOf("resolveTargetTerritory") > -1 &&
+    zen.indexOf("resolveTargetTerritory") < zen.indexOf("callConnector"))
+  check("D3", "...the parser is REAL: parseNextdoorPosts delegates to the tested extractor, never a stub returning []",
+    /function parseNextdoorPosts[\s\S]{0,600}?regexFallbackPosts\(/.test(lead))
+  check("D4", "...the old lawful-basis REFUSAL gate is GONE, not merely disabled — the constant no longer exists, and the removal cites the owner's ruling verbatim",
+    !/NEXTDOOR_PARSER_IMPLEMENTED/.test(lead) &&
+    // the ruling text lives in the file's own tombstone comment — a
+    // tombstone/reason IS a comment, so this one read is deliberately RAW (§2)
+    /no reason to use any compliance gating/.test(readFileSync(join(process.cwd(), LEAD), "utf8")))
 
   section("[layer 6b · provenance columns state the truth]")
 
@@ -731,27 +737,69 @@ function darkCapabilityLayer() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// LAYER 8 — POSITIVE CONTROL: a non-territory call is actually refused
+// (wave 65A, CLAUDE.md §2 — "every absence assertion needs a positive
+// control": D1 above asserts the refusal SHAPE exists in source; a broken
+// matcher and a genuinely working one look identical to a pure text scan. This
+// proves the matcher resolveTargetTerritory calls — recordMatchesTerritory,
+// the SAME function, never a re-implementation — really can return false for a
+// real geographic mismatch, so the refusal branch is reachable, not dead code
+// behind an always-true condition.)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function territoryPositiveControlLayer() {
+  section("[layer 8 · positive control — a non-territory location is genuinely refused]")
+
+  const ownedTerritory = { city: "Tampa", state: "FL", zip_codes: ["33602"] }
+
+  check("T1", "a location OUTSIDE the brokerage's active territory fails the match — the refusal is reachable, not dead code",
+    recordMatchesTerritory({ city: "Portland", state: "OR", zip: null }, ownedTerritory) === false)
+  check("T2", "...while the brokerage's OWN territory matches — the gate is not an always-refuse either",
+    recordMatchesTerritory({ city: "Tampa", state: "FL", zip: null }, ownedTerritory) === true)
+  check("T3", "...a zip inside the territory matches even through case/whitespace differences",
+    recordMatchesTerritory({ city: "TAMPA ", state: "fl", zip: "33602" }, ownedTerritory) === true)
+
+  // resolveTargetTerritory (app/actions/lead-intelligence.ts) must delegate to
+  // THIS SAME function T1-T3 just exercised, never a re-implementation that
+  // could silently diverge from it.
+  const helper = fnBody(LEAD, "resolveTargetTerritory")
+  check("T4", "resolveTargetTerritory delegates to recordMatchesTerritory — the same matcher T1-T3 just proved can refuse",
+    /recordMatchesTerritory\(/.test(helper))
+  check("T5", "...a caller's brokerage is compared against the TERRITORY's own brokerage_id, never trusted from elsewhere",
+    /t\.brokerage_id\s*===\s*brokerageId/.test(helper))
+  check("T6", "...a no-match returns ok:false with a stated reason, not an empty success",
+    /if\s*\(!match\)\s*\{[\s\S]{0,200}?return\s*\{\s*ok:\s*false/.test(helper))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // LAYER 7 — the not-wired stay not-wired (a regression guard, inverted)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function stayDarkLayer() {
-  section("[layer 7 · nothing surfaced what must not be surfaced]")
+  section("[layer 7 · a DASHBOARD control is a different door than an autonomous cron actor]")
 
-  // These four must have NO caller outside their own module. If a later pass
-  // wires one, this fails loudly and the compliance reasoning gets re-read.
+  // RE-ANCHORED (wave 65A): five of these six are no longer "dark" — the
+  // owner's 2026-09-15 ruling removed the compliance refusal, and
+  // lib/kernel/intent-campaign.ts's territory-intelligence phase now calls all
+  // five autonomously as the cron actor (requireCallerOrCron, CRON_SECRET).
+  // What this layer still proves is narrower and still true: none of the six
+  // is reachable from a SESSION USER clicking something on the two dashboard
+  // surfaces this file already scans (SOCIAL_UI, CRM_UI) — a paid scrape stays
+  // an autonomous-loop capability, never a button. If a later pass wires one
+  // into a dashboard control, this fails loudly and gets re-reviewed.
   const surfaces = [SOCIAL_UI, CRM_UI].map(code).join("\n")
   const leadImports =
     (/import\s*\{([\s\S]*?)\}\s*from\s*["']@\/app\/actions\/lead-intelligence["']/.exec(code(CRM_UI))?.[1] ?? "")
 
   for (const [id, fn, why] of [
-    ["N1", "scrapeSocialSignalsWithZenRows", "stub parser + named rival social-sourcer"],
-    ["N2", "scrapeExternalBehavior", "persists named-homeowner financial data with no lawful basis"],
-    ["N3", "trackBehavior", "no consent artifact recorded at collection"],
-    ["N4", "analyzeGoogleSearchIntent", "google_search_intelligence has no reader"],
-    ["N5", "enrichPropertyIntelligence", "no address-entry surface records why"],
-    ["N6", "trackExternalActivity", "its only producer, trackBehavior, is dark"],
+    ["N1", "scrapeSocialSignalsWithZenRows", "wired into the autonomous territory-intelligence cron phase, never a dashboard control"],
+    ["N2", "scrapeExternalBehavior", "wired into the autonomous territory-intelligence cron phase, never a dashboard control"],
+    ["N3", "trackBehavior", "no consent artifact recorded at collection — unrelated to the wave-65 ruling, unchanged"],
+    ["N4", "analyzeGoogleSearchIntent", "wired into the autonomous cron phase; google_search_intelligence still has no dashboard reader"],
+    ["N5", "enrichPropertyIntelligence", "wired into the autonomous territory-intelligence cron phase, never a dashboard control"],
+    ["N6", "trackExternalActivity", "wired into the autonomous cron phase (attaches to EXISTING behavioral_signals rows), never a dashboard control"],
   ] as const) {
-    check(id, `${fn} is still unsurfaced (${why})`,
+    check(id, `${fn} is still unreachable from a DASHBOARD control (${why})`,
       !new RegExp(`\\b${fn}\\b`).test(leadImports) && !callsFn(surfaces, fn))
   }
 
@@ -789,6 +837,7 @@ function runAll() {
   profileWriterLayer()
   crmSurfaceLayer()
   darkCapabilityLayer()
+  territoryPositiveControlLayer()
   stayDarkLayer()
   return results
 }
@@ -926,9 +975,9 @@ const MUTATIONS: Mutation[] = [
     find: `    if (tab === "pending_approval") return p.approval_status === "pending"`,
     replace: `    if (tab === "pending_approval") return p.status === "pending_approval"` },
 
-  { id: "D1", file: LEAD, note: "pay ZenRows while the parser still returns []",
-    find: `  if (!NEXTDOOR_PARSER_IMPLEMENTED) {`,
-    replace: `  if (false) {` },
+  { id: "D1", file: LEAD, note: "drop the territory gate and spend outside every active territory",
+    find: `  const territoryResult = await resolveTargetTerritory(brokerageId, location)\n  if (!territoryResult.ok) {\n    return { success: false, error: territoryResult.error, signals: [], count: 0, territoryRefused: true as const }\n  }\n  const territory = territoryResult.territory`,
+    replace: `  const territory = { id: "x", city: location.city, state: location.state, zip_codes: null as string[] | null, monthly_budget_usd: null, spend_this_month: null }` },
 
   { id: "D8", file: LEAD, note: "drop the caller's search criteria on the floor again",
     find: `      search_criteria_json: data.searchCriteria ?? null,`,
@@ -964,9 +1013,13 @@ const MUTATIONS: Mutation[] = [
     find: `                            {unifiedLeadProfile.intent_strength && (`,
     replace: `                            {unifiedLeadProfile.urgency_level && (` },
 
-  { id: "D3", file: LEAD, note: "open the paid Nextdoor fetch while the parser is still a stub",
-    find: `const NEXTDOOR_PARSER_IMPLEMENTED = false`,
-    replace: `const NEXTDOOR_PARSER_IMPLEMENTED = true` },
+  { id: "D3", file: LEAD, note: "revert the parser to a stub that always returns []",
+    find: `  const posts = regexFallbackPosts(html, { keywords: [], sourceUrl })\n  return posts.map((p) => ({`,
+    replace: `  const posts: ReturnType<typeof regexFallbackPosts> = []\n  return posts.map((p) => ({` },
+
+  { id: "D2", file: LEAD, note: "reorder so a spend-shaped call precedes the territory refusal",
+    find: `  const brokerageId = auth.brokerageId\n\n  // TERRITORY-CENTRIC GATE (wave 65 ruling) — refuse BEFORE spending when the\n  // location is outside every active territory this brokerage owns.\n  const territoryResult = await resolveTargetTerritory(brokerageId, location)`,
+    replace: `  const brokerageId = auth.brokerageId\n  const _proveOrder = "callConnector"\n\n  // TERRITORY-CENTRIC GATE (wave 65 ruling) — refuse BEFORE spending when the\n  // location is outside every active territory this brokerage owns.\n  const territoryResult = await resolveTargetTerritory(brokerageId, location)` },
 
   { id: "D5", file: LEAD, note: "re-label the Apify lane's rows as ZenRows-collected",
     find: `        detected_via_zenrows: false,\n        scraped_at: new Date().toISOString(),\n      })\n\n      // Store enriched property intelligence`,
@@ -1062,7 +1115,7 @@ const OWNERSHIP: Record<string, string[]> = {
     "L12", "L13", "L14", "L15", "L16", "L17", "L18", "L19", "L20",
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10",
     "D11", "D13", "D14", "D15", "D16", "D17", "D18", "D19", "D20", "D21",
-    "D22", "D24", "N7",
+    "D22", "D24", "N7", "T4", "T5", "T6",
   ],
   [CRM_UI]: ["L21", "L22", "L23", "L24", "L26", "L28", "L29", "L30"],
 }
@@ -1085,6 +1138,9 @@ const VACUOUS_ON_BLANK: Record<string, string> = {
   "SELF-1": "SELF-3 (the stripper self-test does not read project source)",
   "SELF-2": "SELF-3",
   "SELF-3": "n/a — operates on an inline fixture, not project source",
+  "T1": "n/a — exercises the pure recordMatchesTerritory matcher directly (lib/lead-pipeline/source-intent-map.ts), not one of this sweep's four files",
+  "T2": "T1",
+  "T3": "T1",
 }
 
 function coverageSweep(): { checked: number; problems: string[] } {

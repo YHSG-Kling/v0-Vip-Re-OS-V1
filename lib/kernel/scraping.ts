@@ -231,6 +231,20 @@ export interface ScrapingDiagnosticsData {
     started_at: string
     completed_at: string | null
   }>
+  /** BatchData Smart Search (V2 Property Subscription) registrations per market
+   *  (m633, wave 65) — the reconcile tick writes status/last_error/
+   *  last_reconciled_at/webhook_url; this is their ONE reader (diagnostics). */
+  smartSearchSubscriptions: Array<{
+    id: string
+    market_id: string
+    quicklist: string
+    subscription_id: string | null
+    status: string
+    webhook_url: string
+    last_error: string | null
+    last_reconciled_at: string | null
+    renewed_at: string | null
+  }>
   failedBatches: Array<{
     id: string
     scraper_type: string
@@ -1079,6 +1093,7 @@ export async function loadScrapingDiagnostics(
     dedupResult,
     cronResult,
     failedBatchesResult,
+    smartSearchResult,
   ] = await Promise.all([
     supabase
       .from('lead_scraping_markets')
@@ -1136,6 +1151,11 @@ export async function loadScrapingDiagnostics(
       .eq('status', 'failed')
       .order('started_at', { ascending: false })
       .limit(20),
+    supabase
+      .from('batchdata_smart_search_subscriptions')
+      .select('id, market_id, quicklist, subscription_id, status, webhook_url, last_error, last_reconciled_at, renewed_at')
+      .order('last_reconciled_at', { ascending: false, nullsFirst: false })
+      .limit(limit)
   ])
 
   // A REFUSED READ IS NOT AN EMPTY ONE. supabase-js RESOLVES a failed query, so
@@ -1156,6 +1176,7 @@ export async function loadScrapingDiagnostics(
   collect('funnel',         rawLeadsResult)     // funnel + gatingDecisions both derive from this
   collect('dedupDecisions', dedupResult)
   collect('cronHistory',    cronResult)
+  collect('smartSearchSubscriptions', smartSearchResult)
   collect('failedBatches',  failedBatchesResult)
 
   // Apply brokerage filter to executions if provided
@@ -1208,6 +1229,7 @@ export async function loadScrapingDiagnostics(
     gatingDecisions,
     cronHistory:    (cronResult.data       ?? []) as ScrapingDiagnosticsData['cronHistory'],
     failedBatches:  (failedBatchesResult.data ?? []) as ScrapingDiagnosticsData['failedBatches'],
+    smartSearchSubscriptions: (smartSearchResult.data ?? []) as ScrapingDiagnosticsData['smartSearchSubscriptions'],
     readErrors,
   }
 }

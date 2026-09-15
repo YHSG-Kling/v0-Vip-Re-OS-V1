@@ -51,6 +51,13 @@ import { calculateLeadScore } from "@/lib/services/lead-management.service"
 import { isValidUUID } from "@/lib/validations"
 import { readPreApproval } from "@/lib/leads/pre-approval"
 import { regexFallbackPosts } from "@/lib/external/nextdoor-extract"
+import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
+import { recordMatchesTerritory } from "@/lib/lead-pipeline/source-intent-map"
+import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
+import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
+import { collectError } from "@/lib/errors/collect-error"
+import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 
 // Previously every function in this file (except `trackBehavior`, which is
 // a legitimate public visitor-tracking pixel) was unauthenticated. Some
@@ -80,6 +87,84 @@ async function requireCaller(): Promise<
     .maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
   return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
+/**
+ * BUILT (orphan doctrine §1.2, wave 65A) — the kernel-callable variant Wave 65's
+ * autonomous intelligence loop needs. The five lead-intelligence scrapers below
+ * used to be reachable ONLY through a browser session (requireCaller), which is
+ * exactly why they were orphan exports (wave 64 state: 6 unreached exports) —
+ * the autonomous cron tick that is supposed to run them has no session. This
+ * adds the SAME `{ internalSecret }` == `CRON_SECRET` trusted-internal pattern
+ * already in force at app/actions/lead-signal-ingest.ts:264-271, rather than a
+ * second ad-hoc scheme: a caller either proves it is the cron (secret match +
+ * an explicit brokerageId, since there is no session to derive one from) or
+ * proves it is a real logged-in tenant user (requireCaller, unchanged). There is
+ * no third path and no body-supplied brokerageId reaches the service client
+ * without one of these two proofs (CLAUDE.md §4 — fail closed).
+ */
+async function requireCallerOrCron(opts: { internalSecret?: string; brokerageId?: string } = {}): Promise<
+  | { ok: true; userId: string | null; brokerageId: string; actor: "session" | "cron" }
+  | { ok: false; error: string }
+> {
+  const cronSecret = process.env.CRON_SECRET
+  const isTrustedInternal = !!cronSecret && !!opts.internalSecret && opts.internalSecret === cronSecret
+  if (isTrustedInternal) {
+    if (!isValidUUID(opts.brokerageId)) {
+      return { ok: false, error: "A cron-actor call must name the brokerageId it is running for" }
+    }
+    return { ok: true, userId: null, brokerageId: opts.brokerageId as string, actor: "cron" }
+  }
+  const session = await requireCaller()
+  if (!session.ok) return session
+  return { ok: true, userId: session.userId, brokerageId: session.brokerageId, actor: "session" }
+}
+
+/**
+ * BUILT (orphan doctrine §1.2, wave 65A) — TERRITORY-CENTRIC GATE, owner ruling
+ * 2026-09-15 verbatim: "there is no reason to use any compliance gating for
+ * these areas of intelligence etc because this is just gathering information
+ * about a property or potential or current client so we can better serve them
+ * with information." The lawful-basis / profiling REFUSAL gates this file used
+ * to carry (NEXTDOOR_PARSER_IMPLEMENTED, the scrapeExternalBehavior /
+ * enrichPropertyIntelligence "compliance" headers) are removed by that ruling —
+ * see the tombstones at their call sites. What survives, because the ruling did
+ * NOT touch it, is the territory boundary: "Territory-centric: scrape/search
+ * only within ACTIVE tenant territories" (wave 65 ruling). This is that gate —
+ * the one boundary every paid scrape in this file must clear before it spends,
+ * whether the caller is a session user typing a location into a form or the
+ * autonomous cron actor. A location outside every ACTIVE territory the caller's
+ * brokerage owns is refused, never scraped.
+ */
+async function resolveTargetTerritory(
+  brokerageId: string,
+  location: { city?: string | null; state?: string | null; zip?: string | null },
+): Promise<
+  | { ok: true; territory: { id: string; city: string | null; state: string | null; zip_codes: string[] | null; monthly_budget_usd: number | null; spend_this_month: number | null } }
+  | { ok: false; error: string }
+> {
+  const supabase = createServiceClient()
+  const resolution = await resolveActiveScrapeTerritories(supabase)
+  if (resolution.noOp) {
+    return { ok: false, error: `No active scrape territory for this brokerage (${resolution.reason}).` }
+  }
+  const ownTerritories = (resolution.territories as any[]).filter((t) => t.brokerage_id === brokerageId)
+  const match = ownTerritories.find((t) =>
+    recordMatchesTerritory({ city: location.city ?? null, state: location.state ?? null, zip: location.zip ?? null }, t),
+  )
+  if (!match) {
+    return {
+      ok: false,
+      error: `${location.city ?? "that location"}${location.state ? `, ${location.state}` : ""} is outside this brokerage's active scrape territories — refused before spending.`,
+    }
+  }
+  return {
+    ok: true,
+    territory: {
+      id: match.id, city: match.city ?? null, state: match.state ?? null, zip_codes: match.zip_codes ?? null,
+      monthly_budget_usd: match.monthly_budget_usd ?? null, spend_this_month: match.spend_this_month ?? null,
+    },
+  }
 }
 
 export async function trackBehavior(sessionData: {
@@ -461,60 +546,59 @@ export async function getIntelligenceDashboardStats() {
 }
 
 /**
- * DELIBERATELY NOT WIRED TO ANY SURFACE.
+ * AUTONOMOUS, WIRED (wave 65A). Was DARK behind NEXTDOOR_PARSER_IMPLEMENTED = false.
  *
- * 1. THE PARSER WAS A STUB — CLOSED (wave 64C). parseNextdoorPosts (below) now
- *    delegates to lib/external/nextdoor-extract.ts::regexFallbackPosts, a real
- *    tested extractor, instead of unconditionally returning []. This reason
- *    alone no longer blocks wiring — reason 3 below is why the gate
- *    (NEXTDOOR_PARSER_IMPLEMENTED) stays off regardless.
- * 2. NAMED, WIRED, MORE COMPLETE RIVAL: the social/forum collect lane is
- *    lib/lead-pipeline/social-sourcer.ts (sourceReddit / sourceFacebook /
- *    sourceInstagram / sourceCraigslist / sourceGoogle / sourceLinkedInRelocation),
- *    driven by app/api/cron/lead-scraping/route.ts with territory resolution
- *    (lib/lead-pipeline/scrape-territories.ts), per-vendor spend metering
- *    (lib/vendor-governance/meter-vendor.ts:meterVendorSpend), scraper-health
- *    escalation and the promotion gate. That lane has its own real normalizers
- *    and real intent detection, independently of this file's parser fix.
+ * ── TOMBSTONE — THE COMPLIANCE GATE IS REMOVED ────────────────────────────────
+ * The old header refused this function for two reasons: (1) the parser was a
+ * stub — CLOSED in wave 64C, parseNextdoorPosts below delegates to the real,
+ * tested lib/external/nextdoor-extract.ts::regexFallbackPosts; (2) a claimed
+ * lack of lawful basis to collect named individuals' neighbourhood posts. Reason
+ * 2 is REMOVED by the owner's 2026-09-15 ruling, verbatim: "there is no reason
+ * to use any compliance gating for these areas of intelligence etc because this
+ * is just gathering information about a property or potential or current
+ * client so we can better serve them with information." The
+ * NEXTDOOR_PARSER_IMPLEMENTED switch that encoded reason 2 is deleted with this
+ * comment as its tombstone — there is no surviving reason to keep it off.
  *
- * NOT DELETED. It writes social_intelligence (author_name, post_content,
- * post_url, ai_intent_score) which the rival lane does not produce in that
- * shape, so it is an independent twin rather than a proven port. It stays,
- * hardened, unwired, and honest about being dark.
+ * What the ruling did NOT remove: the wave 65 territory-centric boundary
+ * (resolveTargetTerritory, above) and the protected-class TARGETING filter
+ * (lib/lead-governance/protected-class-signals.ts, untouched by this lane) —
+ * both still gate every paid scrape in this file.
  *
- * 3. COMPLIANCE — THE SURVIVING, SUFFICIENT REASON: even with a working parser
- *    (now true — see 1) this collects named individuals' neighbourhood posts.
- *    There is no lawful-basis record for that anywhere in this codebase — no
- *    consent artifact, no legitimate-interest assessment, and
- *    social_intelligence has no subject-rights linkage. Wiring it would create
- *    profiles of people who have never transacted with the brokerage. This
- *    lane (64C) leaves it unresolved rather than deciding a lawful-basis
- *    question that is the owner's to make, not an audit lane's to guess.
+ * SEPARATE, STILL-LIVE RIVAL LANE: lib/lead-pipeline/social-sourcer.ts, driven
+ * by app/api/cron/lead-scraping/route.ts, remains the more complete social/forum
+ * collector with its own normalizers. This function is not a duplicate of it —
+ * it writes `social_intelligence` (author_name/post_content/post_url/
+ * ai_intent_score), a shape the rival lane does not produce — so both are kept
+ * per the orphan doctrine (§1: "functionality already lives elsewhere" does not
+ * apply when the output shape differs).
+ *
+ * Callable two ways (requireCallerOrCron): a session user's dashboard trigger,
+ * or the autonomous cron actor (`{ internalSecret: CRON_SECRET, brokerageId }`)
+ * from app/api/cron/intent-campaign/route.ts's territory-intelligence phase.
+ * Every discovered post with an identifiable author is handed to
+ * lib/kernel/scraping.ts::ingestRawSourceBatch (sourceChannel "nextdoor_chatter")
+ * so it walks the SAME dedupe → enrich → dedupe → gate spine every other scraped
+ * lead walks, rather than living only in social_intelligence where no promotion
+ * path reads it.
  */
-export async function scrapeSocialSignalsWithZenRows(location: {
-  city: string
-  state: string
-  zip?: string
-}) {
+export async function scrapeSocialSignalsWithZenRows(
+  location: { city: string; state: string; zip?: string },
+  opts: { internalSecret?: string; brokerageId?: string } = {},
+) {
   // Paid scraper — requires auth to prevent budget drain
-  const auth = await requireCaller()
+  const auth = await requireCallerOrCron(opts)
   if (!auth.ok) return { success: false, error: auth.error, signals: [], count: 0 }
 
   const brokerageId = auth.brokerageId
 
-  // DARK CAPABILITY GATE — refuse BEFORE spending. parseNextdoorPosts returns
-  // [] unconditionally, so there is no outcome in which this call produces a
-  // row. Charging for a fetch whose parser is a stub is pure budget burn.
-  if (!NEXTDOOR_PARSER_IMPLEMENTED) {
-    return {
-      success: false,
-      error:
-        "Nextdoor scraping is not implemented — parseNextdoorPosts has no extraction logic, so a ZenRows fetch would cost money and yield zero signals. Use the lead-scraping pipeline (lib/lead-pipeline/social-sourcer.ts) instead.",
-      signals: [],
-      count: 0,
-      dark: true as const,
-    }
+  // TERRITORY-CENTRIC GATE (wave 65 ruling) — refuse BEFORE spending when the
+  // location is outside every active territory this brokerage owns.
+  const territoryResult = await resolveTargetTerritory(brokerageId, location)
+  if (!territoryResult.ok) {
+    return { success: false, error: territoryResult.error, signals: [], count: 0, territoryRefused: true as const }
   }
+  const territory = territoryResult.territory
 
   try {
     const supabase = createServiceClient()
@@ -524,7 +608,14 @@ export async function scrapeSocialSignalsWithZenRows(location: {
 
     if (!zenrowsApiKey) {
       console.log("[v0] ZenRows API key not configured")
-      return { success: false, error: "ZenRows API key not configured" }
+      return { success: false, error: "ZenRows API key not configured", signals: [], count: 0, dark: true as const }
+    }
+
+    // BUDGET GATE (existing vendor-governance ceiling) — refuse before spending
+    // when this brokerage is already at/over its monthly vendor budget.
+    const budget = await checkVendorBudget({ brokerageId, addCost: ZENROWS_CALL_COST_USD })
+    if (!budget.allowed) {
+      return { success: false, error: `Vendor budget exhausted for this brokerage ($${budget.spent}/$${budget.budget}).`, signals: [], count: 0, budgetRefused: true as const }
     }
 
     // Construct Nextdoor URL for the location
@@ -540,6 +631,11 @@ export async function scrapeSocialSignalsWithZenRows(location: {
       timeoutMs: 60_000,
     })
 
+    await meterVendorSpend({
+      vendorName: "zenrows", usageType: "nextdoor_chatter", cost: ZENROWS_CALL_COST_USD,
+      brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id, city: location.city, state: location.state },
+    })
+
     if (!response.ok || response.data == null) {
       throw new Error(`ZenRows API error: ${response.status} ${response.error ?? ""}`)
     }
@@ -551,6 +647,7 @@ export async function scrapeSocialSignalsWithZenRows(location: {
 
     // Save social intelligence signals to database
     const signals = []
+    const rawRecords: NormalizedScrapedRecord[] = []
 
     for (const post of posts) {
       const { data: signal } = await supabase
@@ -576,26 +673,60 @@ export async function scrapeSocialSignalsWithZenRows(location: {
       if (signal) {
         signals.push(signal)
       }
+
+      // IDENTITY ANCHOR FOR DEDUPE: a Nextdoor post with a readable author name
+      // is a person with buy/sell intent, same shape as every other scraped raw
+      // lead — hand it to the canonical raw-lead spine rather than leaving it
+      // stranded only in social_intelligence (which no promotion path reads).
+      if (post.author) {
+        rawRecords.push({
+          sourceRecordId: post.url ?? `nextdoor:${territory.id}:${post.author}:${post.date ?? "unknown"}`,
+          source: "nextdoor",
+          behaviorType: "nextdoor_chatter",
+          intentType: post.intentSummary === "selling_intent" ? "seller" : post.intentSummary === "buying_intent" ? "buyer" : "unknown",
+          intentSignals: post.keywords ?? [],
+          fullName: post.author,
+          username: post.author,
+          city: location.city,
+          state: location.state,
+          zip: location.zip ?? null,
+          motivationScore: post.intentScore ?? null,
+          sourceUrl: post.url ?? null,
+          rawPayload: post as unknown as Record<string, unknown>,
+        })
+      }
+    }
+
+    let ingest: Awaited<ReturnType<typeof ingestRawSourceBatch>> | null = null
+    if (rawRecords.length > 0) {
+      ingest = await ingestRawSourceBatch({
+        brokerageId, marketId: territory.id, source: "nextdoor",
+        sourceFamily: "social_intent", sourceChannel: "nextdoor_chatter",
+        sourceSubtype: "nextdoor_post", records: rawRecords, executionId: null,
+        marketGeo: { city: territory.city, state: territory.state, zip_codes: territory.zip_codes },
+      })
     }
 
     console.log("[v0] Successfully scraped", signals.length, "signals from Nextdoor")
 
-    return { success: true, signals, count: signals.length }
+    return { success: true, signals, count: signals.length, rawIngested: ingest?.inserted ?? 0 }
   } catch (error) {
     console.error("[v0] Error scraping Nextdoor with ZenRows:", error)
+    await collectError({ workflowName: "lead_intelligence_nextdoor_scrape", errorMessage: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, severity: "low", brokerageId, context: { city: location.city, state: location.state } })
     return { success: false, error: String(error), signals: [], count: 0 }
   }
 }
 
-/**
- * Flip this to true ONLY when the compliance gap in the header above
- * (reason #2 — no lawful-basis record for profiling named individuals'
- * neighborhood posts) is closed. The PARSER gap (reason #1) is closed —
- * parseNextdoorPosts below now delegates to the real, tested regex-fallback
- * extractor — but that alone does not make wiring this function safe; keep the
- * switch OFF for the surviving reason.
- */
-const NEXTDOOR_PARSER_IMPLEMENTED = false
+/** Matches lib/external/zenrows-client.ts::scrapeWithZenRows's own recorded cost per call. */
+const ZENROWS_CALL_COST_USD = 0.01
+
+/** Conservative per-lookup estimate — matches the nearby BatchData address/skip-trace
+ *  costs already recorded in lib/external/batchdata-client.ts (0.02-0.03/call). The
+ *  ApifyClient/BatchDataClient shims this file calls drop their real per-call cost on
+ *  the way out (`.then(r => r.data)`), so budget gating here uses a stated estimate
+ *  rather than a fabricated exact figure. */
+const BATCHDATA_LOOKUP_COST_USD = 0.02
+const APIFY_ACTOR_CALL_COST_USD = 0.5
 
 // MERGED ONTO SURVIVOR (orphan doctrine §1.1, wave 64C): this used to be a stub
 // (`console.warn(...); return []`) that ignored both `html` and `location` —
@@ -650,35 +781,49 @@ function firstString(...values: unknown[]): string | null {
  * actually calls BatchData, and if BatchData is not configured or returns no
  * match it writes NOTHING and says so, rather than manufacturing a row.
  *
- * ── WHAT IT DELIBERATELY DOES NOT WRITE ───────────────────────────────────
- * property_intelligence carries owner_name / owner_occupied. BatchData returns
- * them. They are NOT persisted here. Enriching a property address with public
- * record attributes is ordinary real-estate practice; attaching a named human
- * being to it is profiling a person who has no relationship with this
- * brokerage and for whom no lawful basis is recorded anywhere in this
- * codebase. If owner data is ever needed it must go through the contact-scoped
- * path (enrichWithPropertyOwnership, below) where a contact record — and its
- * consent flags — already exist.
+ * ── WHAT IT STILL DOES NOT WRITE (scope, not compliance) ──────────────────
+ * property_intelligence carries owner_name / owner_occupied; BatchData returns
+ * them and they are still NOT persisted here. The reason this comment used to
+ * give — "no lawful basis is recorded anywhere in this codebase" — is REMOVED
+ * by the owner's 2026-09-15 ruling (verbatim, on scrapeSocialSignalsWithZenRows
+ * above): there is no compliance gate on gathering property/client information
+ * anymore. This lane leaves owner_name/owner_occupied out of THIS insert as a
+ * scope decision, not a refusal — widening this row's write surface is a
+ * follow-up, tracked in the report as unresolved rather than done silently
+ * here. If owner data is needed today it already has a path:
+ * enrichWithPropertyOwnership (below), contact-scoped.
  *
- * ── STILL NOT WIRED TO A SURFACE ──────────────────────────────────────────
- * The only reader of property_intelligence is getAllSignalsForProfile. Until
- * an address-entry surface exists that also records why the brokerage is
- * enriching that address, this stays callable-but-unwired. See the report.
+ * ── AUTONOMOUS + WIRED (wave 65A) ──────────────────────────────────────────
+ * Callable by a session user OR the autonomous cron actor (requireCallerOrCron)
+ * from app/api/cron/intent-campaign/route.ts's territory-intelligence phase,
+ * gated by resolveTargetTerritory (wave 65 territory-centric ruling) before any
+ * BatchData spend. getAllSignalsForProfile remains the dashboard reader.
  */
-export async function enrichPropertyIntelligence(propertyData: {
-  address: string
-  city: string
-  state: string
-  zip: string
-  contactId?: string
-  profileId?: string
-}) {
-  // Calls paid BatchData API; require auth
-  const auth = await requireCaller()
+export async function enrichPropertyIntelligence(
+  propertyData: {
+    address: string
+    city: string
+    state: string
+    zip: string
+    contactId?: string
+    profileId?: string
+  },
+  opts: { internalSecret?: string; brokerageId?: string } = {},
+) {
+  // Calls paid BatchData API; require auth (session OR the autonomous cron actor)
+  const auth = await requireCallerOrCron(opts)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!propertyData?.address?.trim()) {
     return { success: false, error: "A property address is required" }
+  }
+
+  // TERRITORY-CENTRIC GATE (wave 65 ruling) — an address outside every active
+  // territory this brokerage owns is refused before spending. The old lawful-
+  // basis refusal this function carried is REMOVED — see the header note below.
+  const territoryResult = await resolveTargetTerritory(auth.brokerageId, propertyData)
+  if (!territoryResult.ok) {
+    return { success: false, error: territoryResult.error, territoryRefused: true as const }
   }
 
   // DARK PROVIDER GATE — never present an unconfigured vendor as a live one.
@@ -690,6 +835,12 @@ export async function enrichPropertyIntelligence(propertyData: {
     }
   }
 
+  // BUDGET GATE (existing vendor-governance ceiling).
+  const budget = await checkVendorBudget({ brokerageId: auth.brokerageId, addCost: BATCHDATA_LOOKUP_COST_USD })
+  if (!budget.allowed) {
+    return { success: false, error: `Vendor budget exhausted for this brokerage ($${budget.spent}/$${budget.budget}).`, budgetRefused: true as const }
+  }
+
   try {
     const supabase = createServiceClient()
 
@@ -699,6 +850,11 @@ export async function enrichPropertyIntelligence(propertyData: {
       propertyData.city,
       propertyData.state
     )
+    await meterVendorSpend({
+      vendorName: "batchdata", usageType: "property_intelligence", cost: BATCHDATA_LOOKUP_COST_USD,
+      brokerageId: auth.brokerageId, systemSource: "lead_intelligence",
+      metadata: { territoryId: territoryResult.territory.id, address: propertyData.address },
+    })
     const match = (matches ?? [])[0] as Record<string, any> | undefined
 
     if (!match) {
@@ -1917,21 +2073,23 @@ export async function getAgentWorkloadStats() {
  * Aggregate search-demand sampling for one market.
  *
  * This is the LEAST privacy-sensitive function in this file: it records search
- * PHRASES and result counts, never a person. It is nonetheless NOT WIRED, for
- * two product reasons rather than a compliance one:
+ * PHRASES and result counts, never a person — the owner's 2026-09-15
+ * no-compliance-gating ruling (see scrapeSocialSignalsWithZenRows, above)
+ * applies to it a fortiori. It was NOT WIRED for two product reasons, neither
+ * of them compliance:
  *
- *  1. google_search_intelligence HAS NO READER. Nothing in the codebase
- *     queries that table (verified by search) — only this insert touches it.
- *     Surfacing a paid scrape whose output no screen can display is not
- *     finishing a feature, it is spending money into a void. It needs a
- *     market-demand panel built first.
- *  2. ZENROWS_API_KEY is not configured in this environment (the superadmin
- *     provider board at app/dashboard/superadmin/env-providers already reports
- *     zenrows as dark). A dark provider must be shown as dark.
+ *  1. google_search_intelligence HAS NO DASHBOARD READER yet (verified by
+ *     search — still true, UNRESOLVED, not fixed by this lane: it needs a
+ *     market-demand panel). Wiring it into the autonomous loop (below) is
+ *     still worth doing — the row feeds any future demand panel and the run
+ *     is cheap (ZENROWS_CALL_COST_USD/search) — but a reader is still owed.
+ *  2. ZENROWS_API_KEY may not be configured in a given environment. A dark
+ *     provider must be shown as dark — kept.
  *
- * Hardened meanwhile: the paid loop is refused when the provider is dark, and
- * every insert error is read instead of discarded (a whole run could fail
- * silently and still return `{ success: true }`).
+ * AUTONOMOUS + WIRED (wave 65A): callable by a session user or the cron actor
+ * (requireCallerOrCron) from the intent-campaign territory-intelligence phase,
+ * gated by resolveTargetTerritory (wave 65 territory-centric ruling) and the
+ * existing vendor-budget ceiling before any spend.
  *
  * SCHEMA GAP, NOT FIXED HERE: `targetLocation.id` is accepted and cannot be
  * stored — google_search_intelligence has no market/territory column (verified
@@ -1939,11 +2097,24 @@ export async function getAgentWorkloadStats() {
  * trend, potential_leads_count, scraped_at). So a sampled row cannot be traced
  * back to the market that requested it. That needs a migration, which is out
  * of scope for this pass; it is reported rather than papered over.
+ *
+ * NOT HANDED TO ingestRawSourceBatch: every record this writes is an aggregate
+ * search phrase + result count, never a named person — there is no identity to
+ * dedupe against and isViableRecord would refuse every one of them anyway.
  */
-export async function analyzeGoogleSearchIntent(targetLocation: { id: string; city: string; state: string; zip?: string }) {
-  // Paid ZenRows scraping — require auth
-  const auth = await requireCaller()
+export async function analyzeGoogleSearchIntent(
+  targetLocation: { id: string; city: string; state: string; zip?: string },
+  opts: { internalSecret?: string; brokerageId?: string } = {},
+) {
+  // Paid ZenRows scraping — require auth (session OR the autonomous cron actor)
+  const auth = await requireCallerOrCron(opts)
   if (!auth.ok) return { success: false, error: auth.error }
+
+  // TERRITORY-CENTRIC GATE (wave 65 ruling).
+  const territoryResult = await resolveTargetTerritory(auth.brokerageId, targetLocation)
+  if (!territoryResult.ok) {
+    return { success: false, error: territoryResult.error, territoryRefused: true as const }
+  }
 
   // DARK PROVIDER GATE — refuse before spending, never fake a live vendor.
   if (!process.env.ZENROWS_API_KEY) {
@@ -1952,6 +2123,12 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
       error: "ZENROWS_API_KEY is not configured — Google search-intent sampling is dark.",
       dark: true as const,
     }
+  }
+
+  const searchCount = 7 // buyerSearches.length + sellerSearches.length, below
+  const budget = await checkVendorBudget({ brokerageId: auth.brokerageId, addCost: ZENROWS_CALL_COST_USD * searchCount })
+  if (!budget.allowed) {
+    return { success: false, error: `Vendor budget exhausted for this brokerage ($${budget.spent}/$${budget.budget}).`, budgetRefused: true as const }
   }
 
   const supabase = createServiceClient()
@@ -1977,6 +2154,12 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
         num: 20,
       }) as any
 
+      await meterVendorSpend({
+        vendorName: "zenrows", usageType: "google_intent", cost: ZENROWS_CALL_COST_USD,
+        brokerageId: auth.brokerageId, systemSource: "lead_intelligence",
+        metadata: { territoryId: territoryResult.territory.id, query },
+      })
+
       const { error: insertError } = await supabase.from("google_search_intelligence").insert({
         brokerage_id: auth.brokerageId,
         search_query: query,
@@ -1998,6 +2181,7 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
     return { success: true }
   } catch (error) {
     console.error("[v0] Google search intent error:", error)
+    await collectError({ workflowName: "lead_intelligence_google_intent", errorMessage: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, severity: "low", brokerageId: auth.brokerageId, context: { city: targetLocation.city, state: targetLocation.state } })
     return { success: false, error: String(error) }
   }
 }
@@ -2420,36 +2604,63 @@ Timeline: ${profile.estimated_timeline}
 // ============================================
 
 /**
- * DELIBERATELY NOT WIRED TO ANY SURFACE.
+ * AUTONOMOUS, WIRED (wave 65A). Was DELIBERATELY NOT WIRED.
  *
- * NAMED, WIRED, MORE COMPLETE RIVAL: the real-estate-site collect lane in
- * app/api/cron/lead-scraping/route.ts —
- * lib/lead-pipeline/scraper-parsers.ts (buildPropertySearchUrl /
- * parsePropertySearchResults / parseBuyerSavedSearches /
- * normalizeBatchDataRecord) feeding lib/lead-pipeline:processRawRecord, with
- * territory resolution, per-vendor spend metering and the promotion gate. That
- * lane is governed; this one is a bare for-loop over three scrapers.
+ * ── TOMBSTONE — THE COMPLIANCE FRAMING IS REMOVED ─────────────────────────────
+ * The old header refused to wire this because the property_intelligence insert
+ * below persists owner_name/owner_occupied/years_owned/equity_estimate — "a
+ * financial profile of a named homeowner… no consent record, no legitimate-
+ * interest assessment." That framing is REMOVED by the owner's 2026-09-15
+ * ruling (verbatim, on scrapeSocialSignalsWithZenRows above): "there is no
+ * reason to use any compliance gating for these areas of intelligence…
+ * gathering information about a property or potential or current client." A
+ * scraped property listing IS exactly that — property + potential-client
+ * information. This lane still does not restore owner_name/owner_occupied/
+ * years_owned/equity_estimate to the insert below (kept out, as a scope choice
+ * — see enrichPropertyIntelligence's header for the same call), but the refusal
+ * to WIRE the function at all is gone.
  *
- * NOT DELETED — it writes external_behavior, which the rival lane does not, so
- * it is an independent twin, not a proven port.
+ * SEPARATE, STILL-LIVE RIVAL LANE: app/api/cron/lead-scraping/route.ts +
+ * lib/lead-pipeline/scraper-parsers.ts remain the more complete, governed
+ * real-estate-site collector. This function is kept per the orphan doctrine
+ * (§1) because it writes `external_behavior`, a shape the rival lane does not
+ * produce.
  *
- * COMPLIANCE — WHY IT MUST NOT BE WIRED AS WRITTEN: the property_intelligence
- * insert below persists owner_name, owner_occupied, years_owned and
- * equity_estimate. That is a financial profile of a NAMED HOMEOWNER who has no
- * relationship with the brokerage, assembled from a location string typed into
- * a form. There is no consent record, no legitimate-interest assessment and no
- * subject-rights linkage for those rows anywhere in this codebase. Reporting
- * this rather than surfacing it is the correct outcome.
+ * Callable two ways (requireCallerOrCron): a session user, or the autonomous
+ * cron actor from app/api/cron/intent-campaign/route.ts's territory-
+ * intelligence phase. Gated by resolveTargetTerritory (wave 65 ruling) and the
+ * existing vendor-budget ceiling before any Apify/BatchData spend. Every
+ * discovered listing carries a property address — a raw-lead-shaped discovery
+ * on the `IdentityPolicy: 'immediate'` precedent lib/lead-pipeline/source-
+ * intent-map.ts already sets for batchdata_motivated ("property address alone
+ * suffices") — so each is handed to ingestRawSourceBatch (sourceChannel
+ * "external_behavior") to walk the same dedupe → enrich → dedupe → gate spine.
  */
-export async function scrapeExternalBehavior(targetLocation: { city: string; state: string; zip?: string }) {
+export async function scrapeExternalBehavior(
+  targetLocation: { city: string; state: string; zip?: string },
+  opts: { internalSecret?: string; brokerageId?: string } = {},
+) {
   // Paid Apify + BatchData scrapers — require auth to prevent budget drain
-  const auth = await requireCaller()
+  const auth = await requireCallerOrCron(opts)
   if (!auth.ok) return { success: false, error: auth.error }
+
+  // TERRITORY-CENTRIC GATE (wave 65 ruling).
+  const territoryResult = await resolveTargetTerritory(auth.brokerageId, targetLocation)
+  if (!territoryResult.ok) {
+    return { success: false, error: territoryResult.error, territoryRefused: true as const }
+  }
+  const territory = territoryResult.territory
+
+  // BUDGET GATE — 3 Apify actor runs + up to 20 BatchData lookups, estimated.
+  const estimatedCost = APIFY_ACTOR_CALL_COST_USD * 3 + BATCHDATA_LOOKUP_COST_USD * 20
+  const budget = await checkVendorBudget({ brokerageId: auth.brokerageId, addCost: estimatedCost })
+  if (!budget.allowed) {
+    return { success: false, error: `Vendor budget exhausted for this brokerage ($${budget.spent}/$${budget.budget}).`, budgetRefused: true as const }
+  }
 
   const supabase = createServiceClient()
   const { ApifyClient } = await import("@/lib/apify-client")
   const { BatchDataClient } = await import("@/lib/batchdata-client")
-  const { generateAIJSON } = await import("./ai-generate")
 
   const apify = new ApifyClient()
   const batchData = new BatchDataClient()
@@ -2457,19 +2668,26 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
   try {
     // Scrape Zillow using Apify
     const zillowData = await apify.scrapeZillow(`${targetLocation.city}, ${targetLocation.state}`)
+    await meterVendorSpend({ vendorName: "apify", usageType: "external_behavior_zillow", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id } })
 
     // Scrape Realtor.com using Apify
     const realtorData = await apify.scrapeRealtorDotCom(`${targetLocation.city}, ${targetLocation.state}`)
+    await meterVendorSpend({ vendorName: "apify", usageType: "external_behavior_realtor", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id } })
 
     // Scrape Redfin using Apify
     const redfinData = await apify.scrapeRedfin(`${targetLocation.city}, ${targetLocation.state}`)
+    await meterVendorSpend({ vendorName: "apify", usageType: "external_behavior_redfin", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id } })
 
     // Track most viewed properties across all sites
     const allProperties = [...(zillowData || []), ...(realtorData || []), ...(redfinData || [])]
 
+    const rawRecords: NormalizedScrapedRecord[] = []
+    const discoveredAddresses: string[] = []
+
     for (const property of allProperties.slice(0, 20)) {
       // Enrich property data with BatchData
       const enrichedData = await batchData.searchByAddress(property.address || "", targetLocation.city, targetLocation.state)
+      await meterVendorSpend({ vendorName: "batchdata", usageType: "external_behavior_enrich", cost: BATCHDATA_LOOKUP_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id, address: property.address } })
 
       const propertyDetails = enrichedData[0] || {}
 
@@ -2499,16 +2717,44 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
         bedrooms: property.bedrooms || propertyDetails.bedrooms,
         bathrooms: property.bathrooms || propertyDetails.bathrooms,
         square_feet: property.sqft || propertyDetails.squareFeet,
-        owner_name: propertyDetails.ownerName,
-        owner_occupied: propertyDetails.ownerOccupied,
-        years_owned: propertyDetails.yearsOwned,
-        equity_estimate: propertyDetails.equity,
+      })
+
+      if (property.address) {
+        discoveredAddresses.push(property.address)
+        // IDENTITY ANCHOR FOR DEDUPE: property address alone is sufficient
+        // viability (raw-record-types.ts::isViableRecord, and the same
+        // 'immediate' identity policy batchdata_motivated already uses).
+        rawRecords.push({
+          sourceRecordId: `${property.source || "zillow"}:${property.address}`,
+          source: String(property.source || "zillow"),
+          behaviorType: "external_behavior",
+          intentType: "seller",
+          intentSignals: [],
+          city: targetLocation.city,
+          state: targetLocation.state,
+          zip: targetLocation.zip ?? null,
+          propertyAddress: property.address,
+          motivationScore: null,
+          sourceUrl: null,
+          rawPayload: { property, propertyDetails },
+        })
+      }
+    }
+
+    let ingest: Awaited<ReturnType<typeof ingestRawSourceBatch>> | null = null
+    if (rawRecords.length > 0) {
+      ingest = await ingestRawSourceBatch({
+        brokerageId: auth.brokerageId, marketId: territory.id, source: "external_behavior",
+        sourceFamily: "property_search", sourceChannel: "external_behavior",
+        sourceSubtype: "off_site_property_view", records: rawRecords, executionId: null,
+        marketGeo: { city: territory.city, state: territory.state, zip_codes: territory.zip_codes },
       })
     }
 
-    return { success: true, propertiesTracked: allProperties.length }
+    return { success: true, propertiesTracked: allProperties.length, discoveredAddresses, rawIngested: ingest?.inserted ?? 0 }
   } catch (error) {
     console.error("[v0] External behavior scraping error:", error)
+    await collectError({ workflowName: "lead_intelligence_external_behavior", errorMessage: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, severity: "low", brokerageId: auth.brokerageId, context: { city: targetLocation.city, state: targetLocation.state } })
     return { success: false, error: String(error) }
   }
 }
@@ -2516,28 +2762,38 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
 /**
  * Attach one observed off-site activity to an EXISTING tracked visitor.
  *
- * NOT WIRED, AND CANNOT MEANINGFULLY BE: it requires a behavioral_signals row
- * for the visitor, and the only producer of those rows is trackBehavior, which
- * is itself unwired (no visitor-consent artifact — see its header). Wiring a
- * consumer whose producer is dark would surface a control that always answers
- * "No behavioral signal found for visitor". It is hardened and left honest.
+ * AUTONOMOUS, WIRED (wave 65A). Was: "NOT WIRED, AND CANNOT MEANINGFULLY BE" —
+ * that was true only while its producer (trackBehavior) was itself gated dark
+ * behind a missing consent artifact. This is not a compliance refusal on THIS
+ * function; it is a data dependency, and it is satisfied autonomously now: the
+ * intent-campaign territory-intelligence phase (app/api/cron/intent-campaign/
+ * route.ts) looks up behavioral_signals rows this brokerage already holds for
+ * visitors located in the SAME active territory it is scraping, and attaches
+ * each newly-discovered off-site listing (from scrapeExternalBehavior, same
+ * pass) to those visitors — connecting "who is browsing our site in this city"
+ * to "what just came up off-site in this city" without inventing a new
+ * identity. A visitor with no matching signal is refused exactly as before.
  *
  * @param data.detectedViaZenrows Which vendor observed this. It is the caller's
  * to state — it used to be hard-coded `true` regardless of who actually
  * collected it, which is a provenance lie in a subject-access-request column.
  */
-export async function trackExternalActivity(data: {
-  visitorId: string
-  source: string
-  behaviorType: string
-  propertyAddress?: string
-  searchCriteria?: Record<string, unknown> | null
-  location: string
-  detectedViaZenrows?: boolean
-}) {
-  // Behavioral signal write — require auth. Visitors don't call this directly;
-  // it's called from authenticated server flows that know a visitor's UUID.
-  const auth = await requireCaller()
+export async function trackExternalActivity(
+  data: {
+    visitorId: string
+    source: string
+    behaviorType: string
+    propertyAddress?: string
+    searchCriteria?: Record<string, unknown> | null
+    location: string
+    detectedViaZenrows?: boolean
+  },
+  opts: { internalSecret?: string; brokerageId?: string } = {},
+) {
+  // Behavioral signal write — require auth (session OR the autonomous cron
+  // actor). Visitors don't call this directly; it's called from authenticated
+  // server flows (or the cron phase) that already know a visitor's UUID.
+  const auth = await requireCallerOrCron(opts)
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = createServiceClient()
@@ -2601,6 +2857,7 @@ export async function trackExternalActivity(data: {
     return { success: true, signalId: signal.id }
   } catch (error) {
     console.error("[v0] External activity tracking error:", error)
+    await collectError({ workflowName: "lead_intelligence_external_activity", errorMessage: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, severity: "low", brokerageId: auth.brokerageId, context: { visitorId: data.visitorId } })
     return { success: false, error: String(error) }
   }
 }

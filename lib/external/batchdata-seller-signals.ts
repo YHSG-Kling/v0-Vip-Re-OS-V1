@@ -210,6 +210,24 @@ export const TRUST_OWNED_SIGNAL_TYPE = "trust_owned"
  */
 export const ACTIVE_LISTING_SIGNAL_TYPE = "active_listing"
 
+/**
+ * CASH BUYER / INVESTOR — the BUYER-side counterpart to every seller-motivation
+ * type above. Wave 65 gap: the provider's live quicklist catalogue (39 fields,
+ * confirmed via `list_property_dataset_fields quicklist` on 2026-09-15) has
+ * `quickLists.cashBuyer` and this lane sourced 38 of the 39 before this entry —
+ * the one genuine field this lane had not declared. Owner ruling verbatim:
+ * "batchdata has information that can help us with finding new leads like
+ * motivated sellers... cash buyer/investor for buyer side" (wave 65 task list).
+ *
+ * NOT a seller-motivation signal — the opposite direction. A property whose
+ * owner previously transacted as a cash/investor buyer identifies DEMAND (an
+ * investor who might buy a motivated seller's house, or resell one of their
+ * own holdings on a schedule). Filed here rather than invented as a second
+ * vocabulary so shopping_agent / the demand-matching lane can query
+ * `motivated_seller_signals` for BOTH sides through the ONE table.
+ */
+export const CASH_BUYER_SIGNAL_TYPE = "cash_buyer"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ADDED 2026-08-22 — THE FOUR THAT ARE DERIVED FROM PROTECTED-CLASS SOURCES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -435,6 +453,12 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
         "quickLists.forSaleByOwner", "listing.status", "listing.statusCategory",
       ],
       why: "SUPPRESSION, not motivation. The property is on the market and NOT for sale by owner, so a listing broker holds the representation. This is filed so an agent and a scorer can both see the reason NOT to pitch — NAR Code of Ethics Article 16. `quickLists.forSaleByOwner` is named as a source because it is what DISQUALIFIES the suppression: an unrepresented seller is not somebody else's client.",
+    },
+    {
+      signalType: CASH_BUYER_SIGNAL_TYPE,
+      label: "Cash buyer / investor (demand, not motivation)",
+      sources: ["quickLists.cashBuyer"],
+      why: "BUYER-side demand, not seller motivation. The owner's own last purchase was cash/investor-funded — the recorded pattern this lane's other 38 fields describe a seller by; here it identifies a likely buyer or a landlord with a resale schedule. Filed as its own signal_type (never overloaded onto an existing motivation kind) so a demand-matching or fix-and-flip-adjacent lane can read investor supply through the same table without a second vocabulary.",
     },
 
     // ── THE FOUR PROTECTED-CLASS-DERIVED TYPES (findings #297 / #304) ───────
@@ -1134,6 +1158,17 @@ export function deriveSellerSignals(
       variant: "q:fix-and-flip",
       reason: "Provider flags a property held for resale rather than occupation",
       observed: { fix_and_flip: true },
+    })
+  }
+
+  // ── cash buyer / investor (BUYER-side demand — see the constant's doc) ──
+  if (readQuickList(row, "cashBuyer")) {
+    out.push({
+      signalType: CASH_BUYER_SIGNAL_TYPE,
+      strength: "weak",
+      variant: "q:cash-buyer",
+      reason: "Owner's recorded acquisition was cash/investor-funded — demand signal, not a motivation-to-sell reading",
+      observed: { cash_buyer: true },
     })
   }
 

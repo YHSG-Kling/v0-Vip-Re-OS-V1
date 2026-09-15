@@ -7,7 +7,6 @@
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
     "app/actions/journey-tasks.ts": 1,
-    "app/actions/lead-intelligence.ts": 5,
     "app/actions/listings.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
@@ -140,6 +139,7 @@
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
+    "lib/external/zyte-client.ts": 2,
     "lib/finance/auto-dispute.ts": 1,
     "lib/finance/qb-reconciliation.ts": 3,
     "lib/finance/quarterly-tax-concierge.ts": 1,
@@ -285,9 +285,8 @@
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
     "lib/lead-pipeline/promotion-address-verification.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
-    "lib/lead-pipeline/raw-record-types.ts": 1,
     "lib/lead-pipeline/scraper-health.ts": 2,
-    "lib/lead-pipeline/social-sourcer.ts": 7,
+    "lib/lead-pipeline/social-sourcer.ts": 10,
     "lib/lead-pipeline/source-intent-map.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
@@ -434,7 +433,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9467,
+  "census": 9499,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -473,7 +472,7 @@
     "app/actions/admin/manager-evals.ts": 11,
     "app/actions/admin/onboarding-steps.ts": 3,
     "app/actions/admin/referral-earnings.ts": 2,
-    "app/actions/admin/run-scrape-test.ts": 1,
+    "app/actions/admin/run-scrape-test.ts": 2,
     "app/actions/admin/staff-360.ts": 2,
     "app/actions/admin/subscription-agreement.ts": 2,
     "app/actions/admin/team-members.ts": 3,
@@ -1815,6 +1814,7 @@
     "app/dashboard/admin/fees/brokerage-fees-client.tsx": 1,
     "app/dashboard/admin/intelligence-mesh/intelligence-mesh-client.tsx": 1,
     "app/dashboard/admin/lead-intake/dedupe-reasons.tsx": 1,
+    "app/dashboard/admin/lead-intake/pipeline-stats-panel.tsx": 1,
     "app/dashboard/admin/lead-intake/pipeline-stats.ts": 1,
     "app/dashboard/admin/lead-intake/raw-leads-review.tsx": 1,
     "app/dashboard/admin/lead-intake/social-scrape-trigger.tsx": 1,
@@ -2957,6 +2957,7 @@
     "lib/connections/zoom.ts": 22,
     "lib/constants/index.ts": 3,
     "lib/contact-pipeline/contact-capture.ts": 3,
+    "lib/contact-promotion/acquisition-cost.ts": 1,
     "lib/contact-promotion/contact-creator.ts": 3,
     "lib/contact-promotion/conversion-finality.ts": 5,
     "lib/contact-promotion/conversion-welcome.ts": 3,
@@ -3097,7 +3098,7 @@
     "lib/external/apify-actors.ts": 3,
     "lib/external/apify-client.ts": 7,
     "lib/external/arcgis-permits.ts": 9,
-    "lib/external/batchdata-client.ts": 7,
+    "lib/external/batchdata-client.ts": 12,
     "lib/external/batchdata-mcp.ts": 2,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/census-appreciation.ts": 4,
@@ -3119,8 +3120,9 @@
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
     "lib/external/vision-property.ts": 1,
-    "lib/external/zenrows-client.ts": 3,
+    "lib/external/zenrows-client.ts": 4,
     "lib/external/zenrows-normalizer.ts": 1,
+    "lib/external/zyte-client.ts": 4,
     "lib/farm-mail/dispatch-farm-mail.ts": 1,
     "lib/fatigue/fatigue-calculator.ts": 2,
     "lib/fatigue/fatigue-display.ts": 2,
@@ -3413,7 +3415,7 @@
     "lib/kernel/idle-hands.ts": 3,
     "lib/kernel/ingress-continuity.ts": 7,
     "lib/kernel/intelligence-report.ts": 8,
-    "lib/kernel/intent-campaign.ts": 5,
+    "lib/kernel/intent-campaign.ts": 6,
     "lib/kernel/jobs.ts": 1,
     "lib/kernel/journey-snapshot.ts": 2,
     "lib/kernel/launch-war-room.ts": 3,
@@ -3570,18 +3572,20 @@
     "lib/lead-governance/stale-lead-processor.ts": 1,
     "lib/lead-intelligence/behavioral-summary.ts": 1,
     "lib/lead-intelligence/interest-level.ts": 1,
+    "lib/lead-intelligence/person-timeline.ts": 2,
     "lib/lead-intelligence/signal-extensions.ts": 4,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
     "lib/lead-intent/lead-opt-out.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 3,
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
-    "lib/lead-pipeline/enrichment-column-map.ts": 3,
+    "lib/lead-pipeline/enrichment-column-map.ts": 5,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 1,
     "lib/lead-pipeline/exa-sourcer.ts": 2,
     "lib/lead-pipeline/fuzzy-matcher.ts": 2,
+    "lib/lead-pipeline/lead-intelligence-signals.ts": 1,
     "lib/lead-pipeline/lead-lifecycle.ts": 2,
     "lib/lead-pipeline/material-enrichment-change.ts": 1,
     "lib/lead-pipeline/offer-rejection-recovery-runner.ts": 1,
@@ -3593,10 +3597,10 @@
     "lib/lead-pipeline/persona-drift.ts": 1,
     "lib/lead-pipeline/pipeline-processor.ts": 1,
     "lib/lead-pipeline/portal-lead-intake.ts": 3,
-    "lib/lead-pipeline/processing-status.ts": 2,
+    "lib/lead-pipeline/processing-status.ts": 3,
     "lib/lead-pipeline/promotion-address-verification.ts": 3,
     "lib/lead-pipeline/promotion-gate-health.ts": 2,
-    "lib/lead-pipeline/raw-record-types.ts": 3,
+    "lib/lead-pipeline/raw-record-types.ts": 2,
     "lib/lead-pipeline/reactivation-cadence.ts": 1,
     "lib/lead-pipeline/reactivation-enroller.ts": 1,
     "lib/lead-pipeline/reactivation-sequence-installer.ts": 1,
@@ -3604,12 +3608,12 @@
     "lib/lead-pipeline/schedule-followup.ts": 1,
     "lib/lead-pipeline/scrape-territories.ts": 3,
     "lib/lead-pipeline/scraper-health.ts": 4,
-    "lib/lead-pipeline/scraper-parsers.ts": 5,
-    "lib/lead-pipeline/social-sourcer.ts": 17,
-    "lib/lead-pipeline/source-conversion-learning.ts": 2,
+    "lib/lead-pipeline/scraper-parsers.ts": 7,
+    "lib/lead-pipeline/social-sourcer.ts": 24,
+    "lib/lead-pipeline/source-conversion-learning.ts": 3,
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
     "lib/lead-pipeline/source-health.ts": 1,
-    "lib/lead-pipeline/source-intent-map.ts": 7,
+    "lib/lead-pipeline/source-intent-map.ts": 8,
     "lib/lead-pipeline/source-lifetime-health-runner.ts": 1,
     "lib/lead-pipeline/source-wording-diagnostic.ts": 1,
     "lib/lead-pipeline/stale-preapproval-reengage-runner.ts": 1,
@@ -4484,7 +4488,8 @@
       "acknowledgeReferralPayoutAction"
     ],
     "app/actions/admin/run-scrape-test.ts": [
-      "runScrapeTestAction"
+      "runScrapeTestAction",
+      "verifyScrapeTestCronDoorAction"
     ],
     "app/actions/admin/staff-360.ts": [
       "getStaff360Action",
@@ -10571,6 +10576,9 @@
     "app/dashboard/admin/lead-intake/dedupe-reasons.tsx": [
       "DedupeReasons"
     ],
+    "app/dashboard/admin/lead-intake/pipeline-stats-panel.tsx": [
+      "PipelineStatsPanel"
+    ],
     "app/dashboard/admin/lead-intake/pipeline-stats.ts": [
       "loadRawPipelineStats"
     ],
@@ -14920,6 +14928,9 @@
       "captureContact",
       "queueContactEnrichmentAndScore"
     ],
+    "lib/contact-promotion/acquisition-cost.ts": [
+      "resolveLeadAcquisitionCost"
+    ],
     "lib/contact-promotion/contact-creator.ts": [
       "motivationToContactType",
       "resolveContactType",
@@ -15559,12 +15570,17 @@
     ],
     "lib/external/batchdata-client.ts": [
       "batchDataTriggersFor",
+      "quickListSlugsFor",
       "normalizeBatchDataProperty",
       "buildPropertySearchBody",
       "fetchMotivatedSellers",
       "searchProperties",
       "fetchBatchRankPropensity",
-      "enrichPropertyWithBatchData"
+      "enrichPropertyWithBatchData",
+      "createOrRenewSmartSearchSubscription",
+      "skipTraceBatchDataV3Batch",
+      "verifyAddressBatchData",
+      "enrichPropertyDatasetsBatchData"
     ],
     "lib/external/batchdata-mcp.ts": [
       "callBatchDataMcp",
@@ -15697,10 +15713,17 @@
     "lib/external/zenrows-client.ts": [
       "scrapeWithZenRows",
       "retryWithApifyFallback",
+      "scrapeSiteWithBestProvider",
       "extractContactsFromHtml"
     ],
     "lib/external/zenrows-normalizer.ts": [
       "normalizeZenRowsHtml"
+    ],
+    "lib/external/zyte-client.ts": [
+      "zyteConfigured",
+      "scrapeWithZyte",
+      "decodeBase64Body",
+      "estimateZyteCost"
     ],
     "lib/farm-mail/dispatch-farm-mail.ts": [
       "dispatchFarmMail"
@@ -17141,6 +17164,7 @@
       "composeSellerIntent",
       "composeBuyerIntent",
       "runIntentCampaign",
+      "runTerritoryIntelligencePhase",
       "realSellerScraper",
       "realBuyerIntentScraper"
     ],
@@ -18053,6 +18077,10 @@
     "lib/lead-intelligence/interest-level.ts": [
       "interestLevelToSignalScale"
     ],
+    "lib/lead-intelligence/person-timeline.ts": [
+      "buildPersonTimeline",
+      "redactForContactView"
+    ],
     "lib/lead-intelligence/signal-extensions.ts": [
       "buildOfferLostSignal",
       "buildOpenHouseAttendeeSignal",
@@ -18086,7 +18114,9 @@
     "lib/lead-pipeline/enrichment-column-map.ts": [
       "deriveEducationLevel",
       "peopleDataProfileToContactColumns",
-      "peopleDataProfileToLeadColumns"
+      "peopleDataProfileToLeadColumns",
+      "batchDataPropertyEnrichmentToLeadColumns",
+      "batchDataPropertyEnrichmentToContactColumns"
     ],
     "lib/lead-pipeline/enrichment-merge.ts": [
       "mergeEnrichment",
@@ -18105,6 +18135,9 @@
     "lib/lead-pipeline/fuzzy-matcher.ts": [
       "isConfidentMatch",
       "calculateFuzzyMatch"
+    ],
+    "lib/lead-pipeline/lead-intelligence-signals.ts": [
+      "getLeadIntelligenceSignals"
     ],
     "lib/lead-pipeline/lead-lifecycle.ts": [
       "isLeadHandedOff",
@@ -18150,7 +18183,8 @@
     ],
     "lib/lead-pipeline/processing-status.ts": [
       "isRawProcessingStatus",
-      "isRejectionStatus"
+      "isRejectionStatus",
+      "isTerminalRawProcessingStatus"
     ],
     "lib/lead-pipeline/promotion-address-verification.ts": [
       "needsPromotionAddressVerification",
@@ -18163,7 +18197,6 @@
     ],
     "lib/lead-pipeline/raw-record-types.ts": [
       "isViableRecord",
-      "hasPromotionEligibleIdentity",
       "buildLeadIdentityKey"
     ],
     "lib/lead-pipeline/reactivation-cadence.ts": [
@@ -18197,7 +18230,9 @@
       "parsePropertySearchResults",
       "parseCraigslistHtml",
       "normalizeBatchDataRecord",
-      "parseBuyerSavedSearches"
+      "parseBuyerSavedSearches",
+      "buildRealtySiteChatterUrl",
+      "parseContactAgentChatter"
     ],
     "lib/lead-pipeline/social-sourcer.ts": [
       "detectIntent",
@@ -18216,9 +18251,17 @@
       "normalizeRentalListing",
       "sourceRentalListings",
       "normalizeLinkedInPost",
-      "sourceLinkedInRelocation"
+      "sourceLinkedInRelocation",
+      "normalizeRedditRelocationPost",
+      "sourceRedditRelocation",
+      "normalizeFacebookRecommendRealtorPost",
+      "sourceFacebookRecommendRealtor",
+      "normalizeAgentSeekingResult",
+      "sourceAgentSeekingPhraseIntent",
+      "sourceRealtySiteChatter"
     ],
     "lib/lead-pipeline/source-conversion-learning.ts": [
+      "computeLeadAcquisitionCost",
       "scoreSourceConversions",
       "recommendSourceAllocation"
     ],
@@ -18236,6 +18279,7 @@
       "expandEnabledSources",
       "scoreToUrgencyLevel",
       "buildTerritoryPhrases",
+      "buildAgentSeekingPhrases",
       "recordMatchesTerritory"
     ],
     "lib/lead-pipeline/source-lifetime-health-runner.ts": [

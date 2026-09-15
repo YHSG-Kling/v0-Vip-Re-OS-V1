@@ -25,7 +25,6 @@ import {
 } from "../lib/lead-pipeline/source-intent-map"
 import {
   isViableRecord,
-  hasPromotionEligibleIdentity,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
 import { normalizeRedditPost, normalizeFacebookPost } from "../lib/lead-pipeline/social-sourcer"
@@ -259,7 +258,10 @@ function stageScoring(records: NormalizedScrapedRecord[]) {
 // ── STAGE 7 — Promotion eligibility ──────────────────────────────────────────
 function stagePromotion(records: NormalizedScrapedRecord[]) {
   console.log("\n[7] Promotion eligibility (raw → lead gate)")
-  const eligible = records.filter(hasPromotionEligibleIdentity)
+  // REPOINTED (orphan doctrine §1.1, wave 65A): hasPromotionEligibleIdentity was
+  // byte-identical to isViableRecord and was merged onto it — see the tombstone
+  // at lib/lead-pipeline/raw-record-types.ts (where the function used to be).
+  const eligible = records.filter(isViableRecord)
   check("all viable in-territory records are promotion-eligible", eligible.length === records.length, `${eligible.length}/${records.length}`)
 }
 

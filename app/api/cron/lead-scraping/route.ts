@@ -3,6 +3,7 @@ NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ZenrowsClient, BatchDataClient, batchDataTriggersFor } from "@/lib/external"
+import { createOrRenewSmartSearchSubscription, quickListSlugsFor } from "@/lib/external/batchdata-client"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { escalateScraperFailureIfNeeded, setScraperHealer } from "@/lib/lead-pipeline/scraper-health"
 import { MAX_PROMOTION_ATTEMPTS, STRANDED_STATUSES, reportStuckRawLeads } from "@/lib/lead-pipeline/promotion-gate-health"
@@ -21,6 +22,10 @@ import {
   sourceGoogle,
   sourceRentalListings,
   sourceLinkedInRelocation,
+  sourceRedditRelocation,
+  sourceFacebookRecommendRealtor,
+  sourceAgentSeekingPhraseIntent,
+  sourceRealtySiteChatter,
 } from "@/lib/lead-pipeline/social-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
@@ -435,6 +440,80 @@ export async function GET(request: Request) {
           if (sourceErr) {
             await escalateScraperFailureIfNeeded(supabase, { scraperType: "batchdata_motivated", errorMessage: sourceErr.message })
           }
+
+          // ============================================
+          // 2b. SMART SEARCH RECONCILE (V2 Property Subscription) — BatchData phase only
+          // ============================================
+          // DISTINCT from the poll above: registers/renews a PUSH subscription per
+          // configured quicklist trigger so BatchData delivers matches to
+          // app/api/webhooks/batchdata-smart-search BETWEEN polling runs, instead of
+          // only what this cron's own pull catches on its own cadence. Folded into the
+          // EXISTING daily tick rather than a new cron (CLAUDE.md wave-62 cost ruling —
+          // "vercel cron usage... charges outweighing the build"). Best-effort: a
+          // subscription failure never blocks or fails the poll-based scrape above,
+          // which is the capability that actually produces leads today.
+          try {
+            const smartSearchTriggers = enabledSources.has("batchdata_motivated")
+              ? batchDataTriggersFor(motivatedParams.signal_types)
+              : []
+            const smartSearchQuicklists = quickListSlugsFor(smartSearchTriggers)
+            if (smartSearchQuicklists.length > 0) {
+              const { data: existingSubs, error: existingSubsErr } = await supabase
+                .from("batchdata_smart_search_subscriptions")
+                .select("quicklist, status, subscription_id, renewed_at")
+                .eq("market_id", market.id)
+              if (existingSubsErr) {
+                // Table not yet applied (m633 WRITTEN NOT APPLIED) or another read
+                // refusal — never treat "couldn't read" as "nothing subscribed"; skip
+                // this market's reconcile pass rather than risk a duplicate registration.
+                throw new Error(`smart-search subscription read refused: ${existingSubsErr.message}`)
+              }
+              const byQuicklist = new Map(
+                ((existingSubs ?? []) as Array<{ quicklist: string; status: string; subscription_id: string | null; renewed_at: string | null }>)
+                  .map((r) => [r.quicklist, r]),
+              )
+              // UNRESOLVED: BatchData's own subscription expiry/renewal cadence was not
+              // confirmed by this lane's research (see the wave report). 30 days is a
+              // conservative default so an active subscription is re-registered well
+              // before any provider-side TTL, never left to silently lapse.
+              const RENEWAL_STALE_MS = 30 * 24 * 60 * 60 * 1000
+              const staleCutoff = Date.now() - RENEWAL_STALE_MS
+
+              for (const quicklist of smartSearchQuicklists) {
+                const row = byQuicklist.get(quicklist)
+                const needsCreate = !row || row.status === "error" || !row.subscription_id
+                const needsRenew =
+                  row?.status === "active" && (!row.renewed_at || new Date(row.renewed_at).getTime() < staleCutoff)
+                if (!needsCreate && !needsRenew) continue
+
+                const result = await createOrRenewSmartSearchSubscription({
+                  quicklist, city: market.city, state: market.state,
+                })
+                const { error: upsertErr } = await supabase
+                  .from("batchdata_smart_search_subscriptions")
+                  .upsert(
+                    {
+                      market_id: market.id,
+                      quicklist,
+                      subscription_id: result.subscriptionId,
+                      status: result.ok ? "active" : "error",
+                      webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
+                      last_error: result.error,
+                      last_reconciled_at: new Date().toISOString(),
+                      ...(result.ok ? { renewed_at: new Date().toISOString() } : {}),
+                      updated_at: new Date().toISOString(),
+                    },
+                    { onConflict: "market_id,quicklist" },
+                  )
+                if (upsertErr) {
+                  results.errors.push(`Smart Search subscription write failed for ${market.name}/${quicklist}: ${upsertErr.message}`)
+                }
+              }
+            }
+          } catch (smartSearchErr) {
+            // Best-effort side-channel — logged, never fails the cron run.
+            results.errors.push(`Smart Search reconcile error for ${market.name}: ${smartSearchErr}`)
+          }
         }
       }
 
@@ -451,7 +530,11 @@ export async function GET(request: Request) {
         enabledSources.has("rental") ||
         enabledSources.has("linkedin") ||
         enabledSources.has("exa") ||
-        enabledSources.has("tavily")
+        enabledSources.has("tavily") ||
+        enabledSources.has("reddit_relocation") ||
+        enabledSources.has("facebook_recommend_realtor") ||
+        enabledSources.has("agent_seeking_phrase_intent") ||
+        enabledSources.has("realty_chatter")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -474,6 +557,10 @@ export async function GET(request: Request) {
 
         let socialLeadsCreated = 0
         let sourceCostUsd = 0
+        // Realty-chatter (ZenRows/Zyte) spend is metered per-provider inline below, so it is
+        // tracked SEPARATELY from sourceCostUsd (which feeds the single composite "apify_social"
+        // ledger entry after this block) — see the realty_chatter block for why.
+        let realtyChatterCostUsd = 0
         let sourceErr: Error | null = null
 
         try {
@@ -642,6 +729,56 @@ export async function GET(request: Request) {
             await insertSocial(records, "tavily")
           }
 
+          // ── WAVE 65 LANES (owner ruling 2026-09-15) — each a DISTINCT capability with its
+          // own sourceChannel; never merged with the look-alike lanes above. ────────────────
+
+          // ── Reddit relocation lane — "moving to <city>" / "looking for a realtor in <city>" ─
+          if (enabledSources.has("reddit_relocation")) {
+            const { records, cost } = await sourceRedditRelocation(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "reddit_relocation")
+          }
+
+          // ── Facebook "recommend a realtor" lane ──────────────────────────────────
+          if (enabledSources.has("facebook_recommend_realtor")) {
+            const groupUrls: string[] = motivatedParams?.facebook_group_urls?.length
+              ? motivatedParams.facebook_group_urls
+              : market.city ? [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, "")}buysell`] : []
+            const { records, cost } = await sourceFacebookRecommendRealtor(groupUrls, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "facebook_recommend_realtor")
+          }
+
+          // ── Agent-seeking phrase intent — cross-source (Google/Apify today) ──────
+          if (enabledSources.has("agent_seeking_phrase_intent")) {
+            const { records, cost } = await sourceAgentSeekingPhraseIntent(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "agent_seeking_phrase_intent")
+          }
+
+          // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────
+          // (ZenRows primary, Zyte fallback — lib/external/zenrows-client.ts::
+          // scrapeSiteWithBestProvider). Homes.com is NEW coverage this wave. Each site keeps
+          // its OWN sourceChannel (owner ruling: never merge look-alike lanes). Metered
+          // SEPARATELY per real provider below (not folded into sourceCostUsd) so the "apify_social"
+          // composite ledger entry after this block never double-counts ZenRows/Zyte spend.
+          if (enabledSources.has("realty_chatter") && market.city && market.state) {
+            for (const site of ["zillow", "realtor", "homes"] as const) {
+              const chatter = await sourceRealtySiteChatter(site, { city: market.city, state: market.state })
+              realtyChatterCostUsd += chatter.cost
+              await insertSocial(chatter.records, `${site}_chatter`)
+              if (chatter.cost > 0) {
+                await meterVendorSpend({
+                  vendorName: chatter.provider ?? "zenrows",
+                  usageType: "realty_site_chatter",
+                  cost: chatter.cost,
+                  brokerageId: market.brokerage_id,
+                  metadata: { market_id: market.id, site, scraper_type: "realty_chatter" },
+                })
+              }
+            }
+          }
+
           results.total_leads_created += socialLeadsCreated
 
           await updateScrapingJob(job.job?.id, {
@@ -665,7 +802,7 @@ export async function GET(request: Request) {
           completed_at: new Date().toISOString(),
           total_items_found: socialLeadsCreated,
           leads_created: socialLeadsCreated,
-          api_cost: sourceCostUsd,
+          api_cost: sourceCostUsd + realtyChatterCostUsd,
           error_message: sourceErr?.message ?? null,
         }).eq("id", execRecord?.id).then(() => {}, () => {})
 
@@ -683,7 +820,9 @@ export async function GET(request: Request) {
           metadata: { market_id: market.id, scraper_type: "social_intent" },
         })
 
-        territorySpendUsd += sourceCostUsd
+        // realtyChatterCostUsd was already metered per-provider above (ZenRows/Zyte, not Apify) —
+        // add it to the territory total here so budget tracking still sees the full spend.
+        territorySpendUsd += sourceCostUsd + realtyChatterCostUsd
       }
 
       // ── OSINT public-records source — distressed-seller filings ─────────────

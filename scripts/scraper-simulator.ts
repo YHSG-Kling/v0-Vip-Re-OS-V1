@@ -25,15 +25,16 @@ import {
   parseCraigslistHtml,
   normalizeBatchDataRecord,
   buildPropertySearchUrl,
+  buildRealtySiteChatterUrl,
+  parseContactAgentChatter,
 } from "../lib/lead-pipeline/scraper-parsers"
 import { mergeEnrichment, shouldGapFill } from "../lib/lead-pipeline/enrichment-merge"
 import {
   isViableRecord,
-  hasPromotionEligibleIdentity,
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
-import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources } from "../lib/lead-pipeline/source-intent-map"
+import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases } from "../lib/lead-pipeline/source-intent-map"
 import {
   detectIntent,
   isInvestor,
@@ -44,6 +45,13 @@ import {
   normalizeFacebookPost,
   normalizeRentalListing,
   normalizeLinkedInPost,
+  normalizeRedditRelocationPost,
+  normalizeFacebookRecommendRealtorPost,
+  normalizeAgentSeekingResult,
+  sourceRedditRelocation,
+  sourceFacebookRecommendRealtor,
+  sourceAgentSeekingPhraseIntent,
+  sourceRealtySiteChatter,
 } from "../lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
 import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
@@ -259,7 +267,10 @@ function testGates() {
     email: "ann.lee@example.com", city: "Tampa", state: "FL", motivationScore: 70, rawPayload: {},
   }
   check("record with email is viable", isViableRecord(withContact))
-  check("record with full name + email is promotion-eligible", hasPromotionEligibleIdentity(withContact))
+  // REPOINTED (orphan doctrine §1.1, wave 65A): hasPromotionEligibleIdentity was
+  // byte-identical to isViableRecord and was merged onto it — see the tombstone
+  // at lib/lead-pipeline/raw-record-types.ts (where the function used to be).
+  check("record with full name + email is promotion-eligible", isViableRecord(withContact))
   const key = buildLeadIdentityKey(withContact)
   check("identity key built", !!key && key.length > 0, String(key))
 
@@ -267,7 +278,7 @@ function testGates() {
     sourceRecordId: "t-2", source: "zillow", behaviorType: "property_view",
     intentType: "buyer", intentSignals: ["x"], motivationScore: 40, rawPayload: {},
   }
-  check("anonymous (no contact/address/name) not promotion-eligible", !hasPromotionEligibleIdentity(anonymous))
+  check("anonymous (no contact/address/name) not promotion-eligible", !isViableRecord(anonymous))
 }
 
 // ── 7. URL builder ───────────────────────────────────────────────────────────
@@ -1425,6 +1436,189 @@ function testBatchDataTypes() {
   check("batchdata_motivated → seller intent", getSourceSemantics("batchdata_motivated").intentType === "seller")
 }
 
+// ── 21. WAVE 65 LANES — Reddit relocation / Facebook "recommend a realtor" /
+// agent-seeking phrase intent / realty-site saved-search + contact-agent chatter ─────────────
+// Each is its own section with a POSITIVE CONTROL proving the territory gate would catch a
+// lane that forgot it (CLAUDE.md §2): a market with no city/state must yield zero phrases /
+// zero records, never a global sweep.
+function testWave65Lanes() {
+  console.log("\n[Wave 65 · Reddit relocation lane]")
+  const relocPost = normalizeRedditRelocationPost(
+    { id: "r1", title: "Moving to Austin next month, need advice", author: "reloc_jane", url: "https://reddit.com/r/moving/r1" },
+    { city: "Austin", state: "TX" },
+  )
+  check("reddit_relocation → source tagged", relocPost.source === "reddit_relocation")
+  check("reddit_relocation → buyer intent (relocation is inbound-buyer)", relocPost.intentType === "buyer")
+  check("reddit_relocation → intent signals include relocating", relocPost.intentSignals.includes("relocating"))
+  check("reddit_relocation → identity anchored on username", relocPost.username === "reloc_jane")
+  check("reddit_relocation semantics registered + distinct from reddit_intent", getSourceSemantics("reddit_relocation").motivationType === "relocation_buyer")
+  check("reddit_relocation is its OWN vendor-routed source (not folded into reddit_intent)", resolveSourceKey("reddit_relocation") === "reddit_relocation" && resolveSourceKey("reddit_relocation") !== resolveSourceKey("reddit"))
+
+  console.log("\n[Wave 65 · Facebook 'recommend a realtor' lane]")
+  const recPost = normalizeFacebookRecommendRealtorPost(
+    { postId: "fb1", authorName: "Sam Buyer", url: "https://facebook.com/groups/x/posts/fb1" },
+    { city: "Tampa", state: "FL" },
+  )
+  check("facebook_recommend_realtor → source tagged", recPost.source === "facebook_recommend_realtor")
+  check("facebook_recommend_realtor → agent-referral signal present", recPost.intentSignals.includes("recommend_a_realtor"))
+  check("facebook_recommend_realtor → name split from author handle", recPost.firstName === "Sam" && recPost.lastName === "Buyer")
+  check("facebook_recommend_realtor is DISTINCT from facebook_group (never merged)", "facebook_recommend_realtor" in SOURCE_VENDOR && resolveSourceKey("facebook_recommend_realtor") !== resolveSourceKey("facebook"))
+
+  console.log("\n[Wave 65 · Agent-seeking phrase intent lane]")
+  const agentResult = normalizeAgentSeekingResult(
+    { url: "https://example.com/thread", title: "Looking for a realtor in Denver" },
+    { city: "Denver", state: "CO" },
+  )
+  check("agent_seeking_phrase_intent → source tagged", agentResult.source === "agent_seeking_phrase_intent")
+  check("agent_seeking_phrase_intent → referral signal present", agentResult.intentSignals.includes("agent_referral_request"))
+  check("agent_seeking_phrase_intent is DISTINCT from google_phrase_intent (never merged)", resolveSourceKey("agent_seeking_phrase_intent") !== resolveSourceKey("google"))
+
+  console.log("\n[Wave 65 · buildAgentSeekingPhrases — territory-centric query builder]")
+  const phrasesAustin = buildAgentSeekingPhrases({ city: "Austin", state: "TX" })
+  check("phrases built for a real market", phrasesAustin.phrases.length > 0)
+  check("every phrase names the territory (no generic global phrase)", phrasesAustin.phrases.every((p) => p.includes("Austin")))
+  check("phrase set covers 'looking for a realtor' + 'recommend a realtor'",
+    phrasesAustin.phrases.some((p) => p.includes("looking for a realtor")) && phrasesAustin.phrases.some((p) => p.includes("recommend a realtor")))
+  // POSITIVE CONTROL — a lane without a territory gate IS caught: an empty market must
+  // never fall back to a global/borderless query.
+  const phrasesEmpty = buildAgentSeekingPhrases({ city: null, state: null })
+  check("POSITIVE CONTROL: no territory ⇒ zero phrases (never a global sweep)", phrasesEmpty.phrases.length === 0)
+
+  console.log("\n[Wave 65 · Zillow/Realtor/Homes.com chatter — URL builder + contact-agent parser]")
+  const zUrl = buildRealtySiteChatterUrl("zillow", { city: "Austin", state: "TX" })
+  const rUrl = buildRealtySiteChatterUrl("realtor", { city: "Austin", state: "TX" })
+  const hUrl = buildRealtySiteChatterUrl("homes", { city: "Austin", state: "TX" })
+  check("zillow chatter URL targets zillow.com", zUrl.includes("zillow.com"))
+  check("realtor chatter URL targets realtor.com", rUrl.includes("realtor.com"))
+  check("NEW COVERAGE: homes.com chatter URL targets homes.com (never wired before wave 65)", hUrl.includes("homes.com"))
+  check("chatter URLs are DISTINCT per site (never one shared URL)", new Set([zUrl, rUrl, hUrl]).size === 3)
+
+  const chatterHtml = `<html><body>
+    <div class="contact-agent-widget" data-id="ca1">
+      <span class="agent-contact-name">Pat Homebuyer</span>
+      <span class="home-address">456 Elm St</span>
+    </div>
+  </body></html>`
+  const chatterRecords = parseContactAgentChatter(chatterHtml, "zillow", { city: "Austin", state: "TX" })
+  check("contact-agent chatter block parsed into a record", chatterRecords.length === 1)
+  check("contact-agent record anchored on the handle (name split)", chatterRecords[0]?.firstName === "Pat" && chatterRecords[0]?.lastName === "Homebuyer")
+  check("contact-agent record tagged with the contact_agent signal", chatterRecords[0]?.intentSignals.includes("contact_agent"))
+  // POSITIVE CONTROL — an anonymous CTA block (no handle) must never fabricate an identity.
+  const anonHtml = `<html><body><div class="contact-agent-widget"></div></body></html>`
+  check("POSITIVE CONTROL: anonymous contact-agent block ⇒ zero records (never fabricated)", parseContactAgentChatter(anonHtml, "zillow", { city: "Austin", state: "TX" }).length === 0)
+
+  console.log("\n[Wave 65 · sourcer territory honesty — no geography ⇒ no scrape]")
+  check("realty_site_chatter, reddit_relocation, facebook_recommend_realtor, agent_seeking_phrase_intent all have SOURCE_MAP semantics",
+    ["realty_site_chatter", "reddit_relocation", "facebook_recommend_realtor", "agent_seeking_phrase_intent"].every((k) => !!getSourceSemantics(k)))
+  check("expandEnabledSources activates every wave-65 gate token from its canonical key",
+    ["realty_site_chatter", "reddit_relocation", "facebook_recommend_realtor", "agent_seeking_phrase_intent"].every((k) => {
+      const gated = expandEnabledSources([k])
+      return gated.has(k)
+    }))
+}
+
+async function testWave65SourcersHonestlyNoOp() {
+  console.log("\n[Wave 65 · sourcer async wrappers — POSITIVE CONTROL: no territory ⇒ no network call]")
+  const emptyMarket = { city: null, state: null }
+  const reloc = await sourceRedditRelocation(emptyMarket)
+  check("sourceRedditRelocation: no territory ⇒ zero records, zero cost", reloc.records.length === 0 && reloc.cost === 0)
+  const agentSeek = await sourceAgentSeekingPhraseIntent(emptyMarket)
+  check("sourceAgentSeekingPhraseIntent: no territory ⇒ zero records, zero cost", agentSeek.records.length === 0 && agentSeek.cost === 0)
+  const fbRec = await sourceFacebookRecommendRealtor([], emptyMarket)
+  check("sourceFacebookRecommendRealtor: no group URLs ⇒ zero records, zero cost (no default sweep)", fbRec.records.length === 0 && fbRec.cost === 0)
+  const chatter = await sourceRealtySiteChatter("zillow", { city: "", state: "" })
+  check("sourceRealtySiteChatter: no territory ⇒ zero records, zero cost, no provider call", chatter.records.length === 0 && chatter.cost === 0 && chatter.provider === null)
+}
+
+// ── 22. Apify actor registry re-verification (2026) — see docs/lead-acquisition-coverage-2026-09.md
+function testActorRegistryFreshness() {
+  console.log("\n[Wave 65 · Apify actor registry — 2026-verified primaries]")
+  check("reddit primary is the Search actor (Reddit's logged-out search.json is 403'd mid-2026)", ACTOR_REGISTRY.reddit[0] === "clearpath/reddit-search-scraper")
+  check("facebook primary is a 2026-confirmed-live group-posts actor", ACTOR_REGISTRY.facebook[0] === "memo23/facebook-public-group-posts-scraper")
+  check("craigslist primary is a 2026-confirmed-live actor", ACTOR_REGISTRY.craigslist[0] === "solidcode/craigslist-scraper")
+  check("linkedin primary uses the REAL live slug (-no-cookies suffix)", ACTOR_REGISTRY.linkedin[0] === "apimaestro/linkedin-posts-search-scraper-no-cookies")
+  check("instagram primary stays the confirmed-live apify/instagram-hashtag-scraper", ACTOR_REGISTRY.instagram[0] === "apify/instagram-hashtag-scraper")
+  check("every task still resolves ≥1 candidate (resilience preserved)", (Object.keys(ACTOR_REGISTRY) as (keyof typeof ACTOR_REGISTRY)[]).every((t) => pickActors(t).length > 0))
+}
+
+// ── 23. Zyte client + ZenRows/Zyte provider picker (fetch mocked, no real keys) ──────────────
+async function testZyteClientAndProviderPicker() {
+  console.log("\n[Wave 65 · Zyte client — response handling (fetch mocked)]")
+  const { scrapeWithZyte, decodeBase64Body, estimateZyteCost, zyteConfigured } = await import("../lib/external/zyte-client")
+
+  const savedZyteKey = process.env.ZYTE_API_KEY
+  delete process.env.ZYTE_API_KEY
+  check("zyteConfigured() is false with no key", zyteConfigured() === false)
+  const noKeyRes = await scrapeWithZyte("https://example.com")
+  check("no ZYTE_API_KEY ⇒ fails closed (ok:false, no throw)", noKeyRes.ok === false && noKeyRes.error?.includes("ZYTE_API_KEY") === true)
+
+  process.env.ZYTE_API_KEY = "sim-test-zyte-key"
+  check("zyteConfigured() is true once the key is set", zyteConfigured() === true)
+
+  const realFetch = globalThis.fetch
+  // httpResponseBody comes back base64-encoded.
+  const b64 = Buffer.from("<html>zyte body</html>", "utf-8").toString("base64")
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK",
+    json: async () => ({ url: "https://example.com", statusCode: 200, httpResponseBody: b64 }),
+    text: async () => JSON.stringify({ url: "https://example.com", statusCode: 200, httpResponseBody: b64 }),
+  })) as unknown as typeof fetch
+  const httpRes = await scrapeWithZyte("https://example.com", { jsRender: false })
+  check("scrapeWithZyte: httpResponseBody decoded correctly", httpRes.ok && httpRes.html.includes("zyte body"))
+  check("scrapeWithZyte: mode recorded as httpResponseBody", httpRes.mode === "httpResponseBody")
+
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK",
+    json: async () => ({ url: "https://example.com", statusCode: 200, browserHtml: "<html>rendered</html>" }),
+    text: async () => JSON.stringify({ url: "https://example.com", statusCode: 200, browserHtml: "<html>rendered</html>" }),
+  })) as unknown as typeof fetch
+  const browserRes = await scrapeWithZyte("https://example.com", { jsRender: true })
+  check("scrapeWithZyte: browserHtml (jsRender) returned as plain string", browserRes.ok && browserRes.html.includes("rendered"))
+  check("scrapeWithZyte: mode recorded as browserHtml", browserRes.mode === "browserHtml")
+
+  globalThis.fetch = (async () => ({ ok: false, status: 401, statusText: "Unauthorized", text: async () => "" })) as unknown as typeof fetch
+  const failRes = await scrapeWithZyte("https://example.com")
+  check("scrapeWithZyte: a refused request comes back ok:false (never throws)", failRes.ok === false)
+  globalThis.fetch = realFetch
+
+  check("decodeBase64Body: pure decode", decodeBase64Body(b64) === "<html>zyte body</html>")
+  check("decodeBase64Body: defensive on garbage/undefined", decodeBase64Body(undefined) === "" && decodeBase64Body("") === "")
+  check("estimateZyteCost: browser rendering costs more than plain HTTP", estimateZyteCost("browserHtml") > estimateZyteCost("httpResponseBody"))
+
+  console.log("\n[Wave 65 · scrapeSiteWithBestProvider — pick by CONFIGURED KEY, fail closed with none]")
+  const { scrapeSiteWithBestProvider } = await import("../lib/external/zenrows-client")
+  const savedZenrowsKey = process.env.ZENROWS_API_KEY
+
+  // Neither key set ⇒ fail closed, no network call at all.
+  delete process.env.ZENROWS_API_KEY
+  delete process.env.ZYTE_API_KEY
+  const noProvider = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/")
+  check("POSITIVE CONTROL: no scrape keys ⇒ fails closed (no provider, no cost)", noProvider.ok === false && noProvider.provider === null && noProvider.cost === 0)
+
+  // Only ZYTE_API_KEY set ⇒ Zyte is used directly (ZenRows skipped, not attempted).
+  process.env.ZYTE_API_KEY = "sim-test-zyte-key"
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK",
+    json: async () => ({ url: "https://zillow.com/austin-tx/", statusCode: 200, browserHtml: "<html>zyte-only</html>" }),
+    text: async () => "",
+  })) as unknown as typeof fetch
+  const zyteOnly = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/", { jsRender: true })
+  check("ZYTE_API_KEY alone ⇒ Zyte provider used", zyteOnly.ok && zyteOnly.provider === "zyte" && zyteOnly.html.includes("zyte-only"))
+
+  // Both keys set, ZenRows succeeds ⇒ ZenRows is primary (Zyte never called).
+  process.env.ZENROWS_API_KEY = "sim-test-zenrows-key"
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK", text: async () => "<html>zenrows-primary</html>",
+  })) as unknown as typeof fetch
+  const zenrowsPrimary = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/", { jsRender: true })
+  check("both keys set + ZenRows succeeds ⇒ ZenRows stays primary", zenrowsPrimary.ok && zenrowsPrimary.provider === "zenrows" && zenrowsPrimary.html.includes("zenrows-primary"))
+
+  globalThis.fetch = realFetch
+  // restore env
+  if (savedZenrowsKey === undefined) delete process.env.ZENROWS_API_KEY; else process.env.ZENROWS_API_KEY = savedZenrowsKey
+  if (savedZyteKey === undefined) delete process.env.ZYTE_API_KEY; else process.env.ZYTE_API_KEY = savedZyteKey
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
@@ -1456,6 +1650,10 @@ async function main() {
   testNeighborhoodIntelligence()
   testBatchDataTypes()
   await testZenRowsClient()
+  testWave65Lanes()
+  await testWave65SourcersHonestlyNoOp()
+  testActorRegistryFreshness()
+  await testZyteClientAndProviderPicker()
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

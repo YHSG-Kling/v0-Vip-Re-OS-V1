@@ -16,14 +16,22 @@ export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "go
  * Ordered candidate actors per task — primary first. Multiple public actors
  * exist for each source; if one is removed we try the next. Keep primaries
  * cost-effective; fallbacks are alternates that accept compatible input.
+ *
+ * RE-VERIFIED 2026-09-15 (wave 65, Exa research — see
+ * docs/lead-acquisition-coverage-2026-09.md for citations + pricing). Reddit's own
+ * logged-out search.json API is reported hard-blocked (403) as of mid-2026, which is why a
+ * dedicated Reddit SEARCH actor (clearpath) now leads that list ahead of the older
+ * subreddit-listing-style trudax actor. The LinkedIn "no-cookies" slug below is the real,
+ * currently-live actor id — the old entry (missing the "-no-cookies" suffix) was never
+ * confirmed live and is kept only as an unverified last resort.
  */
 export const ACTOR_REGISTRY: Record<ApifyTask, string[]> = {
-  reddit:     ["trudax/reddit-scraper", "trudax/reddit-scraper-lite", "oxylabs/reddit-scraper"],
-  facebook:   ["apify/facebook-posts-scraper", "apify/facebook-pages-scraper", "easyapi/facebook-posts-search-scraper"],
-  instagram:  ["apify/instagram-scraper", "apify/instagram-hashtag-scraper", "apify/instagram-search-scraper"],
-  craigslist: ["epctex/craigslist-scraper", "ivanvs/craigslist-scraper", "lukaskrivka/craigslist-scraper"],
+  reddit:     ["clearpath/reddit-search-scraper", "harshmaur/reddit-search-scraper", "trudax/reddit-scraper", "trudax/reddit-scraper-lite", "oxylabs/reddit-scraper"],
+  facebook:   ["memo23/facebook-public-group-posts-scraper", "scrapier/facebook-groups-posts-scraper", "logical_scrapers/facebook-group-posts-scraper", "apify/facebook-posts-scraper", "apify/facebook-pages-scraper"],
+  instagram:  ["apify/instagram-hashtag-scraper", "apidojo/instagram-hashtag-scraper", "apify/instagram-scraper", "apify/instagram-search-scraper"],
+  craigslist: ["solidcode/craigslist-scraper", "epctex/craigslist-scraper", "ivanvs/craigslist-scraper", "lukaskrivka/craigslist-scraper"],
   google:     ["apify/google-search-scraper", "scraping-fish/google-search-results-scraper"],
-  linkedin:   ["apimaestro/linkedin-posts-search-scraper", "curious_coder/linkedin-post-search-scraper", "harvestapi/linkedin-post-search"],
+  linkedin:   ["apimaestro/linkedin-posts-search-scraper-no-cookies", "harvestapi/linkedin-post-search", "curious_coder/linkedin-post-search-scraper", "apimaestro/linkedin-posts-search-scraper"],
 }
 
 export type ActorRunner = (actorId: string, input: Record<string, any>) => Promise<{ data: any[]; cost: number }>

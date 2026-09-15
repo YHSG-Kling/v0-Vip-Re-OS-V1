@@ -335,6 +335,74 @@ export function parseBuyerSavedSearches(
   return records.filter(isViableRecord)
 }
 
+/**
+ * Build the URL for the realty_site_chatter lane (Zillow/Realtor/Homes.com saved-search +
+ * "contact agent" chatter — owner ruling wave 65, distinct from buildPropertySearchUrl's
+ * FSBO-only search above). Territory-centric: general market search results, which is where a
+ * portal renders its "contact agent" / "request a tour" / "save this search" CTAs across many
+ * listings at once, rather than the fsbo:true-filtered page zillow_behavior targets. Homes.com is
+ * NEW coverage this wave — it was never wired into buildPropertySearchUrl's switch.
+ */
+export function buildRealtySiteChatterUrl(site: "zillow" | "realtor" | "homes", market: { city: string; state: string }): string {
+  const citySlug = market.city.toLowerCase().replace(/ /g, "-")
+  switch (site) {
+    case "zillow":
+      return `https://www.zillow.com/${citySlug}-${market.state.toLowerCase()}/`
+    case "realtor":
+      return `https://www.realtor.com/realestateandhomes-search/${market.city.replace(/ /g, "_")}_${market.state}`
+    case "homes":
+      return `https://www.homes.com/${citySlug}-${market.state.toLowerCase()}/homes-for-sale/`
+  }
+}
+
+/**
+ * Parse "contact agent" / "request info" / "schedule a tour" chatter blocks — a DISTINCT DOM
+ * signal from parseBuyerSavedSearches above (which reads saved-search/favorited/watching
+ * markers). Same defensive posture: a record is emitted only when the block carries a usable
+ * handle/name (never fabricated), and never when the page doesn't expose this UI publicly — an
+ * honest zero is the correct answer for a page that keeps this data behind a login wall.
+ */
+export function parseContactAgentChatter(html: string, site: string, market: MarketGeo): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+
+  $(
+    '[class*="contact-agent"], [class*="contactAgent"], [class*="request-info"], ' +
+    '[class*="request-tour"], [class*="schedule-tour"], [class*="inquiry"], [data-testid*="contact-agent"]',
+  ).each((i, el) => {
+    const block = $(el)
+    const handle =
+      block.attr("data-user") ||
+      block.find('[class*="user"], [class*="member"], [class*="author"], [class*="name"]').first().text().trim() ||
+      ""
+    const propertyAddress =
+      block.find('[class*="address"], [class*="home-address"]').first().text().trim() || null
+
+    // Need a usable identity (handle) to anchor the lead — an anonymous CTA block is noise.
+    if (!handle) return
+
+    const nameParts = handle.split(/\s+/).filter(Boolean)
+    records.push({
+      sourceRecordId: `${site}-contact-agent-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      source: site,
+      behaviorType: "contact_agent_chatter",
+      intentType: "buyer",
+      intentSignals: ["contact_agent", "request_info"],
+      firstName: nameParts.length >= 2 ? nameParts[0] : null,
+      lastName: nameParts.length >= 2 ? nameParts.slice(1).join(" ") : null,
+      username: handle || undefined,
+      propertyAddress,
+      city: market.city,
+      state: market.state,
+      motivationScore: 58, // an active contact-agent inquiry outranks a passive saved search
+      sourceUrl: null,
+      rawPayload: { handle, propertyAddress },
+    })
+  })
+
+  return records.filter(isViableRecord)
+}
+
 // NOTE: expired/withdrawn listings are now sourced from BatchData (the 'expired' motivation
 // trigger → quickList 'expired-listing'), tagged by normalizeBatchDataRecord above. The old
 // portal-HTML expired parser was consolidated away so expired has a single, structured source.

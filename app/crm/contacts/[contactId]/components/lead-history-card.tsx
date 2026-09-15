@@ -112,6 +112,13 @@ interface OutreachRow {
   them_first_score: number | null
 }
 
+interface TimelineEventRow {
+  id: string
+  type: string
+  occurredAt: string | null
+  summary: string
+}
+
 interface AssignmentRow {
   id: string
   lead_id: string | null
@@ -135,6 +142,8 @@ export function LeadHistoryCard({ contactId }: { contactId: string }) {
   const [communications, setCommunications] = useState<CommunicationRow[]>([])
   const [outreach, setOutreach] = useState<OutreachRow[]>([])
   const [assignments, setAssignments] = useState<AssignmentRow[]>([])
+  const [timeline, setTimeline] = useState<TimelineEventRow[]>([])
+  const [timelineError, setTimelineError] = useState<string | null>(null)
   const [extendedError, setExtendedError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -162,6 +171,8 @@ export function LeadHistoryCard({ contactId }: { contactId: string }) {
       setCommunications(Array.isArray(payload.communications) ? payload.communications : [])
       setOutreach(Array.isArray(payload.outreach) ? payload.outreach : [])
       setAssignments(Array.isArray(payload.assignments) ? payload.assignments : [])
+      setTimeline(Array.isArray(payload.timeline) ? payload.timeline : [])
+      setTimelineError(typeof payload.timelineError === "string" ? payload.timelineError : null)
       setExtendedError(typeof payload.extendedError === "string" ? payload.extendedError : null)
     } catch (err: unknown) {
       setRows(null)
@@ -362,7 +373,31 @@ export function LeadHistoryCard({ contactId }: { contactId: string }) {
               </section>
             )}
 
-            {assignments.length === 0 && activities.length === 0 && communications.length === 0 && outreach.length === 0 && !extendedError && (
+            {timelineError && (
+              <p className="text-xs text-destructive">
+                Summarized timeline could not be fully read: {timelineError}
+              </p>
+            )}
+            {timeline.length > 0 && (
+              <section className="space-y-1.5">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Summarized timeline (pre-conversion summary + everything since)
+                </h4>
+                <ol className="space-y-1">
+                  {timeline.map((t) => (
+                    <li key={t.id} className="text-xs text-muted-foreground rounded border px-2 py-1.5">
+                      <span className="font-medium text-foreground capitalize">{t.type.replace(/_/g, " ")}</span>
+                      {" — "}
+                      {t.summary}
+                      {" — "}
+                      {when(t.occurredAt) ?? "date unrecorded"}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+
+            {assignments.length === 0 && activities.length === 0 && communications.length === 0 && outreach.length === 0 && timeline.length === 0 && !extendedError && (
               <p className="text-xs text-muted-foreground">
                 No lead-era activity, communication or assignment history on record for this contact.
               </p>

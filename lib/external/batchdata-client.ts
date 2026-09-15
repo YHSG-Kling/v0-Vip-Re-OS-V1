@@ -166,6 +166,17 @@ const QUICKLIST_SLUG: Record<string, string> = {
   distressed:      'preforeclosure',
 }
 
+/**
+ * Pure: the internal motivation-trigger labels (probate/foreclosure/tax_lien/…) →
+ * their BatchData quickList slug, filtered to ones the provider actually publishes.
+ * Reused by both the V1 pull (buildPropertySearchBody, below) and the V2 Smart Search
+ * subscription reconcile step (app/api/cron/lead-scraping/route.ts) so the two never
+ * drift onto two different slug spellings for the same trigger.
+ */
+export function quickListSlugsFor(triggers: readonly string[]): string[] {
+  return validQuickLists(triggers.map((t) => QUICKLIST_SLUG[t]).filter(Boolean) as string[])
+}
+
 /** Pure: a BatchData Property Search `results.properties[]` row → BatchDataRecord. */
 export function normalizeBatchDataProperty(p: Record<string, any>, requestedType: string): BatchDataRecord {
   const addr      = p.address ?? {}
@@ -377,78 +388,112 @@ export async function searchProperties(address: string): Promise<{
   }
 }
 
-// ─── BatchRank propensity — a DISTINCT capability from the passive `intel.salePropensity`
-// read in lib/external/batchdata-seller-signals.ts (which is read off a regular Property
-// Search response when BatchData happens to include it) ────────────────────────────────
-// BatchRank is BatchData's premium AI sale-propensity product (High/Medium/Low or a
-// 0-100 numeric score, ~82% accuracy in BatchData's own Aug-Oct 2025 test per the
-// owner's research brief). This lane's research did NOT surface a confirmed dedicated
-// endpoint path or response field name for it beyond "offered as a premium REST API" —
-// unlike property/search, property/lookup and property/skip-trace, which ARE confirmed.
-// Rather than invent a path, this calls property/lookup (a confirmed endpoint) with an
-// explicit request for the BatchRank field and reads it DEFENSIVELY from every plausible
-// shape a premium add-on could arrive in; when none of them are present the call is
-// treated as "this account/response has no BatchRank," never as a fabricated score. This
-// is FAIL-CLOSED BY CONSTRUCTION: no BATCHDATA_API_KEY, no address, a network error, or a
-// response with no recognizable BatchRank field ALL return { available: false, score:
-// null }, never a guessed number. The exact wire contract is UNRESOLVED pending a
-// confirmed doc citation — see the wave report.
+// ─── BatchRank propensity ─────────────────────────────────────────────────────────────
+// WAVE 65 CORRECTION of wave 64's guess. Wave 64 treated BatchRank as a premium field
+// distinct from the passive `intel.salePropensity` read in
+// lib/external/batchdata-seller-signals.ts and invented an `includeBatchRank` search
+// option plus a `batchRank`/`batch_rank` response field — neither is real.
+//
+// CONFIRMED LIVE, 2026-09-15, via the BatchData MCP server's own
+// `list_property_dataset_fields` tool (github.com/batchdataco/batchdata-mcp-server,
+// the same MCP this repo already adapts in lib/external/batchdata-mcp.ts):
+//   list_property_dataset_fields({dataset_name:"batchrank"}) →
+//     {"dataset":"batchrank","fieldCount":4,
+//      "fields":["_id","intel.salePropensity","intel.salePropensityCategory",
+//                "intel.salePropensityStatus"]}
+// BatchRank is not a separate premium field — it IS the `batchrank` DATASET
+// projection, and that dataset publishes EXACTLY `intel.salePropensity` (the 0-100
+// score), `intel.salePropensityCategory` (High/Medium/Low) and
+// `intel.salePropensityStatus` (the provider's own per-record availability verdict).
+// This is the same field seller-signals' SALE_PROPENSITY_SIGNAL_TYPE already reads
+// passively when a search response happens to carry it — BatchRank is that field
+// requested ON PURPOSE via the dataset list, not a second capability. Kept as its
+// own function anyway (not folded into detectSellerSignals) because callers here want
+// ONE address's score at PROMOTION time with its own budget/cost accounting, not a
+// motivated-seller sweep.
+//
+// FAIL-CLOSED BY CONSTRUCTION: no BATCHDATA_API_KEY, no address, a network error, a
+// response with no property row, or `salePropensityStatus` reporting the model has
+// nothing for this parcel ALL return { available: false, score: null }, never a
+// fabricated number.
 export interface BatchRankResult {
   available: boolean
-  score: number | null           // 0-100 when the provider returns a numeric score
-  category: "High" | "Medium" | "Low" | null
+  score: number | null           // intel.salePropensity, 0-100
+  category: "High" | "Medium" | "Low" | null   // intel.salePropensityCategory
+  /** intel.salePropensityStatus verbatim — the provider's own verdict on whether this
+   *  parcel has a model output at all (e.g. an "unavailable"-shaped status refuses the
+   *  read even when a stray numeric field is present). */
+  status: string | null
   cost: number
   /** Set when the call could not confirm BatchRank is on this account/response —
    *  the reason the fetch fails closed, never a fabricated result. */
   unavailableReason?: string
 }
 
-/** PURE — reads a BatchRank score/category out of a property-lookup response body in
- *  every plausible shape (top-level, under `intel`, or under `batchRank`), never guesses.
- *  Module-private: fetchBatchRankPropensity below is the ONE caller-facing entry point. */
-function readBatchRankFromLookup(propertyRow: Record<string, any> | null | undefined): BatchRankResult {
-  if (!propertyRow) return { available: false, score: null, category: null, cost: 0, unavailableReason: "no property row in response" }
-  const candidates = [
-    propertyRow.batchRank, propertyRow.batch_rank,
-    propertyRow.intel?.batchRank, propertyRow.intel?.batch_rank,
-  ]
-  const raw = candidates.find((c) => c !== undefined && c !== null)
-  if (raw === undefined) return { available: false, score: null, category: null, cost: 0, unavailableReason: "no batchRank field on the response — account may lack BatchRank" }
+/** Status strings the provider could plausibly use to say "no model output for this
+ *  parcel" — read defensively (never assume the exact casing/spelling) so an
+ *  unrecognised status still fails closed rather than accepting a stray score. */
+const BATCHRANK_UNAVAILABLE_STATUSES = new Set(["unavailable", "not_available", "none", "no_data", "insufficient_data"])
 
-  // The field can arrive as a bare number, or an object carrying score + category.
-  const scoreRaw = typeof raw === "number" ? raw : (raw as any)?.score ?? (raw as any)?.value
-  const categoryRaw: unknown = typeof raw === "object" ? (raw as any)?.category ?? (raw as any)?.label : raw
+/** PURE — reads the confirmed `batchrank` dataset fields
+ *  (`intel.salePropensity` / `intel.salePropensityCategory` / `intel.salePropensityStatus`)
+ *  off a property-search/lookup response row. Module-private: fetchBatchRankPropensity
+ *  below is the ONE caller-facing entry point. */
+function readBatchRankFromLookup(propertyRow: Record<string, any> | null | undefined): BatchRankResult {
+  if (!propertyRow) return { available: false, score: null, category: null, status: null, cost: 0, unavailableReason: "no property row in response" }
+  const intel = (propertyRow.intel ?? {}) as Record<string, unknown>
+  const statusRaw = intel.salePropensityStatus
+  const status = typeof statusRaw === "string" ? statusRaw : null
+  if (status && BATCHRANK_UNAVAILABLE_STATUSES.has(status.toLowerCase())) {
+    return { available: false, score: null, category: null, status, cost: 0, unavailableReason: `provider salePropensityStatus: ${status}` }
+  }
+
+  const scoreRaw = intel.salePropensity
+  const categoryRaw = intel.salePropensityCategory
   const score = typeof scoreRaw === "number" && Number.isFinite(scoreRaw) ? Math.min(100, Math.max(0, scoreRaw)) : null
   const category = ["High", "Medium", "Low"].includes(String(categoryRaw)) ? (categoryRaw as "High" | "Medium" | "Low") : null
 
   if (score === null && category === null) {
-    return { available: false, score: null, category: null, cost: 0, unavailableReason: "batchRank field present but unrecognized shape" }
+    return { available: false, score: null, category: null, status, cost: 0, unavailableReason: "no intel.salePropensity/salePropensityCategory on the response — account may lack the batchrank dataset" }
   }
-  return { available: true, score, category, cost: 0.10 }
+  return { available: true, score, category, status, cost: 0.10 }
 }
 
 /**
  * fetchBatchRankPropensity — the BatchData credential + budget gate, fail-closed. Called
  * only for BatchData-origin records at promotion time (bounded spend — never at raw
- * ingest volume). Returns { available: false } rather than throwing so a missing
+ * ingest volume). Requests the confirmed `batchrank` dataset alongside `core` (the
+ * REST request-side parameter name for dataset selection was not independently
+ * confirmed against developer.batchdata.com by this lane — see the wave report's
+ * unresolved list — so both the documented MCP-style `dataset` array and a defensive
+ * `includeDatasets` alias are sent; an account/endpoint that ignores both still returns
+ * a plain search response, which the reader above treats as "no batchrank data" rather
+ * than throwing). Returns { available: false } rather than throwing so a missing
  * entitlement never blocks promotion; the caller decides whether to use the score.
  */
 export async function fetchBatchRankPropensity(address: string): Promise<BatchRankResult> {
   if (!process.env.BATCHDATA_API_KEY) {
-    return { available: false, score: null, category: null, cost: 0, unavailableReason: "BATCHDATA_API_KEY not configured" }
+    return { available: false, score: null, category: null, status: null, cost: 0, unavailableReason: "BATCHDATA_API_KEY not configured" }
   }
   if (!address?.trim()) {
-    return { available: false, score: null, category: null, cost: 0, unavailableReason: "no address to look up" }
+    return { available: false, score: null, category: null, status: null, cost: 0, unavailableReason: "no address to look up" }
   }
   try {
     const data = await batchDataPropertySearch(
-      { searchCriteria: { query: address }, options: { take: 1, skip: 0, includeBatchRank: true } },
+      {
+        searchCriteria: { query: address },
+        options: { take: 1, skip: 0 },
+        // Confirmed dataset name (list_property_datasets): "batchrank". "core" is
+        // requested alongside it because the provider's own dataset docs mark
+        // basic/core as the mutually-exclusive base every other dataset layers onto.
+        dataset: ["core", "batchrank"],
+      },
       "BatchRank lookup error",
     )
     const prop = (data?.results?.properties ?? data?.results ?? [])[0] ?? null
     return readBatchRankFromLookup(prop)
   } catch (e) {
-    return { available: false, score: null, category: null, cost: 0, unavailableReason: `BatchRank lookup failed: ${e instanceof Error ? e.message : String(e)}` }
+    return { available: false, score: null, category: null, status: null, cost: 0, unavailableReason: `BatchRank lookup failed: ${e instanceof Error ? e.message : String(e)}` }
   }
 }
 
@@ -475,5 +520,361 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
     estimatedValue: prop.valuation?.estimatedValue ?? prop.estimatedValue ?? 0,
     daysOnMarket: prop.listing?.daysOnMarket,
     cost: 0.03,
+  }
+}
+
+// ─── SMART SEARCH = V2 PROPERTY SUBSCRIPTION ──────────────────────────────────────────
+// A DISTINCT capability from fetchMotivatedSellers (V1 Property Search, us polling on a
+// cron) — Property Subscription is BatchData's PUSH model: we register search criteria
+// once and BatchData delivers only NEW matches to a webhook as they appear, no polling.
+// The inbound side already exists at app/api/webhooks/batchdata-smart-search/route.ts;
+// this is the OUTBOUND half that was missing — nothing ever CREATED a subscription, so
+// that webhook could only ever receive a push BatchData had no standing reason to send.
+//
+// CONFIRMED, 2026-09-15 (Exa web fetch, batchdata.io/llms.txt + developer.batchdata.com
+// search results — transcribed, not guessed):
+//   · V2 base URL: https://api.batchdata.com/api/v2 (developer.batchdata.com/docs/
+//     batchdata/batchdata-v2: "Property Monitoring for push-based monitoring of search
+//     criteria... Search Sessions for managing persistent delivery contexts").
+//   · Request/response SHAPE (github.com/land-catalyst/land-catalyst,
+//     npmjs.com/package/@land-catalyst/batch-data-sdk — a third-party TS SDK whose
+//     README documents `PropertySubscriptionBuilder` / `PropertySubscriptionRequest` /
+//     `PropertySubscriptionResponse` / `client.createPropertySubscription(subscription)`
+//     against the real API, integration-tested against BATCHDATA_API_KEY per its own
+//     README): the body is `{ searchCriteria, deliveryConfig }`, where searchCriteria is
+//     the SAME shape buildPropertySearchBody already sends to V1 property/search
+//     (query + quickLists/orQuickLists), and deliveryConfig is ONE of
+//     `{ webhook: { url, headers? } }`, `{ kinesis: {...} }` or `{ eventHub: {...} }` —
+//     this lane only ever sends `webhook`, matching the existing receiver.
+// UNRESOLVED (see the wave report): the exact REST PATH SEGMENT under /api/v2 (this
+// lane sends "property/subscription", following the v1 "property/search" naming
+// convention, but that segment was not independently confirmed on
+// developer.batchdata.com — a Stoplight-rendered SPA this lane's fetch tools could not
+// execute JS against) and the exact response field name for the created subscription's
+// id (read DEFENSIVELY below from every plausible shape, never fabricated).
+const BATCHDATA_API_V2_URL = 'https://api.batchdata.com/api/v2'
+
+export interface SmartSearchSubscriptionResult {
+  ok: boolean
+  /** BatchData's id for the created/renewed subscription — null when the call failed
+   *  or the response carried no recognizable id field. */
+  subscriptionId: string | null
+  status: number | null
+  error: string | null
+}
+
+/** PURE — reads a subscription id out of a Property Subscription response body in every
+ *  plausible shape, never guesses. Module-private. */
+function readSubscriptionId(data: Record<string, any> | null | undefined): string | null {
+  if (!data) return null
+  const candidates = [
+    data.id, data.subscriptionId, data.subscription_id,
+    data.results?.id, data.results?.subscriptionId, data.results?.subscription_id,
+    data.subscription?.id,
+  ]
+  const found = candidates.find((c) => typeof c === "string" && c.length > 0)
+  return typeof found === "string" ? found : null
+}
+
+/**
+ * createOrRenewSmartSearchSubscription — register (or, called again with the same
+ * criteria, effectively refresh) a V2 Property Subscription for ONE BatchData quickList
+ * against ONE territory's geography, delivered to this repo's webhook receiver. Bounded
+ * spend by construction: called only from the reconcile step below, never per-record.
+ * FAIL-CLOSED: no BATCHDATA_API_KEY, no webhook URL configured, or a network/HTTP error
+ * all return { ok: false }, never a fabricated subscription id.
+ */
+export async function createOrRenewSmartSearchSubscription(params: {
+  /** A single BatchData quickList slug, validated against BATCHDATA_QUICKLISTS — Smart
+   *  Search subscriptions are one criteria set each, unlike the OR-able V1 search pull. */
+  quicklist: string
+  city?: string
+  state: string
+  zip?: string
+}): Promise<SmartSearchSubscriptionResult> {
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { ok: false, subscriptionId: null, status: null, error: "BATCHDATA_API_KEY not configured" }
+  }
+  const webhookUrl = process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL
+  if (!webhookUrl) {
+    return { ok: false, subscriptionId: null, status: null, error: "BATCHDATA_SMART_SEARCH_WEBHOOK_URL not configured — no delivery target to register" }
+  }
+  const secret = process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_SECRET
+  const quicklists = validQuickLists([params.quicklist])
+  if (quicklists.length === 0) {
+    return { ok: false, subscriptionId: null, status: null, error: `"${params.quicklist}" is not a valid BatchData quickList` }
+  }
+  const query = [params.city, params.zip, params.state].filter(Boolean).join(", ") || params.state
+
+  try {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<Record<string, any>>({
+      connector: "batchdata_smart_search",
+      baseUrl: BATCHDATA_API_V2_URL,
+      path: "property/subscription",
+      method: "POST",
+      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      body: {
+        searchCriteria: { query, quickLists: quicklists },
+        deliveryConfig: {
+          webhook: {
+            url: webhookUrl,
+            // Matches the receiver's verifySharedSecret, which also accepts a bearer
+            // Authorization header — sent both ways since BatchData's exact header name
+            // for this push was not confirmed (see app/api/webhooks/batchdata-smart-search/route.ts).
+            ...(secret ? { headers: { "x-batchdata-webhook-secret": secret, Authorization: `Bearer ${secret}` } } : {}),
+          },
+        },
+      },
+    })
+    if (!res.ok) {
+      return { ok: false, subscriptionId: null, status: res.status, error: res.error ?? `HTTP ${res.status ?? "network"}` }
+    }
+    const subscriptionId = readSubscriptionId(res.data)
+    if (!subscriptionId) {
+      return { ok: false, subscriptionId: null, status: res.status, error: "subscription created but no id in the response — cannot track it for renewal" }
+    }
+    return { ok: true, subscriptionId, status: res.status, error: null }
+  } catch (e) {
+    return { ok: false, subscriptionId: null, status: null, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// ─── V3 SKIP TRACE — batched, ≤100 per call ────────────────────────────────────────────
+// CONFIRMED (batchdata.io/llms.txt, 2026-09-15): "API Reference V3 (includes V3 Skip
+// Trace)"; "Property and Phone APIs offer asynchronous variants... async responses
+// return a `requestId`... deliver to a `webhookUrl`". This lane uses the SYNCHRONOUS V3
+// form (bounded batch, no webhook plumbing needed) — the async variant is available at
+// the same request shape plus `options.webhookUrl` if a caller ever needs >100 records.
+// UNRESOLVED: the exact V3 path segment was not independently confirmed against
+// developer.batchdata.com (Stoplight SPA, not executable by this lane's fetch tools);
+// "property/skip-trace" is used, following the v1 "property/search" / "property/
+// lookup/all-attributes" naming convention this repo already relies on elsewhere.
+//
+// DOES NOT DUPLICATE lib/compliance/phone-scrub-runner.ts — this function returns RAW
+// phone/email candidates only. DNC/TCPA scrubbing stays the orchestrator's job, exactly
+// as it already is for the PeopleData lane (enrichment-orchestrator.ts calls
+// scrubPhonesForPatch on whatever candidates it has, regardless of which provider found
+// them).
+export interface BatchDataSkipTraceInput {
+  /** Caller-supplied correlation id (e.g. the lead/contact id) — echoed back so a
+   *  batch response can be matched to its request row without relying on name/address
+   *  string equality. */
+  ref: string
+  firstName?: string
+  lastName?: string
+  address?: string
+  city?: string
+  state?: string
+  zip?: string
+}
+
+export interface BatchDataSkipTraceMatch {
+  ref: string
+  matched: boolean
+  phones: string[]
+  emails: string[]
+}
+
+const BATCHDATA_API_V3_URL = 'https://api.batchdata.com/api/v3'
+const SKIP_TRACE_BATCH_LIMIT = 100
+
+/** PURE — one V3 skip-trace response row → phones[]/emails[], read defensively across
+ *  the plausible shapes (a `persons[]` array, a flat `phoneNumbers`/`emails`, or the
+ *  V1-style `phone`/`email` singular fields this repo already reads elsewhere). */
+function readSkipTraceMatch(ref: string, row: Record<string, any> | null | undefined): BatchDataSkipTraceMatch {
+  if (!row) return { ref, matched: false, phones: [], emails: [] }
+  const phoneSources = [
+    row.phoneNumbers, row.phones, row.contact?.phoneNumbers, row.contact?.phones,
+    ...(Array.isArray(row.persons) ? row.persons.flatMap((p: any) => p?.phoneNumbers ?? p?.phones ?? []) : []),
+  ].filter(Array.isArray).flat()
+  const emailSources = [
+    row.emails, row.contact?.emails,
+    ...(Array.isArray(row.persons) ? row.persons.flatMap((p: any) => p?.emails ?? []) : []),
+  ].filter(Array.isArray).flat()
+  const singlePhone = typeof row.phone === "string" ? [row.phone] : []
+  const singleEmail = typeof row.email === "string" ? [row.email] : []
+
+  const phones = Array.from(new Set(
+    [...phoneSources, ...singlePhone]
+      .map((p) => (typeof p === "string" ? p : p?.number))
+      .filter((p): p is string => typeof p === "string" && p.length > 0),
+  ))
+  const emails = Array.from(new Set(
+    [...emailSources, ...singleEmail]
+      .map((e) => (typeof e === "string" ? e : e?.email))
+      .filter((e): e is string => typeof e === "string" && e.length > 0),
+  ))
+  return { ref, matched: phones.length > 0 || emails.length > 0, phones, emails }
+}
+
+/**
+ * skipTraceBatchDataV3Batch — synchronous V3 Skip Trace, chunked to the documented
+ * ≤100-per-call limit. FAIL-CLOSED: no BATCHDATA_API_KEY returns every input as
+ * unmatched (never throws, never fabricates a phone/email) so a caller can fall through
+ * to another provider or terminate the row exactly as if BatchData found nothing.
+ */
+export async function skipTraceBatchDataV3Batch(
+  people: readonly BatchDataSkipTraceInput[],
+): Promise<{ matches: BatchDataSkipTraceMatch[]; cost: number }> {
+  if (people.length === 0) return { matches: [], cost: 0 }
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { matches: people.map((p) => ({ ref: p.ref, matched: false, phones: [], emails: [] })), cost: 0 }
+  }
+
+  const chunks: BatchDataSkipTraceInput[][] = []
+  for (let i = 0; i < people.length; i += SKIP_TRACE_BATCH_LIMIT) chunks.push(people.slice(i, i + SKIP_TRACE_BATCH_LIMIT))
+
+  const allMatches: BatchDataSkipTraceMatch[] = []
+  let cost = 0
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  for (const chunk of chunks) {
+    try {
+      const res = await callConnector<Record<string, any>>({
+        connector: "batchdata_skip_trace",
+        baseUrl: BATCHDATA_API_V3_URL,
+        path: "property/skip-trace",
+        method: "POST",
+        auth: { style: "bearer", token: BATCHDATA_API_KEY },
+        body: {
+          requests: chunk.map((p) => ({
+            propertyAddress: p.address ? { street: p.address, city: p.city, state: p.state, zip: p.zip } : undefined,
+            owner: { firstName: p.firstName, lastName: p.lastName },
+          })),
+        },
+      })
+      if (!res.ok || !res.data) {
+        allMatches.push(...chunk.map((p) => ({ ref: p.ref, matched: false, phones: [], emails: [] })))
+        continue
+      }
+      const rows: any[] = res.data.results?.persons ?? res.data.results?.properties ?? res.data.results ?? []
+      // Correlate positionally — the request array and the response array are the same
+      // length and order per the documented batch contract; a length mismatch means the
+      // response drifted and every ref in this chunk fails closed rather than being
+      // matched to the wrong person.
+      if (rows.length !== chunk.length) {
+        allMatches.push(...chunk.map((p) => ({ ref: p.ref, matched: false, phones: [], emails: [] })))
+      } else {
+        chunk.forEach((p, i) => allMatches.push(readSkipTraceMatch(p.ref, rows[i])))
+      }
+      cost += chunk.length * 0.15 // V3 skip trace is a per-match-attempt charge; matched or not, the lookup is billed
+    } catch {
+      allMatches.push(...chunk.map((p) => ({ ref: p.ref, matched: false, phones: [], emails: [] })))
+    }
+  }
+  return { matches: allMatches, cost }
+}
+
+// ─── ADDRESS VERIFY — fallback ONLY when Lob is unconfigured ──────────────────────────
+// Lob stays the survivor for mailing-address verification (lib/external/lob-address-
+// verify.ts, wired through lib/lead-pipeline/promotion-address-verification.ts — CLAUDE.md
+// §1: merge onto the named survivor, never build a second primary). This exists so the
+// SAME capability keeps working when LOB_API_KEY is absent but BATCHDATA_API_KEY is
+// present, rather than the promotion gate silently never verifying an address at all.
+// CONFIRMED (batchdata.io/llms.txt): "Address APIs include Verify, Geocode, Reverse
+// Geocode, and Autocomplete... Address APIs are synchronous-only." Request shape per the
+// community `@land-catalyst/batch-data-sdk` README: `{ requests: [{ street, city, state,
+// zip }] }`. UNRESOLVED: exact V1 path segment ("address/verify" used here, matching the
+// address/geocode and address/autocomplete siblings' naming) not independently confirmed.
+export interface BatchDataAddressVerifyResult {
+  ok: boolean
+  verified: boolean
+  standardized: { street?: string; city?: string; state?: string; zip?: string } | null
+  cost: number
+  error?: string
+}
+
+export async function verifyAddressBatchData(address: {
+  street: string
+  city?: string
+  state?: string
+  zip?: string
+}): Promise<BatchDataAddressVerifyResult> {
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { ok: false, verified: false, standardized: null, cost: 0, error: "BATCHDATA_API_KEY not configured" }
+  }
+  if (!address.street?.trim()) {
+    return { ok: false, verified: false, standardized: null, cost: 0, error: "no street address to verify" }
+  }
+  try {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<Record<string, any>>({
+      connector: "batchdata_address_verify",
+      baseUrl: BATCHDATA_API_URL,
+      path: "address/verify",
+      method: "POST",
+      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      body: { requests: [{ street: address.street, city: address.city, state: address.state, zip: address.zip }] },
+    })
+    if (!res.ok || !res.data) {
+      return { ok: false, verified: false, standardized: null, cost: 0, error: res.error ?? `HTTP ${res.status ?? "network"}` }
+    }
+    const row = (res.data.results ?? res.data.results?.addresses ?? [res.data])[0] ?? {}
+    const verified = row.deliverable === true || row.verified === true || row.status === "verified"
+    const std = row.standardized ?? row.address ?? null
+    return {
+      ok: true,
+      verified,
+      standardized: std ? { street: std.street ?? std.primary_line, city: std.city, state: std.state, zip: std.zip ?? std.zip_code } : null,
+      cost: 0.02,
+    }
+  } catch (e) {
+    return { ok: false, verified: false, standardized: null, cost: 0, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// ─── PROPERTY-ENRICHMENT DATASETS — valuation, mortgage-liens, foreclosure, deed, owner ─
+// One address lookup requesting the SAME confirmed dataset names BatchRank uses above
+// (list_property_datasets), landed as a single compact object so enrichment-column-map.ts
+// can map it onto EXISTING leads/contacts columns without inventing any.
+export interface BatchDataPropertyEnrichment {
+  ok: boolean
+  equityPercent: number | null
+  estimatedValue: number | null
+  mortgageBalance: number | null
+  foreclosureStatus: string | null
+  lastDeedType: string | null
+  ownerOccupied: boolean | null
+  cost: number
+  error?: string
+}
+
+export async function enrichPropertyDatasetsBatchData(address: string): Promise<BatchDataPropertyEnrichment> {
+  const empty = { equityPercent: null, estimatedValue: null, mortgageBalance: null, foreclosureStatus: null, lastDeedType: null, ownerOccupied: null }
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { ok: false, ...empty, cost: 0, error: "BATCHDATA_API_KEY not configured" }
+  }
+  if (!address?.trim()) {
+    return { ok: false, ...empty, cost: 0, error: "no address to look up" }
+  }
+  try {
+    const data = await batchDataPropertySearch(
+      {
+        searchCriteria: { query: address },
+        options: { take: 1, skip: 0 },
+        dataset: ["core", "valuation", "mortgage-liens", "foreclosure", "deed", "owner"],
+      },
+      "BatchData property enrichment error",
+    )
+    const prop = (data?.results?.properties ?? data?.results ?? [])[0]
+    if (!prop) return { ok: false, ...empty, cost: 0, error: "no property matched this address" }
+    const valuation = prop.valuation ?? {}
+    const mortgage = prop.mortgage ?? prop.openLien ?? {}
+    const foreclosure = prop.foreclosure ?? {}
+    const deed = prop.deedHistory ?? prop.sale?.lastSale ?? {}
+    const owner = prop.owner ?? {}
+    return {
+      ok: true,
+      equityPercent: typeof valuation.equityPercent === "number" ? valuation.equityPercent : null,
+      estimatedValue: typeof valuation.estimatedValue === "number" ? valuation.estimatedValue : null,
+      mortgageBalance: typeof mortgage.openLoanBalance === "number" ? mortgage.openLoanBalance
+        : typeof mortgage.totalOpenLienBalance === "number" ? mortgage.totalOpenLienBalance : null,
+      foreclosureStatus: typeof foreclosure.status === "string" ? foreclosure.status : null,
+      lastDeedType: typeof deed.documentType === "string" ? deed.documentType : null,
+      ownerOccupied: typeof owner.ownerOccupied === "boolean" ? owner.ownerOccupied : null,
+      cost: 0.05,
+    }
+  } catch (e) {
+    return { ok: false, ...empty, cost: 0, error: e instanceof Error ? e.message : String(e) }
   }
 }

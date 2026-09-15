@@ -33,6 +33,11 @@ export type SourceKey =
   | 'exa_buyer_intent'
   | 'tavily_intent'
   | 'osint_signal'
+  // ── Wave 65 lanes (owner ruling 2026-09-15) — DISTINCT from the sources above; never merge ──
+  | 'realty_site_chatter'         // Zillow/Realtor/Homes.com saved-search + "contact agent" chatter (ZenRows/Zyte)
+  | 'reddit_relocation'           // Reddit "moving to <city>" / "looking for a realtor in <city>"
+  | 'facebook_recommend_realtor'  // Facebook-group "recommend a realtor" threads
+  | 'agent_seeking_phrase_intent' // "looking for a real estate agent/realtor" phrase intent, cross-source
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -337,6 +342,75 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter (ZenRows/Zyte) ─────────
+  // DISTINCT from zenrows_zillow/zenrows_realtor/zenrows_homes above (those parse structured
+  // FSBO listing cards + saved-search DOM blocks via cheerio parsers); this lane targets the
+  // "contact agent" / "request a tour" / "get pre-approved" form-chatter and saved-search-alert
+  // markers that normalizeZenRowsHtml's intent scorer already reads (buyerAlertProfile). Owner
+  // ruling wave 65: never merge look-alike scraping lanes.
+  realty_site_chatter: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'realty_site_chatter',
+    behaviorType:              'contact_agent_chatter',
+    scoreRange:                [40, 75],
+    baseScore:                 55,
+    boostSignals:              ['contact_agent', 'request_info', 'saved_search', 'schedule_tour', 'get_pre_approved', 'buyer_alert_profile'],
+    dampSignals:               ['agent_landing_page', 'no_form'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Reddit relocation lane — "moving to <city>" / "looking for a realtor in <city>" ───────
+  // DISTINCT from reddit_intent above (which follows the brokerage's own configured
+  // subreddits/keywords); this lane runs a FIXED territory-centric relocation query set against
+  // general relocation/city subreddits regardless of what keywords are configured.
+  reddit_relocation: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'relocation_buyer',
+    behaviorType:              'social_intent',
+    scoreRange:                [40, 70],
+    baseScore:                 54,
+    boostSignals:              ['moving_to', 'relocating', 'looking_for_a_realtor', 'new_job', 'job_transfer', 'need_a_realtor'],
+    dampSignals:               ['just_curious', 'hypothetical', 'not_moving'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Facebook "recommend a realtor" lane ────────────────────────────────────────────────────
+  // DISTINCT from facebook_group above (configured-keyword group monitoring); this lane runs a
+  // FIXED "recommend a realtor / need an agent" query against the territory's local groups.
+  facebook_recommend_realtor: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'agent_referral_request',
+    behaviorType:              'social_intent',
+    scoreRange:                [35, 70],
+    baseScore:                 50,
+    boostSignals:              ['recommend_a_realtor', 'need_an_agent', 'looking_for_a_realtor', 'buying_or_selling', 'referral'],
+    dampSignals:               ['just_asking', 'no_timeline'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Agent-seeking phrase intent — cross-source (Google/Apify today) ───────────────────────
+  // "looking for a real estate agent/realtor" is a DISTINCT phrase-intent capability from
+  // google_phrase_intent (buyer/seller listing search phrases) — this targets people actively
+  // shopping for an AGENT, the platform's own referral funnel.
+  agent_seeking_phrase_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'agent_referral_request',
+    behaviorType:              'search_signal',
+    scoreRange:                [30, 60],
+    baseScore:                 42,
+    boostSignals:              ['looking_for_a_realtor', 'need_a_real_estate_agent', 'recommend_a_realtor', 'best_real_estate_agent'],
+    dampSignals:               ['general_research'],
+    identityPolicy:            'analytics_only',
+    canPromoteBeforeEnrichment: false,
+  },
+
 }
 
 // ─── Fallback for unknown sources ─────────────────────────────────────────────
@@ -422,6 +496,14 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   exa: "exa_buyer_intent",
   tavily: "tavily_intent",
   osint: "osint_signal",
+  realty_chatter: "realty_site_chatter",
+  zillow_chatter: "realty_site_chatter",
+  realtor_chatter: "realty_site_chatter",
+  homes_chatter: "realty_site_chatter",
+  reddit_relocation: "reddit_relocation",
+  facebook_recommend_realtor: "facebook_recommend_realtor",
+  agent_seeking: "agent_seeking_phrase_intent",
+  agent_seeking_phrase_intent: "agent_seeking_phrase_intent",
 }
 
 /**
@@ -434,7 +516,7 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
  *   • osint    — public + court records (divorce / probate / foreclosure / tax-lien / eviction).
  *   • peopledata is enrichment-only and never sources raw leads, so it is not here.
  */
-export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily'
+export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'zyte'
 
 export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   zenrows_zillow:       'zenrows',
@@ -454,6 +536,14 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   tavily_intent:        'tavily',  // AI-native agentic search (buyer/seller/investor)
   batchdata_motivated:  'batchdata',
   osint_signal:         'osint',
+  // Wave 65 lanes — contract owner is ZenRows (with Zyte as the configured-key fallback the
+  // provider picker reaches for, see lib/external/zenrows-client.ts::scrapeSiteWithBestProvider);
+  // 'zyte' is a distinct union member so the vendor ledger can attribute a run that actually fell
+  // back, without this contract map pretending to know which provider serves any given call.
+  realty_site_chatter:        'zenrows',
+  reddit_relocation:          'apify',
+  facebook_recommend_realtor: 'apify',
+  agent_seeking_phrase_intent: 'apify', // Google search via Apify today
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -490,6 +580,10 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   tavily_intent:        'tavily',
   batchdata_motivated:  'batchdata_motivated',
   osint_signal:         'osint_signal',
+  realty_site_chatter:        'realty_chatter',
+  reddit_relocation:          'reddit_relocation',
+  facebook_recommend_realtor: 'facebook_recommend_realtor',
+  agent_seeking_phrase_intent: 'agent_seeking_phrase_intent',
 }
 
 /**
@@ -590,6 +684,45 @@ export function buildTerritoryPhrases(market: {
   }
 
   return { buyerPhrases, sellerPhrases }
+}
+
+// ─── buildAgentSeekingPhrases ──────────────────────────────────────────────────
+// DISTINCT from buildTerritoryPhrases (buyer/seller LISTING-search phrases): this builds the
+// "shopping for an agent" phrase set the agent_seeking_phrase_intent lane (and the Reddit /
+// Facebook "recommend a realtor" lanes) run against a territory — owner ruling wave 65 task 3
+// ("a phrase-intent lane for 'looking for a real estate agent/realtor' across sources").
+
+export interface AgentSeekingPhrases {
+  phrases: string[]
+}
+
+export function buildAgentSeekingPhrases(market: {
+  city?:      string | null
+  state?:     string | null
+  zip_codes?: string[] | null
+  counties?:  string[] | null
+}): AgentSeekingPhrases {
+  const city    = market.city?.trim()    ?? ''
+  const state   = market.state?.trim()   ?? ''
+  const counties = market.counties       ?? []
+
+  const locationTokens: string[] = [
+    city,
+    ...counties.map(c => c.replace(/\s+county$/i, '').trim()),
+    [city, state].filter(Boolean).join(', '),
+  ].filter(Boolean)
+
+  const phrases: string[] = []
+  for (const loc of locationTokens) {
+    phrases.push(
+      `looking for a realtor in ${loc}`,
+      `looking for a real estate agent in ${loc}`,
+      `need a real estate agent in ${loc}`,
+      `recommend a realtor in ${loc}`,
+      `best real estate agent in ${loc}`,
+    )
+  }
+  return { phrases }
 }
 
 // ─── Territory match helper ────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ import { LeadQuickActions } from "@/components/lead/LeadQuickActions"
 import { LeadReadinessPanel } from "@/components/lead/LeadReadinessPanel"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { getLeadIntelligenceSignals } from "@/lib/lead-pipeline/lead-intelligence-signals"
+import { buildPersonTimeline } from "@/lib/lead-intelligence/person-timeline"
 
 export const dynamic = "force-dynamic"
 
@@ -102,6 +103,19 @@ export default async function LeadDetailPage({ params }: PageProps) {
     brokerageId: lead.brokerage_id ?? null,
   })
 
+  // THE PERSON TIMELINE — one ordered history from first touch (scrape / lead
+  // magnet / portal / open house) through ISA touches, assignment, conversion
+  // and post-conversion activity (owner ruling, wave 65). LEAD-DESK ONLY: this
+  // page already gated on resolveLeadVisibility + leadRowInScope above, so the
+  // full (un-redacted) timeline — including raw scrape provenance and
+  // behavioral signals — is safe to render here and nowhere agent-facing.
+  const timeline = await buildPersonTimeline({
+    leadId: lead.id,
+    contactId: lead.contact_id ?? null,
+    brokerageId: lead.brokerage_id ?? null,
+    client: svc,
+  })
+
   const fullName = [lead.first_name, lead.last_name].filter(Boolean).join(" ") || "(unnamed lead)"
   const addr = [lead.mailing_address, lead.mailing_city, lead.mailing_state, lead.mailing_zip].filter(Boolean).join(", ")
 
@@ -160,6 +174,38 @@ export default async function LeadDetailPage({ params }: PageProps) {
                 </div>
               )
             })
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Person Timeline</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            First touch through {timeline.convertedAt ? "conversion and after" : "today"} — every source in one
+            order.{timeline.acquisitionCost != null ? ` Acquisition cost: $${timeline.acquisitionCost.toFixed(2)}.` : ""}
+          </p>
+        </CardHeader>
+        <CardContent className="text-sm space-y-3">
+          {timeline.warnings.length > 0 && (
+            <div className="text-xs text-destructive">
+              Some sources could not be read: {timeline.warnings.join("; ")}
+            </div>
+          )}
+          {timeline.events.length === 0 ? (
+            <div className="text-muted-foreground">No timeline events recorded yet.</div>
+          ) : (
+            <ol className="space-y-2">
+              {timeline.events.map((e) => (
+                <li key={e.id} className="border-l-2 pl-3 space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                    <Badge variant="outline">{e.type.replace(/_/g, " ")}</Badge>
+                    <span>{e.occurredAt ? new Date(e.occurredAt).toLocaleString() : "date unrecorded"}</span>
+                  </div>
+                  <div>{e.summary}</div>
+                </li>
+              ))}
+            </ol>
           )}
         </CardContent>
       </Card>

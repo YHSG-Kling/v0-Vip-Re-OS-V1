@@ -131,3 +131,89 @@ export function peopleDataProfileToLeadColumns(
   }
   return out
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCHDATA PROPERTY-ENRICHMENT DATASETS (valuation, mortgage-liens, foreclosure,
+// deed, owner — lib/external/batchdata-client.ts::enrichPropertyDatasetsBatchData)
+// → the SAME first-class columns PeopleData writes above, PLUS the property-fact
+// JSONB columns those two tables ALREADY carry. Every key below is verified live
+// against scripts/schema-snapshot.ts — PGRST204 refuses an insert/update naming
+// an absent column ENTIRELY (CLAUDE.md §3), so nothing here invents one.
+//
+// leads has NO property_records/court_records jsonb — the nested facts land in
+// enrichment_profile.batchdata_property instead (the same pattern
+// freeLaneProfileBlock already uses for osint_free, enrichment-orchestrator.ts).
+// contacts DOES carry a general-purpose property_records jsonb; that is its
+// landing spot, so the two tables get parallel-shaped but table-appropriate patches.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The shape enrichPropertyDatasetsBatchData returns (duplicated here, not imported,
+ *  so this file stays free of the gateway-bearing lib/external import graph — see the
+ *  header note above about unit-testability under plain tsx). */
+export interface BatchDataPropertyEnrichmentLike {
+  ok: boolean
+  equityPercent: number | null
+  estimatedValue: number | null
+  mortgageBalance: number | null
+  foreclosureStatus: string | null
+  lastDeedType: string | null
+  ownerOccupied: boolean | null
+}
+
+/** Pure: BatchData property-enrichment → the first-class columns BOTH leads and
+ *  contacts carry (equity_estimate, lender_status). Shared because both tables use
+ *  identical names and semantics for these two — verified against schema-snapshot.ts. */
+function sharedBatchDataPropertyColumns(e: BatchDataPropertyEnrichmentLike): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (typeof e.equityPercent === 'number') out.equity_estimate = e.equityPercent
+  if (typeof e.foreclosureStatus === 'string' && e.foreclosureStatus.trim() !== '') out.lender_status = e.foreclosureStatus
+  return out
+}
+
+/** Pure: BatchData property-enrichment → leads columns + the enrichment_profile.batchdata_property
+ *  nested block (leads has no dedicated property jsonb column). */
+export function batchDataPropertyEnrichmentToLeadColumns(
+  e: BatchDataPropertyEnrichmentLike | null | undefined,
+  priorProfile: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!e || !e.ok) return {}
+  const out = sharedBatchDataPropertyColumns(e)
+  if (typeof e.estimatedValue === 'number') out.estimated_value = e.estimatedValue
+  out.enrichment_profile = {
+    ...(priorProfile ?? {}),
+    batchdata_property: {
+      captured_at: new Date().toISOString(),
+      equity_percent: e.equityPercent,
+      estimated_value: e.estimatedValue,
+      mortgage_balance: e.mortgageBalance,
+      foreclosure_status: e.foreclosureStatus,
+      last_deed_type: e.lastDeedType,
+      owner_occupied: e.ownerOccupied,
+    },
+  }
+  return out
+}
+
+/** Pure: BatchData property-enrichment → contacts columns + the property_records jsonb
+ *  column contacts already carry (verified against schema-snapshot.ts). */
+export function batchDataPropertyEnrichmentToContactColumns(
+  e: BatchDataPropertyEnrichmentLike | null | undefined,
+  priorPropertyRecords: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!e || !e.ok) return {}
+  const out = sharedBatchDataPropertyColumns(e)
+  if (typeof e.estimatedValue === 'number') out.home_value_estimate = e.estimatedValue
+  out.property_records = {
+    ...(priorPropertyRecords ?? {}),
+    batchdata: {
+      captured_at: new Date().toISOString(),
+      equity_percent: e.equityPercent,
+      estimated_value: e.estimatedValue,
+      mortgage_balance: e.mortgageBalance,
+      foreclosure_status: e.foreclosureStatus,
+      last_deed_type: e.lastDeedType,
+      owner_occupied: e.ownerOccupied,
+    },
+  }
+  return out
+}

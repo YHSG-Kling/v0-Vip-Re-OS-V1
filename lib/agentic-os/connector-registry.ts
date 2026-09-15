@@ -111,6 +111,20 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     npmSdk:    "apify-client",  // HIGH-ROI swap when we touch this area — typed actors/runs/datasets
     tags:      ["scraper", "actor", "social", "search"],
   },
+  // Zyte API — automatic-extraction / browser-rendering scraper. Fallback behind ZenRows for
+  // Zillow/Realtor.com/Homes.com saved-search + "contact agent" chatter (see
+  // docs/lead-acquisition-coverage-2026-09.md for the researched verdict + pricing tiers).
+  // lib/external/zyte-client.ts picks it only when ZENROWS_API_KEY is unset or ZenRows fails.
+  zyte: {
+    connector: "zyte",
+    category:  "scraper",
+    baseUrl:   "https://api.zyte.com/v1",
+    auth:      "basic", // Zyte API uses HTTP Basic with the API key as username, empty password
+    envKey:    "ZYTE_API_KEY",
+    docsUrl:   "https://docs.zyte.com/zyte-api/",
+    githubUrl: "https://github.com/zytedata",
+    tags:      ["buyer-intent", "seller-intent", "real-estate", "fallback-scraper"],
+  },
   exa: {
     connector: "exa",
     category:  "ai",

@@ -18,7 +18,8 @@ import {
   scrapeLinkedInPosts,
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
-import { parseCraigslistHtml } from "./scraper-parsers"
+import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter } from "./scraper-parsers"
+import { buildAgentSeekingPhrases } from "./source-intent-map"
 
 export interface SocialMarket {
   city: string | null
@@ -306,4 +307,129 @@ export async function sourceLinkedInRelocation(market: SocialMarket): Promise<{ 
     limit: 50,
   }).catch(() => ({ posts: [], cost: 0 }))
   return { records: (r.posts ?? []).map((p) => normalizeLinkedInPost(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WAVE 65 LANES (owner ruling 2026-09-15) — each is a DISTINCT capability with its
+// own territory-centric query builder + normalizer + sourceChannel. Never merged
+// with the look-alike lanes above (facebook_group / reddit_intent / google_phrase_intent).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Reddit relocation lane — "moving to <city>" / "looking for a realtor in <city>" ─────────
+
+export function normalizeRedditRelocationPost(post: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  const text = `${post.title ?? ""} ${post.body ?? post.text ?? post.selftext ?? ""}`
+  return {
+    sourceRecordId: `reddit-reloc-${post.id ?? post.post_id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    source: "reddit_relocation",
+    behaviorType: "social_intent",
+    intentType: "buyer", // relocation / "need a realtor" posts are inbound-buyer signals
+    intentSignals: ["relocating", "looking_for_realtor"],
+    city: market.city,
+    state: market.state,
+    username: (post.author ?? post.username) ?? undefined,
+    sourceUrl: post.url ?? post.permalink ?? null,
+    motivationScore: 54,
+    rawPayload: post,
+  }
+}
+
+/** Territory-centric relocation query — fixed phrase set, independent of configured keywords. */
+export async function sourceRedditRelocation(market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const where = [market.city, market.state].filter(Boolean).join(", ")
+  if (!where) return { records: [], cost: 0 }
+  const { phrases } = buildAgentSeekingPhrases(market)
+  const keywords = [
+    `moving to ${market.city ?? where}`,
+    `relocating to ${market.city ?? where}`,
+    ...phrases.slice(0, 2),
+  ]
+  // General relocation subreddits + a city-named community when one plausibly exists.
+  const subreddits = ["moving", "relocating", "IWantOut", market.city ? `${market.city.toLowerCase().replace(/\s+/g, "")}` : undefined].filter(Boolean) as string[]
+  const r = await scrapeRedditPosts({ subreddits, keywords, limit: 50 }).catch(() => ({ posts: [], cost: 0 }))
+  return { records: (r.posts ?? []).map((p) => normalizeRedditRelocationPost(p, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+// ── Facebook "recommend a realtor" lane ───────────────────────────────────────────────────
+
+export function normalizeFacebookRecommendRealtorPost(post: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  const { firstName, lastName } = nameFromHandle(post.authorName ?? post.user?.name)
+  return {
+    sourceRecordId: `fb-recrealtor-${post.postId ?? post.id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+    source: "facebook_recommend_realtor",
+    behaviorType: "social_intent",
+    intentType: "unknown", // a "recommend a realtor" thread may resolve buyer or seller at enrichment
+    intentSignals: ["recommend_a_realtor", "agent_referral_request"],
+    firstName,
+    lastName,
+    city: market.city,
+    state: market.state,
+    sourceUrl: post.url ?? null,
+    motivationScore: 50,
+    rawPayload: post,
+  }
+}
+
+/** Territory-centric "recommend a realtor" query against the market's local FB groups. */
+export async function sourceFacebookRecommendRealtor(
+  groupUrls: string[], market: SocialMarket,
+): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  if (groupUrls.length === 0) return { records: [], cost: 0 }
+  const keywords = ["recommend a realtor", "need an agent", "looking for a realtor", "recommend a real estate agent"]
+  const all: NormalizedScrapedRecord[] = []
+  let cost = 0
+  for (const groupUrl of groupUrls) {
+    const r = await scrapeFacebookGroupPosts({ groupUrl, keywords, limit: 50 }).catch(() => ({ posts: [], cost: 0 }))
+    cost += r.cost ?? 0
+    all.push(...(r.posts ?? []).map((p) => normalizeFacebookRecommendRealtorPost(p, market)).filter(isViableRecord))
+  }
+  return { records: all, cost }
+}
+
+// ── Agent-seeking phrase intent — cross-source (Google/Apify today) ──────────────────────────
+
+export function normalizeAgentSeekingResult(result: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  return {
+    sourceRecordId: `agent-seeking-${Buffer.from(String(result.url ?? result.link ?? result.title ?? Date.now())).toString("base64").slice(0, 40)}`,
+    source: "agent_seeking_phrase_intent",
+    behaviorType: "search_signal",
+    intentType: "unknown",
+    intentSignals: ["agent_referral_request", "looking_for_realtor"],
+    city: market.city,
+    state: market.state,
+    sourceUrl: result.url ?? result.link ?? null,
+    motivationScore: 42,
+    rawPayload: result,
+  }
+}
+
+/** "Looking for a real estate agent/realtor" phrase intent — territory-centric, cross-source. */
+export async function sourceAgentSeekingPhraseIntent(market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const { phrases } = buildAgentSeekingPhrases(market)
+  if (phrases.length === 0) return { records: [], cost: 0 }
+  const r = await scrapeGoogleSearchResults({ queries: phrases.slice(0, 5), resultsPerQuery: 10 }).catch(() => ({ results: [], cost: 0 }))
+  return { records: (r.results ?? []).map((x) => normalizeAgentSeekingResult(x, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+// ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter (ZenRows/Zyte) ──────────
+// DISTINCT from the zillow_behavior FSBO/saved-search block in the cron (which parses per-listing
+// cards). This targets the general market page's saved-search + contact-agent CTA chatter, with
+// Homes.com as NEW coverage — reuses the SAME parseBuyerSavedSearches signal plus the new
+// parseContactAgentChatter DOM reader, over whichever provider is configured (ZenRows primary,
+// Zyte fallback — lib/external/zenrows-client.ts::scrapeSiteWithBestProvider).
+export async function sourceRealtySiteChatter(
+  site: "zillow" | "realtor" | "homes", market: { city: string; state: string },
+): Promise<{ records: NormalizedScrapedRecord[]; cost: number; provider: "zenrows" | "zyte" | null }> {
+  if (!market.city || !market.state) return { records: [], cost: 0, provider: null }
+  const { scrapeSiteWithBestProvider } = await import("@/lib/external/zenrows-client")
+  const url = buildRealtySiteChatterUrl(site, market)
+  const res = await scrapeSiteWithBestProvider(url, { jsRender: true, premiumProxy: true }).catch(
+    () => ({ ok: false, html: "", provider: null as "zenrows" | "zyte" | null, cost: 0, error: "scrape threw" }),
+  )
+  if (!res.ok || !res.html) return { records: [], cost: res.cost ?? 0, provider: res.provider }
+
+  const { parseBuyerSavedSearches } = await import("./scraper-parsers")
+  const savedSearch = parseBuyerSavedSearches(res.html, site, market)
+  const contactAgent = parseContactAgentChatter(res.html, site, market)
+  return { records: [...savedSearch, ...contactAgent], cost: res.cost, provider: res.provider }
 }

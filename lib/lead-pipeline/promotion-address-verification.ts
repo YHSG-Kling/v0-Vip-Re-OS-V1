@@ -131,15 +131,67 @@ export async function verifyMailingAddressForPromotion(params: {
   }
 
   try {
-    const { verifyAddressViaLob } = await import("@/lib/external/lob-address-verify")
-    const { data, cost } = await verifyAddressViaLob({
-      primary_line: (candidate.mailing_address ?? "").trim(),
-      city:         candidate.mailing_city  ?? undefined,
-      state:        candidate.mailing_state ?? undefined,
-      zip_code:     candidate.mailing_zip   ?? undefined,
-    })
+    let data: LobVerificationResult | null
+    let cost: number
+    let usedBatchDataFallback = false
+    if (process.env.LOB_API_KEY) {
+      const { verifyAddressViaLob } = await import("@/lib/external/lob-address-verify")
+      ;({ data, cost } = await verifyAddressViaLob({
+        primary_line: (candidate.mailing_address ?? "").trim(),
+        city:         candidate.mailing_city  ?? undefined,
+        state:        candidate.mailing_state ?? undefined,
+        zip_code:     candidate.mailing_zip   ?? undefined,
+      }))
+    } else {
+      // FALLBACK ONLY WHEN LOB IS UNCONFIGURED (wave 65 task 4). Lob stays the survivor
+      // — this never runs when LOB_API_KEY is set, so a tenant with Lob configured sees
+      // no behavior change at all. Without this, an environment that has BATCHDATA_API_KEY
+      // but not LOB_API_KEY would silently never verify a mailing address (needsPromotionAddressVerification
+      // stays true forever, `not_warranted` never fires, and verifyAddressViaLob's own
+      // no-key branch always returns data:null — the promotion gate would spend nothing
+      // and learn nothing on every pass). lib/external/batchdata-client.ts's
+      // verifyAddressBatchData is FAIL-CLOSED the same way Lob's adapter is: no key, no
+      // address, or a network error all return an unverified result, never a fabricated one.
+      usedBatchDataFallback = true
+      const { verifyAddressBatchData } = await import("@/lib/external/batchdata-client")
+      const bd = await verifyAddressBatchData({
+        street: (candidate.mailing_address ?? "").trim(),
+        city:   candidate.mailing_city  ?? undefined,
+        state:  candidate.mailing_state ?? undefined,
+        zip:    candidate.mailing_zip   ?? undefined,
+      })
+      cost = bd.cost
+      // Shaped to match LobVerificationResult exactly so interpretLobForPromotion below
+      // (the ONE verdict interpreter — never a second one) needs no changes at all.
+      data = bd.ok
+        ? {
+            verified: bd.verified,
+            deliverability: bd.verified ? "deliverable" : "undeliverable",
+            standardized: {
+              primary_line: bd.standardized?.street,
+              city:         bd.standardized?.city,
+              state:        bd.standardized?.state,
+              zip_code:     bd.standardized?.zip,
+            },
+            raw: bd,
+            error: bd.error ?? null,
+          }
+        : null // ok:false (no key / no match / network) — same "learned nothing" posture as Lob's no-key branch
+    }
 
     const verdict = interpretLobForPromotion(data)
+    // HONEST PROVENANCE: interpretLobForGate always stamps mailing_address_source
+    // with CASS_SOURCE ("lob_cass") — correct when Lob actually ran, a false CASS
+    // certification claim when BatchData did. mailing-cass-gate.ts is the shared
+    // interpreter (never forked into a second one, per this file's own header) so
+    // the correction happens HERE, after the shared call, rather than by editing
+    // that gate. A BatchData-ruled row therefore does NOT set the CASS_SOURCE
+    // marker `needsPromotionAddressVerification` checks to skip a re-buy — the
+    // honest provenance is worth the (bounded, address-only, no-email/no-phone)
+    // possibility of a later sweep verifying the same address again.
+    if (usedBatchDataFallback && "mailing_address_source" in verdict.patch) {
+      verdict.patch.mailing_address_source = "batchdata_verify"
+    }
 
     // Nothing learned (no key / transient) → write NOTHING. A synthetic `false`
     // here would look like an authoritative Lob refusal on the next pass and

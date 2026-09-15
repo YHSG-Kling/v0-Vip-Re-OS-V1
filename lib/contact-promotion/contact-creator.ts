@@ -14,6 +14,7 @@
  */
 
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
+import { resolveLeadAcquisitionCost } from './acquisition-cost'
 import { ENUM_VOCABULARIES, normalizeEnumValue } from '@/lib/data-steward/value-normalizer'
 import { canonicalContactType, isStorableContactType } from "@/lib/contact-types"
 import { normalizeContactPersona } from "@/lib/campaigns/contact-sources"
@@ -109,8 +110,36 @@ export async function createContactFromLead(
   supabase: any,
   data: ContactCreationData
 ): Promise<{ contactId?: string; error?: string }> {
-  
+
   try {
+    // LEAD-COST TRACKING (owner ruling, wave 65: "...where they came from for
+    // lead cost tracking"). Resolved BEFORE the insert so the full figure —
+    // raw cost_per_record + enrichment spend + campaign cost share — rides in
+    // contactData below, same lossless-carry contract as every other field on
+    // this record. Best-effort: a resolution failure leaves acquisition_cost
+    // null on the contact, never blocks the conversion.
+    const acquisition = await resolveLeadAcquisitionCost(supabase, {
+      leadId: data.leadId,
+      brokerageId: data.brokerageId,
+      costPerRecord: data.lead.cost_per_record ?? null,
+      campaignAttributionId: data.lead.campaign_attribution_id ?? null,
+    })
+    if (acquisition.warnings.length > 0) {
+      console.warn(`[createContactFromLead] acquisition-cost warnings for lead ${data.leadId}:`, acquisition.warnings)
+    }
+    // WRITE IT ONTO THE LEAD (task: "write it onto the lead at promotion"),
+    // best-effort and BEFORE the contact insert — the lead row still exists and
+    // is not yet deactivated. A failure here is logged, never thrown: the
+    // conversion must not fail because a cost figure could not be stamped.
+    if (acquisition.acquisitionCost != null) {
+      const { error: costWriteError } = await supabase
+        .from("leads")
+        .update({ acquisition_cost: acquisition.acquisitionCost })
+        .eq("id", data.leadId)
+      if (costWriteError) {
+        console.warn(`[createContactFromLead] leads.acquisition_cost not written for ${data.leadId}: ${costWriteError.message}`)
+      }
+    }
     // The contact belongs to the assigned agent's OFFICE + TEAM, so resolve them from the agent and
     // stamp them on the contact. Without this every converted contact landed with location_id/team_id
     // = null, so any location/team-scoped contacts query (the command center, a location admin's CRM,
@@ -179,6 +208,8 @@ export async function createContactFromLead(
       source_subtype: data.lead.source_subtype ?? null,
       campaign_attribution_id: data.lead.campaign_attribution_id ?? null,
       cost_per_record:         data.lead.cost_per_record ?? null,
+      // acquisition_cost is DELIBERATELY NOT in this bundle — see the isolated
+      // best-effort UPDATE right after the insert below, and read why there.
       first_touch_channel:     data.lead.first_touch_channel ?? null,
       first_touched_at:        data.lead.first_touched_at ?? null,
 
@@ -364,6 +395,31 @@ export async function createContactFromLead(
 
     if (error) {
       throw new Error(`Failed to create contact: ${error.message}`)
+    }
+
+    // acquisition_cost — an ISOLATED best-effort UPDATE, deliberately NOT part
+    // of the insert above. `contacts.acquisition_cost` is m634, applied live 2026-09-15 — was WRITTEN NOT
+    // APPLIED (supabase/migrations/m634-lead-acquisition-cost.sql) — until the
+    // integrator applies it, naming this column inside the main insert would
+    // be PGRST204-refused WHOLE (CLAUDE.md §3: "an INSERT naming an absent
+    // column is refused entirely, not most of the row"), which would break
+    // EVERY lead promotion the moment this lane's code shipped. Isolating it
+    // here means a pre-migration refusal costs exactly one field, logged, and
+    // never the contact itself. Once m632 lands this starts succeeding with no
+    // code change. Falls back to cost_per_record when the richer figure is
+    // unknown, so the contact never carries LESS cost information than the
+    // lead already had.
+    {
+      const acquisitionCostValue = acquisition.acquisitionCost ?? data.lead.cost_per_record ?? null
+      if (acquisitionCostValue != null) {
+        const { error: acqError } = await supabase
+          .from("contacts")
+          .update({ acquisition_cost: acquisitionCostValue })
+          .eq("id", contact.id)
+        if (acqError) {
+          console.warn(`[createContactFromLead] contacts.acquisition_cost not written for ${contact.id} (expected until m632 applies): ${acqError.message}`)
+        }
+      }
     }
 
     // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This is THE

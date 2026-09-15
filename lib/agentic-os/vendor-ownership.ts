@@ -24,7 +24,7 @@ export type VendorOwnership = "platform" | "user_connected"
  *  offers payments/accounting to every subscriber (subscribers do NOT connect their own). */
 export const PLATFORM_VENDORS = new Set<string>([
   "perplexity", "osint", "rentcast", "peopledata", "exa", "tavily",
-  "apify_social", "apify", "batchdata", "zenrows",
+  "apify_social", "apify", "batchdata", "zenrows", "zyte",
   "vapi", "did", "heygen", "elevenlabs", "browser_tts", "cma_aggregate",
   "lob",                          // direct mail — platform-owned
   "stripe", "quickbooks", "plaid", // financial — platform-operated, offered to all subscribers

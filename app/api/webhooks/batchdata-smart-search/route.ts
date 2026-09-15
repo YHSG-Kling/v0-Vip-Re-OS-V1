@@ -11,16 +11,23 @@
 // timing-safe against an inbound header. No secret configured → refuse every
 // request (fail closed — CLAUDE.md §4).
 //
-// PAYLOAD CONTRACT — UNRESOLVED: this lane's research confirmed Smart Search is
-// "event-driven monitoring [that] pushes new matches (no polling)" but did not
-// surface a confirmed push-payload schema (unlike property/search, which this
-// repo already parses via normalizeBatchDataProperty). Rather than guess a
-// schema and silently drop a real payload shape, every plausible envelope
-// (`matches[]`, `properties[]`, `results[]`, a bare array, or a single object)
-// is accepted, and each item is run through the SAME normalizeBatchDataRecord
-// used by the property-search + motivated-seller sourcers — the wire contract
-// should be reconfirmed against BatchData's dashboard/docs before this fires in
-// production (see the wave report's unresolved list).
+// PAYLOAD CONTRACT — wave 65 refinement of wave 64's guess. Confirmed this wave
+// (Exa fetch, npmjs.com/package/@land-catalyst/batch-data-sdk — a third-party TS
+// SDK integration-tested against a live BATCHDATA_API_KEY per its own README):
+// `PropertySubscriptionResponse` and `PropertySearchResponse` are the SAME shape
+// the provider uses everywhere else in this repo — `results.properties[]` — so
+// `results.properties` is now checked FIRST, matching lib/external/
+// batchdata-client.ts's own `data?.results?.properties ?? data?.results` read.
+// The exact push-delivery envelope (as opposed to the create-subscription
+// response envelope) was still not independently confirmed by this lane against
+// developer.batchdata.com's Stoplight docs (JS-rendered; this lane's fetch tools
+// could not execute it) — so every OTHER plausible envelope (`matches[]`, a bare
+// `properties[]`, `results[]`, a bare array, or a single object) is still
+// accepted as a fallback, and each item is run through the SAME
+// normalizeBatchDataRecord used by the property-search + motivated-seller
+// sourcers. Reconfirm the delivery envelope specifically (not just the response
+// envelope) before this fires in production — see the wave report's unresolved
+// list.
 //
 // TERRITORY: Smart Search matches carry no market_id, so each match is routed
 // by GEOGRAPHY against the SAME active-subscriber territory resolver every
@@ -80,17 +87,19 @@ export async function POST(request: Request) {
   }
 
   const p = payload as Record<string, unknown> | unknown[] | null
-  const rawMatches: Array<Record<string, unknown>> = Array.isArray((p as any)?.matches)
-    ? (p as any).matches
-    : Array.isArray((p as any)?.properties)
-      ? (p as any).properties
-      : Array.isArray((p as any)?.results)
-        ? (p as any).results
-        : Array.isArray(p)
-          ? (p as unknown[])
-          : p && typeof p === "object"
-            ? [p as Record<string, unknown>]
-            : []
+  const rawMatches: Array<Record<string, unknown>> = Array.isArray((p as any)?.results?.properties)
+    ? (p as any).results.properties
+    : Array.isArray((p as any)?.matches)
+      ? (p as any).matches
+      : Array.isArray((p as any)?.properties)
+        ? (p as any).properties
+        : Array.isArray((p as any)?.results)
+          ? (p as any).results
+          : Array.isArray(p)
+            ? (p as unknown[])
+            : p && typeof p === "object"
+              ? [p as Record<string, unknown>]
+              : []
 
   if (rawMatches.length === 0) {
     return NextResponse.json({ ingested: 0, reason: "no matches in payload" })
