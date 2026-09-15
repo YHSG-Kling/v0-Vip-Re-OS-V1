@@ -188,6 +188,9 @@ export async function createContactFromLead(
     //                    contact-side lifecycle filter. MAPPED to 'new' below instead —
     //                    left NULL, the contact was invisible to AI lead scoring.
     const contactData = {
+      // Lead cost carried at conversion (m634, applied live 2026-09-15): the
+      // full acquisition figure when computed, else the raw cost_per_record.
+      acquisition_cost: acquisition.acquisitionCost ?? data.lead.cost_per_record ?? null,
       // Basic identity
       first_name: data.lead.first_name,
       last_name: data.lead.last_name,
@@ -409,18 +412,11 @@ export async function createContactFromLead(
     // code change. Falls back to cost_per_record when the richer figure is
     // unknown, so the contact never carries LESS cost information than the
     // lead already had.
-    {
-      const acquisitionCostValue = acquisition.acquisitionCost ?? data.lead.cost_per_record ?? null
-      if (acquisitionCostValue != null) {
-        const { error: acqError } = await supabase
-          .from("contacts")
-          .update({ acquisition_cost: acquisitionCostValue })
-          .eq("id", contact.id)
-        if (acqError) {
-          console.warn(`[createContactFromLead] contacts.acquisition_cost not written for ${contact.id} (expected until m632 applies): ${acqError.message}`)
-        }
-      }
-    }
+    // TOMBSTONE (wave 65 integration): the isolated post-insert
+    // `.update({ acquisition_cost })` that stood here was the PRE-m634 safety.
+    // m634 is APPLIED LIVE (2026-09-15), so acquisition_cost now rides in the
+    // contactData bundle above like every other carried lead column — one
+    // insert, one refusal path, and the carry proof counts it as DECIDED.
 
     // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This is THE
     // lead->contact converter and it emits no CONTACT_CREATED, so a promoted

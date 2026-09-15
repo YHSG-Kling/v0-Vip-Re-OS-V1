@@ -323,33 +323,34 @@ async function main(): Promise<void> {
 
   // ═══ 8. THE ACQUISITION-COST CARRY RIDES THE SAME SHARED CONVERTER ═══════
   // Lane 65D, owner ruling: "...where they came from for lead cost tracking."
-  // leads.acquisition_cost / contacts.acquisition_cost are m632 — WRITTEN, NOT
-  // APPLIED. Both lanes call createContactFromLead (the same converter §6
+  // leads.acquisition_cost / contacts.acquisition_cost are m634 — APPLIED LIVE
+  // 2026-09-15. Both lanes call createContactFromLead (the same converter §6
   // requires), so proving it here — once — covers both, exactly like the
-  // history carry above. The live-safety property is the finding worth a
-  // guard: naming an absent column inside the MAIN insert is a PGRST204 that
-  // refuses the WHOLE row (CLAUDE.md §3), so until m632 applies, the write
-  // MUST be an isolated statement a refusal there cannot take the contact down
-  // with it.
-  console.log("\n[8 · acquisition_cost carry is LIVE-SAFE ahead of m632 (isolated write, not in the main insert)]")
+  // history carry above. Pre-migration the contact write was an isolated
+  // statement (so a PGRST204 could not take the contact down); with the column
+  // live, the carried value rides the ONE contactData bundle like every other
+  // carried lead column — the rule, not the waypoint (CLAUDE.md §2).
+  console.log("\n[8 · acquisition_cost is carried in the one contactData bundle (m634 applied live)]")
   {
     const creator = code("lib/contact-promotion/contact-creator.ts")
     const acqCostModule = code("lib/contact-promotion/acquisition-cost.ts")
 
     check("createContactFromLead resolves the acquisition cost before inserting the contact",
       /resolveLeadAcquisitionCost\(/.test(creator))
-    check("acquisition_cost is NOT a key inside the contactData bundle passed to the main insert",
+    check("acquisition_cost IS a key inside the contactData bundle passed to the main insert",
       (() => {
         const start = creator.indexOf("const contactData = {")
         const end = creator.indexOf("\n    }\n", start)
         const body = creator.slice(start, end)
-        return !/^\s*acquisition_cost:/m.test(body)
+        return /^\s*acquisition_cost:/m.test(body)
       })())
-    check("contacts.acquisition_cost is instead written by its OWN isolated .update() after the insert succeeds",
-      /\.from\("contacts"\)\s*\.update\(\{\s*acquisition_cost:/.test(creator))
-    check("leads.acquisition_cost is written the same isolated way (own statement, own error handling)",
+    check("...falling back to the raw cost_per_record so the contact never carries LESS cost than the lead",
+      /acquisition_cost:\s*acquisition\.acquisitionCost\s*\?\?\s*data\.lead\.cost_per_record/.test(creator))
+    check("no second, isolated contacts.acquisition_cost .update() survives beside the bundle (one write path)",
+      !/\.from\("contacts"\)\s*\.update\(\{\s*acquisition_cost:/.test(creator))
+    check("leads.acquisition_cost is stamped at promotion by its own statement with its own error handling",
       /\.from\("leads"\)\s*\.update\(\{\s*acquisition_cost:/.test(creator))
-    check("a refusal on either isolated write is logged, never thrown (never blocks the conversion)",
+    check("a refusal on the lead stamp is logged, never thrown (never blocks the conversion)",
       !/throw[\s\S]{0,200}acquisition_cost/.test(creator))
     check("the pure formula lives in the ONE owned learning module, not re-derived in the live resolver",
       acqCostModule.includes("computeLeadAcquisitionCost") &&

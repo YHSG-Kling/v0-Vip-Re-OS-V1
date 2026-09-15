@@ -144,11 +144,15 @@ function testDiagnosticsHonesty() {
   check("the loader returns readErrors (not only computes it)",
     /return\s*\{[\s\S]{0,800}?\breadErrors\b/.test(kernel))
 
-  // Six reads, six inspections. Counted rather than named, so renaming a
-  // dimension does not turn this red while dropping one still does.
+  // N reads, N inspections. BOTH sides are counted from the source (the
+  // Promise.all destructure names one `…Result` per read; each read must
+  // reach `collect(...)`), so adding a diagnostic read — wave 65 added the
+  // Smart Search subscriptions read — cannot pin this to a stale literal.
+  const destructure = kernel.match(/const \[([\s\S]*?)\] = await Promise\.all\(\[/)?.[1] ?? ""
+  const reads = [...destructure.matchAll(/\b[a-zA-Z]+Result\b/g)].length
   const inspected = [...kernel.matchAll(/collect\(\s*['"][a-zA-Z]+['"]\s*,/g)].length
-  check(`every diagnostic read has its error inspected (${inspected} of 6)`, inspected === 6,
-    `found ${inspected}`)
+  check(`every diagnostic read has its error inspected (${inspected} of ${reads})`, reads >= 6 && inspected === reads,
+    `found ${inspected} inspections for ${reads} reads`)
   check("the inspection reads `.error`, so a RESOLVED failure is still caught",
     /if\s*\(\s*result\.error\s*\)/.test(kernel))
 
