@@ -642,8 +642,16 @@ function darkCapabilityLayer() {
     zen.indexOf("NEXTDOOR_PARSER_IMPLEMENTED") < zen.indexOf("callConnector"))
   check("D3", "...and the gate constant is genuinely false",
     /const\s+NEXTDOOR_PARSER_IMPLEMENTED\s*=\s*false/.test(lead))
-  check("D4", "...the parser really is still a stub, so the gate is not theatre",
-    /function parseNextdoorPosts[\s\S]{0,1200}?return\s*\[\]\s*\n\}/.test(lead))
+  // WAVE 64C: the parser is no longer a stub — it delegates to the real
+  // extractor (lib/external/nextdoor-extract.ts::regexFallbackPosts). The gate
+  // is still not theatre, for a DIFFERENT reason the code states: no
+  // lawful-basis record exists for profiling named non-contacts, so the
+  // constant stays false on compliance grounds. Assert that reason, not the
+  // old stub shape (CLAUDE.md §2 — the rule, not a waypoint).
+  check("D4", "...the gate is not theatre: the parser is real (delegates to nextdoor-extract) AND the constant is held false on a stated lawful-basis ground",
+    /function parseNextdoorPosts[\s\S]{0,600}?regexFallbackPosts\(/.test(lead) &&
+    /lawful-basis/.test(lead) &&
+    /NEXTDOOR_PARSER_IMPLEMENTED\s*=\s*false/.test(lead))
 
   section("[layer 6b · provenance columns state the truth]")
 
