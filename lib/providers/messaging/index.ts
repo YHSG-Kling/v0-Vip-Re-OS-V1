@@ -17,6 +17,7 @@
  */
 
 import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { resolveSMSProviderForActor } from "./resolve-sms-provider"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { SMS_ADAPTERS } from "./sms-adapters"
@@ -353,9 +354,15 @@ async function resolveFreshEmailVerification(contactId: string, email: string): 
   if (!result.verified) {
     return { ok: false, reason: `Email did not pass verification (${result.reason ?? "unverified"}) — nothing was sent.` }
   }
-  try {
-    await svc.from("contacts").update({ email_verified: true, email_verification_date: new Date().toISOString() }).eq("id", contactId)
-  } catch { /* stamp is an optimization — the send still proceeds on a real verdict */ }
+  await sentinelWrite(
+    svc,
+    svc.from("contacts").update({ email_verified: true, email_verification_date: new Date().toISOString() }).eq("id", contactId),
+    {
+      table: "contacts",
+      flow: "email_send_verification_stamp",
+      reason: "the address already passed a live verification for this send; the stamp only lets the next send inside the 180-day window skip the check, so a lost stamp costs one extra verification, never an unverified send",
+    },
+  )
   return { ok: true }
 }
 

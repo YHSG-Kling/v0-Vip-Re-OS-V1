@@ -16,6 +16,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkQuietHours, stateFromPhone } from "@/lib/communication/call-compliance"
 // PURE, no I/O (lib/compliance/phone-scrub.ts carries no server-only import) — reused here
@@ -209,9 +210,16 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
         // Clean — persist so the NEXT send within the freshness window skips the live
         // call. Best-effort: a refused stamp never blocks a compliant send.
         if (input.contactId) {
-          try {
-            await svc.from("contacts").update({ dnc_status: false, dnc_verified_at: new Date().toISOString() }).eq("id", input.contactId)
-          } catch { /* stamp is an optimization, not the gate */ }
+          await sentinelWrite(
+            svc,
+            svc.from("contacts").update({ dnc_status: false, dnc_verified_at: new Date().toISOString() }).eq("id", input.contactId),
+            {
+              table: "contacts",
+              flow: "tcpa_gate_dnc_verdict_stamp",
+              brokerageId: input.brokerageId ?? null,
+              reason: "the live DNC/TCPA verdict already gated this send; the stamp only lets the next send inside the freshness window skip the provider call, so a lost stamp costs one extra verification, never a compliance miss",
+            },
+          )
         }
       }
       // SMS-specific opt-out from STOP keyword path
