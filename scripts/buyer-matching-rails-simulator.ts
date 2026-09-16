@@ -24,6 +24,7 @@ import { createClient } from "@supabase/supabase-js"
 import { blankComments } from "./strip-comments"
 import { INVESTOR_OFFMARKET_QUICKLISTS, BATCHDATA_QUICKLISTS } from "../lib/external/batchdata-client"
 import { normalizeActiveListingSources, DEFAULT_ACTIVE_LISTING_SOURCES, type ActiveListingSource } from "../lib/buyer-search/listing-source-order"
+import { toInvestorFacingCandidate, toInvestorFacingCandidates } from "../lib/buyer-search/investor-facing"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -64,9 +65,12 @@ function investorRailSource() {
   check("cost metered once per pull (no double-meter — batchdata-client itself never meters)", /meterVendorSpend\(\{[\s\S]*?usageType:\s*"investor_offmarket_search"/.test(runner))
   check("delivery reuses the SAME portal-card path the scraped rail already uses (one push, two sources)", /pushPortalValueCard\(\{[\s\S]*?updateType:\s*"investor_offmarket_deals"[\s\S]*?\}, svc\)[\s\S]*?stampDelivered/.test(runner))
   check("stamps delivered_at/delivered_via on the rows just surfaced (never re-stamps an old delivery)", /update\(\{ delivered_at: new Date\(\)\.toISOString\(\), delivered_via: via \}\)[\s\S]*?is\("delivered_at", null\)/.test(runner))
-  check("every written column has a reader (getInvestorOffMarketCandidates selects the full column list)",
-    /select\("id, market_id, address_key, property_address, city, state, zip, quicklists, estimated_value, equity_percent, owner_name, fit_score, matched_at, delivered_at, delivered_via, dismissed_at"\)/.test(runner))
-  check("getInvestorDealMatch (named reader) now carries the BatchData candidates alongside the aggregate match", /offMarketCandidates = await getInvestorOffMarketCandidates/.test(runner))
+  check("every written column has a reader (getInvestorOffMarketCandidates' SELECT names every column the upsert writes, including wave-68's batchrank_score/batchrank_band)",
+    ["market_id", "address_key", "property_address", "city", "state", "zip", "quicklists",
+     "estimated_value", "equity_percent", "owner_name", "fit_score", "batchrank_score", "batchrank_band",
+     "matched_at", "delivered_at", "delivered_via", "dismissed_at"]
+      .every((col) => new RegExp(`select\\("[^"]*\\b${col}\\b[^"]*"\\)`).test(runner)))
+  check("getInvestorDealMatch (named reader) now carries the BatchData candidates alongside the aggregate match", /rawCandidates = await getInvestorOffMarketCandidates/.test(runner))
 
   const panel = stripped("app/components/contact/investor-deals-panel.tsx")
   check("portal surface renders the BatchData candidates (offMarketCandidates reader)", /offMarketCandidates/.test(panel) && /batchDataDeals/.test(panel))
@@ -132,6 +136,44 @@ function contactOnlyDelivery() {
   check("runMarketWatchForBuyer's persona gate is also read off `contacts` (never `leads`)", /from\("contacts"\)[\s\S]*?select\("contact_persona"\)/.test(mw))
   const act = stripped("app/actions/investor-deals.ts")
   check("the agent-facing action validates a UUID before touching the DB (no lead id smuggled through)", /isValidUUID\(contactId\)/.test(act))
+}
+
+function ownerRedaction() {
+  console.log("\n[OWNER REDACTION — wave 68: \"these investors should not get the owners information\"]")
+  // Positive control: a fixture that DOES carry owner_name (and every other owner field the
+  // redactor knows about) — proves the finder still recognizes the defect it exists for,
+  // rather than reporting a clean bill of health because nothing in the fixture could match.
+  const fixture = {
+    id: "cand-1", property_address: "9 Distress Rd", city: "Testville", zip: "09999",
+    quicklists: ["absentee-owner"], estimated_value: 250000, equity_percent: 40,
+    owner_name: "Moti Seller", owner_phone: "+15555551212", owner_email: "moti@example.com",
+    owner_mailing_address: "1 Other St, Elsewhere, AZ 00000",
+    fit_score: 0.8, matched_at: null, delivered_at: null, delivered_via: null, dismissed_at: null,
+  }
+  const investorFacing = toInvestorFacingCandidate(fixture) as Record<string, unknown>
+  check("audience:\"investor\" (the DEFAULT) strips owner_name from the payload",
+    !("owner_name" in investorFacing))
+  check("...and every other owner field named in the redactor (phone/email/mailing)",
+    !("owner_phone" in investorFacing) && !("owner_email" in investorFacing) && !("owner_mailing_address" in investorFacing))
+  check("...while every NON-owner field survives unchanged", investorFacing.property_address === "9 Distress Rd" && investorFacing.fit_score === 0.8)
+
+  const brokerageFacing = toInvestorFacingCandidate(fixture, "brokerage") as Record<string, unknown>
+  check("audience:\"brokerage\" is an explicit no-op — owner_name is KEPT for the agent surface",
+    brokerageFacing.owner_name === "Moti Seller")
+
+  const arr = toInvestorFacingCandidates([fixture, fixture], "investor")
+  check("toInvestorFacingCandidates redacts every row in an array the same way",
+    arr.length === 2 && arr.every((r) => !("owner_name" in (r as Record<string, unknown>))))
+
+  console.log("\n[OWNER REDACTION — wiring: the redactor is actually IN the read paths]")
+  const runner = stripped("lib/buyer-search/investor-offmarket-runner.ts")
+  check("getInvestorDealMatch calls toInvestorFacingCandidates before returning", /toInvestorFacingCandidates\(rawCandidates, audience\)/.test(runner))
+  check("...and defaults its own `audience` param to \"investor\" (safe default — nothing can forget)", /audience: CandidateAudience = "investor"/.test(runner))
+  const act = stripped("app/actions/investor-deals.ts")
+  check("getInvestorDealMatchAction resolves the CALLER'S role before choosing an audience (never trusts a client-supplied flag)", /resolveActorAudience\(userId\)/.test(act))
+  check("...via the SAME role predicate every other tenant-admin gate in this repo uses (§6)", /isAgentOrTenantAdmin\(/.test(act))
+  const panel = stripped("app/components/contact/investor-deals-panel.tsx")
+  check("the panel's client type marks owner_name OPTIONAL, present only for the resolved agent audience", /owner_name\?:\s*string \| null/.test(panel))
 }
 
 function dedupeAndTerritory() {
@@ -268,6 +310,7 @@ async function main() {
   investorRailSource()
   regularBuyerRailSource()
   contactOnlyDelivery()
+  ownerRedaction()
   dedupeAndTerritory()
   activeListingSourceOrderWave68()
   await liveLayer()

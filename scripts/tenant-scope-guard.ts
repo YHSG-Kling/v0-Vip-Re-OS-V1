@@ -503,3 +503,249 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
   console.log("  ✅ TENANT_BINDING_PASS — no surface binds a foreign user via a typed identifier")
 }
 
+// ── CHECK 3: a caller-supplied tenant id forwarded unverified into a SERVICE-
+// role query ─────────────────────────────────────────────────────────────────
+//
+// wave 68C (CLAUDE.md §4 IDOR audit). The defect this closes, quoted from §4:
+// "Body-supplied `brokerageId` on a service client is the IDOR shape found
+// repeatedly here." A function whose PARAMETER is named brokerageId /
+// brokerage_id / tenantId / tenant_id, used verbatim (not reassigned from the
+// SESSION first) inside a `.eq("brokerage_id"|"tenant_id", <that param>)` or an
+// insert/update payload key `brokerage_id: <that param>` on a SERVICE client,
+// lets any authenticated caller read or write another tenant's rows by simply
+// naming a different id. Fixed this wave (the pattern every future finding
+// should follow — resolve `getAgentContext()`, session wins, the parameter is
+// accepted-and-ignored): app/actions/ai-isa-settings.ts::getAIISAStats,
+// app/actions/transaction-compliance.ts (five exports), and
+// app/actions/campaign-sequences.ts::listCampaignSequences.
+//
+// SCOPE, PER-FUNCTION: each `export async function NAME(...) { ... }` (brace-
+// balanced body) is scanned on its own — a shadow in one export does not
+// silence a sibling export in the same file.
+//
+// KNOWN BLIND SPOTS (CLAUDE.md §2):
+//   · arrow-function exports (`export const f = async (...) => {}`) are not
+//     walked — every finding fixed this wave was a `function` declaration.
+//   · a parameter carried inside a typed OBJECT parameter (`data: { brokerageId
+//     string }`, read back as `data.brokerageId`) is invisible — only a
+//     directly-named or destructured parameter is checked. transaction-
+//     compliance.ts's `params.brokerageId` shape needed a manual read to find.
+//   · "shadowed" is textual: a `const brokerageId = ctx.brokerageId`-shaped
+//     reassignment ANYWHERE earlier in the same function body silences every
+//     later raw use, so a shadow that runs only on one code path (e.g. inside an
+//     `if`) can hide a raw use on another path.
+//   · the service-client variable must be created INSIDE the same function
+//     (`createServiceClient()`/`createAdminClient()`) — a service client
+//     received as a parameter or read off a module-level singleton is unseen.
+const SERVICE_ID_EXEMPT: Record<string, string> = {
+  "app/actions/home-value.ts::getListingAppointmentSlots":
+    "PUBLIC lane by design — the result page and portal reach this with NO agent session at all; the brokerageId IS the scope (there is no session brokerage to prefer) and the row returned is an agent directory (name/photo/phone), not tenant financial or client data. Comment at the call site names this explicitly.",
+  "app/actions/superadmin/tenant-entitlements.ts::getTenantEntitlementsAction":
+    "platform-staff act-as/support surface, gated by requireSuperadmin() (platform_role) before the id is used — a target brokerage id is the whole point of a superadmin console.",
+  "app/actions/superadmin/brokerage-management.ts::getBrokerageDetailAction":
+    "platform-staff act-as/support surface, gated by requireSuperadmin() (platform_role).",
+  "app/actions/superadmin/brokerage-management.ts::reactivateBrokerageAction":
+    "platform-staff act-as/support surface, gated by requireSuperadmin() (platform_role).",
+  "app/actions/superadmin/coupons.ts::redeemCouponForBrokerageAction":
+    "platform-staff act-as/support surface, gated by requirePlatformCapability('billing') (platform_role).",
+  "app/actions/superadmin/tenant-setup.ts::getTenantSetupReadinessAction":
+    "platform-staff act-as/support surface, gated by requirePlatformCapability('tenants') (platform_role).",
+  "app/actions/superadmin/tenant-users.ts::listTenantUsersAction":
+    "platform-staff act-as/support surface, gated by requirePlatformCapability('tenants') (platform_role).",
+  "app/actions/superadmin/portal-clients.ts::backfillPortalClientUsersAction":
+    "platform-staff act-as/support surface, gated by requirePlatformCapability('tenants') (platform_role).",
+  "app/actions/superadmin/tenant-message.ts::listMessageableAdminsAction":
+    "platform-staff act-as/support surface, gated by requirePlatformCapability('support') (platform_role).",
+  "app/actions/lead-import/crm-pull-actions.ts::getCrmImportStatusAction":
+    "platform-staff white-glove migration surface, gated by gateStaffAction('tenants') (platform_role) — tenant is the operator's TARGET by design, never the operator's own.",
+}
+
+{
+  const TARGET_PARAM_NAMES = ["brokerageId", "brokerage_id", "tenantId", "tenant_id"]
+  // A shadow is ANY local (const/let) redeclaration of the same name inside the
+  // function body — this codebase resolves the session tenant through dozens of
+  // differently-named helpers (ctx, auth, gate, session, profile, requireCaller,
+  // resolveFinancialContext, scopeForBrokerage, …), so matching by HELPER NAME
+  // false-accused every one this guard did not happen to know (acceptOffer's own
+  // `const brokerageId = auth.brokerageId` from a local `requireCaller()`, for
+  // one). Matching by SHADOWED, not by source, trades a theoretical miss (a
+  // redeclaration from something that is not actually session-derived) for not
+  // re-accusing code that already resolves tenant from the session under a name
+  // this guard has never seen — the far more common shape in this repo.
+
+  /**
+   * One finding per (file, function, param) where the param reaches a SERVICE
+   * client `.eq(...)`/payload key unshadowed. Same rule as CHECK 1/2: this is
+   * the function the positive controls exercise, not a paraphrase of it.
+   */
+  function unverifiedServiceTenantIdsIn(raw: string): Array<{ fn: string; param: string }> {
+    const src = stripComments(raw)
+    const out: Array<{ fn: string; param: string }> = []
+    const FN_RE = /export\s+async\s+function\s+(\w+)\s*\(([^)]*)\)/g
+    let m: RegExpExecArray | null
+    while ((m = FN_RE.exec(src))) {
+      const fnName = m[1]
+      const paramList = m[2]
+      const targets = TARGET_PARAM_NAMES.filter((n) => new RegExp(`\\b${n}\\b`).test(paramList))
+      if (targets.length === 0) continue
+
+      // Brace-balance the body starting at the first `{` after the signature.
+      const bodyStart = src.indexOf("{", FN_RE.lastIndex)
+      if (bodyStart === -1) continue
+      let depth = 0
+      let i = bodyStart
+      for (; i < src.length; i++) {
+        if (src[i] === "{") depth++
+        else if (src[i] === "}") {
+          depth--
+          if (depth === 0) break
+        }
+      }
+      const body = src.slice(bodyStart, i + 1)
+
+      // Service-client variable names created INSIDE this body.
+      const svcVars = new Set<string>()
+      const SVC_RE = /(?:const|let)\s+(\w+)\s*=\s*(?:await\s+)?(?:createServiceClient|createAdminClient)\s*\(/g
+      let sm: RegExpExecArray | null
+      while ((sm = SVC_RE.exec(body))) svcVars.add(sm[1])
+      if (svcVars.size === 0) continue
+
+      for (const param of targets) {
+        // Shadowed anywhere in the body BEFORE a raw use silences this param —
+        // a local (const/let) redeclaration of the same name, destructured or
+        // plain, from ANY source (see the note above this block).
+        const shadowRe = new RegExp(
+          `(?:const|let)\\s*(?:\\{[^}]*\\b${param}\\b[^}]*\\}|${param})\\s*=`,
+        )
+        const shadowMatch = shadowRe.exec(body)
+
+        // Raw use: <svcVar>....eq("brokerage_id"|"tenant_id", param) within 400
+        // chars, or a payload key `brokerage_id: param` / `tenant_id: param`
+        // within 200 chars after a <svcVar> call.
+        const svcAlt = [...svcVars].join("|")
+        const eqRe = new RegExp(
+          `\\b(?:${svcAlt})\\b[\\s\\S]{0,400}?\\.eq\\(\\s*["'\`](?:brokerage_id|tenant_id)["'\`]\\s*,\\s*${param}\\s*\\)`,
+        )
+        const payloadRe = new RegExp(
+          `\\b(?:${svcAlt})\\b[\\s\\S]{0,200}?\\b(?:brokerage_id|tenant_id)\\s*:\\s*${param}\\s*[,}]`,
+        )
+        const eqMatch = eqRe.exec(body)
+        const payloadMatch = payloadRe.exec(body)
+        const useMatch = eqMatch ?? payloadMatch
+        if (!useMatch) continue
+        if (shadowMatch && shadowMatch.index < useMatch.index) continue // shadowed before the use
+
+        out.push({ fn: fnName, param })
+      }
+    }
+    return out
+  }
+
+  // ── POSITIVE CONTROLS ──────────────────────────────────────────────────────
+  {
+    const controls: Array<{ name: string; src: string; expect: number; why: string }> = [
+      {
+        name: "a raw param forwarded into a SERVICE-client .eq(brokerage_id, …) is REPORTED",
+        expect: 1,
+        why: "the finder no longer recognises the IDOR shape §4 names — its zero means nothing",
+        src: [
+          "export async function getStats(brokerageId: string) {",
+          "  const svc = createServiceClient()",
+          '  const { data } = await svc.from("contacts").select("id").eq("brokerage_id", brokerageId)',
+          "  return data",
+          "}",
+        ].join("\n"),
+      },
+      {
+        name: "a raw param forwarded into a SERVICE-client insert payload is REPORTED",
+        expect: 1,
+        why: "the write half of the same shape is being missed",
+        src: [
+          "export async function seed(brokerageId: string) {",
+          "  const svc = createServiceClient()",
+          '  await svc.from("logs").insert({ brokerage_id: brokerageId, kind: "x" })',
+          "}",
+        ].join("\n"),
+      },
+      {
+        name: "a param SHADOWED by getAgentContext() before use is NOT reported",
+        expect: 0,
+        why: "the fixed pattern (ctx wins, param accepted-and-ignored) is being accused — this is the false positive this guard must never produce",
+        src: [
+          "export async function getStats(_brokerageId: string) {",
+          "  const ctx = await getAgentContext()",
+          "  if (!ctx.isAuthenticated || !ctx.brokerageId) return null",
+          "  const brokerageId = ctx.brokerageId",
+          "  const svc = createServiceClient()",
+          '  const { data } = await svc.from("contacts").select("id").eq("brokerage_id", brokerageId)',
+          "  return data",
+          "}",
+        ].join("\n"),
+      },
+      {
+        name: "a raw param used only on a SESSION client (RLS-backed) is NOT reported",
+        expect: 0,
+        why: "CHECK 3 targets the service-client bypass specifically; the session-client + RLS pattern used throughout this repo is a separate, RLS-dependent question this textual guard cannot answer and must not accuse",
+        src: [
+          "export async function getRows(brokerageId: string) {",
+          "  const supabase = await createClient()",
+          '  const { data } = await supabase.from("sync_errors").select("*").eq("brokerage_id", brokerageId)',
+          "  return data",
+          "}",
+        ].join("\n"),
+      },
+    ]
+    let controlFailed = false
+    for (const c of controls) {
+      const got = unverifiedServiceTenantIdsIn(c.src).length
+      if (got === c.expect) console.log(`  ✓ control · ${c.name}`)
+      else {
+        controlFailed = true
+        console.log(`  ✗ CONTROL FAILED · ${c.name} — expected ${c.expect}, got ${got}`)
+        console.log(`      ${c.why}`)
+      }
+    }
+    if (controlFailed) {
+      console.log(" ❌ SERVICE_TENANT_ID_CONTROL_FAIL — the finder cannot prove it still works, so its zero means nothing")
+      process.exit(1)
+    }
+  }
+
+  // Scope: "use server" files under app/actions ONLY — CLAUDE.md §4's "every
+  // export is a public HTTP endpoint" is what makes a caller-supplied tenant id
+  // dangerous; it names "use server" files specifically. A `lib/` helper taking
+  // `brokerageId` and querying a service client is ordinary internal plumbing —
+  // it is reached only from an action that already resolved the tenant from the
+  // session, same as any other internal function argument, and scanning `lib/`
+  // here produced ~60 such false positives before this scope line was added.
+  const svcOffenders: string[] = []
+  let svcScanned = 0
+  for (const abs of scanCorpus(["app/actions"])) {
+    const raw = readFileSync(abs, "utf8")
+    if (!/["']use server["']/.test(raw)) continue
+    svcScanned += 1
+    const rel = relative(root, abs).replace(/\\/g, "/")
+    for (const { fn, param } of unverifiedServiceTenantIdsIn(raw)) {
+      const key = `${rel}::${fn}`
+      if (SERVICE_ID_EXEMPT[key]) continue
+      svcOffenders.push(`${key} — param \`${param}\` reaches a SERVICE client unshadowed`)
+    }
+  }
+
+  console.log(`\n── SERVICE-CLIENT TENANT-ID GUARD ──`)
+  console.log(
+    `  ${svcScanned} "use server" files scanned under app/actions · ${Object.keys(SERVICE_ID_EXEMPT).length} documented platform-staff/public exemptions`,
+  )
+  if (svcOffenders.length > 0) {
+    console.log(`  ✗ ${svcOffenders.length} caller-supplied tenant id reaches a SERVICE client unshadowed:`)
+    for (const o of [...new Set(svcOffenders)]) console.log(`     - ${o}`)
+    console.log(
+      " ❌ SERVICE_TENANT_ID_FAIL — resolve tenant from getAgentContext() and let the session win (CLAUDE.md §4)",
+    )
+    process.exit(1)
+  }
+  console.log(
+    " ✅ SERVICE_TENANT_ID_PASS — no function forwards a caller-supplied brokerage/tenant id into a SERVICE client unverified",
+  )
+}
+

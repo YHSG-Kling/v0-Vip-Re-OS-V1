@@ -11,6 +11,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import type {
   VoiceTrainingJobStatus,
   VoiceProfileTrainingStatus,
@@ -22,6 +23,23 @@ import type {
 import { VOICE_CLONE_SAMPLE_PHRASES } from "./video-voice.constants"
 
 type ServerSupabase = Awaited<ReturnType<typeof createClient>>
+
+// wave 68C (CLAUDE.md §4 IDOR audit): three exports below (updateVoiceProfileSamples,
+// setDefaultVoiceProfile, startVoiceCloneTraining) took `brokerageId` straight
+// from the caller, checked only its UUID shape, and used it to scope reads AND
+// writes on a session client with no authentication check at all — no RLS
+// tenant policy was found for agent_voice_profiles / voice_clone_training in
+// supabase/migrations, so this was a real cross-tenant write, not merely an
+// RLS-redundant filter. Tenant now comes from the SESSION via this one helper.
+async function requireSessionBrokerageId(): Promise<
+  { ok: true; brokerageId: string; userId: string } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Not authenticated" }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
+}
 
 /** The in-progress capture for a profile: 'queued' = recorded, not yet submitted.
  *
@@ -224,13 +242,16 @@ export async function createVoiceProfile(data: {
  */
 export async function updateVoiceProfileSamples(
   profileId: string,
-  brokerageId: string,
+  _brokerageId: string,
   sampleManifest: SampleManifest,
   actorUserId?: string
 ) {
-  if (!isValidUUID(profileId) || !isValidUUID(brokerageId)) {
-    throw new Error("Invalid profile or brokerage ID")
+  if (!isValidUUID(profileId)) {
+    throw new Error("Invalid profile ID")
   }
+  const session = await requireSessionBrokerageId()
+  if (!session.ok) throw new Error(session.error)
+  const brokerageId = session.brokerageId
 
   const supabase = await createClient()
 
@@ -311,12 +332,15 @@ export async function updateVoiceProfileSamples(
 export async function setDefaultVoiceProfile(
   profileId: string,
   agentId: string,
-  brokerageId: string,
+  _brokerageId: string,
   actorUserId?: string
 ) {
-  if (!isValidUUID(profileId) || !isValidUUID(agentId) || !isValidUUID(brokerageId)) {
+  if (!isValidUUID(profileId) || !isValidUUID(agentId)) {
     throw new Error("Invalid IDs provided")
   }
+  const session = await requireSessionBrokerageId()
+  if (!session.ok) throw new Error(session.error)
+  const brokerageId = session.brokerageId
 
   const supabase = await createClient()
 
@@ -382,13 +406,16 @@ export async function setDefaultVoiceProfile(
  */
 export async function startVoiceCloneTraining(
   profileId: string,
-  brokerageId: string,
+  _brokerageId: string,
   sampleManifest: SampleManifest,
   actorUserId?: string
 ) {
-  if (!isValidUUID(profileId) || !isValidUUID(brokerageId)) {
-    throw new Error("Invalid profile or brokerage ID")
+  if (!isValidUUID(profileId)) {
+    throw new Error("Invalid profile ID")
   }
+  const session = await requireSessionBrokerageId()
+  if (!session.ok) throw new Error(session.error)
+  const brokerageId = session.brokerageId
 
   const supabase = await createClient()
 

@@ -1258,6 +1258,23 @@ export async function fetchIncrementalPropertySearch(params: {
    *  last time" across cron runs. Omit to page without session semantics (every call
    *  returns the same result set from page 1, re-deduped by the caller). */
   searchSession?: string | null
+  // ── BUY-BOX FILTERS (wave 68, owner ruling: an investor's portal buy-box maps to
+  // Property Search FILTERS — quickList + valuation.estimatedValue min/max +
+  // equityPercent.min + general.propertyTypeDetail.equals + geography — NOT the Buy Box
+  // API and NOT BatchRank; see docs/lead-acquisition-coverage-2026-09.md). ADDITIVE:
+  // every existing caller that omits these keeps its exact prior request body. */
+  /** valuation.estimatedValue.min — the box's price floor. */
+  minPrice?: number | null
+  /** valuation.estimatedValue.max — the box's price ceiling. */
+  maxPrice?: number | null
+  /** equityPercent.min — only properties with at least this much equity. */
+  minEquityPercent?: number | null
+  /** general.propertyTypeDetail.equals — a single BatchData property-type slug
+   *  (e.g. "Single Family"), when the box names exactly one type worth filtering
+   *  server-side. Multiple box types are left to the caller's own client-side scoring
+   *  (scoreOffMarketFit already does this softly) rather than an AND/OR filter shape
+   *  that has not been independently confirmed against the live API. */
+  propertyTypeDetail?: string | null
 }): Promise<IncrementalSearchResult> {
   if (!process.env.BATCHDATA_API_KEY) {
     return { ok: false, records: [], nextPageCursor: null, resultsFound: null, sessionUnsupported: false, cost: 0, error: "BATCHDATA_API_KEY not configured" }
@@ -1272,9 +1289,25 @@ export async function fetchIncrementalPropertySearch(params: {
   if (params.pageCursor) options.pageCursor = params.pageCursor
   if (params.searchSession) options.searchSession = params.searchSession
 
+  const searchCriteria: Record<string, unknown> = { query, orQuickLists: quicklists }
+  if (params.minPrice != null || params.maxPrice != null) {
+    searchCriteria.valuation = {
+      estimatedValue: {
+        ...(params.minPrice != null && { min: params.minPrice }),
+        ...(params.maxPrice != null && { max: params.maxPrice }),
+      },
+    }
+  }
+  if (params.minEquityPercent != null) {
+    searchCriteria.equityPercent = { min: params.minEquityPercent }
+  }
+  if (params.propertyTypeDetail) {
+    searchCriteria.general = { propertyTypeDetail: { equals: params.propertyTypeDetail } }
+  }
+
   try {
     const data = await batchDataPropertySearch(
-      { searchCriteria: { query, orQuickLists: quicklists }, options },
+      { searchCriteria, options },
       "BatchData incremental search error",
     )
     const properties: any[] = data?.results?.properties ?? data?.results ?? []

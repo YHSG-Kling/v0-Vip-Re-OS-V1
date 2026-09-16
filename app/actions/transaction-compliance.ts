@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ─── COMPLIANCE CHECK DEFINITIONS ────────────────────────────────────────────
 // These checks are seeded when a transaction advances to INSPECTION stage
@@ -24,19 +25,27 @@ const TRANSACTION_COMPLIANCE_CHECKS = [
 /**
  * Seeds transaction compliance checks when stage advances to INSPECTION.
  * Inserts rows into transaction_compliance_log table.
+ *
+ * wave 68C (CLAUDE.md §4 IDOR audit): `brokerageId` used to come straight from
+ * the caller into a SERVICE-role query/insert with only a UUID-shape check —
+ * any authenticated caller could seed (and later read/update) compliance rows
+ * under an arbitrary tenant. Tenant now comes from the SESSION; the parameter
+ * is accepted for call-site compatibility and otherwise ignored.
  */
 export async function seedTransactionComplianceChecks(
   transactionId: string,
-  brokerageId: string
+  _brokerageId: string
 ): Promise<{ success: boolean; inserted: number; error?: string }> {
   if (!isValidUUID(transactionId)) return { success: false, inserted: 0, error: "Invalid transaction ID" }
-  if (!isValidUUID(brokerageId)) return { success: false, inserted: 0, error: "Invalid brokerage ID" }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, inserted: 0, error: "Not authenticated" }
+  const brokerageId = ctx.brokerageId
 
   const supabase = createServiceClient()
 
   // Get current user for audit
-  const serverClient = await createClient()
-  const { data: { user } } = await serverClient.auth.getUser()
+  const user = { id: ctx.userId }
 
   // Check for existing checks to avoid duplicates
   const { data: existing } = await supabase
@@ -97,6 +106,11 @@ const STATUS_PENDING = "pending"
 const STATUS_WAIVED = "waived"
 const STATUS_NEEDS_REVIEW = "needs_review"
 
+// wave 68C (CLAUDE.md §4 IDOR audit): `params.brokerageId` used to flow straight
+// into the SERVICE-role `.eq("brokerage_id", …)` below with only a UUID-shape
+// check — any authenticated caller could target another tenant's compliance
+// check by id + transaction id. Tenant now comes from the SESSION; the
+// parameter is accepted for call-site compatibility and otherwise ignored.
 export async function updateComplianceCheck(params: {
   checkId: string
   transactionId: string
@@ -107,15 +121,15 @@ export async function updateComplianceCheck(params: {
 }): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(params.checkId)) return { success: false, error: "Invalid check ID" }
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
-  if (!isValidUUID(params.brokerageId)) return { success: false, error: "Invalid brokerage ID" }
 
-  const supabase = createServiceClient()
-  const serverClient = await createClient()
-  const { data: { user } } = await serverClient.auth.getUser()
-
-  if (!user) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Not authenticated" }
   }
+  const brokerageId = ctx.brokerageId
+  const user = { id: ctx.userId }
+
+  const supabase = createServiceClient()
 
   // Get current check for context
   const { data: check } = await supabase
@@ -123,7 +137,7 @@ export async function updateComplianceCheck(params: {
     .select("check_type, check_label, status, is_blocking")
     .eq("id", params.checkId)
     .eq("transaction_id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", brokerageId)
     .single()
 
   if (!check) {
@@ -156,7 +170,7 @@ export async function updateComplianceCheck(params: {
     .update(updateData)
     .eq("id", params.checkId)
     .eq("transaction_id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", brokerageId)
 
   if (updateError) {
     return { success: false, error: updateError.message }
@@ -165,7 +179,7 @@ export async function updateComplianceCheck(params: {
   // Create timeline entry for compliance change (normalized status)
   await supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
-    brokerage_id: params.brokerageId,
+    brokerage_id: brokerageId,
     activity_type: "compliance_check_updated",
     description: `Compliance check "${check.check_label}" updated: ${previousStatus} -> ${params.status}`,
     performed_by: user.id,
@@ -196,12 +210,17 @@ export async function updateComplianceCheck(params: {
  * ALLOWED to proceed: status = "pass" or "waived"
  * BLOCKED from proceeding: status = "fail", "pending", or "needs_review" (for blocking checks)
  */
+// wave 68C (CLAUDE.md §4 IDOR audit): see seedTransactionComplianceChecks above
+// — tenant now comes from the SESSION, not the caller-supplied parameter.
 export async function canProceedToClosingPrep(
   transactionId: string,
-  brokerageId: string
+  _brokerageId: string
 ): Promise<{ allowed: boolean; blockers: string[] }> {
   if (!isValidUUID(transactionId)) return { allowed: false, blockers: ["Invalid transaction ID"] }
-  if (!isValidUUID(brokerageId)) return { allowed: false, blockers: ["Invalid brokerage ID"] }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { allowed: false, blockers: ["Not authenticated"] }
+  const brokerageId = ctx.brokerageId
 
   const supabase = createServiceClient()
 
@@ -248,9 +267,11 @@ export async function canProceedToClosingPrep(
 
 // ─── GET TRANSACTION COMPLIANCE CHECKS ──────────────────────────────────────────
 
+// wave 68C (CLAUDE.md §4 IDOR audit): see seedTransactionComplianceChecks above
+// — tenant now comes from the SESSION, not the caller-supplied parameter.
 export async function getTransactionComplianceChecks(
   transactionId: string,
-  brokerageId: string
+  _brokerageId: string
 ): Promise<{
   success: boolean
   checks: Array<{
@@ -270,7 +291,10 @@ export async function getTransactionComplianceChecks(
   error?: string
 }> {
   if (!isValidUUID(transactionId)) return { success: false, checks: [], error: "Invalid transaction ID" }
-  if (!isValidUUID(brokerageId)) return { success: false, checks: [], error: "Invalid brokerage ID" }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, checks: [], error: "Not authenticated" }
+  const brokerageId = ctx.brokerageId
 
   const supabase = createServiceClient()
 
@@ -372,6 +396,8 @@ export async function getAllTransactionComplianceLogs(filters?: {
 
 // ─── BATCH UPDATE COMPLIANCE CHECK ──────────────────────────────────────────────
 
+// wave 68C (CLAUDE.md §4 IDOR audit): see seedTransactionComplianceChecks above
+// — tenant now comes from the SESSION, not the caller-supplied parameter.
 export async function batchPassComplianceChecks(params: {
   checkIds: string[]
   transactionId: string
@@ -379,7 +405,6 @@ export async function batchPassComplianceChecks(params: {
   resolutionNotes?: string
 }): Promise<{ success: boolean; updated: number; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, updated: 0, error: "Invalid transaction ID" }
-  if (!isValidUUID(params.brokerageId)) return { success: false, updated: 0, error: "Invalid brokerage ID" }
   if (!params.checkIds.length) return { success: true, updated: 0 }
 
   const serverClient = await createClient()
@@ -388,6 +413,12 @@ export async function batchPassComplianceChecks(params: {
   if (!user) {
     return { success: false, updated: 0, error: "Not authenticated" }
   }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, updated: 0, error: "Not authenticated" }
+  }
+  const brokerageId = ctx.brokerageId
 
   const supabase = createServiceClient()
 
@@ -405,7 +436,7 @@ export async function batchPassComplianceChecks(params: {
     })
     .in("id", params.checkIds)
     .eq("transaction_id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", brokerageId)
 
   if (error) {
     return { success: false, updated: 0, error: error.message }
@@ -414,7 +445,7 @@ export async function batchPassComplianceChecks(params: {
   // Log timeline entry
   await supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
-    brokerage_id: params.brokerageId,
+    brokerage_id: brokerageId,
     activity_type: "compliance_batch_pass",
     description: `${params.checkIds.length} compliance checks marked as pass`,
     performed_by: user.id,

@@ -256,8 +256,15 @@ async function scopeForBrokerage(brokerageId: string) {
 
 // ── getAIISAStats ─────────────────────────────────────────────────────────────
 // Dashboard-level stats for the admin/broker ISA reporting surface.
+//
+// wave 68C (CLAUDE.md §4 IDOR audit): this took `brokerageId` straight from the
+// caller and forwarded it, unverified, into a SERVICE-role client — any
+// authenticated caller could read another tenant's contact/lead/handoff counts.
+// Tenant now comes from the SESSION (getAgentContext, the pattern this file's
+// own `scopeForBrokerage` already uses); the parameter is accepted for
+// call-site compatibility and otherwise ignored.
 
-export async function getAIISAStats(brokerageId: string): Promise<{
+export async function getAIISAStats(_brokerageId: string): Promise<{
   activeContactCount: number
   activeLeadCount: number
   staleContactCount: number
@@ -265,6 +272,18 @@ export async function getAIISAStats(brokerageId: string): Promise<{
   outreachLast30Days: number
   negativeOutcomeLast30Days: number
 }> {
+  const { ctx } = await sessionScope()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return {
+      activeContactCount: 0,
+      activeLeadCount: 0,
+      staleContactCount: 0,
+      handoffRequiredCount: 0,
+      outreachLast30Days: 0,
+      negativeOutcomeLast30Days: 0,
+    }
+  }
+  const brokerageId = ctx.brokerageId
   const { createServiceClient } = await import('@/lib/supabase/service')
   const supabase = createServiceClient()
   const since30 = new Date(Date.now() - 30 * 86_400_000).toISOString()

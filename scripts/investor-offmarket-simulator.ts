@@ -112,6 +112,21 @@ function sourceLayer() {
   check("the cron route drives the brokerage-wide refresh", /refreshInvestorOffMarketMatches/.test(src("app/api/cron/investor-offmarket-refresh/route.ts")))
   const act = src("app/actions/investor-deals.ts")
   check("action returns an honest reason when the contact isn't an investor", /not_investor:[\s\S]*?investor buyers/.test(act))
+
+  console.log("\n[wave 68 — buy-box maps to Property Search FILTERS, not the Buy Box API / BatchRank]")
+  check("the runner passes the box's price range into fetchIncrementalPropertySearch", /minPrice: params\.box\.minPrice[\s\S]*?maxPrice: params\.box\.maxPrice/.test(runner))
+  const client = src("lib/external/batchdata-client.ts")
+  check("fetchIncrementalPropertySearch accepts minPrice/maxPrice/minEquityPercent/propertyTypeDetail filters", /minPrice\?:\s*number \| null/.test(client) && /minEquityPercent\?:\s*number \| null/.test(client) && /propertyTypeDetail\?:\s*string \| null/.test(client))
+  check("...and maps them onto valuation.estimatedValue / equityPercent / general.propertyTypeDetail (the documented filter shape)", /valuation\.estimatedValue/.test(client) && /\.equityPercent = \{ min:/.test(client) && /general\.propertyTypeDetail/.test(client))
+  check("existing callers keep working — the new params are all optional (additive, never a breaking change)", /minPrice\?:/.test(client) && /take\?:\s*number/.test(client))
+
+  console.log("\n[wave 68 — BatchRank is an OPTIONAL, fail-closed ranking seam, never the candidate source]")
+  const batchrank = src("lib/external/batchdata-batchrank.ts")
+  check("rankCandidatesWithBatchRank is exported", /export async function rankCandidatesWithBatchRank/.test(batchrank))
+  check("fails closed (unranked, unchanged) when BATCHDATA_BATCHRANK_ENABLED is not \"true\"", /process\.env\[BATCHRANK_ENABLED_ENV\] !== "true"/.test(batchrank))
+  check("...and again when no dedicated token is provisioned", /resolveBatchDataToken\("batchrank"\)/.test(batchrank))
+  check("the runner calls it and stores the verdict on EVERY upsert row (batchrank_score/batchrank_band), never a spread that hides the columns", /batchrank_score: rank\?\.batchrankScore \?\? null, batchrank_band: rank\?\.batchrankBand \?\? null/.test(runner))
+  check(".env.example documents both BatchRank vars as custom-priced / opt-in", /BATCHDATA_BATCHRANK_ENABLED=false/.test(src(".env.example")) && /BATCHDATA_BATCHRANK_TOKEN=/.test(src(".env.example")))
 }
 
 async function liveLayer() {

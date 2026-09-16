@@ -259,3 +259,81 @@ export async function comparablePropertyPage(args: { address: string; city?: str
   const r = await callBatchDataMcp("comparable_property_page", args)
   return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
 }
+
+// ─── SCRUB-BEFORE-USE — thin typed mirrors over the wave-67 MCP tool set ──────────────
+// (help.batchdata.io article 12860581: "check_dnc_status, check_tcpa_status, verify_phone").
+// lib/compliance/phone-scrub-runner.ts called `callBatchDataMcp("check_dnc_status", …)` and
+// `callBatchDataMcp("check_tcpa_status", …)` directly (the INTAKE-time scrub, wave 6x); these
+// are the SAME two tools plus verify_phone, given a typed home here so the SEND-TIME scrub
+// (lib/communication/tcpa-gate.ts — wave 68, "we do want to make sure that the phone/scrub and
+// email before using it") does not hand-roll a third copy of the tool-name string or the
+// tolerant-flag reader. One vocabulary (§6): phone-scrub-runner.ts now calls these too.
+//
+// FAIL CLOSED, NEVER THROWS: `unconfigured:true` is the caller's cue to refuse rather than
+// assume clean — CLAUDE.md §4 ("a gate that cannot run must refuse, not pass").
+
+/** Tolerant boolean read across the field-name variants BatchData's DNC/TCPA tools use. */
+function readMcpFlag(data: unknown, keys: string[]): boolean | null {
+  if (!data || typeof data !== "object") return null
+  const obj = data as Record<string, unknown>
+  for (const k of keys) {
+    const v = obj[k]
+    if (typeof v === "boolean") return v
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase()
+      if (["true", "yes", "listed", "dnc", "litigator"].includes(s)) return true
+      if (["false", "no", "clean", "none", "not_listed"].includes(s)) return false
+    }
+  }
+  return null
+}
+
+export interface DncStatusResult {
+  ok: boolean
+  /** null = tool ran but returned no parseable flag; unconfigured/failed → also null. */
+  dnc: boolean | null
+  unconfigured: boolean
+  error: string | null
+}
+
+/** check_dnc_status — is this number on the national/state Do-Not-Call registry? */
+export async function checkDncStatus(phoneTenDigits: string): Promise<DncStatusResult> {
+  const r = await callBatchDataMcp<unknown>("check_dnc_status", { phone_number: phoneTenDigits })
+  const dnc = r.ok ? readMcpFlag(r.data, ["dnc", "is_dnc", "isDnc", "dnc_status", "onDnc", "listed", "result"]) : null
+  return { ok: r.ok, dnc, unconfigured: !!r.unconfigured, error: r.error }
+}
+
+export interface TcpaStatusResult {
+  ok: boolean
+  /** true = this number is associated with a known TCPA litigator. */
+  tcpaLitigator: boolean | null
+  unconfigured: boolean
+  error: string | null
+}
+
+/** check_tcpa_status — is this number associated with a known TCPA litigator? */
+export async function checkTcpaStatus(phoneTenDigits: string): Promise<TcpaStatusResult> {
+  const r = await callBatchDataMcp<unknown>("check_tcpa_status", { phone_number: phoneTenDigits })
+  const tcpaLitigator = r.ok
+    ? readMcpFlag(r.data, ["tcpa", "litigator", "is_litigator", "isLitigator", "tcpaLitigator", "tcpa_litigator", "listed", "result"])
+    : null
+  return { ok: r.ok, tcpaLitigator, unconfigured: !!r.unconfigured, error: r.error }
+}
+
+export interface VerifyPhoneResult {
+  ok: boolean
+  reachable: boolean | null
+  lineType: string | null
+  unconfigured: boolean
+  error: string | null
+}
+
+/** @proofSeam the 3rd wave-68 mirror; reachability is deliberately a SEPARATE verify
+ *  pass (lib/compliance/phone-scrub.ts's own header) the fresh DNC/TCPA scrub did not
+ *  need — kept ready for that pass, exercised by scripts/outbound-call-gates-simulator.ts. */
+export async function verifyPhone(phoneTenDigits: string): Promise<VerifyPhoneResult> {
+  const r = await callBatchDataMcp<Record<string, any>>("verify_phone", { phone_number: phoneTenDigits })
+  const reachable = r.ok ? readMcpFlag(r.data, ["reachable", "is_valid", "isValid", "valid", "result"]) : null
+  const lineType = r.ok && r.data && typeof r.data === "object" ? ((r.data as Record<string, any>).line_type ?? (r.data as Record<string, any>).lineType ?? null) : null
+  return { ok: r.ok, reachable, lineType, unconfigured: !!r.unconfigured, error: r.error }
+}

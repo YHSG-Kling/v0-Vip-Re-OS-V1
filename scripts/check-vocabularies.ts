@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 438 tables, 774 columns.
+ * MEASURED AT GENERATION: 439 tables, 775 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-16
  * source: public.live_check_constraints_json()
- * body-sha256: 74b6b5e1a38acf0c1dc2cbec5d7cb02a40b3ff5e438c72eb6ef77c0f9ed12fbb
+ * body-sha256: 608a7d45fa9367a0c8ea42b78bee36f8fabd401a2afc9dd15af4dfdbf83585f2
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -757,6 +757,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   investor_deal_matches: {
     status: ["active", "archived"],
+  },
+  investor_offmarket_candidates: {
+    batchrank_band: ["high", "low", "medium"],
   },
   isa_outreach_log: {
     channel: ["direct_mail", "email", "in_app", "sms", "social", "video", "voice"],

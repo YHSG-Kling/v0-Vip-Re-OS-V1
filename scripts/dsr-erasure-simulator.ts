@@ -53,7 +53,7 @@ function report() {
 // fails loudly if someone drops one from CONTACT_PII_NULL_COLUMNS.
 const MUST_CLEAR = [
   "dl_image_url", "legal_first_name", "legal_middle_name", "legal_last_name",
-  "mailing_address", "household_income", "credit_score_band", "court_records",
+  "mailing_address", "household_income", "credit_score_band", "credit_score_range", "court_records",
   "public_records", "social_handles", "ghl_contact_id", "peopledata_id",
   "birthday", "occupation", "enrichment_profile",
 ]

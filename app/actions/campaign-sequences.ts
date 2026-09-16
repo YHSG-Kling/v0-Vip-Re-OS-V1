@@ -53,13 +53,23 @@ function fieldValueForWrite(name: string, raw: unknown): unknown {
 
 // ─── List sequences ───────────────────────────────────────────────────────────
 
+// wave 68C (CLAUDE.md §4 IDOR audit): every OTHER export in this file already
+// resolves tenant from getAgentContext() before touching the service client;
+// this one took `brokerageId` straight from the caller. Tenant now comes from
+// the SESSION; the parameter is accepted for call-site compatibility and
+// otherwise ignored.
 export async function listCampaignSequences(
-  brokerageId: string,
+  _brokerageId: string,
   category?: SequenceCategory
 ): Promise<{
   sequences: CampaignSequence[]
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { sequences: [], error: "Not authenticated" }
+  }
+  const brokerageId = ctx.brokerageId
   const service = createServiceClient()
   let query = service
     .from("campaign_sequences")

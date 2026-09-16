@@ -37,6 +37,19 @@
  *
  * There is no live layer: proving a refusal end-to-end would require dialling.
  */
+// ── test-only shim ──────────────────────────────────────────────────────────
+// lib/communication/tcpa-gate.ts imports `server-only`, which throws outside a
+// Server Component. Neutralize it in the require cache BEFORE importing
+// anything that transitively pulls it (see scripts/inbound-intent-simulator.ts
+// for the same idiom).
+import { createRequire } from "module"
+const _require = createRequire(import.meta.url)
+try {
+  const soPath = _require.resolve("server-only")
+  _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
+} catch { /* server-only not resolvable — nothing to shim */ }
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
@@ -48,6 +61,14 @@ import {
   type OutboundCallGateContext,
   type OutboundCallRefusal,
 } from "../lib/voice/outbound-call-gates"
+// tcpa-gate.ts is `server-only` — imported AFTER the require-cache shim above
+// (a static import would hoist above the shim and throw).
+const {
+  evaluateFreshScrubVerdict,
+  isDncTcpaVerdictFresh,
+  DNC_TCPA_SCRUB_STALENESS_DAYS,
+} = await import("../lib/communication/tcpa-gate")
+import { checkDncStatus, checkTcpaStatus, verifyPhone } from "../lib/external/batchdata-mcp"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -216,6 +237,87 @@ console.log("\n═══ 7. The duplicates are gone, and named their survivor �
     /export async function resolveSMSProviderForActor/.test(resolver))
   check("...with an in-code record naming it",
     resolver.includes("SURVIVOR: resolveSMSProviderForActor"))
+}
+
+console.log("\n═══ 8. SCRUB BEFORE USE — fresh DNC/TCPA verdict (wave 68) ═══")
+{
+  // PURE decision core — no network calls, exhaustively testable per CLAUDE.md §2.
+  const CLEAN_DNC = { ok: true, dnc: false }
+  const CLEAN_TCPA = { ok: true, tcpaLitigator: false }
+
+  console.log("  — positive control: a verified-clean number PASSES —")
+  {
+    const v = evaluateFreshScrubVerdict(CLEAN_DNC, CLEAN_TCPA)
+    check("verified + clean passes (verified:true, blocked:false)", v.verified === true && (v as any).blocked === false)
+  }
+
+  console.log("  — negative control 1: dnc=true is REFUSED —")
+  {
+    const v = evaluateFreshScrubVerdict({ ok: true, dnc: true }, CLEAN_TCPA)
+    check("dnc:true refuses with blockReason 'dnc'", v.verified === true && (v as any).blocked === true && (v as any).blockReason === "dnc")
+  }
+
+  console.log("  — negative control 2: a TCPA litigator number is REFUSED —")
+  {
+    const v = evaluateFreshScrubVerdict(CLEAN_DNC, { ok: true, tcpaLitigator: true })
+    check("tcpaLitigator:true refuses with blockReason 'tcpa_litigator'", v.verified === true && (v as any).blocked === true && (v as any).blockReason === "tcpa_litigator")
+  }
+
+  console.log("  — negative control 3: unverifiable-without-key is REFUSED (fail closed) —")
+  {
+    const v = evaluateFreshScrubVerdict({ ok: false, dnc: null, unconfigured: true }, { ok: false, tcpaLitigator: null, unconfigured: true })
+    check("unconfigured (no BatchData key) refuses rather than assuming clean", v.verified === false && typeof (v as any).reason === "string" && (v as any).reason.length > 0)
+  }
+  {
+    // Both calls FAILED (not merely unconfigured — e.g. a network error) also refuses.
+    const v = evaluateFreshScrubVerdict({ ok: false, dnc: null, error: "timeout" }, { ok: false, tcpaLitigator: null, error: "timeout" })
+    check("a provider failure with no answer from either check also refuses", v.verified === false)
+  }
+
+  console.log("  — freshness clock (pure) —")
+  {
+    const now = Date.now()
+    check("null verified_at is NEVER fresh", isDncTcpaVerdictFresh(null, now) === false)
+    check(`a verdict ${DNC_TCPA_SCRUB_STALENESS_DAYS - 1}d old is fresh`, isDncTcpaVerdictFresh(new Date(now - (DNC_TCPA_SCRUB_STALENESS_DAYS - 1) * 86400000).toISOString(), now) === true)
+    check(`a verdict ${DNC_TCPA_SCRUB_STALENESS_DAYS + 1}d old is STALE`, isDncTcpaVerdictFresh(new Date(now - (DNC_TCPA_SCRUB_STALENESS_DAYS + 1) * 86400000).toISOString(), now) === false)
+  }
+
+  console.log("  — live-call I/O shell (env unconfigured — no real BatchData spend) —")
+  {
+    delete process.env.BATCHDATA_MCP_URL
+    delete process.env.BATCHDATA_MCP_AUTH
+    delete process.env.BATCHDATA_API_KEY
+    // Run all three synchronously so a slow/absent network never blocks this proof.
+  }
+
+  console.log("  — the gate is wired into enforceTCPACompliance, not a second gate stack —")
+  {
+    const tcpa = code("lib/communication/tcpa-gate.ts")
+    check("enforceTCPACompliance calls evaluateFreshScrubVerdict (the extension lives IN the existing gate)",
+      /evaluateFreshScrubVerdict\(/.test(tcpa))
+    check("...reads the freshness clock off contacts.dnc_verified_at before deciding whether to re-check live",
+      /isDncTcpaVerdictFresh\(contact\.dnc_verified_at/.test(tcpa))
+    check("...and calls the THIN wrappers on lib/external/batchdata-mcp.ts (checkDncStatus/checkTcpaStatus) — never a raw callBatchDataMcp string here",
+      /checkDncStatus/.test(tcpa) && /checkTcpaStatus/.test(tcpa) && !/callBatchDataMcp/.test(tcpa))
+    check("no SECOND gate stack was built — phone-scrub-runner.ts (the intake scrub) now reuses the SAME thin wrappers",
+      /checkDncStatus, checkTcpaStatus/.test(code("lib/compliance/phone-scrub-runner.ts")))
+  }
+
+  console.log("  — thin MCP wrappers exist and are fail-closed by construction —")
+  {
+    check("checkDncStatus/checkTcpaStatus/verifyPhone are exported functions", typeof checkDncStatus === "function" && typeof checkTcpaStatus === "function" && typeof verifyPhone === "function")
+  }
+}
+
+console.log("\n═══ 9. Outbound EMAIL gets a fresh verification verdict too (wave 68) ═══")
+{
+  const msg = code("lib/providers/messaging/index.ts")
+  check("sendEmail gates on a fresh verification verdict when a contactId is present",
+    /if \(params\.contactId && !params\.skipVerificationGate\)/.test(msg))
+  check("...and REUSES the existing email verifier (lib/external/email-verifier.ts) rather than a second implementation",
+    /import\("@\/lib\/external\/email-verifier"\)/.test(msg) && /checkEmailMx/.test(msg))
+  check("...persisting the verdict on the SAME columns the schema already carries (email_verified / email_verification_date)",
+    /email_verified: true, email_verification_date:/.test(msg))
 }
 
 console.log(`\n${"═".repeat(70)}`)

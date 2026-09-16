@@ -23,6 +23,8 @@ import {
   type BatchDataRecord,
 } from "@/lib/external/batchdata-client"
 import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+import { rankCandidatesWithBatchRank } from "@/lib/external/batchdata-batchrank"
+import { toInvestorFacingCandidates, type CandidateAudience } from "@/lib/buyer-search/investor-facing"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -265,9 +267,17 @@ async function pullAndPersistBatchDataOffMarketCandidates(
     for (const quicklist of INVESTOR_OFFMARKET_QUICKLISTS) {
       let pull
       try {
+        // BUY-BOX FILTERS (wave 68 owner ruling): the investor's box maps to Property
+        // Search filters, not a second API — pass price range / equity floor / a
+        // single named property type straight through when the box has them. A box
+        // naming several property types is left to scoreOffMarketFit's own soft
+        // scoring below (server-side .equals only takes one value honestly).
         pull = await fetchIncrementalPropertySearch({
           quicklist, city: market.city, state: market.state,
           searchSession: `investor-offmarket-${market.id}-${quicklist}`, take: 20,
+          minPrice: params.box.minPrice ?? undefined,
+          maxPrice: params.box.maxPrice ?? undefined,
+          propertyTypeDetail: params.box.propertyTypes.length === 1 ? params.box.propertyTypes[0] : undefined,
         })
       } catch { continue }
       if (!pull.ok) continue
@@ -299,6 +309,14 @@ async function pullAndPersistBatchDataOffMarketCandidates(
   const alreadyDelivered = new Set(((existing ?? []) as Array<{ address_key: string; delivered_at: string | null }>)
     .filter((e) => e.delivered_at).map((e) => e.address_key))
 
+  // OPTIONAL BatchRank ranking seam (wave 68) — fail-closed by default (BATCHDATA_
+  // BATCHRANK_ENABLED unset / no token): every candidate comes back unchanged with
+  // batchrank* left null, which is the honest "not ranked" state below.
+  const batchRankResult = await rankCandidatesWithBatchRank(
+    addressKeys.map((k) => ({ addressKey: k, address: byAddress.get(k)!.row.property_address as string | null })),
+  )
+  const batchRankByAddress = new Map(batchRankResult.candidates.map((c) => [c.addressKey, c]))
+
   // Every column named EXPLICITLY at the write site (not a spread of the mapper's
   // row) so the opposite-missing census can see this table's writer — a spread
   // of an identifier hides the key set and every column reads as writerless.
@@ -306,6 +324,7 @@ async function pullAndPersistBatchDataOffMarketCandidates(
   const upserts = addressKeys.map((k) => {
     const c = byAddress.get(k)!
     const r = c.row
+    const rank = batchRankByAddress.get(k)
     return {
       brokerage_id: r.brokerage_id, contact_id: r.contact_id, market_id: r.market_id,
       address_key: r.address_key, property_address: r.property_address,
@@ -313,6 +332,7 @@ async function pullAndPersistBatchDataOffMarketCandidates(
       quicklists: r.quicklists, estimated_value: r.estimated_value,
       equity_percent: r.equity_percent, owner_name: r.owner_name,
       fit_score: c.matchScore, matched_at: matchedAt,
+      batchrank_score: rank?.batchrankScore ?? null, batchrank_band: rank?.batchrankBand ?? null,
     }
   })
   const { error } = await svc.from("investor_offmarket_candidates")
@@ -345,17 +365,27 @@ async function stampDelivered(svc: Svc, contactId: string, addressKeys: string[]
  */
 async function getInvestorOffMarketCandidates(svc: Svc, params: { contactId: string; brokerageId: string }) {
   const { data } = await svc.from("investor_offmarket_candidates")
-    .select("id, market_id, address_key, property_address, city, state, zip, quicklists, estimated_value, equity_percent, owner_name, fit_score, matched_at, delivered_at, delivered_via, dismissed_at")
+    .select("id, market_id, address_key, property_address, city, state, zip, quicklists, estimated_value, equity_percent, owner_name, fit_score, batchrank_score, batchrank_band, matched_at, delivered_at, delivered_via, dismissed_at")
     .eq("contact_id", params.contactId).eq("brokerage_id", params.brokerageId)
     .is("dismissed_at", null)
     .order("fit_score", { ascending: false }).limit(25)
-  return (data ?? []) as Array<{
+  const rows = (data ?? []) as Array<{
     id: string; market_id: string; address_key: string; property_address: string
     city: string | null; state: string | null; zip: string | null
     quicklists: string[]; estimated_value: number | null; equity_percent: number | null
-    owner_name: string | null; fit_score: number; matched_at: string | null
-    delivered_at: string | null; delivered_via: string | null; dismissed_at: string | null
+    owner_name: string | null; fit_score: number
+    batchrank_score: number | null; batchrank_band: "high" | "medium" | "low" | null
+    matched_at: string | null; delivered_at: string | null; delivered_via: string | null; dismissed_at: string | null
   }>
+  // BatchRank sort (wave 68): when a band is present it re-orders WITHIN the existing
+  // fit_score ordering (High first) — an optional refinement, never a replacement for
+  // the geo/distress/equity fit score every candidate always carries.
+  const BAND_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 }
+  return [...rows].sort((a, b) => {
+    const ra = a.batchrank_band ? BAND_RANK[a.batchrank_band] : 99
+    const rb = b.batchrank_band ? BAND_RANK[b.batchrank_band] : 99
+    return ra !== rb ? ra - rb : b.fit_score - a.fit_score
+  })
 }
 
 async function upsert(
@@ -426,15 +456,26 @@ export async function refreshInvestorOffMarketMatches(
  * riding alongside (offMarketCandidates — same reader every column of investor_offmarket_candidates
  * needs). Two sources, one read, so a caller (the portal panel) never has to know there are two
  * off-market rails under the hood.
+ *
+ * `audience` (wave 68 owner ruling: "these investors should not get the owners information") —
+ * defaults to "investor", which strips owner_name/phone/email/mailing fields via
+ * lib/buyer-search/investor-facing.ts::toInvestorFacingCandidates before this ever leaves the
+ * function. A caller that KNOWS it is the brokerage-side agent surface passes audience:"brokerage"
+ * explicitly — the default stays safe so nothing contact-facing can forget to redact.
  */
-export async function getInvestorDealMatch(svc: Svc, params: { contactId: string; brokerageId: string }) {
+export async function getInvestorDealMatch(
+  svc: Svc,
+  params: { contactId: string; brokerageId: string },
+  audience: CandidateAudience = "investor",
+) {
   const { data } = await svc
     .from("investor_deal_matches")
     .select("*")
     .eq("contact_id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
-  const offMarketCandidates = await getInvestorOffMarketCandidates(svc, params)
+  const rawCandidates = await getInvestorOffMarketCandidates(svc, params)
+  const offMarketCandidates = toInvestorFacingCandidates(rawCandidates, audience)
   if (!data && offMarketCandidates.length === 0) return null
   return { ...(data ?? {}), offMarketCandidates }
 }

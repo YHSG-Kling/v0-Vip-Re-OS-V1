@@ -18,6 +18,27 @@ import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 import { runInvestorOffMarketMatch, getInvestorDealMatch } from "@/lib/buyer-search/investor-offmarket-runner"
 import { readRoleGrants, selectTenantBrokerageId } from "@/lib/auth/role-grants"
+import { isAgentOrTenantAdmin } from "@/lib/auth/resolve-user-role"
+
+/**
+ * BROKERAGE-SIDE READER GATE (wave 68 owner ruling: "these investors should not get the
+ * owners information"). getInvestorDealMatchAction backs app/components/contact/
+ * investor-deals-panel.tsx, which mounts under app/crm/contacts/[contactId]/page.tsx — the
+ * AGENT-facing CRM dashboard (assertCanActOnContact there requires getAgentContext, i.e.
+ * tenant staff). Because a `"use server"` export is a public HTTP endpoint regardless of
+ * which page currently calls it (CLAUDE.md §4), this action resolves the CALLER'S OWN role
+ * — via the SAME predicate isAgentOrTenantAdmin used everywhere else in this repo (§6, one
+ * vocabulary) — and only passes audience:"brokerage" (owner_name visible) to a resolved
+ * agent/tenant-admin. Anyone else gets the safe default from getInvestorDealMatch
+ * ("investor" — owner fields stripped), even if some future caller reuses this action.
+ */
+async function resolveActorAudience(authUserId: string): Promise<"investor" | "brokerage"> {
+  const svc = createServiceClient()
+  const { data: userRow } = await svc.from("users").select("user_type").eq("id", authUserId).maybeSingle()
+  return isAgentOrTenantAdmin({ user_type: (userRow as { user_type?: string | null } | null)?.user_type ?? null })
+    ? "brokerage"
+    : "investor"
+}
 
 async function resolveBrokerageId(authUserId: string): Promise<string> {
   const svc = createServiceClient()
@@ -57,13 +78,13 @@ async function resolveBrokerageId(authUserId: string): Promise<string> {
 }
 
 async function authAndScope(contactId: string) {
-  if (!isValidUUID(contactId)) return { brokerageId: "", error: "Invalid contact id" as const }
+  if (!isValidUUID(contactId)) return { brokerageId: "", userId: "", error: "Invalid contact id" as const }
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { brokerageId: "", error: "Unauthorized" as const }
+  if (!user) return { brokerageId: "", userId: "", error: "Unauthorized" as const }
   const brokerageId = await resolveBrokerageId(user.id)
-  if (!brokerageId) return { brokerageId: "", error: "No brokerage for user" as const }
-  return { brokerageId, error: null }
+  if (!brokerageId) return { brokerageId: "", userId: user.id, error: "No brokerage for user" as const }
+  return { brokerageId, userId: user.id, error: null }
 }
 
 export async function findInvestorDealsAction(params: {
@@ -91,9 +112,10 @@ export async function findInvestorDealsAction(params: {
 export async function getInvestorDealMatchAction(params: {
   contactId: string
 }): Promise<{ success: boolean; match?: any; error?: string }> {
-  const { brokerageId, error } = await authAndScope(params.contactId)
+  const { brokerageId, userId, error } = await authAndScope(params.contactId)
   if (!brokerageId) return { success: false, error: error ?? undefined }
-  const match = await getInvestorDealMatch(createServiceClient(), { contactId: params.contactId, brokerageId })
+  const audience = await resolveActorAudience(userId)
+  const match = await getInvestorDealMatch(createServiceClient(), { contactId: params.contactId, brokerageId }, audience)
   return { success: true, match }
 }
 

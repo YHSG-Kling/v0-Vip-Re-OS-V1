@@ -20,6 +20,12 @@ import { resolveRecipientBrokerageId, resolveAgentRecipient } from "@/lib/notifi
  * lender_status / credit_pipeline_stage on `contacts`), distinct from the
  * `credit_accounts` pipeline that `advanceCreditFlow` drives.
  *
+ * VOCABULARY (CLAUDE.md §6): writes `credit_score_band` ONLY — the AGENT-TRACKED
+ * credit-repair pipeline band, hand-advanced by a human here. Never write
+ * `credit_score_range` from this action — that column is PeopleData's own passive
+ * estimate (m640), written only by lib/lead-pipeline/enrichment-orchestrator.ts.
+ * Two different columns for the same idea, on purpose; do not merge them.
+ *
  * SECURITY (w4s1): this took a caller-supplied `contact_id` and read + UPDATED
  * `contacts` with NO tenant predicate at all — `profile.brokerage_id` was resolved
  * and then used only to stamp the event log. Consumer credit standing is among the

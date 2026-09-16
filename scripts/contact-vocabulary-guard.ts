@@ -419,6 +419,67 @@ check("ALL FOUR tiers are PAYING — there is no free tier in the vocabulary",
 check("POSITIVE CONTROL — the tier finder rejects a tier the vocabulary does not name",
   !same([...TIER_ORDER, "free"], TIER_ORDER) && !isCanonicalTier("free"))
 
+// ─── 6 · credit_score_band vs credit_score_range — two columns, one each ──────
+//
+// wave 68C carry (c). `contacts.credit_score_band` is the AGENT-TRACKED
+// credit-repair pipeline band (app/actions/credit-copilot.ts, hand-advanced by
+// a human). `contacts.credit_score_range` is PeopleData's own passive estimate
+// (m640, written only by lib/lead-pipeline/enrichment-orchestrator.ts). CLAUDE.md
+// §6: two spellings of one idea are a defect, but these are NOT that — they are
+// two DIFFERENT ideas that happen to share a shape ("a credit score band/range
+// string"), so the check here is the opposite of a merge: no writer may cross
+// the streams and put a value meant for one column into the other.
+{
+  function writesBothInOnePayload(raw: string): boolean {
+    const src = stripComments(raw)
+    // A write call's object-literal payload: `.insert({...})`, `.update({...})`,
+    // `.upsert({...})`. Windowed like the rest of this file's scans — generous
+    // enough for a real payload, short enough that an unrelated later object
+    // literal in the same file cannot be mistaken for one write's payload.
+    const WRITE_RE = /\.(?:insert|update|upsert)\(\s*\{/g
+    let m: RegExpExecArray | null
+    while ((m = WRITE_RE.exec(src))) {
+      const window = src.slice(m.index, m.index + 1200)
+      if (/\bcredit_score_band\s*:/.test(window) && /\bcredit_score_range\s*:/.test(window)) return true
+    }
+    return false
+  }
+
+  const controlBad = writesBothInOnePayload(
+    `await supabase.from("contacts").update({ credit_score_band: x, credit_score_range: y }).eq("id", id)`,
+  )
+  const controlGood = writesBothInOnePayload(
+    `await supabase.from("contacts").update({ credit_score_band: x }).eq("id", id)`,
+  )
+  check("POSITIVE CONTROL — a single write payload naming BOTH columns is caught", controlBad === true)
+  check("POSITIVE CONTROL — a write naming only one column is NOT flagged", controlGood === false)
+
+  const bandWriter = join(ROOT, "app/actions/credit-copilot.ts")
+  const rangeWriter = join(ROOT, "lib/lead-pipeline/enrichment-orchestrator.ts")
+  const bandSrc = stripComments(readFileSync(bandWriter, "utf8"))
+  const rangeSrc = stripComments(readFileSync(rangeWriter, "utf8"))
+  check("the AGENT-TRACKED writer (credit-copilot.ts) writes credit_score_band",
+    /\bcredit_score_band\s*:/.test(bandSrc))
+  check("...and never writes credit_score_range (that is the PeopleData column, not this pipeline's)",
+    !/\bcredit_score_range\s*:/.test(bandSrc))
+  check("the PEOPLEDATA writer (enrichment-orchestrator.ts) writes credit_score_range",
+    /\bcredit_score_range\s*:/.test(rangeSrc))
+  check("...and never writes credit_score_band (that is the agent-tracked pipeline's column, not this one's)",
+    !/\bcredit_score_band\s*:/.test(rangeSrc))
+
+  // Repo-wide: no OTHER write payload anywhere sets both in one call (would mean
+  // a third writer conflating the two, or one of the two writers above growing a
+  // second column it should not touch).
+  const crossFiles: string[] = []
+  for (const abs of [...walkTs(join(ROOT, "app")), ...walkTs(join(ROOT, "lib")), ...rootRuntimeFiles(ROOT)]) {
+    const raw = readFileSync(abs, "utf8")
+    if (!raw.includes("credit_score_band") || !raw.includes("credit_score_range")) continue
+    if (writesBothInOnePayload(raw)) crossFiles.push(relative(ROOT, abs))
+  }
+  check("no write payload anywhere sets BOTH credit_score_band and credit_score_range in one call",
+    crossFiles.length === 0, crossFiles.join(", "))
+}
+
 // ─── Result ──────────────────────────────────────────────────────────────────
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${pass} passed, ${fail} failed`)

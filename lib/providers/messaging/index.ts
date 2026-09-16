@@ -303,6 +303,11 @@ export interface SendEmailParams {
    * account is connected (or refresh fails).
    */
   agentUserId?: string
+  /** Bypass the outbound EMAIL-VERIFICATION gate below — for system/transactional mail
+   *  with no contact relationship (platform notices, receipts). Default false: any send
+   *  naming a contactId is gated (wave 68 owner ruling verbatim: "we do want to make sure
+   *  that the phone/scrub and email before using it"). */
+  skipVerificationGate?: boolean
 }
 
 export interface SendEmailResult {
@@ -317,7 +322,54 @@ export interface SendEmailResult {
   providerMessageId?: string | null
 }
 
+const EMAIL_VERIFICATION_STALENESS_DAYS = 180
+
+/**
+ * FRESH EMAIL VERIFICATION GATE — the email-side twin of the DNC/TCPA fresh scrub in
+ * lib/communication/tcpa-gate.ts (wave 68). Reuses the EXISTING email verifier
+ * (lib/external/email-verifier.ts) rather than a second implementation: a stored
+ * `email_verified` verdict younger than the staleness window is trusted as-is; otherwise
+ * Tier 1+2 (syntax + MX, free — no vendor key needed, so there is no "unconfigured"
+ * failure mode here the way BatchData has) run live and the verdict is persisted.
+ */
+async function resolveFreshEmailVerification(contactId: string, email: string): Promise<{ ok: boolean; reason?: string }> {
+  const svc = createServiceClient()
+  const { data: contact, error } = await svc
+    .from("contacts")
+    .select("email_verified, email_verification_date")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (error) {
+    return { ok: false, reason: `Could not read this contact's email verification state (${error.message}) — nothing was sent.` }
+  }
+  const verifiedAt = (contact as { email_verification_date?: string | null } | null)?.email_verification_date ?? null
+  const fresh = (contact as { email_verified?: boolean | null } | null)?.email_verified === true
+    && verifiedAt != null
+    && (Date.now() - new Date(verifiedAt).getTime()) / (1000 * 60 * 60 * 24) <= EMAIL_VERIFICATION_STALENESS_DAYS
+  if (fresh) return { ok: true }
+
+  const { checkEmailMx } = await import("@/lib/external/email-verifier")
+  const result = await checkEmailMx(email)
+  if (!result.verified) {
+    return { ok: false, reason: `Email did not pass verification (${result.reason ?? "unverified"}) — nothing was sent.` }
+  }
+  try {
+    await svc.from("contacts").update({ email_verified: true, email_verification_date: new Date().toISOString() }).eq("id", contactId)
+  } catch { /* stamp is an optimization — the send still proceeds on a real verdict */ }
+  return { ok: true }
+}
+
 export async function sendEmail(params: SendEmailParams): Promise<SendEmailResult> {
+  // ── EMAIL VERIFICATION GATE (mandatory for contact-facing sends) ────────────
+  // Gate applies to CONTACTS — agents/ISA only ever touch contacts (§ scope). A send with
+  // no contactId (system/transactional mail) is unaffected.
+  if (params.contactId && !params.skipVerificationGate) {
+    const verdict = await resolveFreshEmailVerification(params.contactId, params.to)
+    if (!verdict.ok) {
+      return { success: false, error: verdict.reason ?? "Email verification failed — nothing was sent." }
+    }
+  }
+
   // Tier 1: when agentUserId is provided, try the agent's personal mailbox.
   // This makes agent→contact email come from sarah@kw.com instead of platform
   // noreply, so contacts can reply naturally and threads stay in agent's inbox.

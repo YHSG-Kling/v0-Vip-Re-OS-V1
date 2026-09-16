@@ -82,6 +82,7 @@
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
     "lib/buyer-search/external-match.ts": 2,
     "lib/buyer-search/fair-housing.ts": 3,
+    "lib/buyer-search/investor-facing.ts": 1,
     "lib/buyer-search/investor-offmarket-match.ts": 2,
     "lib/campaign-sequences/touchpoint-bridge.ts": 1,
     "lib/campaigns/channels.ts": 1,
@@ -93,6 +94,7 @@
     "lib/commission/cda-discrepancy.ts": 2,
     "lib/commission/ledger-sync.ts": 5,
     "lib/commission/payment-tracker.ts": 1,
+    "lib/communication/tcpa-gate.ts": 2,
     "lib/compliance/federal-holidays.ts": 1,
     "lib/compliance/phone-scrub-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 2,
@@ -130,7 +132,7 @@
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
     "lib/external/batchdata-client.ts": 4,
-    "lib/external/batchdata-mcp.ts": 5,
+    "lib/external/batchdata-mcp.ts": 6,
     "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
@@ -434,7 +436,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9526,
+  "census": 9539,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -702,7 +704,7 @@
     "app/actions/income-engine.ts": 4,
     "app/actions/instant-property-alerts.ts": 2,
     "app/actions/intent-writers.ts": 4,
-    "app/actions/investor-deals.ts": 2,
+    "app/actions/investor-deals.ts": 3,
     "app/actions/isa-phone-numbers.ts": 4,
     "app/actions/jobs.ts": 1,
     "app/actions/journey-tasks.ts": 9,
@@ -863,6 +865,7 @@
     "app/actions/seller-updates.ts": 5,
     "app/actions/sequence-step-ai.ts": 2,
     "app/actions/services-config.ts": 10,
+    "app/actions/settings/active-listing-sources.ts": 2,
     "app/actions/settings/brokerage-identity.ts": 2,
     "app/actions/settings/create-commission-structure.ts": 1,
     "app/actions/settings/create-email-template.ts": 1,
@@ -2838,8 +2841,10 @@
     "lib/buyer-search/external-match.ts": 4,
     "lib/buyer-search/fair-housing.ts": 4,
     "lib/buyer-search/intent-parser.ts": 3,
+    "lib/buyer-search/investor-facing.ts": 2,
     "lib/buyer-search/investor-offmarket-match.ts": 6,
     "lib/buyer-search/investor-offmarket-runner.ts": 3,
+    "lib/buyer-search/listing-source-order.ts": 2,
     "lib/buyer-search/market-watch.ts": 2,
     "lib/buyer-search/persona-inference.ts": 2,
     "lib/buyer-search/portal-cards.ts": 2,
@@ -2905,7 +2910,7 @@
     "lib/communication/call-compliance.ts": 2,
     "lib/communication/call-disclosures.ts": 4,
     "lib/communication/phone-reachability.ts": 1,
-    "lib/communication/tcpa-gate.ts": 2,
+    "lib/communication/tcpa-gate.ts": 4,
     "lib/communication-spine/conversation-manager.ts": 1,
     "lib/communication-spine/ingest-message-service.ts": 1,
     "lib/communication-spine/message-normalizer.ts": 2,
@@ -3100,8 +3105,9 @@
     "lib/external/apify-client.ts": 7,
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
+    "lib/external/batchdata-batchrank.ts": 1,
     "lib/external/batchdata-client.ts": 22,
-    "lib/external/batchdata-mcp.ts": 9,
+    "lib/external/batchdata-mcp.ts": 12,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
     "lib/external/census-appreciation.ts": 4,
@@ -6011,7 +6017,8 @@
     ],
     "app/actions/investor-deals.ts": [
       "findInvestorDealsAction",
-      "getInvestorDealMatchAction"
+      "getInvestorDealMatchAction",
+      "dismissInvestorOffMarketCandidateAction"
     ],
     "app/actions/isa-phone-numbers.ts": [
       "listIsaPhoneNumbers",
@@ -7133,6 +7140,10 @@
       "getStageRules",
       "createStageRule",
       "deleteStageRule"
+    ],
+    "app/actions/settings/active-listing-sources.ts": [
+      "getActiveListingSourcesSetting",
+      "updateActiveListingSourcesSetting"
     ],
     "app/actions/settings/brokerage-identity.ts": [
       "getBrokerageIdentity",
@@ -14356,6 +14367,10 @@
       "mergeIntentWithContext",
       "intentToFilters"
     ],
+    "lib/buyer-search/investor-facing.ts": [
+      "toInvestorFacingCandidate",
+      "toInvestorFacingCandidates"
+    ],
     "lib/buyer-search/investor-offmarket-match.ts": [
       "inBoxGeography",
       "inBoxPrice",
@@ -14368,6 +14383,10 @@
       "runInvestorOffMarketMatch",
       "refreshInvestorOffMarketMatches",
       "getInvestorDealMatch"
+    ],
+    "lib/buyer-search/listing-source-order.ts": [
+      "normalizeActiveListingSources",
+      "resolveActiveListingSources"
     ],
     "lib/buyer-search/market-watch.ts": [
       "scoreCriteriaFit",
@@ -14667,6 +14686,8 @@
       "hasReachablePhone"
     ],
     "lib/communication/tcpa-gate.ts": [
+      "isDncTcpaVerdictFresh",
+      "evaluateFreshScrubVerdict",
       "enforceTCPACompliance",
       "recordPhoneValidation"
     ],
@@ -15576,6 +15597,9 @@
     "lib/external/batchdata-ai-tools.ts": [
       "batchDataMcpTools"
     ],
+    "lib/external/batchdata-batchrank.ts": [
+      "rankCandidatesWithBatchRank"
+    ],
     "lib/external/batchdata-client.ts": [
       "batchDataTriggersFor",
       "quickListSlugsFor",
@@ -15609,7 +15633,10 @@
       "investorBuyboxPage",
       "comparablePropertyPreview",
       "comparablePropertyCount",
-      "comparablePropertyPage"
+      "comparablePropertyPage",
+      "checkDncStatus",
+      "checkTcpaStatus",
+      "verifyPhone"
     ],
     "lib/external/batchdata-seller-signals.ts": [
       "at",

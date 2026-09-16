@@ -35,6 +35,16 @@ interface OffMarketCandidate {
   equity_percent: number | null
   fit_score: number
   delivered_at: string | null
+  /** OPTIONAL BatchRank band (wave 68) — investor-facing surfaces get the band only, never
+   *  the raw score, matching the same redaction posture as owner_name below. */
+  batchrank_band?: "high" | "medium" | "low" | null
+  /** Present ONLY when the server action resolved this session as tenant staff/agent
+   *  (app/actions/investor-deals.ts::resolveActorAudience → audience:"brokerage"). Wave 68
+   *  owner ruling: "these investors should not get the owners information" — this panel is
+   *  mounted exclusively under app/crm/contacts/[contactId]/page.tsx (the agent CRM
+   *  dashboard, gated by assertCanActOnContact → getAgentContext), which is the ONE
+   *  brokerage-side surface this column still has a reader on. */
+  owner_name?: string | null
 }
 interface Match {
   candidate_count: number
@@ -140,6 +150,9 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium">{d.property_address}{d.city ? `, ${d.city}` : ""}{d.zip ? ` ${d.zip}` : ""}</span>
                     <Badge className={scoreStyle(d.fit_score)}>{Math.round(d.fit_score * 100)}% fit</Badge>
+                    {d.batchrank_band && (
+                      <Badge variant="outline" className="text-[10px] capitalize">BatchRank: {d.batchrank_band}</Badge>
+                    )}
                     {d.quicklists.slice(0, 2).map((q) => (
                       <Badge key={q} variant="outline" className="text-[10px] capitalize">{q.replace(/-/g, " ")}</Badge>
                     ))}
@@ -154,6 +167,11 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
                       {dismissing === d.id ? "…" : "Dismiss"}
                     </Button>
                   </div>
+                  {/* AGENT-ONLY (audience:"brokerage" — see the OffMarketCandidate.owner_name
+                      doc comment above): owner contact info to work the off-market deal. */}
+                  {d.owner_name && (
+                    <p className="text-xs text-muted-foreground mt-1">Owner: {d.owner_name}</p>
+                  )}
                 </div>
               ))}
             </>
