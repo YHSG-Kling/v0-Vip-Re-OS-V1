@@ -299,9 +299,21 @@ async function pullAndPersistBatchDataOffMarketCandidates(
   const alreadyDelivered = new Set(((existing ?? []) as Array<{ address_key: string; delivered_at: string | null }>)
     .filter((e) => e.delivered_at).map((e) => e.address_key))
 
+  // Every column named EXPLICITLY at the write site (not a spread of the mapper's
+  // row) so the opposite-missing census can see this table's writer — a spread
+  // of an identifier hides the key set and every column reads as writerless.
+  const matchedAt = new Date().toISOString()
   const upserts = addressKeys.map((k) => {
     const c = byAddress.get(k)!
-    return { ...c.row, fit_score: c.matchScore, matched_at: new Date().toISOString() }
+    const r = c.row
+    return {
+      brokerage_id: r.brokerage_id, contact_id: r.contact_id, market_id: r.market_id,
+      address_key: r.address_key, property_address: r.property_address,
+      city: r.city, state: r.state, zip: r.zip,
+      quicklists: r.quicklists, estimated_value: r.estimated_value,
+      equity_percent: r.equity_percent, owner_name: r.owner_name,
+      fit_score: c.matchScore, matched_at: matchedAt,
+    }
   })
   const { error } = await svc.from("investor_offmarket_candidates")
     .upsert(upserts, { onConflict: "contact_id,address_key" })

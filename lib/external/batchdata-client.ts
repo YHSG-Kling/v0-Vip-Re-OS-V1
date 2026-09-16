@@ -1,4 +1,5 @@
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
+import { resolveBatchDataToken } from "@/lib/external/batchdata-tokens"
 
 // ─── CLASS ALIAS (backward compat for callers using `new BatchDataClient()`) ──
 export class BatchDataClient {
@@ -341,7 +342,9 @@ async function batchDataPropertySearch(body: unknown, errorLabel: string): Promi
     baseUrl: BATCHDATA_API_URL,
     path: "property/search",
     method: "POST",
-    auth: { style: "bearer", token: BATCHDATA_API_KEY },
+    // Token strategy (lib/external/batchdata-tokens.ts, wave 67): property/search is
+    // the "search" purpose — always BATCHDATA_API_KEY.
+    auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
     body,
   })
   if (!res.ok) throw new Error(`${errorLabel}: ${res.status ?? "network"} ${res.error ?? ""}`.trim())
@@ -619,17 +622,67 @@ function looksLikeProvisioningRefusal(status: number | null, message: string): b
   )
 }
 
+/** One territory's geography contributing to a POOLED Smart Search subscription
+ *  (wave 67 cap strategy — see buildSmartSearchSubscriptionPlan below). Module-private
+ *  — every external caller (the cron reconcile step) builds this shape structurally
+ *  and passes it into the exported functions below rather than importing the type
+ *  by name. */
+interface SmartSearchGeography {
+  marketId: string
+  priority: number
+  city?: string | null
+  state: string
+  zip?: string | null
+}
+
+/**
+ * PURE — the union query for a pooled subscription's searchCriteria.query.
+ *
+ * UNRESOLVED / BEST-EFFORT (owner-directed build, wave 67 §"how can we get around
+ * the caps"): BatchData's own documented example is a SINGLE `"City, ST"` string
+ * (see the wave-66 note above this function) and no fetched article states a
+ * multi-location query SYNTAX. The pooling strategy the owner asked for — one
+ * subscription per quicklist covering every active territory's geography — has no
+ * confirmed way to express "OR these N places" inside one `query` string, so this
+ * joins each territory's `"City, ST"` (deduped) with `"; "` as the most literal
+ * reading of "the union of territory geographies" until the integrator confirms the
+ * real syntax against a live account. If BatchData's parser does not accept a
+ * joined string, the effect degrades to matching only the FIRST segment — visible
+ * immediately in the reconcile's leads-per-subscription count, never a silent
+ * narrowing nobody can see (CLAUDE.md §2: a count that moves is the finding).
+ *
+ * Module-private — exercised through createSmartSearchSubscription's own behavior
+ * (its `query` body field), not imported directly by anything outside this file. */
+function buildPooledSmartSearchQuery(geographies: readonly Pick<SmartSearchGeography, "city" | "state" | "zip">[]): string {
+  const seen = new Set<string>()
+  const parts: string[] = []
+  for (const g of geographies) {
+    const label = [g.city, g.zip, g.state].filter(Boolean).join(", ") || g.state
+    if (label && !seen.has(label)) {
+      seen.add(label)
+      parts.push(label)
+    }
+  }
+  return parts.join("; ")
+}
+
 /**
  * createSmartSearchSubscription — register ONE V2 Property Subscription for ONE
- * BatchData quickList against ONE territory's geography, delivered to this repo's
- * webhook receiver. Bounded spend by construction: called only from the reconcile
- * plan below (buildSmartSearchSubscriptionPlan), never per-record, and only after the
- * caller has confirmed the account-wide 5-subscription cap is not exceeded.
+ * BatchData quickList, POOLED across every active territory that wants it (wave 67
+ * cap strategy: 5 account-wide slots cover 5 quicklists PLATFORM-WIDE rather than
+ * 5 (market × quicklist) pairs). The caller writes one MEMBERSHIP row per
+ * contributing market against the single subscription id this returns — see
+ * app/api/cron/lead-scraping/route.ts step 2b and
+ * batchdata_smart_search_subscriptions.pool_key/pooled/geography_count (m637).
+ * Bounded spend by construction: called only from the reconcile plan below
+ * (buildSmartSearchSubscriptionPlan), never per-record, and only after the caller
+ * has confirmed the account-wide 5-subscription cap is not exceeded.
  *
- * SUBSCRIPTIONS ARE IMMUTABLE (documented). A criteria change is a DELETE of the old
- * subscription id followed by a fresh CREATE — never a renew-in-place. There is
- * therefore no `createOrRenew` any more; the reconcile step deletes first when it
- * needs to change criteria, then calls this.
+ * SUBSCRIPTIONS ARE IMMUTABLE (documented). A criteria change (including the
+ * geography UNION changing because a territory joined or left the pool) is a
+ * DELETE of the old subscription id followed by a fresh CREATE — never a
+ * renew-in-place. There is therefore no `createOrRenew` any more; the reconcile
+ * step deletes first when it needs to change criteria, then calls this.
  *
  * TOMBSTONE (wave 66, CLAUDE.md §1.1): `createOrRenewSmartSearchSubscription`
  * (wave 65B) stood here and is DELETED. Its survivor is THIS function plus the
@@ -640,15 +693,15 @@ function looksLikeProvisioningRefusal(status: number | null, message: string): b
  * 2026-09-16) — so renewing in place was a guessed capability, not a lost one;
  * the create half is what survives, unchanged in effect, under its honest name.
  *
- * FAIL-CLOSED: no BATCHDATA_API_KEY, no webhook URL configured, or a network/HTTP
- * error all return { ok: false }, never a fabricated subscription id.
+ * FAIL-CLOSED: no BATCHDATA_API_KEY, no webhook URL configured, no geographies, or
+ * a network/HTTP error all return { ok: false }, never a fabricated subscription id.
  */
 export async function createSmartSearchSubscription(params: {
   /** A single BatchData quickList slug, validated against BATCHDATA_QUICKLISTS. */
   quicklist: string
-  city?: string
-  state: string
-  zip?: string
+  /** Every active territory admitting this pooled subscription — searchCriteria.query
+   *  is their union (buildPooledSmartSearchQuery). Always at least one entry. */
+  geographies: readonly Pick<SmartSearchGeography, "city" | "state" | "zip">[]
 }): Promise<SmartSearchSubscriptionResult> {
   if (!process.env.BATCHDATA_API_KEY) {
     return { ok: false, subscriptionId: null, status: null, error: "BATCHDATA_API_KEY not configured", provisioningRequired: false }
@@ -662,7 +715,10 @@ export async function createSmartSearchSubscription(params: {
   if (quicklists.length === 0) {
     return { ok: false, subscriptionId: null, status: null, error: `"${params.quicklist}" is not a valid BatchData quickList`, provisioningRequired: false }
   }
-  const query = [params.city, params.zip, params.state].filter(Boolean).join(", ") || params.state
+  if (!params.geographies?.length) {
+    return { ok: false, subscriptionId: null, status: null, error: "no geographies to pool — nothing wants this quicklist", provisioningRequired: false }
+  }
+  const query = buildPooledSmartSearchQuery(params.geographies)
 
   try {
     const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
@@ -671,7 +727,8 @@ export async function createSmartSearchSubscription(params: {
       baseUrl: BATCHDATA_API_V2_URL,
       path: SMART_SEARCH_PATH,
       method: "POST",
-      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      // Token strategy: Smart Search registration is the "search" purpose.
+      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
       body: {
         searchCriteria: { query, orQuickLists: quicklists },
         deliveryConfig: {
@@ -712,7 +769,7 @@ export async function deleteSmartSearchSubscription(subscriptionId: string): Pro
       baseUrl: BATCHDATA_API_V2_URL,
       path: `${SMART_SEARCH_PATH}/${encodeURIComponent(subscriptionId)}`,
       method: "DELETE",
-      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
     })
     return { ok: res.ok, status: res.status, error: res.ok ? null : (res.error ?? `HTTP ${res.status ?? "network"}`) }
   } catch (e) {
@@ -736,7 +793,7 @@ export async function listSmartSearchSubscriptions(): Promise<{ ok: boolean; sub
       baseUrl: BATCHDATA_API_V2_URL,
       path: SMART_SEARCH_PATH,
       method: "GET",
-      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
     })
     if (!res.ok) return { ok: false, subscriptionIds: [], error: res.error ?? `HTTP ${res.status ?? "network"}` }
     const rows: any[] = res.data?.result?.subscriptions ?? res.data?.result ?? res.data?.results ?? res.data?.subscriptions ?? []
@@ -749,43 +806,64 @@ export async function listSmartSearchSubscriptions(): Promise<{ ok: boolean; sub
   }
 }
 
-// ─── SUBSCRIPTION PLAN — the 5-per-account cap forces prioritization ──────────────────
-export interface SmartSearchWant {
+// ─── SUBSCRIPTION PLAN — POOLED BY QUICKLIST (wave 67 cap strategy) ───────────────────
+// Owner ruling (wave 67, "how can we get around the caps" — RESEARCHED FACTS in the
+// lane prompt, help.batchdata.io/batchdata.io/pricing 2026-09-16): Property Monitoring
+// is capped at 5 subscriptions PER ACCOUNT, not per market. Wave 65B/66 spent that cap
+// one (market × quicklist) pair at a time, so as few as 5 TERRITORIES exhausted it
+// platform-wide. The fix POOLS by QUICKLIST: every active territory that wants a given
+// quicklist becomes ONE subscription whose query is the union of their geographies
+// (buildPooledSmartSearchQuery), so 5 slots cover 5 QUICKLISTS platform-wide regardless
+// of how many territories want each one. The per-market row survives as a MEMBERSHIP
+// row (batchdata_smart_search_subscriptions.pool_key/pooled/geography_count, m637) —
+// many markets can point at the same subscription_id.
+// Module-private — the cron reconcile step (the only external caller) builds these
+// shapes structurally rather than importing the type names; SmartSearchPlanEntry
+// below is the one public shape callers actually name.
+interface SmartSearchGeographyWant {
   marketId: string
-  /** Higher = more important. Mirrors lead_scraping_markets.priority so a territory the
-   *  tenant already ranked highly is not starved by one that happens to sort first. */
+  /** Higher = more important. Mirrors lead_scraping_markets.priority. */
   priority: number
-  quicklist: string
   city?: string | null
   state: string
   zip?: string | null
 }
 
-export interface SmartSearchPlanEntry extends SmartSearchWant {
+/** One quicklist's pooled want: every active territory that currently wants it. */
+interface SmartSearchQuicklistWant {
+  quicklist: string
+  geographies: readonly SmartSearchGeographyWant[]
+}
+
+export interface SmartSearchPlanEntry {
+  quicklist: string
   action: "keep" | "create" | "defer"
   reason: string
+  geographies: readonly SmartSearchGeographyWant[]
+  /** Highest contributing territory's priority — used only for cap ranking; the
+   *  pooled subscription itself serves every contributing territory equally. */
+  priority: number
 }
 
 /**
- * PURE — turns every (market × quicklist) the tenant base WANTS a live subscription for
- * into an admit/defer plan against the account-wide 5-subscription cap.
+ * PURE — turns every QUICKLIST the active tenant base wants (pooled across every
+ * territory that wants it) into an admit/defer plan against the account-wide
+ * 5-subscription cap. The cap now binds on the NUMBER OF DISTINCT QUICKLISTS, never
+ * on the number of territories — a 6th, 50th, or 500th territory wanting an
+ * already-admitted quicklist joins its pool for free (a membership row, no new
+ * subscription); only the 6th DISTINCT quicklist is deferred.
  *
- * "Combine territories into one query where BatchData accepts multi-location" — NOT
- * done here. BatchData's own example (`searchCriteria.query: "Phoenix, AZ"`) and every
- * confirmed usage in this repo's own V1 pulls is a SINGLE city/state string; nothing in
- * the fetched documentation states a multi-location query syntax, and inventing one
- * (e.g. joining with ";" or "|") risks silently narrowing a subscription to zero
- * results rather than widening it — a false economy against a hard cap this quiet.
- * So the fallback the task names explicitly is the one implemented: RANK by priority
- * (already-active subscriptions keep their slot ahead of a new want, so a live
- * subscription is never torn down just because a higher-priority territory showed up
- * later in the list — churn costs a delete+recreate and a window with no coverage)
- * and DEFER whatever does not fit, with the reason recorded for the status column.
+ * RANK by priority (the highest priority territory contributing to a quicklist),
+ * already-pooled quicklists KEEP their slot ahead of a new quicklist (so a live
+ * subscription is never torn down just because a higher-priority territory adopted a
+ * different quicklist later — churn costs a delete+recreate and a coverage gap), and
+ * DEFER whatever does not fit, with the reason recorded for the status column.
  */
 export function buildSmartSearchSubscriptionPlan(params: {
-  wants: readonly SmartSearchWant[]
-  /** (market_id, quicklist) pairs already ACTIVE (subscriptionId set, status active) —
-   *  kept ahead of new wants so reconciling does not thrash a working subscription. */
+  wants: readonly SmartSearchQuicklistWant[]
+  /** Quicklists already POOLED + ACTIVE (subscriptionId set, status active, and — per
+   *  the caller's own diffing — membership unchanged since the last reconcile) — kept
+   *  ahead of new wants so reconciling does not thrash a working subscription. */
   alreadyActive: ReadonlySet<string>
   /** Total subscriptions BatchData reports across the WHOLE account right now
    *  (listSmartSearchSubscriptions), including any this repo did not register itself. */
@@ -793,14 +871,14 @@ export function buildSmartSearchSubscriptionPlan(params: {
   cap?: number
 }): SmartSearchPlanEntry[] {
   const cap = params.cap ?? BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP
-  const key = (w: Pick<SmartSearchWant, "marketId" | "quicklist">) => `${w.marketId}:${w.quicklist}`
+  const maxPriority = (w: SmartSearchQuicklistWant) => w.geographies.reduce((m, g) => Math.max(m, g.priority), 0)
 
-  const kept = params.wants.filter((w) => params.alreadyActive.has(key(w)))
+  const kept = params.wants.filter((w) => params.alreadyActive.has(w.quicklist))
   const candidates = params.wants
-    .filter((w) => !params.alreadyActive.has(key(w)))
-    // Highest priority first; stable tie-break on (marketId, quicklist) so the plan is
+    .filter((w) => !params.alreadyActive.has(w.quicklist))
+    // Highest priority first; stable tie-break on quicklist name so the plan is
     // deterministic for the same input rather than depending on array order.
-    .sort((a, b) => b.priority - a.priority || key(a).localeCompare(key(b)))
+    .sort((a, b) => maxPriority(b) - maxPriority(a) || a.quicklist.localeCompare(b.quicklist))
 
   // Slots already spoken for by rows this repo did NOT just decide to keep (an
   // out-of-band subscription BatchData's account shows that our own plan does not
@@ -809,16 +887,21 @@ export function buildSmartSearchSubscriptionPlan(params: {
   const externalLiveCount = Math.max(0, params.accountLiveCount - kept.length)
   let remaining = Math.max(0, cap - kept.length - externalLiveCount)
 
-  const plan: SmartSearchPlanEntry[] = kept.map((w) => ({ ...w, action: "keep", reason: "already active" }))
+  const plan: SmartSearchPlanEntry[] = kept.map((w) => ({
+    quicklist: w.quicklist, geographies: w.geographies, priority: maxPriority(w), action: "keep", reason: "already active",
+  }))
   for (const w of candidates) {
+    const priority = maxPriority(w)
     if (remaining > 0) {
-      plan.push({ ...w, action: "create", reason: `admitted (priority ${w.priority})` })
+      plan.push({
+        quicklist: w.quicklist, geographies: w.geographies, priority, action: "create",
+        reason: `admitted (priority ${priority}, pooling ${w.geographies.length} territor${w.geographies.length === 1 ? "y" : "ies"})`,
+      })
       remaining--
     } else {
       plan.push({
-        ...w,
-        action: "defer",
-        reason: `account cap (${cap}) reached — ${kept.length + (candidates.length - candidates.filter((c) => c === w).length)} higher-priority subscription(s) already hold the remaining slots`,
+        quicklist: w.quicklist, geographies: w.geographies, priority, action: "defer",
+        reason: `account cap (${cap}) reached — ${cap} higher-priority quicklist pool(s) already hold every slot`,
       })
     }
   }
@@ -920,7 +1003,10 @@ export async function skipTraceBatchDataV3Batch(
         baseUrl: BATCHDATA_API_V3_URL,
         path: "property/skip-trace",
         method: "POST",
-        auth: { style: "bearer", token: BATCHDATA_API_KEY },
+        // Token strategy: skip-trace is billed pay-as-you-go per matched record —
+        // a dedicated BATCHDATA_SKIP_TRACE_TOKEN keeps its provisioning (and cost)
+        // isolated from the search lane's token.
+        auth: { style: "bearer", token: resolveBatchDataToken("skip_trace") ?? BATCHDATA_API_KEY },
         body: {
           requests: chunk.map((p) => ({
             propertyAddress: p.address ? { street: p.address, city: p.city, state: p.state, zip: p.zip } : undefined,
@@ -988,7 +1074,7 @@ export async function verifyAddressBatchData(address: {
       baseUrl: BATCHDATA_API_URL,
       path: "address/verify",
       method: "POST",
-      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
       body: { requests: [{ street: address.street, city: address.city, state: address.state, zip: address.zip }] },
     })
     if (!res.ok || !res.data) {
@@ -1111,7 +1197,9 @@ export async function lookupBatchDataPropertiesByIds(
         baseUrl: BATCHDATA_API_URL,
         path: "property/lookup/all-attributes",
         method: "POST",
-        auth: { style: "bearer", token: BATCHDATA_API_KEY },
+        // Token strategy: property-lookup hydration backs the listing/monitoring
+        // lanes (Smart Search hydrate, active-listing discovery) — BATCHDATA_LISTING_TOKEN.
+        auth: { style: "bearer", token: resolveBatchDataToken("listing") ?? BATCHDATA_API_KEY },
         body: { requests: chunk.map((propertyId) => ({ propertyId })), ...(opts?.dataset ? { dataset: opts.dataset } : {}) },
       })
       if (!res.ok || !res.data) continue // best-effort hydrate — a failed chunk yields fewer hydrated rows, never throws
@@ -1399,7 +1487,8 @@ export async function fetchBatchDataWalletBalance(): Promise<BatchDataWalletBala
       baseUrl: BATCHDATA_API_URL,
       path: "wallet/balance",
       method: "GET",
-      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      // Account-wide read — always the master key regardless of purpose tokens.
+      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
     })
     if (!res.ok || !res.data) return { ok: false, balanceUsd: null, error: res.error ?? `HTTP ${res.status ?? "network"}` }
     const raw = res.data.results?.balance ?? res.data.result?.balance ?? res.data.balance
@@ -1431,7 +1520,7 @@ export async function fetchBatchDataWalletConsumptionReport(params?: { since?: s
       baseUrl: BATCHDATA_API_URL,
       path: "wallet/consumption-report",
       method: "GET",
-      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
       query: params?.since ? { since: params.since } : undefined,
     })
     if (!res.ok || !res.data) return { ok: false, totalConsumedUsd: null, periodStart: null, periodEnd: null, error: res.error ?? `HTTP ${res.status ?? "network"}` }

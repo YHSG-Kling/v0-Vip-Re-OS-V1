@@ -613,6 +613,14 @@ export interface SmartSearchSubscriptionRow {
   subscription_id: string | null
   last_error: string | null
   last_reconciled_at: string | null
+  /** m637 (wave 67 pooled-cap strategy) — the shared key every territory pooled onto
+   *  this quicklist's ONE subscription carries; null on a pre-m637 row. */
+  pool_key: string | null
+  /** m637 — true when subscription_id is a POOLED (union-query) subscription rather
+   *  than a single territory's own. */
+  pooled: boolean
+  /** m637 — how many territories are folded into this pool as of the last reconcile. */
+  geography_count: number | null
 }
 
 /**
@@ -668,7 +676,7 @@ export async function getBatchDataFeedStatus(): Promise<{
         .in("market_id", marketIds),
       svc
         .from("batchdata_smart_search_subscriptions")
-        .select("market_id, quicklist, status, priority, subscription_id, last_error, last_reconciled_at")
+        .select("market_id, quicklist, status, priority, subscription_id, last_error, last_reconciled_at, pool_key, pooled, geography_count")
         .in("market_id", marketIds)
         .order("priority", { ascending: false }),
     ])
@@ -699,6 +707,7 @@ export async function getBatchDataFeedStatus(): Promise<{
         market_id: s.market_id, quicklist: s.quicklist, status: s.status,
         priority: s.priority ?? null, subscription_id: s.subscription_id ?? null,
         last_error: s.last_error ?? null, last_reconciled_at: s.last_reconciled_at ?? null,
+        pool_key: s.pool_key ?? null, pooled: !!s.pooled, geography_count: typeof s.geography_count === "number" ? s.geography_count : null,
       })),
     }
   } catch (error) {

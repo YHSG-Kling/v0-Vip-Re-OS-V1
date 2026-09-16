@@ -82,7 +82,7 @@
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
     "lib/buyer-search/external-match.ts": 2,
     "lib/buyer-search/fair-housing.ts": 3,
-    "lib/buyer-search/investor-offmarket-match.ts": 3,
+    "lib/buyer-search/investor-offmarket-match.ts": 2,
     "lib/campaign-sequences/touchpoint-bridge.ts": 1,
     "lib/campaigns/channels.ts": 1,
     "lib/campaigns/contact-sources.ts": 2,
@@ -414,7 +414,7 @@
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
     "lib/video/promo-composition.ts": 1,
-    "lib/video/realism-profile.ts": 2,
+    "lib/video/realism-profile.ts": 3,
     "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
@@ -434,7 +434,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9522,
+  "census": 9526,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3099,9 +3099,11 @@
     "lib/external/apify-actors.ts": 3,
     "lib/external/apify-client.ts": 7,
     "lib/external/arcgis-permits.ts": 9,
+    "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-client.ts": 22,
-    "lib/external/batchdata-mcp.ts": 8,
+    "lib/external/batchdata-mcp.ts": 9,
     "lib/external/batchdata-seller-signals.ts": 20,
+    "lib/external/batchdata-tokens.ts": 1,
     "lib/external/census-appreciation.ts": 4,
     "lib/external/email-verifier.ts": 3,
     "lib/external/exa-client.ts": 2,
@@ -4161,7 +4163,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 14,
+    "lib/video/realism-profile.ts": 15,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -15571,6 +15573,9 @@
       "arcgisFeatureQuery",
       "recentArcgisPermits"
     ],
+    "lib/external/batchdata-ai-tools.ts": [
+      "batchDataMcpTools"
+    ],
     "lib/external/batchdata-client.ts": [
       "batchDataTriggersFor",
       "quickListSlugsFor",
@@ -15597,13 +15602,14 @@
     ],
     "lib/external/batchdata-mcp.ts": [
       "callBatchDataMcp",
+      "listBatchDataMcpTools",
+      "batchDataPreferMcp",
       "investorBuyboxPreview",
       "investorBuyboxCount",
       "investorBuyboxPage",
       "comparablePropertyPreview",
       "comparablePropertyCount",
-      "comparablePropertyPage",
-      "batchDataPreferMcp"
+      "comparablePropertyPage"
     ],
     "lib/external/batchdata-seller-signals.ts": [
       "at",
@@ -15626,6 +15632,9 @@
       "selectLeadsToProbe",
       "ingestBatchDataSellerSignals",
       "realBatchDataPropertyLookup"
+    ],
+    "lib/external/batchdata-tokens.ts": [
+      "resolveBatchDataToken"
     ],
     "lib/external/census-appreciation.ts": [
       "probeCensusMedianHomeValue",
@@ -20936,6 +20945,7 @@
       "withNaturalPauses",
       "stripNaturalPauseMarkup",
       "alignmentWithoutPauseMarkup",
+      "sentenceLengthCoefficientOfVariation",
       "scanForAiTells",
       "avatarPipWindowFade",
       "estimateAvatarRenderCostUsd",

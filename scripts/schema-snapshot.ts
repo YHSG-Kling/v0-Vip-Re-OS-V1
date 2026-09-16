@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-16
  * source: public.live_schema_json()
- * body-sha256: ded593a2b7f8f2a9b6e60eb0aeb8faf02b80ddc842450576abe5428d56d33116
+ * body-sha256: e6fc7b025746eb342108c9cf6f5118a142801deeeaebde96c2384bc6ecaa9e73
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -124,7 +124,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   automation_logs: ["automation_id", "brokerage_id", "created_at", "executed_at", "id", "result", "trigger_type", "user_id"],
   batchdata_incremental_search_state: ["created_at", "id", "lane", "last_error", "last_run_at", "market_id", "page_cursor", "results_found", "session_supported", "updated_at"],
   batchdata_motivated_sellers_raw: ["brokerage_id", "created_at", "email", "first_name", "id", "last_name", "lead_id", "motivation_confidence", "motivation_type", "phone", "predicted_timeframe", "property_address", "property_baths", "property_beds", "property_city", "property_estimated_value", "property_sqft", "property_state", "property_zip", "raw_json", "residential_address", "residential_city", "residential_state", "residential_zip", "scraper_execution_id"],
-  batchdata_smart_search_subscriptions: ["created_at", "id", "last_error", "last_reconciled_at", "market_id", "priority", "quicklist", "renewed_at", "status", "subscription_id", "updated_at", "webhook_url"],
+  batchdata_smart_search_subscriptions: ["created_at", "geography_count", "id", "last_error", "last_reconciled_at", "market_id", "pool_key", "pooled", "priority", "quicklist", "renewed_at", "status", "subscription_id", "updated_at", "webhook_url"],
   behavioral_patterns: ["brokerage_id", "confidence_threshold", "created_at", "description", "detection_rules", "entity_type", "id", "is_active", "is_system_default", "minimum_signals", "pattern_name", "pattern_slug", "pattern_type", "recommended_action", "updated_at"],
   behavioral_signals: ["brokerage_id", "city", "contact_id", "detected_at", "id", "identified", "intent_confidence_score", "intent_type", "ip_address", "last_seen_date", "state", "total_sessions", "unified_profile_id", "user_agent", "visitor_id", "zip"],
   billing_invoices: ["amount_cents", "brokerage_id", "created_at", "due_date", "id", "invoice_date", "paid_at", "pdf_url", "status", "stripe_invoice_id", "subscription_id"],

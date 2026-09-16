@@ -71,7 +71,14 @@ function investorRailSource() {
   check("portal surface renders the BatchData candidates (offMarketCandidates reader)", /offMarketCandidates/.test(panel) && /batchDataDeals/.test(panel))
 
   const migration = raw("supabase/migrations/m638-investor-offmarket-candidates.sql")
-  check("migration is WRITTEN NOT APPLIED (integrator applies it)", migration.split("\n")[2].includes("WRITTEN, NOT APPLIED"))
+  // RULE, not waypoint (CLAUDE.md §2): the header on line 3 states an honest
+  // state — either still WRITTEN NOT APPLIED, or APPLIED LIVE — and once it says
+  // APPLIED the live schema snapshot must carry the table (m638 applied 2026-09-16).
+  const m638Header = migration.split("\n")[2]
+  const m638Applied = m638Header.includes("APPLIED LIVE")
+  check("m638 header states an honest applied state", m638Applied || m638Header.includes("WRITTEN, NOT APPLIED"))
+  const snapshot = raw("scripts/schema-snapshot.ts")
+  check("once m638 is applied the schema snapshot carries investor_offmarket_candidates", !m638Applied || /investor_offmarket_candidates/.test(snapshot))
   check("UNIQUE (contact_id, address_key) — the dedupe rule the code's onConflict relies on", /UNIQUE \(contact_id, address_key\)/.test(migration))
   check("RLS tenant policy on brokerage_id = current_user_brokerage_id()", /current_user_brokerage_id\(\)/.test(migration))
   check("every proof-listed column exists in the migration", [
@@ -107,7 +114,11 @@ function regularBuyerRailSource() {
   check("admin markets panel RENDERS beds/baths/sqft/property_type", /l\.beds/.test(panel) && /l\.baths/.test(panel) && /l\.sqft/.test(panel) && /l\.property_type/.test(panel))
 
   const m639 = raw("supabase/migrations/m639-market-active-listings-criteria-specs.sql")
-  check("m639 is WRITTEN NOT APPLIED", m639.split("\n")[2].includes("WRITTEN, NOT APPLIED"))
+  const m639Header = m639.split("\n")[2]
+  const m639Applied = m639Header.includes("APPLIED LIVE")
+  check("m639 header states an honest applied state", m639Applied || m639Header.includes("WRITTEN, NOT APPLIED"))
+  check("once m639 is applied the schema snapshot carries market_active_listings.beds/baths/sqft/property_type",
+    !m639Applied || (/market_active_listings/.test(raw("scripts/schema-snapshot.ts")) && /"beds"/.test(raw("scripts/schema-snapshot.ts").split("market_active_listings")[1]?.slice(0, 800) ?? "")))
   check("m639 adds all four nullable spec columns", /ADD COLUMN IF NOT EXISTS beds\s+integer/.test(m639) && /ADD COLUMN IF NOT EXISTS baths\s+numeric/.test(m639) && /ADD COLUMN IF NOT EXISTS sqft\s+integer/.test(m639) && /ADD COLUMN IF NOT EXISTS property_type text/.test(m639))
 }
 

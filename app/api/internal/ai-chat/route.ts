@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { convertToModelMessages, tool } from "ai"
 import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
+import { batchDataMcpTools } from "@/lib/external/batchdata-ai-tools"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -1221,6 +1222,13 @@ export async function POST(req: NextRequest) {
     }),
   }
 
+  // BatchData property-intelligence tools (wave 67) — gated: only added when
+  // BatchData's MCP is configured for this deployment (batchDataMcpTools resolves
+  // {} otherwise), so an agent surface with no BatchData token behaves exactly as
+  // before. Tenant scoped from the SESSION-resolved brokerageId/user.id above, never
+  // a request body (CLAUDE.md §4); each tool call meters its own spend.
+  const batchDataTools = await batchDataMcpTools({ brokerageId, userId: user.id })
+
   // Routed streaming entry — routing table model, tenant fair-use cap checked
   // BEFORE streaming, cost ledger written on finish (totalUsage, so every
   // tool-calling step is billed). Identity is the session-resolved user +
@@ -1232,7 +1240,7 @@ export async function POST(req: NextRequest) {
       system: systemPrompt,
       messages: await convertToModelMessages(messages),
       maxTokens: 1024,
-      tools: agentTools,
+      tools: { ...agentTools, ...batchDataTools },
       maxSteps: 5,
       userId: user.id,
       brokerageId,

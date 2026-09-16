@@ -129,3 +129,112 @@ orchestration functions), `app/api/webhooks/batchdata-smart-search/route.ts` (id
 hydrate), `app/api/cron/lead-scraping/route.ts` (BatchData branch — reconcile plan, opt-in
 incremental/active-listing/buy-box steps, end-of-run wallet reconcile), `lib/cma/comp-provider.ts`
 (BatchData comps beside RentCast). Migrations `m635`/`m636` (WRITTEN, NOT APPLIED).
+
+## Cap strategy + token provisioning + MCP — wave 67 (owner: "make sure our system will keep up
+with the demands of our tenant subscribers… since batchdata is setup for the platform to pay, how
+can we get around the caps")
+
+Research method (owner-supplied, recorded verbatim in the wave-67 lane prompt): help.batchdata.io
++ batchdata.io/pricing, fetched 2026-09-16. No live paid call was made this wave either
+(`BATCHDATA_API_KEY` unset here).
+
+### Plan tiers (RESEARCHED FACTS — owner's commercial decision which tier to buy)
+
+| Plan | Monthly price | Records/month | Notes |
+|---|---|---|---|
+| Growth | $1,000 | 100,000 | |
+| Professional | $2,500 | 300,000 | |
+| Scale | $5,000 | 750,000 | |
+| Enterprise | $10,000 | 3,000,000 | Custom rate limits + dedicated infrastructure |
+
+**Enterprise trigger (owner's commercial decision, never assumed in code):** the Scale tier's
+per-record rate is $5,000 / 750,000 ≈ **$0.00667/record**; Enterprise's is $10,000 / 3,000,000 ≈
+$0.00333/record — Enterprise is cheaper per record ONLY past its own $10,000 floor, i.e. once
+sustained platform-wide consumption exceeds **750,000 records/month** (Scale's ceiling) for two+
+consecutive billing periods. Below that, upgrading early just pays for headroom nobody used yet.
+This repo does not auto-upgrade a plan — `fetchBatchDataWalletConsumptionReport` (existing REST
+wrapper) is the measurement the owner reviews before deciding; no code path changes tier.
+
+Skip-trace is billed **pay-as-you-go** separately from the plan tiers, ~$0.06/matched record.
+Billing for every lane is **per record against whatever datasets the calling TOKEN is
+provisioned for** (not runtime request params) — this is what makes the token-strategy seam
+below a real lever, not just an organizational nicety: a token that only sees skip-trace traffic
+never gets billed for datasets a different lane's calls asked for.
+
+### (1) Pool Property Monitoring subscriptions BY QUICKLIST, not by (market × quicklist)
+
+Property Monitoring is capped at **5 subscriptions PER ACCOUNT** (confirmed wave 66). The
+wave-65B/66 reconcile spent that cap one (market × quicklist) pair at a time, so as few as 5
+territories running distinct quicklists exhausted the account-wide cap. Wave 67 rebuilds
+`buildSmartSearchSubscriptionPlan` + the cron's step 2b (`app/api/cron/lead-scraping/route.ts`)
+to pool by QUICKLIST: every active territory wanting a given quicklist shares ONE subscription
+whose `searchCriteria.query` is the union of their geographies
+(`lib/external/batchdata-client.ts::buildPooledSmartSearchQuery`). Five slots now cover **5
+quicklists platform-wide**, regardless of territory count. The per-territory row in
+`batchdata_smart_search_subscriptions` survives as a MEMBERSHIP row (`pool_key`, `pooled`,
+`geography_count` — migration `m637`, WRITTEN NOT APPLIED); the webhook receiver
+(`app/api/webhooks/batchdata-smart-search/route.ts`) already fans a pooled event out to the
+correct market by matching the hydrated property's city/zip against `lead_scraping_markets`
+(`resolveActiveScrapeTerritories` + `recordMatchesTerritory`) — that fan-out needed no change,
+it was already territory-centric rather than subscription-centric.
+
+**UNRESOLVED / blind spot:** no fetched article states a multi-location `searchCriteria.query`
+SYNTAX — BatchData's own documented example is a single `"City, ST"` string. The union query is
+built as each territory's `"City, ST"` joined with `"; "` (deduped) as the most literal reading of
+"pool the geographies"; if BatchData's parser does not accept a joined string, the query degrades
+to matching only the first segment. This is visible immediately in the leads-per-subscription
+count on the admin markets feed panel (a count that moves is the finding, CLAUDE.md §2) — never a
+silent narrowing. The integrator should confirm the real syntax against a live account before
+relying on this for full coverage.
+
+### (2) Search-Session incremental pulls are the primary "only-new" rail
+
+Property Monitoring (push) is the ACCELERATOR; the wave-66 Incremental Property Search
+(cursor + `searchSession`, per market × quicklist lane, opt-in via `batchdata_incremental` in
+`enabled_sources`) needs no subscription slot at all and is the rail every territory can run
+regardless of whether its quicklist made the cut in the pooled cap above. No code change this
+wave — this is a usage-pattern recommendation: enable `batchdata_incremental` broadly, treat
+Smart Search admission as a bonus for whichever 5 quicklists are hottest platform-wide.
+
+### (3) Token strategy — separate provisioned tokens per dataset need
+
+`lib/external/batchdata-tokens.ts::resolveBatchDataToken(purpose)` resolves which env token backs
+each call:
+
+| Purpose | Env var | Falls back to | Used by |
+|---|---|---|---|
+| `search` | `BATCHDATA_API_KEY` | — (always this) | property/search, Smart Search subscription CRUD, address/verify, wallet reads |
+| `skip_trace` | `BATCHDATA_SKIP_TRACE_TOKEN` | `BATCHDATA_API_KEY` | `property/skip-trace` (V3) |
+| `listing` | `BATCHDATA_LISTING_TOKEN` | `BATCHDATA_API_KEY` | `property/lookup/all-attributes` (Smart Search hydrate, active-listing discovery) |
+| `mcp` | `BATCHDATA_MCP_AUTH` | `BATCHDATA_API_KEY` | the MCP client (`lib/external/batchdata-mcp.ts`) |
+
+Because billing is per-record against a token's OWN provisioning, a single shared token used for
+every purpose gets billed at the union of every dataset any caller ever asked for — e.g. if the
+search lane's token also carries listing/comps add-ons (because a search call once requested
+them), every skip-trace record billed on that SAME token inherits that wider provisioning even
+though skip-trace never reads those add-ons. Provisioning narrow, purpose-specific tokens (all
+optional — every deployment that sets only `BATCHDATA_API_KEY` behaves exactly as before) keeps
+per-record cost proportional to what each lane actually reads, and makes a runaway lane's spend
+attributable to the token that caused it on BatchData's own per-token billing dashboard.
+
+### MCP transport rebuild + AI-SDK tool surface
+
+`lib/external/batchdata-mcp.ts` now uses the OFFICIAL `@modelcontextprotocol/sdk` `Client` +
+`StreamableHTTPClientTransport` against `https://mcp.batchdata.com` (default when
+`BATCHDATA_MCP_URL` is unset) with `Authorization: Bearer <mcp token>`, replacing the wave-6x
+hand-rolled JSON-RPC POST. Every exported function/signature is unchanged (`investorBuybox*`,
+`comparableProperty*`, `callBatchDataMcp`, `batchDataPreferMcp`) so no caller needed to change.
+
+`@ai-sdk/mcp` (the AI-SDK-native MCP client wrapper the owner's research named) was CHECKED, not
+assumed: its latest npm version is 2.0.50, targeting the `ai@4`/`ai@5`-era
+`experimental_createMCPClient` shape; this repo runs `ai@6.0.16` (wave-59 ruling), whose own
+exports (`Object.keys(require('ai'))`) carry no MCP client at all. Adding an unverified
+major-version-mismatched dependency was judged riskier than the documented fallback, so
+`lib/external/batchdata-ai-tools.ts::batchDataMcpTools()` instead wraps the official client's
+`listTools()`/`callTool()` (both added to `batchdata-mcp.ts` this wave) into AI-SDK
+`tool({inputSchema: jsonSchema(...), execute})` objects built from the `ai` package that IS
+installed. Wired into the in-app agent copilot's tool registry
+(`app/api/internal/ai-chat/route.ts` — the surface that already exposes `lookup_contact` and the
+other Kernel OS action tools), gated on a configured "mcp" purpose token, tenant-scoped from the
+session-resolved `brokerageId`/`user.id`, and metered per call
+(`meterVendorSpend`, `usageType: "mcp_<tool name>"`).

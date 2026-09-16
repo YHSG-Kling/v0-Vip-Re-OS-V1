@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Building2, Loader2, TrendingUp } from "lucide-react"
-import { findInvestorDealsAction, getInvestorDealMatchAction } from "@/app/actions/investor-deals"
+import { findInvestorDealsAction, getInvestorDealMatchAction, dismissInvestorOffMarketCandidateAction } from "@/app/actions/investor-deals"
 
 interface OffMarketMatch {
   recordId: string
@@ -84,6 +84,14 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
 
   const deals = (match?.candidates ?? []).slice(0, 10)
   const batchDataDeals = (match?.offMarketCandidates ?? []).slice(0, 10)
+  const [dismissing, setDismissing] = useState<string | null>(null)
+  async function dismiss(candidateId: string) {
+    setDismissing(candidateId)
+    const res = await dismissInvestorOffMarketCandidateAction({ contactId, candidateId })
+    setDismissing(null)
+    if (!res.success) { setError(res.error ?? "Could not dismiss this property"); return }
+    setMatch((m) => m ? { ...m, offMarketCandidates: (m.offMarketCandidates ?? []).filter((c) => c.id !== candidateId) } : m)
+  }
 
   return (
     <Card>
@@ -136,11 +144,16 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
                       <Badge key={q} variant="outline" className="text-[10px] capitalize">{q.replace(/-/g, " ")}</Badge>
                     ))}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {d.estimated_value != null && `~$${Math.round(d.estimated_value).toLocaleString()} est. value`}
-                    {d.equity_percent != null && ` · ${Math.round(d.equity_percent)}% equity`}
-                    {!d.delivered_at && " · new"}
-                  </p>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <p className="text-xs text-muted-foreground">
+                      {d.estimated_value != null && `~$${Math.round(d.estimated_value).toLocaleString()} est. value`}
+                      {d.equity_percent != null && ` · ${Math.round(d.equity_percent)}% equity`}
+                      {!d.delivered_at && " · new"}
+                    </p>
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={dismissing === d.id} onClick={() => dismiss(d.id)}>
+                      {dismissing === d.id ? "…" : "Dismiss"}
+                    </Button>
+                  </div>
                 </div>
               ))}
             </>

@@ -679,7 +679,10 @@ const MAX_NATURAL_SENTENCE_WORDS = 28
  *   · a mean sentence length under 4 words — a run of very short beats
  *     ("Sold. Closed. Done.") is naturally low-variance without being
  *     robotic; nothing here should punish brevity.
- */
+ *  @proofSeam scripts/avatar-pipeline-hardening-simulator.ts §sentenceVariance
+ *     asserts every negative-control fixture sits above this floor and the
+ *     uniform fixture below it; the product reader is scanForAiTells in this
+ *     module. */
 export const MAX_SENTENCE_LENGTH_UNIFORMITY_CV = 0.12
 const MIN_SENTENCES_FOR_VARIANCE_CHECK = 3
 const MIN_MEAN_WORDS_FOR_VARIANCE_CHECK = 4
@@ -689,7 +692,9 @@ const MIN_MEAN_WORDS_FOR_VARIANCE_CHECK = 4
  * enough signal to judge rhythm (see the guards on the constant above);
  * otherwise the population coefficient of variation of each sentence's
  * spoken-word count.
- */
+ *  @proofSeam scripts/avatar-pipeline-hardening-simulator.ts §sentenceVariance
+ *     calibrates the threshold above through this exact function; the product
+ *     reader is scanForAiTells in this module. */
 export function sentenceLengthCoefficientOfVariation(sentences: string[]): number | null {
   if (!Array.isArray(sentences) || sentences.length < MIN_SENTENCES_FOR_VARIANCE_CHECK) return null
   const counts = sentences.map((s) => spokenWords(s).length)

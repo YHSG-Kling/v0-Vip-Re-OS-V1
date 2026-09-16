@@ -96,3 +96,30 @@ export async function getInvestorDealMatchAction(params: {
   const match = await getInvestorDealMatch(createServiceClient(), { contactId: params.contactId, brokerageId })
   return { success: true, match }
 }
+
+/**
+ * dismissInvestorOffMarketCandidateAction — the WRITER of
+ * investor_offmarket_candidates.dismissed_at (wave 67 integration; the column
+ * was read by getInvestorOffMarketCandidates' `.is("dismissed_at", null)` and
+ * written by nothing). Gate first (session → brokerage), then the service
+ * client bounded to (id, contact_id, brokerage_id); the update is `.select()`ed
+ * and COUNTED because a zero-row update resolves without an error.
+ */
+export async function dismissInvestorOffMarketCandidateAction(params: {
+  contactId: string
+  candidateId: string
+}): Promise<{ success: boolean; error?: string }> {
+  const { brokerageId, error } = await authAndScope(params.contactId)
+  if (!brokerageId) return { success: false, error: error ?? undefined }
+  if (!isValidUUID(params.candidateId)) return { success: false, error: "Invalid candidate id" }
+  const { data, error: updateError } = await createServiceClient()
+    .from("investor_offmarket_candidates")
+    .update({ dismissed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq("id", params.candidateId)
+    .eq("contact_id", params.contactId)
+    .eq("brokerage_id", brokerageId)
+    .select("id")
+  if (updateError) return { success: false, error: updateError.message }
+  if (!data || data.length === 0) return { success: false, error: "Candidate not found for this contact" }
+  return { success: true }
+}

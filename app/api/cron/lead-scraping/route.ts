@@ -487,118 +487,10 @@ export async function GET(request: Request) {
             await escalateScraperFailureIfNeeded(supabase, { scraperType: "batchdata_motivated", errorMessage: sourceErr.message })
           }
 
-          // ============================================
-          // 2b. SMART SEARCH RECONCILE (V2 Property Subscription) — BatchData phase only
-          // ============================================
-          // DISTINCT from the poll above: registers a PUSH subscription per configured
-          // quicklist trigger so BatchData delivers matches to
-          // app/api/webhooks/batchdata-smart-search BETWEEN polling runs. Folded into
-          // the EXISTING daily tick rather than a new cron (CLAUDE.md wave-62 cost
-          // ruling). Best-effort: a subscription failure never blocks or fails the
-          // poll-based scrape above, which is the capability that actually produces
-          // leads today.
-          //
-          // WAVE 66 FIX of wave 65B's per-market-only reconcile: BatchData caps
-          // Property Subscription at 5 PER ACCOUNT (documented), so this now runs
-          // through buildSmartSearchSubscriptionPlan against the RUN-LEVEL
-          // `smartSearchAccountLiveCount` counter (declared above the market loop),
-          // which is decremented as markets earlier in the priority order (`markets`
-          // is `priority DESC`) admit their creates — giving later, lower-priority
-          // markets an honest "deferred: cap reached" verdict instead of a surprise
-          // provider-side refusal on whichever market happened to run 6th.
-          //
-          // SUBSCRIPTIONS ARE IMMUTABLE (documented) — wave 65B's 30-day "renewal"
-          // cadence was a GUESS with no documented TTL behind it; renewing would mean
-          // delete-then-recreate, which BURNS a cap slot for no reason when nothing
-          // about the criteria changed. Dropped: an `active` row with a live
-          // `subscription_id` is left alone indefinitely. It is recreated ONLY when
-          // this market's desired quicklist SET changed (a criteria change), which is
-          // detected by diffing the currently active rows against
-          // `smartSearchQuicklists` below and deleting whatever is active but no
-          // longer wanted before the plan runs.
-          try {
-            const smartSearchTriggers = enabledSources.has("batchdata_motivated")
-              ? batchDataTriggersFor(motivatedParams.signal_types)
-              : []
-            const smartSearchQuicklists = quickListSlugsFor(smartSearchTriggers)
-            const { data: existingSubs, error: existingSubsErr } = await supabase
-              .from("batchdata_smart_search_subscriptions")
-              .select("quicklist, status, subscription_id")
-              .eq("market_id", market.id)
-            if (existingSubsErr) {
-              // Table not yet applied (m633 WRITTEN NOT APPLIED / m635 widening not yet
-              // applied) or another read refusal — never treat "couldn't read" as
-              // "nothing subscribed"; skip this market's reconcile pass rather than
-              // risk a duplicate registration.
-              throw new Error(`smart-search subscription read refused: ${existingSubsErr.message}`)
-            }
-            const rows = (existingSubs ?? []) as Array<{ quicklist: string; status: string; subscription_id: string | null }>
-            const byQuicklist = new Map(rows.map((r) => [r.quicklist, r]))
-            const wantedSet = new Set(smartSearchQuicklists)
-
-            // Criteria changed for this market → the OLD quicklist is no longer
-            // wanted, but its row may still be `active` on BatchData's side. Delete
-            // it (immutable subscriptions cannot be edited) so its slot is freed for
-            // the plan below, and record the row gone.
-            for (const row of rows) {
-              if (row.status === "active" && row.subscription_id && !wantedSet.has(row.quicklist)) {
-                const del = await deleteSmartSearchSubscription(row.subscription_id)
-                if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
-                await supabase
-                  .from("batchdata_smart_search_subscriptions")
-                  .update({ status: "cancelled", last_error: del.ok ? "superseded by criteria change" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
-                  .eq("market_id", market.id).eq("quicklist", row.quicklist)
-              }
-            }
-
-            if (wantedSet.size > 0) {
-              const wants = smartSearchQuicklists.map((quicklist) => ({
-                marketId: market.id, priority: market.priority ?? 0, quicklist, city: market.city, state: market.state,
-              }))
-              const alreadyActive = new Set(
-                rows.filter((r) => r.status === "active" && r.subscription_id && wantedSet.has(r.quicklist))
-                  .map((r) => `${market.id}:${r.quicklist}`),
-              )
-              const plan = buildSmartSearchSubscriptionPlan({
-                wants, alreadyActive, accountLiveCount: smartSearchAccountLiveCount,
-              })
-
-              for (const entry of plan) {
-                if (entry.action === "keep") continue
-                if (entry.action === "defer") {
-                  await supabase.from("batchdata_smart_search_subscriptions").upsert(
-                    { market_id: market.id, quicklist: entry.quicklist, status: "deferred", webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "", last_error: entry.reason, priority: entry.priority, last_reconciled_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-                    { onConflict: "market_id,quicklist" },
-                  )
-                  continue
-                }
-                // action === "create" — only reached when the plan already confirmed a slot is free.
-                const result = await createSmartSearchSubscription({ quicklist: entry.quicklist, city: market.city, state: market.state })
-                if (result.ok) smartSearchAccountLiveCount++
-                const status = result.ok ? "active" : result.provisioningRequired ? "provisioning_required" : "error"
-                const { error: upsertErr } = await supabase
-                  .from("batchdata_smart_search_subscriptions")
-                  .upsert(
-                    {
-                      market_id: market.id, quicklist: entry.quicklist,
-                      subscription_id: result.subscriptionId, status,
-                      webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
-                      last_error: result.error, priority: entry.priority,
-                      last_reconciled_at: new Date().toISOString(),
-                      ...(result.ok ? { renewed_at: new Date().toISOString() } : {}),
-                      updated_at: new Date().toISOString(),
-                    },
-                    { onConflict: "market_id,quicklist" },
-                  )
-                if (upsertErr) {
-                  results.errors.push(`Smart Search subscription write failed for ${market.name}/${entry.quicklist}: ${upsertErr.message}`)
-                }
-              }
-            }
-          } catch (smartSearchErr) {
-            // Best-effort side-channel — logged, never fails the cron run.
-            results.errors.push(`Smart Search reconcile error for ${market.name}: ${smartSearchErr}`)
-          }
+          // 2b. SMART SEARCH RECONCILE moved OUT of the per-market loop (wave 67 —
+          // see the POOLED reconcile step right after this `for` loop closes). Pooling
+          // by quicklist needs every active territory's want gathered FIRST so the
+          // union query and the cap plan are computed once, not market-by-market.
 
           // ============================================
           // 2c. INCREMENTAL PROPERTY SEARCH (wave 66, task 2) — OPT-IN per market
@@ -1025,6 +917,153 @@ export async function GET(request: Request) {
         })
         .eq("id", market.id)
         .then(() => {}, () => {})
+    }
+
+    // ============================================
+    // 2b. SMART SEARCH RECONCILE (V2 Property Subscription) — POOLED BY QUICKLIST
+    // ============================================
+    // WAVE 67 REBUILD of wave 66's per-market reconcile (moved out of the market
+    // loop above — pooling needs every active territory's want gathered FIRST).
+    // Owner ruling ("how can we get around the caps"): BatchData caps Property
+    // Subscription at 5 PER ACCOUNT — pooling by market×quicklist wastes the cap on
+    // territory count; pooling by QUICKLIST spends it on the number of DISTINCT
+    // quicklists instead; 5 slots then cover 5 quicklists PLATFORM-WIDE no matter how
+    // many territories want each one. searchCriteria.query becomes the UNION of every
+    // contributing territory's geography (buildPooledSmartSearchQuery — syntax
+    // unresolved, see that function's own comment). The per-market row in
+    // batchdata_smart_search_subscriptions survives as a MEMBERSHIP row: every
+    // territory that contributed to a pooled subscription gets its own row sharing
+    // that subscription's id, with pool_key/pooled/geography_count (m637) recording
+    // which pool it belongs to and how many territories are in it.
+    //
+    // Best-effort: a subscription failure never blocks or fails the poll-based scrape
+    // above, which is the capability that actually produces leads today.
+    //
+    // SUBSCRIPTIONS ARE IMMUTABLE (documented) — an `active` pooled row is left alone
+    // indefinitely UNLESS its membership changed (a territory joined or left the pool
+    // since the last reconcile, detected by comparing `geography_count`) or NO
+    // territory wants it anymore, either of which forces a delete-then-recreate
+    // (burning no extra slot — the old id frees its slot before the new one claims it).
+    try {
+      const geosByQuicklist = new Map<string, Array<{ marketId: string; priority: number; city: string | null; state: string; zip: string | null }>>()
+      for (const m of markets) {
+        if ((m.spend_this_month ?? 0) >= (m.monthly_budget_usd ?? 100)) continue
+        const mSources = expandEnabledSources(m.enabled_sources ?? ["batchdata_motivated"])
+        if (!mSources.has("batchdata_motivated")) continue
+        const mMotivated = m.lead_scraping_motivated_params?.[0]
+        if (!mMotivated?.is_active) continue
+        const quicklists = quickListSlugsFor(batchDataTriggersFor(mMotivated.signal_types))
+        for (const quicklist of quicklists) {
+          const list = geosByQuicklist.get(quicklist) ?? []
+          list.push({ marketId: m.id, priority: m.priority ?? 0, city: m.city ?? null, state: m.state, zip: null })
+          geosByQuicklist.set(quicklist, list)
+        }
+      }
+      const wants = Array.from(geosByQuicklist.entries()).map(([quicklist, geographies]) => ({ quicklist, geographies }))
+
+      const { data: existingSubs, error: existingSubsErr } = await supabase
+        .from("batchdata_smart_search_subscriptions")
+        .select("market_id, quicklist, status, subscription_id, geography_count")
+      if (existingSubsErr) {
+        // Table not yet applied (m633/m635/m637) or another read refusal — never treat
+        // "couldn't read" as "nothing subscribed"; skip the whole pooled reconcile pass
+        // this run rather than risk a duplicate registration.
+        throw new Error(`smart-search subscription read refused: ${existingSubsErr.message}`)
+      }
+      const rows = (existingSubs ?? []) as Array<{ market_id: string; quicklist: string; status: string; subscription_id: string | null; geography_count: number | null }>
+
+      // One representative row per quicklist tells us the pooled subscription's id
+      // and how many territories it currently claims to cover.
+      const activeByQuicklist = new Map<string, { subscriptionId: string; geographyCount: number }>()
+      for (const r of rows) {
+        if (r.status === "active" && r.subscription_id) {
+          activeByQuicklist.set(r.quicklist, { subscriptionId: r.subscription_id, geographyCount: r.geography_count ?? 1 })
+        }
+      }
+
+      // Membership drift (geography count changed) → delete first, subscriptions are
+      // immutable. Freed slot is picked up by the plan below under the SAME quicklist.
+      for (const w of wants) {
+        const active = activeByQuicklist.get(w.quicklist)
+        if (active && active.geographyCount !== w.geographies.length) {
+          const del = await deleteSmartSearchSubscription(active.subscriptionId)
+          if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
+          await supabase.from("batchdata_smart_search_subscriptions")
+            .update({ status: "cancelled", last_error: del.ok ? "superseded by pooled membership change" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
+            .eq("quicklist", w.quicklist).eq("status", "active")
+          activeByQuicklist.delete(w.quicklist)
+        }
+      }
+      // No territory wants this quicklist anymore → delete + cancel every membership row.
+      for (const [quicklist, active] of activeByQuicklist) {
+        if (!wants.some((w) => w.quicklist === quicklist)) {
+          const del = await deleteSmartSearchSubscription(active.subscriptionId)
+          if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
+          await supabase.from("batchdata_smart_search_subscriptions")
+            .update({ status: "cancelled", last_error: del.ok ? "no active territory wants this quicklist anymore" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
+            .eq("quicklist", quicklist).eq("status", "active")
+        }
+      }
+
+      const alreadyActive = new Set(
+        wants.filter((w) => {
+          const active = activeByQuicklist.get(w.quicklist)
+          return !!active && active.geographyCount === w.geographies.length
+        }).map((w) => w.quicklist),
+      )
+
+      const plan = buildSmartSearchSubscriptionPlan({ wants, alreadyActive, accountLiveCount: smartSearchAccountLiveCount })
+
+      for (const entry of plan) {
+        if (entry.action === "keep") continue
+        if (entry.action === "defer") {
+          for (const g of entry.geographies) {
+            await supabase.from("batchdata_smart_search_subscriptions").upsert(
+              {
+                market_id: g.marketId, quicklist: entry.quicklist, status: "deferred",
+                webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
+                last_error: entry.reason, priority: g.priority,
+                pool_key: entry.quicklist, pooled: true, geography_count: entry.geographies.length,
+                last_reconciled_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+              },
+              { onConflict: "market_id,quicklist" },
+            )
+          }
+          continue
+        }
+        // action === "create" — only reached when the plan already confirmed a slot is
+        // free. ONE provider call for the whole pool; every contributing territory
+        // then gets its own membership row against the same subscription id.
+        const result = await createSmartSearchSubscription({
+          quicklist: entry.quicklist,
+          geographies: entry.geographies.map((g) => ({ city: g.city, state: g.state, zip: g.zip })),
+        })
+        if (result.ok) smartSearchAccountLiveCount++
+        const status = result.ok ? "active" : result.provisioningRequired ? "provisioning_required" : "error"
+        for (const g of entry.geographies) {
+          const { error: upsertErr } = await supabase
+            .from("batchdata_smart_search_subscriptions")
+            .upsert(
+              {
+                market_id: g.marketId, quicklist: entry.quicklist,
+                subscription_id: result.subscriptionId, status,
+                webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
+                last_error: result.error, priority: g.priority,
+                pool_key: entry.quicklist, pooled: true, geography_count: entry.geographies.length,
+                last_reconciled_at: new Date().toISOString(),
+                ...(result.ok ? { renewed_at: new Date().toISOString() } : {}),
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "market_id,quicklist" },
+            )
+          if (upsertErr) {
+            results.errors.push(`Smart Search pooled subscription write failed for ${entry.quicklist}/${g.marketId}: ${upsertErr.message}`)
+          }
+        }
+      }
+    } catch (smartSearchErr) {
+      // Best-effort side-channel — logged, never fails the cron run.
+      results.errors.push(`Smart Search pooled reconcile error: ${smartSearchErr}`)
     }
 
     // ── PROMOTION PASS — run scraped raw records through the pipeline ──────────

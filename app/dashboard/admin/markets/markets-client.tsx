@@ -594,7 +594,8 @@ export function MarketsSetupClient({
           <p className="text-xs text-muted-foreground">
             Market-wide active/expired/withdrawn/sold listings BatchData reports inside your territories, the
             incremental-search cursor state per market and lane, and the Property Monitoring subscriptions the
-            daily reconcile admitted (five per account, highest territory priority first).
+            daily reconcile admitted (five per account — POOLED by quicklist across every active territory, so
+            each slot can cover many territories at once; "pooled" shows how many).
           </p>
         </div>
         {initialFeed.error && (
@@ -612,6 +613,11 @@ export function MarketsSetupClient({
                     <p className="truncate">
                       <span className="font-medium">{s.quicklist}</span>
                       <span className="text-muted-foreground"> · {marketLabel(s.market_id)} · priority {s.priority ?? 0}</span>
+                      {s.pooled && (
+                        <span className="ml-1.5 rounded-md border border-sky-300 px-1.5 py-0.5 text-[10px] font-medium uppercase text-sky-700">
+                          pooled{s.geography_count ? ` · ${s.geography_count} territories` : ""}
+                        </span>
+                      )}
                     </p>
                     <span className={`shrink-0 rounded-md border px-2 py-0.5 text-xs font-medium ${
                       s.status === "active" ? "border-emerald-300 text-emerald-700"
@@ -620,7 +626,8 @@ export function MarketsSetupClient({
                     }`}>{s.status}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {s.subscription_id ? `id ${s.subscription_id}` : "no provider id"} · reconciled {when(s.last_reconciled_at)}
+                    {s.subscription_id ? `id ${s.subscription_id}` : "no provider id"}
+                    {s.pool_key ? ` · pool ${s.pool_key}` : ""} · reconciled {when(s.last_reconciled_at)}
                   </p>
                   {s.last_error && <p className="text-xs text-destructive">{s.last_error}</p>}
                 </li>
