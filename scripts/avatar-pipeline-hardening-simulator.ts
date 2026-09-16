@@ -82,6 +82,8 @@ import {
   PAUSE_MARKUP_ALIGNMENT_FIXTURE_EXPECTED_TEXT,
   PLAIN_ALIGNMENT_FIXTURE,
   estimateAvatarRenderCostUsd,
+  sentenceLengthCoefficientOfVariation,
+  MAX_SENTENCE_LENGTH_UNIFORMITY_CV,
 } from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -800,6 +802,37 @@ function realismSection() {
     check(`CONTROL: the "${c.label}" realistic script produces ZERO findings (false-positive check)`,
       scanForAiTells(c.text).length === 0)
   }
+
+  // ── §sentenceVariance (wave 67) — robotic-pacing tell: identical-length ───
+  // sentences, distinct from the long-sentence check above and from every
+  // other pattern (proven below by isolating the new finding's text).
+  check("CONTROL: a script with fewer than 3 sentences returns null (no rhythm to judge)",
+    sentenceLengthCoefficientOfVariation(["One line here."]) === null &&
+    sentenceLengthCoefficientOfVariation(["One line here.", "And another one."]) === null)
+  check("CONTROL: a run of very short beats (mean < 4 words) returns null rather than flagging brevity",
+    sentenceLengthCoefficientOfVariation(["Sold.", "Closed.", "Done deal."]) === null)
+  check("CONTROL: the calibration fixture's CV lands below the uniformity floor",
+    (() => {
+      const cv = sentenceLengthCoefficientOfVariation([
+        "The market is strong this month.", "Buyers are active in every area.",
+        "Prices continue to rise steadily.", "Inventory remains fairly low overall.",
+        "Homes are selling very quickly now.",
+      ])
+      return cv !== null && cv < MAX_SENTENCE_LENGTH_UNIFORMITY_CV
+    })())
+  check("CONTROL: every existing AI_TELL negative control's CV sits ABOVE the floor (the threshold was calibrated to their measured spread, not guessed)",
+    [AI_TELL_NEGATIVE_CONTROL, ...AI_TELL_ADDITIONAL_NEGATIVE_CONTROLS.map((c) => c.text)].every((text) => {
+      const sentences = text.trim().split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0)
+      const cv = sentenceLengthCoefficientOfVariation(sentences)
+      return cv === null || cv >= MAX_SENTENCE_LENGTH_UNIFORMITY_CV
+    }))
+  check("the new finding fires on the uniform-sentence-length fixture AND names 'robotic pacing' (a real, distinct message, not a coincidental hit on another pattern)",
+    scanForAiTells(AI_TELL_POSITIVE_CONTROLS.find((c) => c.label === "uniform_sentence_length")!.text)
+      .some((h) => /robotic pacing/.test(h)))
+  check("...and that fixture produces EXACTLY ONE finding (proving no other scanForAiTells pattern coincidentally also fires on it)",
+    scanForAiTells(AI_TELL_POSITIVE_CONTROLS.find((c) => c.label === "uniform_sentence_length")!.text).length === 1)
+  check("SPOKEN_REALISM_DIRECTIVE names sentence-length variance explicitly (rule 8), matching the wave-67 audit's own 'robotic pacing: sentence-length variance' phrasing",
+    /vary sentence length/i.test(readStripped("lib/video/realism-profile.ts")))
 
   // POSITIVE CONTROLS (§2) — the avatar-freeze guard
   check("CONTROL: a clip that fills its whole window returns null (no fade — nothing to fix)",

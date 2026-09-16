@@ -588,6 +588,7 @@ export const SPOKEN_REALISM_DIRECTIVE = [
   "5. Open with the fact, the number, or their situation — never a self-introduction. Use the person's name and the real property/neighbourhood facts already given to you; specificity is what makes a viewer believe a real person is speaking.",
   "6. Close with ONE natural, specific next step, said the way a person actually talks — not a generic call-to-action template.",
   "7. Read it aloud in your head before finishing: if it would sound stiff coming out of a real person's mouth, rewrite it.",
+  "8. Vary sentence length — mix a short punchy line with an occasional longer one. A script where every sentence lands at nearly the same length reads as a machine-paced list, not a person talking.",
 ].join("\n")
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -649,6 +650,54 @@ const UNCONTRACTED_PATTERNS: RegExp[] = [
  *  research note. Reuses spokenWords (§6 — one word-splitter for the video
  *  lane) rather than a second regex split. */
 const MAX_NATURAL_SENTENCE_WORDS = 28
+
+/**
+ * SENTENCE-LENGTH VARIANCE — the "robotic pacing" tell the wave-67 realism
+ * audit named explicitly ("no AI-generated tells: robotic pacing (sentence-
+ * length variance)"). MAX_NATURAL_SENTENCE_WORDS above catches a sentence
+ * that is too LONG; it says nothing about a script where every sentence is
+ * the SAME length — which is a distinct, real tell (LLM-drafted copy
+ * routinely produces a run of near-identical-length sentences; natural
+ * speech mixes a short punchy line with an occasional longer one).
+ *
+ * MAX_SENTENCE_LENGTH_UNIFORMITY_CV is the coefficient of variation
+ * (population stdev / mean word count across a script's sentences) below
+ * which the rhythm reads as suspiciously uniform. CALIBRATED against every
+ * existing negative control fixture in this file (AI_TELL_NEGATIVE_CONTROL +
+ * the five AI_TELL_ADDITIONAL_NEGATIVE_CONTROLS): their CVs range 0.144-0.341
+ * (measured via spokenWords/roughSentences, the SAME splitters this scanner
+ * already uses — §6, no second tokenizer). 0.12 sits strictly below that
+ * whole band (margin to the closest negative, 0.144) and strictly above a
+ * genuinely uniform fixture (a 5-sentence, 5-6-word-per-sentence script
+ * measures 0.087) — so the threshold separates the two without re-flagging
+ * any script this file already asserts is clean.
+ *
+ * GUARDED so it never fires on what it cannot meaningfully judge:
+ *   · fewer than MIN_SENTENCES_FOR_VARIANCE_CHECK sentences — three data
+ *     points is the minimum every calibration fixture above actually has;
+ *     one or two sentences have no "rhythm" to be uniform or varied.
+ *   · a mean sentence length under 4 words — a run of very short beats
+ *     ("Sold. Closed. Done.") is naturally low-variance without being
+ *     robotic; nothing here should punish brevity.
+ */
+export const MAX_SENTENCE_LENGTH_UNIFORMITY_CV = 0.12
+const MIN_SENTENCES_FOR_VARIANCE_CHECK = 3
+const MIN_MEAN_WORDS_FOR_VARIANCE_CHECK = 4
+
+/**
+ * sentenceLengthCoefficientOfVariation — PURE. Returns null when there is not
+ * enough signal to judge rhythm (see the guards on the constant above);
+ * otherwise the population coefficient of variation of each sentence's
+ * spoken-word count.
+ */
+export function sentenceLengthCoefficientOfVariation(sentences: string[]): number | null {
+  if (!Array.isArray(sentences) || sentences.length < MIN_SENTENCES_FOR_VARIANCE_CHECK) return null
+  const counts = sentences.map((s) => spokenWords(s).length)
+  const mean = counts.reduce((a, b) => a + b, 0) / counts.length
+  if (mean < MIN_MEAN_WORDS_FOR_VARIANCE_CHECK) return null
+  const variance = counts.reduce((a, b) => a + (b - mean) ** 2, 0) / counts.length
+  return Math.sqrt(variance) / mean
+}
 
 /**
  * Split into sentences for the length check. Deliberately NOT importing
@@ -713,11 +762,19 @@ export function scanForAiTells(script: string | null | undefined): string[] {
       "spoken delivery this formal reads as stiff; use contractions throughout.",
     )
   }
-  const longSentence = roughSentences(text).find((s) => spokenWords(s).length > MAX_NATURAL_SENTENCE_WORDS)
+  const sentences = roughSentences(text)
+  const longSentence = sentences.find((s) => spokenWords(s).length > MAX_NATURAL_SENTENCE_WORDS)
   if (longSentence) {
     hits.push(
       `AI-tell: a ${spokenWords(longSentence).length}-word sentence — TTS delivery of a sentence this long reads ` +
       "as a monotone wall of text; keep one idea per sentence.",
+    )
+  }
+  const cv = sentenceLengthCoefficientOfVariation(sentences)
+  if (cv !== null && cv < MAX_SENTENCE_LENGTH_UNIFORMITY_CV) {
+    hits.push(
+      `AI-tell: robotic pacing — every sentence lands at nearly the same length (variance ${cv.toFixed(3)}, ` +
+      `below the ${MAX_SENTENCE_LENGTH_UNIFORMITY_CV} natural-speech floor) — mix a short line with a longer one.`,
     )
   }
 
@@ -767,6 +824,16 @@ export const AI_TELL_POSITIVE_CONTROLS: ReadonlyArray<{ label: string; text: str
   {
     label: "long_sentence",
     text: "This home, which sits on a quiet street near the elementary school and the new coffee shop that just opened last spring, has been completely renovated from top to bottom including the roof, the plumbing, and the electrical system, and it is priced to sell quickly this week.",
+  },
+  {
+    // wave 67 — MAX_SENTENCE_LENGTH_UNIFORMITY_CV's positive control. Five
+    // sentences, each 5-6 spoken words (CV ≈ 0.087 — measured below the
+    // 0.12 floor and below every negative control's CV, see the constant's
+    // own calibration note). No other pattern above fires on this text, so
+    // it also proves the variance check is a genuinely NEW finding, not a
+    // restatement of the long-sentence or formal-transition checks.
+    label: "uniform_sentence_length",
+    text: "The market is strong this month. Buyers are active in every area. Prices continue to rise steadily. Inventory remains fairly low overall. Homes are selling very quickly now.",
   },
 ]
 
