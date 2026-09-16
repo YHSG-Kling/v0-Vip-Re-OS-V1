@@ -228,6 +228,31 @@ export const ACTIVE_LISTING_SIGNAL_TYPE = "active_listing"
  */
 export const CASH_BUYER_SIGNAL_TYPE = "cash_buyer"
 
+/**
+ * ACTIVE-LISTING MONITOR STATUS-TRANSITION TYPES — wave 66, owner verbatim:
+ * "Batchdata also allows you to find properties that are active and other new
+ * features… enhance our lead acquisition, enrichment and listing providing."
+ *
+ * DISTINCT FROM `active_listing` (SUPPRESSION, above) AND `listing_withdrawn`
+ * (a POINT-IN-TIME quickList snapshot conflating expired/canceled/failed).
+ * These three fire from lib/kernel/listings-batchdata-feed.ts's active-listing
+ * discovery lane, which watches a monitored territory's on-market properties
+ * OVER TIME (via the daily poll and, once provisioned, the Property Monitoring
+ * push) and files a signal ONLY when it observes an actual STATE TRANSITION —
+ * `listing.status`/`listing.statusCategory` this pass differing from the value
+ * recorded last pass — for a property that matches an address already on file
+ * for one of the brokerage's own leads or contacts (the table's `lead_id`/
+ * `contact_id` CHECK requires one; a transition with no match is filed in the
+ * listings feed table only, never here). A snapshot read ("is this on-market
+ * right now") is a different fact from a TRANSITION ("this changed since we
+ * last looked"), and CLAUDE.md §6 is why they get their own names rather than
+ * reusing `active_listing`/`listing_withdrawn` for a fact those types were
+ * never declared against.
+ */
+export const EXPIRED_LISTING_SIGNAL_TYPE = "expired_listing"
+export const WITHDRAWN_LISTING_SIGNAL_TYPE = "withdrawn"
+export const SOLD_LISTING_SIGNAL_TYPE = "sold"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ADDED 2026-08-22 — THE FOUR THAT ARE DERIVED FROM PROTECTED-CLASS SOURCES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -459,6 +484,24 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
       label: "Cash buyer / investor (demand, not motivation)",
       sources: ["quickLists.cashBuyer"],
       why: "BUYER-side demand, not seller motivation. The owner's own last purchase was cash/investor-funded — the recorded pattern this lane's other 38 fields describe a seller by; here it identifies a likely buyer or a landlord with a resale schedule. Filed as its own signal_type (never overloaded onto an existing motivation kind) so a demand-matching or fix-and-flip-adjacent lane can read investor supply through the same table without a second vocabulary.",
+    },
+    {
+      signalType: EXPIRED_LISTING_SIGNAL_TYPE,
+      label: "Listing expired (status transition, active-listing monitor)",
+      sources: ["listing.status", "listing.statusCategory", "listing.daysOnMarket"],
+      why: "The active-listing monitor observed this address's MLS status change FROM on-market TO expired between two passes — a demonstrated, dated transition, not a snapshot flag. Distinct from `listing_withdrawn` (a point-in-time quickList read that already conflates expired/canceled/failed) because this lane can name WHICH transition it saw and WHEN.",
+    },
+    {
+      signalType: WITHDRAWN_LISTING_SIGNAL_TYPE,
+      label: "Listing withdrawn (status transition, active-listing monitor)",
+      sources: ["listing.status", "listing.statusCategory"],
+      why: "The active-listing monitor observed this address's MLS status change FROM on-market TO withdrawn — the owner pulled the listing without a sale, a transition read over time rather than a single quickList snapshot.",
+    },
+    {
+      signalType: SOLD_LISTING_SIGNAL_TYPE,
+      label: "Listing sold (status transition, active-listing monitor)",
+      sources: ["listing.status", "listing.statusCategory", "sale.lastSale.date", "sale.lastSale.price"],
+      why: "The active-listing monitor observed this address's MLS status change FROM on-market TO sold. Filed as a SUPPRESSION-adjacent fact (the same posture as `active_listing`, above) — a sold property is not a prospecting target — but recorded under its own name because 'sold' is a materially different fact than 'still on market with another broker' for anything reading this signal downstream (e.g. closing out a stale seller-track).",
     },
 
     // ── THE FOUR PROTECTED-CLASS-DERIVED TYPES (findings #297 / #304) ───────

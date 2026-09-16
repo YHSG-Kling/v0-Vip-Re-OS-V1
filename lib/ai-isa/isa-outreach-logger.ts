@@ -196,6 +196,30 @@ export async function logISAOutreach(params: {
     }), { table: 'ai_isa_engagement_tracking', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
   }
 
+  // 3d. INSERT intelligent_outreach_log — WAVE 66 (result column had no writer at all;
+  // the table itself had exactly ONE ad-hoc writer anywhere in the tree,
+  // app/actions/lead-intelligence.ts's "value_first_email" nudge, which never stamped
+  // `result` either). This is the CANONICAL ISA outreach ledger for every OTHER touch —
+  // every send that reaches here already IS a real delivery attempt — so it is the right
+  // place to also stamp the contact-facing value-first outreach ledger the lead-desk reads,
+  // rather than leaving it fed by one narrow legacy path. CONTACT ENTITIES ONLY: the table
+  // carries contact_id, not lead_id (schema-snapshot.ts) — same posture as step 3c above.
+  // result vocabulary (owner ruling, wave 66): sent | delivered | failed | replied. This
+  // function only KNOWS 'sent' — it fires at dispatch time, before any provider callback
+  // could report delivered/failed/replied; a later delivery-status update belongs to
+  // whatever reads the provider webhook (message_provider_logs), never fabricated here.
+  if (entityType === 'contact') {
+    await sentinelWrite(supabase, supabase.from('intelligent_outreach_log').insert({
+      brokerage_id:  params.brokerageId,
+      contact_id:    entityId,
+      outreach_type: 'isa_touch',
+      channel:       params.channel,
+      content:       JSON.stringify({ subject: params.subject ?? null, body: params.bodySnippet ?? null }),
+      result:        'sent',
+      created_at:    now.toISOString(),
+    }), { table: 'intelligent_outreach_log', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
+  }
+
   // 4. INSERT lifecycle_events — brokerage_id is NOT NULL (pass 5 live
   // catch): without it this insert ALWAYS failed and the ISA's outreach
   // never reached the lifecycle stream.

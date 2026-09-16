@@ -5,6 +5,7 @@ import {
   getScrapingMarkets,
   getScrapingKeywords,
   getScrapingJobs,
+  getBatchDataFeedStatus,
 } from "@/app/actions/lead-scraping-config"
 import { MarketsSetupClient } from "./markets-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -40,10 +41,14 @@ export default async function MarketsSetupPage() {
   // Markets carry their nested property/motivated params from getScrapingMarkets'
   // own select. Keywords and job history are the rest of the scrape config that
   // had no reader anywhere in the product before this page loaded them.
-  const [{ markets }, { keywords }, { jobs }] = await Promise.all([
+  // Wave 66: the BatchData feed status (active-listing feed, incremental-search
+  // cursor state, Property-Monitoring subscription ledger) is the READER half
+  // of m635/m636 — written by the lead-scraping cron, shown nowhere before.
+  const [{ markets }, { keywords }, { jobs }, feed] = await Promise.all([
     getScrapingMarkets(),
     getScrapingKeywords(),
     getScrapingJobs(25),
+    getBatchDataFeedStatus(),
   ])
 
   // The territory-marketplace carry: the zip searched on /pricing, stored at
@@ -117,6 +122,12 @@ export default async function MarketsSetupPage() {
           }
         })}
         suggestedZip={suggestedZip}
+        initialFeed={{
+          listings: feed.listings,
+          searchState: feed.searchState,
+          subscriptions: feed.subscriptions,
+          error: feed.success ? null : (feed.error ?? "feed status unavailable"),
+        }}
       />
     </div>
   )

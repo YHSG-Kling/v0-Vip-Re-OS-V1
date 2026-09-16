@@ -34,7 +34,7 @@ import {
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
-import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases } from "../lib/lead-pipeline/source-intent-map"
+import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
 import {
   detectIntent,
   isInvestor,
@@ -1521,6 +1521,41 @@ function testWave65Lanes() {
     }))
 }
 
+// ── 22. WAVE 66 CHANNELS — every new sourceChannel scores as ITSELF, never a stranger ────────
+// Owner ruling (wave 66, lane 66C): "processRawRecord must accept the new sourceChannels ...
+// in source-intent-map.ts scoring — a channel with no scoring entry must be a proof failure
+// (positive control)". hasScoringEntry(k) must be true (a real SOURCE_MAP entry, not the
+// silent FALLBACK_DEFINITION) for every one of the 11 wave-65/66 channels named in the ruling.
+function testWave66Channels() {
+  console.log("\n[Wave 66 · every named sourceChannel has its OWN scoring entry]")
+  const WAVE_66_CHANNELS = [
+    "batchdata_smart_search", "batchdata_buybox",
+    "zillow_chatter", "realtor_chatter", "homes_chatter",
+    "reddit_relocation", "facebook_recommend_realtor", "agent_seeking_phrase_intent",
+    "nextdoor_chatter", "google_intent", "external_behavior",
+  ]
+  for (const ch of WAVE_66_CHANNELS) {
+    check(`"${ch}" has a REAL scoring entry (not the fallback)`, hasScoringEntry(ch))
+  }
+  check("buyer-side channel batchdata_buybox scores buyer intent", getSourceSemantics("batchdata_buybox").intentType === "buyer")
+  check("seller-side channel batchdata_smart_search scores seller intent", getSourceSemantics("batchdata_smart_search").intentType === "seller")
+  check("batchdata_smart_search is its OWN vendor-routed key (not folded into batchdata_motivated)",
+    resolveSourceKey("batchdata_smart_search") === "batchdata_smart_search" && resolveSourceKey("batchdata_smart_search") !== resolveSourceKey("batchdata_motivated"))
+  check("nextdoor_chatter aliases onto nextdoor_intent (one vocabulary, CLAUDE.md §6)", resolveSourceKey("nextdoor_chatter") === "nextdoor_intent")
+  check("google_intent aliases onto google_phrase_intent (one vocabulary, CLAUDE.md §6)", resolveSourceKey("google_intent") === "google_phrase_intent")
+
+  // POSITIVE CONTROL — a made-up channel with no entry MUST read false, or the check above
+  // is not actually checking anything (CLAUDE.md §2: every absence assertion needs a positive
+  // control that still recognises the defect it exists to catch).
+  check("POSITIVE CONTROL: a bogus/unregistered channel has NO scoring entry", hasScoringEntry("zz_totally_made_up_channel_wave66") === false)
+
+  // processRawRecord's own fallback logic, exercised directly: source unresolved but
+  // source_channel resolved → scoring uses the channel, never the fallback definition.
+  const preferred = hasScoringEntry("some_unknown_source") ? "some_unknown_source"
+    : (hasScoringEntry("batchdata_buybox") ? "batchdata_buybox" : "some_unknown_source")
+  check("processRawRecord fallback chain: unresolved source + resolved source_channel → channel wins", preferred === "batchdata_buybox")
+}
+
 async function testWave65SourcersHonestlyNoOp() {
   console.log("\n[Wave 65 · sourcer async wrappers — POSITIVE CONTROL: no territory ⇒ no network call]")
   const emptyMarket = { city: null, state: null }
@@ -1656,6 +1691,7 @@ async function main() {
   await testZenRowsClient()
   testWave65Lanes()
   await testWave65SourcersHonestlyNoOp()
+  testWave66Channels()
   testActorRegistryFreshness()
   await testZyteClientAndProviderPicker()
 

@@ -28,6 +28,9 @@ import {
   updatePropertyParams,
   createMotivatedParams,
   updateMotivatedParams,
+  type MarketActiveListingRow,
+  type IncrementalSearchStateRow,
+  type SmartSearchSubscriptionRow,
 } from "@/app/actions/lead-scraping-config"
 
 export interface PropertyParamsRow {
@@ -80,6 +83,21 @@ export interface JobRow {
   market_label: string | null
 }
 
+export interface BatchDataFeedView {
+  listings: MarketActiveListingRow[]
+  searchState: IncrementalSearchStateRow[]
+  subscriptions: SmartSearchSubscriptionRow[]
+  error: string | null
+}
+
+function usd(n: number | null): string {
+  return n == null ? "—" : `$${Math.round(n).toLocaleString()}`
+}
+
+function when(iso: string | null): string {
+  return iso ? new Date(iso).toLocaleString() : "never"
+}
+
 const KEYWORD_TYPES = ["buying_intent", "selling_intent", "life_event", "distress", "custom"]
 
 function num(v: string): number | undefined {
@@ -92,12 +110,18 @@ export function MarketsSetupClient({
   initialKeywords,
   initialJobs,
   suggestedZip,
+  initialFeed,
 }: {
   initialMarkets: MarketRow[]
   initialKeywords: KeywordRow[]
   initialJobs: JobRow[]
   suggestedZip: string | null
+  initialFeed: BatchDataFeedView
 }) {
+  const marketLabel = (marketId: string): string => {
+    const m = initialMarkets.find((x) => x.id === marketId)
+    return m ? `${m.name} — ${m.city}, ${m.state}` : "Unknown market"
+  }
   const [markets, setMarkets] = useState<MarketRow[]>(initialMarkets)
   const [keywords, setKeywords] = useState<KeywordRow[]>(initialKeywords)
   const [name, setName] = useState("")
@@ -561,6 +585,97 @@ export function MarketsSetupClient({
             ))}
           </ul>
         )}
+      </div>
+
+      {/* Wave 66 — BatchData feed status: the reader half of m635/m636. */}
+      <div className="rounded-lg border bg-card">
+        <div className="border-b p-3">
+          <h2 className="text-sm font-semibold">BatchData feed ({initialFeed.listings.length} listings tracked)</h2>
+          <p className="text-xs text-muted-foreground">
+            Market-wide active/expired/withdrawn/sold listings BatchData reports inside your territories, the
+            incremental-search cursor state per market and lane, and the Property Monitoring subscriptions the
+            daily reconcile admitted (five per account, highest territory priority first).
+          </p>
+        </div>
+        {initialFeed.error && (
+          <p className="p-3 text-xs text-destructive">{initialFeed.error}</p>
+        )}
+        <div className="border-b p-3">
+          <h3 className="text-xs font-semibold uppercase text-muted-foreground">Property Monitoring subscriptions ({initialFeed.subscriptions.length})</h3>
+          {initialFeed.subscriptions.length === 0 ? (
+            <p className="mt-1 text-sm text-muted-foreground">None registered yet — the daily scrape tick registers one per active market and quicklist once BatchData has provisioned monitoring for the account.</p>
+          ) : (
+            <ul className="mt-1 divide-y">
+              {initialFeed.subscriptions.map((s) => (
+                <li key={`${s.market_id}:${s.quicklist}`} className="py-1.5 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="truncate">
+                      <span className="font-medium">{s.quicklist}</span>
+                      <span className="text-muted-foreground"> · {marketLabel(s.market_id)} · priority {s.priority ?? 0}</span>
+                    </p>
+                    <span className={`shrink-0 rounded-md border px-2 py-0.5 text-xs font-medium ${
+                      s.status === "active" ? "border-emerald-300 text-emerald-700"
+                        : s.status === "error" ? "border-destructive/40 text-destructive"
+                        : "text-muted-foreground"
+                    }`}>{s.status}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {s.subscription_id ? `id ${s.subscription_id}` : "no provider id"} · reconciled {when(s.last_reconciled_at)}
+                  </p>
+                  {s.last_error && <p className="text-xs text-destructive">{s.last_error}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="border-b p-3">
+          <h3 className="text-xs font-semibold uppercase text-muted-foreground">Incremental search state ({initialFeed.searchState.length})</h3>
+          {initialFeed.searchState.length === 0 ? (
+            <p className="mt-1 text-sm text-muted-foreground">No incremental pull has run yet.</p>
+          ) : (
+            <ul className="mt-1 divide-y">
+              {initialFeed.searchState.map((s) => (
+                <li key={`${s.market_id}:${s.lane}`} className="py-1.5 text-sm">
+                  <p className="truncate">
+                    <span className="font-medium">{s.lane}</span>
+                    <span className="text-muted-foreground"> · {marketLabel(s.market_id)}</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {s.results_found ?? 0} results found · {s.has_cursor ? "resumable cursor held" : "no cursor"} ·{" "}
+                    {s.session_supported ? "search session on" : "search session unavailable on this key"} · last run {when(s.last_run_at)}
+                  </p>
+                  {s.last_error && <p className="text-xs text-destructive">{s.last_error}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="p-3">
+          <h3 className="text-xs font-semibold uppercase text-muted-foreground">Tracked listings</h3>
+          {initialFeed.listings.length === 0 ? (
+            <p className="mt-1 text-sm text-muted-foreground">No listings discovered yet — the on-market pull runs on the daily scrape tick for every active market.</p>
+          ) : (
+            <ul className="mt-1 max-h-96 divide-y overflow-y-auto">
+              {initialFeed.listings.map((l) => (
+                <li key={l.id} className="py-1.5 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="truncate">
+                      <span className="font-medium">{l.property_address}</span>
+                      <span className="text-muted-foreground">
+                        {" "}· {[l.city, l.state, l.zip].filter(Boolean).join(", ") || marketLabel(l.market_id)}
+                      </span>
+                    </p>
+                    <span className="shrink-0 text-xs font-medium">{usd(l.list_price)} · {l.current_status}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    seen {when(l.last_seen_at)} · status changed {when(l.last_status_change_at)}
+                    {l.batchdata_quicklists.length > 0 && ` · ${l.batchdata_quicklists.join(", ")}`}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   )

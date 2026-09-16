@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 756 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 758 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-15
+ * generated: 2026-09-16
  * source: public.live_schema_json()
- * body-sha256: 46cf6229fabd21fe6407cf0f6b8a87242d0985ad479ff123a6096a2396c00ef7
+ * body-sha256: 7ea182d694a93938fee519c0e5c2ee2cf8fc0a45ca2580b689c0310ee09139e5
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -135,6 +135,7 @@ export const LIVE_TABLES: readonly string[] = [
   "auto_response_settings",
   "automation_errors",
   "automation_logs",
+  "batchdata_incremental_search_state",
   "batchdata_motivated_sellers_raw",
   "batchdata_smart_search_subscriptions",
   "behavioral_patterns",
@@ -435,6 +436,7 @@ export const LIVE_TABLES: readonly string[] = [
   "managed_agent_sessions",
   "managed_agents",
   "manager_signals",
+  "market_active_listings",
   "market_data",
   "market_data_sources",
   "market_insights",

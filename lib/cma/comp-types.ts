@@ -32,7 +32,7 @@ import type { CompFeatures } from "./state-adjustment-rates"
  *                in lib/cma/comp-provider.ts for the reasoning.
  *   none       — nothing was sourced for this side
  */
-export type CompProviderId = "idxbroker" | "rentcast" | "perplexity" | "none"
+export type CompProviderId = "idxbroker" | "rentcast" | "batchdata" | "perplexity" | "none"
 
 /**
  * What the comp's `salePrice` actually IS. A closed sale and a live list price

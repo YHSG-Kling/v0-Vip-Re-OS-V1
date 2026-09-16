@@ -38,6 +38,10 @@ export interface SourceMetrics {
   roi_multiple: number
   cost_per_record: number
   cost_per_contact: number
+  /** spend / closed_count — the brokerage lead-cost report's headline number: what a CLOSED
+   *  deal from this source actually cost, not just what a raw record or a contact cost.
+   *  0 when nothing has closed yet (never divides by zero, never fabricates a figure). */
+  cost_per_conversion: number
 
   // Agent performance
   agent_count: number
@@ -158,7 +162,7 @@ export async function getSourcePerformance(
     // ── 1. Contacts grouped by source + source_family ──────────────────────────
     let contactsQuery = supabase
       .from("contacts")
-      .select("id, source, source_family, source_channel, source_subtype, agent_id, cost_per_record, campaign_attribution_id, created_at")
+      .select("id, source, source_family, source_channel, source_subtype, agent_id, cost_per_record, acquisition_cost, campaign_attribution_id, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
@@ -171,9 +175,14 @@ export async function getSourcePerformance(
     if (cErr) throw cErr
 
     // ── 2. Leads grouped by source ─────────────────────────────────────────────
+    // acquisition_cost (m634, applied live 2026-09-15) is the FULLER lead-cost figure
+    // (cost_per_record + enrichment spend + campaign cost share — lib/contact-promotion/
+    // acquisition-cost.ts). Same fallback rule as lib/lead-pipeline/source-conversion-runner.ts
+    // (loadSourceConversions): prefer acquisition_cost, fall back to the narrower
+    // cost_per_record for rows that never got the richer figure computed.
     let leadsQuery = supabase
       .from("leads")
-      .select("id, source, source_family, source_channel, agent_id, cost_per_record, campaign_attribution_id, lifecycle_state, created_at, contact_id")
+      .select("id, source, source_family, source_channel, agent_id, cost_per_record, acquisition_cost, campaign_attribution_id, lifecycle_state, created_at, contact_id")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
@@ -288,6 +297,7 @@ export async function getSourcePerformance(
           roi_multiple: 0,
           cost_per_record: 0,
           cost_per_contact: 0,
+          cost_per_conversion: 0,
           agent_count: 0,
           top_agent_id: null,
           top_agent_name: null,
@@ -313,7 +323,9 @@ export async function getSourcePerformance(
       const family = (l.source_family as SourceFamily) ?? "lead"
       const m = getOrCreate(l.source ?? "manual_entry", family, l.source_channel)
       m.lead_count++
-      m.total_spend += l.cost_per_record ?? 0
+      // acquisition_cost preferred, cost_per_record fallback — same rule as
+      // source-conversion-runner.ts::loadSourceConversions.
+      m.total_spend += (l as any).acquisition_cost ?? l.cost_per_record ?? 0
       if (l.contact_id) m.contact_count++
       if (l.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = l.campaign_attribution_id
@@ -339,7 +351,9 @@ export async function getSourcePerformance(
       const m = getOrCreate(c.source ?? "website", family, c.source_channel, c.source_subtype)
       contactSourceKey.set(c.id, `${m.source}::${m.source_family}`)
       m.contact_count++
-      m.total_spend += c.cost_per_record ?? 0
+      // acquisition_cost preferred, cost_per_record fallback — same rule as
+      // source-conversion-runner.ts::loadSourceConversions.
+      m.total_spend += (c as any).acquisition_cost ?? c.cost_per_record ?? 0
       if (c.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = c.campaign_attribution_id
         m.campaign_name = campaignNames[c.campaign_attribution_id] ?? null
@@ -418,6 +432,13 @@ export async function getSourcePerformance(
         m.roi_multiple = parseFloat((m.revenue_attributed / m.total_spend).toFixed(2))
         m.cost_per_record = parseFloat((m.total_spend / Math.max(upstream, 1)).toFixed(2))
         m.cost_per_contact = parseFloat((m.total_spend / Math.max(m.contact_count, 1)).toFixed(2))
+        // Cost-per-CONVERSION — the brokerage lead-cost report's headline: what a closed deal
+        // from this source/channel actually cost. Denominator is closed_count, not contact_count
+        // or upstream — a source can be cheap per-contact and still be a money pit if nothing
+        // it produces ever closes. Stays 0 (never divides, never fabricates) with no closes yet.
+        if (m.closed_count > 0) {
+          m.cost_per_conversion = parseFloat((m.total_spend / m.closed_count).toFixed(2))
+        }
       }
     }
 
@@ -825,7 +846,7 @@ export async function exportSourceCSV(
       "Source", "Source Family", "Channel", "Subtype",
       "Raw Records", "Leads", "Contacts", "Appointments", "Transactions", "Closed",
       "Lead→Contact Rate", "Contact→Appt Rate", "Close Rate",
-      "Total Spend", "Revenue Attributed", "ROI Multiple", "Cost Per Contact",
+      "Total Spend", "Revenue Attributed", "ROI Multiple", "Cost Per Contact", "Cost Per Conversion",
       "Top Agent", "Campaign",
     ]
 
@@ -833,7 +854,7 @@ export async function exportSourceCSV(
       s.source, s.source_family, s.source_channel ?? "", s.source_subtype ?? "",
       s.raw_record_count, s.lead_count, s.contact_count, s.appointment_count, s.transaction_count, s.closed_count,
       `${s.lead_to_contact_rate}%`, `${s.contact_to_appt_rate}%`, `${s.close_rate}%`,
-      `$${s.total_spend.toFixed(2)}`, `$${s.revenue_attributed.toFixed(2)}`, `${s.roi_multiple}x`, `$${s.cost_per_contact.toFixed(2)}`,
+      `$${s.total_spend.toFixed(2)}`, `$${s.revenue_attributed.toFixed(2)}`, `${s.roi_multiple}x`, `$${s.cost_per_contact.toFixed(2)}`, `$${s.cost_per_conversion.toFixed(2)}`,
       s.top_agent_name ?? "", s.campaign_name ?? "",
     ])
 

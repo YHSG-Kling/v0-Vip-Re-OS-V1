@@ -13,6 +13,7 @@ import {
   getSourceSemantics,
   scoreToUrgencyLevel,
   recordMatchesTerritory,
+  hasScoringEntry,
 } from './source-intent-map'
 
 // ─── Processing status state machine ─────────────────────────────────────────
@@ -74,6 +75,10 @@ interface RawRecord {
   mailing_zip?: string | null
   /** 'platform' (platform-scraped inventory, Engine 1 distributes) | 'brokerage'. */
   source_origin?: 'platform' | 'brokerage' | null
+  /** Wave 66 lanes tag the channel here (e.g. "batchdata_smart_search", "nextdoor_chatter")
+   *  even when `source` itself carries a more generic/legacy value — see the scoring
+   *  fallback below. */
+  source_channel?: string | null
   lead_id: string | null
   error_message: string | null
 }
@@ -209,9 +214,22 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
 
   // ── Source semantics — score and derive intent fields ─────────────────────
   // Computed once before the identity gate; used on promotion.
-  const sourceSemantics = getSourceSemantics(rec.source)
+  //
+  // WAVE 66 HARDENING: a wave-65/66 ingest lane can tag a record's `source_channel`
+  // with a distinct, more specific channel (e.g. "batchdata_smart_search",
+  // "nextdoor_chatter") than whatever ended up in the per-record `source` column.
+  // Prefer `source` when it resolves to a REAL scoring entry (the common case —
+  // most sources are already this specific); fall back to `source_channel` only
+  // when `source` does NOT (hasScoringEntry, never the silent FALLBACK_DEFINITION),
+  // so a channel with no scoring entry of its own is never scored as a stranger by
+  // accident. This never overrides an already-correct, more specific `source`.
+  const scoringSource =
+    hasScoringEntry(rec.source) ? rec.source
+    : (rec.source_channel && hasScoringEntry(rec.source_channel)) ? rec.source_channel
+    : rec.source
+  const sourceSemantics = getSourceSemantics(scoringSource)
   const computedScore   = calculateSourceScore(
-    rec.source,
+    scoringSource,
     rec.normalized_preview?.intentSignals ?? [],
   )
   // urgency_level is derived from the FUSED score at promotion (scoreToUrgencyLevel below),

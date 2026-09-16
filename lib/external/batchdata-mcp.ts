@@ -96,6 +96,69 @@ export async function callBatchDataMcp<T = unknown>(
  * REST-shaped result so we don't pay the REST cost when MCP succeeds. Both paths feed the same
  * upstream consumer.
  */
+// ─── BUY BOX + COMPS — typed wrappers over the batchdata-mcp-server's own tools ───────
+// Tool names match github.com/batchdataco/batchdata-mcp-server's published tool set
+// (the same names this environment's own `mcp__batchdata__*` tools carry, minus that
+// prefix — this environment's prefix is a LOCAL naming convention for the tool-search
+// registry, not part of the wire protocol `tools/call` sends). No independently
+// confirmed REST equivalent exists for Buy Box (batchdata.io/buy-box-api is marketing
+// copy, not an API reference), so investor-match discovery is MCP-ONLY: when
+// BATCHDATA_MCP_URL is unset, callers get `{unconfigured:true}` and there is no REST
+// fallback to try, unlike every other function in this module pair.
+
+/** One investor's buy-box match against a subject property — read defensively across
+ *  the tool's plausible response shapes (an array under `matches`/`results`/`investors`,
+ *  or a bare array). */
+export interface BuyBoxMatchRow {
+  [key: string]: unknown
+}
+
+function extractRows(data: unknown): BuyBoxMatchRow[] {
+  if (Array.isArray(data)) return data as BuyBoxMatchRow[]
+  const d = data as Record<string, any> | null
+  const candidate = d?.matches ?? d?.results ?? d?.investors ?? d?.properties ?? d?.comps
+  return Array.isArray(candidate) ? candidate : []
+}
+
+/** Preview (cheap/no-charge sample) of investor buy-box matches for a subject property. */
+export async function investorBuyboxPreview(args: { address: string; city?: string; state?: string; zip?: string }): Promise<{ ok: boolean; rows: BuyBoxMatchRow[]; unconfigured: boolean; error: string | null }> {
+  const r = await callBatchDataMcp("investor_buybox_preview", args)
+  return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
+}
+
+/** Billed count of matches (no rows) — used to size a buy-box pull before paying for it. */
+export async function investorBuyboxCount(args: { address: string; city?: string; state?: string; zip?: string }): Promise<{ ok: boolean; count: number | null; unconfigured: boolean; error: string | null }> {
+  const r = await callBatchDataMcp<Record<string, any>>("investor_buybox_count", args)
+  const count = r.ok ? (typeof r.data?.count === "number" ? r.data.count : (typeof r.data === "number" ? r.data : null)) : null
+  return { ok: r.ok, count, unconfigured: !!r.unconfigured, error: r.error }
+}
+
+/** Full (billed) page of investor buy-box matches. */
+export async function investorBuyboxPage(args: { address: string; city?: string; state?: string; zip?: string; take?: number; skip?: number }): Promise<{ ok: boolean; rows: BuyBoxMatchRow[]; unconfigured: boolean; error: string | null }> {
+  const r = await callBatchDataMcp("investor_buybox_page", args)
+  return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
+}
+
+/** Preview of the comps dataset for an address — the MCP-side mirror of
+ *  lib/external/batchdata-client.ts::fetchBatchDataComps's REST call, used when a
+ *  caller already routes other property reads through MCP and wants ONE egress path
+ *  rather than mixing REST and MCP for the same CMA. */
+export async function comparablePropertyPreview(args: { address: string; city?: string; state?: string; zip?: string }): Promise<{ ok: boolean; rows: BuyBoxMatchRow[]; unconfigured: boolean; error: string | null }> {
+  const r = await callBatchDataMcp("comparable_property_preview", args)
+  return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
+}
+
+export async function comparablePropertyCount(args: { address: string; city?: string; state?: string; zip?: string }): Promise<{ ok: boolean; count: number | null; unconfigured: boolean; error: string | null }> {
+  const r = await callBatchDataMcp<Record<string, any>>("comparable_property_count", args)
+  const count = r.ok ? (typeof r.data?.count === "number" ? r.data.count : (typeof r.data === "number" ? r.data : null)) : null
+  return { ok: r.ok, count, unconfigured: !!r.unconfigured, error: r.error }
+}
+
+export async function comparablePropertyPage(args: { address: string; city?: string; state?: string; zip?: string; take?: number; skip?: number }): Promise<{ ok: boolean; rows: BuyBoxMatchRow[]; unconfigured: boolean; error: string | null }> {
+  const r = await callBatchDataMcp("comparable_property_page", args)
+  return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
+}
+
 export async function batchDataPreferMcp<T>(
   mcpTool: string,
   mcpArgs: Record<string, unknown>,

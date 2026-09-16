@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 436 tables, 771 columns.
+ * MEASURED AT GENERATION: 438 tables, 774 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-12
+ * generated: 2026-09-16
  * source: public.live_check_constraints_json()
- * body-sha256: 367abfaa167afdc3e063bd0bd4ff01e01148b1b4109c5c821039b62ae5413976
+ * body-sha256: 74b6b5e1a38acf0c1dc2cbec5d7cb02a40b3ff5e438c72eb6ef77c0f9ed12fbb
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -268,6 +268,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   automation_errors: {
     status: ["dismissed", "investigating", "open", "resolved"],
+  },
+  batchdata_smart_search_subscriptions: {
+    status: ["active", "cancelled", "deferred", "error", "pending", "provisioning_required", "renewal_due"],
   },
   behavioral_patterns: {
     entity_type: ["buyer", "negotiation", "seller"],
@@ -519,9 +522,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   compliance_tasks: {
     status: ["complete", "overdue", "pending", "waived"],
-  },
-  contact_enrichment_queue: {
-    status: ["completed", "failed", "pending", "running", "skipped"],
   },
   contact_memory: {
     entity_type: ["contact", "listing", "transaction"],
@@ -897,6 +897,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     property_type: ["commercial", "condo", "land", "multi_family", "other", "single_family", "townhouse"],
     status: ["active", "cancelled", "coming_soon", "draft", "expired", "listing_signed", "off_market", "pending", "sold", "withdrawn"],
   },
+  live_agent_sessions: {
+    status: ["active", "ended", "swept"],
+    surface: ["portal", "site", "widget"],
+  },
   mail_response_tracking: {
     response_type: ["appointment", "call", "form_submit", "landing_visit", "qr_scan", "reply"],
   },
@@ -909,6 +913,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   manager_signals: {
     status: ["consumed", "expired", "open"],
+  },
+  market_active_listings: {
+    current_status: ["active", "expired", "sold", "withdrawn"],
   },
   market_data: {
     dom_trend: ["decreasing", "increasing", "stable"],

@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 
 // ============================================
@@ -567,5 +568,133 @@ export async function updateScrapingJob(
   } catch (error) {
     console.error("[v0] Error updating scraping job:", error)
     return { success: false, error: String(error) }
+  }
+}
+
+// ============================================
+// BATCHDATA FEED STATUS (wave 66 integration — the READER half of m635/m636)
+// ============================================
+
+export interface MarketActiveListingRow {
+  id: string
+  market_id: string
+  property_address: string
+  city: string | null
+  state: string | null
+  zip: string | null
+  current_status: string
+  list_price: number | null
+  batchdata_quicklists: string[]
+  last_seen_at: string | null
+  last_status_change_at: string | null
+}
+
+export interface IncrementalSearchStateRow {
+  market_id: string
+  lane: string
+  has_cursor: boolean
+  session_supported: boolean
+  results_found: number | null
+  last_error: string | null
+  last_run_at: string | null
+}
+
+export interface SmartSearchSubscriptionRow {
+  market_id: string
+  quicklist: string
+  status: string
+  priority: number | null
+  subscription_id: string | null
+  last_error: string | null
+  last_reconciled_at: string | null
+}
+
+/**
+ * getBatchDataFeedStatus — what the BatchData lanes have actually produced for
+ * THIS tenant's territories: the market-wide active-listing feed
+ * (market_active_listings, m636), the cursor/session state of the incremental
+ * property search per market×lane (batchdata_incremental_search_state, m635),
+ * and the Property-Monitoring subscription ledger with the admission priority
+ * the reconcile plan wrote (batchdata_smart_search_subscriptions.priority, m635).
+ *
+ * Wave 66C's readerless census flagged every one of these columns as written by
+ * lib/kernel/listings-batchdata-feed.ts / the lead-scraping cron and read by
+ * nothing; this is the reader, surfaced on /dashboard/admin/markets beside the
+ * scrape-job history (the one page that owns the territory config).
+ *
+ * TENANCY: gate first, then the service client (lib/kernel/manager-registry.ts
+ * pattern). The two m635 tables carry RLS with NO tenant policy (they are keyed
+ * by market_id, not brokerage_id), so a session read would come back
+ * successfully EMPTY; the tenant's market ids are resolved through the SESSION
+ * client (lead_scraping_markets RLS) and the service reads are bounded to that
+ * set. market_active_listings has its own brokerage policy and is read through
+ * the session client directly. Nothing here takes a brokerage id from a caller.
+ */
+export async function getBatchDataFeedStatus(): Promise<{
+  success: boolean
+  listings: MarketActiveListingRow[]
+  searchState: IncrementalSearchStateRow[]
+  subscriptions: SmartSearchSubscriptionRow[]
+  error?: string
+}> {
+  try {
+    const supabase = await createClient()
+    const { data: markets, error: marketsErr } = await supabase
+      .from("lead_scraping_markets")
+      .select("id")
+    if (marketsErr) throw marketsErr
+    const marketIds = (markets ?? []).map((m: { id: string }) => m.id)
+    if (marketIds.length === 0) return { success: true, listings: [], searchState: [], subscriptions: [] }
+
+    const { data: listings, error: listingsErr } = await supabase
+      .from("market_active_listings")
+      .select("id, market_id, property_address, city, state, zip, current_status, list_price, batchdata_quicklists, last_seen_at, last_status_change_at")
+      .in("market_id", marketIds)
+      .order("last_seen_at", { ascending: false })
+      .limit(200)
+    if (listingsErr) throw listingsErr
+
+    const svc = createServiceClient()
+    const [{ data: state, error: stateErr }, { data: subs, error: subsErr }] = await Promise.all([
+      svc
+        .from("batchdata_incremental_search_state")
+        .select("market_id, lane, page_cursor, session_supported, results_found, last_error, last_run_at")
+        .in("market_id", marketIds),
+      svc
+        .from("batchdata_smart_search_subscriptions")
+        .select("market_id, quicklist, status, priority, subscription_id, last_error, last_reconciled_at")
+        .in("market_id", marketIds)
+        .order("priority", { ascending: false }),
+    ])
+    if (stateErr) throw stateErr
+    if (subsErr) throw subsErr
+
+    return {
+      success: true,
+      listings: (listings ?? []).map((l: any) => ({
+        id: l.id, market_id: l.market_id, property_address: l.property_address,
+        city: l.city ?? null, state: l.state ?? null, zip: l.zip ?? null,
+        current_status: l.current_status,
+        list_price: typeof l.list_price === "number" ? l.list_price : l.list_price != null ? Number(l.list_price) : null,
+        batchdata_quicklists: Array.isArray(l.batchdata_quicklists) ? l.batchdata_quicklists.map(String) : [],
+        last_seen_at: l.last_seen_at ?? null, last_status_change_at: l.last_status_change_at ?? null,
+      })),
+      searchState: (state ?? []).map((s: any) => ({
+        market_id: s.market_id, lane: s.lane,
+        // The cursor itself is an opaque provider token bound to the criteria —
+        // never rendered, only its presence (a resumable pull) is reported.
+        has_cursor: typeof s.page_cursor === "string" && s.page_cursor.length > 0,
+        session_supported: s.session_supported !== false,
+        results_found: s.results_found ?? null, last_error: s.last_error ?? null, last_run_at: s.last_run_at ?? null,
+      })),
+      subscriptions: (subs ?? []).map((s: any) => ({
+        market_id: s.market_id, quicklist: s.quicklist, status: s.status,
+        priority: s.priority ?? null, subscription_id: s.subscription_id ?? null,
+        last_error: s.last_error ?? null, last_reconciled_at: s.last_reconciled_at ?? null,
+      })),
+    }
+  } catch (error) {
+    console.error("[v0] Error fetching BatchData feed status:", error)
+    return { success: false, listings: [], searchState: [], subscriptions: [], error: String(error) }
   }
 }

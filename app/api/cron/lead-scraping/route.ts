@@ -3,7 +3,15 @@ NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ZenrowsClient, BatchDataClient, batchDataTriggersFor } from "@/lib/external"
-import { createOrRenewSmartSearchSubscription, quickListSlugsFor } from "@/lib/external/batchdata-client"
+import {
+  createSmartSearchSubscription,
+  deleteSmartSearchSubscription,
+  listSmartSearchSubscriptions,
+  buildSmartSearchSubscriptionPlan,
+  BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP,
+  quickListSlugsFor,
+} from "@/lib/external/batchdata-client"
+import { runIncrementalPropertySearchForMarket, runActiveListingDiscoveryForMarket, runBuyBoxMatchingForMarket } from "@/lib/kernel/listings-batchdata-feed"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { escalateScraperFailureIfNeeded, setScraperHealer } from "@/lib/lead-pipeline/scraper-health"
 import { MAX_PROMOTION_ATTEMPTS, STRANDED_STATUSES, reportStuckRawLeads } from "@/lib/lead-pipeline/promotion-gate-health"
@@ -159,6 +167,35 @@ export async function GET(request: Request) {
 
     // Get active keywords
     const { data: keywords } = await supabase.from("lead_scraping_keywords").select("*").eq("is_active", true)
+
+    // ── SMART SEARCH ACCOUNT-WIDE CAP (wave 66 fix) ───────────────────────────
+    // BatchData caps Property Subscription at 5 PER ACCOUNT, not per market — the
+    // wave-65B reconcile checked only the current market's own rows, so two
+    // priority-1 markets could each "successfully" create a subscription and the
+    // 6th call across the account would simply refuse. `markets` above is already
+    // ordered by `priority DESC` (lib/lead-pipeline/scrape-territories.ts), so
+    // walking it in order and decrementing one shared counter is what turns that
+    // ordering into an actual admission PLAN: the highest-priority territories'
+    // wants are tried first, everything the cap has no room for is recorded
+    // `deferred`. `smartSearchAccountLiveCount` starts from BatchData's own live
+    // count (never our local table alone — a subscription cancelled by a human on
+    // BatchData's dashboard would otherwise silently look like a free slot) and is
+    // reconciled up by one for every `create` this run actually admits.
+    let smartSearchAccountLiveCount = 0
+    let smartSearchAccountCountKnown = false
+    try {
+      const liveList = await listSmartSearchSubscriptions()
+      if (liveList.ok) {
+        smartSearchAccountLiveCount = liveList.subscriptionIds.length
+        smartSearchAccountCountKnown = true
+      } else {
+        results.errors.push(`Smart Search account list read failed (proceeding conservatively, cap treated as already full): ${liveList.error}`)
+        smartSearchAccountLiveCount = BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP
+      }
+    } catch (e) {
+      results.errors.push(`Smart Search account list read threw (proceeding conservatively): ${e}`)
+      smartSearchAccountLiveCount = BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP
+    }
 
     for (const market of markets) {
       results.markets_processed++
@@ -404,7 +441,12 @@ export async function GET(request: Request) {
               source:       "batchdata_motivated",
               sourceFamily: "motivated_seller",
               sourceChannel: "batchdata",
-            })
+              // No per-batch figure exists at this call site: getMotivatedSellerData
+              // returns records only and BatchData's spend is reconciled from the
+              // provider's own wallet consumption report at the end of this tick
+              // (reconcileBatchDataWalletSpend), never estimated here. null = unknown.
+              batchCostUsd: null,
+              })
             leadsCreated = batchInserted
 
             results.total_leads_found += sourceItemsFound
@@ -444,61 +486,100 @@ export async function GET(request: Request) {
           // ============================================
           // 2b. SMART SEARCH RECONCILE (V2 Property Subscription) — BatchData phase only
           // ============================================
-          // DISTINCT from the poll above: registers/renews a PUSH subscription per
-          // configured quicklist trigger so BatchData delivers matches to
-          // app/api/webhooks/batchdata-smart-search BETWEEN polling runs, instead of
-          // only what this cron's own pull catches on its own cadence. Folded into the
-          // EXISTING daily tick rather than a new cron (CLAUDE.md wave-62 cost ruling —
-          // "vercel cron usage... charges outweighing the build"). Best-effort: a
-          // subscription failure never blocks or fails the poll-based scrape above,
-          // which is the capability that actually produces leads today.
+          // DISTINCT from the poll above: registers a PUSH subscription per configured
+          // quicklist trigger so BatchData delivers matches to
+          // app/api/webhooks/batchdata-smart-search BETWEEN polling runs. Folded into
+          // the EXISTING daily tick rather than a new cron (CLAUDE.md wave-62 cost
+          // ruling). Best-effort: a subscription failure never blocks or fails the
+          // poll-based scrape above, which is the capability that actually produces
+          // leads today.
+          //
+          // WAVE 66 FIX of wave 65B's per-market-only reconcile: BatchData caps
+          // Property Subscription at 5 PER ACCOUNT (documented), so this now runs
+          // through buildSmartSearchSubscriptionPlan against the RUN-LEVEL
+          // `smartSearchAccountLiveCount` counter (declared above the market loop),
+          // which is decremented as markets earlier in the priority order (`markets`
+          // is `priority DESC`) admit their creates — giving later, lower-priority
+          // markets an honest "deferred: cap reached" verdict instead of a surprise
+          // provider-side refusal on whichever market happened to run 6th.
+          //
+          // SUBSCRIPTIONS ARE IMMUTABLE (documented) — wave 65B's 30-day "renewal"
+          // cadence was a GUESS with no documented TTL behind it; renewing would mean
+          // delete-then-recreate, which BURNS a cap slot for no reason when nothing
+          // about the criteria changed. Dropped: an `active` row with a live
+          // `subscription_id` is left alone indefinitely. It is recreated ONLY when
+          // this market's desired quicklist SET changed (a criteria change), which is
+          // detected by diffing the currently active rows against
+          // `smartSearchQuicklists` below and deleting whatever is active but no
+          // longer wanted before the plan runs.
           try {
             const smartSearchTriggers = enabledSources.has("batchdata_motivated")
               ? batchDataTriggersFor(motivatedParams.signal_types)
               : []
             const smartSearchQuicklists = quickListSlugsFor(smartSearchTriggers)
-            if (smartSearchQuicklists.length > 0) {
-              const { data: existingSubs, error: existingSubsErr } = await supabase
-                .from("batchdata_smart_search_subscriptions")
-                .select("quicklist, status, subscription_id, renewed_at")
-                .eq("market_id", market.id)
-              if (existingSubsErr) {
-                // Table not yet applied (m633 WRITTEN NOT APPLIED) or another read
-                // refusal — never treat "couldn't read" as "nothing subscribed"; skip
-                // this market's reconcile pass rather than risk a duplicate registration.
-                throw new Error(`smart-search subscription read refused: ${existingSubsErr.message}`)
+            const { data: existingSubs, error: existingSubsErr } = await supabase
+              .from("batchdata_smart_search_subscriptions")
+              .select("quicklist, status, subscription_id")
+              .eq("market_id", market.id)
+            if (existingSubsErr) {
+              // Table not yet applied (m633 WRITTEN NOT APPLIED / m635 widening not yet
+              // applied) or another read refusal — never treat "couldn't read" as
+              // "nothing subscribed"; skip this market's reconcile pass rather than
+              // risk a duplicate registration.
+              throw new Error(`smart-search subscription read refused: ${existingSubsErr.message}`)
+            }
+            const rows = (existingSubs ?? []) as Array<{ quicklist: string; status: string; subscription_id: string | null }>
+            const byQuicklist = new Map(rows.map((r) => [r.quicklist, r]))
+            const wantedSet = new Set(smartSearchQuicklists)
+
+            // Criteria changed for this market → the OLD quicklist is no longer
+            // wanted, but its row may still be `active` on BatchData's side. Delete
+            // it (immutable subscriptions cannot be edited) so its slot is freed for
+            // the plan below, and record the row gone.
+            for (const row of rows) {
+              if (row.status === "active" && row.subscription_id && !wantedSet.has(row.quicklist)) {
+                const del = await deleteSmartSearchSubscription(row.subscription_id)
+                if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
+                await supabase
+                  .from("batchdata_smart_search_subscriptions")
+                  .update({ status: "cancelled", last_error: del.ok ? "superseded by criteria change" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
+                  .eq("market_id", market.id).eq("quicklist", row.quicklist)
               }
-              const byQuicklist = new Map(
-                ((existingSubs ?? []) as Array<{ quicklist: string; status: string; subscription_id: string | null; renewed_at: string | null }>)
-                  .map((r) => [r.quicklist, r]),
+            }
+
+            if (wantedSet.size > 0) {
+              const wants = smartSearchQuicklists.map((quicklist) => ({
+                marketId: market.id, priority: market.priority ?? 0, quicklist, city: market.city, state: market.state,
+              }))
+              const alreadyActive = new Set(
+                rows.filter((r) => r.status === "active" && r.subscription_id && wantedSet.has(r.quicklist))
+                  .map((r) => `${market.id}:${r.quicklist}`),
               )
-              // UNRESOLVED: BatchData's own subscription expiry/renewal cadence was not
-              // confirmed by this lane's research (see the wave report). 30 days is a
-              // conservative default so an active subscription is re-registered well
-              // before any provider-side TTL, never left to silently lapse.
-              const RENEWAL_STALE_MS = 30 * 24 * 60 * 60 * 1000
-              const staleCutoff = Date.now() - RENEWAL_STALE_MS
+              const plan = buildSmartSearchSubscriptionPlan({
+                wants, alreadyActive, accountLiveCount: smartSearchAccountLiveCount,
+              })
 
-              for (const quicklist of smartSearchQuicklists) {
-                const row = byQuicklist.get(quicklist)
-                const needsCreate = !row || row.status === "error" || !row.subscription_id
-                const needsRenew =
-                  row?.status === "active" && (!row.renewed_at || new Date(row.renewed_at).getTime() < staleCutoff)
-                if (!needsCreate && !needsRenew) continue
-
-                const result = await createOrRenewSmartSearchSubscription({
-                  quicklist, city: market.city, state: market.state,
-                })
+              for (const entry of plan) {
+                if (entry.action === "keep") continue
+                if (entry.action === "defer") {
+                  await supabase.from("batchdata_smart_search_subscriptions").upsert(
+                    { market_id: market.id, quicklist: entry.quicklist, status: "deferred", webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "", last_error: entry.reason, priority: entry.priority, last_reconciled_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+                    { onConflict: "market_id,quicklist" },
+                  )
+                  continue
+                }
+                // action === "create" — only reached when the plan already confirmed a slot is free.
+                const result = await createSmartSearchSubscription({ quicklist: entry.quicklist, city: market.city, state: market.state })
+                if (result.ok) smartSearchAccountLiveCount++
+                const status = result.ok ? "active" : result.provisioningRequired ? "provisioning_required" : "error"
                 const { error: upsertErr } = await supabase
                   .from("batchdata_smart_search_subscriptions")
                   .upsert(
                     {
-                      market_id: market.id,
-                      quicklist,
-                      subscription_id: result.subscriptionId,
-                      status: result.ok ? "active" : "error",
+                      market_id: market.id, quicklist: entry.quicklist,
+                      subscription_id: result.subscriptionId, status,
                       webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
-                      last_error: result.error,
+                      last_error: result.error, priority: entry.priority,
                       last_reconciled_at: new Date().toISOString(),
                       ...(result.ok ? { renewed_at: new Date().toISOString() } : {}),
                       updated_at: new Date().toISOString(),
@@ -506,7 +587,7 @@ export async function GET(request: Request) {
                     { onConflict: "market_id,quicklist" },
                   )
                 if (upsertErr) {
-                  results.errors.push(`Smart Search subscription write failed for ${market.name}/${quicklist}: ${upsertErr.message}`)
+                  results.errors.push(`Smart Search subscription write failed for ${market.name}/${entry.quicklist}: ${upsertErr.message}`)
                 }
               }
             }
@@ -514,6 +595,58 @@ export async function GET(request: Request) {
             // Best-effort side-channel — logged, never fails the cron run.
             results.errors.push(`Smart Search reconcile error for ${market.name}: ${smartSearchErr}`)
           }
+
+          // ============================================
+          // 2c. INCREMENTAL PROPERTY SEARCH (wave 66, task 2) — OPT-IN per market
+          // ============================================
+          // DISTINCT from the flat V1 pull above: cursor + Search Session so this
+          // lane delivers ONLY NEW matches per (market, quicklist) lane and resumes
+          // after a failed run instead of re-walking the whole result set. A market
+          // must explicitly name `batchdata_incremental` in enabled_sources — this
+          // never silently doubles the existing polled pull above for a market that
+          // has not opted in.
+          if (enabledSources.has("batchdata_incremental")) {
+            try {
+              const lanes = quickListSlugsFor(batchDataTriggersFor(motivatedParams.signal_types))
+              for (const quicklist of lanes) {
+                const r = await runIncrementalPropertySearchForMarket(supabase, market, { quicklist, lane: quicklist })
+                results.total_leads_created += r.inserted
+                results.errors.push(...r.errors)
+              }
+            } catch (e) {
+              results.errors.push(`Incremental property search error for ${market.name}: ${e}`)
+            }
+          }
+        }
+      }
+
+      // ============================================
+      // 2d. ACTIVE-LISTING DISCOVERY (wave 66, task 3) — a market-wide listings feed
+      // ============================================
+      // Independent of the motivated-seller gate above — a territory may want
+      // on-market inventory awareness without running seller-signal triggers.
+      if (enabledSources.has("batchdata_active_listings")) {
+        try {
+          const r = await runActiveListingDiscoveryForMarket(supabase, market)
+          results.errors.push(...r.errors)
+          if (r.transitions > 0 || r.signalsWritten > 0) {
+            console.log(`[Lead Scraping Cron] Active-listing feed ${market.name}: observed=${r.observed} transitions=${r.transitions} signals=${r.signalsWritten}`)
+          }
+        } catch (e) {
+          results.errors.push(`Active-listing discovery error for ${market.name}: ${e}`)
+        }
+      }
+
+      // ============================================
+      // 2e. BUY BOX MATCHING (wave 66, task 4) — investor demand per active listing
+      // ============================================
+      if (enabledSources.has("batchdata_buybox")) {
+        try {
+          const r = await runBuyBoxMatchingForMarket(supabase, market)
+          results.total_leads_created += r.investorLeadsCreated
+          results.errors.push(...r.errors)
+        } catch (e) {
+          results.errors.push(`Buy Box matching error for ${market.name}: ${e}`)
         }
       }
 
@@ -619,6 +752,7 @@ export async function GET(request: Request) {
                 marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
                 executionId: execRecord?.id ?? null,
                 source: "nextdoor", sourceFamily: "social_intent", sourceChannel: "nextdoor",
+                batchCostUsd: scraped.cost ?? null,
               })
               socialLeadsCreated += ndInserted
             }
@@ -627,13 +761,16 @@ export async function GET(request: Request) {
           const socialMarket = { city: market.city, state: market.state }
           // ONE batch call per sub-source — routes through the kernel's canonical writer
           // (ingestRawSourceBatch) instead of one insert per record.
-          const insertSocial = async (records: NormalizedScrapedRecord[], channel: string, sourceFamily = "social_intent") => {
+          const insertSocial = async (records: NormalizedScrapedRecord[], channel: string, sourceFamily = "social_intent", batchCostUsd: number | null = null) => {
             const { inserted } = await insertRawBatch({
               records, marketId: market.id,
               marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
               executionId: execRecord?.id ?? null,
               source: channel, sourceFamily, sourceChannel: channel,
-            })
+              // Wave 66C seam: the sub-source's metered cost, spread by the kernel
+              // across the records as raw_scraped_leads.cost_per_record.
+              batchCostUsd,
+              })
             socialLeadsCreated += inserted
           }
 
@@ -645,7 +782,7 @@ export async function GET(request: Request) {
             for (const groupUrl of groupUrls) {
               const { records, cost } = await sourceFacebook(groupUrl, keywordsBySource["facebook"], socialMarket)
               sourceCostUsd += cost
-              await insertSocial(records, "facebook")
+              await insertSocial(records, "facebook", "social_intent", cost)
             }
           }
 
@@ -653,7 +790,7 @@ export async function GET(request: Request) {
           if (enabledSources.has("instagram") && keywordsBySource["instagram"]) {
             const { records, cost } = await sourceInstagram(keywordsBySource["instagram"], socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "instagram")
+            await insertSocial(records, "instagram", "social_intent", cost)
           }
 
           // ── Reddit communities (Apify) ───────────────────────────────────────
@@ -663,7 +800,7 @@ export async function GET(request: Request) {
               : [`${market.city.toLowerCase().replace(/\s+/g, "")}realestate`, "FirstTimeHomeBuyer", "moving"]
             const { records, cost } = await sourceReddit(subreddits, keywordsBySource["reddit"], socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "reddit")
+            await insertSocial(records, "reddit", "social_intent", cost)
           }
 
           // ── Craigslist (Apify) — for-sale (seller FSBO) + housing-wanted (buyer) ─
@@ -674,11 +811,11 @@ export async function GET(request: Request) {
               market.city, keywordsBySource["craigslist"].slice(0, 3).join(" "), socialMarket,
             )
             sourceCostUsd += forSale.cost
-            await insertSocial(forSale.records, "craigslist")
+            await insertSocial(forSale.records, "craigslist", "social_intent", forSale.cost)
             // Buyer intent: "housing wanted" / ISO posts.
             const wanted = await sourceCraigslistWanted(market.city, socialMarket)
             sourceCostUsd += wanted.cost
-            await insertSocial(wanted.records, "craigslist_wanted")
+            await insertSocial(wanted.records, "craigslist_wanted", "social_intent", wanted.cost)
           }
 
           // ── Google phrase intent (Apify) — buyer + seller searches ───────────
@@ -690,7 +827,7 @@ export async function GET(request: Request) {
             const queries = [...sellerPhrases.slice(0, 3), ...buyerPhrases.slice(0, 2)]
             const { records, cost } = await sourceGoogle(queries, socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "google_phrase_intent", "search_signal")
+            await insertSocial(records, "google_phrase_intent", "search_signal", cost)
           }
 
           // ── Rental listings (Apify Craigslist 'apa') — landlord/investor sellers ─
@@ -701,7 +838,7 @@ export async function GET(request: Request) {
           if (enabledSources.has("rental") && market.city) {
             const { records, cost } = await sourceRentalListings(market.city, socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "rental")
+            await insertSocial(records, "rental", "social_intent", cost)
           }
 
           // Expired / off-market sellers: addresses are scraped via
@@ -712,21 +849,21 @@ export async function GET(request: Request) {
           if (enabledSources.has("linkedin")) {
             const { records, cost } = await sourceLinkedInRelocation(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "linkedin")
+            await insertSocial(records, "linkedin", "social_intent", cost)
           }
 
           // ── Exa neural search (AI-native) — buyer-intent content across the web ─
           if (enabledSources.has("exa")) {
             const { records, cost } = await sourceExaBuyerIntent(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "exa")
+            await insertSocial(records, "exa", "social_intent", cost)
           }
 
           // ── Tavily agentic search (AI-native) — buyer / seller / investor intent ─
           if (enabledSources.has("tavily")) {
             const { records, cost } = await sourceTavilyIntent(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "tavily")
+            await insertSocial(records, "tavily", "social_intent", cost)
           }
 
           // ── WAVE 65 LANES (owner ruling 2026-09-15) — each a DISTINCT capability with its
@@ -736,7 +873,7 @@ export async function GET(request: Request) {
           if (enabledSources.has("reddit_relocation")) {
             const { records, cost } = await sourceRedditRelocation(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "reddit_relocation")
+            await insertSocial(records, "reddit_relocation", "social_intent", cost)
           }
 
           // ── Facebook "recommend a realtor" lane ──────────────────────────────────
@@ -746,14 +883,14 @@ export async function GET(request: Request) {
               : market.city ? [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, "")}buysell`] : []
             const { records, cost } = await sourceFacebookRecommendRealtor(groupUrls, socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "facebook_recommend_realtor")
+            await insertSocial(records, "facebook_recommend_realtor", "social_intent", cost)
           }
 
           // ── Agent-seeking phrase intent — cross-source (Google/Apify today) ──────
           if (enabledSources.has("agent_seeking_phrase_intent")) {
             const { records, cost } = await sourceAgentSeekingPhraseIntent(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records, "agent_seeking_phrase_intent")
+            await insertSocial(records, "agent_seeking_phrase_intent", "social_intent", cost)
           }
 
           // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────
@@ -766,7 +903,7 @@ export async function GET(request: Request) {
             for (const site of ["zillow", "realtor", "homes"] as const) {
               const chatter = await sourceRealtySiteChatter(site, { city: market.city, state: market.state })
               realtyChatterCostUsd += chatter.cost
-              await insertSocial(chatter.records, `${site}_chatter`)
+              await insertSocial(chatter.records, `${site}_chatter`, "social_intent", chatter.cost)
               if (chatter.cost > 0) {
                 await meterVendorSpend({
                   vendorName: chatter.provider ?? "zenrows",
@@ -981,6 +1118,29 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── WALLET RECONCILE (wave 66, task 6) — spend MEASURED, not estimated ──
+    // Once per run (not per market/brokerage — BatchData's wallet is ONE
+    // account-wide balance): sums this month's own vendor_usage_tracking
+    // estimate for vendor 'batchdata' and compares it to BatchData's own
+    // wallet consumption report, filing a low-severity ops row when the two
+    // drift past a noise threshold. Best-effort — never fails the cron.
+    try {
+      const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
+      const { data: spendRows } = await supabase
+        .from("vendor_usage_tracking")
+        .select("total_cost")
+        .eq("vendor_name", "batchdata")
+        .gte("created_at", startOfMonth)
+      const estimatedSpendThisMonthUsd = (spendRows ?? []).reduce((s: number, r: any) => s + (Number(r.total_cost) || 0), 0)
+      const { reconcileBatchDataWalletSpend } = await import("@/lib/external/batchdata-client")
+      const reconcile = await reconcileBatchDataWalletSpend({ brokerageId: null, estimatedSpendThisMonthUsd })
+      if (reconcile.flagged) {
+        results.errors.push(`BatchData wallet drift flagged: wallet=$${reconcile.walletTotalUsd} estimate=$${reconcile.estimatedTotalUsd.toFixed(2)}`)
+      }
+    } catch (e) {
+      results.errors.push(`BatchData wallet reconcile skipped: ${e}`)
+    }
+
     const durationMs = Date.now() - cronStartedAt
     console.log("[Lead Scraping Cron] Completed:", results)
 
@@ -1079,6 +1239,9 @@ interface InsertRawBatchParams {
   /** A scraper_executions row already opened for this phase; reused instead of
    *  opening (and closing) a second row per sub-source batch. */
   executionId?: string | null
+  /** Metered vendor cost of THIS batch (wave 66C seam) — the kernel spreads it
+   *  across the records as raw_scraped_leads.cost_per_record. Never a body value. */
+  batchCostUsd?: number | null
   /** Batch label for scraper_executions.scraper_type + lifecycle metadata,
    *  e.g. "facebook", "batchdata_motivated", "osint_signal" — kept DISTINCT
    *  per source (owner ruling: never fold two scraping capabilities into one). */
@@ -1100,6 +1263,7 @@ async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted:
     sourceSubtype: params.sourceSubtype,
     records:       params.records,
     executionId:   params.executionId ?? null,
+    batchCostUsd:  params.batchCostUsd ?? null,
     marketGeo:     params.marketGeo ?? null,
   })
 

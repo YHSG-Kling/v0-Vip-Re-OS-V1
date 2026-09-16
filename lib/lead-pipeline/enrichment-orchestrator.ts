@@ -17,7 +17,7 @@ import {
   processKernelEvent,
 } from '@/lib/kernel'
 import { KernelEvent } from '@/lib/kernel/events'
-import { MAX_RETRIES, enrichmentRetryOutcome } from './enrichment-retry'
+import { MAX_RETRIES, enrichmentRetryOutcome, classifyEnrichmentFault, escalateConfigFaultOnce } from './enrichment-retry'
 import { isContactInLiveDeal } from '@/lib/enrichment/deal-suppression'
 import {
   planEnrichmentLane,
@@ -517,6 +517,21 @@ export async function processEnrichmentQueue(
         const mailingVerified: boolean = mvRaw === true
         const emailFlagVerified: boolean = (enriched as any).emailVerified === true
 
+        // NAME BACKFILL (wave 66, owner ruling 2026-09-15 verbatim: "we need to get
+        // rid of the fair housing and anything else that is preventing from getting
+        // the full lead info including name, email, etc."). A record skip-traced by
+        // phone/email alone (see `hasIdentifier` above — first_name is NOT required)
+        // used to have PeopleData's returned name land ONLY in enrichment_profile.
+        // full_name/first_name/last_name, never on the first-class columns every
+        // scorer/segmenter/dashboard reads. Backfill ONLY when the entity does not
+        // already carry a name — this fills a gap, it never overwrites a name the
+        // record already had with a different provider match.
+        const entityHasName = !!(entity.first_name || entity.last_name)
+        const namePatch: Record<string, unknown> =
+          !entityHasName && enriched.firstName
+            ? { first_name: enriched.firstName, ...(enriched.lastName && { last_name: enriched.lastName }) }
+            : {}
+
         // Rich enrichment profile (downstream — AI-ISA scripts, AI Mesh, dashboards) so the full
         // PDL payload is queryable without re-calling the API. Only includes fields actually
         // returned by the provider; undefined/null are omitted so callers can use coalesce safely.
@@ -581,6 +596,8 @@ export async function processEnrichmentQueue(
             .update({
               ...(primaryEmail && { email: primaryEmail }),
               ...leadPhonePatch,
+              // NAME BACKFILL (wave 66) — see the namePatch note above.
+              ...namePatch,
               // First-class lead enrichment (m233): promote home_owner_status + life_events out of
               // the jsonb so lead persona/segmentation read them directly (parity with contacts).
               ...peopleDataProfileToLeadColumns(profile),
@@ -661,10 +678,28 @@ export async function processEnrichmentQueue(
             .update({
               ...(primaryEmail && { email: primaryEmail }),
               ...contactPhonePatch,
+              // NAME BACKFILL (wave 66) — see the namePatch note above.
+              ...namePatch,
               ...contactEnrichmentColumns,
               last_enriched_at: enrichedAt,
               enrichment_confidence: enriched.enrichmentConfidence,
               email_verified: emailFlagVerified,
+              // MAILING ADDRESS (wave 66, owner ruling 2026-09-15 — "the full lead
+              // info including name, email, etc."). Contacts carries the same
+              // mailing_address/_city/_state/_zip/_verified/_source columns leads
+              // does (scripts/schema-snapshot.ts), but this branch never wrote them —
+              // a contact's PDL-returned mailing address was stranded in
+              // enrichment_profile.streetAddress/city/state while the identical lead
+              // branch (above) promoted it to first-class columns. BUILT (CLAUDE.md
+              // §1.2): same shape as the lead write immediately above.
+              ...(hasMailingData && {
+                mailing_address: mailingStreet,
+                mailing_city: enriched.city ?? null,
+                mailing_state: enriched.state ?? null,
+                mailing_zip: enriched.zipCode ?? null,
+                mailing_address_verified: mailingVerified,
+                mailing_address_source: 'enrichment',
+              }),
               enrichment_profile: profile,
               ...(matChange.changed && { last_life_event_detected: enrichedAt }),
             })
@@ -991,7 +1026,14 @@ export async function processEnrichmentQueue(
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES)
+      // Wave 66C seam: a BatchData "token ability missing" / "not provisioned"
+      // refusal is a CONFIG fault — terminal on attempt 1, escalated ONCE to
+      // self_heal_events (domain connector) instead of retried as transient.
+      const fault = classifyEnrichmentFault(message)
+      if (fault === "config") {
+        await escalateConfigFaultOnce(supabase, { brokerageId: entry.brokerage_id ?? null, vendor: "batchdata", errorMessage: message })
+      }
+      const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, fault)
 
       await supabase
         .from('lead_enrichment_queue')

@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1788 of 1848 pairs) — storing them would be
+ * overwhelming majority (1791 of 1851 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1925 edges across 710 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1848 unordered
+ * MEASURED AT GENERATION: 1928 edges across 712 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1851 unordered
  * table pairs carry at least one FK; 60
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-15
+ * generated: 2026-09-16
  * source: public.live_foreign_keys_json()
- * body-sha256: 9bc8790dff9896c14bf1f16f154008625826dbef62c2cced5e8f1b6ddcfeb738
+ * body-sha256: 9270ad407ff6f32b1f7115aa41dabbb59b2fd9ccc4958401010e05311f39bd42
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -199,6 +199,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "auto_response_settings": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "automation_errors": { "assigned_by": "users", "assigned_to": "users", "brokerage_id": "brokerages", "dismissed_by": "users", "lead_id": "leads", "resolved_by": "users" },
   "automation_logs": { "brokerage_id": "brokerages" },
+  "batchdata_incremental_search_state": { "market_id": "lead_scraping_markets" },
   "batchdata_motivated_sellers_raw": { "brokerage_id": "brokerages", "lead_id": "leads" },
   "batchdata_smart_search_subscriptions": { "market_id": "lead_scraping_markets" },
   "behavioral_patterns": { "brokerage_id": "brokerages" },
@@ -481,6 +482,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "managed_agent_sessions": { "brokerage_id": "brokerages", "managed_agent_id": "managed_agents" },
   "managed_agents": { "brokerage_id": "brokerages" },
   "manager_signals": { "brokerage_id": "brokerages", "contact_id": "contacts" },
+  "market_active_listings": { "brokerage_id": "brokerages", "market_id": "lead_scraping_markets" },
   "market_data": { "brokerage_id": "brokerages" },
   "market_data_sources": { "brokerage_id": "brokerages" },
   "market_insights": { "agent_id": "agents", "brokerage_id": "brokerages" },

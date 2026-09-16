@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 704 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 706 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-15
+ * generated: 2026-09-16
  * source: public.live_schema_json()
- * body-sha256: 3404e2c60e853ce399eb354ade7ed541c97066128d6e2038198106a5f88e54f2
+ * body-sha256: 0188c05bf860019d7fe12d27796b71ada9bfe2ab9a707d7f4c529730bdf9efd3
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -122,8 +122,9 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   auto_response_settings: ["agent_id", "brokerage_id", "created_at", "custom_prompt", "delay_minutes", "id", "is_enabled", "keywords", "tone", "updated_at"],
   automation_errors: ["assigned_at", "assigned_by", "assigned_to", "brokerage_id", "context_json", "created_at", "dismiss_reason", "dismissed_at", "dismissed_by", "error_message", "id", "lead_id", "resolution_notes", "resolved_at", "resolved_by", "severity", "status", "workflow_name"],
   automation_logs: ["automation_id", "brokerage_id", "created_at", "executed_at", "id", "result", "trigger_type", "user_id"],
+  batchdata_incremental_search_state: ["created_at", "id", "lane", "last_error", "last_run_at", "market_id", "page_cursor", "results_found", "session_supported", "updated_at"],
   batchdata_motivated_sellers_raw: ["brokerage_id", "created_at", "email", "first_name", "id", "last_name", "lead_id", "motivation_confidence", "motivation_type", "phone", "predicted_timeframe", "property_address", "property_baths", "property_beds", "property_city", "property_estimated_value", "property_sqft", "property_state", "property_zip", "raw_json", "residential_address", "residential_city", "residential_state", "residential_zip", "scraper_execution_id"],
-  batchdata_smart_search_subscriptions: ["created_at", "id", "last_error", "last_reconciled_at", "market_id", "quicklist", "renewed_at", "status", "subscription_id", "updated_at", "webhook_url"],
+  batchdata_smart_search_subscriptions: ["created_at", "id", "last_error", "last_reconciled_at", "market_id", "priority", "quicklist", "renewed_at", "status", "subscription_id", "updated_at", "webhook_url"],
   behavioral_patterns: ["brokerage_id", "confidence_threshold", "created_at", "description", "detection_rules", "entity_type", "id", "is_active", "is_system_default", "minimum_signals", "pattern_name", "pattern_slug", "pattern_type", "recommended_action", "updated_at"],
   behavioral_signals: ["brokerage_id", "city", "contact_id", "detected_at", "id", "identified", "intent_confidence_score", "intent_type", "ip_address", "last_seen_date", "state", "total_sessions", "unified_profile_id", "user_agent", "visitor_id", "zip"],
   billing_invoices: ["amount_cents", "brokerage_id", "created_at", "due_date", "id", "invoice_date", "paid_at", "pdf_url", "status", "stripe_invoice_id", "subscription_id"],
@@ -404,6 +405,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   managed_agent_sessions: ["anthropic_session_id", "brokerage_id", "created_at", "ended_at", "entity_id", "entity_type", "id", "last_agent_message", "last_event_at", "managed_agent_id", "status", "stop_reason"],
   managed_agents: ["agent_kind", "anthropic_agent_id", "anthropic_version", "archived_at", "brokerage_id", "config", "created_at", "id", "model", "system_prompt_hash", "updated_at"],
   manager_signals: ["brokerage_id", "consumed_action", "consumed_at", "contact_id", "created_at", "entity_id", "entity_type", "from_manager", "id", "message", "payload", "signal_type", "status", "to_manager"],
+  market_active_listings: ["address_key", "batchdata_quicklists", "brokerage_id", "city", "created_at", "current_status", "id", "last_seen_at", "last_status_change_at", "list_price", "market_id", "property_address", "state", "updated_at", "zip"],
   market_data: ["active_listings", "avg_days_on_market", "brokerage_id", "city", "created_at", "data_date", "dom_trend", "id", "list_to_sale_ratio", "market_area", "market_type", "median_list_price", "median_sale_price", "months_of_inventory", "new_listings_30d", "price_trend_pct_1yr", "price_trend_pct_30d", "price_trend_pct_90d", "sold_listings_30d", "source_type", "state", "updated_at", "zip_code"],
   market_data_sources: ["brokerage_id", "city", "created_at", "id", "is_active", "last_synced_at", "market_area", "source_type", "state", "sync_error", "zip_codes"],
   market_insights: ["agent_id", "ai_model_used", "ai_narrative", "brokerage_id", "buyer_indicators", "competition_alert", "dom_trend", "generated_at", "headline", "id", "insight_date", "inventory_level", "key_stats", "market_area", "market_type", "price_trend", "seasonal_pattern", "seller_indicators", "summary", "zip_code"],

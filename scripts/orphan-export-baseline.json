@@ -129,8 +129,9 @@
     "lib/embed/widget-modes.ts": 1,
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
-    "lib/external/batchdata-client.ts": 2,
-    "lib/external/batchdata-seller-signals.ts": 17,
+    "lib/external/batchdata-client.ts": 4,
+    "lib/external/batchdata-mcp.ts": 5,
+    "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
@@ -433,7 +434,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9499,
+  "census": 9522,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -722,7 +723,7 @@
     "app/actions/lead-promotion/promote-lead.ts": 1,
     "app/actions/lead-quick-actions.ts": 3,
     "app/actions/lead-readiness/evaluate-readiness.ts": 2,
-    "app/actions/lead-scraping-config.ts": 15,
+    "app/actions/lead-scraping-config.ts": 16,
     "app/actions/lead-signal-ingest.ts": 5,
     "app/actions/leads.ts": 11,
     "app/actions/learning-modules-approvals.ts": 4,
@@ -3098,8 +3099,8 @@
     "lib/external/apify-actors.ts": 3,
     "lib/external/apify-client.ts": 7,
     "lib/external/arcgis-permits.ts": 9,
-    "lib/external/batchdata-client.ts": 12,
-    "lib/external/batchdata-mcp.ts": 2,
+    "lib/external/batchdata-client.ts": 22,
+    "lib/external/batchdata-mcp.ts": 8,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/census-appreciation.ts": 4,
     "lib/external/email-verifier.ts": 3,
@@ -3430,6 +3431,7 @@
     "lib/kernel/listing-marketing-week.ts": 1,
     "lib/kernel/listing-price-advisor.ts": 1,
     "lib/kernel/listing-propensity.ts": 3,
+    "lib/kernel/listings-batchdata-feed.ts": 3,
     "lib/kernel/listings.ts": 8,
     "lib/kernel/local-lifestyle.ts": 1,
     "lib/kernel/lookalike-audience.ts": 2,
@@ -3582,7 +3584,7 @@
     "lib/lead-pipeline/enrichment-column-map.ts": 5,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
-    "lib/lead-pipeline/enrichment-retry.ts": 1,
+    "lib/lead-pipeline/enrichment-retry.ts": 3,
     "lib/lead-pipeline/exa-sourcer.ts": 2,
     "lib/lead-pipeline/fuzzy-matcher.ts": 2,
     "lib/lead-pipeline/lead-intelligence-signals.ts": 1,
@@ -3613,7 +3615,7 @@
     "lib/lead-pipeline/source-conversion-learning.ts": 3,
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
     "lib/lead-pipeline/source-health.ts": 1,
-    "lib/lead-pipeline/source-intent-map.ts": 8,
+    "lib/lead-pipeline/source-intent-map.ts": 9,
     "lib/lead-pipeline/source-lifetime-health-runner.ts": 1,
     "lib/lead-pipeline/source-wording-diagnostic.ts": 1,
     "lib/lead-pipeline/stale-preapproval-reengage-runner.ts": 1,
@@ -6147,7 +6149,8 @@
       "updateMotivatedParams",
       "getScrapingJobs",
       "createScrapingJob",
-      "updateScrapingJob"
+      "updateScrapingJob",
+      "getBatchDataFeedStatus"
     ],
     "app/actions/lead-signal-ingest.ts": [
       "ingestOfferLostSignalAction",
@@ -15577,13 +15580,29 @@
       "searchProperties",
       "fetchBatchRankPropensity",
       "enrichPropertyWithBatchData",
-      "createOrRenewSmartSearchSubscription",
+      "createSmartSearchSubscription",
+      "deleteSmartSearchSubscription",
+      "listSmartSearchSubscriptions",
+      "buildSmartSearchSubscriptionPlan",
       "skipTraceBatchDataV3Batch",
       "verifyAddressBatchData",
-      "enrichPropertyDatasetsBatchData"
+      "enrichPropertyDatasetsBatchData",
+      "lookupBatchDataPropertiesByIds",
+      "fetchIncrementalPropertySearch",
+      "fetchBatchDataComps",
+      "normalizeBuyBoxInvestorRecord",
+      "fetchBatchDataWalletBalance",
+      "fetchBatchDataWalletConsumptionReport",
+      "reconcileBatchDataWalletSpend"
     ],
     "lib/external/batchdata-mcp.ts": [
       "callBatchDataMcp",
+      "investorBuyboxPreview",
+      "investorBuyboxCount",
+      "investorBuyboxPage",
+      "comparablePropertyPreview",
+      "comparablePropertyCount",
+      "comparablePropertyPage",
       "batchDataPreferMcp"
     ],
     "lib/external/batchdata-seller-signals.ts": [
@@ -17245,6 +17264,11 @@
       "composePropensityBrief",
       "runListingPropensity"
     ],
+    "lib/kernel/listings-batchdata-feed.ts": [
+      "runActiveListingDiscoveryForMarket",
+      "runIncrementalPropertySearchForMarket",
+      "runBuyBoxMatchingForMarket"
+    ],
     "lib/kernel/listings.ts": [
       "createListingRecord",
       "createOrAttachSellerContact",
@@ -18126,7 +18150,9 @@
       "processEnrichmentQueue"
     ],
     "lib/lead-pipeline/enrichment-retry.ts": [
-      "enrichmentRetryOutcome"
+      "enrichmentRetryOutcome",
+      "classifyEnrichmentFault",
+      "escalateConfigFaultOnce"
     ],
     "lib/lead-pipeline/exa-sourcer.ts": [
       "normalizeExaResult",
@@ -18275,6 +18301,7 @@
     "lib/lead-pipeline/source-intent-map.ts": [
       "calculateSourceScore",
       "getSourceSemantics",
+      "hasScoringEntry",
       "resolveSourceKey",
       "expandEnabledSources",
       "scoreToUrgencyLevel",
@@ -21532,5 +21559,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 6
 }

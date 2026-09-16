@@ -85,6 +85,19 @@ export interface IngestRawSourceBatchParams {
    *  this function otherwise does per call when the caller already loaded it (the cron loads
    *  it once per territory). Omit (undefined) to fall back to the DB lookup by marketId. */
   marketGeo?: { city?: string | null; state?: string | null; zip_codes?: string[] | null } | null
+  /**
+   * WAVE 66 (raw_scraped_leads.cost_per_record writer — no writer existed before this).
+   * The TOTAL vendor ledger cost this caller metered for the WHOLE batch (the same figure
+   * meterVendorSpend/vendor_usage_tracking records for the market/lane — e.g. the cron's
+   * `sourceCostUsd`), divided per-record below and written on EVERY row inserted from this
+   * call. NEVER a per-record body value — a caller cannot hand a single record its own price;
+   * it can only hand the batch's real metered total, which this function then divides. Omit
+   * (undefined/null) when the caller has not metered a cost yet (or never will, e.g. BatchData's
+   * own vendor lane, which meters without a market_id) — cost_per_record is left null rather
+   * than fabricated (CLAUDE.md: "COST — recorded, never estimated", lib/analytics/territory-roi.ts).
+   * acquisition_cost (m634, live) sums this correctly once it is populated.
+   */
+  batchCostUsd?: number | null
 }
 
 export interface IngestBatchResult {
@@ -534,6 +547,19 @@ export async function ingestRawSourceBatch(
       : null
   }
 
+  // raw_scraped_leads.cost_per_record WRITER (wave 66 finding — none existed). Derived from
+  // the BATCH'S ledger cost ÷ the records in this call, never a per-record body value. Every
+  // record that survives the viability/territory gates below and actually gets inserted shares
+  // the SAME per-record figure, because the vendor charged for the batch, not for any one row —
+  // dividing by the incoming count (not just the inserted count) is the honest denominator: a
+  // record dropped by the viability/territory gate still consumed its share of the call the
+  // vendor billed. null (never 0) when the caller has not metered a cost — 0 would read as "this
+  // vendor was free," which is a claim this function has no basis to make.
+  const costPerRecord: number | null =
+    typeof params.batchCostUsd === "number" && params.batchCostUsd > 0 && params.records.length > 0
+      ? params.batchCostUsd / params.records.length
+      : null
+
   try {
     for (const record of params.records) {
       // Gate 1 — viability: must have at least one identity signal
@@ -604,6 +630,7 @@ export async function ingestRawSourceBatch(
           },
           processing_status:    'pending',
           scraper_execution_id: execId ?? null,
+          cost_per_record:      costPerRecord,
         })
         .select('id')
         .maybeSingle()

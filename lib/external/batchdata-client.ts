@@ -1,3 +1,5 @@
+import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
+
 // ─── CLASS ALIAS (backward compat for callers using `new BatchDataClient()`) ──
 export class BatchDataClient {
   async searchByAddress(address: string, city: string, state: string) {
@@ -527,82 +529,120 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
 // A DISTINCT capability from fetchMotivatedSellers (V1 Property Search, us polling on a
 // cron) — Property Subscription is BatchData's PUSH model: we register search criteria
 // once and BatchData delivers only NEW matches to a webhook as they appear, no polling.
-// The inbound side already exists at app/api/webhooks/batchdata-smart-search/route.ts;
-// this is the OUTBOUND half that was missing — nothing ever CREATED a subscription, so
-// that webhook could only ever receive a push BatchData had no standing reason to send.
+// The inbound side lives at app/api/webhooks/batchdata-smart-search/route.ts; this is
+// the OUTBOUND half.
 //
-// CONFIRMED, 2026-09-15 (Exa web fetch, batchdata.io/llms.txt + developer.batchdata.com
-// search results — transcribed, not guessed):
-//   · V2 base URL: https://api.batchdata.com/api/v2 (developer.batchdata.com/docs/
-//     batchdata/batchdata-v2: "Property Monitoring for push-based monitoring of search
-//     criteria... Search Sessions for managing persistent delivery contexts").
-//   · Request/response SHAPE (github.com/land-catalyst/land-catalyst,
-//     npmjs.com/package/@land-catalyst/batch-data-sdk — a third-party TS SDK whose
-//     README documents `PropertySubscriptionBuilder` / `PropertySubscriptionRequest` /
-//     `PropertySubscriptionResponse` / `client.createPropertySubscription(subscription)`
-//     against the real API, integration-tested against BATCHDATA_API_KEY per its own
-//     README): the body is `{ searchCriteria, deliveryConfig }`, where searchCriteria is
-//     the SAME shape buildPropertySearchBody already sends to V1 property/search
-//     (query + quickLists/orQuickLists), and deliveryConfig is ONE of
-//     `{ webhook: { url, headers? } }`, `{ kinesis: {...} }` or `{ eventHub: {...} }` —
-//     this lane only ever sends `webhook`, matching the existing receiver.
-// UNRESOLVED (see the wave report): the exact REST PATH SEGMENT under /api/v2 (this
-// lane sends "property/subscription", following the v1 "property/search" naming
-// convention, but that segment was not independently confirmed on
-// developer.batchdata.com — a Stoplight-rendered SPA this lane's fetch tools could not
-// execute JS against) and the exact response field name for the created subscription's
-// id (read DEFENSIVELY below from every plausible shape, never fabricated).
+// WAVE 66 CORRECTION of wave 65B's guess, against DOCUMENTED FACTS (help.batchdata.io,
+// fetched 2026-09-16, transcribed verbatim in the wave-66 lane prompt):
+//   · Path is `/api/v2/property-subscription` (hyphenated resource, not
+//     "property/subscription" — wave 65B's unconfirmed v1-naming guess was wrong).
+//   · Body: `{ searchCriteria: { query, orQuickLists: [...] }, deliveryConfig: { type:
+//     "webhook", url, headers? } }` — `orQuickLists` (not `quickLists`, not nested under
+//     a `webhook` object) is the documented shape.
+//   · Response: `{ status: { code: 201 }, result: { subscriptionId } }`.
+//   · `GET /api/v2/property-subscription` lists all subscriptions; `GET`/`DELETE
+//     /api/v2/property-subscription/{id}` read/remove one.
+//   · Subscriptions are IMMUTABLE — a criteria change is delete-then-recreate, never a
+//     PATCH/PUT.
+//   · Hard ACCOUNT-WIDE cap: 5 subscriptions per account, 5M properties each, 4 delivery
+//     retries. Provisioning requires sales setup (7 business days + setup fee) — an
+//     unprovisioned account's create call refuses, detected below as
+//     `provisioningRequired` rather than a generic error so the caller can record it
+//     distinctly (batchdata_smart_search_subscriptions.status = 'provisioning_required').
+export const BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP = 5
 const BATCHDATA_API_V2_URL = 'https://api.batchdata.com/api/v2'
+const SMART_SEARCH_PATH = 'property-subscription'
 
 export interface SmartSearchSubscriptionResult {
   ok: boolean
-  /** BatchData's id for the created/renewed subscription — null when the call failed
-   *  or the response carried no recognizable id field. */
+  /** BatchData's id for the created subscription — null when the call failed or the
+   *  response carried no recognizable id field. */
   subscriptionId: string | null
   status: number | null
   error: string | null
+  /** True when the failure looks like "this account is not provisioned for Property
+   *  Monitoring" (sales setup required) rather than an ordinary request/network error —
+   *  read from the documented refusal shape (403 / a message naming provisioning,
+   *  entitlement or sales). The caller records this AS ITS OWN STATE
+   *  ('provisioning_required'), never retried on the same cadence as a transient error. */
+  provisioningRequired: boolean
 }
 
-/** PURE — reads a subscription id out of a Property Subscription response body in every
- *  plausible shape, never guesses. Module-private. */
+/** PURE — reads a subscription id out of a Property Subscription response body. The
+ *  documented shape is `result.subscriptionId`; the others are defensive fallbacks for
+ *  an account on an older response revision. Module-private. */
 function readSubscriptionId(data: Record<string, any> | null | undefined): string | null {
   if (!data) return null
   const candidates = [
-    data.id, data.subscriptionId, data.subscription_id,
-    data.results?.id, data.results?.subscriptionId, data.results?.subscription_id,
-    data.subscription?.id,
+    data.result?.subscriptionId, data.result?.id,
+    data.subscriptionId, data.id, data.subscription_id,
+    data.results?.subscriptionId, data.results?.id,
   ]
   const found = candidates.find((c) => typeof c === "string" && c.length > 0)
   return typeof found === "string" ? found : null
 }
 
+/** PURE — every phrase a "you are not provisioned for this API" refusal plausibly uses.
+ *  Read defensively (case-insensitive substring) rather than pinned to one exact
+ *  sentence, because the wording was not independently confirmed against a live
+ *  refusal — only the CLAUDE.md §2 posture ("assert the rule, not a waypoint") applies
+ *  the same way to a vendor error string as to our own code. */
+function looksLikeProvisioningRefusal(status: number | null, message: string): boolean {
+  const m = message.toLowerCase()
+  return (
+    status === 403 ||
+    m.includes("not provisioned") ||
+    m.includes("provisioning") ||
+    m.includes("sales team") ||
+    m.includes("contact sales") ||
+    m.includes("entitlement") ||
+    m.includes("not enabled for your account") ||
+    m.includes("upgrade your plan")
+  )
+}
+
 /**
- * createOrRenewSmartSearchSubscription — register (or, called again with the same
- * criteria, effectively refresh) a V2 Property Subscription for ONE BatchData quickList
- * against ONE territory's geography, delivered to this repo's webhook receiver. Bounded
- * spend by construction: called only from the reconcile step below, never per-record.
- * FAIL-CLOSED: no BATCHDATA_API_KEY, no webhook URL configured, or a network/HTTP error
- * all return { ok: false }, never a fabricated subscription id.
+ * createSmartSearchSubscription — register ONE V2 Property Subscription for ONE
+ * BatchData quickList against ONE territory's geography, delivered to this repo's
+ * webhook receiver. Bounded spend by construction: called only from the reconcile
+ * plan below (buildSmartSearchSubscriptionPlan), never per-record, and only after the
+ * caller has confirmed the account-wide 5-subscription cap is not exceeded.
+ *
+ * SUBSCRIPTIONS ARE IMMUTABLE (documented). A criteria change is a DELETE of the old
+ * subscription id followed by a fresh CREATE — never a renew-in-place. There is
+ * therefore no `createOrRenew` any more; the reconcile step deletes first when it
+ * needs to change criteria, then calls this.
+ *
+ * TOMBSTONE (wave 66, CLAUDE.md §1.1): `createOrRenewSmartSearchSubscription`
+ * (wave 65B) stood here and is DELETED. Its survivor is THIS function plus the
+ * delete-then-create branch of the reconcile step in
+ * app/api/cron/lead-scraping/route.ts (step 2b, "SMART SEARCH RECONCILE"). The
+ * "renew" half had no documented counterpart — subscriptions are immutable and
+ * carry no TTL (help.batchdata.io Property Monitoring guide, fetched
+ * 2026-09-16) — so renewing in place was a guessed capability, not a lost one;
+ * the create half is what survives, unchanged in effect, under its honest name.
+ *
+ * FAIL-CLOSED: no BATCHDATA_API_KEY, no webhook URL configured, or a network/HTTP
+ * error all return { ok: false }, never a fabricated subscription id.
  */
-export async function createOrRenewSmartSearchSubscription(params: {
-  /** A single BatchData quickList slug, validated against BATCHDATA_QUICKLISTS — Smart
-   *  Search subscriptions are one criteria set each, unlike the OR-able V1 search pull. */
+export async function createSmartSearchSubscription(params: {
+  /** A single BatchData quickList slug, validated against BATCHDATA_QUICKLISTS. */
   quicklist: string
   city?: string
   state: string
   zip?: string
 }): Promise<SmartSearchSubscriptionResult> {
   if (!process.env.BATCHDATA_API_KEY) {
-    return { ok: false, subscriptionId: null, status: null, error: "BATCHDATA_API_KEY not configured" }
+    return { ok: false, subscriptionId: null, status: null, error: "BATCHDATA_API_KEY not configured", provisioningRequired: false }
   }
   const webhookUrl = process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL
   if (!webhookUrl) {
-    return { ok: false, subscriptionId: null, status: null, error: "BATCHDATA_SMART_SEARCH_WEBHOOK_URL not configured — no delivery target to register" }
+    return { ok: false, subscriptionId: null, status: null, error: "BATCHDATA_SMART_SEARCH_WEBHOOK_URL not configured — no delivery target to register", provisioningRequired: false }
   }
   const secret = process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_SECRET
   const quicklists = validQuickLists([params.quicklist])
   if (quicklists.length === 0) {
-    return { ok: false, subscriptionId: null, status: null, error: `"${params.quicklist}" is not a valid BatchData quickList` }
+    return { ok: false, subscriptionId: null, status: null, error: `"${params.quicklist}" is not a valid BatchData quickList`, provisioningRequired: false }
   }
   const query = [params.city, params.zip, params.state].filter(Boolean).join(", ") || params.state
 
@@ -611,33 +651,160 @@ export async function createOrRenewSmartSearchSubscription(params: {
     const res = await callConnector<Record<string, any>>({
       connector: "batchdata_smart_search",
       baseUrl: BATCHDATA_API_V2_URL,
-      path: "property/subscription",
+      path: SMART_SEARCH_PATH,
       method: "POST",
       auth: { style: "bearer", token: BATCHDATA_API_KEY },
       body: {
-        searchCriteria: { query, quickLists: quicklists },
+        searchCriteria: { query, orQuickLists: quicklists },
         deliveryConfig: {
-          webhook: {
-            url: webhookUrl,
-            // Matches the receiver's verifySharedSecret, which also accepts a bearer
-            // Authorization header — sent both ways since BatchData's exact header name
-            // for this push was not confirmed (see app/api/webhooks/batchdata-smart-search/route.ts).
-            ...(secret ? { headers: { "x-batchdata-webhook-secret": secret, Authorization: `Bearer ${secret}` } } : {}),
-          },
+          type: "webhook",
+          url: webhookUrl,
+          // Matches the receiver's verifySharedSecret, which also accepts a bearer
+          // Authorization header — sent both ways since BatchData's exact header name
+          // for this push is not confirmed by any fetched article.
+          ...(secret ? { headers: { "x-batchdata-webhook-secret": secret, Authorization: `Bearer ${secret}` } } : {}),
         },
       },
     })
     if (!res.ok) {
-      return { ok: false, subscriptionId: null, status: res.status, error: res.error ?? `HTTP ${res.status ?? "network"}` }
+      const message = res.error ?? `HTTP ${res.status ?? "network"}`
+      return { ok: false, subscriptionId: null, status: res.status, error: message, provisioningRequired: looksLikeProvisioningRefusal(res.status ?? null, message) }
     }
     const subscriptionId = readSubscriptionId(res.data)
     if (!subscriptionId) {
-      return { ok: false, subscriptionId: null, status: res.status, error: "subscription created but no id in the response — cannot track it for renewal" }
+      return { ok: false, subscriptionId: null, status: res.status, error: "subscription created but no id in the response — cannot track it for renewal", provisioningRequired: false }
     }
-    return { ok: true, subscriptionId, status: res.status, error: null }
+    return { ok: true, subscriptionId, status: res.status, error: null, provisioningRequired: false }
   } catch (e) {
-    return { ok: false, subscriptionId: null, status: null, error: e instanceof Error ? e.message : String(e) }
+    return { ok: false, subscriptionId: null, status: null, error: e instanceof Error ? e.message : String(e), provisioningRequired: false }
   }
+}
+
+/** DELETE /api/v2/property-subscription/{id}. Best-effort — a delete failure is
+ *  reported, never thrown, so the caller can still proceed to recreate under a new
+ *  criteria set and record the old row as an orphan on BatchData's side rather than
+ *  blocking the reconcile tick on it. */
+export async function deleteSmartSearchSubscription(subscriptionId: string): Promise<{ ok: boolean; status: number | null; error: string | null }> {
+  if (!process.env.BATCHDATA_API_KEY) return { ok: false, status: null, error: "BATCHDATA_API_KEY not configured" }
+  if (!subscriptionId) return { ok: false, status: null, error: "no subscriptionId supplied" }
+  try {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<Record<string, any>>({
+      connector: "batchdata_smart_search",
+      baseUrl: BATCHDATA_API_V2_URL,
+      path: `${SMART_SEARCH_PATH}/${encodeURIComponent(subscriptionId)}`,
+      method: "DELETE",
+      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+    })
+    return { ok: res.ok, status: res.status, error: res.ok ? null : (res.error ?? `HTTP ${res.status ?? "network"}`) }
+  } catch (e) {
+    return { ok: false, status: null, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** GET /api/v2/property-subscription — the account's live subscription list, read
+ *  defensively (the documented list envelope was not independently re-confirmed by
+ *  this lane; every plausible array location is checked). Used by the reconcile step
+ *  to learn the TRUE account-wide count before deciding what it may still create —
+ *  the local `batchdata_smart_search_subscriptions` table is our OWN record of what we
+ *  asked for, not authoritative over what BatchData actually holds (a row could have
+ *  been cancelled on their side, e.g. by a human via their dashboard). */
+export async function listSmartSearchSubscriptions(): Promise<{ ok: boolean; subscriptionIds: string[]; error: string | null }> {
+  if (!process.env.BATCHDATA_API_KEY) return { ok: false, subscriptionIds: [], error: "BATCHDATA_API_KEY not configured" }
+  try {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<Record<string, any>>({
+      connector: "batchdata_smart_search",
+      baseUrl: BATCHDATA_API_V2_URL,
+      path: SMART_SEARCH_PATH,
+      method: "GET",
+      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+    })
+    if (!res.ok) return { ok: false, subscriptionIds: [], error: res.error ?? `HTTP ${res.status ?? "network"}` }
+    const rows: any[] = res.data?.result?.subscriptions ?? res.data?.result ?? res.data?.results ?? res.data?.subscriptions ?? []
+    const ids = (Array.isArray(rows) ? rows : [])
+      .map((r) => (typeof r === "string" ? r : r?.subscriptionId ?? r?.id))
+      .filter((id): id is string => typeof id === "string" && id.length > 0)
+    return { ok: true, subscriptionIds: ids, error: null }
+  } catch (e) {
+    return { ok: false, subscriptionIds: [], error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// ─── SUBSCRIPTION PLAN — the 5-per-account cap forces prioritization ──────────────────
+export interface SmartSearchWant {
+  marketId: string
+  /** Higher = more important. Mirrors lead_scraping_markets.priority so a territory the
+   *  tenant already ranked highly is not starved by one that happens to sort first. */
+  priority: number
+  quicklist: string
+  city?: string | null
+  state: string
+  zip?: string | null
+}
+
+export interface SmartSearchPlanEntry extends SmartSearchWant {
+  action: "keep" | "create" | "defer"
+  reason: string
+}
+
+/**
+ * PURE — turns every (market × quicklist) the tenant base WANTS a live subscription for
+ * into an admit/defer plan against the account-wide 5-subscription cap.
+ *
+ * "Combine territories into one query where BatchData accepts multi-location" — NOT
+ * done here. BatchData's own example (`searchCriteria.query: "Phoenix, AZ"`) and every
+ * confirmed usage in this repo's own V1 pulls is a SINGLE city/state string; nothing in
+ * the fetched documentation states a multi-location query syntax, and inventing one
+ * (e.g. joining with ";" or "|") risks silently narrowing a subscription to zero
+ * results rather than widening it — a false economy against a hard cap this quiet.
+ * So the fallback the task names explicitly is the one implemented: RANK by priority
+ * (already-active subscriptions keep their slot ahead of a new want, so a live
+ * subscription is never torn down just because a higher-priority territory showed up
+ * later in the list — churn costs a delete+recreate and a window with no coverage)
+ * and DEFER whatever does not fit, with the reason recorded for the status column.
+ */
+export function buildSmartSearchSubscriptionPlan(params: {
+  wants: readonly SmartSearchWant[]
+  /** (market_id, quicklist) pairs already ACTIVE (subscriptionId set, status active) —
+   *  kept ahead of new wants so reconciling does not thrash a working subscription. */
+  alreadyActive: ReadonlySet<string>
+  /** Total subscriptions BatchData reports across the WHOLE account right now
+   *  (listSmartSearchSubscriptions), including any this repo did not register itself. */
+  accountLiveCount: number
+  cap?: number
+}): SmartSearchPlanEntry[] {
+  const cap = params.cap ?? BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP
+  const key = (w: Pick<SmartSearchWant, "marketId" | "quicklist">) => `${w.marketId}:${w.quicklist}`
+
+  const kept = params.wants.filter((w) => params.alreadyActive.has(key(w)))
+  const candidates = params.wants
+    .filter((w) => !params.alreadyActive.has(key(w)))
+    // Highest priority first; stable tie-break on (marketId, quicklist) so the plan is
+    // deterministic for the same input rather than depending on array order.
+    .sort((a, b) => b.priority - a.priority || key(a).localeCompare(key(b)))
+
+  // Slots already spoken for by rows this repo did NOT just decide to keep (an
+  // out-of-band subscription BatchData's account shows that our own plan does not
+  // recognise) still count against the cap — we cannot create past what the account
+  // actually holds regardless of whose row it is.
+  const externalLiveCount = Math.max(0, params.accountLiveCount - kept.length)
+  let remaining = Math.max(0, cap - kept.length - externalLiveCount)
+
+  const plan: SmartSearchPlanEntry[] = kept.map((w) => ({ ...w, action: "keep", reason: "already active" }))
+  for (const w of candidates) {
+    if (remaining > 0) {
+      plan.push({ ...w, action: "create", reason: `admitted (priority ${w.priority})` })
+      remaining--
+    } else {
+      plan.push({
+        ...w,
+        action: "defer",
+        reason: `account cap (${cap}) reached — ${kept.length + (candidates.length - candidates.filter((c) => c === w).length)} higher-priority subscription(s) already hold the remaining slots`,
+      })
+    }
+  }
+  return plan
 }
 
 // ─── V3 SKIP TRACE — batched, ≤100 per call ────────────────────────────────────────────
@@ -877,4 +1044,429 @@ export async function enrichPropertyDatasetsBatchData(address: string): Promise<
   } catch (e) {
     return { ok: false, ...empty, cost: 0, error: e instanceof Error ? e.message : String(e) }
   }
+}
+
+// ─── PROPERTY LOOKUP — hydrates a Smart Search push (IDs only) into a full record ─────
+// DOCUMENTED CONTRACT (wave-66 lane prompt): the Smart Search push event carries
+// `propertyId` ONLY (plus parcelHash/addressHash — no owner name, no address, no
+// motivation facts), and hydration is `POST /api/v1/property/lookup { requests: [{
+// propertyId }] }`. INDEPENDENTLY CONFIRMED (Exa fetch, developer.batchdata.com,
+// 2026-09-16): the LIVE Property Lookup endpoint is
+// `POST https://api.batchdata.com/api/v1/property/lookup/all-attributes`, taking
+// `requests: [{ propertyId }]` alongside the address-shaped request this repo already
+// sends elsewhere via `dataset` projection selection. The confirmed path is used here
+// rather than the lane prompt's shorter `property/lookup`, and this paragraph records
+// the discrepancy rather than silently picking one.
+export interface BatchDataLookupResult {
+  ok: boolean
+  /** One row per requested id that the provider actually returned, in NO guaranteed
+   *  order — callers must match by `propertyId`/`_id`, never by array position. */
+  properties: Array<Record<string, unknown>>
+  cost: number
+  error?: string
+}
+
+/** Chunked to the same batch-size discipline as the V3 skip trace (no documented cap
+ *  found for this endpoint; reusing the confirmed V3 limit is the conservative choice
+ *  rather than guessing a larger one). */
+const PROPERTY_LOOKUP_BATCH_LIMIT = 100
+
+export async function lookupBatchDataPropertiesByIds(
+  propertyIds: readonly string[],
+  opts?: { dataset?: string[] },
+): Promise<BatchDataLookupResult> {
+  const ids = [...new Set(propertyIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
+  if (ids.length === 0) return { ok: true, properties: [], cost: 0 }
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { ok: false, properties: [], cost: 0, error: "BATCHDATA_API_KEY not configured" }
+  }
+  const chunks: string[][] = []
+  for (let i = 0; i < ids.length; i += PROPERTY_LOOKUP_BATCH_LIMIT) chunks.push(ids.slice(i, i + PROPERTY_LOOKUP_BATCH_LIMIT))
+
+  const properties: Array<Record<string, unknown>> = []
+  let cost = 0
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  for (const chunk of chunks) {
+    try {
+      const res = await callConnector<Record<string, any>>({
+        connector: "batchdata_property_lookup",
+        baseUrl: BATCHDATA_API_URL,
+        path: "property/lookup/all-attributes",
+        method: "POST",
+        auth: { style: "bearer", token: BATCHDATA_API_KEY },
+        body: { requests: chunk.map((propertyId) => ({ propertyId })), ...(opts?.dataset ? { dataset: opts.dataset } : {}) },
+      })
+      if (!res.ok || !res.data) continue // best-effort hydrate — a failed chunk yields fewer hydrated rows, never throws
+      const rows: any[] = res.data?.results?.properties ?? res.data?.results ?? []
+      for (const r of rows) if (r && typeof r === "object") properties.push(r)
+      cost += chunk.length * 0.02 // property lookup is priced like the address-keyed V1 search (COST_PER_AVM_LOOKUP-adjacent); no per-lookup price confirmed
+    } catch {
+      // best-effort — a network failure on one chunk does not fail the others already hydrated
+    }
+  }
+  return { ok: true, properties, cost }
+}
+
+// ─── INCREMENTAL PROPERTY SEARCH — cursor pagination + Search Sessions ────────────────
+// DOCUMENTED CONTRACT: `options.useCursorPagination: true`, `options.take`,
+// `options.pageCursor` (opaque, signed, bound to the searchCriteria that produced it —
+// a cursor from one search cannot be replayed against a different one).
+// `results.nextPageCursor` on the response feeds the NEXT call's `pageCursor`;
+// `results.meta.totalResults` (`resultsFound`) is frozen from page 1 and must not be
+// re-read as if paging changed it; no random sort order is admitted while paging.
+// `options.searchSession` (a caller-named persistent context) additionally narrows
+// delivery to properties NEVER BEFORE returned under that session name — this is what
+// lets the daily tick ask "what's NEW since last time" instead of re-walking the whole
+// result set and re-deduping client-side. Requires token ability `property-search-
+// sessions`; an account without it gets a 403, handled below as `sessionUnsupported`
+// so the caller degrades to plain skip/take rather than failing the whole pull.
+export interface IncrementalSearchResult {
+  ok: boolean
+  records: BatchDataRecord[]
+  /** Feed back into the next call's `pageCursor` to keep paging the SAME searchCriteria.
+   *  null when the provider reports no further page (or the call failed). */
+  nextPageCursor: string | null
+  /** Frozen from page 1 per the documented contract — callers should not expect this to
+   *  change across pages of the SAME search and must not treat a later page's own
+   *  possibly-absent total as a smaller true count. */
+  resultsFound: number | null
+  /** True when the account's token lacks the `property-search-sessions` ability (a 403
+   *  naming sessions) — the caller should retry the SAME request with `searchSession`
+   *  omitted (plain skip/take) rather than treat this as a hard failure. */
+  sessionUnsupported: boolean
+  cost: number
+  error?: string
+}
+
+export async function fetchIncrementalPropertySearch(params: {
+  quicklist: string
+  city?: string
+  state: string
+  zip?: string
+  take?: number
+  /** Feed the PREVIOUS call's `nextPageCursor` here to continue paging; omit to start a
+   *  fresh page 1. */
+  pageCursor?: string | null
+  /** A stable name derived from (market id, signal lane) — e.g.
+   *  `m-<marketId>-<quicklist>` — so the SAME logical search resumes "only new since
+   *  last time" across cron runs. Omit to page without session semantics (every call
+   *  returns the same result set from page 1, re-deduped by the caller). */
+  searchSession?: string | null
+}): Promise<IncrementalSearchResult> {
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { ok: false, records: [], nextPageCursor: null, resultsFound: null, sessionUnsupported: false, cost: 0, error: "BATCHDATA_API_KEY not configured" }
+  }
+  const quicklists = validQuickLists([params.quicklist])
+  if (quicklists.length === 0) {
+    return { ok: false, records: [], nextPageCursor: null, resultsFound: null, sessionUnsupported: false, cost: 0, error: `"${params.quicklist}" is not a valid BatchData quickList` }
+  }
+  const query = [params.city, params.zip, params.state].filter(Boolean).join(", ") || params.state
+
+  const options: Record<string, unknown> = { useCursorPagination: true, take: params.take ?? 100 }
+  if (params.pageCursor) options.pageCursor = params.pageCursor
+  if (params.searchSession) options.searchSession = params.searchSession
+
+  try {
+    const data = await batchDataPropertySearch(
+      { searchCriteria: { query, orQuickLists: quicklists }, options },
+      "BatchData incremental search error",
+    )
+    const properties: any[] = data?.results?.properties ?? data?.results ?? []
+    const records = properties.map((p) => normalizeBatchDataProperty(p, params.quicklist))
+    return {
+      ok: true,
+      records,
+      nextPageCursor: typeof data?.results?.nextPageCursor === "string" ? data.results.nextPageCursor : null,
+      resultsFound: typeof data?.results?.meta?.totalResults === "number" ? data.results.meta.totalResults : (typeof data?.results?.resultsFound === "number" ? data.results.resultsFound : null),
+      sessionUnsupported: false,
+      cost: records.length * 0.05,
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    const sessionUnsupported = !!params.searchSession && (message.includes("403") || /session/i.test(message))
+    return { ok: false, records: [], nextPageCursor: null, resultsFound: null, sessionUnsupported, cost: 0, error: message }
+  }
+}
+
+// ─── COMPARABLE PROPERTY (COMPS DATASET) — a REAL data provider beside RentCast ───────
+// Product surface (batchdata.io/api-solutions): "Comparables identifier" / "Comps
+// dataset developer guide: low-cost comparable-property analysis". CONFIRMED (Exa
+// fetch, developer.batchdata.com Property Lookup reference, 2026-09-16): `comps` is one
+// of the 14 named dataset projections a Property Search/Lookup request can select
+// (`basic comps batchrank contact core deed demographic foreclosure image listing
+// mortgage-liens owner permit quicklist valuation`) — so this is the SAME
+// `property/search` call every other function in this file uses, requesting the `comps`
+// dataset rather than a separate endpoint. Wired into lib/cma/comp-provider.ts as a
+// provider BESIDE RentCast (never replacing it — RentCast stays the sold-side default
+// per the owner's ruling in that file); cost is booked through logVendorUsage at the
+// CMA call site, matching every other comp source's own accounting.
+export interface BatchDataComp {
+  address: string | null
+  status: "closed" | "active" | "pending" | "unknown"
+  salePrice: number | null
+  saleDate: string | null
+  sqftLiving: number | null
+  bedrooms: number | null
+  bathrooms: number | null
+  distanceMiles: number | null
+  similarityScore: number | null
+}
+
+export interface BatchDataCompsResult {
+  ok: boolean
+  comps: BatchDataComp[]
+  cost: number
+  error?: string
+}
+
+/** PURE — one `comps` dataset row → BatchDataComp. Read defensively: the dataset's own
+ *  field catalogue was not independently re-walked this wave (see lib/external/
+ *  batchdata-seller-signals.ts's own 2026-08-20 catalogue reads for the sibling
+ *  datasets this repo HAS confirmed); every field is read from the same address/
+ *  valuation/lastSale shapes normalizeBatchDataProperty already trusts elsewhere in
+ *  this file, so a drift in one place is a drift the whole file already tolerates. */
+function readBatchDataComp(row: Record<string, any>): BatchDataComp {
+  const addr = row.address ?? {}
+  const building = row.building ?? {}
+  const lastSale = row.lastSale ?? row.sale ?? {}
+  const listing = row.listing ?? {}
+  const removedDate = typeof row.removedDate === "string" ? row.removedDate : null
+  const status: BatchDataComp["status"] =
+    removedDate || lastSale.date || lastSale.saleDate ? "closed"
+      : String(listing.statusCategory ?? listing.status ?? "").toLowerCase().includes("pend") ? "pending"
+        : (listing.status || listing.daysOnMarket != null) ? "active"
+          : "unknown"
+  return {
+    address: typeof addr.street === "string" ? addr.street : null,
+    status,
+    salePrice: typeof lastSale.price === "number" ? lastSale.price : (typeof listing.listPrice === "number" ? listing.listPrice : null),
+    saleDate: removedDate ?? (typeof lastSale.date === "string" ? lastSale.date : (typeof lastSale.saleDate === "string" ? lastSale.saleDate : null)),
+    sqftLiving: typeof building.livingAreaSquareFeet === "number" ? building.livingAreaSquareFeet : null,
+    bedrooms: typeof building.bedroomCount === "number" ? building.bedroomCount : null,
+    bathrooms: typeof building.bathroomCount === "number" ? building.bathroomCount : null,
+    distanceMiles: typeof row.distanceMiles === "number" ? row.distanceMiles : null,
+    similarityScore: typeof row.correlation === "number" ? row.correlation : null,
+  }
+}
+
+/** Cost telemetry, cents — no per-comp price independently confirmed; priced the same
+ *  as the property-enrichment dataset pull (enrichPropertyDatasetsBatchData) since both
+ *  are one address lookup against a named dataset projection. */
+const BATCHDATA_COMPS_COST_CENTS = 5
+
+export async function fetchBatchDataComps(address: string, opts?: { limit?: number }): Promise<BatchDataCompsResult> {
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { ok: false, comps: [], cost: 0, error: "BATCHDATA_API_KEY not configured" }
+  }
+  if (!address?.trim()) {
+    return { ok: false, comps: [], cost: 0, error: "no address to look up" }
+  }
+  try {
+    const data = await batchDataPropertySearch(
+      {
+        searchCriteria: { query: address },
+        options: { take: opts?.limit ?? RENTCAST_COMP_PULL_LIMIT_FALLBACK, skip: 0 },
+        dataset: ["core", "comps"],
+      },
+      "BatchData comps error",
+    )
+    const rows: any[] = data?.results?.comps ?? data?.results?.properties?.[0]?.comps ?? []
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { ok: true, comps: [], cost: BATCHDATA_COMPS_COST_CENTS / 100, error: "no comps dataset rows on the response" }
+    }
+    return { ok: true, comps: rows.map(readBatchDataComp), cost: BATCHDATA_COMPS_COST_CENTS / 100 }
+  } catch (e) {
+    return { ok: false, comps: [], cost: 0, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+/** Named locally so fetchBatchDataComps does not depend on lib/cma's own pull-limit
+ *  constant (this file must stay CMA-agnostic — lib/cma/* imports FROM here, never the
+ *  reverse). */
+const RENTCAST_COMP_PULL_LIMIT_FALLBACK = 20
+
+// ─── BUY BOX — investor-match rows normalized into BUYER-side raw leads ───────────────
+// mcp__batchdata__investor_buybox_count/page/preview (the BatchData MCP server's own
+// tools — no independently-confirmed REST path exists for this product; batchdata.io/
+// buy-box-api is marketing copy, not an API reference) are the primary path, mirrored
+// through lib/external/batchdata-mcp.ts. This function is the PURE normalizer shared by
+// both the MCP path and any future REST path: an investor-profile row → a
+// NormalizedScrapedRecord shaped for lib/kernel/scraping.ts::ingestRawSourceBatch,
+// sourceChannel `batchdata_buybox`, intentType 'buyer' — DISTINCT from every
+// seller-motivation record this file already normalizes (never overloaded onto
+// normalizeBatchDataProperty, which is seller-shaped and requires a subject property).
+export interface BatchDataInvestorMatch {
+  investorName?: string | null
+  entityName?: string | null
+  phone?: string | null
+  email?: string | null
+  mailingCity?: string | null
+  mailingState?: string | null
+  mailingZip?: string | null
+  mailingStreet?: string | null
+  buyBoxScore?: number | null
+  matchedPropertyAddress?: string | null
+}
+
+/** PURE. One investor-profile match → NormalizedScrapedRecord (buyer-intent). Read
+ *  defensively across the plausible MCP tool response shapes (entity vs individual
+ *  investor, camelCase vs snake_case) rather than pinned to one payload sample. */
+export function normalizeBuyBoxInvestorRecord(
+  row: BatchDataInvestorMatch & Record<string, any>,
+  matchedPropertyAddress: string,
+): NormalizedScrapedRecord {
+  const owner = row.owner ?? row.investor ?? row
+  const fullName = typeof owner.fullName === "string" ? owner.fullName.trim()
+    : typeof owner.name === "string" ? owner.name.trim() : ""
+  const entityName = typeof owner.entityName === "string" ? owner.entityName
+    : typeof owner.companyName === "string" ? owner.companyName : null
+  const first = owner.firstName ?? (fullName ? fullName.split(/\s+/)[0] : null)
+  const last = owner.lastName ?? (fullName ? fullName.split(/\s+/).slice(1).join(" ") : null)
+  const mailing = owner.mailingAddress ?? {}
+  const score = typeof row.buyBoxScore === "number" ? row.buyBoxScore : (typeof row.matchScore === "number" ? row.matchScore : null)
+  const idSlug = `${entityName ?? fullName ?? "investor"}-${matchedPropertyAddress}`.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
+
+  return {
+    sourceRecordId: `batchdata-buybox-${idSlug || Date.now()}`,
+    source: "batchdata_buybox",
+    behaviorType: "investor_buy_box_match",
+    intentType: "buyer",
+    intentSignals: ["cash_buyer", "investor_buy_box"],
+    firstName: first ?? null,
+    lastName: last ?? null,
+    fullName: !first && !last ? (entityName ?? fullName ?? null) : null,
+    email: (owner.email as string | null | undefined) ?? null,
+    phone: (owner.phone as string | null | undefined) ?? null,
+    city: (mailing.city as string | null | undefined) ?? null,
+    state: (mailing.state as string | null | undefined) ?? null,
+    zip: (mailing.zip as string | null | undefined) ?? null,
+    mailingAddress: (mailing.street as string | null | undefined) ?? null,
+    propertyAddress: null, // the MATCHED property belongs to the tenant's own listing, not the investor — never conflate the two in one record's propertyAddress
+    motivationScore: score,
+    sourceUrl: null,
+    rawPayload: row as Record<string, unknown>,
+    intent: {
+      winner: "investor", persona: "investor_buy_hold",
+      // A Buy Box match IS the investor signal — the provider matched this profile's
+      // stated criteria to the subject listing, so the investor axis is certain and
+      // the others carry nothing; `matched` names the mechanism, not a phrase.
+      scores: { buyer: 0, seller: 0, investor: 1, agent: 0, generic: 0 },
+      matched: ["batchdata_buybox_match"],
+    },
+  }
+}
+
+// ─── WALLET — balance + consumption report, so spend is MEASURED not estimated ───────
+// help.batchdata.io lists "Wallet endpoints reference: balance, consumption report,
+// credit card transactions" and developer.batchdata.com's V1 nav confirms a "Wallet"
+// section exists under the v1 API reference; the Stoplight-rendered page itself could
+// not be read by this lane's fetch tools (same JS-rendering limitation recorded
+// elsewhere in this file for the V2/V3 path segments), so the exact path segments below
+// follow this file's OWN established v1 naming convention (`address/verify`,
+// `property/search`) rather than being independently confirmed. UNRESOLVED, recorded
+// rather than guessed silently: confirm `wallet/balance` and
+// `wallet/consumption-report` (or their real segments) against a live account before
+// this reconcile path is trusted for anything more than an advisory drift signal.
+export interface BatchDataWalletBalance {
+  ok: boolean
+  balanceUsd: number | null
+  error?: string
+}
+
+export async function fetchBatchDataWalletBalance(): Promise<BatchDataWalletBalance> {
+  if (!process.env.BATCHDATA_API_KEY) return { ok: false, balanceUsd: null, error: "BATCHDATA_API_KEY not configured" }
+  try {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<Record<string, any>>({
+      connector: "batchdata_wallet",
+      baseUrl: BATCHDATA_API_URL,
+      path: "wallet/balance",
+      method: "GET",
+      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+    })
+    if (!res.ok || !res.data) return { ok: false, balanceUsd: null, error: res.error ?? `HTTP ${res.status ?? "network"}` }
+    const raw = res.data.results?.balance ?? res.data.result?.balance ?? res.data.balance
+    const balanceUsd = typeof raw === "number" ? raw : (typeof raw === "string" ? Number(raw) : null)
+    return { ok: true, balanceUsd: Number.isFinite(balanceUsd) ? balanceUsd : null }
+  } catch (e) {
+    return { ok: false, balanceUsd: null, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+export interface BatchDataConsumptionReport {
+  ok: boolean
+  /** Total USD actually consumed for the reporting window BatchData returns —
+   *  compared against our OWN vendor_usage_tracking estimate for the same window so a
+   *  drift is a MEASURED finding, not an assumption that our per-call cost constants
+   *  are exact. */
+  totalConsumedUsd: number | null
+  periodStart: string | null
+  periodEnd: string | null
+  error?: string
+}
+
+export async function fetchBatchDataWalletConsumptionReport(params?: { since?: string }): Promise<BatchDataConsumptionReport> {
+  if (!process.env.BATCHDATA_API_KEY) return { ok: false, totalConsumedUsd: null, periodStart: null, periodEnd: null, error: "BATCHDATA_API_KEY not configured" }
+  try {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<Record<string, any>>({
+      connector: "batchdata_wallet",
+      baseUrl: BATCHDATA_API_URL,
+      path: "wallet/consumption-report",
+      method: "GET",
+      auth: { style: "bearer", token: BATCHDATA_API_KEY },
+      query: params?.since ? { since: params.since } : undefined,
+    })
+    if (!res.ok || !res.data) return { ok: false, totalConsumedUsd: null, periodStart: null, periodEnd: null, error: res.error ?? `HTTP ${res.status ?? "network"}` }
+    const report = res.data.results ?? res.data.result ?? res.data
+    const raw = report?.totalConsumed ?? report?.total ?? report?.amount
+    const totalConsumedUsd = typeof raw === "number" ? raw : (typeof raw === "string" ? Number(raw) : null)
+    return {
+      ok: true,
+      totalConsumedUsd: Number.isFinite(totalConsumedUsd) ? totalConsumedUsd : null,
+      periodStart: typeof report?.periodStart === "string" ? report.periodStart : null,
+      periodEnd: typeof report?.periodEnd === "string" ? report.periodEnd : null,
+    }
+  } catch (e) {
+    return { ok: false, totalConsumedUsd: null, periodStart: null, periodEnd: null, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * reconcileBatchDataWalletSpend — compares our OWN vendor_usage_tracking ledger sum for
+ * vendor 'batchdata' this month against BatchData's own wallet consumption report, and
+ * files a LOW-severity automation_errors row when they drift past a noise threshold.
+ * This is what makes BatchData spend "measured, not estimated" (CLAUDE.md §5: a wrong
+ * cost-ledger number is a wrong invoice) — every per-call cost constant in this file
+ * (RENTCAST_COMPS_COST_CENTS-style literals) is an ESTIMATE until compared against the
+ * provider's own billed truth. Best-effort and non-blocking: a wallet-API failure is
+ * reported in the return value and never throws.
+ */
+export async function reconcileBatchDataWalletSpend(params: {
+  brokerageId: string | null
+  estimatedSpendThisMonthUsd: number
+}): Promise<{ ok: boolean; walletTotalUsd: number | null; estimatedTotalUsd: number; driftUsd: number | null; flagged: boolean; error?: string }> {
+  const report = await fetchBatchDataWalletConsumptionReport()
+  if (!report.ok || report.totalConsumedUsd === null) {
+    return { ok: false, walletTotalUsd: null, estimatedTotalUsd: params.estimatedSpendThisMonthUsd, driftUsd: null, flagged: false, error: report.error }
+  }
+  const driftUsd = report.totalConsumedUsd - params.estimatedSpendThisMonthUsd
+  // Flag only when the drift is both >$5 absolute AND >20% relative — a one-cent
+  // rounding difference on a $0.03 pull is not a finding; a $40 gap on an estimated
+  // $20 is.
+  const flagged = Math.abs(driftUsd) > 5 && Math.abs(driftUsd) > params.estimatedSpendThisMonthUsd * 0.2
+  if (flagged) {
+    // Through the ONE canonical writer (lib/errors/collect-error.ts — the
+    // hand-rolled-insert population is frozen by test:automation-errors); it
+    // never throws, so the drift is still reported in the return value even if
+    // the ops row could not be filed.
+    const { collectError } = await import("@/lib/errors/collect-error")
+    await collectError({
+      workflowName: "batchdata_wallet_reconcile",
+      errorMessage: `BatchData wallet consumption ($${report.totalConsumedUsd.toFixed(2)}) drifted from our own vendor_usage_tracking estimate ($${params.estimatedSpendThisMonthUsd.toFixed(2)}) by $${driftUsd.toFixed(2)} — the per-call cost constants in lib/external/batchdata-client.ts are estimates and may need re-pricing against the wallet's billed truth.`,
+      severity: "low",
+      brokerageId: params.brokerageId ?? undefined,
+      context: { walletTotalUsd: report.totalConsumedUsd, estimatedTotalUsd: params.estimatedSpendThisMonthUsd, driftUsd },
+    })
+  }
+  return { ok: true, walletTotalUsd: report.totalConsumedUsd, estimatedTotalUsd: params.estimatedSpendThisMonthUsd, driftUsd, flagged }
 }

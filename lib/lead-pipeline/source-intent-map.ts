@@ -38,6 +38,10 @@ export type SourceKey =
   | 'reddit_relocation'           // Reddit "moving to <city>" / "looking for a realtor in <city>"
   | 'facebook_recommend_realtor'  // Facebook-group "recommend a realtor" threads
   | 'agent_seeking_phrase_intent' // "looking for a real estate agent/realtor" phrase intent, cross-source
+  // ── Wave 66 lanes (owner ruling 2026-09-15/16) — DISTINCT from every source above; never merge ──
+  | 'batchdata_smart_search'      // BatchData V2 Property Subscription push (webhook) — DISTINCT from the polled batchdata_motivated sweep
+  | 'batchdata_buybox'            // BatchData Buy Box investor-criteria match per listing — a BUYER-side signal
+  | 'external_behavior'           // lead-intelligence's off-site property-view discovery lane (app/actions/lead-intelligence.ts::scrapeExternalBehavior)
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -411,6 +415,59 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── BatchData Smart Search (V2 Property Subscription push) ──────────────────────────────────
+  // DISTINCT from batchdata_motivated above (which is the POLLED quicklist sweep): this is the
+  // incremental webhook delivery lib/kernel/manager-registry.ts's batchdata_smart_search entry
+  // describes (app/api/webhooks/batchdata-smart-search). Same quicklist universe, own
+  // vendor-routed key per owner ruling ("never merge look-alike scraping lanes").
+  batchdata_smart_search: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'motivated_seller_subscription',
+    behaviorType:              'batchdata_smart_search_match',
+    scoreRange:                [50, 90],
+    baseScore:                 65,
+    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant'],
+    dampSignals:               ['low_confidence', 'incomplete'],
+    identityPolicy:            'immediate',
+    canPromoteBeforeEnrichment: true,
+  },
+
+  // ── BatchData Buy Box — investor-criteria match per listing (wave 66 ruling) ────────────────
+  // A Buy Box match tells us a property fits an INVESTOR'S stated buying criteria — a BUYER-side
+  // signal, never the seller-side motivated-seller lanes above. Enrichment-first: a matched
+  // listing alone is not yet a named person.
+  batchdata_buybox: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'investor_buybox_match',
+    behaviorType:              'investor_buybox_match',
+    scoreRange:                [45, 80],
+    baseScore:                 58,
+    boostSignals:              ['cash_buyer', '1031_exchange', 'portfolio', 'investor', 'high_equity', 'fix_and_flip'],
+    dampSignals:               ['owner_occupied_only', 'low_confidence'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── External behavior — off-site property-view discovery (scrapeExternalBehavior) ──────────
+  // Property discovery across Zillow/Realtor/Redfin outside the governed cron lane (kept per the
+  // orphan doctrine — it writes `external_behavior`, a shape the governed lane does not produce).
+  // Per-record `source` there is usually the origin site (already aliased below); this canonical
+  // entry hardens the fallback for any record tagged with the umbrella channel name directly.
+  external_behavior: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'off_site_property_interest',
+    behaviorType:              'external_behavior',
+    scoreRange:                [35, 65],
+    baseScore:                 45,
+    boostSignals:              ['price_reduced', 'by_owner', 'motivated', 'vacant'],
+    dampSignals:               ['agent_listed', 'low_confidence'],
+    identityPolicy:            'immediate',
+    canPromoteBeforeEnrichment: true,
+  },
+
 }
 
 // ─── Fallback for unknown sources ─────────────────────────────────────────────
@@ -471,6 +528,19 @@ export function getSourceSemantics(source: string): SourceDefinition {
 }
 
 /**
+ * hasScoringEntry — true only when `source` resolves to a REAL SOURCE_MAP entry (directly or
+ * via SOURCE_ALIASES), never the silent FALLBACK_DEFINITION. `getSourceSemantics` always
+ * returns a truthy object (fallback included), so it cannot answer "does this channel have its
+ * OWN scoring, or is it being scored as a stranger?" — this is that check. Used by
+ * pipeline-processor.ts to fall back from `raw_scraped_leads.source` to `.source_channel` when
+ * the former has no real entry, and by the wave-66 positive-control proof (a bogus channel name
+ * MUST come back false, or the check is not actually checking anything).
+ */
+export function hasScoringEntry(source: string): boolean {
+  return resolveSourceKey(source) in SOURCE_MAP
+}
+
+/**
  * Maps the `source` values emitted by the scrapers/parsers to the canonical
  * SOURCE_MAP keys. Without this, parser sources like "zillow"/"realtor"/"redfin"/
  * "nextdoor" silently fell through to the unknown fallback (wrong intent + score).
@@ -504,6 +574,11 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   facebook_recommend_realtor: "facebook_recommend_realtor",
   agent_seeking: "agent_seeking_phrase_intent",
   agent_seeking_phrase_intent: "agent_seeking_phrase_intent",
+  // Wave 66 — same idea, a second spelling seen elsewhere in the codebase (CLAUDE.md §6: one
+  // vocabulary per function). Aliased onto the existing canonical key rather than duplicating
+  // its SourceDefinition.
+  nextdoor_chatter: "nextdoor_intent",
+  google_intent: "google_phrase_intent",
 }
 
 /**
@@ -544,6 +619,10 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   reddit_relocation:          'apify',
   facebook_recommend_realtor: 'apify',
   agent_seeking_phrase_intent: 'apify', // Google search via Apify today
+  // Wave 66 lanes.
+  batchdata_smart_search:     'batchdata',
+  batchdata_buybox:           'batchdata',
+  external_behavior:          'apify',  // discovery is Apify; BatchData only enriches the match
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -584,6 +663,9 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   reddit_relocation:          'reddit_relocation',
   facebook_recommend_realtor: 'facebook_recommend_realtor',
   agent_seeking_phrase_intent: 'agent_seeking_phrase_intent',
+  batchdata_smart_search:     'batchdata_smart_search',
+  batchdata_buybox:           'batchdata_buybox',
+  external_behavior:          'external_behavior',
 }
 
 /**

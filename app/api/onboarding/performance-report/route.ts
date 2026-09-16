@@ -192,11 +192,21 @@ export async function GET() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // Same resolver the POST above uses (m353 / lane 66D carry, 2026-09-16):
+  // agent_performance_reports.agent_id FKs agents(id), not users(id) — a raw
+  // user.id filter here reads EMPTY for every agent, same defect the POST's
+  // comment already documents for the write side.
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const agentId = await resolveAgentId(supabase as any, user.id)
+  if (!agentId) {
+    return NextResponse.json({ hasReport: false })
+  }
+
   // Get most recent report
   const { data: report } = await supabase
     .from('agent_performance_reports')
     .select('*')
-    .eq('agent_id', user.id)
+    .eq('agent_id', agentId)
     .eq('report_type', 'onboarding_coaching')
     .order('created_at', { ascending: false })
     .limit(1)

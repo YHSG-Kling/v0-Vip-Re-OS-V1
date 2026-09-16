@@ -24,10 +24,25 @@
 // TARGETING, not to scraping/enrichment/scoring/sourcing reads. This module is
 // a read of already-collected behavioral/search signals for internal scoring —
 // not an ad-targeting path — so it is deliberately NOT routed through that
-// gate. It still never surfaces demographic content: lead_osint_data.data_content
-// (social-profile payloads that CAN carry protected-class fields) is read only
-// for its metadata (data_type / data_source / confidence_score) — the JSON body
-// itself is never folded into the narrative or returned to a caller.
+// gate.
+//
+// TOMBSTONE (wave 66, owner ruling 2026-09-15 verbatim: "we need to get rid of
+// the fair housing and anything else that is preventing from getting the full
+// lead info including name, email, etc." / "there is no reason to use any
+// compliance gating for these areas of intelligence etc because this is just
+// gathering information about a property or potential or current client so we
+// can better serve them with information."). This file used to reduce
+// `lead_osint_data.data_content` to a boolean (`hasProfileContent`, never
+// stored) and never fold the JSON body into the narrative or the returned
+// rows — a redaction motivated by the same fair-housing reasoning the ruling
+// above removes. The content is now surfaced in full: `osintProfiles` below
+// carries the raw `data_content` payload per row, and the narrative names the
+// social platforms it came from. Nothing about this module's SCOPE changed —
+// it is still a read of already-collected signals, not an ad-audience path —
+// so `assertAudienceSegmentationAllowed` / `protectedClassSegmentationIn`
+// (lib/lead-governance/protected-class-signals.ts) remain untouched and still
+// refuse a protected-class field from DEFINING an ad audience; that is the one
+// arm this ruling does not reach.
 //
 // Consumers (this pass): getAllSignalsForProfile → createUnifiedLeadProfile
 // (app/actions/lead-intelligence.ts), which already writes
@@ -98,6 +113,16 @@ export interface BehavioralIntentSummary {
   }>
   osintSignalCount: number
   osintSources: string[]
+  /** FULL `data_content` payload per OSINT row (wave 66 — see the FAIR HOUSING
+   *  tombstone above). Whatever the source captured — name, email, phone,
+   *  bio text, social profile fields — rides here verbatim; this module does
+   *  not filter it by field name or content. */
+  osintProfiles: Array<{
+    dataType: string | null
+    dataSource: string | null
+    confidenceScore: number | null
+    content: unknown
+  }>
   loggedSignalCount: number
   topSignalStrength: number | null
   outreachAttemptCount: number
@@ -118,7 +143,7 @@ const EMPTY_SUMMARY = (contactId: string): BehavioralIntentSummary => ({
   nextdoorActivityCount: 0, nextdoorActivity: [],
   googleSearchActivityCount: 0, googleSearchActivity: [],
   googleSearchIntelligenceCount: 0, marketSearchDemand: [],
-  osintSignalCount: 0, osintSources: [],
+  osintSignalCount: 0, osintSources: [], osintProfiles: [],
   loggedSignalCount: 0, topSignalStrength: null,
   outreachAttemptCount: 0,
   behavioralIntentScore: 0,
@@ -157,11 +182,9 @@ export async function buildBehavioralIntentSummary(
       .order("scraped_at", { ascending: false })
       .limit(10)
     : null
-  // data_content IS selected (the column has to be read by name for the
-  // readerless-write census to see it) but its JSON body is reduced to a
-  // boolean (`hasProfileContent`) below and NEVER surfaced in the narrative or
-  // returned rows — see the FAIR HOUSING note above: a social-profile payload
-  // can carry protected-class fields and this module does not forward them.
+  // data_content is selected AND surfaced in full (wave 66 — see the FAIR
+  // HOUSING tombstone above): the JSON body rides into `osintProfiles`
+  // verbatim, whatever fields the source captured.
   const osintQuery = supabase.from("lead_osint_data")
     .select("data_type, data_source, confidence_score, data_content")
     .eq("lead_id", contactId)
@@ -248,7 +271,19 @@ export async function buildBehavioralIntentSummary(
   if (googleActivityRows.length > 0) narrativeParts.push(`${googleActivityRows.length} search-intent hit(s)`)
   const marketDemandRows = ((googleIntelResult?.data ?? []) as Array<{ search_query: string | null; detected_location: string | null; related_searches: string[] | null; trend: string | null; potential_leads_count: number | null; scraped_at: string | null }>)
   if (marketDemandRows.length > 0) narrativeParts.push(`market search-demand trending ${marketDemandRows[0].trend ?? "unknown"} for "${marketDemandRows[0].search_query ?? "the area"}"`)
-  if (osintRows.length > 0) narrativeParts.push(`${osintRows.length} OSINT enrichment source(s): ${osintSources.join(", ") || "unspecified"}`)
+  if (osintRows.length > 0) {
+    narrativeParts.push(`${osintRows.length} OSINT enrichment source(s): ${osintSources.join(", ") || "unspecified"}`)
+    // Wave 66: fold the captured content's own field names into the narrative
+    // (e.g. a scraped profile's name/email/bio keys), not just the row count —
+    // the fair-housing reduction this replaced is the tombstone above.
+    const contentKeys = new Set<string>()
+    for (const r of osintRows) {
+      if (r.data_content && typeof r.data_content === "object" && !Array.isArray(r.data_content)) {
+        for (const k of Object.keys(r.data_content as Record<string, unknown>)) contentKeys.add(k)
+      }
+    }
+    if (contentKeys.size > 0) narrativeParts.push(`captured fields: ${[...contentKeys].join(", ")}`)
+  }
   if (outreachRows.length > 0) narrativeParts.push(`${outreachRows.length} prior intelligent-outreach attempt(s)`)
   const narrative = narrativeParts.length > 0
     ? `${narrativeParts.join("; ")}. Behavioral intent score ${behavioralIntentScore}/100.`
@@ -292,6 +327,12 @@ export async function buildBehavioralIntentSummary(
     })),
     osintSignalCount: osintRows.length,
     osintSources,
+    osintProfiles: osintRows.map((r) => ({
+      dataType: r.data_type ?? null,
+      dataSource: r.data_source ?? null,
+      confidenceScore: r.confidence_score ?? null,
+      content: r.data_content ?? null,
+    })),
     loggedSignalCount: signalsLogRows.length,
     topSignalStrength,
     outreachAttemptCount: outreachRows.length,

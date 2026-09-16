@@ -98,3 +98,34 @@ undocumented reads).
 - `docs.zyte.com`/`zyte.com` render pricing client-side in places; the numbers above were pulled
   from the rendered/cached text Exa returned, not a browser session — cross-check against the
   live pricing page before treating the tier table as authoritative for billing.
+
+## BatchData — wave 66 (owner: "Batchdata also allows you to find properties that are active
+and other new features… enhance our lead acquisition, enrichment and listing providing.")
+
+Research method: Exa web search/fetch against `help.batchdata.io`, `developer.batchdata.com`
+(V1/V2/V3 API reference — Stoplight-rendered SPA, not executable by this lane's fetch tools) and
+`batchdata.io/llms.txt`. No live paid call was made (fail-closed, `BATCHDATA_API_KEY` unset here).
+
+| Capability | Contract | Doc URL | Limits | Blind spots |
+|---|---|---|---|---|
+| Smart Search (V2 Property Subscription) | `POST /api/v2/property-subscription` `{searchCriteria:{query,orQuickLists},deliveryConfig:{type:'webhook',url,headers}}` → `{status:{code:201},result:{subscriptionId}}`; `GET`/`DELETE /api/v2/property-subscription/{id}`; immutable (delete+recreate) | help.batchdata.io (fetched 2026-09-16, transcribed in the wave-66 lane prompt) | **5 subscriptions/account**, 5M properties each, 4 delivery retries; sales provisioning (7 business days + fee) | Push envelope confirmed as ids-only this wave (`propertyId`/`addedToSubscriptionIds`); the exact refusal wording for "not provisioned" was not independently observed — detected heuristically (403 or a phrase naming provisioning/sales/entitlement) |
+| Property Lookup (hydrate) | `POST /api/v1/property/lookup/all-attributes` `{requests:[{propertyId}]}` | developer.batchdata.com (Exa fetch, 2026-09-16 — CONFIRMED live path, differs from the lane prompt's shorter `property/lookup`) | 100/request chunk (this repo's own conservative choice, no documented cap found) | — |
+| Incremental Property Search | `options.useCursorPagination`, `options.take`, `options.pageCursor` ← previous `results.nextPageCursor`; `options.searchSession` (named, persistent, only-new delivery) | help.batchdata.io | Requires token ability `property-search-sessions` (else 403); `resultsFound` frozen from page 1; no random sort while paging | Exact 403 wording for a missing ability not independently observed — detected heuristically |
+| Active-listing discovery | `orQuickLists:["on-market"]` (+ pending/expired/canceled/failed/recently-sold via the same quickList vocabulary) | help.batchdata.io | Same as the underlying Property Search | `market_active_listings` (m636) has no MLS field-level status beyond the quickList-derived bucket (active/expired/withdrawn/sold) |
+| Buy Box (investor matching) | MCP tools `investor_buybox_preview`/`count`/`page` only | batchdata.io/buy-box-api (marketing copy — **no independently confirmed REST endpoint**) | MCP-only — no fallback when `BATCHDATA_MCP_URL` is unset | Per-call price not confirmed; metered at an estimate |
+| Comps dataset | `comps` dataset projection on the SAME `property/search`/`property/lookup` call (14 named projections: `basic comps batchrank contact core deed demographic foreclosure image listing mortgage-liens owner permit quicklist valuation`) | developer.batchdata.com Property Lookup reference (Exa fetch, 2026-09-16 — CONFIRMED) | — | Field-level shape of a `comps` row not independently re-walked this wave (read defensively, reusing shapes this repo already trusts for the sibling datasets) |
+| Wallet (balance, consumption report) | `GET wallet/balance`, `GET wallet/consumption-report` under `/api/v1` (V1 nav confirms a "Wallet" section exists) | developer.batchdata.com (Stoplight SPA — **path segments NOT independently confirmed**, following this file's own v1 naming convention as a best guess) | — | Response field names (`balance`, `totalConsumed`) are guesses read defensively across plausible shapes; treat `reconcileBatchDataWalletSpend`'s drift signal as advisory only until confirmed against a live account |
+
+Coverage row (extends the matrix above): motivated-seller BatchData sourcing stays `lane B` (not
+owned by this lane); the six capabilities above are ADDITIVE and each is its own `sourceChannel`
+(`batchdata_smart_search`, `batchdata_incremental`, none for the listings feed itself — it writes
+`market_active_listings` + `motivated_seller_signals`, not a raw lead — `batchdata_buybox`) so
+none collapses into another (owner: never merge look-alike scraping lanes).
+
+Files: `lib/external/batchdata-client.ts` (REST — subscription plan/create/list/delete, property
+lookup, incremental search, comps, wallet, buy-box normalizer), `lib/external/batchdata-mcp.ts`
+(MCP wrappers for buy-box + comps), `lib/kernel/listings-batchdata-feed.ts` (the three per-market
+orchestration functions), `app/api/webhooks/batchdata-smart-search/route.ts` (ids-only envelope +
+hydrate), `app/api/cron/lead-scraping/route.ts` (BatchData branch — reconcile plan, opt-in
+incremental/active-listing/buy-box steps, end-of-run wallet reconcile), `lib/cma/comp-provider.ts`
+(BatchData comps beside RentCast). Migrations `m635`/`m636` (WRITTEN, NOT APPLIED).

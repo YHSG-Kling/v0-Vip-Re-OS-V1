@@ -289,8 +289,11 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
   // ── 4. ISA TOUCHES — intelligent_outreach_log, ai_isa_calls, voice_calls, ai_isa_activities ─
   if (contactId) {
     const [outreachRes, isaCallsRes, voiceCallsRes, isaActivitiesRes] = await Promise.all([
+      // `result` (wave 66): the ISA delivery-outcome writer, lib/ai-isa/isa-outreach-logger.ts
+      // ::logISAOutreach, now stamps sent | delivered | failed | replied on every contact-entity
+      // touch. This was a readerless column (selected nowhere) before this line.
       svc.from("intelligent_outreach_log")
-        .select("id, outreach_type, channel, created_at")
+        .select("id, outreach_type, channel, result, created_at")
         .eq("contact_id", contactId),
       svc.from("ai_isa_calls")
         .select("id, script_used, appointment_set, lead_quality_score, created_at")
@@ -308,7 +311,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
         id: `outreach:${r.id}`,
         type: "isa_outreach",
         occurredAt: r.created_at ?? null,
-        summary: `Value-first outreach sent: ${r.outreach_type ?? "outreach"}${r.channel ? ` via ${r.channel}` : ""}`,
+        summary: `Value-first outreach sent: ${r.outreach_type ?? "outreach"}${r.channel ? ` via ${r.channel}` : ""}${r.result && r.result !== "sent" ? ` (${r.result})` : ""}`,
         sensitivity: "summary_safe",
       })
     }

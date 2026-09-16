@@ -89,6 +89,7 @@ import {
 } from "@/lib/property/rentcast-eligibility"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
+import { fetchBatchDataComps, type BatchDataComp } from "@/lib/external/batchdata-client"
 import {
   findCompsViaPerplexity,
   PERPLEXITY_COMP_SEARCH_COST_USD,
@@ -510,7 +511,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     }
   }
 
-  const closedComps = soldSelected
+  let closedComps = soldSelected
     .sort((a, b) => b.comp.similarityScore - a.comp.similarityScore || compareDesc(a.date, b.date))
     .slice(0, REQUIRED_SOLD_COMPS)
     .map((c) => c.comp)
@@ -519,6 +520,51 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     notes.push(
       `Only ${closedComps.length} closed comparable sale(s) could be sourced — below the ${REQUIRED_SOLD_COMPS}-sale minimum this CMA is supposed to rest on.`,
     )
+  }
+
+  // ── 3b. BATCHDATA COMPS DATASET — a SECOND REAL DATA PROVIDER, sold side only ──
+  //
+  // Owner ruling (wave 66): "Batchdata also allows you to find properties that
+  // are active and other new features… enhance our lead acquisition,
+  // enrichment and listing providing." Wired here BESIDE RentCast, never
+  // replacing it — RentCast stays the platform default (the ruling this file's
+  // header already implements). Tried ONLY when RentCast alone left the sold
+  // side short, because a real second PROVIDER (unlike Perplexity's AI web
+  // search, which AI_GAP_FILL_SLOTS refuses for the sold side on purpose — see
+  // that constant's own reasoning) is allowed to help fill closed sales: it is
+  // still a licensed data feed with a verifiable comp record, not a model's
+  // guess. Every row carries `sourceProvider: "batchdata"` so the disclaimer
+  // and the appraiser packet can distinguish it from RentCast's own comps.
+  let batchDataSoldContribution = 0
+  if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY) {
+    try {
+      const bd = await fetchBatchDataComps(fullAddress)
+      costCents += Math.round(bd.cost * 100)
+      void logVendorUsage({
+        vendorName: "batchdata", usageType: "comps_lookup", unitCount: 1,
+        estimatedCost: bd.cost, systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
+        brokerageId: req.brokerageId,
+        metadata: { purpose: "cma_sold_comp_gap_fill", rows: bd.comps.length, contact_id: req.contactId ?? null },
+      }).catch(() => null)
+
+      if (bd.ok && bd.comps.length > 0) {
+        const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
+        const closedBd = bd.comps
+          .filter((c) => c.status === "closed" && c.address && !seenAddr.has(normalizeAddress(c.address)))
+          .map((c) => toScoredCompFromBatchData(req.subject, c))
+          .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
+        if (closedBd.length > 0) {
+          closedComps.push(...closedBd)
+          batchDataSoldContribution = closedBd.length
+          citations.push("BatchData comparable-property dataset (comps)")
+          notes.push(`${closedBd.length} closed comparable sale(s) came from BatchData's comps dataset, a SECOND real data provider, to fill the sold-side shortfall RentCast left — not an AI gap-fill.`)
+        }
+      } else if (!bd.ok) {
+        notes.push(`BatchData comps dataset was tried to fill the sold-side shortfall and failed: ${bd.error}`)
+      }
+    } catch (e) {
+      notes.push(`BatchData comps dataset lookup threw and was skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   // ── 4. Active + pending: IDX when connected, RentCast otherwise ───────────
@@ -754,7 +800,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     activeComps,
     pendingComps,
     provenance: {
-      soldProvider: closedComps.length > 0 ? "rentcast" : "none",
+      soldProvider: closedComps.length === 0 ? "none" : batchDataSoldContribution > closedComps.length - batchDataSoldContribution ? "batchdata" : "rentcast",
       activeProvider,
       pendingProvider,
       idxConnected,
@@ -937,6 +983,42 @@ function toScoredCompFromRentcast(
     sourceProvider: "rentcast",
     priceBasis: status === "closed" ? "closed_sale" : "list_price",
   }
+}
+
+/** BatchData's `comps` dataset publishes no similarity metric of its own (unlike
+ *  RentCast's `correlation`, which is used directly when present) — falls back to
+ *  the same deterministic featureSimilarity every IDX/AI row already uses. */
+function toScoredCompFromBatchData(subject: SubjectFeatures, c: BatchDataComp): ScoredComp {
+  const { fullBaths, halfBaths } = splitBaths(c.bathrooms)
+  const comp: ScoredComp = {
+    address: c.address ?? "",
+    status: c.status === "unknown" ? "closed" : c.status,
+    salePrice: c.salePrice ?? 0,
+    saleDate: c.saleDate ?? new Date().toISOString().slice(0, 10),
+    sqftLiving: c.sqftLiving,
+    bedrooms: c.bedrooms,
+    fullBaths,
+    halfBaths,
+    garageSpaces: null,
+    hasPool: null,
+    isWaterfront: null,
+    hasView: null,
+    lotSizeAcres: null,
+    yearBuilt: null,
+    conditionGrade: null,
+    basementFinished: null,
+    isNewConstruction: null,
+    isGated: null,
+    daysOnMarket: null,
+    pricePerSqft: c.salePrice && c.sqftLiving && c.sqftLiving > 0 ? Math.round(c.salePrice / c.sqftLiving) : null,
+    similarityScore: c.similarityScore ?? 0,
+    citation: "BatchData comparable-property dataset (comps)",
+    distanceMiles: c.distanceMiles,
+    sourceProvider: "batchdata",
+    priceBasis: c.status === "closed" ? "closed_sale" : "list_price",
+  }
+  if (comp.similarityScore === 0) comp.similarityScore = featureSimilarity(subject, comp)
+  return comp
 }
 
 function toScoredCompFromIdx(

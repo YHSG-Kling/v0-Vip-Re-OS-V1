@@ -498,14 +498,35 @@ BEGIN
 END
 $$;
 
--- ── user_id → users (4 tables) ──────────────────────────────
+-- ── user_id → users (3 tables) ──────────────────────────────
+-- FIX (census round 11, 2026-09-16, lane 66D): journey_states DROPPED from
+-- this block. m610 (supabase/migrations/m610-two-text-user-id-columns-become-keys.sql,
+-- APPLIED 2026-09-07 — AFTER this file was written) ruled that
+-- journey_states.user_id "STAYS TEXT, ON PURPOSE. It is not a user id" — the
+-- live UNIQUE(user_id) plus lib/kernel/dual-intent-linker.ts::journeyUserKey
+-- key ONE row per (contact, side) as the composite string `${contactId}:buyer`
+-- / `${contactId}:seller`, which is never a real users.id and is not even
+-- uuid-shaped. Verified against the live caches: scripts/schema-fk-map.ts:415
+-- lists journey_states' FKs as only brokerage_id/contact_id/deal_id/listing_id
+-- (no user_id), confirming the FK was never added; scripts/schema-fk-map.ts
+-- lines 362/640/790 show document_downloads.user_id, saved_properties.user_id
+-- and video_generation_queue.user_id already carry a live FK to users (the
+-- saved_properties one from m610 itself), so this block is a no-op for those
+-- three (skipped by the "already has a foreign key" check) and only
+-- journey_states was ever live work here. Left in as written, this block's
+-- own pre-step would refuse to retype journey_states.user_id (non-null rows
+-- once any dual-intent journey exists) and the ADD CONSTRAINT below would
+-- then try a uuid FK on a text column — a type-mismatch error that aborts
+-- the whole file's single implicit transaction, which is the likely reason
+-- this migration is still WRITTEN, NOT APPLIED. Dropping journey_states here
+-- makes the block match live reality (3 tables, all now no-ops) without
+-- touching the file's provenance header above.
 DO $$
 DECLARE
   t text;
   n int := 0;
   targets text[] := ARRAY[
     'document_downloads',
-    'journey_states',
     'saved_properties',
     'video_generation_queue'
   ];
@@ -540,7 +561,7 @@ BEGIN
     n := n + 1;
   END LOOP;
 
-  RAISE NOTICE 'm608: added % user_id -> users foreign key(s) of 4 expected', n;
+  RAISE NOTICE 'm608: added % user_id -> users foreign key(s) of 3 expected', n;
 END
 $$;
 
