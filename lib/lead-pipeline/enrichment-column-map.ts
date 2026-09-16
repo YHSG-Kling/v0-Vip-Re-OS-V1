@@ -25,6 +25,8 @@ export interface EnrichmentProfileLike {
   education?: Array<{ school?: string | null; degree?: string | null; major?: string | null }> | null
   home_owner_status?: string | null
   home_value?: number | null
+  net_worth?: string | null
+  credit_score_range?: string | null
   linkedin_url?: string | null
   facebook_url?: string | null
   twitter_url?: string | null
@@ -89,6 +91,10 @@ export function peopleDataProfileToContactColumns(
   set('education_level', deriveEducationLevel(profile.education))
   set('home_owner_status', profile.home_owner_status)
   set('home_value_estimate', typeof profile.home_value === 'number' ? profile.home_value : undefined)
+  // m640: PeopleData's own market-intelligence estimates — distinct from the
+  // agent-tracked contacts.credit_score_band (see the migration header).
+  set('net_worth_range', profile.net_worth)
+  set('credit_score_range', profile.credit_score_range)
   set('linkedin_url', profile.linkedin_url)
   set('facebook_url', profile.facebook_url)
   set('twitter_url', profile.twitter_url)

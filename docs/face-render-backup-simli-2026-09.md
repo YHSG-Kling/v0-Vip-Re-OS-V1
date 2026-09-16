@@ -97,10 +97,23 @@ with `provider = 'simli'`, and a vendor-usage row at the Simli rate on close.
 ## 7. Blind spots
 
 - No Simli session was run (no `SIMLI_API_KEY` in this environment).
-- Anonymous embed/site visitors: `/api/internal/voice-tts` is auth-gated to a
-  Supabase session, so the Simli TTS leg on the *anonymous* embed surface
-  will 401 today; the portal surface (signed-in contact) works end to end.
-  Follow-up: a short-lived, session-scoped TTS token for the embed widget.
+- **RESOLVED (lane 63B, carried forward — verified live by lane 67C on
+  6c75aef4):** the anonymous embed/site 401 above is fixed. `/api/embed/session`
+  mints a `live_agent_sessions` row on the Simli fail-over leg
+  (`provider: "simli"`) and returns its id as `liveSessionId`;
+  `SimliFaceSession.tsx` sends that `liveSessionId` to
+  `/api/internal/voice-tts`, which branches BEFORE requiring a Supabase
+  session and resolves tenant/agent/voice OFF THE ROW via the one shared
+  resolver `resolveOpenSimliSession` (`lib/did/live-session-metering.ts`) —
+  never from the request body (CLAUDE.md §4). That resolver is the
+  short-lived, session-scoped door this bullet used to ask for: it proves the
+  row is OPEN (`status = 'active'`), is genuinely a SIMLI session (never a
+  D-ID session's id), and its heartbeat is still fresh (`STALE_AFTER_MS` =
+  10 min — the same threshold the sweeper uses), refusing 404/409 otherwise.
+  No Supabase session ever reaches this branch; the portal's signed-in path
+  is untouched (unchanged `else` branch, still `resolveSelfVoice(user.id)`).
+  Proof: `test:face-render-seam` §voiceTts (`scripts/face-render-seam-simulator.ts`),
+  73/73 passing, including the tenant-off-the-row control.
 - Simli's "idle-state motion" weakness (vendor-acknowledged) is untested here.
 - Trinity face-generation response fields are undocumented (`schema: {}`);
   the four-key fallback above is the honest reading, confirm on first use.

@@ -314,6 +314,10 @@ export async function GET(request: Request) {
                   source:       "zillow_behavior",
                   sourceFamily: "property_search",
                   sourceChannel: site,
+                  // ZenRows returns a per-scrape cost (scraped.cost, metered above into
+                  // sourceCostUsd); the kernel spreads it across this site's records as
+                  // raw_scraped_leads.cost_per_record, same as the nextdoor/social call sites.
+                  batchCostUsd: scraped.cost ?? null,
                 })
                 sourceLeadsCreated += siteInserted
                 results.total_leads_created += siteInserted

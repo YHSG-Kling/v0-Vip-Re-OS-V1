@@ -396,7 +396,20 @@ export async function processEnrichmentQueue(
           }
           result.succeeded++
         } else {
-          const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES)
+          // Classify like the top-level catch (~:1034): a free-lane provider that is
+          // simply unreachable/keyless is transient (retry later), but a provider
+          // refusing on the SAME account-config signature (token ability missing /
+          // provisioning required) is a config fault and must terminalize + escalate
+          // once rather than burn MAX_RETRIES against a wall that will not move.
+          const freeLaneFault = classifyEnrichmentFault(laneNote)
+          if (freeLaneFault === "config") {
+            await escalateConfigFaultOnce(supabase, {
+              brokerageId,
+              vendor: plan.label,
+              errorMessage: laneNote,
+            })
+          }
+          const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, freeLaneFault)
           const { error: retryError } = await supabase
             .from('lead_enrichment_queue')
             .update({
@@ -830,6 +843,10 @@ export async function processEnrichmentQueue(
                   childrenCount: enriched.childrenCount ?? null,
                   householdSize: enriched.householdSize ?? null,
                   householdIncome: enriched.householdIncome ?? null,
+                  // m640: promoted from the jsonb blob alongside household_income —
+                  // see lib/lead-pipeline/enrichment-column-map.ts and the migration header.
+                  netWorth: enriched.netWorth ?? null,
+                  creditScoreRange: enriched.creditScoreRange ?? null,
                   homeOwnerStatus: enriched.homeOwnerStatus ?? null,
                   homeValue: enriched.homeValue ?? null,
                   occupation: enriched.currentTitle ?? null,
@@ -907,6 +924,10 @@ export async function processEnrichmentQueue(
         // through to the ORIGINAL Step 7 no-match handling below, unchanged.
         let batchDataFallback: { phones: string[]; emails: string[] } | null = null
         let batchDataFallbackCost = 0
+        // Captured (not just logged) so the Step 7 no-match path below can classify it
+        // instead of always defaulting to "transient" — a BatchData token/provisioning
+        // refusal here is the SAME config fault the top-level catch (~:1034) escalates.
+        let batchDataFallbackErrorMessage: string | null = null
         if (process.env.BATCHDATA_API_KEY && (entity.first_name || entity.address || entity.mailing_address)) {
           try {
             const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
@@ -923,6 +944,7 @@ export async function processEnrichmentQueue(
             const m = matches[0]
             if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails }
           } catch (e) {
+            batchDataFallbackErrorMessage = e instanceof Error ? e.message : String(e)
             console.warn('[enrichment-orchestrator] batchdata skip-trace fallback failed (non-blocking):', e)
           }
           if (batchDataFallbackCost > 0) {
@@ -977,7 +999,21 @@ export async function processEnrichmentQueue(
         // FINAL attempt terminalize to 'failed' (NOT 'pending') so a permanently-
         // unmatchable lead doesn't sit as a zombie 'pending' entry the fetch will never
         // pick up again, and surface it to automation_errors like the exception path.
-        const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES)
+        //
+        // Classify like the top-level catch (~:1034): a genuine "no match" is transient
+        // (worth retrying — a later scrape can still find the person), but a swallowed
+        // BatchData fallback refusal (token ability missing / not provisioned) is a
+        // CONFIG fault on the ACCOUNT and must terminalize + escalate once, not burn
+        // MAX_RETRIES against the same wall.
+        const step7Fault = classifyEnrichmentFault(batchDataFallbackErrorMessage)
+        if (step7Fault === "config") {
+          await escalateConfigFaultOnce(supabase, {
+            brokerageId,
+            vendor: "batchdata",
+            errorMessage: batchDataFallbackErrorMessage!,
+          })
+        }
+        const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, step7Fault)
         await supabase
           .from('lead_enrichment_queue')
           .update({

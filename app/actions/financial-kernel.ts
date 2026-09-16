@@ -255,7 +255,10 @@ export async function loadBrokerageFinancialSummaryAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await loadBrokerageFinancialSummary({ ...input, ctx })
+    // TENANT OVERRIDE REMOVED (§4) — same shape as markCommissionPaidAction below:
+    // a client-supplied brokerageId forwarded unchanged into a SERVICE-role query
+    // would let any authenticated finance user read another brokerage's books.
+    return await loadBrokerageFinancialSummary({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -266,7 +269,8 @@ export async function loadCommissionQueueAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await loadCommissionQueue({ ...input, ctx })
+    // TENANT OVERRIDE REMOVED (§4) — see loadBrokerageFinancialSummaryAction above.
+    return await loadCommissionQueue({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -277,7 +281,8 @@ export async function loadCommissionDistributionsAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await loadCommissionDistributions({ ...input, ctx })
+    // TENANT OVERRIDE REMOVED (§4) — see loadBrokerageFinancialSummaryAction above.
+    return await loadCommissionDistributions({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -288,7 +293,8 @@ export async function recalculateCommissionStateAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await recalculateCommissionState({ ...input, ctx })
+    // TENANT OVERRIDE REMOVED (§4) — see loadBrokerageFinancialSummaryAction above.
+    return await recalculateCommissionState({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -307,7 +313,13 @@ export async function markCommissionApprovedAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await markCommissionApproved({ ...input, approvedBy: input.approvedBy ?? ctx.userId, ctx })
+    // TENANT OVERRIDE REMOVED (same hole as resolveFinancialContext above, §4): a
+    // client-supplied brokerageId on a money-status-transition action, forwarded
+    // unchanged into the kernel's SERVICE-role `.eq("brokerage_id", brokerageId)`
+    // filter, let any authenticated finance admin approve a commission belonging
+    // to a brokerage they merely knew the id of. House pattern: accepted and
+    // ignored — the session's brokerage is the only brokerage.
+    return await markCommissionApproved({ ...input, brokerageId: ctx.brokerageId, approvedBy: input.approvedBy ?? ctx.userId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -318,7 +330,15 @@ export async function markCommissionPaidAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await markCommissionPaid({ ...input, ctx })
+    // TENANT OVERRIDE REMOVED (§4 — same IDOR shape as resolveFinancialContext's
+    // comment above): input.brokerageId used to flow straight through to
+    // markCommissionPaid's `.eq("brokerage_id", brokerageId)` lookup AND its
+    // lifecycle_events insert, both on the service client (RLS bypassed). A
+    // caller who knew (or enumerated) another brokerage's id and one of its
+    // commissionIds could mark THAT brokerage's commission paid — real money,
+    // real audit trail, wrong tenant. The session's brokerage is the only one
+    // this action will ever act against.
+    return await markCommissionPaid({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -328,7 +348,8 @@ export async function markCommissionPaidAction(
 export async function fileCommissionDisputeAction(input: { commissionId: string; brokerageId: string; reason: string }) {
   try {
     const ctx = await getFinancialActorContext()
-    return await markCommissionDisputed({ ctx, commissionId: input.commissionId, brokerageId: input.brokerageId, reason: input.reason })
+    // TENANT OVERRIDE REMOVED (§4) — same shape as markCommissionPaidAction above.
+    return await markCommissionDisputed({ ctx, commissionId: input.commissionId, brokerageId: ctx.brokerageId, reason: input.reason })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -338,7 +359,8 @@ export async function fileCommissionDisputeAction(input: { commissionId: string;
 export async function resolveCommissionDisputeAction(input: { commissionId: string; brokerageId: string; resolution: "upheld" | "corrected" | "reopened"; notes?: string }) {
   try {
     const ctx = await getFinancialActorContext()
-    return await resolveCommissionDispute({ ctx, commissionId: input.commissionId, brokerageId: input.brokerageId, resolution: input.resolution, notes: input.notes })
+    // TENANT OVERRIDE REMOVED (§4) — same shape as markCommissionPaidAction above.
+    return await resolveCommissionDispute({ ctx, commissionId: input.commissionId, brokerageId: ctx.brokerageId, resolution: input.resolution, notes: input.notes })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -463,7 +485,8 @@ export async function exportFinancialReportAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await exportFinancialReport({ ...input, ctx })
+    // TENANT OVERRIDE REMOVED (§4) — see loadBrokerageFinancialSummaryAction above.
+    return await exportFinancialReport({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -474,7 +497,8 @@ export async function emailFinancialReportAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await emailFinancialReport({ ...input, ctx })
+    // TENANT OVERRIDE REMOVED (§4) — see loadBrokerageFinancialSummaryAction above.
+    return await emailFinancialReport({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }

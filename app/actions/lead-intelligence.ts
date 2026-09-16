@@ -2583,12 +2583,17 @@ Timeline: ${profile.estimated_timeline}
       .select("contact_id")
       .eq("id", leadProfileId)
       .maybeSingle()
+    // `result` (owner ruling, wave 66 — see lib/ai-isa/isa-outreach-logger.ts:218 for the
+    // canonical stamp): sent | delivered | failed | replied. This call fires at dispatch
+    // time, before any provider callback could report delivered/failed/replied, so 'sent'
+    // is the only truthful value here — same posture as the canonical ISA writer.
     await supabase.from("intelligent_outreach_log").insert({
       brokerage_id: auth.brokerageId,
       contact_id:   profileRow?.contact_id ?? null,
       outreach_type: "value_first_email",
       channel:       "email",
       content:       JSON.stringify({ subject: (emailData.data as any)?.subject, body: (emailData.data as any)?.emailBody, value_offer: valueOffer }),
+      result:        "sent",
       created_at:    new Date().toISOString(),
     })
 
