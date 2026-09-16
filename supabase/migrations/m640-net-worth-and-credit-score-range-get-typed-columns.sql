@@ -1,5 +1,5 @@
 -- m640-net-worth-and-credit-score-range-get-typed-columns.sql
--- ── WRITTEN, NOT APPLIED. The integrator applies this. ──
+-- ── APPLIED LIVE 2026-09-16 on hrvaqgvukzxfskkcrwbt via mcp apply_migration (m640_net_worth_and_credit_score_range_typed_columns) ──
 --
 -- Lane 67C carry (d): PeopleData's net_worth_range and credit_score_range
 -- (lib/external/peopledata-client.ts skipTraceWithPeopleData ->

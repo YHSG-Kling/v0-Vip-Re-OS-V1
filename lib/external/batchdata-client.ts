@@ -53,6 +53,9 @@ export interface BatchDataRecord {
   beds?: number
   baths?: number
   sqft?: number
+  /** Building/property type (e.g. "Single Family", "Condo") — read for criteria-fit scoring
+   *  (wave 67: market_active_listings.property_type / investor_offmarket_candidates). */
+  propertyType?: string
   estimatedValue?: number
   // ── Rich seller-profile signal (max-info capture) ──────────────────────────
   /** All BatchData quickList tags returned for the property (cash-buyer, absentee-owner,
@@ -153,6 +156,20 @@ export const BATCHDATA_QUICKLISTS = new Set<string>([
   'tax-default', 'tired-landlord', 'trust-owned', 'unknown-equity', 'vacant', 'vacant-lot',
 ])
 
+/**
+ * INVESTOR OFF-MARKET quickLists (wave 67, owner verbatim: "with a buyer who we know is an investor
+ * intent, that we are giving them off market listings"). The named subset of BATCHDATA_QUICKLISTS an
+ * investor-intent contact's off-market rail pulls from — every slug validated against
+ * BATCHDATA_QUICKLISTS (asserted in the simulator), and 'on-market'/'pending-listing'/
+ * 'recently-sold'/'active-listing' NEVER appear here — that vocabulary is the regular-buyer rail's
+ * (market_active_listings, current_status='active'). Used by
+ * lib/buyer-search/investor-offmarket-runner.ts beside the existing scraped lead/contact sourcing —
+ * ADDITIVE, never a replacement.
+ */
+export const INVESTOR_OFFMARKET_QUICKLISTS = [
+  "absentee-owner", "high-equity", "tired-landlord", "vacant", "preforeclosure", "inherited",
+] as const satisfies readonly string[]
+
 // Maps our internal motivation types to VALID BatchData Property Search quickList slugs. Each value
 // is a real quickList from BATCHDATA_QUICKLISTS (validated by the simulator).
 const QUICKLIST_SLUG: Record<string, string> = {
@@ -221,6 +238,7 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
     beds:  building.bedroomCount       ?? building.beds  ?? undefined,
     baths: building.bathroomCount      ?? building.baths ?? undefined,
     sqft:  building.livingAreaSquareFeet ?? building.sqft ?? undefined,
+    propertyType: building.propertyType ?? building.property_type ?? p.propertyType ?? undefined,
     estimatedValue: valuation.estimatedValue ?? p.estimatedValue ?? undefined,
     // Rich seller-profile signal (preserved for downstream scoring, AI-ISA scripts, dashboards)
     quickLists: quickLists.length ? quickLists : undefined,

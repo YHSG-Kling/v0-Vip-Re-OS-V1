@@ -153,6 +153,12 @@ export async function runActiveListingDiscoveryForMarket(
           zip: record.propertyZip ?? record.zip ?? null,
           current_status: status,
           list_price: record.estimatedValue ?? null,
+          // m639 — criteria-fit specs (beds/baths/sqft/property_type), nullable: honest when a
+          // pull's building sub-object is absent, never a fabricated 0/null-string default.
+          beds: record.beds ?? null,
+          baths: record.baths ?? null,
+          sqft: record.sqft ?? null,
+          property_type: record.propertyType ?? null,
           batchdata_quicklists: record.quickLists ?? [],
           last_seen_at: new Date().toISOString(),
           ...(isTransition || isFirstSeen ? { last_status_change_at: new Date().toISOString() } : {}),

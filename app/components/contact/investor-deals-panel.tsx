@@ -25,10 +25,23 @@ interface OffMarketMatch {
   matchScore: number
   reasons: string[]
 }
+interface OffMarketCandidate {
+  id: string
+  property_address: string
+  city: string | null
+  zip: string | null
+  quicklists: string[]
+  estimated_value: number | null
+  equity_percent: number | null
+  fit_score: number
+  delivered_at: string | null
+}
 interface Match {
   candidate_count: number
   candidates: OffMarketMatch[]
   last_matched_at: string | null
+  // BatchData off-market rail (wave 67) — riding alongside the scraped-inventory candidates above.
+  offMarketCandidates?: OffMarketCandidate[]
 }
 
 function scoreStyle(s: number): string {
@@ -70,6 +83,7 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
   }
 
   const deals = (match?.candidates ?? []).slice(0, 10)
+  const batchDataDeals = (match?.offMarketCandidates ?? []).slice(0, 10)
 
   return (
     <Card>
@@ -106,6 +120,27 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
                       <TrendingUp className="h-3 w-3" />{d.reasons.slice(0, 2).join(" · ")}
                     </p>
                   )}
+                </div>
+              ))}
+            </>
+          )}
+          {batchDataDeals.length > 0 && (
+            <>
+              <p className="text-xs text-muted-foreground pt-2">{batchDataDeals.length} additional off-market propert{batchDataDeals.length === 1 ? "y" : "ies"} from BatchData (absentee / high-equity / tired-landlord / vacant / pre-foreclosure / probate) — never on-market.</p>
+              {batchDataDeals.map((d) => (
+                <div key={d.id} className="p-3 rounded-lg border">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">{d.property_address}{d.city ? `, ${d.city}` : ""}{d.zip ? ` ${d.zip}` : ""}</span>
+                    <Badge className={scoreStyle(d.fit_score)}>{Math.round(d.fit_score * 100)}% fit</Badge>
+                    {d.quicklists.slice(0, 2).map((q) => (
+                      <Badge key={q} variant="outline" className="text-[10px] capitalize">{q.replace(/-/g, " ")}</Badge>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {d.estimated_value != null && `~$${Math.round(d.estimated_value).toLocaleString()} est. value`}
+                    {d.equity_percent != null && ` · ${Math.round(d.equity_percent)}% equity`}
+                    {!d.delivered_at && " · new"}
+                  </p>
                 </div>
               ))}
             </>

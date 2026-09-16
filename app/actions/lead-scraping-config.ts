@@ -584,6 +584,12 @@ export interface MarketActiveListingRow {
   zip: string | null
   current_status: string
   list_price: number | null
+  // m639 — criteria-fit specs so admins can see WHY the buyer-match scorer would (or wouldn't)
+  // fit a buyer's box against this feed row; read by market-watch.ts::runMarketWatchForBuyer.
+  beds: number | null
+  baths: number | null
+  sqft: number | null
+  property_type: string | null
   batchdata_quicklists: string[]
   last_seen_at: string | null
   last_status_change_at: string | null
@@ -648,7 +654,7 @@ export async function getBatchDataFeedStatus(): Promise<{
 
     const { data: listings, error: listingsErr } = await supabase
       .from("market_active_listings")
-      .select("id, market_id, property_address, city, state, zip, current_status, list_price, batchdata_quicklists, last_seen_at, last_status_change_at")
+      .select("id, market_id, property_address, city, state, zip, current_status, list_price, beds, baths, sqft, property_type, batchdata_quicklists, last_seen_at, last_status_change_at")
       .in("market_id", marketIds)
       .order("last_seen_at", { ascending: false })
       .limit(200)
@@ -676,6 +682,8 @@ export async function getBatchDataFeedStatus(): Promise<{
         city: l.city ?? null, state: l.state ?? null, zip: l.zip ?? null,
         current_status: l.current_status,
         list_price: typeof l.list_price === "number" ? l.list_price : l.list_price != null ? Number(l.list_price) : null,
+        beds: l.beds ?? null, baths: l.baths != null ? Number(l.baths) : null,
+        sqft: l.sqft ?? null, property_type: l.property_type ?? null,
         batchdata_quicklists: Array.isArray(l.batchdata_quicklists) ? l.batchdata_quicklists.map(String) : [],
         last_seen_at: l.last_seen_at ?? null, last_status_change_at: l.last_status_change_at ?? null,
       })),

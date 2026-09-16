@@ -668,6 +668,12 @@ export function MarketsSetupClient({
                     <span className="shrink-0 text-xs font-medium">{usd(l.list_price)} · {l.current_status}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
+                    {(l.beds != null || l.baths != null || l.sqft != null || l.property_type) && (
+                      <>
+                        {[l.beds != null ? `${l.beds} bd` : null, l.baths != null ? `${l.baths} ba` : null, l.sqft != null ? `${l.sqft.toLocaleString()} sqft` : null, l.property_type].filter(Boolean).join(" · ")}
+                        {" · "}
+                      </>
+                    )}
                     seen {when(l.last_seen_at)} · status changed {when(l.last_status_change_at)}
                     {l.batchdata_quicklists.length > 0 && ` · ${l.batchdata_quicklists.join(", ")}`}
                   </p>
