@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1791 of 1851 pairs) — storing them would be
+ * overwhelming majority (1794 of 1854 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1928 edges across 712 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1851 unordered
+ * MEASURED AT GENERATION: 1931 edges across 713 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1854 unordered
  * table pairs carry at least one FK; 60
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-16
  * source: public.live_foreign_keys_json()
- * body-sha256: 9270ad407ff6f32b1f7115aa41dabbb59b2fd9ccc4958401010e05311f39bd42
+ * body-sha256: f999fc6c18dd73f5a8ec2e394e74fe7edb823fecef4b60f123dde516f80434e8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -411,6 +411,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "intelligence_signals_log": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "intelligent_outreach_log": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "investor_deal_matches": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
+  "investor_offmarket_candidates": { "brokerage_id": "brokerages", "contact_id": "contacts", "market_id": "lead_scraping_markets" },
   "isa_outreach_log": { "agent_id": "agents", "brokerage_id": "brokerages", "calendar_event_id": "calendar_events", "contact_id": "contacts", "lead_id": "leads" },
   "journey_stage_progress": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "journey_states": { "brokerage_id": "brokerages", "contact_id": "contacts", "deal_id": "transactions", "listing_id": "listings" },
