@@ -23,6 +23,7 @@ import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { blankComments } from "./strip-comments"
 import { INVESTOR_OFFMARKET_QUICKLISTS, BATCHDATA_QUICKLISTS } from "../lib/external/batchdata-client"
+import { normalizeActiveListingSources, DEFAULT_ACTIVE_LISTING_SOURCES, type ActiveListingSource } from "../lib/buyer-search/listing-source-order"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -140,6 +141,100 @@ function dedupeAndTerritory() {
   check("bounded to 2 markets per contact (cost control — never an unbounded territory fan-out)", /\.slice\(0, 2\)/.test(runner))
 }
 
+function activeListingSourceOrderWave68() {
+  console.log("\n[wave 68 — active-listing source order: cost ruling on the BatchData on-market pull]")
+
+  // ── PURE: the resolver's own default + normalization ──────────────────────────────────────
+  check("DEFAULT excludes batchdata_on_market (cost reason — off by default)",
+    !DEFAULT_ACTIVE_LISTING_SOURCES.includes("batchdata_on_market"))
+  check("DEFAULT is exactly [idx, rentcast] in that order (the owner-ruled precedence)",
+    DEFAULT_ACTIVE_LISTING_SOURCES.length === 2 && DEFAULT_ACTIVE_LISTING_SOURCES[0] === "idx" && DEFAULT_ACTIVE_LISTING_SOURCES[1] === "rentcast")
+  check("normalizer drops an unknown/junk value and keeps the real ones, in order",
+    JSON.stringify(normalizeActiveListingSources(["idx", "bogus", "rentcast", 42, null])) === JSON.stringify(["idx", "rentcast"]))
+  check("normalizer dedupes (first occurrence wins)",
+    JSON.stringify(normalizeActiveListingSources(["rentcast", "idx", "rentcast"])) === JSON.stringify(["rentcast", "idx"]))
+  check("normalizer falls back to the DEFAULT on a non-array (malformed column)",
+    JSON.stringify(normalizeActiveListingSources("not-an-array")) === JSON.stringify(DEFAULT_ACTIVE_LISTING_SOURCES))
+  check("normalizer falls back to the DEFAULT when every entry is junk (never an empty list)",
+    JSON.stringify(normalizeActiveListingSources(["nope", "also-nope"])) === JSON.stringify(DEFAULT_ACTIVE_LISTING_SOURCES))
+  // POSITIVE CONTROL (§2): a raw pass-through (no normalization at all) would NOT match the
+  // asserted behavior above — proves the assertion actually exercises filtering, not an identity.
+  const identity = (v: unknown) => v as ActiveListingSource[]
+  check("positive control: an unfiltered pass-through does NOT equal the normalized result (the finder can tell them apart)",
+    JSON.stringify(identity(["idx", "bogus", "rentcast"])) !== JSON.stringify(normalizeActiveListingSources(["idx", "bogus", "rentcast"])))
+
+  // ── SOURCE: every consumer calls the ONE resolver ──────────────────────────────────────────
+  const mw = stripped("lib/buyer-search/market-watch.ts")
+  check("market-watch.ts imports the ONE resolver (no second reader of the setting)",
+    /import \{ resolveActiveListingSources \} from "\.\/listing-source-order"/.test(mw))
+  const mwGateRe = /const sources = await resolveActiveListingSources\(brokerageId\)[\s\S]*?if \(sources\.includes\("batchdata_on_market"\)\)/
+  check("runMarketWatchForBuyer gates the market_active_listings pull on the resolved order", mwGateRe.test(mw))
+  // POSITIVE CONTROL (§2): mutate the gate condition to a different source name — the SAME
+  // regex, over the mutated text, must fail, proving the finder is not a tautology.
+  const mwMutated = mw.replace('if (sources.includes("batchdata_on_market")) {', 'if (sources.includes("nonexistent_source")) {')
+  check("positive control: mutating the gated source name breaks the same assertion", !mwGateRe.test(mwMutated))
+
+  const em = stripped("lib/buyer-search/external-match.ts")
+  check("external-match.ts imports the SAME resolver (one vocabulary, §6)",
+    /import \{ resolveActiveListingSources \} from "\.\/listing-source-order"/.test(em))
+  check("runExternalMarketWatchForBuyer no-ops when BOTH idx and rentcast are excluded",
+    /if \(!sources\.includes\("idx"\) && !sources\.includes\("rentcast"\)\)/.test(em))
+  check("runExternalMarketWatchForBuyer refuses a CONNECTION-chosen tier this brokerage excluded (never overrides the connection precedence, only narrows it)",
+    /if \(!sources\.includes\(result\.source\)\)[\s\S]{0,120}reason: `\$\{result\.source\}_excluded_by_setting`/.test(em))
+
+  const feed = stripped("lib/kernel/listings-batchdata-feed.ts")
+  check("listings-batchdata-feed.ts imports the SAME resolver",
+    /import \{ resolveActiveListingSources \} from "@\/lib\/buyer-search\/listing-source-order"/.test(feed))
+  check("runActiveListingDiscoveryForMarket SKIPS the billed pull when batchdata_on_market is excluded",
+    /const sources = await resolveActiveListingSources\(market\.brokerage_id\)[\s\S]{0,120}if \(!sources\.includes\("batchdata_on_market"\)\)[\s\S]{0,120}return \{ observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] \}/.test(feed))
+  // POSITIVE CONTROL: the same regex must NOT match the file with the skip line removed.
+  const feedNoSkip = feed.replace(
+    /if \(!sources\.includes\("batchdata_on_market"\)\) \{\s*return \{ observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] \}\s*\}/,
+    "",
+  )
+  check("positive control: deleting the skip block makes the same assertion fail",
+    !/const sources = await resolveActiveListingSources\(market\.brokerage_id\)[\s\S]{0,120}if \(!sources\.includes\("batchdata_on_market"\)\)[\s\S]{0,120}return \{ observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] \}/.test(feedNoSkip))
+  check("the cron caller (app/api/cron/lead-scraping/route.ts) is UNCHANGED — the skip lives inside the function, not the cron",
+    /const r = await runActiveListingDiscoveryForMarket\(supabase, market\)/.test(stripped("app/api/cron/lead-scraping/route.ts")))
+
+  // ── SETTINGS SURFACE ────────────────────────────────────────────────────────────────────────
+  const settingsAction = stripped("app/actions/settings/active-listing-sources.ts")
+  check("settings action reads through requireBrokerageAdmin (gate first, then the client — §4)",
+    /requireBrokerageAdmin\(supabase, acting\.userId\)/.test(settingsAction) && /requireBrokerageAdmin\(supabase, ctx\.userId\)/.test(settingsAction))
+  check("settings write normalizes before persisting (never stores a value the resolver would refuse)",
+    /const normalized = normalizeActiveListingSources\(sources\)/.test(settingsAction))
+  const leadSourcesClient = stripped("app/dashboard/settings/integrations/lead-sources/lead-sources-client.tsx")
+  check("the settings page renders an ordered checklist with a per-source cost hint",
+    /SOURCE_INFO/.test(leadSourcesClient) && /updateActiveListingSourcesSetting/.test(leadSourcesClient))
+
+  // ── FEED PANEL ───────────────────────────────────────────────────────────────────────────────
+  const actions = stripped("app/actions/lead-scraping-config.ts")
+  check("getBatchDataFeedStatus resolves activeListingSources via the ONE resolver",
+    /const activeListingSources = brokerageId\s*\n\s*\? await resolveActiveListingSources\(brokerageId\)/.test(actions))
+  check("getBatchDataFeedStatus's success return carries activeListingSources",
+    (actions.match(/activeListingSources,?/g) ?? []).length >= 3) // resolve line + success return + error-path fallback
+  const panel = stripped("app/dashboard/admin/markets/markets-client.tsx")
+  check("admin markets panel shows the exact disabled note",
+    /BatchData on-market pull disabled — IDX\/RentCast serve buyer smart search/.test(panel))
+
+  // ── MIGRATION SHAPE — RULE, not a waypoint (§2): honest state, never pinned to one literal ──
+  const migration = raw("supabase/migrations/m642-active-listing-source-order.sql")
+  const m642Header = migration.split("\n")[2]
+  const m642Applied = m642Header.includes("APPLIED LIVE")
+  check("m642 header states an honest applied state", m642Applied || m642Header.includes("WRITTEN, NOT APPLIED"))
+  check("once m642 is applied the schema snapshot carries brokerage_settings.active_listing_sources",
+    !m642Applied || /active_listing_sources/.test(raw("scripts/schema-snapshot.ts")))
+  check("adds active_listing_sources as jsonb NOT NULL with the owner-ruled default",
+    /active_listing_sources jsonb NOT NULL DEFAULT '\["idx","rentcast"\]'::jsonb/.test(migration))
+  check("CHECK constraint asserts it is a jsonb ARRAY (jsonb_typeof)",
+    /CHECK \(jsonb_typeof\(active_listing_sources\) = 'array'\)/.test(migration))
+
+  // ── MANAGER REGISTRY ────────────────────────────────────────────────────────────────────────
+  const registry = stripped("lib/kernel/manager-registry.ts")
+  check("registered in MAINTENANCE_DOMAINS, owned by shopping_agent (the buyer-market-watch owner)",
+    /active_listing_source_order:\s*\{\s*manager:\s*"shopping_agent"/.test(registry))
+}
+
 async function liveLayer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
@@ -174,6 +269,7 @@ async function main() {
   regularBuyerRailSource()
   contactOnlyDelivery()
   dedupeAndTerritory()
+  activeListingSourceOrderWave68()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

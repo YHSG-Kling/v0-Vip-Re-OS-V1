@@ -32,6 +32,7 @@ import {
   type IncrementalSearchStateRow,
   type SmartSearchSubscriptionRow,
 } from "@/app/actions/lead-scraping-config"
+import type { ActiveListingSource } from "@/lib/buyer-search/listing-source-order"
 
 export interface PropertyParamsRow {
   id: string
@@ -87,6 +88,9 @@ export interface BatchDataFeedView {
   listings: MarketActiveListingRow[]
   searchState: IncrementalSearchStateRow[]
   subscriptions: SmartSearchSubscriptionRow[]
+  /** Wave 68 — this brokerage's resolved active-listing source order, so the panel can explain
+   *  whether the (billed) on-market pull below is running and why. */
+  activeListingSources: ActiveListingSource[]
   error: string | null
 }
 
@@ -597,6 +601,15 @@ export function MarketsSetupClient({
             daily reconcile admitted (five per account — POOLED by quicklist across every active territory, so
             each slot can cover many territories at once; "pooled" shows how many).
           </p>
+          {!initialFeed.activeListingSources.includes("batchdata_on_market") && (
+            <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+              BatchData on-market pull disabled — IDX/RentCast serve buyer smart search. This feed still runs
+              for territories opted into other BatchData lanes (motivated sellers, incremental search); the
+              billed on-market discovery pull specifically is off because your active-listing source order
+              (Settings → Lead Sources) doesn&apos;t include it. See docs/lead-acquisition-coverage-2026-09.md
+              for the cost comparison.
+            </p>
+          )}
         </div>
         {initialFeed.error && (
           <p className="p-3 text-xs text-destructive">{initialFeed.error}</p>

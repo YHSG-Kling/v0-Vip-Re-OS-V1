@@ -23,6 +23,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { loadBuyerCriteria, type BuyerCriteria } from "./buyer-criteria"
 export { loadBuyerCriteria, type BuyerCriteria }
 
+// Wave 68 — the ONE resolver for the brokerage's active-listing source order (cost ruling: the
+// billed BatchData on-market feed is OFF by default). See lib/buyer-search/listing-source-order.ts.
+import { resolveActiveListingSources } from "./listing-source-order"
+
 export interface ListingFacts {
   list_price?: number | null
   bedrooms?:   number | null
@@ -98,14 +102,25 @@ export async function runMarketWatchForBuyer(
   // brokerage's OWN active territories, BESIDE our own inventory above. A DIFFERENT source of
   // active-for-sale properties (not necessarily this brokerage's own listing) that still fits the
   // buyer's box — the same criteria-fit scorer, the same delivery path, never a second matcher.
-  let mq = supabase.from("market_active_listings")
-    .select("id, list_price, beds, baths, property_type, city")
-    .eq("brokerage_id", brokerageId).eq("current_status", "active").limit(200)
-  if (criteria.maxPrice != null) mq = mq.lte("list_price", criteria.maxPrice)
-  if (criteria.minBeds != null) mq = mq.gte("beds", criteria.minBeds)
-  const { data: marketActive } = await mq
-  const marketRows = ((marketActive ?? []) as Array<{ id: string; list_price: number | null; beds: number | null; baths: number | null; property_type: string | null; city: string | null }>)
-    .map((m) => ({ id: m.id, list_price: m.list_price, bedrooms: m.beds, bathrooms: m.baths, city: m.city, __source: "market_watch_active_feed" as const }))
+  //
+  // COST GATE (wave 68, owner: "that is a lot of money to spend for leads…"). This pull is the
+  // BILLED BatchData on-market quicklist feed (lib/kernel/listings-batchdata-feed.ts::
+  // runActiveListingDiscoveryForMarket bills per record on every re-walk). It runs ONLY when this
+  // brokerage's resolved active_listing_sources names "batchdata_on_market" — the m642 default is
+  // ["idx","rentcast"], which excludes it. IDX/RentCast run through runExternalMarketWatchForBuyer
+  // beside this function (lib/buyer-search/external-match.ts), which reads the SAME resolver.
+  const sources = await resolveActiveListingSources(brokerageId)
+  let marketRows: Array<ListingFacts & { id: string; __source: "market_watch_active_feed" }> = []
+  if (sources.includes("batchdata_on_market")) {
+    let mq = supabase.from("market_active_listings")
+      .select("id, list_price, beds, baths, property_type, city")
+      .eq("brokerage_id", brokerageId).eq("current_status", "active").limit(200)
+    if (criteria.maxPrice != null) mq = mq.lte("list_price", criteria.maxPrice)
+    if (criteria.minBeds != null) mq = mq.gte("beds", criteria.minBeds)
+    const { data: marketActive } = await mq
+    marketRows = ((marketActive ?? []) as Array<{ id: string; list_price: number | null; beds: number | null; baths: number | null; property_type: string | null; city: string | null }>)
+      .map((m) => ({ id: m.id, list_price: m.list_price, bedrooms: m.beds, bathrooms: m.baths, city: m.city, __source: "market_watch_active_feed" as const }))
+  }
 
   const rows = [...listingRows, ...marketRows]
   if (rows.length === 0) return { matched: 0, newMatches: 0, reason: "no inventory" }

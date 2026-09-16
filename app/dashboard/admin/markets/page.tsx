@@ -126,6 +126,7 @@ export default async function MarketsSetupPage() {
           listings: feed.listings,
           searchState: feed.searchState,
           subscriptions: feed.subscriptions,
+          activeListingSources: feed.activeListingSources,
           error: feed.success ? null : (feed.error ?? "feed status unavailable"),
         }}
       />

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getTenantConnectionsAction } from "@/app/actions/tenant-connections"
+import { getActiveListingSourcesSetting } from "@/app/actions/settings/active-listing-sources"
 import { LeadSourcesClient } from "./lead-sources-client"
 
 export const dynamic = "force-dynamic"
@@ -17,5 +18,16 @@ export default async function LeadSourcesPage() {
   const res = await getTenantConnectionsAction()
   if (!res.ok) return <div className="p-6 text-red-600">Brokerage admin access required.</div>
 
-  return <LeadSourcesClient connections={res.connections} portalLeads={res.portalLeads} />
+  // Wave 68 — active-listing source order for regular-buyer smart search (owner: "that is a lot
+  // of money to spend for leads…"). A read failure here falls back to the safe default inside
+  // getActiveListingSourcesSetting itself; the page never blocks on it.
+  const listingSources = await getActiveListingSourcesSetting()
+
+  return (
+    <LeadSourcesClient
+      connections={res.connections}
+      portalLeads={res.portalLeads}
+      initialActiveListingSources={listingSources.sources}
+    />
+  )
 }

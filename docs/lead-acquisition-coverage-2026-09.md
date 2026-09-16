@@ -238,3 +238,92 @@ installed. Wired into the in-app agent copilot's tool registry
 other Kernel OS action tools), gated on a configured "mcp" purpose token, tenant-scoped from the
 session-resolved `brokerageId`/`user.id`, and metered per call
 (`meterVendorSpend`, `usageType: "mcp_<tool name>"`).
+
+## Active-listing source ranking for regular buyers — wave 68 (owner: "that is a lot of money to
+spend for leads, is the rentcast with optional idx broker a better implementation for the smart
+search buyer criteria of on the market active property listings?")
+
+Research method: Exa `web_fetch_exa` against `rentcast.io/api` and `developers.rentcast.io/
+reference/billing-and-pricing` (2 fetches — both render their price table client-side, so the
+rendered markdown carries product copy and FAQ text but not the digits, the same limitation this
+doc already flagged for `zyte.com`/`docs.zyte.com` above and the D-ID pricing page in wave 61).
+Numbers below are RentCast's own published figures as captured by a third-party review
+(`bnbcalc.com/reviews/rentcast-review-2026`, dated August 2026, read directly off RentCast's own
+dashboard) — treated the same way this repo treated the Spatius D-ID breakdown in wave 61: a
+mirror of the primary source, not the primary source, and flagged UNRESOLVED below pending a
+direct dashboard screenshot.
+
+### RentCast Property Data API — plan table (as captured August 2026)
+
+| Plan | Monthly price | Included requests | Overage / request |
+|---|---|---|---|
+| Developer | $0 | 50 | $0.20 |
+| Foundation | $74 | 1,000 | $0.06 |
+| Growth | $199 | 5,000 | $0.03 |
+| Scale | $449 | 25,000 | $0.015 |
+
+Billed **per request**, not per record — one call to `/listings/sale` (or `/listings/rental/
+long-term`) with a `limit` parameter returns a page of listings for that one request's cost,
+whatever the page size. `lib/property/rentcast.ts` already wraps this endpoint
+(`searchRentcastSaleListings`); no new client code needed for the ranking below.
+
+### BatchData Listing Data add-on — per-record price
+
+**Not separately published.** BatchData's own doc surface (confirmed in the wave-67 section
+above) prices by PLAN TIER ($/record derived from the monthly price ÷ included records — Growth
+$0.01, Professional $0.00833, Scale $0.00667, Enterprise $0.00333) and bills every pull against
+whatever datasets the calling TOKEN is provisioned for, not a listed per-record SKU for "Listing
+Data" specifically. State this as: **token-provisioned per-record, unpublished** — this repo's own
+`fetchIncrementalPropertySearch` (the function `runActiveListingDiscoveryForMarket` calls) carries
+a flat internal ledger ESTIMATE of `records.length * 0.05` (`lib/external/batchdata-client.ts`
+line ~1287) for lack of a published number — 5–15× the plan-tier-derived range above, and itself a
+blind spot: nobody has reconciled that literal against a real invoice.
+
+### Worked example — 1 brokerage, 3 markets, daily refresh, 200 active listings/market
+
+Smart search buyer criteria needs a current active-listing view per active market; the comparison
+below prices REFRESHING that view once a day for 3 markets × 200 active listings each (600
+property-records' worth of "what's active right now" per day, 18,000/month).
+
+| Source | Unit cost | Daily | Monthly | Platform $ this wave's capability alone |
+|---|---|---|---|---|
+| **IDX broker feed** (brokerage's own MLS credential) | $0 — tenant-owned vendor relationship | $0 | $0 | **$0** — never touches the platform's BatchData/RentCast budget |
+| **RentCast** | per REQUEST, not per record — 1 request/market/day covers the whole page | 3 requests | 90 requests/mo | **$8.00/mo** on Developer (50 free + 40 × $0.20 overage), or a flat **$74/mo** on Foundation (1,000 included, room to grow into per-buyer searches too) |
+| **BatchData on-market quicklist** (`runActiveListingDiscoveryForMarket`) | per RECORD, full re-walk needed every cycle to detect status transitions (active→expired/withdrawn/sold), not only new-since-last | 600 records | 18,000 records/mo | **$180/mo** at the Growth plan's derived rate ($0.01/record) — **$900/mo** at this repo's own internal $0.05/record ledger estimate — either way drawn from the SAME shared $1,000–$10,000/mo plan pool every other BatchData lane (acquisition, skip-trace, comps, buy-box) also spends from |
+
+**This is the "a lot of money" the owner named.** For the specific job of "does this buyer's box
+match what's on the market right now," BatchData's per-record on-market pull costs 20×–100× what
+RentCast's per-request pull costs for the identical 3-market/200-listing/day workload, and IDX
+costs the platform nothing at all when the brokerage owns the feed. That is why the wave-68 DECISION
+(`lib/buyer-search/listing-source-order.ts`) orders regular-buyer active-listing search IDX →
+RentCast → BatchData-on-market-only-if-opted-in, while leaving BatchData PRIMARY for its own priced
+job — motivated-seller/off-market ACQUISITION and Property Monitoring, which no per-request API
+sells at any price (RentCast has no off-market/motivated-seller dataset at all).
+
+### Best connection for BatchData acquisition (per owner's question, wave 68)
+
+For ACQUISITION (motivated sellers, off-market, monitoring) — **REST v1 `property/search` with
+cursor pagination + Search Sessions** (`lib/external/batchdata-client.ts::fetchIncrementalPropertySearch`,
+already used by `runActiveListingDiscoveryForMarket` / `runIncrementalPropertySearchForMarket` /
+`lib/buyer-search/investor-offmarket-runner.ts`) is the right connection: bulk, only-new delivery,
+no LLM in the loop, cheapest per record because nothing is re-fetched that a prior page cursor
+already returned. **MCP** (`https://mcp.batchdata.com`, `lib/external/batchdata-mcp.ts`, wave 67)
+is the right connection for AGENT TOOLS — single-property lookups an LLM decides to make mid-
+conversation (buy box preview, comps, skip-trace) — never for a scheduled bulk territory pull; the
+per-call MCP overhead (tool-call framing, no cursor/session semantics documented) is the wrong
+shape for "walk every active listing in 3 markets."
+
+### Unresolved (this wave)
+
+- RentCast's plan table above is read off a third-party mirror (`bnbcalc.com`), not RentCast's own
+  rendered dashboard — both `rentcast.io/api` and `developers.rentcast.io` render the price table
+  client-side and this lane's fetch tool returns pre-render markdown. Confirm against a live
+  RentCast dashboard/account before treating these four numbers as billing-authoritative.
+- BatchData's "Listing Data" add-on has no independently-confirmed per-record SKU distinct from
+  the plan-tier $/record rate; `fetchIncrementalPropertySearch`'s `records.length * 0.05` ledger
+  estimate is a placeholder 5–15× the plan-tier-derived range and has never been reconciled
+  against an invoice — worth a follow-up once BatchData billing data is available.
+- The worked example assumes a FULL daily re-walk of each market's active set (required to detect
+  status transitions); if `market_active_listings`' existing session/cursor state ever proves the
+  BatchData API delivers a smaller only-changed delta for `on-market`, the BatchData column above
+  would shrink — not observed or measured this wave, flagged rather than assumed.

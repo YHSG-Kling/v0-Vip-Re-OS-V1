@@ -56,6 +56,11 @@ import {
   type DerivedSellerSignal,
 } from "@/lib/external/batchdata-seller-signals"
 import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+// Wave 68 — cost gate: this pull bills per RECORD (docs/lead-acquisition-coverage-2026-09.md),
+// so it only runs for a brokerage whose resolved order names "batchdata_on_market" (default
+// excludes it — see lib/buyer-search/listing-source-order.ts, the SAME resolver market-watch.ts
+// consults before reading the feed this function writes).
+import { resolveActiveListingSources } from "@/lib/buyer-search/listing-source-order"
 
 // Minimal market shape every caller here already has from
 // lib/lead-pipeline/scrape-territories.ts's resolver — no separate DB read.
@@ -100,6 +105,15 @@ export async function runActiveListingDiscoveryForMarket(
   const errors: string[] = []
   let signalsWritten = 0
   let transitions = 0
+
+  // COST GATE (wave 68, owner: "that is a lot of money to spend for leads…" — RESEARCHED: this
+  // pull bills per RECORD and must re-walk the whole active set every cycle to detect status
+  // transitions, 20x-100x RentCast's per-request cost for the same coverage). Skip the billed
+  // pull entirely when this brokerage's order excludes "batchdata_on_market" (the m642 default).
+  const sources = await resolveActiveListingSources(market.brokerage_id)
+  if (!sources.includes("batchdata_on_market")) {
+    return { observed: 0, transitions: 0, signalsWritten: 0, errors: [] }
+  }
 
   const pull = await fetchIncrementalPropertySearch({
     quicklist: "on-market",

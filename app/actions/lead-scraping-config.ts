@@ -3,6 +3,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+// Wave 68 — the ONE resolver for a brokerage's active-listing source order (cost ruling on the
+// BatchData on-market pull). getBatchDataFeedStatus surfaces it beside the feed it explains.
+import { resolveActiveListingSources, DEFAULT_ACTIVE_LISTING_SOURCES, type ActiveListingSource } from "@/lib/buyer-search/listing-source-order"
 
 // ============================================
 // MARKET CONFIGURATION
@@ -649,16 +652,35 @@ export async function getBatchDataFeedStatus(): Promise<{
   listings: MarketActiveListingRow[]
   searchState: IncrementalSearchStateRow[]
   subscriptions: SmartSearchSubscriptionRow[]
+  /** Wave 68 — this brokerage's resolved active-listing source order (lib/buyer-search/
+   *  listing-source-order.ts::resolveActiveListingSources), so the admin markets panel can
+   *  explain WHY the on-market pull below is or isn't running, beside the cost this doc
+   *  section quotes: docs/lead-acquisition-coverage-2026-09.md. */
+  activeListingSources: ActiveListingSource[]
   error?: string
 }> {
   try {
     const supabase = await createClient()
+
+    // Same session-resolved brokerageId shape as createScrapingMarket above — resolveActiveListingSources
+    // takes an explicit brokerageId (never a request-body one, CLAUDE.md §4).
+    let brokerageId: string | null = null
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      const { data: profile } = await supabase
+        .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+      brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    }
+    const activeListingSources = brokerageId
+      ? await resolveActiveListingSources(brokerageId)
+      : [...DEFAULT_ACTIVE_LISTING_SOURCES]
+
     const { data: markets, error: marketsErr } = await supabase
       .from("lead_scraping_markets")
       .select("id")
     if (marketsErr) throw marketsErr
     const marketIds = (markets ?? []).map((m: { id: string }) => m.id)
-    if (marketIds.length === 0) return { success: true, listings: [], searchState: [], subscriptions: [] }
+    if (marketIds.length === 0) return { success: true, listings: [], searchState: [], subscriptions: [], activeListingSources }
 
     const { data: listings, error: listingsErr } = await supabase
       .from("market_active_listings")
@@ -709,9 +731,10 @@ export async function getBatchDataFeedStatus(): Promise<{
         last_error: s.last_error ?? null, last_reconciled_at: s.last_reconciled_at ?? null,
         pool_key: s.pool_key ?? null, pooled: !!s.pooled, geography_count: typeof s.geography_count === "number" ? s.geography_count : null,
       })),
+      activeListingSources,
     }
   } catch (error) {
     console.error("[v0] Error fetching BatchData feed status:", error)
-    return { success: false, listings: [], searchState: [], subscriptions: [], error: String(error) }
+    return { success: false, listings: [], searchState: [], subscriptions: [], activeListingSources: [...DEFAULT_ACTIVE_LISTING_SOURCES], error: String(error) }
   }
 }
