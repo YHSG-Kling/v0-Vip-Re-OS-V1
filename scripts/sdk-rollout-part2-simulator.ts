@@ -80,13 +80,17 @@ async function main() {
       check("meta.graphGet('') refuses (unconfigured, no SDK client constructed)", !mg.ok && /unconfigured/.test(mg.error ?? ""), mg.error ?? "")
       check("meta.graphPost('') refuses (unconfigured, no SDK client constructed)", !mp.ok && /unconfigured/.test(mp.error ?? ""), mp.error ?? "")
 
-      const { upsertContactByEmail, createContact, listContactsPage } = await import("../lib/providers/hubspot/client")
+      // Wave 72A tombstone (owner: "hubspot is only sync out to hubspot."):
+      // `listContactsPage` (the inbound-pull page fetch) is retired along with
+      // lib/crm/import-pull.ts::pullHubSpot — mutation control re-pointed at
+      // the two SURVIVING outbound functions only, never deleted.
+      const { upsertContactByEmail, createContact } = await import("../lib/providers/hubspot/client")
       const hu = await upsertContactByEmail("", "a@b.com", { firstname: "A" })
       const hc = await createContact("", { firstname: "A" })
-      const hl = await listContactsPage("", { limit: 10, properties: ["email"] })
       check("hubspot.upsertContactByEmail('') refuses (unconfigured, no network)", !hu.ok && /unconfigured/.test(hu.error ?? ""), hu.error ?? "")
       check("hubspot.createContact('') refuses (unconfigured, no network)", !hc.ok && /unconfigured/.test(hc.error ?? ""), hc.error ?? "")
-      check("hubspot.listContactsPage('') refuses (unconfigured, no network)", !hl.ok && /unconfigured/.test(hl.error ?? ""), hl.error ?? "")
+      check("hubspot adapter no longer exports listContactsPage (inbound pull retired)",
+        !("listContactsPage" in (await import("../lib/providers/hubspot/client"))))
 
       const { verifyUsAddress } = await import("../lib/providers/lob/client")
       const lv = await verifyUsAddress("", { primary_line: "1 Main St", city: "Austin", state: "TX", zip_code: "78701" })
@@ -109,7 +113,6 @@ async function main() {
   const FULLY_MIGRATED: Array<{ file: string; host: string }> = [
     { file: "lib/external/lob-address-verify.ts", host: "api.lob.com" },
     { file: "lib/crm/providers/hubspot.ts", host: "api.hubapi.com" },
-    { file: "lib/crm/import-pull.ts", host: "api.hubapi.com" },
     { file: "lib/providers/accounting/quickbooks.ts", host: "oauth.platform.intuit.com" },
     { file: "lib/connections/accounting-scopes.ts", host: "oauth.platform.intuit.com" },
     { file: "lib/social/dm-dispatch.ts", host: "graph.facebook.com" },
@@ -123,6 +126,14 @@ async function main() {
     const stripped = strippedSrc(file)
     check(`${file}: stripped source no longer contains "${host}"`, !stripped.includes(host), `raw source still has it? ${src(file).includes(host)}`)
   }
+
+  // lib/crm/import-pull.ts USED to be in FULLY_MIGRATED above (its pullHubSpot
+  // called the SDK adapter's listContactsPage). Wave 72A retired the pull
+  // entirely (owner: "hubspot is only sync out to hubspot.") — it is not
+  // "migrated off REST", it has NO hubspot code reference left at all (only
+  // the tombstone comment naming the survivor). Assert that directly.
+  check('lib/crm/import-pull.ts: retired, not merely migrated — no "hubspot" in stripped source',
+    !/hubspot/i.test(strippedSrc("lib/crm/import-pull.ts")))
 
   // KEPT-ON-REST carve-outs still carry their host — recorded as a blind spot
   // (the denominator this "gone" list is measured against), not silently
@@ -170,7 +181,12 @@ async function main() {
   check("peopledata-client.ts imports enrichPerson from the adapter", importsAdapter(strippedSrc("lib/external/peopledata-client.ts"), "@/lib/providers/peopledata/client") && callsFn(strippedSrc("lib/external/peopledata-client.ts"), "enrichPerson"))
   check("lob-address-verify.ts imports verifyUsAddress from the adapter", importsAdapter(strippedSrc("lib/external/lob-address-verify.ts"), "@/lib/providers/lob/client") && callsFn(strippedSrc("lib/external/lob-address-verify.ts"), "verifyUsAddress"))
   check("hubspot.ts imports upsertContactByEmail + createContact from the adapter", importsAdapter(strippedSrc("lib/crm/providers/hubspot.ts"), "@/lib/providers/hubspot/client") && callsFn(strippedSrc("lib/crm/providers/hubspot.ts"), "upsertContactByEmail") && callsFn(strippedSrc("lib/crm/providers/hubspot.ts"), "createContact"))
-  check("import-pull.ts's pullHubSpot imports listContactsPage from the adapter", importsAdapter(strippedSrc("lib/crm/import-pull.ts"), "@/lib/providers/hubspot/client") && callsFn(strippedSrc("lib/crm/import-pull.ts"), "listContactsPage"))
+  // Re-pointed (wave 72A, owner: "hubspot is only sync out to hubspot."):
+  // this used to assert pullHubSpot imports listContactsPage — that pull is
+  // retired. Re-anchored on the outbound survivor: import-pull.ts must NOT
+  // import the hubspot adapter at all anymore.
+  check("import-pull.ts no longer imports the hubspot adapter (inbound pull retired, sync-out is the only door)",
+    !importsAdapter(strippedSrc("lib/crm/import-pull.ts"), "@/lib/providers/hubspot/client"))
   check("quickbooks.ts's refreshAccessToken imports refreshQuickBooksToken from the adapter", importsAdapter(strippedSrc("lib/providers/accounting/quickbooks.ts"), "@/lib/providers/quickbooks/client") && callsFn(strippedSrc("lib/providers/accounting/quickbooks.ts"), "refreshQuickBooksToken"))
   check("accounting-scopes.ts's ensureFreshQuickBooksToken imports refreshQuickBooksToken from the adapter", importsAdapter(strippedSrc("lib/connections/accounting-scopes.ts"), "@/lib/providers/quickbooks/client") && callsFn(strippedSrc("lib/connections/accounting-scopes.ts"), "refreshQuickBooksToken"))
   check("platform-social.ts imports graphGet for the 5 migrated Meta reads", importsAdapter(strippedSrc("lib/platform/platform-social.ts"), "@/lib/providers/meta/client") && callsFn(strippedSrc("lib/platform/platform-social.ts"), "graphGet", 5))

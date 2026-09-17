@@ -21,10 +21,15 @@ import {
 } from "@/app/actions/lead-import/crm-pull-actions"
 import type { CrmImportProvider } from "@/lib/crm/import-pull"
 
+// TOMBSTONE (wave 72A, owner ruling verbatim: "hubspot is only sync out to
+// hubspot."): HubSpot used to be listed here as a migration-import source
+// (an inbound pull). It is retired — HubSpot is sync-OUT only. Survivor: the
+// tenant's own HubSpot connection stays on app/settings/connections
+// (connection-center-client.tsx), which pushes TO HubSpot via
+// lib/crm/providers/hubspot.ts:25 (`syncContactToHubSpot`) and never pulls.
 const PROVIDERS: Array<{ key: CrmImportProvider; label: string; keyHint: string; extra?: "apiUrl" | "locationId" }> = [
   { key: "followupboss", label: "Follow Up Boss", keyHint: "FUB API key" },
   { key: "lofty", label: "Lofty / Chime", keyHint: "Lofty API token", extra: "apiUrl" },
-  { key: "hubspot", label: "HubSpot", keyHint: "Private-app token" },
   { key: "gohighlevel", label: "GoHighLevel", keyHint: "GHL API key", extra: "locationId" },
 ]
 
@@ -84,7 +89,7 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground max-w-2xl">
-          Connect this subscriber&apos;s Follow Up Boss, Lofty, HubSpot or GoHighLevel account and import
+          Connect this subscriber&apos;s Follow Up Boss, Lofty or GoHighLevel account and import
           their contacts straight into THIS tenant — the same safeguards as the CSV import above: names,
           emails, phones and addresses land on contacts, duplicates are skipped against the tenant&apos;s
           existing book, and consent is never imported as opted-in. Every run is audit-logged.

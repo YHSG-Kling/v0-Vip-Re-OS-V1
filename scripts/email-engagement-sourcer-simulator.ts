@@ -25,8 +25,13 @@
  *      calls sourceEmailEngagementIntent for real, and DELETES every row it created —
  *      CLAUDE.md's wave-56 ruling on test data: tag clearly, delete in the same run,
  *      prove the delete by counting what came back.
+ *   6. WAVE 72A (owner: "contacts coming in from the tenants website or email
+ *      come in as contacts not raw leads.") — `records` is now ALWAYS empty (every
+ *      email_tracking row is already a CONTACT, so this never feeds raw_scraped_leads)
+ *      and the qualifying pattern is routed directly onto the contact instead, as a
+ *      manager signal (campaign_orchestrator → ai_isa, contactsNotified counts it).
  *
- * No database required for layers 1-4. Source assertions + pure-function calls only.
+ * No database required for layers 1-4, 6. Source assertions + pure-function calls only.
  */
 import { createClient } from "@supabase/supabase-js"
 import {
@@ -209,11 +214,26 @@ async function testLiveLayer() {
     if (trackError || !inserted) { console.log(`  ⊘ could not create test email_tracking rows — ${trackError?.message ?? "no rows"}`); return }
     for (const row of inserted as Array<{ id: string }>) cleanup.push({ table: "email_tracking", id: row.id })
 
-    const { records, rowsExamined } = await sourceEmailEngagementIntent(svc, brokerageId, { now })
+    const { records, rowsExamined, contactsNotified } = await sourceEmailEngagementIntent(svc, brokerageId, { now })
     check("live: examined at least the rows this run created", rowsExamined >= EMAIL_ENGAGEMENT_MIN_EVENTS)
-    const match = records.find((r) => r.email === (contact as any).email)
-    check("live: the tagged test contact's repeated engagement is sourced", !!match)
-    check("live: sourced record carries click_through (one click among the events)", !!match?.intentSignals.includes("click_through"))
+    // WAVE 72A: records is ALWAYS empty — this contact's pattern is routed as a
+    // manager signal instead of minted as a raw lead (the person is already a
+    // contact, never a candidate for raw_scraped_leads).
+    check("live: records stays empty (no raw lead minted for an existing contact)", records.length === 0)
+    check("live: the tagged test contact's repeated engagement notified the AI ISA", contactsNotified >= 1)
+
+    const { data: signalRow, error: signalError } = await svc
+      .from("manager_signals")
+      .select("id, from_manager, to_manager, signal_type, contact_id, payload")
+      .eq("brokerage_id", brokerageId)
+      .eq("contact_id", (contact as any).id)
+      .eq("signal_type", "contact_renewed_email_engagement")
+      .maybeSingle()
+    check("live: manager signal written campaign_orchestrator → ai_isa for the contact",
+      !signalError && !!signalRow && (signalRow as any).from_manager === "campaign_orchestrator" && (signalRow as any).to_manager === "ai_isa")
+    check("live: signal payload carries click_through (one click among the events)",
+      !!(signalRow as any)?.payload?.intentSignals?.includes?.("click_through"))
+    if (signalRow) cleanup.push({ table: "manager_signals", id: (signalRow as any).id })
   } finally {
     // CLAUDE.md wave-56 ruling: delete in the SAME run, prove the delete by counting
     // what came back — never leave test data behind.

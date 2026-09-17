@@ -29,12 +29,20 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 /**
  * processInboundEmail
  *
- * AUTH MODEL: This entry point has no in-tree caller — it is intended to be
- * invoked either from an authenticated session (e.g. an "agent replies as
- * AI" tool) or from a trusted server-to-server caller (an inbound-email
- * webhook route that has already verified the provider signature, or an
- * internal cron). Because no inbound-email webhook currently exists for
- * this path, we require ONE of:
+ * WAVE 72A CORRECTION: the paragraph below used to claim "this entry point
+ * has no in-tree caller" — stale. The caller IS wired: app/api/providers/
+ * inbound/route.ts (Step 8b) calls this for every inbound message that
+ * resolved to a LEAD (never a contact — Step 3 of that route matches
+ * CONTACTS first, so a contact's email never reaches this lead-only path),
+ * forwarding CRON_SECRET as `internalSecret` exactly as this doc always said
+ * a webhook ingress should. Kept documented below because the auth model
+ * itself (trusted-internal OR session) is still accurate and still the
+ * contract new callers must honour.
+ *
+ * AUTH MODEL: invoked either from an authenticated session (e.g. an "agent
+ * replies as AI" tool) or from a trusted server-to-server caller (an
+ * inbound-email webhook route that has already verified the provider
+ * signature, or an internal cron). We require ONE of:
  *
  *   1. A valid authenticated session whose brokerage matches the lead.
  *   2. A trusted internal call: process.env.CRON_SECRET is configured AND

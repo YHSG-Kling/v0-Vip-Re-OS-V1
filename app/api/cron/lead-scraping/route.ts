@@ -947,7 +947,13 @@ export async function GET(request: Request) {
       if (enabledSources.has("email_engagement_intent") && market.brokerage_id && !emailEngagementBrokeragesRun.has(market.brokerage_id)) {
         emailEngagementBrokeragesRun.add(market.brokerage_id)
         try {
-          const { records, rowsExamined } = await sourceEmailEngagementIntent(supabase, market.brokerage_id)
+          // WAVE 72A (owner: "contacts coming in from the tenants website or email
+          // come in as contacts not raw leads."): `records` is now ALWAYS empty —
+          // every email_tracking row is already a CONTACT (see the sourcer's header)
+          // — so this never mints a raw lead. `contactsNotified` counts the manager
+          // signals (campaign_orchestrator → ai_isa) sent directly onto those
+          // contacts instead. `insertRawBatch` still no-ops safely on the empty array.
+          const { records, rowsExamined, contactsNotified } = await sourceEmailEngagementIntent(supabase, market.brokerage_id)
           const { inserted: emailEngagementInserted } = await insertRawBatch({
             records, marketId: market.id,
             marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
@@ -961,7 +967,7 @@ export async function GET(request: Request) {
           })
           results.total_leads_created += emailEngagementInserted
           if (rowsExamined > 0) {
-            console.log(`[Lead Scraping Cron] Email engagement intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${emailEngagementInserted}`)
+            console.log(`[Lead Scraping Cron] Email engagement intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${emailEngagementInserted} contactsNotified=${contactsNotified}`)
           }
         } catch (err) {
           results.errors.push(`Email engagement intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)

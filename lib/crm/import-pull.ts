@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // CRM IMPORT — the INBOUND direction (sync-out existed; migration didn't).
 // DESIGN RULE (the owner's line): imported data NEVER bypasses the gate. These
-// fetchers pull from the tenant's old CRM (Follow Up Boss / Lofty / HubSpot /
+// fetchers pull from the tenant's old CRM (Follow Up Boss / Lofty /
 // GoHighLevel) and emit rows shaped EXACTLY like that vendor's CSV export —
 // the same keys IMPORT_FIELD_ALIASES already matches — then the ONE gated
 // pipeline (processImportRows → field steward → Data Steward enum normalizer →
@@ -14,11 +14,18 @@
 // All egress via the connector gateway; per-tenant credentials from
 // platform_credentials; every fetcher returns { rows, nextCursor } so runs are
 // resumable and honestly report "more remain".
+//
+// TOMBSTONE (wave 72A, owner ruling verbatim: "hubspot is only sync out to
+// hubspot."): HubSpot is NOT a member of this inbound-pull set. There was a
+// `pullHubSpot` fetcher (+ `hubspotToRow` mapper) here that called
+// lib/providers/hubspot/client.ts::listContactsPage — both retired. Survivor:
+// lib/crm/providers/hubspot.ts:25 (`syncContactToHubSpot`, sync-OUT only,
+// via the same adapter's `upsertContactByEmail` / `createContact`).
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
-export type CrmImportProvider = "followupboss" | "lofty" | "hubspot" | "gohighlevel"
-export const CRM_IMPORT_PROVIDERS: CrmImportProvider[] = ["followupboss", "lofty", "hubspot", "gohighlevel"]
+export type CrmImportProvider = "followupboss" | "lofty" | "gohighlevel"
+export const CRM_IMPORT_PROVIDERS: CrmImportProvider[] = ["followupboss", "lofty", "gohighlevel"]
 
 export interface CrmPullPage {
   rows: Record<string, unknown>[]
@@ -46,22 +53,6 @@ export function fubToRow(p: any): Record<string, unknown> {
     // Vendor-specific context → notes via the steward (never onto the contact).
     "FUB Source": p.source ?? "",
     "FUB Tags": Array.isArray(p.tags) ? p.tags.join(", ") : "",
-  }
-}
-
-export function hubspotToRow(c: any): Record<string, unknown> {
-  const p = c.properties ?? {}
-  return {
-    "First Name": p.firstname ?? "",
-    "Last Name": p.lastname ?? "",
-    Email: p.email ?? "",
-    Phone: p.phone ?? p.mobilephone ?? "",
-    Address: p.address ?? "",
-    City: p.city ?? "",
-    State: p.state ?? "",
-    Zip: p.zip ?? "",
-    Type: p.lifecyclestage ?? "",
-    "HubSpot Owner": p.hubspot_owner_id ?? "",
   }
 }
 
@@ -113,20 +104,6 @@ async function pullFollowUpBoss(apiKey: string, cursor: string | null): Promise<
 }
 
 // internal helper — called in-file by pullCrmPage
-// Wave 71A: routes through the official `@hubspot/api-client` SDK adapter
-// (lib/providers/hubspot/client.ts) instead of the connector-gateway.
-async function pullHubSpot(token: string, cursor: string | null): Promise<CrmPullPage> {
-  const { listContactsPage } = await import("@/lib/providers/hubspot/client")
-  const res = await listContactsPage(token, {
-    limit: PAGE_SIZE,
-    after: cursor,
-    properties: ["firstname", "lastname", "email", "phone", "mobilephone", "address", "city", "state", "zip", "lifecyclestage"],
-  })
-  if (!res.ok) return { rows: [], nextCursor: null, error: res.error ?? `HubSpot pull failed (${res.status})` }
-  return { rows: (res.data?.results ?? []).map(hubspotToRow), nextCursor: res.data?.paging?.next?.after ?? null }
-}
-
-// internal helper — called in-file by pullCrmPage
 async function pullLofty(apiKey: string, baseUrl: string | null, cursor: string | null): Promise<CrmPullPage> {
   const offset = Number(cursor ?? 0)
   const res = await callConnector<{ contacts?: any[]; data?: any[] }>({
@@ -166,7 +143,6 @@ export async function pullCrmPage(
 ): Promise<CrmPullPage> {
   switch (provider) {
     case "followupboss": return pullFollowUpBoss(cred.apiKey, cursor)
-    case "hubspot": return pullHubSpot(cred.apiKey, cursor)
     case "lofty": return pullLofty(cred.apiKey, cred.apiUrl ?? null, cursor)
     case "gohighlevel": return pullGoHighLevel(cred.apiKey, cred.locationId ?? null, cursor)
   }

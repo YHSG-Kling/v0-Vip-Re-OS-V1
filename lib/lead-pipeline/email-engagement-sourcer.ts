@@ -25,17 +25,18 @@
 // no vendor call, no API key, no rate limit, the data already sits in
 // email_tracking (written by the SendGrid webhook this repo already runs).
 //
-// CONTRACT: normalizes qualifying email_tracking activity into
-// NormalizedScrapedRecord[] for lib/kernel/scraping.ts::ingestRawSourceBatch
-// (sourceChannel 'email_engagement_intent', sourceFamily 'email_behavior' —
-// see source-intent-map.ts's SOURCE_MAP entry for scoring). The person is
-// ALREADY a contact in the overwhelming case (email_tracking is
-// contact-scoped — only a matched send produces a row at all), so the
-// three-table dedup in lib/kernel/scraping.ts::dedupRawAgainstLeadAndContact
-// resolves this against `contacts` and records the signal on that person's
-// history without minting a duplicate lead — exactly the "gathering
-// information... so we can better serve them" posture wave 65 ruled for
-// intelligence lanes generally, applied here to a first-party behavioral one.
+// CONTRACT (revised wave 72A — see the ruling further down this header): the
+// PURE classifier (normalizeEmailEngagementSignal) still decides whether a
+// contact's repeated engagement qualifies, but the LIVE sourcer no longer
+// feeds it to lib/kernel/scraping.ts::ingestRawSourceBatch. email_tracking is
+// ALWAYS contact-scoped (only a matched send against `contacts` produces a
+// row at all — app/api/webhooks/sendgrid-events/route.ts resolves the
+// contact BEFORE writing), so there is no non-contact case to source into
+// raw_scraped_leads. The qualifying signal is instead routed directly onto
+// the contact via a manager signal (campaign_orchestrator → ai_isa) — the
+// "gathering information... so we can better serve them" posture wave 65
+// ruled for intelligence lanes generally, delivered on the CONTACT side per
+// the wave-72 correction, never by minting a raw lead for an existing contact.
 // TERRITORY: bounded to the calling market's own brokerage, same shape as
 // site_visitor_intent — the cron call site (app/api/cron/lead-scraping/
 // route.ts) runs this ONCE per brokerage, not once per market row, since
@@ -47,9 +48,29 @@
 // timestamp, so re-running the cron against an unchanged engagement burst
 // produces the same id and dedupes at the DB unique-violation layer (23505),
 // the same mechanic normalizeSiteVisitorRow relies on via last_seen_at.
+//
+// WAVE 72A RULING (owner verbatim: "contacts coming in from the tenants
+// website or email come in as contacts not raw leads."). The paragraph above
+// was WRONG about what this lane's dedup actually did. `email_tracking` is
+// written by ONLY ONE path (app/api/webhooks/sendgrid-events/route.ts), and
+// that path resolves the event against `contacts` before it ever writes a
+// row — `email_tracking.contact_id` is nullable in the schema but this repo
+// never produces a row with it null. So EVERY signal this sourcer ever saw
+// was already an existing CONTACT, and feeding it through
+// ingestRawSourceBatch → raw_scraped_leads → (pre-enrichment dedup) meant the
+// raw row was created, matched the contact, and then just SAT there marked
+// 'duplicate_pre_enrich' — a dead end. The contact's own record was never
+// touched and the AI ISA was never told. `sourceEmailEngagementIntent` no
+// longer returns these as NormalizedScrapedRecord[] (that field is now
+// ALWAYS empty — there is no non-contact case for this table to source).
+// Instead each qualifying pattern is routed directly onto the contact via a
+// manager signal (campaign_orchestrator, who owns the brokerage's outbound
+// email, → ai_isa, who nurtures contacts) so the AI ISA can act on the
+// renewed-intent pattern — never a raw lead for someone already a contact.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NormalizedScrapedRecord } from './raw-record-types'
+import { publishManagerSignal } from '@/lib/kernel/manager-signals'
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -148,11 +169,18 @@ export function normalizeEmailEngagementSignal(
 }
 
 interface EmailEngagementSourceResult {
+  /** WAVE 72A: ALWAYS empty. This table has no non-contact case (see the
+   *  header note) — kept in the shape only so callers written against the
+   *  site_visitor_intent-family contract (records/cost/rowsExamined) do not
+   *  need a special case; `insertRawBatch` no-ops on an empty array. */
   records: NormalizedScrapedRecord[]
   /** Always 0 — first-party data already collected (our own send + the
    *  provider's engagement webhook), no vendor call. */
   cost: number
   rowsExamined: number
+  /** Contacts whose repeated-engagement pattern was routed to the AI ISA
+   *  (campaign_orchestrator → ai_isa manager signal) this run. */
+  contactsNotified: number
 }
 
 /** LIVE: reads email_tracking for ONE brokerage's open/click activity in the
@@ -160,14 +188,18 @@ interface EmailEngagementSourceResult {
  *  contacts crossing the repeat bar whose MOST RECENT qualifying event falls
  *  inside the lookback window (a fresh burst this tick — the same "only
  *  what's new since the last look" shape sourceSiteVisitorIntent applies via
- *  last_seen_at), then resolves each survivor's contact record. Never writes
- *  — the caller (the lead-scraping cron) batches these through
- *  ingestRawSourceBatch, same as every other sourcer in this file's family.
- *  Fails closed (empty result) on a refused read — never treats "couldn't
- *  read" as "nothing to source" silently: the caller sees rowsExamined stay 0
- *  and can log it. Excludes opted-out contacts (email_opt_out) — an
- *  engagement pattern from before an opt-out is not grounds to resurface
- *  someone who told the brokerage to stop. */
+ *  last_seen_at), then resolves each survivor's contact record. WAVE 72A:
+ *  `records` is deliberately never filled (see the header note — this table
+ *  has no non-contact case). Instead, for every qualifying, non-opted-out
+ *  contact this WRITES a manager signal (campaign_orchestrator → ai_isa,
+ *  lib/kernel/manager-signals.ts::publishManagerSignal, idempotent per open
+ *  signal) carrying the pattern, so the AI ISA can decide whether to
+ *  re-engage — never a raw lead for someone who is already a contact. Fails
+ *  closed (empty result) on a refused read — never treats "couldn't read" as
+ *  "nothing to source" silently: the caller sees rowsExamined stay 0 and can
+ *  log it. Excludes opted-out contacts (email_opt_out) — an engagement
+ *  pattern from before an opt-out is not grounds to resurface someone who
+ *  told the brokerage to stop. */
 export async function sourceEmailEngagementIntent(
   svc: Svc,
   brokerageId: string,
@@ -189,7 +221,7 @@ export async function sourceEmailEngagementIntent(
     .gte('event_at', windowStart)
     .limit(2000)
 
-  if (error || !data) return { records: [], cost: 0, rowsExamined: 0 }
+  if (error || !data) return { records: [], cost: 0, rowsExamined: 0, contactsNotified: 0 }
 
   // Aggregate client-side (no GROUP BY over the supabase-js query builder) —
   // same "one read, aggregate in TS" shape the rest of this pipeline family
@@ -222,7 +254,7 @@ export async function sourceEmailEngagementIntent(
     }
   }
 
-  if (qualifyingIds.length === 0) return { records: [], cost: 0, rowsExamined: data.length }
+  if (qualifyingIds.length === 0) return { records: [], cost: 0, rowsExamined: data.length, contactsNotified: 0 }
 
   const { data: contacts, error: contactsError } = await svc
     .from('contacts')
@@ -230,9 +262,16 @@ export async function sourceEmailEngagementIntent(
     .eq('brokerage_id', brokerageId)
     .in('id', qualifyingIds.slice(0, 200))
 
-  if (contactsError || !contacts) return { records: [], cost: 0, rowsExamined: data.length }
+  if (contactsError || !contacts) return { records: [], cost: 0, rowsExamined: data.length, contactsNotified: 0 }
 
+  // WAVE 72A: `records` stays empty by design (see header note) — every
+  // subject here is already a CONTACT, so this never feeds
+  // ingestRawSourceBatch/raw_scraped_leads. `normalizeEmailEngagementSignal`
+  // (the pure classifier) still decides WHETHER the pattern qualifies and
+  // which intent signals it carries; the qualifying result is routed onto
+  // the contact via a manager signal instead of being minted as a record.
   const records: NormalizedScrapedRecord[] = []
+  let contactsNotified = 0
   for (const c of contacts as Array<{
     id: string; email: string | null; first_name: string | null; last_name: string | null
     city: string | null; state: string | null; contact_type: string | null; email_opt_out: boolean | null
@@ -240,7 +279,7 @@ export async function sourceEmailEngagementIntent(
     if (c.email_opt_out) continue
     const agg = aggByContact.get(c.id)
     if (!agg) continue
-    const rec = normalizeEmailEngagementSignal({
+    const signal = normalizeEmailEngagementSignal({
       contactId: c.id,
       email: c.email,
       firstName: c.first_name,
@@ -253,8 +292,29 @@ export async function sourceEmailEngagementIntent(
       earliestEventAt: agg.earliest,
       latestEventAt: agg.latest,
     }, { minEvents })
-    if (rec) records.push(rec)
+    if (!signal) continue
+
+    const name = [c.first_name, c.last_name].filter(Boolean).join(' ').trim() || 'This contact'
+    const res = await publishManagerSignal({
+      brokerageId,
+      fromManager: 'campaign_orchestrator',
+      toManager: 'ai_isa',
+      signalType: 'contact_renewed_email_engagement',
+      message: `${name} has opened/clicked our emails ${agg.count}x in the last ${windowDays}d — renewed intent, consider a follow-up.`,
+      entityType: 'contact',
+      entityId: c.id,
+      contactId: c.id,
+      payload: {
+        eventCount: agg.count,
+        clickCount: agg.clicks,
+        windowDays,
+        intentSignals: signal.intentSignals,
+        intentType: signal.intentType,
+        latestEventAt: agg.latest,
+      },
+    }, svc)
+    if (res.ok) contactsNotified++
   }
 
-  return { records, cost: 0, rowsExamined: data.length }
+  return { records, cost: 0, rowsExamined: data.length, contactsNotified }
 }

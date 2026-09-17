@@ -118,28 +118,12 @@ export async function createContact(
   }
 }
 
-export interface ContactPage {
-  results: Array<{ properties?: Record<string, string | null> }>
-  paging?: { next?: { after?: string } }
-}
-
-/** `GET /crm/v3/objects/contacts` (paged) — the SDK equivalent of the import
- *  puller's pullHubSpot page fetch. `properties` matches the exact field list
- *  the caller already reads (firstname/lastname/email/phone/mobilephone/
- *  address/city/state/zip/lifecyclestage). */
-export async function listContactsPage(
-  accessToken: string,
-  opts: { limit: number; after?: string | null; properties: string[] },
-): Promise<AdapterResult<ContactPage>> {
-  if (!accessToken) return { ok: false, status: null, data: null, error: "unconfigured: no HubSpot access token" }
-  try {
-    const res = await client(accessToken).crm.contacts.basicApi.getPage(
-      opts.limit,
-      opts.after ?? undefined,
-      opts.properties,
-    )
-    return { ok: true, status: 200, data: res as unknown as ContactPage, error: null }
-  } catch (err) {
-    return mapError(err)
-  }
-}
+// TOMBSTONE (wave 72A, owner ruling verbatim: "hubspot is only sync out to
+// hubspot."): `listContactsPage` — the inbound-pull page fetch this adapter
+// exposed for lib/crm/import-pull.ts::pullHubSpot — is RETIRED. HubSpot is
+// sync-OUT only; there is no inbound contact pull from HubSpot into this OS.
+// Survivor: this file's own `upsertContactByEmail` / `createContact` (above),
+// called from the outbound sync at lib/crm/providers/hubspot.ts:25
+// (`syncContactToHubSpot`). The `basicApi.getPage` SDK surface stays declared
+// on `HubSpotContactsSurface` above only because `basicApi.create` shares the
+// interface; no code path calls `.getPage` anymore.

@@ -32,6 +32,16 @@
 // market row, since website traffic is a brokerage-wide signal, not a per-territory one.
 // DEDUP: isViableRecord + buildLeadIdentityKey (username=session_id + sourceUrl=page_url)
 // let ingestRawSourceBatch's own dedup carry the load — no bespoke dedup here.
+//
+// WAVE 72A AUDIT (owner ruling: "contacts coming in from the tenants website or
+// email come in as contacts not raw leads."): this sourcer was checked against
+// that rule and is COMPLIANT — sourceSiteVisitorIntent's read below already
+// filters `.is('contact_id', null).is('lead_id', null).is('identified_at', null)`,
+// so it only ever sources a session that has NOT resolved to a contact (or a
+// lead) yet. A visitor who IS identified never reaches this pipeline; that
+// linkage happens at app/api/track/identify, outside this file. Contrast with
+// lib/lead-pipeline/email-engagement-sourcer.ts, which the same audit found
+// violating this rule and fixed.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NormalizedScrapedRecord } from './raw-record-types'
