@@ -1276,6 +1276,26 @@ async function dispatchVideoViaDID({
 
   const isVideoSource = !!didProfile.did_video_url
 
+  // ── VIDEO-SOURCED AVATAR CONSENT GATE (wave 72D — lib/did/avatar-consent-
+  // gate.ts's header has the full gap this closes) ──────────────────────────
+  // `did_video_url` is written straight through POST /api/agent/update-video-
+  // profile with NO consent check — a video used to drive a talking avatar
+  // requires D-ID's verified on-camera consent statement
+  // (lib/did/consent.ts::consentRequiredFor("video")), same as
+  // app/api/did/create-avatar already enforces for the persistent-avatar path.
+  // A V4 expressive presenter uses `avatar_id`, not this raw sourceUrl — that
+  // avatar was already gated at creation time (create-avatar mints it, never
+  // this dispatch), so the check only applies to the non-V4 video-source
+  // branch. Refused BEFORE the ElevenLabs TTS call so a refused render does
+  // not also spend TTS cost on audio nobody can use.
+  if (isVideoSource && presenterTypeForTwin(didProfile.did_avatar_id) !== "expressive") {
+    const { requireConsentForVideoAvatarSource } = await import("@/lib/did/avatar-consent-gate")
+    const consentCheck = await requireConsentForVideoAvatarSource(supabase, agentRecordId, sourceUrl)
+    if (!consentCheck.ok) {
+      return { success: false, providerKey: "did", error: consentCheck.refusal.message }
+    }
+  }
+
   // Render the script with template variables filled in.
   const renderedScript = (params.scriptVars ? Object.entries(params.scriptVars) : []).reduce(
     (acc, [k, v]) => acc.replace(new RegExp(`{{\\s*${k}\\s*}}`, "g"), String(v ?? "")),

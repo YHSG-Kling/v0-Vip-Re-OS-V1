@@ -1113,6 +1113,117 @@ function v3Section() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// §sideDoor — wave 72D: a VIDEO-sourced avatar reachable WITHOUT the create-
+// avatar consent gate, because it never goes through create-avatar at all.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// §consent (above) proves the create-avatar route's OWN gate holds. It cannot
+// prove the gate is the only door: POST /api/agent/update-video-profile lets
+// an agent write agent_voice_profiles.did_video_url directly, no consent
+// check of any kind — and lib/video/presenter-media.ts (the Director render
+// worker's presenter resolver), lib/providers/dispatch.ts (the ISA outreach-
+// email avatar path) and lib/did/index.ts's generateVideo() (the pipeline
+// every OTHER avatar-video call site — partners-meeting, assistant-starter,
+// the workflow video adapter, avatar-track-submit, director-reel-render —
+// funnels through) all read that column as a fallback avatar source and hand
+// it straight to D-ID. lib/did/avatar-consent-gate.ts closes it: a NEW,
+// consent.ts-write-path-untouched module the two live submission sites call
+// before they submit a video-sourced avatar to D-ID.
+function sideDoorSection() {
+  console.log("\n── §sideDoor — video-sourced avatar consent gate (wave 72D) ──")
+
+  const gate = readStripped("lib/did/avatar-consent-gate.ts")
+  check("the gate module exists and exports requireConsentForVideoAvatarSource",
+    /export async function requireConsentForVideoAvatarSource/.test(gate))
+  check("the gate is a no-op for anything that doesn't look like a video url (isVideoUrl false-branch returns ok:true)",
+    /if \(!sourceUrl \|\| !isVideoUrl\(sourceUrl\)\) return \{ ok: true \}/.test(gate))
+  check("the gate FAILS CLOSED on an unresolvable agent identity — never treated as 'skip the check'",
+    /if \(!agentId\) \{/.test(gate) && /ok: false/.test(gate))
+  check("the gate reads the SAME verified-consent table create-avatar's own gate reads (findVerifiedConsent, not a second resolver)",
+    /import \{ findVerifiedConsent \} from "\.\/consent"/.test(gate) && /await findVerifiedConsent\(svc, agentId\)/.test(gate))
+  check("the gate detects 'video' with the ONE extension predicate the repo already trusts (isVideoUrl, not a second regex — §6)",
+    /import \{ isVideoUrl \} from "@\/lib\/video\/broll-url"/.test(gate))
+  check("this module imports consent.ts's READ export only — it does not touch mintConsent/uploadConsentVideo (the write path the lane brief forbids editing)",
+    !/mintConsent|uploadConsentVideo/.test(gate))
+
+  // ── lib/did/index.ts (the Director/autonomous pipeline) calls it BEFORE the
+  //    D-ID submit, and got the realism-parity fixes dispatch.ts already had.
+  const didIndex = readStripped("lib/did/index.ts")
+  check("generateVideo() imports and calls requireConsentForVideoAvatarSource",
+    /await import\("\.\/avatar-consent-gate"\)/.test(didIndex) && /requireConsentForVideoAvatarSource\(svc, agentRecordId, avatarSrc\.sourceUrl\)/.test(didIndex))
+  check("...and the check runs BEFORE the D-ID submit (didPost call), not after",
+    (() => {
+      const gateIdx = didIndex.indexOf("requireConsentForVideoAvatarSource(svc")
+      const submitIdx = didIndex.indexOf('didPost("/talks"')
+      return gateIdx > -1 && submitIdx > -1 && gateIdx < submitIdx
+    })())
+  check("a refused video-sourced render returns status:\"error\" (the shape every caller of generateVideo already branches on) rather than throwing",
+    /if \(!consentCheck\.ok\) \{\s*\n\s*return \{ videoId: "", videoUrl: null, status: "error", note: consentCheck\.refusal\.message \}/.test(didIndex))
+  check("generateVideo() now spreads DID_TALK_REALISM_CONFIG (fluent/pad_audio) instead of the bare {result_format,stitch} it used to build inline",
+    /config: Record<string, unknown> = \{\s*\n\s*\.\.\.DID_TALK_REALISM_CONFIG,/.test(didIndex))
+  check("generateVideo()'s ElevenLabs leg now sends model_id + ELEVENLABS_REALISM_VOICE_SETTINGS + apply_text_normalization — not the bare API defaults",
+    /model_id: avatarTtsModel,/.test(didIndex) &&
+    /voice_config: ELEVENLABS_REALISM_VOICE_SETTINGS,/.test(didIndex) &&
+    /apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,/.test(didIndex))
+  check("generateVideo() paces the script through withNaturalPauses before it reaches D-ID's TTS provider, same as dispatch.ts's avatar leg",
+    /const pacedScript = withNaturalPauses\(input\.script, avatarTtsModel\)/.test(didIndex) && /input: pacedScript,/.test(didIndex))
+
+  // CONTROL: the pre-fix inline config/voice_config (the literal shape this
+  // section replaced, quoted from the file's own prior body) is correctly
+  // recognised as lacking the realism-parity fields.
+  const oldConfigFixture = [
+    'const config: Record<string, unknown> = {',
+    '    result_format: "mp4",',
+    '    stitch: true,',
+  ].join("\n")
+  check("[control] the pre-fix bare config literal does not match the DID_TALK_REALISM_CONFIG-spread pattern",
+    !/config: Record<string, unknown> = \{\s*\n\s*\.\.\.DID_TALK_REALISM_CONFIG,/.test(oldConfigFixture))
+  const oldVoiceConfigFixture = [
+    '    scriptBlock.provider = {',
+    '      type: "elevenlabs",',
+    '      voice_id: input.voiceId,',
+    '      voice_config: {',
+    '        stability: 0.5,',
+    '        similarity_boost: 0.75,',
+    '      },',
+    '    }',
+  ].join("\n")
+  check("[control] the pre-fix hardcoded stability/similarity_boost literal does not match the ELEVENLABS_REALISM_VOICE_SETTINGS pattern",
+    /stability: 0\.5,/.test(oldVoiceConfigFixture) && !/voice_config: ELEVENLABS_REALISM_VOICE_SETTINGS,/.test(oldVoiceConfigFixture))
+
+  // ── lib/providers/dispatch.ts (the ISA outreach-email path) calls the SAME
+  //    gate, BEFORE the ElevenLabs TTS spend, and skips it correctly for a V4
+  //    expressive presenter (already gated at mint time via create-avatar).
+  const dispatch = readStripped("lib/providers/dispatch.ts")
+  check("dispatchVideoViaDID imports and calls requireConsentForVideoAvatarSource",
+    /await import\("@\/lib\/did\/avatar-consent-gate"\)/.test(dispatch) &&
+    /requireConsentForVideoAvatarSource\(supabase, agentRecordId, sourceUrl\)/.test(dispatch))
+  check("...gated on isVideoSource AND NOT a V4 expressive presenter (a V4 avatar_id was already consent-checked at create-avatar mint time)",
+    /if \(isVideoSource && presenterTypeForTwin\(didProfile\.did_avatar_id\) !== "expressive"\) \{/.test(dispatch))
+  check("...and the check runs BEFORE the ElevenLabs TTS call (convertSpeech) — a refused render must not still spend TTS cost",
+    (() => {
+      const gateIdx = dispatch.indexOf("requireConsentForVideoAvatarSource(supabase")
+      const ttsIdx = dispatch.indexOf("const ttsRes = await convertSpeech(")
+      return gateIdx > -1 && ttsIdx > -1 && gateIdx < ttsIdx
+    })())
+  check("a refused render returns success:false with providerKey:\"did\" — the same DispatchResult shape every other refusal in this function uses",
+    /if \(!consentCheck\.ok\) \{\s*\n\s*return \{ success: false, providerKey: "did", error: consentCheck\.refusal\.message \}/.test(dispatch))
+
+  // CONTROL: dispatch.ts's OWN pre-fix shape (the section immediately after
+  // isVideoSource, before this wave's insert) had no consent-gate call at
+  // all — proving the finder distinguishes "gate present" from "gate absent"
+  // rather than always matching on isVideoSource alone.
+  const oldDispatchFixture = [
+    '  const isVideoSource = !!didProfile.did_video_url',
+    '',
+    '  // Render the script with template variables filled in.',
+  ].join("\n")
+  check("[control] the pre-fix dispatch.ts shape (isVideoSource with no gate call before the template render) is correctly rejected",
+    /const isVideoSource = !!didProfile\.did_video_url/.test(oldDispatchFixture) &&
+    !/requireConsentForVideoAvatarSource/.test(oldDispatchFixture))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log("══════════════════════════════════════════════════════════════")
@@ -1134,6 +1245,7 @@ async function main() {
   avatarPipWindowSection()
   advancedRealismSection()
   v3Section()
+  sideDoorSection()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -1141,6 +1253,6 @@ async function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ All sixteen avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53 + §realism from wave 55 + §avatarPipWindow/§advancedRealism from wave 56 + §v3 from wave 57), each with a positive control.")
+  console.log(" ✅ All seventeen avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53 + §realism from wave 55 + §avatarPipWindow/§advancedRealism from wave 56 + §v3 from wave 57 + §sideDoor from wave 72D), each with a positive control.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

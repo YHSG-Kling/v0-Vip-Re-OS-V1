@@ -351,9 +351,66 @@ export async function generateVideo(
     }
   }
 
+  // agents.id, resolved once and reused below for the expression default AND
+  // the consent gate (was previously resolved only inside the expression
+  // branch, so the consent check below had no identity to check against).
+  const svc = createServiceClient()
+  let agentRecordId: string | null = null
+  if (input.agentUserId) {
+    try {
+      const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+      agentRecordId = await resolveUserIdToAgentRecord(input.agentUserId, input.brokerageId)
+    } catch { /* best-effort — treated as "no identity" below, which fails closed */ }
+  }
+
+  // ── VIDEO-SOURCED AVATAR CONSENT GATE (wave 72D — see lib/did/avatar-
+  // consent-gate.ts's header for the full gap this closes) ──────────────────
+  // A no-op for a photo source or a resolved actor_id/V4 avatar_id (those
+  // already passed app/api/did/create-avatar's own consent gate when minted);
+  // it only fires when `avatarSrc.sourceUrl` looks like a video AND this
+  // agent has no verified `agent_did_consents` row. Refused with the SAME
+  // "needs_consent" shape app/api/did/create-avatar already returns, so a
+  // caller that already understands that contract (or the generic
+  // status==="error" branch every caller here has) handles it correctly.
+  if (avatarSrc.sourceUrl) {
+    const { requireConsentForVideoAvatarSource } = await import("./avatar-consent-gate")
+    const consentCheck = await requireConsentForVideoAvatarSource(svc, agentRecordId, avatarSrc.sourceUrl)
+    if (!consentCheck.ok) {
+      return { videoId: "", videoUrl: null, status: "error", note: consentCheck.refusal.message }
+    }
+  }
+
+  // ── ELEVENLABS MODEL + PACING (wave 72D realism parity) ────────────────────
+  // lib/providers/dispatch.ts's outreach-email avatar path already upgraded to
+  // elevenLabsModelForLane("avatar_narration", …) + withNaturalPauses (wave
+  // 57) and ELEVENLABS_REALISM_VOICE_SETTINGS (wave 55) — this function (the
+  // Director/autonomous render pipeline every other avatar-video call site
+  // funnels through: partners-meeting, assistant-starter, the workflow video
+  // adapter, avatar-track-submit, director-reel-render) had none of the
+  // three: `voice_config` was still ElevenLabs' bare API defaults
+  // (`stability: 0.5, similarity_boost: 0.75`, no `style`, no
+  // `use_speaker_boost`), no `model_id` was ever sent (D-ID's ElevenLabs
+  // integration fell back to whatever its own default model is, never eleven_v3),
+  // and no natural-pause markup was applied. Same §6 "one vocabulary,
+  // one constant" defect the realism-profile.ts header describes for the
+  // stability/similarity_boost pair specifically — this closes it for the
+  // pipeline that actually carries the most avatar-video volume.
+  // `withNaturalPauses` only touches the copy of the script sent to D-ID's
+  // TTS provider here; it never reaches a caption consumer because this
+  // function returns no script text to its callers (GenerateVideoResult has
+  // no script field) — same safety argument dispatch.ts's own wave-57 comment
+  // makes for its call.
+  const {
+    elevenLabsModelForLane, withNaturalPauses,
+    ELEVENLABS_REALISM_VOICE_SETTINGS, ELEVENLABS_TEXT_NORMALIZATION,
+    DID_TALK_REALISM_CONFIG,
+  } = await import("@/lib/video/realism-profile")
+  const avatarTtsModel = elevenLabsModelForLane("avatar_narration")
+  const pacedScript = withNaturalPauses(input.script, avatarTtsModel)
+
   const scriptBlock: Record<string, unknown> = {
     type: "text",
-    input: input.script,
+    input: pacedScript,
     ssml: false,
   }
 
@@ -361,17 +418,15 @@ export async function generateVideo(
     scriptBlock.provider = {
       type: "elevenlabs",
       voice_id: input.voiceId,
-      voice_config: {
-        stability: 0.5,
-        similarity_boost: 0.75,
-      },
+      model_id: avatarTtsModel,
+      voice_config: ELEVENLABS_REALISM_VOICE_SETTINGS,
+      apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
     }
   }
 
   // Resolve facial expression — caller > agent profile > SCRIPT-INFERRED
   // sentiment > platform default. agent_voice_profiles.agent_id FKs to
-  // agents(id); resolve users.id through the canonical helper before
-  // querying.
+  // agents(id); agentRecordId was resolved above.
   //
   // WAVE 61 REALISM FIX — the SCRIPT-INFERRED rung. Before this, an agent
   // with no `default_expression` saved got a hardcoded "happy" for every
@@ -384,26 +439,29 @@ export async function generateVideo(
   const { inferScriptSentiment } = await import("@/lib/video/realism-profile")
   let expression: string = input.expression ?? inferScriptSentiment(input.script)
   let intensity: number  = input.expressionIntensity ?? 0.7
-  if (!input.expression && input.agentUserId) {
+  if (!input.expression && agentRecordId) {
     try {
-      const svc = createServiceClient()
-      const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-      const agentRecordId = await resolveUserIdToAgentRecord(input.agentUserId, input.brokerageId)
-      if (agentRecordId) {
-        const { data: prof } = await svc
-          .from("agent_voice_profiles")
-          .select("default_expression, expression_intensity")
-          .eq("agent_id", agentRecordId)
-          .maybeSingle()
-        if (prof?.default_expression) expression = prof.default_expression as string
-        if (prof?.expression_intensity != null) intensity = Number(prof.expression_intensity)
-      }
+      const { data: prof } = await svc
+        .from("agent_voice_profiles")
+        .select("default_expression, expression_intensity")
+        .eq("agent_id", agentRecordId)
+        .maybeSingle()
+      if (prof?.default_expression) expression = prof.default_expression as string
+      if (prof?.expression_intensity != null) intensity = Number(prof.expression_intensity)
     } catch { /* best-effort — keep defaults */ }
   }
 
+  // REALISM PARITY (wave 72D): DID_TALK_REALISM_CONFIG is the ONE tuned
+  // TalksConfig base (stitch/fluent/pad_audio/result_format — see
+  // lib/video/realism-profile.ts's header for the research) that
+  // lib/providers/dispatch.ts already spreads into BOTH of its D-ID branches.
+  // This function spread only `result_format` + `stitch` inline and never
+  // `fluent` (removes the jump-cut at the loop point) or `pad_audio` (settles
+  // the mouth before the clip ends instead of freezing mid-viseme) — the same
+  // "two different answers to the same realism concern" §6 defect the
+  // dispatch.ts header describes, just between files instead of within one.
   const config: Record<string, unknown> = {
-    result_format: "mp4",
-    stitch: true,
+    ...DID_TALK_REALISM_CONFIG,
     driver_expressions: {
       expressions: [{ start_frame: 0, expression, intensity }],
     },
