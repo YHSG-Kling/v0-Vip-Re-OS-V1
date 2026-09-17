@@ -131,7 +131,8 @@ function testDefaultLanguage() {
   // both must resolve through DEFAULT_LANGUAGE, never a private "en" spelling.
   const sites = [
     { file: "app/actions/podcast-generation.ts", pattern: /language:\s*params\.language\s*\?\?\s*DEFAULT_LANGUAGE/ },
-    { file: "app/actions/avatar-voice-catalog.ts", pattern: /language:\s*v\.labels\?\.language\s*\?\?\s*v\.fine_tuning\?\.language\s*\?\?\s*DEFAULT_LANGUAGE/ },
+    { file: "app/actions/avatar-voice-catalog.ts", // wave 70: the official ElevenLabs SDK spells the field fineTuning; either spelling, same fallback
+      pattern: /language:\s*v\.labels\?\.language\s*\?\?\s*v\.(?:fine_tuning|fineTuning)\?\.language\s*\?\?\s*DEFAULT_LANGUAGE/ },
   ]
   for (const site of sites) {
     const src = stripComments(readFileSync(`${process.cwd()}/${site.file}`, "utf8"))

@@ -765,7 +765,10 @@ function realismSection() {
   check("dispatch.ts's D-ID submission spreads the ONE realism config into BOTH source branches (photo AND video-driven), not one",
     (dispatch.match(/\.\.\.DID_TALK_REALISM_CONFIG,/g) ?? []).length >= 2)
   check("dispatch.ts's D-ID ElevenLabs TTS leg sends the ONE tuned voice_settings constant (it sent NONE before wave 55)",
-    /voice_settings: ELEVENLABS_REALISM_VOICE_SETTINGS/.test(dispatch))
+    // wave 70: the official ElevenLabs SDK adapter spells the field voiceSettings;
+    // the REST spelling is accepted where it still exists — either way it must be
+    // THE constant, never a literal.
+    /voice(?:_s|S)ettings: ELEVENLABS_REALISM_VOICE_SETTINGS/.test(dispatch))
   check("lib/voice/elevenlabs-tts.ts's DEFAULT_VOICE_SETTINGS now DERIVES from the same constant rather than repeating ElevenLabs' raw API defaults (stability 0.5/similarity 0.75/style 0) a second time",
     /const DEFAULT_VOICE_SETTINGS: Required<VoiceSettings> = ELEVENLABS_REALISM_VOICE_SETTINGS/.test(elevenTts))
   check("no stray hardcoded ElevenLabs voice_settings literal remains at either call site (a `{ stability: 0.5` object would be a second, drifting answer)",
