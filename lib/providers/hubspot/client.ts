@@ -19,7 +19,38 @@
 // Next's webpack build, where "server-only" throws unconditionally rather than
 // only-when-client-bundled (see lib/providers/apify/client.ts for the fuller
 // version of this note).
-import { Client } from "@hubspot/api-client"
+//
+// RUNTIME require + NARROW LOCAL TYPE, deliberately NOT `import { Client } from
+// "@hubspot/api-client"` (wave 71 integration, 2026-09-17): the SDK ships 2,938
+// generated .d.ts files, and a type-space import of its root makes `tsc
+// --noEmit` walk every one of them. That single import pushed the full
+// type-check past the 10,000 MB heap that had held since wave 55 ("Ineffective
+// mark-compacts near heap limit", GUARD_EXIT=134 on the first wave-71 chain).
+// createRequire keeps the runtime SDK (the ruling is honoured — the official
+// package still makes every call) while the compiler sees only the three
+// method shapes this adapter actually uses. Same idiom as lib/providers/lob/
+// client.ts (createRequire, not a bare require — package.json is "type":
+// "module" and tsx's ESM loader has no `require` in scope) and the same
+// narrow-declaration idea as types/facebook-nodejs-business-sdk.d.ts.
+import { createRequire } from "node:module"
+
+interface HubSpotContactsSurface {
+  batchApi: {
+    upsert(body: { inputs: Array<{ idProperty: string; id: string; properties: Record<string, string> }> }): Promise<unknown>
+  }
+  basicApi: {
+    create(body: { properties: Record<string, string>; associations: unknown[] }): Promise<{ id: string }>
+    getPage(limit?: number, after?: string, properties?: string[]): Promise<unknown>
+  }
+}
+interface HubSpotClientSurface {
+  crm: { contacts: HubSpotContactsSurface }
+}
+type HubSpotClientCtor = new (opts: { accessToken: string }) => HubSpotClientSurface
+
+const HubSpotSDK = createRequire(import.meta.url)("@hubspot/api-client") as { Client: HubSpotClientCtor }
+const Client: HubSpotClientCtor = HubSpotSDK.Client
+type Client = HubSpotClientSurface
 
 export interface AdapterResult<T> {
   ok: boolean

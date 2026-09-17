@@ -108,7 +108,7 @@ counts specific to this wave; lane report has the full per-file detail.
 |---|---|---|---|
 | `peopledatalabs` | 14.6.0 | `lib/providers/peopledata/client.ts` | Installed. |
 | `facebook-nodejs-business-sdk` | 24.0.1 | `lib/providers/meta/client.ts` | Installed. |
-| `@hubspot/api-client` | 14.0.1 | `lib/providers/hubspot/client.ts` | Installed. |
+| `@hubspot/api-client` | 14.0.1 | `lib/providers/hubspot/client.ts` | Installed. Loaded via `createRequire` with a narrow local type surface — a type-space import of the SDK root walks its 2,938 generated `.d.ts` files and pushed the full `tsc --noEmit` past the 10,000 MB heap (GUARD_EXIT=134, wave-71 chain 1). |
 | `intuit-oauth` | 4.2.5 | `lib/providers/quickbooks/client.ts` | Installed. |
 | `node-quickbooks` | 2.0.50 | — | **Verified, installed, then UNINSTALLED.** Community package (Michael Cohen), not published by Intuit — declined under the official-SDK ruling once `intuit-oauth`'s narrower, actually-official split (token lifecycle only) was confirmed as correct. Its API shape (`QuickBooks(consumerKey, consumerSecret, token, tokenSecret, realmId, useSandbox, debug, minorversion, oauthversion, refreshToken)`, callback-style `createCustomer`/`createInvoice`/`createPurchase`/`createJournalEntry`/`getCompanyInfo`) was inspected before the decision, not skipped. |
 | `lob` | already `^6.6.3` in `package.json` | `lib/providers/lob/client.ts` | Kept at v6, per the task's instruction — NOT upgraded to the current 8.1.1. `lob@6.6.3`'s own `engines` field requires Node `>= 10.0.0` (verified via `npm view lob@6.6.3 engines`), compatible with this repo's Node 22 runtime; the lob-node README's "Node >= 24.15.0" notice describes the v8.x line this repo deliberately stays off. |
