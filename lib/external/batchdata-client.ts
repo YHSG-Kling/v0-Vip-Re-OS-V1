@@ -947,6 +947,23 @@ export interface BatchDataSkipTraceMatch {
 const BATCHDATA_API_V3_URL = 'https://api.batchdata.com/api/v3'
 const SKIP_TRACE_BATCH_LIMIT = 100
 
+/**
+ * THE ONE skip-trace unit-cost constant (lane 72B — CLAUDE.md §3 "one vocabulary
+ * per function"). Reconciled discrepancy: this file's own skipTraceBatchDataV3Batch
+ * had hard-coded `0.15` inline while .env.example's BATCHDATA_SKIP_TRACE_TOKEN
+ * comment documented "~$0.06/matched record per the wave-67 research" — two
+ * spellings of the same number, and the code's `0.15` cited no source at all (its
+ * own comment only describes the BILLING MODEL — "matched or not, the lookup is
+ * billed" — never a verified invoice). Per the wave-67 research (help.batchdata.io /
+ * batchdata.io/pricing, 2026-09-16, recorded in LANE_RULES and
+ * docs/real-estate-data-providers-2026-09.md): "skip-trace pay-as-you-go
+ * ~$0.06/matched record." KEEPING THE RESEARCHED VALUE per this lane's brief
+ * ("keep the researched value unless the code comment cites a verified invoice" —
+ * it did not). Every reader of BatchData's V3 skip-trace unit cost uses THIS
+ * constant; a second literal is the defect §6 names.
+ */
+export const BATCHDATA_SKIP_TRACE_COST_USD = 0.06
+
 /** PURE — one V3 skip-trace response row → phones[]/emails[], read defensively across
  *  the plausible shapes (a `persons[]` array, a flat `phoneNumbers`/`emails`, or the
  *  V1-style `phone`/`email` singular fields this repo already reads elsewhere). */
@@ -1028,7 +1045,7 @@ export async function skipTraceBatchDataV3Batch(
       } else {
         chunk.forEach((p, i) => allMatches.push(readSkipTraceMatch(p.ref, rows[i])))
       }
-      cost += chunk.length * 0.15 // V3 skip trace is a per-match-attempt charge; matched or not, the lookup is billed
+      cost += chunk.length * BATCHDATA_SKIP_TRACE_COST_USD // per-match-attempt charge; matched or not, the lookup is billed
     } catch {
       allMatches.push(...chunk.map((p) => ({ ref: p.ref, matched: false, phones: [], emails: [] })))
     }

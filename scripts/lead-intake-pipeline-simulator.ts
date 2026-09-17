@@ -42,6 +42,8 @@ import {
 } from "../lib/lead-pipeline/processing-status"
 import { activeSubscriberBrokerageIds } from "../lib/lead-pipeline/subscription-gate"
 import { resolveScrapeTerritoriesFrom } from "../lib/lead-pipeline/scrape-territories"
+import { deriveSocialProfileUrl } from "../lib/lead-pipeline/social-identity-resolve"
+import { enrichPerson } from "../lib/providers/peopledata/client"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -309,6 +311,92 @@ check("the sibling column's only other reader in the tree uses exactly this voca
 const baseline = JSON.parse(readFileSync("scripts/opposite-missing-baseline.json", "utf8"))
 check("opposite-missing-baseline.json no longer carries raw_scraped_leads.dedupe_status as a writer-less read (the writer exists; a regression would be a NEW census finding)",
   !(baseline.keys?.["col-read-no-write"] ?? []).includes("raw_scraped_leads.dedupe_status"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 8 (lane 72B) — PeopleData identity resolution for a raw lead that
+// arrived with ONLY a scraped social handle (no name/email/phone). Owner,
+// wave 72, verbatim: "we use peopledata for finding a person's name etc.
+// from raw leads that may come in from the scrapers especially from posts
+// or behavioral signal intent online." No network: deriveSocialProfileUrl
+// is pure, and enrichPerson is exercised with an EMPTY key (its own
+// fail-closed early return — never reaches the SDK/network).
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 8 · PeopleData identity resolution for handle-only raw leads]")
+
+// 8a — deriveSocialProfileUrl: pure per-platform mapping + negative controls.
+check("reddit handle maps to a reddit.com profile URL",
+  deriveSocialProfileUrl("reddit_intent", "throwaway123") === "https://www.reddit.com/user/throwaway123")
+check("instagram handle maps to an instagram.com profile URL",
+  deriveSocialProfileUrl("instagram_intent", "@jane_realtor") === "https://www.instagram.com/jane_realtor")
+check("facebook handle maps to a facebook.com profile URL",
+  deriveSocialProfileUrl("facebook_group", "john.doe.94") === "https://www.facebook.com/john.doe.94")
+check("linkedin handle maps to a linkedin.com/in profile URL",
+  deriveSocialProfileUrl("linkedin_relocation", "jane-doe") === "https://www.linkedin.com/in/jane-doe")
+check("an already-full profile URL passes through unchanged (never re-wrapped)",
+  deriveSocialProfileUrl("reddit_intent", "https://www.reddit.com/user/already_a_url") === "https://www.reddit.com/user/already_a_url")
+check("NEGATIVE CONTROL: a source with no handle concept (e.g. a BatchData quicklist) resolves to null — the resolver never invents a URL shape it cannot back",
+  deriveSocialProfileUrl("batchdata_motivated", "some_id") === null)
+check("an empty/whitespace handle resolves to null regardless of source",
+  deriveSocialProfileUrl("reddit_intent", "   ") === null && deriveSocialProfileUrl("reddit_intent", null) === null)
+check("an unknown/misspelled source resolves to null rather than guessing",
+  deriveSocialProfileUrl("not_a_real_source_key", "someone") === null)
+
+// 8b — FAIL CLOSED: enrichPerson with no key never reaches the network.
+const noKeyResult = await enrichPerson("", { profile: "https://www.reddit.com/user/x" })
+check("enrichPerson with an EMPTY api key fails closed (ok:false, unconfigured) — no network attempted",
+  noKeyResult.ok === false && /unconfigured/i.test(noKeyResult.error ?? ""))
+
+// 8c — lib/kernel/scraping.ts: `username` is now written into normalized_preview
+// at BOTH raw-record normalization sites (was computed for viability/dedup and
+// then silently dropped before this lane).
+check("username is written into normalized_preview at BOTH scraping.ts insertion sites (was dropped at both before this lane)",
+  (kernelScrapingSrc.match(/username:\s*record\.username\s*\?\?\s*null,/g) ?? []).length === 2)
+
+// 8d — lib/external/peopledata-client.ts: the "at least one identifier" guard
+// now admits profileUrl, and profile is threaded through to the adapter.
+const peopleDataClientSrc = stripComments(readFileSync("lib/external/peopledata-client.ts", "utf8"))
+check("skipTraceWithPeopleData's identifier guard now admits profileUrl (no longer refuses a handle-only record outright)",
+  /!params\.profileUrl/.test(peopleDataClientSrc))
+check("skipTraceWithPeopleData threads profileUrl through to enrichPerson's `profile` param",
+  /profile:\s*params\.profileUrl/.test(peopleDataClientSrc))
+
+// 8e — lib/providers/peopledata/client.ts: the SDK adapter passes `profile`
+// through to the official PDL SDK call (confirmed on the SDK's own bundled
+// type surface — see the field's doc comment).
+const pdlAdapterSrc = stripComments(readFileSync("lib/providers/peopledata/client.ts", "utf8"))
+check("the PDL SDK adapter's PersonEnrichParams declares profile",
+  /profile\?:\s*string/.test(pdlAdapterSrc))
+check("the PDL SDK adapter passes profile through to person.enrichment(...)",
+  /profile:\s*params\.profile,/.test(pdlAdapterSrc))
+
+// 8f — pipeline-processor.ts wiring: the identity gate admits username-only
+// records, the enrichment call carries username+source, and the function
+// derives+meters the profile-identify path — all in STRIPPED source.
+check("the identity gate now includes hasUsername as an anchor (username-only records no longer die at 'insufficient_identity')",
+  /const passesIdentityGate = hasEmail \|\| hasPhone \|\| hasFullNameAndLoc \|\| hasPropertyAddress \|\| hasUsername/.test(code))
+check("hasUsername is computed from the record's scraped handle",
+  /const hasUsername\s*=\s*!!username\?\.trim\(\)/.test(code))
+check("the enrichWithPeopleData call site now passes username + source (the two facts the profile-identify path needs)",
+  /username,\s*source:\s*rec\.source,/.test(code))
+const ewpdStart = code.indexOf("async function enrichWithPeopleData")
+const ewpdEnd   = code.indexOf("\n  return base\n}")
+const ewpdBody  = ewpdStart >= 0 && ewpdEnd > ewpdStart ? code.slice(ewpdStart, ewpdEnd) : ""
+check("enrichWithPeopleData body was sliced (not a silent empty string)", ewpdBody.length > 200)
+check("enrichWithPeopleData derives a profile URL ONLY when name/phone/email are all absent (never overrides a real identifier)",
+  /!hasNamePhoneEmail\s*\n\s*\? deriveSocialProfileUrl/.test(ewpdBody))
+check("enrichWithPeopleData meters the NEW profile-identify spend via meterVendorSpend (never a second unmetered PeopleData path)",
+  /meterVendorSpend\(\{/.test(ewpdBody) && /vendorName:\s*'peopledata'/.test(ewpdBody))
+check("the meter call reuses the EXISTING per-match constant (0.25 matched / 0.10 no-match) documented in peopledata-client.ts — never a second invented price",
+  /cost:\s*matched \? 0\.25 : 0\.10,/.test(ewpdBody))
+
+// 8g — ORDERING (task 2 requirement): the second (post-enrichment) dedup still
+// runs AFTER enrichment — unaffected by this lane's change, re-asserted here
+// against the SAME idx variables Layer 2 computed so a regression in either
+// layer trips both.
+check("the username-carrying enrichWithPeopleData call still runs BEFORE the post-enrichment dedupe pass (dedup-after-enrichment order unchanged)",
+  idxEnrichSpend >= 0 && idxEnrichSpend < idxPostEnrichDedup)
+check("the identity gate (now including hasUsername) still runs before the enrichment call",
+  idxIdentityGate < idxEnrichSpend)
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n" + "─".repeat(60))

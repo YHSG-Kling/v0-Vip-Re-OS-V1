@@ -19,6 +19,7 @@ import {
 import { KernelEvent } from '@/lib/kernel/events'
 import { MAX_RETRIES, enrichmentRetryOutcome, classifyEnrichmentFault, escalateConfigFaultOnce } from './enrichment-retry'
 import { isContactInLiveDeal } from '@/lib/enrichment/deal-suppression'
+import { PEOPLEDATA_MATCH_COST_USD } from '@/lib/external/peopledata-client'
 import {
   planEnrichmentLane,
   runFreeOsintLane,
@@ -39,12 +40,13 @@ import {
 const BATCH_SIZE = 10
 
 /**
- * PeopleData's per-record charge (lib/external/peopledata-client.ts returns
- * cost: 0.10 on both the matched and the no-match path). Used to PRE-FLIGHT the
- * brokerage vendor budget before the call, not to price it afterwards — the
- * ledger still records the cost the client actually reports.
+ * PeopleData's per-record charge, PRE-FLIGHTED at the matched (worst-case)
+ * price so the budget check can never admit a call the ledger then books
+ * higher (wave 72 integration: the old comment claimed 0.10 on both paths while
+ * lib/external/peopledata-client.ts reported 0.25 on a match). The ledger still
+ * records the cost the client actually reports.
  */
-const PEOPLEDATA_UNIT_COST = 0.10
+const PEOPLEDATA_UNIT_COST = PEOPLEDATA_MATCH_COST_USD
 
 type EntityType = 'lead' | 'contact'
 

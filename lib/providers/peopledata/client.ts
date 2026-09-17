@@ -63,6 +63,15 @@ export interface PersonEnrichParams {
   email?: string
   /** PDL's `location` free-text param. */
   location?: string
+  /** PDL's `profile` param (lane 72B) — a social profile URL (LinkedIn/Facebook/
+   *  Instagram/Twitter/…). Confirmed on the installed SDK's own type surface
+   *  (`node_modules/peopledatalabs/dist/types/enrichment-types.d.ts`:
+   *  `PersonEnrichmentParams.profile?: Array<string> | string`) — the identifying
+   *  input for a raw lead that arrived with ONLY a social handle/post author (no
+   *  name, email or phone), the exact case the owner named: "we use peopledata
+   *  for finding a person's name etc. from raw leads that may come in from the
+   *  scrapers especially from posts or behavioral signal intent online." */
+  profile?: string
   minLikelihood?: number
   /** PDL's `required` boolean-expression string, e.g. "emails OR phones". */
   required?: string
@@ -83,6 +92,7 @@ export async function enrichPerson(apiKey: string, params: PersonEnrichParams): 
       phone: params.phone,
       email: params.email,
       location: params.location,
+      profile: params.profile,
       min_likelihood: params.minLikelihood,
       required: params.required,
     })

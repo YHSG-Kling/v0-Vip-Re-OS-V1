@@ -10,6 +10,7 @@ import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
 
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
     // session mint just closed.
     const { data: session, error: sessionError } = await supabase
       .from('chat_sessions')
-      .select('id, brokerage_id, agent_id, status, capture_state')
+      .select('id, brokerage_id, agent_id, status, capture_state, contact_id')
       .eq('widget_session_token', session_token)
       .maybeSingle()
 
@@ -133,6 +134,29 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
       ledgerUserId = agentRow?.user_id ?? null
     }
 
+    // ── BatchData property-intelligence tools (lane 72B) ──────────────────
+    // The anonymous pre-lead lane lib/ai-isa/batchdata-isa-tools.ts's own
+    // header named as still unwired in wave 71 (only the ISA email handler
+    // and the D-ID live-avatar brain were reached). Persona is always 'isa'
+    // here — a widget visitor with no contact record yet can never be the
+    // investor-portal persona (that requires an authenticated investor
+    // contact, which this anonymous, pre-capture lane does not have).
+    // conversationKey = the session row's id (stable across this visitor's
+    // whole chat, survives capture) — never the request body. contactId is
+    // the session's own linked contact when capture already happened this
+    // session, else null (the tool still runs, it just has nothing tenant-
+    // scoped to persist a verify/DNC verdict to yet). Gated: {} when
+    // BatchData's MCP is unconfigured, so a deployment with no BatchData
+    // token streams exactly as before this change.
+    const batchDataTools = await batchDataIsaTools({
+      brokerageId: session.brokerage_id,
+      userId: ledgerUserId,
+      agentId: session.agent_id,
+      persona: 'isa',
+      conversationKey: session.id,
+      contactId: session.contact_id ?? null,
+    })
+
     // Routed streaming entry: routing table model, tenant fair-use cap checked
     // BEFORE the first byte, cost ledger written on finish.
     let result: Awaited<ReturnType<typeof streamTextRouted>>
@@ -143,9 +167,12 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
         messages: await convertToModelMessages(recentMessages),
         temperature: 0.7,
         maxTokens: 512,
+        tools: batchDataTools,
+        maxSteps: 5,
         userId: ledgerUserId,
         brokerageId: session.brokerage_id,
         agentId: session.agent_id,
+        manager: 'ai_isa',
         onFinish: async ({ text }) => {
           // Persist assistant turn
           await supabase.from('chat_messages').insert({

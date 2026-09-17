@@ -22,7 +22,7 @@ a need we have; never a second resolver."* Every row below is `keep` or
 | Active/sold/pending listings, regular buyers (`lib/buyer-search/listing-source-order.ts`) | IDX (tenant feed) → RentCast (platform) → BatchData on-market (opt-in) | RentCast `RENTCAST_USD_PER_REQUEST=$0.074`/req (`lib/property/rentcast.ts:124`); IDX $0 (tenant-owned) | **keep** — wave 69 ruling already orders these correctly; IDX is free and RentCast is 20–100× cheaper than BatchData for this job (see §3) |
 | Sold/active/pending comps for CMA (`lib/cma/comp-provider.ts`) | RentCast primary (`REQUIRED_SOLD_COMPS`, `PRIMARY_SOLD_WINDOW_MONTHS`), BatchData supplement when short (`comp-provider.ts:567`) | RentCast $0.074/req; BatchData `BATCHDATA_COMPS_COST_CENTS=5¢`/pull (`batchdata-client.ts:1400`) | **keep** — wave 70 ruling; already built, both wired |
 | AVM (`lib/avm/provider-chain.ts`) | RentCast → BatchData → ZenRows/Zillow scrape → Perplexity → OSINT → cached → market-appreciation fallback (`AvmSource` union, `provider-chain.ts:33`) | RentCast $0.074/req; others per their own metered rate | **keep** — 7-deep fallback chain already covers cost/coverage tradeoffs |
-| Owner/skip-trace/right-party contact (`lib/external/batchdata-client.ts::skipTraceBatchDataV3Batch`) | BatchData V3 skip-trace | $0.15/match-attempt in code (`batchdata-client.ts:1031`) — **note**: this is code's own ledger estimate, higher than the wave-67 researched figure (~$0.06/matched record); unreconciled against an invoice, flagged as a blind spot, not a defect to fix this wave | **keep** — BatchData is the named right-party-contact leader (76% right-party contact per the wave-71 BatchData blog citation); Tovo/ATTOM do not publish a skip-trace SKU at all |
+| Owner/skip-trace/right-party contact (`lib/external/batchdata-client.ts::skipTraceBatchDataV3Batch`) | BatchData V3 skip-trace | **RECONCILED lane 72B**: ONE named constant `BATCHDATA_SKIP_TRACE_COST_USD = 0.06` (`batchdata-client.ts`, above `skipTraceBatchDataV3Batch`) — kept the wave-67 RESEARCHED figure (~$0.06/matched record); the code's prior inline `0.15` cited no invoice, only a description of the billing model ("matched or not, the lookup is billed"), so per this lane's brief the researched value stands and every reader now derives from the one constant | **keep** — BatchData is the named right-party-contact leader (76% right-party contact per the wave-71 BatchData blog citation); Tovo/ATTOM do not publish a skip-trace SKU at all |
 | Motivated-seller quicklists (pre-foreclosure, absentee, vacant, inherited, tired-landlord) (`lib/external/batchdata-client.ts::fetchMotivatedSellers`, `quickListSlugsFor`) | BatchData quicklists | Plan-tier $/record: Growth $0.01, Professional $0.00833, Scale $0.00667, Enterprise $0.00333 (wave 67/68) | **keep** — this is exactly what BatchData is priced for; Tovo's page claims "marketing lists" and foreclosure coverage but publishes no per-record price to compare against |
 | Property monitoring (`lib/kernel/listings-batchdata-feed.ts`, pooled-by-quicklist subscriptions) | BatchData Property Monitoring (5 subscriptions/account, pooled by quicklist, wave 67) | Same plan-tier pool as above | **keep** — no competitor researched here offers a push/subscription monitoring product; RentCast and Tovo are pull-only |
 | Investor buy-box matching (`lib/external/batchdata-mcp.ts::investorBuyboxPreview/Count/Page`) | BatchData MCP (`investor_buybox_*`) | Not independently confirmed — metered at `MCP_TOOL_CALL_COST_USD=$0.05`/call estimate (`batchdata-ai-tools.ts:53`) | **keep** — MCP-only, no REST equivalent exists per wave 67/68 research; no other provider in this evaluation publishes a buy-box product |
@@ -56,7 +56,7 @@ active listings/market") — the repo's own stated volume assumption for a
 | IDX (tenant-owned) | $0 | Never touches platform spend |
 | RentCast (platform, current default when no IDX) | $8.00/mo (Developer: 50 free + 40×$0.20 overage) or $74/mo flat (Foundation) | 1 request/market/day = 90 requests/mo total |
 | BatchData on-market quicklist (opt-in only) | $180/mo (Growth-plan derived rate) to $900/mo (this repo's own internal ledger estimate) | Full re-walk needed every cycle; shares the same $1,000–$10,000/mo pool as every other BatchData lane |
-| Tovo Data | **cannot compute** — no published per-record or per-credit rate | Would need a quote naming $/record before this row can be filled in |
+| Tovo Data | **cannot compute** — no published per-record or per-credit rate (re-fetched `tovodata.com/real-estate-api-pricing/` 2026-09-17, lane 72B — page unchanged: same two credit plans, same withheld conversion rate; nothing moved) | Would need a quote naming $/record before this row can be filled in |
 | ATTOM | **cannot compute** — enterprise pricing, no public rate | Same blind spot |
 
 **Delta**: switching this workload from RentCast to Tovo or ATTOM cannot be
@@ -87,12 +87,14 @@ before the model ever sees them (§2c below).
   unpublished on their public pages (2 fetches spent on Tovo, 1 on ATTOM,
   per the task's fetch budget) — "unpublished — request quote" is recorded
   rather than guessed, per CLAUDE.md §1 ("unresolved beats a guess").
-- BatchData's own skip-trace cost is recorded TWO ways in this repo: the
-  wave-67 researched figure (~$0.06/matched record) and the code's actual
-  ledger charge (`$0.15`/match-attempt, `batchdata-client.ts:1031`). Neither
-  has been reconciled against a real invoice — flagged, not fixed, this wave
-  (out of scope: this lane does not touch `lib/external/*` scraping-frozen
-  files).
+- BatchData's own skip-trace cost — RECONCILED lane 72B (was recorded TWO
+  ways: the wave-67 researched figure ~$0.06/matched record and the code's
+  own inline `0.15`/match-attempt with no cited source). Neither figure has
+  been reconciled against a real BatchData invoice — that remains a blind
+  spot — but the code now reads from ONE named constant
+  (`BATCHDATA_SKIP_TRACE_COST_USD`, `lib/external/batchdata-client.ts`) set
+  to the researched $0.06, so the repo no longer disagrees with itself about
+  which number it charges.
 - RentCast's own plan table (used throughout this doc and the repo) is read
   off a third-party mirror per `docs/lead-acquisition-coverage-2026-09.md`'s
   own unresolved note — not RentCast's live dashboard.

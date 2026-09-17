@@ -628,6 +628,17 @@ export async function ingestRawSourceBatch(
             lastName:        record.lastName        ?? null,
             email:           record.email           ?? null,
             phone:           record.phone           ?? null,
+            // lane 72B — was computed for isViableRecord()/buildLeadIdentityKey()
+            // above and then DROPPED: a post-author/handle-only record (no name,
+            // email or phone — the shape social_intent sources actually arrive
+            // in) survived to a raw_scraped_leads row but carried nothing that
+            // let PeopleData identify the person later (owner: "we use
+            // peopledata for finding a person's name etc. from raw leads that
+            // may come in from the scrapers especially from posts or
+            // behavioral signal intent online"). See
+            // lib/lead-pipeline/social-identity-resolve.ts::deriveSocialProfileUrl,
+            // the reader this now feeds.
+            username:        record.username        ?? null,
             city:            record.city            ?? null,
             state:           record.state           ?? null,
             zip:             record.zip             ?? null,
@@ -744,6 +755,9 @@ export function normalizeRawSourceRecord(
       lastName:        record.lastName        ?? null,
       email:           record.email           ?? null,
       phone:           record.phone           ?? null,
+      // lane 72B — see the matching note in ingestRawSourceBatch's own
+      // normalized_preview build above; same field, same reader.
+      username:        record.username        ?? null,
       city:            record.city            ?? market.city ?? null,
       state:           record.state           ?? market.state ?? null,
       zip:             record.zip             ?? null,

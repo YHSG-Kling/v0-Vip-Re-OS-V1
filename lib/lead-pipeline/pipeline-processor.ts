@@ -5,6 +5,8 @@ import { isTerminalRawProcessingStatus, type RawProcessingStatus, type DedupeSta
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
 import { extractPropertySpecs, leadSpecPatch, contactSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
+import { deriveSocialProfileUrl } from './social-identity-resolve'
+import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
@@ -52,6 +54,12 @@ interface RawRecord {
     lastName?: string | null
     email?: string | null
     phone?: string | null
+    /** lane 72B — the scraped post-author/handle, when the source is a
+     *  social_intent lane and no name/email/phone was on the post. Written by
+     *  lib/kernel/scraping.ts's ingestRawSourceBatch/normalizeRawSourceRecord;
+     *  read below to resolve identity via PeopleData when it is the ONLY
+     *  identity signal this record carries. */
+    username?: string | null
     city?: string | null
     state?: string | null
     zip?: string | null
@@ -152,6 +160,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const phone      = rec.phone      ?? rec.normalized_preview?.phone      ?? (rec.raw_data?.phone      as string | undefined) ?? null
   const city       = rec.city       ?? rec.normalized_preview?.city       ?? (rec.raw_data?.city       as string | undefined) ?? null
   const state      = rec.state      ?? rec.normalized_preview?.state      ?? (rec.raw_data?.state      as string | undefined) ?? null
+  // lane 72B — see the RawRecord.normalized_preview.username doc comment above.
+  const username   = rec.normalized_preview?.username ?? null
 
   // ── Territory gate — block before enrichment spend ────────────────────────
   // Load the market this record was scraped for and check city/state/zip match.
@@ -236,12 +246,20 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   // so the deterministic source baseline alone is no longer used for it here.
 
   // ── STEP 4B: Identity gate — require at least one usable anchor ────────────
-  // Anchors: email, phone, full name + location, or property address.
+  // Anchors: email, phone, full name + location, property address, or (lane
+  // 72B) a scraped social HANDLE — the shape a post-author/behavioral-intent
+  // signal actually arrives in (owner: "raw leads that may come in from the
+  // scrapers especially from posts or behavioral signal intent online"). This
+  // is the SAME bar isViableRecord() (lib/lead-pipeline/raw-record-types.ts)
+  // already cleared to let the row exist as a raw_scraped_leads record in the
+  // first place — a username-only record used to pass THAT gate and then die
+  // here, one step later, never having reached PeopleData at all.
   const hasEmail           = !!email?.trim()
   const hasPhone           = !!phone?.trim()
   const hasFullNameAndLoc  = !!(firstName && lastName && (city || state))
   const hasPropertyAddress = !!(rec.normalized_preview?.propertyAddress ?? rec.raw_data?.propertyAddress)
-  const passesIdentityGate = hasEmail || hasPhone || hasFullNameAndLoc || hasPropertyAddress
+  const hasUsername        = !!username?.trim()
+  const passesIdentityGate = hasEmail || hasPhone || hasFullNameAndLoc || hasPropertyAddress || hasUsername
 
   if (!passesIdentityGate) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity')
@@ -296,7 +314,14 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   // ── Enrichment ──────────────────────────────────────────────────────────────
   await setStatus(supabase, rawRecordId, 'enriching')
 
-  const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone, city, state, brokerageId: effectiveBrokerageId })
+  const enriched = await enrichWithPeopleData({
+    first_name: firstName, last_name: lastName, email, phone, city, state,
+    brokerageId: effectiveBrokerageId,
+    // lane 72B — carried only so enrichWithPeopleData can resolve identity by
+    // social profile when name/email/phone are all absent; never used for
+    // anything else.
+    username, source: rec.source,
+  })
 
   // ── Post-enrichment deduplication — same THREE tables as the pre-enrich pass
   // (raw_scraped_leads + leads + contacts), now with enrichment-filled identity.
@@ -774,12 +799,55 @@ async function enrichWithPeopleData(fields: {
   city?:      string | null
   state?:     string | null
   brokerageId?: string | null
+  /** lane 72B — the record's scraped social handle + source, when it has one.
+   *  Used ONLY to derive a `profileUrl` when name/email/phone are all absent
+   *  (the post-author / behavioral-signal case) — never overrides a real
+   *  name/email/phone identifier when one is present. */
+  username?: string | null
+  source?:   string | null
 }): Promise<any> {
+  const hasNamePhoneEmail = !!(fields.first_name || fields.last_name || fields.phone || fields.email)
+  // lane 72B — the record carries NOTHING PeopleData's name/phone/email params
+  // can use, but it DOES carry a scraped social handle: derive the profile URL
+  // (pure, no network) and let PDL identify by `profile` instead of refusing
+  // the record outright. `skipTraceWithPeopleData`'s own guard still refuses
+  // when neither this nor a name/phone/email resolves to anything (fail
+  // closed — see its own throw).
+  const profileUrl = !hasNamePhoneEmail
+    ? deriveSocialProfileUrl(fields.source ?? null, fields.username ?? null)
+    : null
+
   const enrichmentResult = await skipTraceWithPeopleData({
     name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
     phone: fields.phone   || undefined,
     email: fields.email   || undefined,
+    profileUrl: profileUrl ?? undefined,
   }).catch(() => ({ data: null }))
+
+  // METERING (lane 72B, CLAUDE.md §5 — "a wrong number [in the cost ledger] is
+  // a wrong invoice"). The pre-existing name/phone/email enrichment path above
+  // was never metered from THIS call site at all (trackVendorUsageService for
+  // 'peopledata' is booked by the CALLER — see pipeline-processor.ts's own
+  // history — this file books nothing here today); left unchanged rather than
+  // widened, to keep this lane's blast radius to the NEW capability it adds.
+  // The profile-identify path is new spend this lane introduces, so it is
+  // metered here, at its own point of cost, using the SAME $0.25-per-match
+  // constant lib/external/peopledata-client.ts's own matched-path return
+  // already prices this endpoint at (PDL's official per-match price is not
+  // published in this repo or in docs/real-estate-data-providers-2026-09.md —
+  // recorded there as "unpublished" — so this reuses the existing constant
+  // rather than inventing a second number for the same endpoint).
+  if (profileUrl && fields.brokerageId) {
+    const matched = !!enrichmentResult.data
+    void meterVendorSpend({
+      vendorName: 'peopledata',
+      usageType: 'social_identity_resolve',
+      cost: matched ? 0.25 : 0.10,
+      brokerageId: fields.brokerageId,
+      systemSource: 'lead_scraping',
+      metadata: { profileUrl, source: fields.source ?? null, matched },
+    }).catch(() => null)
+  }
 
   const data = enrichmentResult.data
   let base: BaseEnrichment & {
