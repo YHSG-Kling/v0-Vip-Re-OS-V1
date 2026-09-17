@@ -71,7 +71,12 @@ export async function rankCandidatesWithBatchRank(
     candidates: candidates.map((c) => ({ ...c, batchrankScore: null, batchrankBand: null })),
   })
 
-  if (process.env[BATCHRANK_ENABLED_ENV] !== "true") {
+  // wave 69C carry (c): a computed `process.env[BATCHRANK_ENABLED_ENV]` read is invisible
+  // to scripts/env-var-parity.ts's regex (it only sees literal `process.env.NAME` /
+  // `process.env["NAME"]`), so this flag showed as "documented, never read" despite this
+  // line gating every call. Read it directly; BATCHRANK_ENABLED_ENV stays as the name used
+  // in the reason string below.
+  if (process.env.BATCHDATA_BATCHRANK_ENABLED !== "true") {
     return unchanged(`BatchRank is disabled (set ${BATCHRANK_ENABLED_ENV}=true to enable — custom-priced, contact BatchData sales first)`)
   }
   const token = resolveBatchDataToken("batchrank")

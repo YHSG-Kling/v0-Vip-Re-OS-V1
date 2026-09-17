@@ -123,7 +123,8 @@ function sourceLayer() {
   console.log("\n[wave 68 — BatchRank is an OPTIONAL, fail-closed ranking seam, never the candidate source]")
   const batchrank = src("lib/external/batchdata-batchrank.ts")
   check("rankCandidatesWithBatchRank is exported", /export async function rankCandidatesWithBatchRank/.test(batchrank))
-  check("fails closed (unranked, unchanged) when BATCHDATA_BATCHRANK_ENABLED is not \"true\"", /process\.env\[BATCHRANK_ENABLED_ENV\] !== "true"/.test(batchrank))
+  check("fails closed (unranked, unchanged) when BATCHDATA_BATCHRANK_ENABLED is not \"true\" — read\n    directly (not via a computed process.env[key]) so scripts/env-var-parity.ts sees the read (wave 69C carry c)",
+    /process\.env\.BATCHDATA_BATCHRANK_ENABLED !== "true"/.test(batchrank))
   check("...and again when no dedicated token is provisioned", /resolveBatchDataToken\("batchrank"\)/.test(batchrank))
   check("the runner calls it and stores the verdict on EVERY upsert row (batchrank_score/batchrank_band), never a spread that hides the columns", /batchrank_score: rank\?\.batchrankScore \?\? null, batchrank_band: rank\?\.batchrankBand \?\? null/.test(runner))
   check(".env.example documents both BatchRank vars as custom-priced / opt-in", /BATCHDATA_BATCHRANK_ENABLED=false/.test(src(".env.example")) && /BATCHDATA_BATCHRANK_TOKEN=/.test(src(".env.example")))

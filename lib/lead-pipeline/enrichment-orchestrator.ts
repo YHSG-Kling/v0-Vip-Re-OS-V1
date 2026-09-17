@@ -964,7 +964,16 @@ export async function processEnrichmentQueue(
           // scrubbed and the clean line elected primary, never a naive first-found.
           const scrub = await scrubPhonesForPatch(batchDataFallback.phones)
           const useScrub = !scrub.deferred && Object.keys(scrub.patch).length > 0
-          const phonePatch = useScrub ? scrub.patch : (batchDataFallback.phones[0] ? { phone: batchDataFallback.phones[0] } : {})
+          // Same contacts/leads column split as the PeopleData-matched path above (~505):
+          // `leads` carries phone/phone_secondary only, never the gate columns
+          // (phone_status/phone_verified/phone_secondary_*/dnc_verified_at) — writing an
+          // absent column refuses the WHOLE update (PGRST204, CLAUDE.md §3), which is what
+          // silently dropped every scrubbed lead here before this split existed.
+          const phonePatch = useScrub
+            ? (entityType === 'lead'
+                ? { ...(scrub.patch.phone !== undefined && { phone: scrub.patch.phone }), phone_secondary: scrub.patch.phone_secondary ?? null }
+                : scrub.patch)
+            : (batchDataFallback.phones[0] ? { phone: batchDataFallback.phones[0] } : {})
           const patch: Record<string, unknown> = {
             ...phonePatch,
             ...(batchDataFallback.emails[0] && { email: batchDataFallback.emails[0] }),

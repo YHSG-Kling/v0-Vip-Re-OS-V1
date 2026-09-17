@@ -320,6 +320,25 @@ console.log("\n═══ 9. Outbound EMAIL gets a fresh verification verdict too
     /email_verified: true, email_verification_date:/.test(msg))
 }
 
+console.log("\n═══ 10. VOICEDROP calls the SAME TCPA gate — no second scrub (wave 69C carry a) ═══")
+{
+  const vd = code("lib/voicedrop/orchestrate-voicedrop-send.ts")
+
+  console.log("  — positive control: the voicedrop path actually calls enforceTCPACompliance —")
+  check("orchestrateVoicedropSend's compliance step imports enforceTCPACompliance from THE gate",
+    /["']@\/lib\/communication\/tcpa-gate["']/.test(vd) && /enforceTCPACompliance\(/.test(vd))
+  check("...gated on channel:\"call\" (voicedrop is a phone call under FCC interpretation)",
+    /channel:\s*["']call["']/.test(vd))
+  check("...and refuses the send when the gate refuses (never a fire-and-forget call)",
+    /if \(!scrub\.allowed\) return \{ ok: false/.test(vd))
+
+  console.log("  — negative control: it does NOT hand-roll a second fresh-scrub implementation —")
+  check("voicedrop's own file never calls checkDncStatus/checkTcpaStatus directly —\n    the fresh scrub lives in exactly ONE place (tcpa-gate.ts), never duplicated here",
+    !/checkDncStatus\(|checkTcpaStatus\(/.test(vd))
+  check("...and never re-derives evaluateFreshScrubVerdict/isDncTcpaVerdictFresh locally\n    (those stay exported from tcpa-gate.ts only)",
+    !/function evaluateFreshScrubVerdict|function isDncTcpaVerdictFresh/.test(vd))
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`OUTBOUND CALL GATES — ${pass} passed, ${fail} failed`)
 if (fail > 0) {

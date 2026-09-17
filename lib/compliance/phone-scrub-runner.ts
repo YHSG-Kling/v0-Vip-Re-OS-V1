@@ -70,5 +70,20 @@ export async function scrubPhonesForPatch(numbers: Array<string | null | undefin
 }> {
   const r = await scrubAndElectPhones(numbers)
   if (r.deferred || !r.election) return { patch: {}, deferred: r.deferred, reordered: false, dispositions: r.dispositions }
-  return { patch: electionToColumnPatch(r.election), deferred: false, reordered: r.election.reordered, dispositions: r.dispositions }
+  const patch = electionToColumnPatch(r.election)
+  // FRESH-SCRUB STAMP (m641, applied live 2026-09-16; wave 69C carry b). A live DNC/TCPA
+  // verdict was just CONFIRMED for the primary line, so contacts.dnc_verified_at is
+  // stamped EXPLICITLY here (never a spread) — the same column
+  // lib/communication/tcpa-gate.ts::enforceTCPACompliance stamps on a send-time re-check
+  // (tcpa-gate.ts, the sentinelWrite under "tcpa_gate_dnc_verdict_stamp"). One vocabulary
+  // (§6): this is the INTAKE half of that same freshness clock — without it, a contact
+  // scrubbed here at enrichment still reads dnc_verified_at=null and the very first
+  // outbound send re-queries BatchData for a number this file already confirmed today.
+  // `leads` has no dnc_verified_at column — the caller (enrichment-orchestrator.ts)
+  // already whitelists which keys of this patch it writes to `leads` (phone /
+  // phone_secondary only), so this key is dropped there by construction, never sent.
+  if (patch.dnc_status !== undefined) {
+    patch.dnc_verified_at = new Date().toISOString()
+  }
+  return { patch, deferred: false, reordered: r.election.reordered, dispositions: r.dispositions }
 }
