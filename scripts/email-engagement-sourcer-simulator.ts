@@ -227,7 +227,7 @@ async function testLiveLayer() {
       .select("id, from_manager, to_manager, signal_type, contact_id, payload")
       .eq("brokerage_id", brokerageId)
       .eq("contact_id", (contact as any).id)
-      .eq("signal_type", "contact_renewed_email_engagement")
+      .eq("signal_type", "contact_email_reengage")
       .maybeSingle()
     check("live: manager signal written campaign_orchestrator → ai_isa for the contact",
       !signalError && !!signalRow && (signalRow as any).from_manager === "campaign_orchestrator" && (signalRow as any).to_manager === "ai_isa")

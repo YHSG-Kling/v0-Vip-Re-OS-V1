@@ -299,7 +299,7 @@ export async function sourceEmailEngagementIntent(
       brokerageId,
       fromManager: 'campaign_orchestrator',
       toManager: 'ai_isa',
-      signalType: 'contact_renewed_email_engagement',
+      signalType: 'contact_email_reengage',
       message: `${name} has opened/clicked our emails ${agg.count}x in the last ${windowDays}d — renewed intent, consider a follow-up.`,
       entityType: 'contact',
       entityId: c.id,

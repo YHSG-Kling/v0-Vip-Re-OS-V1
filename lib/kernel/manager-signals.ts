@@ -369,6 +369,9 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   "ai_isa:appointment_no_show": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "no-show re-book call"),
   // Shopping Agent → AI ISA: a stale/expired pre-approval re-qualification call.
   "ai_isa:stale_preapproval_reengage": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "financing re-qualification call"),
+  // Campaign Orchestrator → AI ISA: a contact keeps opening/clicking our email (wave 72A) — the
+  // ISA picks up a consent-gated follow-up on the CONTACT; this never touches the raw-lead path.
+  "ai_isa:contact_email_reengage": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "renewed email-engagement follow-up"),
   // Shopping Agent → AI ISA: a fresh listing matches a saved buyer — a reverse-prospecting call.
   "ai_isa:reverse_prospecting_call_candidate": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "reverse-prospecting call (a new listing fits this buyer)"),
   // Listing Concierge → AI ISA: hot, unrepresented buyer leads from an open house. The ISA PICKS
