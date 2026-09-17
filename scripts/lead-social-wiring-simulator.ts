@@ -651,8 +651,16 @@ function darkCapabilityLayer() {
     /const\s+territoryResult\s*=\s*await\s+resolveTargetTerritory\(/.test(zen) &&
     /if\s*\(!territoryResult\.ok\)\s*\{[^}]{0,200}?return\s*\{[^}]{0,200}?territoryRefused:\s*true/.test(zen))
   check("D2", "...the territory refusal is positioned ahead of the ZenRows call",
+    // wave 70: the ZenRows call is the official SDK adapter's scrapePage(...)
+    // (lib/providers/zenrows/client.ts); the connector-gateway spelling is
+    // accepted only where it still exists, never as the sole marker.
     zen.indexOf("resolveTargetTerritory") > -1 &&
-    zen.indexOf("resolveTargetTerritory") < zen.indexOf("callConnector"))
+    (() => {
+      // EARLIEST spend-shaped marker wins, so an injected call of EITHER
+      // spelling ahead of the refusal is caught (the D2 mutation control).
+      const dials = ["scrapePage(", "callConnector"].map((m) => zen.indexOf(m)).filter((i) => i > -1)
+      return dials.length > 0 && zen.indexOf("resolveTargetTerritory") < Math.min(...dials)
+    })())
   check("D3", "...the parser is REAL: parseNextdoorPosts delegates to the tested extractor, never a stub returning []",
     /function parseNextdoorPosts[\s\S]{0,600}?regexFallbackPosts\(/.test(lead))
   check("D4", "...the old lawful-basis REFUSAL gate is GONE, not merely disabled — the constant no longer exists, and the removal cites the owner's ruling verbatim",
