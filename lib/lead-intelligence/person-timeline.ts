@@ -175,7 +175,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     // the pipeline-processor promotion step, so lead-level cost is still
     // faithfully represented on the conversion event.
     const { data, error } = await svc.from("raw_scraped_leads")
-      .select("id, lead_id, source, source_channel, source_family, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status")
+      .select("id, lead_id, source, source_channel, scrape_category, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status")
       .in("lead_id", allLeadIds)
     if (error) warnings.push(`raw_scraped_leads read refused: ${error.message}`)
     else {
@@ -187,7 +187,10 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
           summary: `Sourced via ${r.source ?? "an unknown source"}${r.source_channel ? ` (${r.source_channel})` : ""}`,
           sensitivity: "lead_desk_only",
           detail: {
-            source: r.source, sourceFamily: r.source_family, sourceChannel: r.source_channel,
+            // m647: the per-row scrape classification lives on scrape_category now —
+            // raw_scraped_leads.source_family is the lineage constant ('raw') and carries no
+            // per-row detail worth surfacing here.
+            source: r.source, sourceFamily: r.scrape_category, sourceChannel: r.source_channel,
             sourceSubtype: r.source_subtype, sourceOrigin: r.source_origin,
             scraperExecutionId: r.scraper_execution_id, dedupeStatus: r.dedupe_status,
           },

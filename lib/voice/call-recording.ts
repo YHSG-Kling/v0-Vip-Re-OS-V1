@@ -290,21 +290,15 @@ export async function startCallRecording(
   const creds = await resolveTenantTwilioCreds(svc, brokerageId)
   if (!creds) return { ok: false, error: "Twilio not configured for this tenant — the call is NOT being recorded" }
 
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<{ sid?: string }>({
-    connector: "twilio",
-    baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/Calls/${encodeURIComponent(callSid)}/Recordings.json`,
-    method: "POST",
-    bodyType: "form",
-    body: {
-      RecordingChannels: "dual",
-      RecordingTrack: "both",
-      RecordingStatusCallback: recordingCallbackUrl(appBaseUrl),
-      RecordingStatusCallbackMethod: "POST",
-      RecordingStatusCallbackEvent: "completed absent",
-    },
-    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+  // Official Twilio SDK adapter (lib/providers/twilio/client.ts) — same
+  // POST /Calls/{sid}/Recordings.json endpoint, same price.
+  const { startCallRecording: startRecordingViaSdk } = await import("@/lib/providers/twilio/client")
+  const res = await startRecordingViaSdk(creds, callSid, {
+    recordingChannels: "dual",
+    recordingTrack: "both",
+    recordingStatusCallback: recordingCallbackUrl(appBaseUrl),
+    recordingStatusCallbackMethod: "POST",
+    recordingStatusCallbackEvent: ["completed", "absent"],
   })
   if (!res.ok) {
     return { ok: false, error: `Twilio start-recording failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }

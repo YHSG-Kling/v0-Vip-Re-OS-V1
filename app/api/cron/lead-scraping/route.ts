@@ -37,6 +37,7 @@ import {
 } from "@/lib/lead-pipeline/social-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
+import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
 import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
 import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
@@ -196,6 +197,15 @@ export async function GET(request: Request) {
       results.errors.push(`Smart Search account list read threw (proceeding conservatively): ${e}`)
       smartSearchAccountLiveCount = BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP
     }
+
+    // Wave 70 — site-visitor-intent lane runs ONCE per BROKERAGE, not once per market row.
+    // Website traffic is a brokerage-wide signal (one site, one set of website_visitors rows);
+    // a brokerage with several territories would otherwise re-source the exact same unidentified
+    // sessions once per territory, producing duplicate raw records the identity-key dedup would
+    // then have to absorb for no reason. `markets` is priority-ordered
+    // (lib/lead-pipeline/scrape-territories.ts), so the first market row this loop sees for a
+    // brokerage is its highest-priority territory — the natural "run it once, on the best row" spot.
+    const siteVisitorBrokeragesRun = new Set<string>()
 
     for (const market of markets) {
       results.markets_processed++
@@ -888,6 +898,38 @@ export async function GET(request: Request) {
         }
       }
 
+      // ── SITE VISITOR INTENT — wave 70 behavioral lane, $0 marginal cost ─────
+      // Own first-party website/portal traffic (website_visitors, already written by the
+      // pixel/dwell beacons) — an unidentified, high-dwell visitor is buyer-intent this repo
+      // already collected and never read for acquisition. Runs ONCE per brokerage (see the
+      // siteVisitorBrokeragesRun set above this loop) — brokerage_id passed EXPLICITLY
+      // (never platform pool: this is the tenant's own site, not a scraped third-party page),
+      // so it lands as source_origin='brokerage' immediately, the same shape a
+      // brokerage-triggered scrape would.
+      if (enabledSources.has("site_visitor_intent") && market.brokerage_id && !siteVisitorBrokeragesRun.has(market.brokerage_id)) {
+        siteVisitorBrokeragesRun.add(market.brokerage_id)
+        try {
+          const { records, rowsExamined } = await sourceSiteVisitorIntent(supabase, market.brokerage_id)
+          const { inserted: siteVisitorInserted } = await insertRawBatch({
+            records, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "site_visitor_intent", sourceFamily: "site_behavior", sourceChannel: "site_visitor_intent",
+            brokerageId: market.brokerage_id,
+            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
+            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
+            // rather than silently inheriting a stale estimate.
+            batchCostUsd: 0,
+          })
+          results.total_leads_created += siteVisitorInserted
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Site visitor intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${siteVisitorInserted}`)
+          }
+        } catch (err) {
+          results.errors.push(`Site visitor intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
       // ── RECRUITING SOURCE — agents/teams looking to switch brokerages ───────
       // Platform-owned raw_recruit_prospects (brokerage_id NULL, market_id set);
       // promoted to brokerage-owned `recruits` in the recruit promotion pass.
@@ -1292,13 +1334,20 @@ interface InsertRawBatchParams {
   sourceFamily: string
   sourceChannel: string
   sourceSubtype?: string
+  /** Wave 70 seam: every source here is PLATFORM-owned (brokerage_id null) by default — see the
+   *  header above. A source whose signal is INHERENTLY brokerage-specific (site_visitor_intent —
+   *  the tenant's own website traffic; nobody else's site produced it) passes its market's
+   *  brokerage_id explicitly instead, which ingestRawSourceBatch resolves to
+   *  raw_scraped_leads.source_origin = 'brokerage'. Omit (undefined) to keep the platform-pool
+   *  default every other call site here already relies on. */
+  brokerageId?: string | null
 }
 
 async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted: number; rawIds: string[] }> {
   if (params.records.length === 0) return { inserted: 0, rawIds: [] }
 
   const res = await ingestRawSourceBatch({
-    brokerageId:   null,
+    brokerageId:   params.brokerageId ?? null,
     marketId:      params.marketId,
     source:        params.source,
     sourceFamily:  params.sourceFamily,

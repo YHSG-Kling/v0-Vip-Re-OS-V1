@@ -1,5 +1,5 @@
 import { runApifyTask } from './apify-actors'
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { runActorSyncGetDatasetItems } from "@/lib/providers/apify/client"
 import { apifyToken } from "@/lib/env/aliases"
 
 // ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
@@ -37,22 +37,12 @@ export async function runApifyActor(
   data: any[]
   cost: number
 }> {
-  // Apify REST paths address actors as `username~actorname` (the public slug uses
-  // a slash). Normalize so e.g. "apify/facebook-posts-scraper" → "apify~facebook-posts-scraper".
-  const id = actorId.replace("/", "~")
-
-  // run-sync-get-dataset-items: starts the actor, waits for it to finish, and
-  // returns the default dataset items in one call — the Apify-recommended pattern
-  // for synchronous scrapes. Avoids manual run polling + dataset-id resolution.
-  const runResponse = await callConnector<any>({
-    connector: "apify",
-    baseUrl: "https://api.apify.com",
-    path: `/v2/acts/${id}/run-sync-get-dataset-items`,
-    method: "POST",
-    auth: { style: "bearer", token: apifyToken() ?? "" },
-    body: input,
-    timeoutMs: 60_000,
-  })
+  // Official Apify SDK adapter (lib/providers/apify/client.ts) — same
+  // run-sync-get-dataset-items semantics (starts the actor, waits for it to
+  // finish, returns the default dataset items), same price (Apify bills
+  // compute-unit usage, not request shape). The adapter normalizes the
+  // "owner/actor" vs "owner~actor" spelling itself.
+  const runResponse = await runActorSyncGetDatasetItems(apifyToken() ?? "", actorId, input, { timeoutSecs: 60 })
 
   // 200/201 = finished with dataset items; 408 = run timed out (actor too slow).
   if (!runResponse.ok) {

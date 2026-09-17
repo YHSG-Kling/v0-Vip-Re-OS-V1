@@ -35,6 +35,7 @@ import {
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
 import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
+import { normalizeSiteVisitorRow, SITE_VISITOR_MIN_DWELL_SECONDS, SITE_VISITOR_LOOKBACK_HOURS } from "../lib/lead-pipeline/site-visitor-sourcer"
 import {
   detectIntent,
   isInvestor,
@@ -96,6 +97,7 @@ import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScop
 import { isPlatformStaffIdentity } from "../lib/auth/resolve-user-role"
 import { isPlatformStaffRole } from "../lib/platform/platform-staff-roster"
 import { readFileSync } from "node:fs"
+import { blankComments } from "./strip-comments"
 import { join } from "node:path"
 import { matchTriggersForEvent, isCooldownActive, type LifecycleTrigger } from "../lib/marketing/trigger-match"
 import { findReusableRun, type ExistingRun } from "../lib/workflow-orchestrator/run-dedupe"
@@ -382,16 +384,25 @@ async function testVendorConnectors() {
   check("BatchData builder: andQuickLists → AND-ed quickLists (intersection narrowing)", (() => { const b = buildPropertySearchBody({ state: "FL", motivationTypes: ["high_equity"], andQuickLists: ["out-of-state-owner"] }).searchCriteria as any; return b.orQuickLists.includes("high-equity") && b.quickLists.includes("out-of-state-owner") })())
   check("BatchData builder: searchCriteria passthrough is the structured 'third type' escape hatch", (() => { const b = buildPropertySearchBody({ state: "FL", searchCriteria: { building: { minBedroomCount: 3 } } }).searchCriteria as any; return b.building.minBedroomCount === 3 })())
 
-  // runApifyActor → run-sync-get-dataset-items with slug `/`→`~`.
-  let apifyUrl = ""
-  globalThis.fetch = (async (url: any) => {
-    apifyUrl = String(url)
-    return { ok: true, status: 200, json: async () => [{ id: "post1" }] }
-  }) as unknown as typeof fetch
-  const apifyRes = await runApifyActor("apify/facebook-posts-scraper", { maxPosts: 10 })
-  check("Apify slug '/'→'~' normalized in path", apifyUrl.includes("acts/apify~facebook-posts-scraper"))
-  check("Apify uses run-sync-get-dataset-items endpoint", apifyUrl.endsWith("/run-sync-get-dataset-items"))
-  check("Apify returns dataset items array", Array.isArray(apifyRes.data) && apifyRes.data.length === 1)
+  // runApifyActor → the official apify-client adapter (wave 70: SDK, same
+  // run-sync-get-dataset-items semantics). The REST URL shape is the SDK's
+  // business now; what this proof owns is (a) the route goes through the ONE
+  // adapter, (b) with no token nothing touches the network — a bare "no rule
+  // or allowlist entry allows host api.apify.com" refusal is exactly what an
+  // adapter that does not fail closed produced in the wave-70 sweep.
+  let apifyFetchCalls = 0
+  globalThis.fetch = (async () => { apifyFetchCalls++; return { ok: true, status: 200, json: async () => [] } }) as unknown as typeof fetch
+  const savedApifyToken = process.env.APIFY_TOKEN; const savedApifyKey = process.env.APIFY_API_TOKEN
+  delete process.env.APIFY_TOKEN; delete process.env.APIFY_API_TOKEN
+  let apifyRefusal = ""
+  try { await runApifyActor("apify/facebook-posts-scraper", { maxPosts: 10 }) } catch (e) { apifyRefusal = e instanceof Error ? e.message : String(e) }
+  if (savedApifyToken !== undefined) process.env.APIFY_TOKEN = savedApifyToken
+  if (savedApifyKey !== undefined) process.env.APIFY_API_TOKEN = savedApifyKey
+  check("Apify without a token refuses as 'unconfigured' — never a network call", /unconfigured/.test(apifyRefusal) && apifyFetchCalls === 0)
+  const apifyExternalSrc = blankComments(readFileSync(join(process.cwd(), "lib/external/apify-client.ts"), "utf8"))
+  check("runApifyActor routes through the official SDK adapter (lib/providers/apify/client.ts)", /from\s+["']@\/lib\/providers\/apify\/client["']/.test(apifyExternalSrc) && /runActorSyncGetDatasetItems\(/.test(apifyExternalSrc))
+  const apifyAdapterSrc = blankComments(readFileSync(join(process.cwd(), "lib/providers/apify/client.ts"), "utf8"))
+  check("the adapter itself fails closed on an empty token (positive control: the guard line exists)", /if \(!token\) return \{ ok: false/.test(apifyAdapterSrc))
 
   // HubSpot CRM sync-out (gateway) — upsert by email, Bearer auth, result mapping.
   let hsReq: { url: string; body: any; auth: string } | null = null
@@ -1658,6 +1669,73 @@ async function testZyteClientAndProviderPicker() {
   if (savedZyteKey === undefined) delete process.env.ZYTE_API_KEY; else process.env.ZYTE_API_KEY = savedZyteKey
 }
 
+// ── WAVE 70 — SITE VISITOR INTENT (behavioral acquisition coverage audit) ────────────────────
+// $0-cost lane: own first-party website_visitors traffic, never a vendor call. Proves the pure
+// classifier + the SOURCE_MAP/SOURCE_VENDOR/GATE_TOKEN wiring, mirroring the wave-65 lane pattern.
+function testWave70SiteVisitorLane() {
+  console.log("\n[Wave 70 · Site visitor intent lane]")
+
+  const listingRow = {
+    session_id: "sess-abc123",
+    page_url: "https://tenant-site.example.com/listings/123-main-st",
+    referrer: "https://google.com",
+    time_on_page_seconds: 90,
+    first_seen_at: "2026-09-17T10:00:00.000Z",
+    last_seen_at: "2026-09-17T10:01:30.000Z",
+    utm_source: "google",
+    utm_medium: "cpc",
+    utm_campaign: null,
+    agent_id: null,
+  }
+  const listingRec = normalizeSiteVisitorRow(listingRow)
+  check("site_visitor_intent → normalizes a qualifying row", listingRec !== null)
+  check("site_visitor_intent → source tagged", listingRec?.source === "site_visitor_intent")
+  check("site_visitor_intent → buyer intent (browsing the tenant's own listings)", listingRec?.intentType === "buyer")
+  check("site_visitor_intent → identity anchored on session id (username)", listingRec?.username === "sess-abc123")
+  check("site_visitor_intent → sourceUrl carries the page", listingRec?.sourceUrl === listingRow.page_url)
+  check("site_visitor_intent → listing-page URL is detected", !!listingRec?.intentSignals.includes("listing_page_view"))
+  check("site_visitor_intent → campaign-referred signal present (utm_source set)", !!listingRec?.intentSignals.includes("campaign_referred"))
+  check("site_visitor_intent → long_dwell always present on a qualifying row", !!listingRec?.intentSignals.includes("long_dwell"))
+  check("site_visitor_intent → rawPayload preserves the full visitor row for audit", (listingRec?.rawPayload as any)?.visitor?.session_id === "sess-abc123")
+
+  // POSITIVE CONTROL (CLAUDE.md §2): a page with no listing/property/search path must NOT
+  // read as a listing-page view — proves the pattern actually discriminates, not a blanket true.
+  const genericRow = { ...listingRow, session_id: "sess-generic", page_url: "https://tenant-site.example.com/about-us" }
+  const genericRec = normalizeSiteVisitorRow(genericRow)
+  check("site_visitor_intent → a non-listing page is NOT tagged listing_page_view (positive control)", !genericRec?.intentSignals.includes("listing_page_view"))
+
+  // A short single-visit span must NOT be tagged return_visit — proves the return-visit
+  // heuristic actually measures a gap beyond the dwell itself, not just "more than 0".
+  const singleVisitRow = { ...listingRow, session_id: "sess-single", first_seen_at: listingRow.last_seen_at }
+  const singleVisitRec = normalizeSiteVisitorRow(singleVisitRow)
+  check("site_visitor_intent → a single short visit is NOT tagged return_visit (positive control)", !singleVisitRec?.intentSignals.includes("return_visit"))
+
+  // A visit spanning well beyond its own dwell IS a return visit.
+  const returnRow = { ...listingRow, session_id: "sess-return", first_seen_at: "2026-09-16T08:00:00.000Z" }
+  const returnRec = normalizeSiteVisitorRow(returnRow)
+  check("site_visitor_intent → a session spanning far beyond its own dwell IS tagged return_visit", !!returnRec?.intentSignals.includes("return_visit"))
+
+  // Missing session or page → not viable at all, never a half-built record.
+  check("site_visitor_intent → no session id → null (not sourceable)", normalizeSiteVisitorRow({ ...listingRow, session_id: null }) === null)
+  check("site_visitor_intent → no page url → null (not sourceable)", normalizeSiteVisitorRow({ ...listingRow, page_url: null }) === null)
+
+  // Viability + dedup-key gate (isViableRecord / buildLeadIdentityKey — the shared contract
+  // every lane in this pipeline is gated by, CLAUDE.md §6: one vocabulary per function).
+  check("site_visitor_intent → passes isViableRecord (username present)", !!listingRec && isViableRecord(listingRec))
+  check("site_visitor_intent → identity key anchors on session+page (dedup)", !!listingRec && buildLeadIdentityKey(listingRec) === `user:sess-abc123|src:${listingRow.page_url}`)
+
+  // Registry wiring — mirrors every other lane's positive controls in this file.
+  check("site_visitor_intent → semantics registered (hasScoringEntry, not the silent fallback)", hasScoringEntry("site_visitor_intent"))
+  check("site_visitor_intent → buyer-side motivation registered", getSourceSemantics("site_visitor_intent").intentType === "buyer")
+  check("site_visitor_intent → enrichment-first identity policy (anonymous by construction)", getSourceSemantics("site_visitor_intent").identityPolicy === "enrichment_first")
+  check("site_visitor_intent → first-party vendor routing ('internal', $0, never a paid call)", SOURCE_VENDOR.site_visitor_intent === "internal")
+  check("site_visitor_intent → DISTINCT from every other lane (never merged)", resolveSourceKey("site_visitor_intent") === "site_visitor_intent")
+  check("site_visitor_intent → alias 'website_visitor' resolves to the canonical key", resolveSourceKey("website_visitor") === "site_visitor_intent")
+  check("site_visitor_intent → cron gate token present (expandEnabledSources wires it)", expandEnabledSources(["site_visitor_intent"]).has("site_visitor_intent"))
+  check("site_visitor_intent → min-dwell constant is a sane positive bar", SITE_VISITOR_MIN_DWELL_SECONDS > 0 && SITE_VISITOR_MIN_DWELL_SECONDS <= 300)
+  check("site_visitor_intent → lookback matches the cron's own 6-hour cadence", SITE_VISITOR_LOOKBACK_HOURS === 6)
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
@@ -1692,6 +1770,7 @@ async function main() {
   testWave65Lanes()
   await testWave65SourcersHonestlyNoOp()
   testWave66Channels()
+  testWave70SiteVisitorLane()
   testActorRegistryFreshness()
   await testZyteClientAndProviderPicker()
 

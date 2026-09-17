@@ -85,6 +85,9 @@ interface CMAComparable {
   ai_rationale: string | null
   risk_flags: string[] | null
   coaching_insight: string | null
+  /** Wave 70 — drives the required RentCast/BatchData/IDX attribution line
+   *  (lib/listings/attribution.ts) on the seller-facing comp table. */
+  source_provider: string | null
 }
 
 interface AICompScore {

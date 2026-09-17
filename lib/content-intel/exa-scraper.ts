@@ -20,10 +20,11 @@
  *     includeText?:   boolean,    // returns full text passages
  *   }
  *
- * Routes through callConnector for the canonical single egress.
+ * Routes through the official Exa SDK adapter (lib/providers/exa/client.ts,
+ * wave 70B) for the canonical single egress.
  */
 import "server-only"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { rawSearch } from "@/lib/providers/exa/client"
 
 export interface ExaSearchResult {
   result_id:        string
@@ -68,9 +69,8 @@ interface ExaResultItem {
   favicon?: string
 }
 
-interface ExaResponse {
-  results?: ExaResultItem[]
-}
+// Response shape is now the SDK adapter's untyped RawSearchData.results,
+// cast to ExaResultItem[] at the one call site below.
 
 export async function exaSearch(args: {
   query:        string
@@ -101,8 +101,9 @@ export async function exaSearch(args: {
   const apiKey = process.env.EXA_API_KEY
   if (!apiKey) return [] // graceful no-op when key not configured
 
+  // `query` is passed as rawSearch's own second argument (the SDK's
+  // search(query, options) signature) — not repeated inside options.
   const body: Record<string, unknown> = {
-    query:        args.query,
     type:         args.type ?? "neural",
     useAutoprompt: true,
     numResults:   Math.min(args.numResults ?? 15, 25),
@@ -120,19 +121,10 @@ export async function exaSearch(args: {
     body.excludeDomains = args.excludeDomains
   }
 
-  const res = await callConnector<ExaResponse>({
-    connector: "exa",
-    baseUrl:   "https://api.exa.ai",
-    path:      "search",
-    method:    "POST",
-    auth:      { style: "header", name: "x-api-key", value: apiKey },
-    body,
-    responseType: "json",
-    timeoutMs:    25_000,
-  })
+  const res = await rawSearch(apiKey, args.query, body)
   if (!res.ok || !res.data?.results) return []
 
-  return res.data.results.map((r) => {
+  return (res.data.results as unknown as ExaResultItem[]).map((r) => {
     const summary = (r.highlights && r.highlights.length > 0)
       ? r.highlights.join(" … ")
       : (r.text ?? "").slice(0, 240)

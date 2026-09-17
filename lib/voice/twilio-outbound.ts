@@ -196,25 +196,33 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
   const { resolveCallRecordingPolicy, recordingDialParams } = await import("@/lib/voice/call-recording")
   const recordingPolicy = await resolveCallRecordingPolicy(svc, params.brokerageId)
 
-  // 3. Dial.
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<{ sid?: string }>({
-    connector: "twilio",
-    baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/Calls.json`,
+  // 3. Dial. Official Twilio SDK adapter (lib/providers/twilio/client.ts) —
+  //    same POST /Calls.json endpoint, same price. recordingDialParams still
+  //    returns Twilio's own REST field spelling (Record/RecordingChannels/…)
+  //    because lib/security/audio-source-allowlist.ts's header names it as
+  //    part of the documented recording-producer chain; translated to the
+  //    SDK's camelCase params right here rather than changing that function's
+  //    contract for its one caller.
+  const { placeCall } = await import("@/lib/providers/twilio/client")
+  const recParams = recordingDialParams(recordingPolicy, base)
+  const res = await placeCall(creds, {
+    to: params.toNumber,
+    from: fromRow.phone_number,
+    url: `${base}/api/voice/twilio/outbound`,
     method: "POST",
-    bodyType: "form",
-    body: {
-      To: params.toNumber,
-      From: fromRow.phone_number,
-      Url: `${base}/api/voice/twilio/outbound`,
-      Method: "POST",
-      MachineDetection: "Enable",
-      StatusCallback: `${base}/api/voice/twilio/status`,
-      StatusCallbackMethod: "POST",
-      ...recordingDialParams(recordingPolicy, base),
-    },
-    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+    machineDetection: "Enable",
+    statusCallback: `${base}/api/voice/twilio/status`,
+    statusCallbackMethod: "POST",
+    ...(recParams.Record === "true"
+      ? {
+          record: true,
+          recordingChannels: recParams.RecordingChannels as "mono" | "dual",
+          recordingTrack: recParams.RecordingTrack as "inbound" | "outbound" | "both",
+          recordingStatusCallback: recParams.RecordingStatusCallback,
+          recordingStatusCallbackMethod: recParams.RecordingStatusCallbackMethod as "GET" | "POST",
+          recordingStatusCallbackEvent: recParams.RecordingStatusCallbackEvent?.split(" "),
+        }
+      : {}),
   })
   if (!res.ok || !res.data?.sid) {
     return { ok: false, error: `Twilio dial failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
@@ -283,16 +291,9 @@ export async function endOutboundAiCall(
   const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
   const creds = await resolveTenantTwilioCreds(svc, brokerageId)
   if (!creds) return { ok: false, error: "Twilio not configured for this tenant" }
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<{ sid?: string }>({
-    connector: "twilio",
-    baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/Calls/${callSid}.json`,
-    method: "POST",
-    bodyType: "form",
-    body: { Status: "completed" },
-    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
-  })
+  // Official Twilio SDK adapter — same POST /Calls/{sid}.json endpoint.
+  const { hangupCall } = await import("@/lib/providers/twilio/client")
+  const res = await hangupCall(creds, callSid)
   if (!res.ok) return { ok: false, error: `Twilio hangup failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
   return { ok: true }
 }

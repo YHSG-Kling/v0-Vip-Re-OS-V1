@@ -35,6 +35,7 @@ import { Skeleton } from "@/app/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 import { recordPropertyActionAction, loadBuyerPropertiesAction } from "@/app/actions/forms-kernel"
 import type { BuyerPropertyInterestLevel, BuyerPropertyInterest } from "@/lib/kernel/forms"
+import { ListingAttribution } from "@/app/components/listings/ListingAttribution"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,9 @@ interface PropertyResult {
   bathrooms?:        number
   primary_photo_url?: string
   current_interest?: BuyerPropertyInterestLevel
+  /** Wave 70: which feed served this result — drives the required RentCast/IDX
+   *  attribution line (lib/listings/attribution.ts). Undefined = our own listing. */
+  source?: 'platform' | 'rentcast' | 'idx'
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -139,6 +143,7 @@ function PropertyCard({
             </span>
           )}
         </div>
+        <ListingAttribution source={property.source} />
       </div>
 
       {/* Action buttons */}

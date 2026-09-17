@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 707 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 708 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-17
  * source: public.live_schema_json()
- * body-sha256: 328658e25aa324ab526bc1b3795d265d9f1fb2ed8d042e5238cedbac4ece00af
+ * body-sha256: 434b3b0ec6e113b935368a95c4e83ca0586a006c165c5c788ba36a9bb6e0cdfa
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -195,6 +195,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   closing_disclosure_agreement: ["agent_drafted_at", "agent_id", "agent_net", "agent_signed_off_at", "agent_signed_off_by", "agent_submitted_at", "agent_submitted_by", "broker_approved_at", "broker_id", "brokerage_id", "brokerage_net", "calculation_version", "cda_template_id", "changes_requested_at", "changes_requested_by", "changes_requested_notes", "check_copy_document_id", "check_copy_uploaded_at", "closed_at", "commission_breakdown", "compliance_approved_at", "compliance_approved_by", "created_at", "field_values", "final_cd_document_id", "final_cd_uploaded_at", "final_cd_uploaded_by", "generated_pdf_at", "generated_pdf_url", "gross_commission", "id", "manual_override_at", "manual_override_by", "manual_override_reason", "missing_docs", "non_cda_payout_details", "non_cda_payout_method", "notes", "preliminary_cd_document_id", "preliminary_cd_uploaded_at", "preliminary_cd_uploaded_by", "revision_number", "sent_to_title_at", "sent_to_title_method", "sent_to_title_recipient", "signature_check_passed", "status", "transaction_id", "updated_at", "uses_cda"],
   closing_disclosure_agreement_revisions: ["acted_at", "acted_by", "action", "cda_id", "changes_requested_notes", "commission_breakdown", "id", "notes", "revision_number", "status_at_snapshot"],
   closing_gifts: ["agent_id", "brokerage_id", "contact_id", "created_at", "delivered_at", "delivery_date", "gift_description", "id", "listing_id", "metadata", "order_date", "ordered_at", "price_cents", "status", "updated_at"],
+  cma_comp_supplement_cache: ["address_key", "cost_cents", "created_at", "fetched_on", "id", "payload"],
   cma_comparables: ["address", "adjusted_price", "adjustments", "ai_rationale", "ai_score", "bathrooms", "bedrooms", "cma_id", "coaching_insight", "created_at", "days_on_market", "distance_miles", "id", "list_price", "price_basis", "price_per_sqft", "risk_flags", "sale_date", "sale_price", "similarity_score", "source_provider", "square_feet", "status"],
   cma_price_adjustments: ["adjustment_amount", "adjustment_type", "cma_report_id", "comparable_address", "comparable_property_id", "created_at", "id", "rationale"],
   cma_reports: ["agent_id", "avm_baseline_high", "avm_baseline_low", "avm_baseline_provider", "avm_baseline_unavailable_reason", "avm_baseline_value", "bathrooms", "bedrooms", "brokerage_id", "comparable_count", "condition", "contact_id", "created_at", "disclaimer_included", "expires_at", "features", "id", "listing_id", "lot_size", "market_conditions", "presented_at", "price_range_high", "price_range_low", "property_address", "property_type", "property_zip", "quality_score", "recommended_price", "square_feet", "status", "updated_at", "year_built"],
@@ -545,7 +546,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   qr_codes: ["agent_id", "brokerage_id", "created_at", "destination_type", "expires_at", "id", "is_active", "label", "lead_count", "listing_id", "marketing_campaign_id", "purpose", "scan_count", "slug", "target_url"],
   qr_scan_events: ["brokerage_id", "campaign_id", "contact_id", "id", "ip_address", "is_first_scan", "qr_code_id", "referrer", "scanned_at", "user_agent"],
   raw_recruit_prospects: ["brokerage_id", "created_at", "id", "market_id", "normalized_preview", "processed_at", "processing_status", "raw_data", "recruit_id", "scraper_execution_id", "source", "source_record_id"],
-  raw_scraped_leads: ["address", "brokerage_id", "city", "cost_per_record", "created_at", "dedupe_status", "email", "email_verified", "enriched_at", "error_message", "first_name", "id", "last_name", "last_promotion_attempt_at", "lead_id", "mailing_address", "mailing_address_source", "mailing_address_verified", "mailing_city", "mailing_state", "mailing_zip", "market_id", "normalized_preview", "phone", "processed_at", "processing_status", "promotion_attempts", "raw_data", "scraper_execution_id", "source", "source_channel", "source_family", "source_origin", "source_record_id", "source_subtype", "state", "updated_at", "zip_code"],
+  raw_scraped_leads: ["address", "brokerage_id", "city", "cost_per_record", "created_at", "dedupe_status", "email", "email_verified", "enriched_at", "error_message", "first_name", "id", "last_name", "last_promotion_attempt_at", "lead_id", "mailing_address", "mailing_address_source", "mailing_address_verified", "mailing_city", "mailing_state", "mailing_zip", "market_id", "normalized_preview", "phone", "processed_at", "processing_status", "promotion_attempts", "raw_data", "scrape_category", "scraper_execution_id", "source", "source_channel", "source_family", "source_origin", "source_record_id", "source_subtype", "state", "updated_at", "zip_code"],
   reaper_runs: ["brokerage_id", "detail", "domain", "escalated", "id", "manager", "ran_at", "reaped", "scanned"],
   recruiting_analytics: ["brokerage_id", "brokerage_net_from_agent", "computed_at", "gross_commission_generated", "id", "recruit_id", "recruited_agent_id", "transaction_count", "year_number"],
   recruiting_costs: ["amount", "brokerage_id", "cost_type", "created_at", "id", "incurred_date", "notes", "recruit_id", "recruited_agent_id"],

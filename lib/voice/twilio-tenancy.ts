@@ -19,7 +19,7 @@
 //                  for tenants provisioned before subaccounts existed)
 // All Twilio egress stays on the connector gateway; creds-gated honestly.
 
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { createSubaccount } from "@/lib/providers/twilio/client"
 
 export interface TwilioCreds {
   accountSid: string
@@ -109,16 +109,10 @@ export async function ensureTenantSubaccount(
   const { data: brk } = await svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
   const friendly = `${((brk as any)?.name ?? "tenant").slice(0, 40)} · ${brokerageId.slice(0, 8)}`
 
-  const res = await callConnector<{ sid?: string; auth_token?: string }>({
-    connector: "twilio",
-    baseUrl: "https://api.twilio.com",
-    path: "/2010-04-01/Accounts.json",
-    method: "POST",
-    bodyType: "form",
-    body: { FriendlyName: friendly },
-    auth: { style: "basic", username: masterSid, password: masterToken },
-  })
-  if (!res.ok || !res.data?.sid || !res.data?.auth_token) {
+  // Official Twilio SDK adapter (lib/providers/twilio/client.ts) — same
+  // POST /2010-04-01/Accounts.json endpoint, same price.
+  const res = await createSubaccount({ accountSid: masterSid, authToken: masterToken }, friendly)
+  if (!res.ok || !res.data?.sid || !res.data?.authToken) {
     return { ok: false, error: `Twilio subaccount create failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
   }
 
@@ -126,7 +120,7 @@ export async function ensureTenantSubaccount(
     brokerage_id: brokerageId,
     platform: "twilio_subaccount",
     account_id: res.data.sid,
-    access_token: res.data.auth_token,
+    access_token: res.data.authToken,
     owner_type: "brokerage",
     owner_id: brokerageId,
     is_active: true,

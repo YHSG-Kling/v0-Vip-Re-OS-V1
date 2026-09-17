@@ -62,6 +62,12 @@ import {
   type AdjustmentRateMap,
   type ResolvedAdjustmentRates,
 } from "./state-adjustment-rates"
+import {
+  adjustComps,
+  ADJUSTMENT_GRID_DISCLAIMER,
+  type ComparableAdjustmentGrid,
+  type ReconciledValueRange,
+} from "./comp-adjustments"
 
 export type { SellerUpgrade } from "./comp-types"
 
@@ -221,6 +227,18 @@ export interface AiCmaResult {
   costEstimateCents: number
   disclaimers: string[]
   generatedAt: string
+  /**
+   * THE APPRAISAL-STYLE ADJUSTMENT GRID (wave 70) — lib/cma/comp-adjustments.ts,
+   * run over the SAME closed comps as `adjustedComps` above. Adds the line item
+   * (distance/location) and the gross/net split + weak-comp flag the state-rate
+   * engine above does not compute. Never model-authored — see
+   * ADJUSTMENT_GRID_DISCLAIMER. Empty array when no closed comps were sourced.
+   */
+  adjustmentGrid: ComparableAdjustmentGrid[]
+  /** Weighted (by inverse gross adjustment) reconciliation of the grid above
+   *  into one value range. Null when the grid is empty. */
+  reconciledRange: ReconciledValueRange | null
+  adjustmentGridDisclaimer: string
 }
 
 /** Cost of the narrative generation itself (a routed fast model), in cents. */
@@ -303,6 +321,19 @@ export async function runAiCma(input: AiCmaInput): Promise<AiCmaResult> {
   const adjustPending = sourced.pendingComps.map((c) => adjustComp(input.subject, c, rates, isArv, effectiveDate))
   const adjustActive = sourced.activeComps.map((c) => adjustComp(input.subject, c, rates, isArv, effectiveDate))
 
+  // ── 3b. THE APPRAISAL-STYLE ADJUSTMENT GRID + RECONCILED RANGE (wave 70) ──
+  //
+  // Runs over the SAME closed comps as step 3 above. `time_market_trend.mid` is
+  // the resolved state rate when one is loaded (real published data); null lets
+  // comp-adjustments.ts fall back to its own documented default rather than two
+  // callers inventing two different fallback numbers.
+  const marketTrendPctPerMonth = rates.get("time_market_trend")?.mid ?? null
+  const { grid: adjustmentGrid, reconciled: reconciledRange } = adjustComps(
+    input.subject,
+    sourced.closedComps,
+    marketTrendPctPerMonth,
+  )
+
   // ── 4. Compute value range from adjusted CLOSED comps ──────────────────
   // Only closed sales set the value. An active or pending comp is an asking
   // price — it tells us about market direction, never about what a home sold for.
@@ -360,6 +391,8 @@ export async function runAiCma(input: AiCmaInput): Promise<AiCmaResult> {
     sellerUpgrades,
     range: { low, mid, high },
     arv,
+    adjustmentGrid,
+    reconciledRange,
   })
 
   // ── 7. Disclaimers ──────────────────────────────────────────────────────
@@ -405,6 +438,9 @@ export async function runAiCma(input: AiCmaInput): Promise<AiCmaResult> {
     costEstimateCents: sourced.provenance.estimatedCostCents + NARRATIVE_COST_CENTS,
     disclaimers,
     generatedAt: new Date().toISOString(),
+    adjustmentGrid,
+    reconciledRange,
+    adjustmentGridDisclaimer: ADJUSTMENT_GRID_DISCLAIMER,
   }
 }
 
@@ -492,9 +528,23 @@ async function generateValuationNarrative(params: {
   sellerUpgrades: SellerUpgrade[]
   range: { low: number; mid: number; high: number }
   arv: AiCmaResult["arv"] | undefined
+  adjustmentGrid: ComparableAdjustmentGrid[]
+  reconciledRange: ReconciledValueRange | null
 }): Promise<string> {
-  const { input, rates, rateVintage, adjustedComps, pendingComps, activeComps, provenance, sellerUpgrades, range, arv } =
-    params
+  const {
+    input,
+    rates,
+    rateVintage,
+    adjustedComps,
+    pendingComps,
+    activeComps,
+    provenance,
+    sellerUpgrades,
+    range,
+    arv,
+    adjustmentGrid,
+    reconciledRange,
+  } = params
 
   const compSummary =
     adjustedComps.length > 0
@@ -554,6 +604,28 @@ async function generateValuationNarrative(params: {
   and it is NOT the recommended price.`
     : `\n\nPROVIDER AVM BASELINE: none available — ${avm.unavailableNote}`
 
+  // THE APPRAISAL-STYLE GRID (wave 70) — gross/net % and the weak-comp flag,
+  // which totalAdjustmentPct above does NOT carry (it is net-only and signed
+  // adjustments can cancel out). This is what "analyze the ADJUSTED comps, not
+  // the raw ones" means in practice: the writer is handed the grid, not asked
+  // to derive it.
+  const gridSummary =
+    adjustmentGrid.length > 0
+      ? adjustmentGrid
+          .map(
+            (g, i) =>
+              `Comp ${i + 1}: ${g.comp.address} — gross adjustment ${(g.grossAdjustmentPct * 100).toFixed(1)}%, ` +
+              `net adjustment ${g.netAdjustmentPct >= 0 ? "+" : ""}${(g.netAdjustmentPct * 100).toFixed(1)}%, ` +
+              `adjusted value $${g.adjustedValue.toLocaleString()}` +
+              (g.isWeakComp ? ` — WEAK COMP (${g.weakCompReasons.join(", ")})` : ""),
+          )
+          .join("\n")
+      : "  (none — no closed comparable sales to grid)"
+  const reconciledBlock = reconciledRange
+    ? `\n\nRECONCILED VALUE (weighted by inverse gross adjustment — a comp needing less adjustment counts more):
+  $${reconciledRange.reconciledValue.toLocaleString()} (range $${reconciledRange.low.toLocaleString()}–$${reconciledRange.high.toLocaleString()}, from ${reconciledRange.compsUsed} comp(s)${reconciledRange.allCompsWeak ? " — ALL flagged weak, treat as directional only" : ""})`
+    : ""
+
   const upgradeBlock = formatUpgradesForPrompt(sellerUpgrades)
   const upgradeInstruction = sellerUpgrades.length
     ? "\n  5. The seller's reported improvements: name them and say how they position the home " +
@@ -581,6 +653,9 @@ ${rates}
 Adjusted closed comps:
 ${compSummary}
 
+APPRAISAL-STYLE ADJUSTMENT GRID (gross/net % and weak-comp flags — ${ADJUSTMENT_GRID_DISCLAIMER}):
+${gridSummary}${reconciledBlock}
+
 Pending (under contract, asking price — not a sale):
 ${pendingSummary || "  (none reported by any connected provider)"}
 
@@ -596,6 +671,11 @@ Estimated value range (derived from the ADJUSTED closed comps only):
 HARD RULES:
   - Use ONLY the comparables listed above. Do not add, recall, or infer any other
     property, address, sale price or sale date. If the comp set is thin, say it is thin.
+  - Use the ADJUSTMENT GRID above (gross/net % and adjusted values) when discussing
+    how well each comp matches the subject — do not compute your own gross/net figure.
+    A comp flagged WEAK COMP should be named as a weaker basis, not treated the same
+    as an unflagged one. This grid is a CMA adjustment tool, not a licensed appraisal —
+    never describe it or its output as an appraisal.
   - Never describe an active or pending listing as a sale.
   - ${
     rateVintage.carriedForward

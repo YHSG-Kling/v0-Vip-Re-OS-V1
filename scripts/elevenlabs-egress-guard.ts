@@ -111,13 +111,22 @@ console.log("\n═══ 4. One caller per capability ═══")
   const rawStream = (t.match(/fetch\(\s*\n?\s*`https:\/\/api\.elevenlabs\.io[^`]*\/stream(\$\{[^}`]*\})?`/g) ?? []).length
   ok("the streaming path is the single remaining raw fetch in the TTS library,\n    because a gateway response is buffered and cannot be streamed",
     rawStream === 1, `found ${rawStream}`)
-  // Two call sites: the buffered synthesizeSpeech, and the timestamped variant
-  // the video rail uses for word-level alignment. Counted rather than guessed —
-  // an earlier pass here asserted ">= 3" from a stale recollection and failed
-  // on correct code, which is the same mistake in the opposite direction.
-  const gatewayCalls = (t.match(/callConnector\s*[<(]/g) ?? []).length
-  ok("...and every OTHER ElevenLabs call in that library is on the gateway",
-    gatewayCalls >= 2, `callConnector call sites: ${gatewayCalls}`)
+  // WAVE 70B (owner: "if there is an sdk option, we should use that"): the
+  // buffered synthesizeSpeech + the timestamped variant no longer POST through
+  // callConnector — they call the official ElevenLabs SERVER SDK
+  // (@elevenlabs/elevenlabs-js) behind lib/providers/elevenlabs/client.ts, the
+  // ONE adapter every server-side buffered ElevenLabs call now shares. Same
+  // price, same metering, different transport under those two call sites —
+  // so the positive control moves from "callConnector count" to "adapter
+  // imported AND called at both sites."
+  const importsAdapter = /import\s*\{\s*convertSpeech\s*,\s*convertSpeechWithTimestamps\s*\}\s*from\s*"@\/lib\/providers\/elevenlabs\/client"/.test(t)
+  ok("the buffered + timestamped paths import the official SDK adapter\n    (lib/providers/elevenlabs/client.ts) instead of building a raw request",
+    importsAdapter)
+  const adapterCalls = (t.match(/\bconvertSpeech(WithTimestamps)?\s*\(/g) ?? []).length
+  ok("...and call it at both sites (buffered + with-timestamps)",
+    adapterCalls >= 2, `adapter call sites: ${adapterCalls}`)
+  ok("...with no callConnector import left in this file — the adapter owns\n    this library's non-streaming egress now",
+    !/import \{ callConnector \} from "@\/lib\/agentic-os\/connector-gateway"/.test(t))
 }
 
 console.log("\n═══ 5. THE GAP IS CLOSED — swept, not spot-checked ═══")

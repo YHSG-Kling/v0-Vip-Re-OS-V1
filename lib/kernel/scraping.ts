@@ -76,7 +76,11 @@ export interface IngestRawSourceBatchParams {
   brokerageId: string | null
   marketId: string
   source: string
-  sourceFamily: string        // e.g. 'property_search' | 'motivated_seller' | 'social_intent'
+  // SCRAPE CATEGORY (e.g. 'property_search' | 'motivated_seller' | 'social_intent') — lands on
+  // raw_scraped_leads.scrape_category (m647), NEVER on source_family, whose live CHECK admits
+  // only the lineage vocabulary ('raw' | 'lead' | 'contact_direct', app/actions/source-analytics.ts
+  // SourceFamily). Written 'raw' unconditionally by this function. See m647's header for why.
+  sourceFamily: string
   sourceChannel: string       // e.g. 'zillow' | 'batchdata' | 'nextdoor' | 'reddit'
   sourceSubtype?: string      // e.g. 'fsbo' | 'motivated_owner' | 'search_signal'
   records: NormalizedScrapedRecord[]
@@ -116,7 +120,10 @@ export interface NormalizeRawRecordParams {
 export interface NormalizedRawOutput {
   normalized_preview: Record<string, unknown>
   processing_status: 'pending'
+  /** The LINEAGE constant ('raw') — see m647. Not the scrape category. */
   source_family: string
+  /** The scrape-category classification (m647) — 'property_search' | 'motivated_seller' | ... */
+  scrape_category: string
   source_channel: string
   source_subtype: string
   identity_key: string | null
@@ -586,7 +593,16 @@ export async function ingestRawSourceBatch(
           source_origin:        sourceOrigin,
           market_id:            params.marketId,
           source:               record.source,
-          source_family:        params.sourceFamily,
+          // FIX (wave 70, lane 70C, m647): source_family carries a live CHECK restricted to the
+          // LINEAGE vocabulary ('raw' | 'lead' | 'contact_direct' — app/actions/source-analytics.ts
+          // SourceFamily) that source-analytics.ts's funnel grouping depends on. params.sourceFamily
+          // is a DIFFERENT concept — the SCRAPE CATEGORY ('property_search' | 'motivated_seller' |
+          // 'social_intent' | ...) — and writing it here violated that CHECK on every insert,
+          // silently (the catch-all error handling below buckets a CHECK-violation refusal into
+          // skipped_duplicate). Every raw record now gets its correct lineage value, and the scrape
+          // category moves to its own column (m647). See that migration's header for the full trace.
+          source_family:        'raw',
+          scrape_category:      params.sourceFamily,
           source_channel:       params.sourceChannel,
           source_subtype:       params.sourceSubtype ?? null,
           source_record_id:     record.sourceRecordId,
@@ -744,7 +760,10 @@ export function normalizeRawSourceRecord(
       intent:          record.intent          ?? null,
     },
     processing_status: 'pending',
-    source_family:     sourceFamily,
+    // m647: source_family is the LINEAGE constant the live CHECK admits; the scrape category
+    // this function derives moves to scrape_category (mirrors ingestRawSourceBatch's own fix).
+    source_family:     'raw',
+    scrape_category:   sourceFamily,
     source_channel:    sourceChannel,
     source_subtype:    sourceSubtype,
     identity_key:      identityKey,

@@ -287,6 +287,13 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // acquisition-cost.ts). Deliberate bump, named per this guard's own
 // instruction; drops back to 0 once the integrator applies it and flips the
 // header.
+//
+// 0 → 1 (wave 70, lane 70A — comps/CMA): m645-cma-comp-supplement-cache.sql,
+// WRITTEN NOT APPLIED — adds cma_comp_supplement_cache(address_key,
+// fetched_on, payload, cost_cents), the same-day cache for the BatchData CMA
+// sold-comp supplement pull (lib/cma/comp-supplement-cache.ts). Deliberate
+// bump, named per this guard's own instruction; drops back to 0 once the
+// integrator applies it and flips the header.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

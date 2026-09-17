@@ -78,6 +78,26 @@ interface AiCmaResultShape {
   aiNarrative: string
   citations: string[]
   disclaimers: string[]
+  /** lib/cma/comp-adjustments.ts — gross/net %, weak-comp flags, reconciled range. */
+  adjustmentGrid: Array<{
+    comp: any
+    lines: Array<{ type: string; amount: number; rationale: string }>
+    netAdjustment: number
+    grossAdjustment: number
+    netAdjustmentPct: number
+    grossAdjustmentPct: number
+    adjustedValue: number
+    isWeakComp: boolean
+    weakCompReasons: string[]
+  }>
+  reconciledRange: {
+    reconciledValue: number
+    low: number
+    high: number
+    compsUsed: number
+    allCompsWeak: boolean
+  } | null
+  adjustmentGridDisclaimer: string
 }
 
 /**
@@ -383,6 +403,13 @@ export async function generateAICMA(params: CMAParams) {
       comparablesPersisted: persisted.comparablesWritten,
       adjustmentsPersisted: persisted.adjustmentsWritten,
       persistenceWarnings: persisted.warnings,
+      // THE APPRAISAL-STYLE ADJUSTMENT GRID (wave 70) — lib/cma/comp-adjustments.ts.
+      // Gross/net % per comp, the weak-comp flag, and the reconciled value range
+      // weighted by inverse gross adjustment. Rendered on the seller-facing CMA
+      // report tab beside the comps it grids — see ADJUSTMENT_GRID_DISCLAIMER.
+      adjustmentGrid: cma.adjustmentGrid,
+      reconciledRange: cma.reconciledRange,
+      adjustmentGridDisclaimer: cma.adjustmentGridDisclaimer,
     }
   } catch (error) {
     console.error("[AI CMA] Generation error:", error)

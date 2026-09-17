@@ -382,6 +382,79 @@ function activeListingSourceOrderWave69() {
     /active_listing_source_order:[\s\S]{0,2000}DERIVED/.test(registry))
 }
 
+/**
+ * WAVE 70 — LISTING ATTRIBUTION SURFACE WIRING.
+ *
+ * Owner, verbatim: "the settings page needs to not say otherwise platforms
+ * rentcast feed just platform feed but rentcast i know legally when we
+ * display a listing it must say provided from rentcast, etc."
+ *
+ * lib/listings/attribution.ts::listingAttributionLine + <ListingAttribution />
+ * is the ONE shared helper/component (§6 — one vocabulary). This does not
+ * re-derive the wording (that is comp-adjustments-simulator's and
+ * cma-provider-lane-simulator's job on the CMA side); it proves every named
+ * DISPLAY surface actually IMPORTS the shared helper or component rather than
+ * rolling its own — the defect this whole capability replaces (buyer-home.tsx
+ * used to print the raw `source` string next to the price with no attribution
+ * sentence at all).
+ */
+function listingAttributionWiring() {
+  console.log("\n[wave 70 · every RentCast-fed display surface imports the SHARED attribution helper]")
+
+  const HELPER_IMPORT = /from ["']@\/lib\/listings\/attribution["']/
+  const COMPONENT_IMPORT = /from ["']@\/app\/components\/listings\/ListingAttribution["']/
+
+  const surfaces: Array<{ file: string; pattern: RegExp; label: string }> = [
+    { file: "app/components/forms/SmartSearchWidget.tsx", pattern: COMPONENT_IMPORT, label: "buyer portal smart-search widget" },
+    { file: "app/portal/[contactId]/buyer-home.tsx", pattern: COMPONENT_IMPORT, label: "buyer-home saved homes" },
+    { file: "app/actions/buyer-portal-matches.ts", pattern: HELPER_IMPORT, label: "Top Matches panel's data action" },
+    { file: "lib/agents/buyer-match-reel-producer.ts", pattern: HELPER_IMPORT, label: "buyer-match reel payload" },
+    { file: "app/dashboard/listings/[id]/cma/tabs/cma-report-tab.tsx", pattern: COMPONENT_IMPORT, label: "CMA comp table" },
+  ]
+
+  for (const s of surfaces) {
+    const exists = existsSync(join(process.cwd(), s.file))
+    check(
+      `${s.label} (${s.file}) imports the shared attribution ${s.pattern === HELPER_IMPORT ? "helper" : "component"}`,
+      exists && s.pattern.test(raw(s.file)),
+    )
+  }
+
+  // TopMatchesPanel doesn't import the helper itself — it renders the
+  // ALREADY-COMPUTED `m.attribution` string the action above builds (one
+  // computation, not a second one in the presentational component). Assert
+  // that binding instead of a (wrong) import requirement.
+  check(
+    "TopMatchesPanel (app/portal/[contactId]/components/TopMatchesPanel.tsx) renders the pre-computed m.attribution",
+    existsSync(join(process.cwd(), "app/portal/[contactId]/components/TopMatchesPanel.tsx")) &&
+      /\{m\.attribution/.test(raw("app/portal/[contactId]/components/TopMatchesPanel.tsx")),
+  )
+
+  // portal-cards.ts doesn't import the helper either — it is the PURE MAPPER
+  // that used to DROP `source` on the floor between the search engine and the
+  // widget (a RentCast-fed result rendered with no attribution at all). Assert
+  // the structural fix: `source` is read from the input and written onto the card.
+  const cards = raw("lib/buyer-search/portal-cards.ts")
+  check(
+    "portal-cards.ts (the pure mapper) now carries `source` through instead of dropping it",
+    /if \(r\.source\) card\.source = r\.source/.test(cards),
+  )
+
+  // POSITIVE CONTROL — a fixture file's content missing the import must make
+  // the SAME regex predicate report false, proving the check discriminates.
+  {
+    const fixtureWithout = `import { Button } from "@/app/components/ui/button"\nexport function X() { return null }`
+    check(
+      "positive control: the component-import check correctly fails on a fixture missing the import",
+      !COMPONENT_IMPORT.test(fixtureWithout),
+    )
+    check(
+      "positive control: the helper-import check correctly fails on a fixture missing the import",
+      !HELPER_IMPORT.test(fixtureWithout),
+    )
+  }
+}
+
 async function liveLayer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
@@ -419,6 +492,7 @@ async function main() {
   investorPortalCardShape()
   dedupeAndTerritory()
   activeListingSourceOrderWave69()
+  listingAttributionWiring()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

@@ -15,7 +15,7 @@
 // subaccount when master creds exist. Mock-safe: no creds → honest
 // notConfigured — a purchase is never faked.
 
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { searchAvailableLocalNumbers, purchaseIncomingPhoneNumber, releaseIncomingPhoneNumber } from "@/lib/providers/twilio/client"
 import { ensureTenantSubaccount, resolveTenantTwilioCreds, type TwilioCreds } from "@/lib/voice/twilio-tenancy"
 
 const NOT_CONFIGURED = "Twilio not configured (missing TWILIO_ACCOUNT_SID / AUTH_TOKEN)"
@@ -87,26 +87,23 @@ export async function searchAvailableNumbers(
   const creds = await resolveCreds(svc, brokerageId)
   if (!creds) return { ok: false, error: NOT_CONFIGURED, notConfigured: true }
 
-  const query: Record<string, string> = { PageSize: String(Math.min(Math.max(opts.limit ?? 10, 1), 30)) }
-  if (opts.areaCode) query.AreaCode = String(opts.areaCode).replace(/\D/g, "").slice(0, 3)
-  if (opts.locality) query.InLocality = String(opts.locality).slice(0, 80)
-
-  const res = await callConnector<{ available_phone_numbers?: Array<Record<string, any>> }>({
-    connector: "twilio", baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/AvailablePhoneNumbers/US/Local.json`,
-    method: "GET", query,
-    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+  // Official Twilio SDK adapter (lib/providers/twilio/client.ts) — same
+  // GET /AvailablePhoneNumbers/US/Local.json endpoint, same price.
+  const res = await searchAvailableLocalNumbers(creds, {
+    areaCode: opts.areaCode ? String(opts.areaCode).replace(/\D/g, "").slice(0, 3) : undefined,
+    inLocality: opts.locality ? String(opts.locality).slice(0, 80) : undefined,
+    limit: Math.min(Math.max(opts.limit ?? 10, 1), 30),
   })
   if (!res.ok) return { ok: false, error: `Twilio number search failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
 
-  const candidates: NumberCandidate[] = (res.data?.available_phone_numbers ?? [])
-    .filter((n) => typeof n?.phone_number === "string" && n.phone_number)
+  const candidates: NumberCandidate[] = (res.data ?? [])
+    .filter((n) => typeof n?.phoneNumber === "string" && n.phoneNumber)
     .map((n) => ({
-      phoneNumber: n.phone_number as string,
-      friendlyName: (n.friendly_name as string) ?? null,
-      locality: (n.locality as string) ?? null,
-      region: (n.region as string) ?? null,
-      postalCode: (n.postal_code as string) ?? null,
+      phoneNumber: n.phoneNumber,
+      friendlyName: n.friendlyName,
+      locality: n.locality,
+      region: n.region,
+      postalCode: n.postalCode,
     }))
   return { ok: true, candidates, credTier: creds.tier }
 }
@@ -171,13 +168,9 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
     }
   }
 
-  // 2. Purchase.
-  const purchaseRes = await callConnector<{ sid?: string }>({
-    connector: "twilio", baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers.json`, method: "POST",
-    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
-    bodyType: "form", body: { PhoneNumber: targetNumber },
-  })
+  // 2. Purchase. Official Twilio SDK adapter — same
+  //    POST /IncomingPhoneNumbers.json endpoint, same price.
+  const purchaseRes = await purchaseIncomingPhoneNumber(creds, targetNumber)
   if (!purchaseRes.ok) {
     const body = purchaseRes.error ?? ""
     await logPhoneNumberEvent(svc, {
@@ -269,12 +262,8 @@ export async function releaseNumber(
       // A Twilio-owned number cannot be honestly released without creds.
       return { ok: false, error: `${NOT_CONFIGURED} — this number has a Twilio SID on file and cannot be released without credentials. Nothing was changed.`, notConfigured: true }
     }
-    const res = await callConnector({
-      connector: "twilio", baseUrl: "https://api.twilio.com",
-      path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.twilio_number_sid}.json`,
-      method: "DELETE",
-      auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
-    })
+    // Official Twilio SDK adapter — same DELETE /IncomingPhoneNumbers/{sid}.json endpoint.
+    const res = await releaseIncomingPhoneNumber(creds, n.twilio_number_sid)
     if (res.ok) {
       twilioReleased = true
     } else if (res.status === 404) {

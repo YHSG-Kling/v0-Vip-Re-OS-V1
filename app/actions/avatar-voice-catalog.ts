@@ -99,21 +99,17 @@ export interface VoiceOption {
 export async function listElevenLabsVoices(): Promise<{ success: boolean; voices: VoiceOption[] }> {
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) return { success: false, voices: [] }
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<{ voices?: any[] }>({
-    connector: "elevenlabs",
-    baseUrl: "https://api.elevenlabs.io",
-    path: "/v1/voices",
-    method: "GET",
-    auth: { style: "header", name: "xi-api-key", value: apiKey },
-  })
+  // Official server SDK adapter (lib/providers/elevenlabs/client.ts) — same
+  // GET /v1/voices endpoint, same price, no more hand-rolled response mapping.
+  const { listVoices } = await import("@/lib/providers/elevenlabs/client")
+  const res = await listVoices(apiKey)
   if (!res.ok || !res.data) return { success: false, voices: [] }
-  const voices: VoiceOption[] = (res.data.voices ?? [])
-    .filter((v: any) => typeof v?.voice_id === "string" && v.category === "premade")
-    .map((v: any) => ({
-      voice_id: v.voice_id,
-      name: v.name ?? v.voice_id,
-      language: v.labels?.language ?? v.fine_tuning?.language ?? DEFAULT_LANGUAGE,
+  const voices: VoiceOption[] = res.data
+    .filter((v) => typeof v?.voiceId === "string" && v.category === "premade")
+    .map((v) => ({
+      voice_id: v.voiceId,
+      name: v.name ?? v.voiceId,
+      language: v.labels?.language ?? v.fineTuning?.language ?? DEFAULT_LANGUAGE,
       gender: v.labels?.gender ?? null,
       category: "premade",
       description: typeof v.description === "string" && v.description.trim()

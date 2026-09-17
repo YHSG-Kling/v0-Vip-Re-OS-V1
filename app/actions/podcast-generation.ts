@@ -7,7 +7,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // audio and cover art are fetched unauthenticated by podcast clients).
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { convertSpeech } from "@/lib/providers/elevenlabs/client"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
@@ -583,19 +583,13 @@ async function synthesizeVoice(
   if (!process.env.ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is not configured. Contact your administrator to enable ElevenLabs voice synthesis.")
   }
-  const response = await callConnector<Buffer>({
-    connector: "elevenlabs",
-    baseUrl: "https://api.elevenlabs.io",
-    path: `/v1/text-to-speech/${voiceId}`,
-    method: "POST",
-    auth: { style: "header", name: "xi-api-key", value: process.env.ELEVENLABS_API_KEY },
-    headers: { Accept: "audio/mpeg" },
-    responseType: "arraybuffer",
-    body: {
-      text,
-      model_id: "eleven_monolingual_v1",
-      voice_settings: settings,
-    },
+  // Official server SDK adapter (lib/providers/elevenlabs/client.ts) — same
+  // endpoint, same price as the raw fetch this replaced.
+  const response = await convertSpeech(process.env.ELEVENLABS_API_KEY, {
+    voiceId,
+    text,
+    modelId: "eleven_monolingual_v1",
+    voiceSettings: settings,
   })
 
   if (!response.ok || !response.data) {

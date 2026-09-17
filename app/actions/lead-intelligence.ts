@@ -39,7 +39,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { STANDARD_TIMELINES, type StandardTimeline } from "@/constants/crm-standards"
 import { requirePermission } from "@/lib/security"
 import { isTenantAdminOrPlatformStaff, resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { scrapePage } from "@/lib/providers/zenrows/client"
 import { revalidatePath } from "next/cache"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
@@ -623,12 +623,12 @@ export async function scrapeSocialSignalsWithZenRows(
 
     console.log("[v0] Scraping Nextdoor via ZenRows for:", location)
 
-    const response = await callConnector<string>({
-      connector: "zenrows", baseUrl: "https://api.zenrows.com", path: "/v1/", method: "GET",
-      query: { url: nextdoorUrl, apikey: zenrowsApiKey, js_render: "true", premium_proxy: "true" },
-      auth: { style: "none" }, responseType: "text",
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-      timeoutMs: 60_000,
+    // Official ZenRows SDK adapter (lib/providers/zenrows/client.ts) — same
+    // request shape, same credit-per-request price.
+    const response = await scrapePage(zenrowsApiKey, nextdoorUrl, {
+      jsRender: true,
+      premiumProxy: true,
+      customHeaders: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
     })
 
     await meterVendorSpend({

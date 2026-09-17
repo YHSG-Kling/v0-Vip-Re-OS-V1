@@ -98,7 +98,7 @@ export async function listRawLeadsForReview(opts?: {
   const supabase = createServiceClient()
   let query = supabase
     .from("raw_scraped_leads")
-    .select("id, first_name, last_name, email, phone, city, state, source, source_family, processing_status, dedupe_status, lead_id, promotion_attempts, error_message, created_at")
+    .select("id, first_name, last_name, email, phone, city, state, source, scrape_category, processing_status, dedupe_status, lead_id, promotion_attempts, error_message, created_at")
   if (opts?.brokerageId) query = query.eq("brokerage_id", opts.brokerageId)
   // Merged from the retired GET /api/leads/raw (its :26-27 / :36 / :44-46).
   if (opts?.source) query = query.eq("source", opts.source)
@@ -119,7 +119,9 @@ export async function listRawLeadsForReview(opts?: {
     city: (r.city as string | null) ?? null,
     state: (r.state as string | null) ?? null,
     source: (r.source as string | null) ?? null,
-    sourceFamily: (r.source_family as string | null) ?? null,
+    // m647: raw_scraped_leads.source_family is the lineage constant ('raw'); the human-facing
+    // scrape classification this UI field is named for lives in scrape_category.
+    sourceFamily: (r.scrape_category as string | null) ?? null,
     processingStatus: (r.processing_status as string | null) ?? null,
     dedupeStatus: (r.dedupe_status as string | null) ?? null,
     leadId: (r.lead_id as string | null) ?? null,

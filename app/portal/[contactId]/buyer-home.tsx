@@ -17,6 +17,7 @@ import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { EducationTutorCard } from "@/app/components/portal/education-tutor-card"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { ListingAttribution } from "@/app/components/listings/ListingAttribution"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
 import { BuyerPulseCard } from "@/app/components/portal/BuyerPulseCard"
@@ -756,7 +757,11 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
                         )}
                         <div className="min-w-0">
                           <p className="text-sm font-medium truncate">{p.property_address}</p>
-                          {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}{isExternal && p.source ? ` · ${p.source}` : ''}</p>}
+                          {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}</p>}
+                          {/* Wave 70: the required RentCast/IDX attribution line — replaces the raw
+                              `· rentcast` source-name fragment this used to print, which named the
+                              provider without the legally-required attribution sentence. */}
+                          {isExternal && <ListingAttribution source={p.source} className="text-[10px] text-muted-foreground block" />}
                         </div>
                         <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-auto" />
                       </CardContent>

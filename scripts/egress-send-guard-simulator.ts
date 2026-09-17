@@ -137,7 +137,33 @@ check("lib/providers/dispatch.ts exposes NO consent-skip flag (no force/bypass/s
 
 // ── 5. NO CONNECTOR BYPASS — a consumer message must not go via a raw messaging-connector call ──
 console.log("\n[5 · no consumer send via a raw messaging-connector (bypassing the consent gate)]")
+// WAVE 70B (owner: "if there is an sdk option, we should use that"): six of
+// these files' Twilio egress moved from raw callConnector to the official
+// `twilio` SDK behind lib/providers/twilio/client.ts (lib/voice/twilio-tenancy.ts,
+// twilio-voice.ts, twilio-outbound.ts, number-provisioning.ts, warm-transfer.ts,
+// call-recording.ts) - same admin/dial calls, same gate stack running BEFORE
+// them, different transport. A detector keyed only to callConnector would stop
+// seeing these files and silently shrink this guard's coverage (CLAUDE.md #2:
+// a count that moves is the finding - this is a transport swap, not a removed
+// capability), so the detector recognizes BOTH shapes.
 const CONNECTOR_SEND = /callConnector[\s\S]{0,300}connector:\s*["'](twilio|telnyx|bandwidth|sendgrid)["']/
+// Matches BOTH a static import ("from '...'") and this file's usual dynamic
+// import ("await import('...')") — every one of the six migrated call sites
+// uses the dynamic form (imported inline, right where the old callConnector
+// call used to sit).
+const TWILIO_SDK_SEND = /(?:from\s+["']|import\(\s*["'])@\/lib\/providers\/twilio\/client["']/
+const isConnectorSend = (src: string) => CONNECTOR_SEND.test(src) || TWILIO_SDK_SEND.test(src)
+
+// POSITIVE CONTROL - the SDK-adapter detector fires on a real import (both
+// shapes) and stays quiet on the same text commented out.
+{
+  const live = `const { placeCall } = await import("@/lib/providers/twilio/client")\n`
+  const prose = `// const { placeCall } = await import("@/lib/providers/twilio/client")\n`
+  const sees = (t: string) => TWILIO_SDK_SEND.test(blankComments(t))
+  if (!sees(live)) { console.error("  FAILED POSITIVE CONTROL - the Twilio SDK-adapter detector no longer recognises a real import"); process.exit(1) }
+  if (sees(prose)) { console.error("  FAILED CONTROL - a commented-out Twilio SDK import is still being counted as code"); process.exit(1) }
+  console.log("  ✓ positive control - a real Twilio SDK adapter import is caught, a commented one is not")
+}
 const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/providers/messaging/index.ts":      "the provider layer (called BY dispatch.ts, behind the gate)",
   "lib/providers/messaging/sms-adapters.ts": "the provider adapters (behind the gate)",
@@ -160,7 +186,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))
-  .filter(({ src }) => CONNECTOR_SEND.test(src))
+  .filter(({ src }) => isConnectorSend(src))
   .map(({ abs }) => relative(root, abs).replace(/\\/g, "/"))
 for (const f of connectorSenders) {
   check(`${f} — ${CONNECTOR_ALLOWLIST[f] ? "reviewed" : "UNREVIEWED"}`, f in CONNECTOR_ALLOWLIST,

@@ -289,6 +289,7 @@
     "lib/lead-pipeline/promotion-address-verification.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/scraper-health.ts": 2,
+    "lib/lead-pipeline/site-visitor-sourcer.ts": 1,
     "lib/lead-pipeline/social-sourcer.ts": 10,
     "lib/lead-pipeline/source-intent-map.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
@@ -436,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9548,
+  "census": 9571,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1598,6 +1599,7 @@
     "app/components/listing-landing/ListingHero.tsx": 1,
     "app/components/listing-landing/NeighborhoodWidget.tsx": 1,
     "app/components/listing-landing/ShowingRequestForm.tsx": 1,
+    "app/components/listings/ListingAttribution.tsx": 1,
     "app/components/listings/SellerUpdateComposer.tsx": 1,
     "app/components/mobile/DailyBriefingCard.tsx": 1,
     "app/components/mobile/MobileActivityFeed.tsx": 1,
@@ -2882,7 +2884,9 @@
     "lib/charts/geometry.ts": 10,
     "lib/cma/ai-cma-engine.ts": 1,
     "lib/cma/ai-cma-orchestrator.ts": 2,
+    "lib/cma/comp-adjustments.ts": 1,
     "lib/cma/comp-provider.ts": 1,
+    "lib/cma/comp-supplement-cache.ts": 2,
     "lib/cma/customer-facing-guard.ts": 6,
     "lib/cma/net-sheet-math.ts": 1,
     "lib/cma/perplexity-comp-finder.ts": 1,
@@ -3625,6 +3629,7 @@
     "lib/lead-pipeline/scrape-territories.ts": 3,
     "lib/lead-pipeline/scraper-health.ts": 4,
     "lib/lead-pipeline/scraper-parsers.ts": 7,
+    "lib/lead-pipeline/site-visitor-sourcer.ts": 2,
     "lib/lead-pipeline/social-sourcer.ts": 24,
     "lib/lead-pipeline/source-conversion-learning.ts": 3,
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
@@ -3674,6 +3679,7 @@
     "lib/listing-presentation/section-narration-orchestrator.ts": 3,
     "lib/listing-presentation/section-narration.ts": 3,
     "lib/listing-presentation/section-render.ts": 1,
+    "lib/listings/attribution.ts": 1,
     "lib/listings/back-on-market.ts": 1,
     "lib/listings/compute-dom.ts": 2,
     "lib/listings/expiry-decision.ts": 2,
@@ -3913,14 +3919,17 @@
     "lib/property-matching/match-scorer.ts": 3,
     "lib/property-risk/buyer-target-analyzer.ts": 1,
     "lib/property-risk/deal-killer-runner.ts": 1,
+    "lib/providers/apify/client.ts": 2,
     "lib/providers/calendar/free-slots.ts": 1,
     "lib/providers/calendar/graph-event-shape.ts": 2,
     "lib/providers/calendar/index.ts": 4,
     "lib/providers/calendar/personal-calendar.ts": 5,
     "lib/providers/content-safety.ts": 1,
     "lib/providers/dispatch.ts": 4,
+    "lib/providers/elevenlabs/client.ts": 3,
     "lib/providers/email/personal-email-adapter.ts": 2,
     "lib/providers/esign/index.ts": 6,
+    "lib/providers/exa/client.ts": 2,
     "lib/providers/inbound-router.ts": 1,
     "lib/providers/mailing-cass-gate.ts": 2,
     "lib/providers/messaging/index.ts": 4,
@@ -3932,9 +3941,11 @@
     "lib/providers/simli/client.ts": 2,
     "lib/providers/simli/faces.ts": 1,
     "lib/providers/tenancy-matrix.ts": 1,
+    "lib/providers/twilio/client.ts": 8,
     "lib/providers/vibe.ts": 5,
     "lib/providers/web-push.ts": 2,
     "lib/providers/webhook-contract.ts": 2,
+    "lib/providers/zenrows/client.ts": 1,
     "lib/quality-checker.ts": 1,
     "lib/recruit-pipeline/recruit-processor.ts": 1,
     "lib/recruit-pipeline/recruit-sourcer.ts": 1,
@@ -9925,6 +9936,9 @@
     "app/components/listing-landing/ShowingRequestForm.tsx": [
       "ShowingRequestForm"
     ],
+    "app/components/listings/ListingAttribution.tsx": [
+      "ListingAttribution"
+    ],
     "app/components/listings/SellerUpdateComposer.tsx": [
       "SellerUpdateComposer"
     ],
@@ -14559,8 +14573,15 @@
       "runAiCma",
       "describeCompProvenance"
     ],
+    "lib/cma/comp-adjustments.ts": [
+      "adjustComps"
+    ],
     "lib/cma/comp-provider.ts": [
       "sourceCompsForCma"
+    ],
+    "lib/cma/comp-supplement-cache.ts": [
+      "getCachedCompSupplement",
+      "setCachedCompSupplement"
     ],
     "lib/cma/customer-facing-guard.ts": [
       "findSuggestedPriceLeaks",
@@ -18323,6 +18344,10 @@
       "buildRealtySiteChatterUrl",
       "parseContactAgentChatter"
     ],
+    "lib/lead-pipeline/site-visitor-sourcer.ts": [
+      "normalizeSiteVisitorRow",
+      "sourceSiteVisitorIntent"
+    ],
     "lib/lead-pipeline/social-sourcer.ts": [
       "detectIntent",
       "isInvestor",
@@ -18574,6 +18599,9 @@
     ],
     "lib/listing-presentation/section-render.ts": [
       "renderSectionsForPresentation"
+    ],
+    "lib/listings/attribution.ts": [
+      "listingAttributionLine"
     ],
     "lib/listings/back-on-market.ts": [
       "isBackOnMarket"
@@ -19768,6 +19796,10 @@
     "lib/property-risk/deal-killer-runner.ts": [
       "runDealKillerRadar"
     ],
+    "lib/providers/apify/client.ts": [
+      "actorExists",
+      "runActorSyncGetDatasetItems"
+    ],
     "lib/providers/calendar/free-slots.ts": [
       "computeFreeSlots"
     ],
@@ -19797,6 +19829,11 @@
       "dispatchDirectMail",
       "dispatchVideo"
     ],
+    "lib/providers/elevenlabs/client.ts": [
+      "convertSpeech",
+      "listVoices",
+      "convertSpeechWithTimestamps"
+    ],
     "lib/providers/email/personal-email-adapter.ts": [
       "sendPersonalEmail",
       "getFreshPersonalToken"
@@ -19808,6 +19845,10 @@
       "syncLoopDocuments",
       "uploadLoopDocument",
       "getLoopActivity"
+    ],
+    "lib/providers/exa/client.ts": [
+      "rawSearch",
+      "neuralSearch"
     ],
     "lib/providers/inbound-router.ts": [
       "normalizeInbound"
@@ -19865,6 +19906,16 @@
     "lib/providers/tenancy-matrix.ts": [
       "providerTenancy"
     ],
+    "lib/providers/twilio/client.ts": [
+      "createSubaccount",
+      "updateIncomingPhoneNumber",
+      "searchAvailableLocalNumbers",
+      "purchaseIncomingPhoneNumber",
+      "releaseIncomingPhoneNumber",
+      "placeCall",
+      "hangupCall",
+      "startCallRecording"
+    ],
     "lib/providers/vibe.ts": [
       "resolveVibeCredential",
       "isVibeConfigured",
@@ -19879,6 +19930,9 @@
     "lib/providers/webhook-contract.ts": [
       "canonicalWebhookUrl",
       "findWebhookContractEntry"
+    ],
+    "lib/providers/zenrows/client.ts": [
+      "scrapePage"
     ],
     "lib/quality-checker.ts": [
       "analyzeContentQuality"

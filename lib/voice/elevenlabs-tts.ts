@@ -43,10 +43,13 @@
  */
 
 import "server-only"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { convertSpeech, convertSpeechWithTimestamps } from "@/lib/providers/elevenlabs/client"
 import { ELEVENLABS_REALISM_VOICE_SETTINGS, ELEVENLABS_TEXT_NORMALIZATION } from "@/lib/video/realism-profile"
 
-const ELEVENLABS_BASE = "https://api.elevenlabs.io"
+// The streaming path (synthesizeSpeechStream) keeps its OWN literal
+// `https://api.elevenlabs.io/...` URL rather than sharing a base-URL
+// constant — see that function's header for why (elevenlabs-egress-guard.ts
+// positive control).
 
 /**
  * Models ElevenLabs actually enforces `language_code` on (per the research
@@ -152,26 +155,19 @@ export async function synthesizeSpeech(
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
   try {
-    // PLATFORM-owned connector — one ELEVENLABS_API_KEY; per-subscriber voice rides as voiceId.
-    // Buffered synthesis egresses through the single gateway (arraybuffer mode → raw mp3 bytes).
-    const res = await callConnector<Buffer>({
-      connector: "elevenlabs",
-      baseUrl: ELEVENLABS_BASE,
-      path: `v1/text-to-speech/${voiceId}`,
-      method: "POST",
-      auth: { style: "header", name: "xi-api-key", value: apiKey },
-      headers: { Accept: "audio/mpeg" },
-      responseType: "arraybuffer",
-      body: {
-        text: input.text,
-        model_id: input.modelId ?? "eleven_monolingual_v1",
-        voice_settings: settings,
-        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
-        // language_code is sent ONLY to models ElevenLabs actually enforces it
-        // on (see the file header's research finding) — never to multilingual_v2,
-        // which either 400s or ignores it depending on endpoint.
-        ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),
-      },
+    // PLATFORM-owned — one ELEVENLABS_API_KEY; per-subscriber voice rides as voiceId.
+    // Buffered synthesis goes through the official server SDK adapter
+    // (lib/providers/elevenlabs/client.ts) — same endpoint, same price, no
+    // more hand-rolled request/response mapping.
+    const modelId = input.modelId ?? "eleven_monolingual_v1"
+    const langField = languageCodeField(modelId, input.languageCode)
+    const res = await convertSpeech(apiKey, {
+      voiceId,
+      text: input.text,
+      modelId,
+      voiceSettings: settings,
+      applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
+      languageCode: "language_code" in langField ? langField.language_code : null,
     })
 
     if (!res.ok || !res.data) {
@@ -235,12 +231,10 @@ export interface SynthesizeSpeechWithTimestampsResult extends SynthesizeSpeechRe
   alignment?: CharacterAlignment
 }
 
-/** Shape of the with-timestamps response body (AudioWithTimestampsResponseModel). */
-interface AudioWithTimestampsBody {
-  audio_base64: string
-  alignment?: CharacterAlignment | null
-  normalized_alignment?: CharacterAlignment | null
-}
+// The raw with-timestamps response shape (AudioWithTimestampsResponseModel,
+// snake_case) is no longer hand-mapped here — the SDK adapter
+// (lib/providers/elevenlabs/client.ts ConvertSpeechWithTimestampsData) returns
+// the camelCase `audioBase64`/`alignment`/`normalizedAlignment` shape directly.
 
 /**
  * synthesizeSpeechWithTimestamps — PREFERRED path for SOUND-OFF CAPTIONS.
@@ -277,28 +271,20 @@ export async function synthesizeSpeechWithTimestamps(
   const settings = { ...DEFAULT_VOICE_SETTINGS, ...(input.voiceSettings ?? {}) }
 
   try {
-    // PLATFORM-owned connector — egresses through the single gateway (json mode →
-    // the with-timestamps body: base64 audio + per-character alignment).
-    const res = await callConnector<AudioWithTimestampsBody>({
-      connector: "elevenlabs",
-      baseUrl: ELEVENLABS_BASE,
-      path: `v1/text-to-speech/${voiceId}/with-timestamps`,
-      method: "POST",
-      auth: { style: "header", name: "xi-api-key", value: apiKey },
-      headers: { Accept: "application/json" },
-      responseType: "json",
-      body: {
-        text: input.text,
-        model_id: input.modelId ?? "eleven_monolingual_v1",
-        voice_settings: settings,
-        apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
-        // language_code is sent ONLY to models ElevenLabs actually enforces it
-        // on (see the file header's research finding) — never to multilingual_v2.
-        ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),
-      },
+    // PLATFORM-owned — the with-timestamps leg goes through the same SDK
+    // adapter as the buffered path (lib/providers/elevenlabs/client.ts).
+    const modelId = input.modelId ?? "eleven_monolingual_v1"
+    const langField = languageCodeField(modelId, input.languageCode)
+    const res = await convertSpeechWithTimestamps(apiKey, {
+      voiceId,
+      text: input.text,
+      modelId,
+      voiceSettings: settings,
+      applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
+      languageCode: "language_code" in langField ? langField.language_code : null,
     })
 
-    if (!res.ok || !res.data?.audio_base64) {
+    if (!res.ok || !res.data?.audioBase64) {
       const body = res.error ?? ""
       const code: SynthesizeSpeechResult["errorCode"] =
         res.status === 401 || res.status === 403
@@ -317,9 +303,9 @@ export async function synthesizeSpeechWithTimestamps(
       }
     }
 
-    const audioBuffer = Buffer.from(res.data.audio_base64, "base64")
+    const audioBuffer = Buffer.from(res.data.audioBase64, "base64")
     // Prefer alignment over the original text (matches the characters we sent).
-    const alignment = res.data.alignment ?? res.data.normalized_alignment ?? undefined
+    const alignment = (res.data.alignment ?? res.data.normalizedAlignment ?? undefined) as CharacterAlignment | undefined
 
     // Same unified vendor-spend ledger as synthesizeSpeech.
     if (input.brokerageId) {

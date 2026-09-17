@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
+import { listingAttributionLine } from "@/lib/listings/attribution"
 
 export interface BuyerPortalMatch {
   id: string
@@ -21,6 +22,13 @@ export interface BuyerPortalMatch {
   status: string | null
   days_on_market: number | null
   primary_photo_url: string | null
+  /**
+   * Wave 70 — the required RentCast/IDX attribution line, PRE-COMPUTED here
+   * (from PropertyFacts.source) so TopMatchesPanel never has to guess a
+   * provider from a listing id. "" for our own listings — the panel renders
+   * nothing.
+   */
+  attribution: string
 }
 
 /**
@@ -130,6 +138,7 @@ export async function getBuyerPortalMatches(contactId: string, limit = 12): Prom
         days_on_market: l ? computeDaysOnMarket(l.go_live_date) : null,
         // Compliant: external (market_watch) references store NO photo (re-fetched elsewhere).
         primary_photo_url: f.photoUrl,
+        attribution: listingAttributionLine(f.source as any),
       } as BuyerPortalMatch
     })
     .filter((x): x is BuyerPortalMatch => x !== null)

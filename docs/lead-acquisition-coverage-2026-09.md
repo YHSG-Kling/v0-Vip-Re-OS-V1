@@ -408,3 +408,211 @@ through the existing `logVendorUsage`/`meterVendorSpend` vendor-cost ledger.
 - The Foundation-tier assumption behind `RENTCAST_USD_PER_REQUEST` is a default, not a confirmed
   account tier — same caveat as the plan table above (read off a third-party mirror, not a live
   RentCast dashboard).
+
+### Comps: RentCast primary, BatchData supplement, adjustment grid, attribution — wave 70
+
+Owner ruling (verbatim): "comps for sold were being pulled from rentcast since rentcast has for
+sale properties from sold to active listings and this is already built in the os. I guess it
+wouldn't hurt to also add comps from batchdata to help with the ai to analyze for cma's but need
+to best output for property appraisal adjusted comps without high costs."
+
+- **Order confirmed correct, not wrong.** `lib/cma/comp-provider.ts::sourceCompsForCma` already
+  had RentCast as the primary sold/active/pending source (`REQUIRED_SOLD_COMPS`,
+  `PRIMARY_SOLD_WINDOW_MONTHS`, widened-window fallback — wave 17/18 build) and the BatchData
+  branch (wave 69B: `comparable_property_count` pre-flight → `comparable_property_page` MCP →
+  REST fallback) already ran ONLY when `closedComps.length < REQUIRED_SOLD_COMPS`, strictly
+  AFTER the RentCast pull. This lane verified the order rather than finding it backwards.
+- **New: same-day cache.** `lib/cma/comp-supplement-cache.ts` + `supabase/migrations/
+  m645-cma-comp-supplement-cache.sql` (WRITTEN, awaiting apply) — per-subject-address,
+  per-calendar-day cache of the BatchData comps supplement payload. A cache hit skips BOTH the
+  free MCP pre-flight/preview AND the billed pull. Confirmed-empty results are cached too (an
+  empty answer is exactly as expensive to re-fetch as a populated one); a transient failure is
+  NOT cached, so a retry can still succeed.
+- **Cost constant derived, not duplicated.** `RENTCAST_COMPS_COST_CENTS` in comp-provider.ts was
+  a literal `15` (a leftover from RentCast's retired per-endpoint pricing, flagged unresolved in
+  the wave-69 section above). Now `RENTCAST_USD_PER_REQUEST * 100` (7.4¢), imported from
+  `lib/property/rentcast.ts` — one number, not two that can disagree.
+- **BatchData comps metered as platform spend.** The billed `comps_lookup` call now goes through
+  `meterVendorSpend` (the same gateway `lib/buyer-search/investor-offmarket-runner.ts` uses for
+  every other BatchData call), `brokerageId` carried for COST-LEDGER ATTRIBUTION ONLY — never a
+  tenant charge. `lib/external/batchdata-client.ts::reconcileBatchDataWalletSpend` already sums
+  `vendor_usage_tracking` for vendor `'batchdata'` PLATFORM-WIDE against BatchData's own wallet
+  consumption report, confirming this was always the intended accounting.
+- **New: the appraisal-style adjustment grid.** `lib/cma/comp-adjustments.ts` — a deliberately
+  PURE (no DB, no I/O) module adding what `lib/cma/state-adjustment-rates.ts::computeCompAdjustments`
+  (the existing DB-backed, per-state, per-vintage engine — not touched, not duplicated) does not
+  compute: a distance/location line item, the gross-vs-net adjustment split, a weak-comp flag at
+  the Fannie Mae Selling Guide B4-1.3-09 gross>25%/net>15% thresholds, and a reconciled value
+  range weighted by inverse gross adjustment. Wired into `lib/cma/ai-cma-orchestrator.ts::runAiCma`
+  (`AiCmaResult.adjustmentGrid` / `.reconciledRange`, fed into the AI narrative prompt so the
+  model analyzes ADJUSTED comps rather than raw sale prices) and rendered on the seller-facing
+  CMA report tab. Every constant is a documented common-appraisal rule-of-thumb (sourced in the
+  file's own header), never model-authored — labelled "CMA adjustments, not an appraisal"
+  (`ADJUSTMENT_GRID_DISCLAIMER`) everywhere it surfaces, per CLAUDE.md §5.
+- **New: `lib/listings/attribution.ts`.** One shared `listingAttributionLine(source)` +
+  `<ListingAttribution />` component, rendering "Listing data provided by RentCast" on every
+  RentCast-fed listing display: the buyer portal smart-search widget, buyer-home saved homes,
+  the portal Top Matches panel, the buyer-match reel's payload (`examples[].attribution`, for the
+  composition to render), and the CMA comp table. Tenant settings copy
+  (`app/dashboard/settings/integrations/lead-sources/lead-sources-client.tsx`) now says "the
+  platform feed" and never names RentCast to the tenant — the two are deliberately different
+  surfaces with opposite rules (never name it in settings; always attribute it on display).
+  **Unresolved:** RentCast's own Terms-of-Use attribution-clause page could not be fetched
+  (`developers.rentcast.io` ToU/attribution path returned CRAWL_NOT_FOUND) — the wording above is
+  the owner's own stated legal requirement, used verbatim; the exact ToU URL should be confirmed
+  and recorded before this wording is treated as legally final.
+- **Carried, not fixed this wave:** `app/dashboard/settings/integrations/integrations-client.tsx`
+  still lists `"rentcast"` as a selectable, tenant-configurable MLS provider option
+  (`PROVIDER_KEYS_BY_TYPE.mls`, label "Rentcast (no IDX needed)") on a brokerage-admin-facing
+  settings page — a second surface with the same defect the lead-sources page had, and arguably
+  worse (it implies a tenant can enter a RentCast credential). Confirmed nothing in
+  `lib/property/rentcast.ts` / `lib/property/rentcast-eligibility.ts` reads a tenant-scoped
+  RentCast credential — the entered value would be dead, written and never read. Out of this
+  lane's named scope (only the lead-sources page was assigned); flagged for a follow-up.
+  `AffordabilitySnapshotReel` (the buyer-match reel composition) does not yet render the new
+  `examples[].attribution` field on its card — the payload carries it, the composition's caption
+  layer does not yet consume it (a video-lanes-audit-scope follow-up, not a comps/CMA one).
+
+## Behavioral + acquisition coverage audit — wave 70 (owner, verbatim, 2026-09-17): "make sure we
+have covered every area of lead acquisition and enrichment scraping and behavioral scraping
+opportunities… If we aren't doing this another competitor will."
+
+### Coverage matrix — every lane named in the owner's list
+
+| # | Lane | Provider | Status | Cost/record or /request | Territory-bound | Dedup |
+|---|---|---|---|---|---|---|
+| 1 | Zillow saved-search + FSBO | ZenRows | **Built** | metered per call (zenrows) | `market.city`/`state` | 3-table (raw+lead+contact) |
+| 2 | Realtor.com saved-search + FSBO | ZenRows | **Built** | metered per call | yes | yes |
+| 3 | Homes.com saved-search + "contact agent" chatter | ZenRows→Zyte | **Built** (wave 65) | metered per call | yes | yes |
+| 4 | Redfin behavior | ZenRows (as `zenrows_homes`) | **Built** | metered per call | yes | yes |
+| 5 | Zillow/Realtor/Homes "contact agent" chatter | ZenRows→Zyte | **Built** (wave 65) | metered per call | yes | yes |
+| 6 | Nextdoor neighborhood chatter | ZenRows + LLM extract | **Built** | metered per call | yes | yes |
+| 7 | Reddit buyer/seller keyword posts | Apify | **Built** | $0.99/1k (clearpath/reddit-search-scraper) | yes | yes |
+| 8 | Reddit relocation / "looking for a realtor in \<city\>" | Apify | **Built** (wave 65) | $0.99/1k | yes | yes |
+| 9 | Facebook group buyer/seller posts | Apify | **Built** | $1.50/1k | group URLs scoped to territory | yes |
+| 10 | Facebook "recommend a realtor" | Apify | **Built** (wave 65) | $1.50/1k | yes | yes |
+| 11 | Instagram hashtag intent | Apify | **Built** | $1.90–2.60/1k | configured hashtags | yes |
+| 12 | Craigslist for-sale (FSBO) | Apify (+ZenRows HTML fallback) | **Built** | $1.4/1k | `city` param | yes |
+| 13 | Craigslist "housing wanted" (buyer ISO) | Apify | **Built** | $1.4/1k | `city` param | yes |
+| 14 | Google phrase intent (buyer/seller) | Apify | **Built** | Apify actor rate | territory-derived phrases | yes |
+| 15 | "Looking for a real estate agent/realtor" (cross-source) | Apify (Google today) | **Built** (wave 65) | Apify actor rate | yes | yes |
+| 16 | BatchData motivated-seller quicklists (foreclosure/probate/tax-lien/absentee/vacant/tired-landlord/high-equity/inherited) | BatchData REST | **Built** | plan-tier $/record ($0.00333–$0.01) | yes | yes |
+| 17 | Property Monitoring (push, pooled by quicklist) | BatchData Smart Search | **Built** (wave 66/67) | shares the plan-tier pool, 5 subs/account | per-subscription geography union | membership row |
+| 18 | Incremental Property Search (cursor, only-new) | BatchData REST | **Built** (wave 66) | plan-tier $/record | per (market×quicklist) | search-session state |
+| 19 | Buy Box (investor demand per listing) | BatchData MCP | **Built** (wave 66) | unconfirmed per-call price | per market | yes |
+| 20 | Active/expired/withdrawn/sold transitions | BatchData quicklist + IDX/RentCast | **Built** (wave 66/68) | IDX $0 → RentCast $0.074/req → BatchData opt-in | per market | relisting-detector |
+| 21 | LinkedIn job-change/relocation | Apify (`linkedin_relocation`) | **Built** | Apify actor rate | territory-derived keywords | yes |
+| 22 | Divorce/probate/tax-lien/pre-foreclosure court records | OSINT (`osint_signal`) | **Built** | per public-records call | `county`/`state` | yes |
+| 23 | New-construction/builder lists | — | **Missing** | — | — | — |
+| 24 | Rental-to-buyer graduation | — | **Partial** — `rental_listing` (Craigslist `apa`) sources the LANDLORD as a seller lead; nothing follows the TENANT side (a renter approaching lease-end as a future buyer) | — | — | — |
+| 25 | Absentee / out-of-state owner | BatchData quicklist (`absentee`) | **Built** | plan-tier $/record | yes | yes |
+| 26 | Lead magnets (guides, calculators) | `form_submissions` intake | **Built** (pre-existing, outside this pipeline — direct-consent intake, not raw scraping) | $0 | n/a (consented) | contact-direct |
+| 27 | IDX/portal behavior (saved searches, favorites) | internal (`lead_idx_property_interactions`, m630/m631) | **Built** (pre-existing) | $0 | n/a | n/a |
+| 28 | **Website visitor identification (anonymous, own site)** | internal (`website_visitors`) | **Was Missing → Built this wave** | **$0** | brokerage-scoped (own site) | identity-key dedup |
+| 29 | Email engagement (opens/clicks) | — | **Missing** | — | — | — |
+| 30 | Open-house sign-ins | `form_submissions` (open_house context) + conversion-welcome | **Built** (pre-existing, consented intake) | $0 | n/a | contact-direct |
+| 31 | Review/reputation chatter (as an ACQUISITION signal, not just reputation response) | — | **Missing** as acquisition — `lib/reputation/*` exists for the tenant's OWN review responses, not for sourcing new leads from public review chatter | — | — | — |
+| 32 | Permit / pre-listing signals | — | **Missing** | — | — | — |
+
+### Totals
+
+**Built: 25 / 32 · Partial: 1 / 32 · Missing: 6 / 32** (new-construction/builder lists, email
+engagement, review/reputation-as-acquisition, permit/pre-listing signals, rental-to-buyer
+graduation's tenant-side half, and — until this wave — website visitor identification).
+
+### What this lane built — website visitor identification ($0/record, the cheapest lane possible)
+
+**Why this one.** Compared against every other missing lane, this was the only one requiring
+literally $0 marginal spend: the data (`website_visitors`, written by the existing pixel
+`app/api/track/pixel` and dwell beacon `app/api/track/dwell`) was already being collected for a
+DIFFERENT purpose (matching a KNOWN contact/lead to a session via `/api/track/identify`) and never
+read for acquisition. LinkedIn job-change/relocation is already partially covered
+(`sourceLinkedInRelocation`, wave 65) and every other missing lane (new-construction lists, email
+engagement, permit records, review-as-acquisition) needs a new paid vendor relationship this lane
+was not scoped to procure. Picked by cost (lowest possible: $0) and evidence (the gap was concrete
+and provable from code, not speculative).
+
+**Built:** `lib/lead-pipeline/site-visitor-sourcer.ts::sourceSiteVisitorIntent` reads
+`website_visitors` for one brokerage's still-unidentified (`contact_id`/`lead_id`/`identified_at`
+all null) sessions with ≥60s dwell (the same bar `lib/kernel/site-traffic-insights.ts` already uses
+for its "stickiest page" verdict) in a 6-hour lookback (matching the cron's own cadence), and
+normalizes each into a `NormalizedScrapedRecord` (`username`=session_id, `sourceUrl`=page_url,
+`intentType`='buyer', signals `long_dwell` / `listing_page_view` when the URL looks like a
+listing/property page / `return_visit` / `campaign_referred`). Wired into
+`app/api/cron/lead-scraping/route.ts` behind `enabledSources.has("site_visitor_intent")`, running
+ONCE per brokerage (not once per territory — website traffic is brokerage-wide, tracked with a
+`siteVisitorBrokeragesRun` set keyed on the priority-ordered market loop) with `brokerageId` passed
+EXPLICITLY (this is the tenant's OWN site — `source_origin='brokerage'` immediately, never the
+platform pool every other lane in this cron defaults to). `sourceChannel='site_visitor_intent'`,
+`sourceFamily` param (now `scrape_category`, see the m647 fix below) `='site_behavior'`.
+`batchCostUsd: 0` passed explicitly. No new cron — folded into the existing lead-scraping tick, so
+no invocation-count change and no `cron-cost-census.ts --write-baseline` needed.
+
+**source-intent-map.ts:** new `SourceKey` `site_visitor_intent` (SOURCE_MAP entry: intentType
+buyer, scoreRange [25,55], baseScore 35, identityPolicy enrichment_first — anonymous by
+construction, real identity resolution stays `/api/track/identify`'s job), `SOURCE_ALIASES`
+(`site_visitor`/`website_visitor`/`website_visitor_intent`), new `ScrapeVendor` member `'internal'`
+(first-party, never appears in `vendor_usage_tracking` — `meterVendorSpend` no-ops on cost≤0 by
+design), `GATE_TOKEN` entry.
+
+**Territory:** bounded to the calling market's own `brokerage_id` — nested inside
+`resolveActiveScrapeTerritories()`'s active-subscriber loop, so a churned/inactive brokerage's
+traffic is never sourced. **Dedup:** `isViableRecord` (username present) +
+`buildLeadIdentityKey` (`user:<session>|src:<page_url>`) — `ingestRawSourceBatch`'s existing
+3-table dedup carries the load, no bespoke dedup needed. **Cost:** metered explicitly at
+`batchCostUsd: 0` (never omitted, so `cost_per_record` reads null-not-fabricated per the kernel's
+own contract, not a stale inherited estimate).
+
+**Proof extension:** `scripts/scraper-simulator.ts` — see the proof output quoted in the lane
+report; asserts the new SOURCE_MAP/SOURCE_VENDOR/GATE_TOKEN entries and
+`normalizeSiteVisitorRow`'s pure classification (long_dwell / listing_page_view / return_visit /
+campaign_referred, and the null-return on a session or page-less row).
+
+### Fixed in passing — raw_scraped_leads.source_family / scrape_category (m647)
+
+While reading `lib/kernel/scraping.ts::ingestRawSourceBatch` for this audit (required reading per
+the task), found that `raw_scraped_leads.source_family` carries a LIVE CHECK restricted to the
+LINEAGE vocabulary (`'raw' | 'lead' | 'contact_direct'`, confirmed against a real
+`public.live_check_constraints_json()` dump and `scripts/check-vocabularies.ts:1283`) — but every
+production caller of `ingestRawSourceBatch` (the cron, the BatchData webhook, the two
+`lead-intelligence.ts` call sites, `listings-batchdata-feed.ts`) writes the SCRAPE-CATEGORY
+vocabulary (`'property_search' | 'motivated_seller' | 'social_intent' | 'distressed_signal' |
+'investor_demand'`) into that SAME column. None of those five values is admitted by the live CHECK,
+so every governed scraping insert has been silently refused (the catch-all error handling buckets
+any insert error, CHECK violations included, into `skipped_duplicate`) since the CHECK's
+introduction — invisible to `check-vocabulary-guard.ts` because it only flags LITERAL comparisons
+in the SAME file as the `.insert()` call, and invisible to `scripts/production-smoke-drill.ts`
+(the one live-DB proof) because its hand-rolled insert never sets `source_family` at all. **Fixed**
+(m647, WRITTEN NOT APPLIED): added `raw_scraped_leads.scrape_category` (free text, vocabulary
+governed by `source-intent-map.ts`'s `SourceKey`); `ingestRawSourceBatch` and
+`normalizeRawSourceRecord` now write the correct lineage constant `'raw'` to `source_family` and
+the scrape category to the new column; the two real per-row readers
+(`lib/lead-intelligence/person-timeline.ts`, `app/actions/lead-promotion/promote-lead.ts`) repointed
+to `scrape_category`. `app/actions/source-analytics.ts`'s raw-record funnel counting was verified
+UNAFFECTED — it already hardcodes the `"raw"` family for every `raw_scraped_leads` row rather than
+trusting the column's actual (until now, wrong) value. Full trace in the migration's own header.
+This means `raw_scraped_leads` has structurally held ~zero governed-writer rows to date in the live
+database — a blind spot beside the "N leads created" counts every prior wave's cron run has
+reported, which counted `ingestRawSourceBatch`'s `result.inserted` (which never actually
+incremented against a real CHECK, since it only exists in that function's own in-memory counter
+before the DB round-trip refuses the row) — **unresolved pending the integrator applying m647 and
+confirming a real insert against the live database.**
+
+### Part 3 — RentCast metering carry (wave 69 unresolved, closed this wave)
+
+`lib/lead-pipeline/contact-signal-rescrape.ts` (`wantAvm` block) and
+`lib/agentic-os/deal-investigator.ts` (MLS step) both read `process.env.RENTCAST_API_KEY` directly
+and called `callRentcastGet("/avm/value", ...)` unmetered — a flat display-only `cost: 0.01`/`$0.01`
+that was never logged to `vendor_usage_tracking` and skipped the platform vendor-budget gate
+(`lib/property/rentcast.ts::gateRentcast`) every other RentCast caller in the tree goes through.
+Both now call `lib/property/rentcast.ts::getRentcastAVM({ brokerageId, address, systemSource,
+contactId })`, booking every request at `RENTCAST_USD_PER_REQUEST` ($0.074) through the same
+metered client + budget gate as the rest of the codebase. `deal-investigator.ts` and
+`contact-signal-rescrape.ts` both needed `contacts.brokerage_id` added to their existing
+`.select()` (it was not previously selected) to have a tenant to meter against; a contact somehow
+missing `brokerage_id` now fails the RentCast step closed with a named warning rather than an
+unmetered live call.
+
+**Simli** — confirmed still absent: `docs/face-render-backup-simli-2026-09.md:99` ("No Simli
+session was run (no `SIMLI_API_KEY` in this environment)"), `.env.example:77` carries the key name
+with no value. Left as documented — no action needed.

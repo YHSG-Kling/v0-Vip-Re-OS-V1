@@ -75,11 +75,18 @@ export function LeadSourcesClient({
           to setup their idx connection." RentCast is platform-provided and never a tenant
           setting; this REUSES the existing IDX Broker form (never a second one) — the same
           component app/dashboard/settings/integrations/idx-broker/page.tsx mounts on its own
-          route, so there is exactly one place this credential is entered. */}
+          route, so there is exactly one place this credential is entered.
+          Wording fixed wave 70 (owner, verbatim): "the settings page needs to not say
+          otherwise platforms rentcast feed just platform feed" — this copy previously named
+          RentCast to the tenant as their fallback ("otherwise the platform's RentCast feed …
+          there is nothing to configure for RentCast"); the tenant never sees that name here,
+          only "the platform feed". The legally-required RentCast attribution still appears
+          wherever a RentCast-fed listing is actually DISPLAYED to a buyer/seller — see
+          lib/listings/attribution.ts — this is a SEPARATE surface (settings), not that one. */}
       <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-        For-sale listings: your IDX feed when connected, otherwise the platform&apos;s RentCast
-        feed. Connect your IDX Broker account below to switch your buyers&apos; smart search to
-        your own board — there is nothing to configure for RentCast, the platform covers it.
+        For-sale listings: your IDX feed when connected, otherwise the platform feed. Connect
+        your IDX Broker account below to switch your buyers&apos; smart search to your own board
+        — there is nothing to configure otherwise, the platform covers it.
       </div>
       <IDXBrokerSettingsPage />
 

@@ -14,6 +14,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 import type { PropertyFacts } from "@/lib/property/resolve-property-facts"
+import { listingAttributionLine } from "@/lib/listings/attribution"
 
 export interface BuyerMatchReelResult { queued: boolean; renderId?: string; reason?: string }
 
@@ -38,6 +39,11 @@ export function buildBuyerMatchReelProps(
       bedrooms:  f.bedrooms != null ? String(f.bedrooms) : "—",
       bathrooms: f.bathrooms != null ? String(f.bathrooms) : "—",
       photoUrl:  f.photoUrl ?? null,
+      // Wave 70 (owner: listing data provided by RentCast must be attributed wherever it
+      // displays): PropertyFacts.source carries the raw saved_properties.source vocabulary
+      // (rentcast | idx | mls | brokerage_listing | manual) when this card came from an
+      // external feed. "" for our own listing — the caption/composition renders nothing.
+      attribution: listingAttributionLine(f.source as any),
     }))
   if (examples.length === 0) return null
   const areaName = (examples[0].cityState.split(",")[0] || "your area").trim()

@@ -337,11 +337,12 @@ console.log("\n── SOURCE: wiring ──")
   // the TCPA and budget gates — both checked against the exported gate list.
   check("OUTBOUND: the gate stack runs BEFORE the Twilio dial",
     outboundLib.indexOf("runOutboundCallGates") >= 0
-    && outboundLib.indexOf("runOutboundCallGates") < outboundLib.indexOf("callConnector"))
+    && outboundLib.indexOf("placeCall(") >= 0
+    && outboundLib.indexOf("runOutboundCallGates") < outboundLib.indexOf("placeCall("))
   check("OUTBOUND: that stack still contains the TCPA chokepoint + the vendor budget ceiling",
     OUTBOUND_CALL_GATE_ORDER.includes("tcpa") && OUTBOUND_CALL_GATE_ORDER.includes("vendor_budget"))
   check("OUTBOUND: machine detection + status callback registered at dial time",
-    outboundLib.includes('MachineDetection: "Enable"') && outboundLib.includes("/api/voice/twilio/status"))
+    /machineDetection:\s*"Enable"/.test(outboundLib) && outboundLib.includes("/api/voice/twilio/status"))
   const outboundRoute = src("app/api/voice/twilio/outbound/route.ts")
   check("OUTBOUND answer webhook: signature-validated; machine → HONEST voicemail + ledger closed; human → the shared turn loop",
     outboundRoute.includes("validateTwilioSignature") && outboundRoute.includes("composeVoicemailMessage") && outboundRoute.includes("twimlGatherTurn"))

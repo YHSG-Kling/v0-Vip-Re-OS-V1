@@ -42,6 +42,8 @@ export type SourceKey =
   | 'batchdata_smart_search'      // BatchData V2 Property Subscription push (webhook) — DISTINCT from the polled batchdata_motivated sweep
   | 'batchdata_buybox'            // BatchData Buy Box investor-criteria match per listing — a BUYER-side signal
   | 'external_behavior'           // lead-intelligence's off-site property-view discovery lane (app/actions/lead-intelligence.ts::scrapeExternalBehavior)
+  // ── Wave 70 lane (owner ruling 2026-09-17 — coverage audit) — DISTINCT from every source above ──
+  | 'site_visitor_intent'         // ON-SITE behavioral acquisition: unidentified, high-dwell tenant-website visitors (own first-party data, $0 marginal cost)
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -468,6 +470,28 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: true,
   },
 
+  // ── Site visitor intent (wave 70 — owner: "make sure we have covered every area of lead
+  // acquisition and enrichment scraping and behavioral scraping opportunities") ────────────────
+  // ON-SITE, first-party behavioral signal: an UNIDENTIFIED (no contact_id/lead_id) visitor to the
+  // tenant's OWN website/portal who dwelled long enough on a listing/search page to read as real
+  // buyer interest (lib/lead-pipeline/site-visitor-sourcer.ts). $0 marginal cost — no vendor call,
+  // the data is already collected by the existing pixel/dwell beacons
+  // (app/api/track/pixel, app/api/track/dwell). Anonymous by construction, so identity is always
+  // enrichment-first; a later /api/track/identify hit (the visitor filling a form) is the real
+  // identity resolution path, not this lane.
+  site_visitor_intent: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'site_visitor_intent',
+    behaviorType:              'site_visitor_intent',
+    scoreRange:                [25, 55],
+    baseScore:                 35,
+    boostSignals:              ['long_dwell', 'listing_page_view', 'return_visit', 'campaign_referred'],
+    dampSignals:               ['bounce', 'short_dwell'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
 }
 
 // ─── Fallback for unknown sources ─────────────────────────────────────────────
@@ -579,6 +603,10 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   // its SourceDefinition.
   nextdoor_chatter: "nextdoor_intent",
   google_intent: "google_phrase_intent",
+  // Wave 70 — site visitor intent, second spelling seen in config/UI copy.
+  site_visitor: "site_visitor_intent",
+  website_visitor: "site_visitor_intent",
+  website_visitor_intent: "site_visitor_intent",
 }
 
 /**
@@ -591,7 +619,9 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
  *   • osint    — public + court records (divorce / probate / foreclosure / tax-lien / eviction).
  *   • peopledata is enrichment-only and never sources raw leads, so it is not here.
  */
-export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'zyte'
+// 'internal' (wave 70) — first-party data already collected by this repo's own pixel/dwell
+// beacons; no vendor call, $0 marginal cost, never appears in vendor_usage_tracking.
+export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'zyte' | 'internal'
 
 export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   zenrows_zillow:       'zenrows',
@@ -623,6 +653,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   batchdata_smart_search:     'batchdata',
   batchdata_buybox:           'batchdata',
   external_behavior:          'apify',  // discovery is Apify; BatchData only enriches the match
+  site_visitor_intent:        'internal', // first-party — own pixel/dwell data, no vendor call
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -666,6 +697,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   batchdata_smart_search:     'batchdata_smart_search',
   batchdata_buybox:           'batchdata_buybox',
   external_behavior:          'external_behavior',
+  site_visitor_intent:        'site_visitor_intent',
 }
 
 /**

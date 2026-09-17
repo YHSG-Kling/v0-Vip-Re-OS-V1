@@ -20,6 +20,8 @@ import { generateAICMA } from "@/app/actions/ai-cma"
 import { buildAppraisalDefensePackage, type AppraisalDefensePackage } from "@/app/actions/appraisal-defense"
 import type { CMAPageData } from "@/app/actions/seller-cma"
 import { useRouter } from "next/navigation"
+import { ADJUSTMENT_GRID_DISCLAIMER, type ComparableAdjustmentGrid, type ReconciledValueRange } from "@/lib/cma/comp-adjustments"
+import { ListingAttribution } from "@/app/components/listings/ListingAttribution"
 
 interface Props {
   listing: {
@@ -81,6 +83,13 @@ export function CMAReportTab({ listing, data }: Props) {
   const [defenseError, setDefenseError] = useState<string | null>(null)
   const [defenseBuilding, setDefenseBuilding] = useState(false)
   const [contractPriceInput, setContractPriceInput] = useState("")
+  // THE APPRAISAL-STYLE ADJUSTMENT GRID (wave 70) — from the RESULT of the most
+  // recent generateAICMA() call in THIS session, since the grid itself is not
+  // yet a persisted column on cma_price_adjustments. Cleared on navigation; the
+  // agent sees it immediately after a generate/regenerate, which is when it is
+  // actually being reviewed before presenting to the seller.
+  const [lastGrid, setLastGrid] = useState<ComparableAdjustmentGrid[] | null>(null)
+  const [lastReconciled, setLastReconciled] = useState<ReconciledValueRange | null>(null)
   const router = useRouter()
 
   async function handleBuildDefense() {
@@ -162,6 +171,8 @@ export function CMAReportTab({ listing, data }: Props) {
       if (!result.success) {
         setGenerateError((result as any).error ?? "CMA generation failed.")
       } else {
+        setLastGrid((result as any).adjustmentGrid ?? null)
+        setLastReconciled((result as any).reconciledRange ?? null)
         // Refresh the page so the new CMA is loaded from the server
         router.refresh()
       }
@@ -212,6 +223,39 @@ export function CMAReportTab({ listing, data }: Props) {
             : ""}
         </span>
       </div>
+
+      {/* Appraisal-style adjustment grid (wave 70) — from the most recent generate/regenerate in this session */}
+      {lastGrid && lastGrid.length > 0 && (
+        <Card>
+          <CardHeader className="py-3 px-4">
+            <CardTitle className="text-sm font-medium text-foreground">Adjustment Grid</CardTitle>
+            <p className="text-xs text-muted-foreground">{ADJUSTMENT_GRID_DISCLAIMER}</p>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 space-y-2">
+            {lastGrid.map((g, i) => (
+              <div key={i} className="flex items-center justify-between text-sm border-b pb-2 last:border-b-0">
+                <div>
+                  <div className="font-medium">{g.comp.address}</div>
+                  <div className="text-xs text-muted-foreground">
+                    Gross {(g.grossAdjustmentPct * 100).toFixed(1)}% · Net {g.netAdjustmentPct >= 0 ? "+" : ""}
+                    {(g.netAdjustmentPct * 100).toFixed(1)}% · Adjusted ${g.adjustedValue.toLocaleString()}
+                  </div>
+                </div>
+                {g.isWeakComp && (
+                  <Badge className="bg-amber-100 text-amber-800 border-amber-300">Weak comp</Badge>
+                )}
+              </div>
+            ))}
+            {lastReconciled && (
+              <div className="text-sm pt-2">
+                Reconciled value: <span className="font-medium">${lastReconciled.reconciledValue.toLocaleString()}</span>{" "}
+                (range ${lastReconciled.low.toLocaleString()}–${lastReconciled.high.toLocaleString()}, weighted by inverse
+                gross adjustment across {lastReconciled.compsUsed} comp(s)){lastReconciled.allCompsWeak ? " — all comps flagged weak, treat as directional only" : ""}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Property upgrades (seller-reported from CMA intake) */}
       {propertyUpgrades.length > 0 && (
@@ -524,6 +568,7 @@ function CompRow({
     ai_rationale: string | null
     risk_flags: string[] | null
     coaching_insight: string | null
+    source_provider?: string | null
   }
   aiScore: {
     score: number
@@ -549,6 +594,7 @@ function CompRow({
             {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
             {comp.address}
           </div>
+          <ListingAttribution source={comp.source_provider as any} className="text-[10px] text-muted-foreground block ml-5" />
           {flags.length > 0 && (
             <div className="flex gap-1 flex-wrap mt-1">
               {flags.slice(0, 3).map((f, i) => (

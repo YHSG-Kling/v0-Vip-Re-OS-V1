@@ -136,22 +136,16 @@ export async function bindNumberToTwilioLane(
   if (!appUrl) return { ok: false, error: "NEXT_PUBLIC_APP_URL not set — can't register the webhook URL" }
   const base = appUrl.replace(/\/$/, "")
 
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector({
-    connector: "twilio",
-    baseUrl: "https://api.twilio.com",
-    path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.twilio_number_sid}.json`,
-    method: "POST",
-    bodyType: "form",
-    body: {
-      VoiceUrl: `${base}/api/voice/twilio/inbound`, VoiceMethod: "POST",
-      // Texts to the tenant's line ride the EXISTING provider-inbound ingress
-      // (opt-out detection + unified inbox); the status callback closes any
-      // ledger row a mid-call hangup left open.
-      SmsUrl: `${base}/api/providers/inbound`, SmsMethod: "POST",
-      StatusCallback: `${base}/api/voice/twilio/status`, StatusCallbackMethod: "POST",
-    },
-    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+  // Official Twilio SDK adapter (lib/providers/twilio/client.ts) — same
+  // POST /IncomingPhoneNumbers/{sid}.json endpoint, same price.
+  const { updateIncomingPhoneNumber } = await import("@/lib/providers/twilio/client")
+  const res = await updateIncomingPhoneNumber(creds, n.twilio_number_sid, {
+    voiceUrl: `${base}/api/voice/twilio/inbound`, voiceMethod: "POST",
+    // Texts to the tenant's line ride the EXISTING provider-inbound ingress
+    // (opt-out detection + unified inbox); the status callback closes any
+    // ledger row a mid-call hangup left open.
+    smsUrl: `${base}/api/providers/inbound`, smsMethod: "POST",
+    statusCallback: `${base}/api/voice/twilio/status`, statusCallbackMethod: "POST",
   })
   if (!res.ok) return { ok: false, error: `Twilio VoiceUrl update failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
 

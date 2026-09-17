@@ -36,6 +36,7 @@ import {
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { normalizeVendorCost } from "@/lib/vendor-governance/cost-normalizer"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { convertSpeech } from "@/lib/providers/elevenlabs/client"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
@@ -1305,29 +1306,23 @@ async function dispatchVideoViaDID({
   // not touch).
   const avatarTtsModel = elevenLabsModelForLane("avatar_narration", params.ttsLanguageCode)
   const pacedScript = withNaturalPauses(renderedScript, avatarTtsModel)
-  const ttsRes = await callConnector<Buffer>({
-    connector: "elevenlabs",
-    baseUrl: "https://api.elevenlabs.io",
-    path: `/v1/text-to-speech/${didProfile.elevenlabs_voice_id}`,
-    method: "POST",
-    auth: { style: "header", name: "xi-api-key", value: elApiKey },
-    headers: { Accept: "audio/mpeg" },
-    responseType: "arraybuffer",
-    body: {
-      text: pacedScript,
-      model_id: avatarTtsModel,
-      voice_settings: ELEVENLABS_REALISM_VOICE_SETTINGS,
-      apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
-      // `language_code` is DELIBERATELY NEVER sent here (wave 52 research
-      // finding, DispatchVideoParams.ttsLanguageCode doc above, reconfirmed
-      // for v3 in realism-profile.ts's wave-57 header): ElevenLabs only
-      // enforces language_code on eleven_turbo_v2_5 / eleven_flash_v2_5 — v3,
-      // like multilingual_v2 before it, either 400s or silently ignores it.
-      // renderedScript is already IN the target language (the caller
-      // translated it — translateReelScript / generatePersonaCopy's `language`
-      // directive), so the model's own text auto-detection selects the
-      // language, with nothing extra to pass here.
-    },
+  // Same SDK adapter lib/voice/elevenlabs-tts.ts's buffered path uses
+  // (lib/providers/elevenlabs/client.ts) — one TTS egress, same price.
+  const ttsRes = await convertSpeech(elApiKey, {
+    voiceId: didProfile.elevenlabs_voice_id,
+    text: pacedScript,
+    modelId: avatarTtsModel,
+    voiceSettings: ELEVENLABS_REALISM_VOICE_SETTINGS,
+    applyTextNormalization: ELEVENLABS_TEXT_NORMALIZATION,
+    // `language_code` is DELIBERATELY NEVER sent here (wave 52 research
+    // finding, DispatchVideoParams.ttsLanguageCode doc above, reconfirmed
+    // for v3 in realism-profile.ts's wave-57 header): ElevenLabs only
+    // enforces language_code on eleven_turbo_v2_5 / eleven_flash_v2_5 — v3,
+    // like multilingual_v2 before it, either 400s or silently ignores it.
+    // renderedScript is already IN the target language (the caller
+    // translated it — translateReelScript / generatePersonaCopy's `language`
+    // directive), so the model's own text auto-detection selects the
+    // language, with nothing extra to pass here.
   })
 
   if (!ttsRes.ok || !ttsRes.data) {

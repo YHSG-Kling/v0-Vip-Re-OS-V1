@@ -88,6 +88,7 @@ import {
   type RentcastEligibilityReason,
 } from "@/lib/property/rentcast-eligibility"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 import { fetchBatchDataComps, readBatchDataComp, BATCHDATA_COMPS_COST_CENTS, type BatchDataComp } from "@/lib/external/batchdata-client"
 import {
@@ -95,6 +96,8 @@ import {
   comparablePropertyPreview,
   comparablePropertyPage,
 } from "@/lib/external/batchdata-mcp"
+import { getCachedCompSupplement, setCachedCompSupplement } from "./comp-supplement-cache"
+import { RENTCAST_USD_PER_REQUEST } from "@/lib/property/rentcast"
 import {
   findCompsViaPerplexity,
   PERPLEXITY_COMP_SEARCH_COST_USD,
@@ -178,8 +181,15 @@ const RENTCAST_COMP_PULL_LIMIT = 20
 /** How many IDX featured rows to consider before narrowing. */
 const IDX_PULL_LIMIT = 100
 
-/** Cost telemetry, in cents, matching lib/property/rentcast.ts COST_PER_AVM_LOOKUP ($0.15). */
-const RENTCAST_COMPS_COST_CENTS = 15
+/**
+ * Cost telemetry, in cents. DERIVED from RENTCAST_USD_PER_REQUEST
+ * (lib/property/rentcast.ts, 7.4¢/request — RentCast bills per successful API
+ * request regardless of endpoint) rather than a second, disagreeing literal.
+ * This module previously hard-coded 15 here, which was a leftover from
+ * RentCast's retired "$49/mo / 250 calls" per-ENDPOINT pricing (COST_PER_AVM_LOOKUP)
+ * that rentcast.ts's own header already documents replacing platform-wide.
+ */
+const RENTCAST_COMPS_COST_CENTS = RENTCAST_USD_PER_REQUEST * 100
 /** IDX Broker is a flat-rate subscription — a featured-set read has no marginal
  *  per-call price. Metered at zero cost so the CALL still appears in the vendor
  *  ledger (an unmetered egress path is not allowed), without inventing a price. */
@@ -556,81 +566,110 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
   let batchDataMcpPreviewAvailable: boolean | null = null
   if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY) {
     try {
-      // ── MCP PRE-FLIGHT (wave 69 owner ruling: "scraping is not frozen so those six
-      // scraping frozen orphan exports should not be blocked" + "keep [provider cost] down
-      // ... try to use an sdk or mcp if it is provided but keeping pricing in mind") ──────
-      // `comparable_property_count` is a cheap/no-charge MCP count — ask it FIRST whether
-      // BatchData has anything at all for this address before paying for the billed `comps`
-      // dataset pull. A confirmed zero SKIPS the pull outright; anything else (a real count,
-      // "unconfigured", or a provider error) falls through unchanged — the pre-flight only
-      // ever SKIPS a pull, it never blocks one it can't be sure about (fail-open on itself).
-      const preflight = await comparablePropertyCount({ address: fullAddress })
-      const preflightConfirmsEmpty = preflight.ok && preflight.count === 0
+      // ── SAME-DAY CACHE, CHECKED FIRST (wave 70 owner ruling: "…need to best output for
+      // property appraisal adjusted comps without high costs") — lib/cma/comp-supplement-
+      // cache.ts. A cache hit skips BOTH the free MCP pre-flight/preview AND the billed pull
+      // entirely: the same subject address re-run the same day (a retry, a regenerate, a
+      // second agent) never pays BatchData twice for the identical answer.
+      const cached = await getCachedCompSupplement(fullAddress)
+      let bdComps: BatchDataComp[] = []
+      let compsVia: "mcp" | "rest" = "rest"
 
-      // `comparable_property_preview` — the CHEAP, no-charge sample the CMA UI's "comps
-      // available" badge reads (CompProvenance.batchDataMcpPreviewAvailable). Read
-      // regardless of what the pull below does, so the badge reports the true state even
-      // on the empty-preflight path.
-      const preview = await comparablePropertyPreview({ address: fullAddress })
-      batchDataMcpPreviewAvailable = preview.ok ? preview.rows.length > 0 : null
-
-      void logVendorUsage({
-        vendorName: "batchdata", usageType: "comps_mcp_preflight", unitCount: 1, estimatedCost: 0,
-        systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE, brokerageId: req.brokerageId,
-        metadata: {
-          purpose: "cma_sold_comp_preflight", preflightOk: preflight.ok, preflightCount: preflight.count,
-          previewOk: preview.ok, previewRows: preview.ok ? preview.rows.length : null, contact_id: req.contactId ?? null,
-        },
-      }).catch(() => null)
-
-      if (preflightConfirmsEmpty) {
-        notes.push("BatchData's MCP comps pre-flight (comparable_property_count) reported 0 available comparables for this address — the billed comps dataset pull was skipped rather than paying for an empty result.")
+      if (cached.hit && cached.payload) {
+        bdComps = cached.payload.comps
+        compsVia = cached.payload.via
+        batchDataMcpPreviewAvailable = bdComps.length > 0
+        notes.push(`BatchData comps dataset supplement served from today's cache for this address (${bdComps.length} row(s)) — the billed pull was skipped (original pull cost ${cached.costCents}¢ of platform spend, not re-incurred).`)
       } else {
-        // The billed pull: MCP `comparable_property_page` tried FIRST (this module's own
-        // header: "agentic callers route property / owner / motivation queries through MCP
-        // when configured, with automatic fallback to the existing REST batchdata-client
-        // path"), REST fetchBatchDataComps as the fallback — never both, never twice-billed.
-        const mcpPage = await comparablePropertyPage({ address: fullAddress, take: REQUIRED_SOLD_COMPS * 3 })
-        let bdComps: BatchDataComp[] = []
-        let compsCostDollars = 0
-        let compsVia: "mcp" | "rest" = "rest"
-        let compsError: string | null = null
-        if (mcpPage.ok && mcpPage.rows.length > 0) {
-          bdComps = mcpPage.rows.map((row) => readBatchDataComp(row as unknown as Record<string, any>))
-          compsVia = "mcp"
-          compsCostDollars = BATCHDATA_COMPS_COST_CENTS / 100
-        } else {
-          if (mcpPage.error && !mcpPage.unconfigured) {
-            notes.push(`BatchData comps dataset (MCP comparable_property_page) failed, falling back to REST: ${mcpPage.error}`)
-          }
-          const rest = await fetchBatchDataComps(fullAddress)
-          bdComps = rest.comps
-          compsCostDollars = rest.cost
-          compsError = rest.ok ? null : rest.error ?? null
-        }
-        costCents += Math.round(compsCostDollars * 100)
+        // ── MCP PRE-FLIGHT (wave 69 owner ruling: "scraping is not frozen so those six
+        // scraping frozen orphan exports should not be blocked" + "keep [provider cost] down
+        // ... try to use an sdk or mcp if it is provided but keeping pricing in mind") ──────
+        // `comparable_property_count` is a cheap/no-charge MCP count — ask it FIRST whether
+        // BatchData has anything at all for this address before paying for the billed `comps`
+        // dataset pull. A confirmed zero SKIPS the pull outright; anything else (a real count,
+        // "unconfigured", or a provider error) falls through unchanged — the pre-flight only
+        // ever SKIPS a pull, it never blocks one it can't be sure about (fail-open on itself).
+        const preflight = await comparablePropertyCount({ address: fullAddress })
+        const preflightConfirmsEmpty = preflight.ok && preflight.count === 0
+
+        // `comparable_property_preview` — the CHEAP, no-charge sample the CMA UI's "comps
+        // available" badge reads (CompProvenance.batchDataMcpPreviewAvailable). Read
+        // regardless of what the pull below does, so the badge reports the true state even
+        // on the empty-preflight path.
+        const preview = await comparablePropertyPreview({ address: fullAddress })
+        batchDataMcpPreviewAvailable = preview.ok ? preview.rows.length > 0 : null
 
         void logVendorUsage({
-          vendorName: "batchdata", usageType: "comps_lookup", unitCount: 1,
-          estimatedCost: compsCostDollars, systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
-          brokerageId: req.brokerageId,
-          metadata: { purpose: "cma_sold_comp_gap_fill", rows: bdComps.length, via: compsVia, contact_id: req.contactId ?? null },
+          vendorName: "batchdata", usageType: "comps_mcp_preflight", unitCount: 1, estimatedCost: 0,
+          systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE, brokerageId: req.brokerageId,
+          metadata: {
+            purpose: "cma_sold_comp_preflight", preflightOk: preflight.ok, preflightCount: preflight.count,
+            previewOk: preview.ok, previewRows: preview.ok ? preview.rows.length : null, contact_id: req.contactId ?? null,
+          },
         }).catch(() => null)
 
-        if (bdComps.length > 0) {
-          const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
-          const closedBd = bdComps
-            .filter((c) => c.status === "closed" && c.address && !seenAddr.has(normalizeAddress(c.address)))
-            .map((c) => toScoredCompFromBatchData(req.subject, c))
-            .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
-          if (closedBd.length > 0) {
-            closedComps.push(...closedBd)
-            batchDataSoldContribution = closedBd.length
-            citations.push(compsVia === "mcp" ? "BatchData comparable-property MCP dataset (comps)" : "BatchData comparable-property dataset (comps)")
-            notes.push(`${closedBd.length} closed comparable sale(s) came from BatchData's comps dataset (via ${compsVia.toUpperCase()}), a SECOND real data provider, to fill the sold-side shortfall RentCast left — not an AI gap-fill.`)
+        if (preflightConfirmsEmpty) {
+          notes.push("BatchData's MCP comps pre-flight (comparable_property_count) reported 0 available comparables for this address — the billed comps dataset pull was skipped rather than paying for an empty result.")
+          // Cached too, at zero cost: a same-day repeat skips the pre-flight call as well.
+          void setCachedCompSupplement(fullAddress, { comps: [], via: "rest" }, 0).catch(() => null)
+        } else {
+          // The billed pull: MCP `comparable_property_page` tried FIRST (this module's own
+          // header: "agentic callers route property / owner / motivation queries through MCP
+          // when configured, with automatic fallback to the existing REST batchdata-client
+          // path"), REST fetchBatchDataComps as the fallback — never both, never twice-billed.
+          const mcpPage = await comparablePropertyPage({ address: fullAddress, take: REQUIRED_SOLD_COMPS * 3 })
+          let compsCostDollars = 0
+          let compsError: string | null = null
+          if (mcpPage.ok && mcpPage.rows.length > 0) {
+            bdComps = mcpPage.rows.map((row) => readBatchDataComp(row as unknown as Record<string, any>))
+            compsVia = "mcp"
+            compsCostDollars = BATCHDATA_COMPS_COST_CENTS / 100
+          } else {
+            if (mcpPage.error && !mcpPage.unconfigured) {
+              notes.push(`BatchData comps dataset (MCP comparable_property_page) failed, falling back to REST: ${mcpPage.error}`)
+            }
+            const rest = await fetchBatchDataComps(fullAddress)
+            bdComps = rest.comps
+            compsCostDollars = rest.cost
+            compsError = rest.ok ? null : rest.error ?? null
           }
-        } else if (compsError) {
-          notes.push(`BatchData comps dataset was tried to fill the sold-side shortfall and failed: ${compsError}`)
+          costCents += Math.round(compsCostDollars * 100)
+
+          // PLATFORM SPEND (wave 70 owner ruling: "batchdata is platform spend") — metered
+          // through the SAME meterVendorSpend gateway every other BatchData caller uses
+          // (lib/buyer-search/investor-offmarket-runner.ts), not a second logging path.
+          // brokerageId travels for COST-LEDGER ATTRIBUTION ONLY (which CMA spent it) — see
+          // lib/external/batchdata-client.ts::reconcileBatchDataWalletSpend, which sums
+          // vendor_usage_tracking for vendor 'batchdata' PLATFORM-WIDE against BatchData's own
+          // wallet consumption report; it is never a tenant charge.
+          await meterVendorSpend({
+            vendorName: "batchdata", usageType: "comps_lookup",
+            cost: compsCostDollars, systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
+            brokerageId: req.brokerageId,
+            metadata: { purpose: "cma_sold_comp_gap_fill", rows: bdComps.length, via: compsVia, contact_id: req.contactId ?? null },
+          }).catch(() => null)
+
+          if (compsError && bdComps.length === 0) {
+            notes.push(`BatchData comps dataset was tried to fill the sold-side shortfall and failed: ${compsError}`)
+            // NOT cached: a transient failure is not the same fact as "confirmed empty", and
+            // caching it would turn a retry into a silent, permanent-for-the-day empty result.
+          } else {
+            void setCachedCompSupplement(fullAddress, { comps: bdComps, via: compsVia }, Math.round(compsCostDollars * 100)).catch(() => null)
+          }
+        }
+      }
+
+      if (bdComps.length > 0) {
+        const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
+        const closedBd = bdComps
+          .filter((c) => c.status === "closed" && c.address && !seenAddr.has(normalizeAddress(c.address)))
+          .map((c) => toScoredCompFromBatchData(req.subject, c))
+          .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
+        if (closedBd.length > 0) {
+          closedComps.push(...closedBd)
+          batchDataSoldContribution = closedBd.length
+          citations.push(compsVia === "mcp" ? "BatchData comparable-property MCP dataset (comps)" : "BatchData comparable-property dataset (comps)")
+          notes.push(`${closedBd.length} closed comparable sale(s) came from BatchData's comps dataset (via ${compsVia.toUpperCase()}), a SECOND real data provider, to fill the sold-side shortfall RentCast left — not an AI gap-fill.`)
         }
       }
     } catch (e) {

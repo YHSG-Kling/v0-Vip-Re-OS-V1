@@ -87,8 +87,14 @@ console.log("\n═══ 1. The identifier is named for the carrier that consume
   // our table — correct code, flagged. Asking "does this come from our row"
   // is the question that actually distinguishes the defect; asking "is this
   // named twilio_number_sid" bans a shape rather than a mistake.
-  const bindPaths = SOURCES.flatMap((s) =>
-    [...s.src.matchAll(/IncomingPhoneNumbers\/\$\{([^}]+)\}/g)].map((m) => ({ file: s.file, expr: m[1].trim() })))
+  // Two spellings of the same site: the raw REST template literal
+  // (`IncomingPhoneNumbers/${expr}.json`) and, since wave 70's official-SDK
+  // adapter, `updateIncomingPhoneNumber(creds, expr, …)` /
+  // `releaseIncomingPhoneNumber(creds, expr)` — the second argument IS the sid.
+  const bindPaths = SOURCES.flatMap((s) => [
+    ...[...s.src.matchAll(/IncomingPhoneNumbers\/\$\{([^}]+)\}/g)].map((m) => ({ file: s.file, expr: m[1].trim() })),
+    ...[...s.src.matchAll(/(?:updateIncomingPhoneNumber|releaseIncomingPhoneNumber)\(\s*[^,()]+,\s*([^,()]+)/g)].map((m) => ({ file: s.file, expr: m[1].trim() })),
+  ])
   const fromOurRow = bindPaths.filter((b) => /^[a-z]\w*\./i.test(b.expr))
   ok(`every IncomingPhoneNumbers/{sid} fed from a DB row uses the SID column` +
      ` (${fromOurRow.length} of ${bindPaths.length} sites read a row)`,
