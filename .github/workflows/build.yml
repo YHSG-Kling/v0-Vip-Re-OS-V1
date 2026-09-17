@@ -159,6 +159,18 @@ jobs:
       #         8.72/9.40 (91.8%) at b3235fd4 and 8.46/9.19 (89.7%) at 5115d4e.
       #         Three readings, one direction, no reversals.
       #
+      #   12288, cpus:1, commit 840795b4 (2026-09-17) — runs 35250637701 attempts 1+2
+      #       → compile aborted TWICE on the same commit, unchanged re-run,
+      #         exit 134 / SIGABRT, heap at 10466 MB used / 11209 MB committed
+      #         (91% of the 12288 cap). NOT a re-run case any more: wave 70
+      #         added five official server SDKs (twilio, @elevenlabs/elevenlabs-js
+      #         102 MB on disk, apify-client, zenrows, exa-js) and webpack was
+      #         bundling all of them into server chunks. Fix: externalised the
+      #         five in next.config.ts (serverExternalPackages + the webpack
+      #         externals pin beside sharp) so they are require()d from
+      #         node_modules at runtime — the compile graph shrinks by roughly
+      #         the size of those packages and the cap stays 12288.
+      #
       # ── 2026-08-26: WHERE THE HEAP ACTUALLY GOES, AND THE ONE LEVER THAT MOVED IT
       #
       # METHOD (so the numbers below can be trusted or discarded on their merits):

@@ -240,6 +240,18 @@ const nextConfig: NextConfig = {
     "esbuild",
     "@sparticuz/chromium-min",
     "ffmpeg-static",
+    // Wave 70 official-SDK adapters (lib/providers/{twilio,elevenlabs,apify,
+    // zenrows,exa}/client.ts). Server-only Node packages — bundling them into
+    // server chunks added ~130 MB of source to the webpack graph and pushed
+    // the CI compile past the heap ceiling twice in a row on the same commit
+    // (10466 MB used / 11209 committed under a 12288 cap, 2026-09-17), which
+    // §8 says is no longer a re-run case. Externalised, Next require()s them
+    // from node_modules at runtime — same behaviour, none of the compile cost.
+    "twilio",
+    "@elevenlabs/elevenlabs-js",
+    "apify-client",
+    "zenrows",
+    "exa-js",
   ],
   reactStrictMode: true,
   poweredByHeader: false,
@@ -306,6 +318,13 @@ const nextConfig: NextConfig = {
       config.externals = [
         ...(Array.isArray(existing) ? existing : [existing]),
         { sharp: 'commonjs sharp' },
+        // Same pin for the wave-70 SDKs — the Vercel modifyConfig rewrite that
+        // dropped serverExternalPackages for sharp would drop these too.
+        { twilio: 'commonjs twilio' },
+        { '@elevenlabs/elevenlabs-js': 'commonjs @elevenlabs/elevenlabs-js' },
+        { 'apify-client': 'commonjs apify-client' },
+        { zenrows: 'commonjs zenrows' },
+        { 'exa-js': 'commonjs exa-js' },
       ]
     }
     // Reduce aggressive file watching to prevent duplicate dev server spawns
