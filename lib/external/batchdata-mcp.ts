@@ -214,7 +214,12 @@ export interface BuyBoxMatchRow {
   [key: string]: unknown
 }
 
-function extractRows(data: unknown): BuyBoxMatchRow[] {
+/** @proofSeam exported (wave 71) so lib/ai-isa/batchdata-isa-tools.ts's hand-authored
+ *  search_properties_* / lookup_property tool wrappers can read the SAME
+ *  defensive multi-shape row extraction this file's own typed wrappers use below,
+ *  rather than a second copy of "an array under matches/results/… or a bare array"
+ *  (CLAUDE.md §6 — one vocabulary). Behavior unchanged; only the export keyword moved. */
+export function extractRows(data: unknown): BuyBoxMatchRow[] {
   if (Array.isArray(data)) return data as BuyBoxMatchRow[]
   const d = data as Record<string, any> | null
   const candidate = d?.matches ?? d?.results ?? d?.investors ?? d?.properties ?? d?.comps

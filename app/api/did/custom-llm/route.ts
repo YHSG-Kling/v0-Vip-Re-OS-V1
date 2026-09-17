@@ -57,6 +57,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import { SPOKEN_REALISM_DIRECTIVE } from "@/lib/video/realism-profile"
 import { streamTextRouted, AIFairUseError, selectModelForTask } from "@/lib/ai/models"
+import { batchDataIsaTools } from "@/lib/ai-isa/batchdata-isa-tools"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -152,6 +153,9 @@ interface ContactContext {
   agentId: string | null
   agentUserId: string | null
   contactType: string | null
+  /** contacts.contact_persona — "investor" selects the investor AI-tool persona
+   *  (property-only BatchData tools, wave 71); anything else gets the "isa" persona. */
+  contactPersona: string | null
   buyerStage: string | null
   activeTransaction: any | null
   visibleMilestones: any[]
@@ -163,7 +167,7 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, brokerage_id, agent_id, contact_type, buyer_stage")
+    .select("id, first_name, last_name, brokerage_id, agent_id, contact_type, contact_persona, buyer_stage")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -211,6 +215,7 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
     agentId: contact.agent_id,
     agentUserId,
     contactType: contact.contact_type,
+    contactPersona: contact.contact_persona ?? null,
     buyerStage: contact.buyer_stage,
     activeTransaction: txn,
     visibleMilestones,
@@ -402,6 +407,30 @@ export async function POST(request: NextRequest) {
     }).catch(() => {})
   }
 
+  // ── BatchData property-intelligence tools (wave 71) ─────────────────────
+  // Persona derived from the CALLER (the resolved contact), never a request body
+  // (CLAUDE.md §4): contacts.contact_persona === "investor" → the investor
+  // persona (property-only BatchData tools, no skip-trace/owner-contact tool
+  // exists in that registry at all); everything else (anonymous visitor, a
+  // buyer/seller contact) gets the "isa" persona. conversationKey scopes the
+  // page-before-preview/count ordering rule and the per-conversation spend
+  // budget to THIS live-avatar conversation across turns — embedSessionId when
+  // the visitor is still anonymous (stable across their whole embed session),
+  // else the resolved contactId. Gated: {} when BatchData's MCP is unconfigured
+  // (batchDataIsaTools resolves the SAME token lib/external/batchdata-mcp.ts
+  // itself uses), so a deployment with no BatchData token streams exactly as
+  // before.
+  const isaPersona = ctx?.contactPersona === "investor" ? "investor" : "isa"
+  const conversationKey = embedSessionId ?? resolvedContactId ?? brokerageId
+  const batchDataTools = await batchDataIsaTools({
+    brokerageId,
+    userId: agentUserId,
+    agentId,
+    persona: isaPersona,
+    conversationKey,
+    contactId: resolvedContactId ?? null,
+  })
+
   // ── Stream via the routed entry ─────────────────────────────────────────
   const { model: routedModel } = selectModelForTask("live_avatar_conversation")
   let result: Awaited<ReturnType<typeof streamTextRouted>>
@@ -413,6 +442,8 @@ export async function POST(request: NextRequest) {
         .filter((m) => m.role !== "system")
         .map((m) => ({ role: m.role, content: String(m.content ?? "") })),
       temperature: 0.7,
+      tools: batchDataTools,
+      maxSteps: 5,
       userId: agentUserId,
       brokerageId,
       agentId,

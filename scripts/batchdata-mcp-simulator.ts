@@ -303,5 +303,15 @@ const read = (rel: string) => stripComments(readFileSync(join(root, rel), "utf8"
      "billing diagnostics: the panel shows BOTH the live balance and this month's estimated spend side by side")
 }
 
+console.log("\n[wave 71 — extractRows exported for reuse by the ISA tool set]")
+{
+  const mcpSrc = read("lib/external/batchdata-mcp.ts")
+  ok(/export function extractRows\(/.test(mcpSrc),
+     "batchdata-mcp.ts: extractRows is exported (was module-private) so batchdata-isa-tools.ts reuses the SAME defensive multi-shape row reader instead of a second copy (CLAUDE.md §6)")
+  const isaToolsSrc = read("lib/ai-isa/batchdata-isa-tools.ts")
+  ok(/import\s*\{[^}]*\bextractRows\b[^}]*\}\s*from\s*["']@\/lib\/external\/batchdata-mcp["']/.test(isaToolsSrc),
+     "batchdata-isa-tools.ts: imports extractRows from batchdata-mcp.ts rather than re-implementing row extraction")
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

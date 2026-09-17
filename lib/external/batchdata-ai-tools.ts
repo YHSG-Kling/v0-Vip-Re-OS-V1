@@ -50,7 +50,11 @@ export interface BatchDataAiToolsContext {
 // same as the property-enrichment / comps dataset pull elsewhere in this repo
 // (BATCHDATA_COMPS_COST_CENTS in batchdata-client.ts) rather than inventing a
 // different number for the same class of call.
-const MCP_TOOL_CALL_COST_USD = 0.05
+//
+// EXPORTED (wave 71) so lib/ai-isa/batchdata-isa-tools.ts's hand-authored ISA/investor
+// tool set prices its own full "page"/lookup/scrub calls at the SAME estimate rather
+// than inventing a second number for the same class of call (CLAUDE.md §6).
+export const MCP_TOOL_CALL_COST_USD = 0.05
 
 // Tool catalogue discovery is a network round-trip (client.listTools()) — cached
 // briefly so a burst of chat turns in the same warm process doesn't re-discover the

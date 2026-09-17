@@ -22,6 +22,7 @@ import { evaluateOutbound } from '@/lib/kernel'
 import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { buildISATools } from '@/lib/ai-isa/tools'
+import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -389,10 +390,26 @@ export async function processInboundEmail(params: {
     inboundExcerpt: params.body.slice(0, 280),
   })
 
+  // BatchData property-intelligence tools (wave 71) — gated: {} when
+  // BatchData's MCP is unconfigured (batchDataIsaTools resolves the SAME
+  // token lib/external/batchdata-mcp.ts itself uses), so an ISA conversation
+  // with no BatchData token behaves exactly as before. Persona is always
+  // "isa" here — the inbound-email handler qualifies a known lead, never an
+  // investor-portal visitor. conversationKey = leadId scopes the ordering
+  // (page-before-preview/count) and per-conversation spend budget to THIS
+  // lead's thread across turns.
+  const batchDataTools = await batchDataIsaTools({
+    brokerageId: lead.brokerage_id,
+    agentId: lead.agent_id ?? null,
+    persona: 'isa',
+    conversationKey: lead.id,
+    contactId: lead.contact_id ?? null,
+  })
+
   const { text: replyBody } = await generateText({
     feature: 'ai_isa_response',
     system: systemPrompt,
-    tools: isaTools,
+    tools: { ...isaTools, ...batchDataTools },
     maxSteps: 5,
     messages: [
       {
