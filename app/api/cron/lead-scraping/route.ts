@@ -38,6 +38,7 @@ import {
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
+import { sourceEmailEngagementIntent } from "@/lib/lead-pipeline/email-engagement-sourcer"
 import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
 import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
@@ -206,6 +207,11 @@ export async function GET(request: Request) {
     // (lib/lead-pipeline/scrape-territories.ts), so the first market row this loop sees for a
     // brokerage is its highest-priority territory — the natural "run it once, on the best row" spot.
     const siteVisitorBrokeragesRun = new Set<string>()
+
+    // Lane 71C — email-engagement-intent lane runs ONCE per BROKERAGE, same reasoning as
+    // siteVisitorBrokeragesRun immediately above: email_tracking is a brokerage-wide signal
+    // (one set of outbound sends, one engagement stream), not a per-territory one.
+    const emailEngagementBrokeragesRun = new Set<string>()
 
     for (const market of markets) {
       results.markets_processed++
@@ -927,6 +933,38 @@ export async function GET(request: Request) {
           }
         } catch (err) {
           results.errors.push(`Site visitor intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── EMAIL ENGAGEMENT INTENT — lane 71C behavioral lane, $0 marginal cost ─
+      // Own first-party outbound-email engagement (email_tracking, already written by the
+      // SendGrid events webhook) — a contact who repeatedly opens/clicks the brokerage's own
+      // mail is a renewed-intent signal this repo already collected and never read for
+      // acquisition. Runs ONCE per brokerage (see emailEngagementBrokeragesRun above this
+      // loop), same shape as site_visitor_intent immediately above: brokerage_id passed
+      // EXPLICITLY (never platform pool — this is the tenant's own send history), so it lands
+      // as source_origin='brokerage' immediately.
+      if (enabledSources.has("email_engagement_intent") && market.brokerage_id && !emailEngagementBrokeragesRun.has(market.brokerage_id)) {
+        emailEngagementBrokeragesRun.add(market.brokerage_id)
+        try {
+          const { records, rowsExamined } = await sourceEmailEngagementIntent(supabase, market.brokerage_id)
+          const { inserted: emailEngagementInserted } = await insertRawBatch({
+            records, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "email_engagement_intent", sourceFamily: "email_behavior", sourceChannel: "email_engagement_intent",
+            brokerageId: market.brokerage_id,
+            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
+            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
+            // rather than silently inheriting a stale estimate.
+            batchCostUsd: 0,
+          })
+          results.total_leads_created += emailEngagementInserted
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Email engagement intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${emailEngagementInserted}`)
+          }
+        } catch (err) {
+          results.errors.push(`Email engagement intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
 

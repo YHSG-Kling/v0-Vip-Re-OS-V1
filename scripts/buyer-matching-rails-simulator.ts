@@ -430,6 +430,25 @@ function listingAttributionWiring() {
       /\{m\.attribution/.test(raw("app/portal/[contactId]/components/TopMatchesPanel.tsx")),
   )
 
+  // LANE 71C — AffordabilitySnapshotReel doesn't import the helper either — it
+  // is a Remotion composition that renders the pre-computed `ex.attribution`
+  // string its producer (lib/agents/buyer-match-reel-producer.ts) already
+  // builds with listingAttributionLine, same shape as TopMatchesPanel above.
+  // Before this lane the composition declared no `attribution` field at all
+  // and ExampleCard silently dropped the string the producer sent it — a
+  // writer with a payload nobody on the reader side ever read back out onto
+  // the rendered frame.
+  check(
+    "AffordabilitySnapshotReel (remotion/AffordabilitySnapshotReel.tsx) declares AffordabilityExample.attribution",
+    existsSync(join(process.cwd(), "remotion/AffordabilitySnapshotReel.tsx")) &&
+      /attribution\?:\s*string/.test(raw("remotion/AffordabilitySnapshotReel.tsx")),
+  )
+  check(
+    "AffordabilitySnapshotReel's ExampleCard renders ex.attribution on the frame",
+    existsSync(join(process.cwd(), "remotion/AffordabilitySnapshotReel.tsx")) &&
+      /\{ex\.attribution/.test(raw("remotion/AffordabilitySnapshotReel.tsx")),
+  )
+
   // portal-cards.ts doesn't import the helper either — it is the PURE MAPPER
   // that used to DROP `source` on the floor between the search engine and the
   // widget (a RentCast-fed result rendered with no attribution at all). Assert

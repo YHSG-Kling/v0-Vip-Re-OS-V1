@@ -48,6 +48,17 @@ export interface AffordabilityExample {
   bathrooms: string
   /** Hero photo URL (exterior preferred). */
   photoUrl:  string | null
+  /** Per-card legal attribution line ("Listing data provided by RentCast" /
+   *  "Listing courtesy of the local MLS via IDX") — lib/listings/attribution.ts
+   *  ::listingAttributionLine. "" (or absent) for the brokerage's own listing,
+   *  which needs no third-party credit. The only producer today
+   *  (lib/agents/buyer-match-reel-producer.ts::buildBuyerMatchReelProps) has
+   *  set this on every example since wave 70; rendered here (lane 71C) —
+   *  previously declared on the payload and dropped on the floor by
+   *  ExampleCard, a writerless-read shape the other direction (a field
+   *  written into the render props with nothing on the composition side to
+   *  read it back out onto the frame). */
+  attribution?: string
 }
 
 export interface AffordabilitySnapshotReelProps {
@@ -163,6 +174,11 @@ const ExampleCard: React.FC<{
           <div style={{ fontSize: 22, opacity: 0.65, marginTop: 8 }}>
             {ex.cityState}
           </div>
+          {ex.attribution && (
+            <div style={{ fontSize: 14, opacity: 0.5, marginTop: 16, letterSpacing: 0.3 }}>
+              {ex.attribution}
+            </div>
+          )}
         </div>
       </div>
     </AbsoluteFill>

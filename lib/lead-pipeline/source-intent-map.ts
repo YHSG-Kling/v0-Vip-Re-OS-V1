@@ -44,6 +44,8 @@ export type SourceKey =
   | 'external_behavior'           // lead-intelligence's off-site property-view discovery lane (app/actions/lead-intelligence.ts::scrapeExternalBehavior)
   // ── Wave 70 lane (owner ruling 2026-09-17 — coverage audit) — DISTINCT from every source above ──
   | 'site_visitor_intent'         // ON-SITE behavioral acquisition: unidentified, high-dwell tenant-website visitors (own first-party data, $0 marginal cost)
+  // ── Lane 71C (carried coverage lane, docs/lead-acquisition-coverage-2026-09.md) — DISTINCT from every source above ──
+  | 'email_engagement_intent'     // repeated opens/clicks on the tenant's OWN outbound email (own first-party data, $0 marginal cost)
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -492,6 +494,30 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── Email engagement intent (lane 71C — docs/lead-acquisition-coverage-2026-09.md's
+  // remaining-lanes matrix: "email engagement intent (opens/clicks/replies on our own
+  // outbound → intent signal)"). Same shape as site_visitor_intent above: a first-party
+  // signal (email_tracking, written by app/api/webhooks/sendgrid-events/route.ts) that
+  // nothing fed back into acquisition. REPEATED engagement (lib/lead-pipeline/
+  // email-engagement-sourcer.ts's EMAIL_ENGAGEMENT_MIN_EVENTS), not a single open, is
+  // the bar. Because email_tracking is contact-scoped, the person sourced here is almost
+  // always ALREADY a contact — the three-table dedup in lib/kernel/scraping.ts resolves
+  // that against `contacts` and records the renewed-intent signal on their history
+  // without minting a duplicate lead, matching wave 65's "person's full history from
+  // first touch through conversion and after" ruling.
+  email_engagement_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'email_engagement_intent',
+    behaviorType:              'email_engagement_intent',
+    scoreRange:                [20, 50],
+    baseScore:                 30,
+    boostSignals:              ['repeated_email_engagement', 'click_through', 'high_frequency_engagement'],
+    dampSignals:               ['unsubscribed', 'bounced'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
 }
 
 // ─── Fallback for unknown sources ─────────────────────────────────────────────
@@ -607,6 +633,9 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   site_visitor: "site_visitor_intent",
   website_visitor: "site_visitor_intent",
   website_visitor_intent: "site_visitor_intent",
+  // Lane 71C — email engagement intent, second spelling seen in config/UI copy.
+  email_engagement: "email_engagement_intent",
+  email_intent: "email_engagement_intent",
 }
 
 /**
@@ -654,6 +683,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   batchdata_buybox:           'batchdata',
   external_behavior:          'apify',  // discovery is Apify; BatchData only enriches the match
   site_visitor_intent:        'internal', // first-party — own pixel/dwell data, no vendor call
+  email_engagement_intent:    'internal', // first-party — own email_tracking data, no vendor call
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -698,6 +728,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   batchdata_buybox:           'batchdata_buybox',
   external_behavior:          'external_behavior',
   site_visitor_intent:        'site_visitor_intent',
+  email_engagement_intent:    'email_engagement_intent',
 }
 
 /**

@@ -509,16 +509,17 @@ opportunities… If we aren't doing this another competitor will."
 | 26 | Lead magnets (guides, calculators) | `form_submissions` intake | **Built** (pre-existing, outside this pipeline — direct-consent intake, not raw scraping) | $0 | n/a (consented) | contact-direct |
 | 27 | IDX/portal behavior (saved searches, favorites) | internal (`lead_idx_property_interactions`, m630/m631) | **Built** (pre-existing) | $0 | n/a | n/a |
 | 28 | **Website visitor identification (anonymous, own site)** | internal (`website_visitors`) | **Was Missing → Built this wave** | **$0** | brokerage-scoped (own site) | identity-key dedup |
-| 29 | Email engagement (opens/clicks) | — | **Missing** | — | — | — |
+| 29 | **Email engagement (opens/clicks)** | internal (`email_tracking`) | **Was Missing → Built lane 71C** | **$0** | brokerage-scoped (own outbound) | identity-key (email) dedup |
 | 30 | Open-house sign-ins | `form_submissions` (open_house context) + conversion-welcome | **Built** (pre-existing, consented intake) | $0 | n/a | contact-direct |
 | 31 | Review/reputation chatter (as an ACQUISITION signal, not just reputation response) | — | **Missing** as acquisition — `lib/reputation/*` exists for the tenant's OWN review responses, not for sourcing new leads from public review chatter | — | — | — |
 | 32 | Permit / pre-listing signals | — | **Missing** | — | — | — |
 
 ### Totals
 
-**Built: 25 / 32 · Partial: 1 / 32 · Missing: 6 / 32** (new-construction/builder lists, email
-engagement, review/reputation-as-acquisition, permit/pre-listing signals, rental-to-buyer
-graduation's tenant-side half, and — until this wave — website visitor identification).
+**Built: 26 / 32 · Partial: 1 / 32 · Missing: 5 / 32** (new-construction/builder lists,
+review/reputation-as-acquisition, permit/pre-listing signals, rental-to-buyer graduation's
+tenant-side half, and — until wave 70 — website visitor identification, and — until lane
+71C — email engagement).
 
 ### What this lane built — website visitor identification ($0/record, the cheapest lane possible)
 
@@ -567,6 +568,60 @@ own contract, not a stale inherited estimate).
 report; asserts the new SOURCE_MAP/SOURCE_VENDOR/GATE_TOKEN entries and
 `normalizeSiteVisitorRow`'s pure classification (long_dwell / listing_page_view / return_visit /
 campaign_referred, and the null-return on a session or page-less row).
+
+### What lane 71C built — email engagement intent ($0/record, the next-cheapest lane)
+
+**Why this one.** Of the five lanes still missing after wave 70, email engagement was the only
+other one requiring $0 marginal spend, for the same reason website visitor identification was:
+the data (`email_tracking`, written by the existing `app/api/webhooks/sendgrid-events/route.ts`
+open/click handling) was already being collected for OTHER purposes (the inbox chip, the per-send
+delivery ledgers, the behavioral-event scorer) and never read for acquisition. New-construction/
+builder lists, review-as-acquisition and permit/pre-listing signals all need a new paid vendor
+relationship this lane is not scoped to procure; rental-to-buyer graduation's tenant-side half
+needs a new detection heuristic on top of an existing paid source (`rental_listing`), not a fresh
+$0 read.
+
+**Built:** `lib/lead-pipeline/email-engagement-sourcer.ts::sourceEmailEngagementIntent` reads
+`email_tracking` for one brokerage's open/click activity in a trailing 14-day window
+(`EMAIL_ENGAGEMENT_WINDOW_DAYS`), aggregates per contact, and keeps only contacts crossing a
+REPEAT bar (`EMAIL_ENGAGEMENT_MIN_EVENTS=3` — a single open is noise, three-plus over two weeks is
+a pattern) whose most recent qualifying event falls inside a 6-hour lookback (matching the cron's
+own cadence, same reasoning as `site_visitor_intent`'s). Opted-out contacts (`email_opt_out`) are
+excluded. Each survivor normalizes into a `NormalizedScrapedRecord` (`email`=the contact's email,
+`intentType` carried from the contact's own `contact_type` when classified, else `'unknown'` —
+never guessed; signals `repeated_email_engagement` always, `click_through` when any event was a
+click, `high_frequency_engagement` at 2× the repeat bar). Because `email_tracking` is
+contact-scoped (only a matched send produces a row), the person sourced here is almost always
+ALREADY a contact — `ingestRawSourceBatch`'s existing 3-table dedup
+(`dedupRawAgainstLeadAndContact`) resolves that against `contacts` and records the renewed-intent
+signal on their history without minting a duplicate lead, matching wave 65's "person's full
+history from first touch through conversion and after" ruling rather than fighting it. Wired into
+`app/api/cron/lead-scraping/route.ts` behind `enabledSources.has("email_engagement_intent")`,
+running ONCE per brokerage (`emailEngagementBrokeragesRun`, mirroring
+`siteVisitorBrokeragesRun`), `brokerageId` passed EXPLICITLY (`source_origin='brokerage'`
+immediately — this is the tenant's own send history). `sourceChannel='email_engagement_intent'`,
+`scrape_category='email_behavior'`. `batchCostUsd: 0` passed explicitly. No new cron — folded into
+the existing lead-scraping tick, no invocation-count change.
+
+**source-intent-map.ts:** new `SourceKey` `email_engagement_intent` (SOURCE_MAP entry: intentType
+unknown by default, scoreRange [20,50], baseScore 30, identityPolicy enrichment_first), new
+`SOURCE_ALIASES` (`email_engagement`/`email_intent`), `SOURCE_VENDOR` member `'internal'` (same as
+`site_visitor_intent` — first-party, never appears in `vendor_usage_tracking`), `GATE_TOKEN` entry.
+
+**Territory:** bounded to the calling market's own `brokerage_id`, same nesting as
+`site_visitor_intent`. **Dedup:** `isViableRecord` (email present) + `buildLeadIdentityKey`
+(`email:<address>`) — `ingestRawSourceBatch`'s existing 3-table dedup carries the load. **Cost:**
+metered explicitly at `batchCostUsd: 0`. **No migration needed:**
+`raw_scraped_leads.scrape_category` (m647, applied live 2026-09-17) is free text governed in code
+by `source-intent-map.ts`'s `SourceKey` union, not a CHECK constraint — a new `SourceKey` value
+needs no schema change.
+
+**Proof:** `scripts/email-engagement-sourcer-simulator.ts` (`npm run test:email-engagement-sourcer`)
+— pure classifier (repeat-bar gating with two positive controls, click-through/high-frequency
+escalation, intentType never invented), the SOURCE_MAP/SOURCE_ALIASES/SOURCE_VENDOR/GATE_TOKEN
+wiring, the dedup contract, and a live round trip (skipped without Supabase creds) that creates a
+tagged test contact + email_tracking rows, sources them for real, and deletes every row it
+created, proving the delete by row count per CLAUDE.md's test-data ruling.
 
 ### Fixed in passing — raw_scraped_leads.source_family / scrape_category (m647)
 

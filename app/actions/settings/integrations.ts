@@ -150,12 +150,32 @@ export async function getProviderOverrides(): Promise<ProviderOverride[]> {
   return (data ?? []) as ProviderOverride[]
 }
 
+/** Tenant-side provider overrides this action refuses outright, regardless of
+ *  what the caller submits. Wave 69 owner ruling (verbatim): "rentcast is
+ *  platform provided but idx is for tenant connected... the setting page
+ *  should only allow them to setup their idx connection." RentCast is a
+ *  PLATFORM credential (RENTCAST_API_KEY) selected by derived resolver logic
+ *  — never a tenant-chosen MLS provider. Fail closed here too, not only in
+ *  the UI select list (integrations-client.tsx PROVIDER_KEYS_BY_TYPE), so a
+ *  direct call to this "use server" export can't re-open the option the UI
+ *  removed. Survivor: lib/buyer-search/listing-source-order.ts::resolveActiveListingSources. */
+const REFUSED_PROVIDER_OVERRIDES: Record<string, string[]> = {
+  mls: ["rentcast"],
+}
+
 export async function upsertProviderOverride(params: {
   provider_type: string
   provider_key: string
   config?: Record<string, unknown>
   enabled?: boolean
 }): Promise<{ success: boolean; error?: string }> {
+  if (REFUSED_PROVIDER_OVERRIDES[params.provider_type]?.includes(params.provider_key)) {
+    return {
+      success: false,
+      error: `"${params.provider_key}" is platform-managed and cannot be set as a tenant ${params.provider_type} override — see lib/buyer-search/listing-source-order.ts`,
+    }
+  }
+
   // ACT-AS WRITE SEAM — read_only refused; the write rides the acting db.
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { success: false, error: ctx.error }

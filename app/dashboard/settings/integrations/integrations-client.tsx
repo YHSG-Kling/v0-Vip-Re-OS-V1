@@ -43,7 +43,18 @@ const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
   calendar:    ["google", "outlook"],
-  mls:         ["idx_broker", "spark", "rets", "bridge", "rentcast"],
+  // TOMBSTONE (lane 71C, carried from wave 69): "rentcast" removed from the
+  // tenant-selectable MLS provider list. Wave 69 owner ruling (verbatim):
+  // "rentcast is platform provided but idx is for tenant connected... the
+  // setting page should only allow them to setup their idx connection." The
+  // active-listing source order is DERIVED platform logic, never a tenant
+  // choice — survivor: lib/buyer-search/listing-source-order.ts::resolveActiveListingSources
+  // (IDX when the brokerage's own IDX credential is connected, else RentCast,
+  // never a tenant-picked override). This provider_overrides row was never
+  // consulted by that resolver anyway (readerless write of the "rentcast"
+  // value specifically) — removed at the source rather than left offering a
+  // choice with no effect.
+  mls:         ["idx_broker", "spark", "rets", "bridge"],
   accounting:  ["quickbooks", "xero"],
   crm:         ["gohighlevel", "none"],
 }
@@ -66,7 +77,6 @@ const PLATFORM_LABELS: Record<string, string> = {
   spark:        "Spark API",
   bridge:       "Bridge Interactive",
   idx_broker:   "IDX Broker",
-  rentcast:     "Rentcast (no IDX needed)",
   quickbooks:   "QuickBooks",
   xero:         "Xero",
   wordpress:    "WordPress",
