@@ -104,7 +104,7 @@
     "lib/connections/scope.ts": 1,
     "lib/connections/zoom.ts": 6,
     "lib/contact-promotion/conversion-welcome.ts": 1,
-    "lib/crm/import-pull.ts": 4,
+    "lib/crm/import-pull.ts": 3,
     "lib/data-guard/index.ts": 1,
     "lib/did/avatar-completion.ts": 2,
     "lib/direct-mail/address-suppression.ts": 2,
@@ -291,7 +291,7 @@
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/scraper-health.ts": 2,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 1,
-    "lib/lead-pipeline/social-sourcer.ts": 10,
+    "lib/lead-pipeline/social-sourcer.ts": 11,
     "lib/lead-pipeline/source-intent-map.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
@@ -438,7 +438,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9589,
+  "census": 9592,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3011,7 +3011,7 @@
     "lib/content-intel/reddit-scraper.ts": 1,
     "lib/content-intel/rss-scraper.ts": 1,
     "lib/content-intel/topic-bank.ts": 2,
-    "lib/crm/import-pull.ts": 5,
+    "lib/crm/import-pull.ts": 4,
     "lib/crm/providers/followupboss.ts": 1,
     "lib/crm/providers/hubspot.ts": 1,
     "lib/crm/providers/lofty.ts": 1,
@@ -3031,6 +3031,7 @@
     "lib/did/agent-presenter.ts": 4,
     "lib/did/agents.ts": 3,
     "lib/did/avatar-completion.ts": 4,
+    "lib/did/avatar-consent-gate.ts": 1,
     "lib/did/consent.ts": 4,
     "lib/did/contract.ts": 8,
     "lib/did/gateway.ts": 2,
@@ -3633,11 +3634,12 @@
     "lib/lead-pipeline/scraper-health.ts": 4,
     "lib/lead-pipeline/scraper-parsers.ts": 7,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 2,
-    "lib/lead-pipeline/social-sourcer.ts": 24,
+    "lib/lead-pipeline/social-identity-resolve.ts": 1,
+    "lib/lead-pipeline/social-sourcer.ts": 26,
     "lib/lead-pipeline/source-conversion-learning.ts": 3,
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
     "lib/lead-pipeline/source-health.ts": 1,
-    "lib/lead-pipeline/source-intent-map.ts": 9,
+    "lib/lead-pipeline/source-intent-map.ts": 10,
     "lib/lead-pipeline/source-lifetime-health-runner.ts": 1,
     "lib/lead-pipeline/source-wording-diagnostic.ts": 1,
     "lib/lead-pipeline/stale-preapproval-reengage-runner.ts": 1,
@@ -3933,7 +3935,7 @@
     "lib/providers/email/personal-email-adapter.ts": 2,
     "lib/providers/esign/index.ts": 6,
     "lib/providers/exa/client.ts": 2,
-    "lib/providers/hubspot/client.ts": 3,
+    "lib/providers/hubspot/client.ts": 2,
     "lib/providers/inbound-router.ts": 1,
     "lib/providers/lob/client.ts": 1,
     "lib/providers/mailing-cass-gate.ts": 2,
@@ -15164,7 +15166,6 @@
     ],
     "lib/crm/import-pull.ts": [
       "fubToRow",
-      "hubspotToRow",
       "loftyToRow",
       "ghlToRow",
       "pullCrmPage"
@@ -15246,6 +15247,9 @@
       "pickAvatarImageUrl",
       "avatarWarning",
       "applyAvatarOutcome"
+    ],
+    "lib/did/avatar-consent-gate.ts": [
+      "requireConsentForVideoAvatarSource"
     ],
     "lib/did/consent.ts": [
       "mintConsent",
@@ -18370,6 +18374,9 @@
       "normalizeSiteVisitorRow",
       "sourceSiteVisitorIntent"
     ],
+    "lib/lead-pipeline/social-identity-resolve.ts": [
+      "deriveSocialProfileUrl"
+    ],
     "lib/lead-pipeline/social-sourcer.ts": [
       "detectIntent",
       "isInvestor",
@@ -18394,6 +18401,8 @@
       "sourceFacebookRecommendRealtor",
       "normalizeAgentSeekingResult",
       "sourceAgentSeekingPhraseIntent",
+      "normalizeNewConstructionResult",
+      "sourceNewConstructionIntent",
       "sourceRealtySiteChatter"
     ],
     "lib/lead-pipeline/source-conversion-learning.ts": [
@@ -18417,6 +18426,7 @@
       "scoreToUrgencyLevel",
       "buildTerritoryPhrases",
       "buildAgentSeekingPhrases",
+      "buildNewConstructionPhrases",
       "recordMatchesTerritory"
     ],
     "lib/lead-pipeline/source-lifetime-health-runner.ts": [
@@ -19874,8 +19884,7 @@
     ],
     "lib/providers/hubspot/client.ts": [
       "upsertContactByEmail",
-      "createContact",
-      "listContactsPage"
+      "createContact"
     ],
     "lib/providers/inbound-router.ts": [
       "normalizeInbound"
