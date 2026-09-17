@@ -7,6 +7,11 @@
 //   1. META LONG-LIVED EXCHANGE — Facebook/Instagram user tokens are renewable
 //      by exchange (fb_exchange_token → ~60 more days). Tokens inside the
 //      renewal window are exchanged automatically via the connector gateway.
+//      KEPT ON REST (wave 71A, official-SDK rollout): `facebook-nodejs-
+//      business-sdk`'s FacebookAdsApi always requires an access token already
+//      in hand to construct, so it cannot express the call that MINTS/renews
+//      a token — see lib/providers/meta/client.ts's header for the full
+//      reasoning and the sites that DID move to the SDK.
 //   2. EXPIRY WATCHDOG — everything else (LinkedIn without a refresh token,
 //      failed exchanges): the tenant admin is notified to RECONNECT before
 //      expiry, once per account per week. No fake refresh, no silent death.

@@ -243,6 +243,12 @@ export async function GET(
 
       // Exchange code for tokens (through the connector-gateway). config.tokenUrl is a full URL —
       // split into origin + pathname so the gateway hits the exact endpoint (no trailing-slash drift).
+      // KEPT ON REST (wave 71A) — this is the shared multi-provider OAuth
+      // authorization-code exchange (google/microsoft/docusign/quickbooks/
+      // xero/meta_ads/google_ads/zoom all pass through this one branch); for
+      // the Meta leg specifically, the Business SDK has no OAuth exchange
+      // method at all (FacebookAdsApi always requires an access token already
+      // in hand to construct), so it cannot express this call regardless.
       const tokenUrl = new URL(config.tokenUrl)
       // Zoom's token endpoint requires HTTP Basic auth (client_id:client_secret
       // in the Authorization header, NOT the form body); everyone else takes
@@ -310,10 +316,10 @@ export async function GET(
       let adConfigExtra: Record<string, unknown> = {}
       if (oauthProvider === "meta_ads") {
         try {
-          const aa = await callConnector<{ data?: Array<{ account_id?: string }> }>({
-            connector: "meta-adaccounts", baseUrl: "https://graph.facebook.com", path: "/v19.0/me/adaccounts?fields=account_id",
-            method: "GET", auth: { style: "bearer", token: tokens.access_token },
-          })
+          // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+          // adapter instead of the connector gateway.
+          const { graphGet } = await import("@/lib/providers/meta/client")
+          const aa = await graphGet<{ data?: Array<{ account_id?: string }> }>(tokens.access_token, ["me", "adaccounts"], { fields: "account_id" })
           if (aa.ok) adAccountId = aa.data?.data?.[0]?.account_id ?? null
         } catch {}
       } else if (oauthProvider === "google_ads") {

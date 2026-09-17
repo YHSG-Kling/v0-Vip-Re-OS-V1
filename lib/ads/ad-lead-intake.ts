@@ -182,14 +182,12 @@ export async function ingestMetaLeadByRef(
 
   let fields: MetaLeadField[] = Array.isArray(input.inlineFields) ? input.inlineFields : []
   if (fields.length === 0 && input.leadgenId && c.access_token) {
-    try {
-      const res = await fetch(`https://graph.facebook.com/v19.0/${input.leadgenId}?access_token=${encodeURIComponent(c.access_token)}`)
-      if (!res.ok) return { ok: false, stage: "graph_error", brokerageId: c.brokerage_id }
-      const json = (await res.json()) as { field_data?: MetaLeadField[] }
-      fields = json.field_data ?? []
-    } catch {
-      return { ok: false, stage: "graph_error", brokerageId: c.brokerage_id }
-    }
+    // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+    // adapter (lib/providers/meta/client.ts) instead of a raw `fetch`.
+    const { graphGet } = await import("@/lib/providers/meta/client")
+    const res = await graphGet<{ field_data?: MetaLeadField[] }>(c.access_token, [input.leadgenId])
+    if (!res.ok) return { ok: false, stage: "graph_error", brokerageId: c.brokerage_id }
+    fields = res.data?.field_data ?? []
   }
   if (fields.length === 0) return { ok: false, stage: "no_fields", brokerageId: c.brokerage_id }
 

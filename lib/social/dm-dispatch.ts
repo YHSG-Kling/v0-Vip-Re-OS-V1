@@ -16,13 +16,11 @@
 //   linkedin/twitter — their APIs do not offer DM send to standard apps;
 //                honest unsupported (the inbox keeps its log-only composer).
 //
-// All egress rides the ONE connector-gateway (same rule as lib/social/publisher).
+// Meta sends (whatsapp/facebook/instagram) route through the official
+// `facebook-nodejs-business-sdk` adapter (lib/providers/meta/client.ts, wave
+// 71A); everything else still rides the connector-gateway.
 
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
-
-/** Graph version pinned to match lib/social/publisher.ts. */
-const GRAPH = "https://graph.facebook.com"
-const GRAPH_V = "v18.0"
+import { graphPost } from "@/lib/providers/meta/client"
 
 export type SocialDmPlatform = "facebook" | "instagram" | "whatsapp" | "linkedin" | "twitter"
 
@@ -80,19 +78,14 @@ export async function dispatchSocialDm(params: DispatchSocialDmParams): Promise<
 
   try {
     if (params.platform === "whatsapp") {
-      // WhatsApp Cloud API — bearer token, phone_number_id edge.
-      const res = await callConnector<any>({
-        connector: "whatsapp",
-        baseUrl: GRAPH,
-        path: `${GRAPH_V}/${params.accountId}/messages`,
-        method: "POST",
-        auth: { style: "bearer", token: params.accessToken },
-        body: {
-          messaging_product: "whatsapp",
-          to: params.recipientId,
-          type: "text",
-          text: { body: params.text.slice(0, 4096) },
-        },
+      // WhatsApp Cloud API — phone_number_id edge. Graph accepts the token as
+      // an Authorization: Bearer header OR (what the SDK's generic transport
+      // uses) a query param; both are the same Graph API auth mechanism.
+      const res = await graphPost<any>(params.accessToken, [params.accountId, "messages"], {
+        messaging_product: "whatsapp",
+        to: params.recipientId,
+        type: "text",
+        text: { body: params.text.slice(0, 4096) },
       })
       if (!res.ok) return { success: false, error: friendlyMetaError(res.error ?? "") }
       return { success: true, providerMessageId: res.data?.messages?.[0]?.id }
@@ -100,17 +93,10 @@ export async function dispatchSocialDm(params: DispatchSocialDmParams): Promise<
 
     // Messenger + Instagram — both ride the PAGE's messages edge with the page
     // token (IG DMs are addressed by the IG-scoped id the webhook captured).
-    const res = await callConnector<any>({
-      connector: params.platform,
-      baseUrl: GRAPH,
-      path: `${GRAPH_V}/${params.accountId}/messages`,
-      method: "POST",
-      auth: { style: "query", name: "access_token", value: params.accessToken },
-      body: {
-        recipient: { id: params.recipientId },
-        messaging_type: "RESPONSE", // reply-only: we only answer threads the person started
-        message: { text: params.text.slice(0, 2000) },
-      },
+    const res = await graphPost<any>(params.accessToken, [params.accountId, "messages"], {
+      recipient: { id: params.recipientId },
+      messaging_type: "RESPONSE", // reply-only: we only answer threads the person started
+      message: { text: params.text.slice(0, 2000) },
     })
     if (!res.ok) return { success: false, error: friendlyMetaError(res.error ?? "") }
     return { success: true, providerMessageId: res.data?.message_id ?? res.data?.id }

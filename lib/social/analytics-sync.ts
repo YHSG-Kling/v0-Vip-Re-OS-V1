@@ -92,18 +92,14 @@ async function fetchTwitterMetrics(externalId: string, accessToken: string): Pro
 }
 
 async function fetchFacebookMetrics(externalId: string, accessToken: string): Promise<FetchedMetrics> {
-  const auth: GatewayAuth = { style: "query", name: "access_token", value: accessToken }
-  const res = await callConnector<{
+  // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+  // adapter (lib/providers/meta/client.ts) instead of the connector gateway.
+  const { graphGet } = await import("@/lib/providers/meta/client")
+  const res = await graphGet<{
     likes?: { summary?: { total_count?: number } }
     comments?: { summary?: { total_count?: number } }
     shares?: { count?: number }
-  }>({
-    connector: "meta",
-    baseUrl: "https://graph.facebook.com",
-    path: `/v18.0/${encodeURIComponent(externalId)}?fields=likes.summary(true),comments.summary(true),shares`,
-    method: "GET",
-    auth,
-  })
+  }>(accessToken, [externalId], { fields: "likes.summary(true),comments.summary(true),shares" })
   const d = res.data
   if (!d) throw new Error("empty Graph response")
   const engagements =
@@ -123,14 +119,10 @@ async function fetchFacebookMetrics(externalId: string, accessToken: string): Pr
 }
 
 async function fetchInstagramMetrics(externalId: string, accessToken: string): Promise<FetchedMetrics> {
-  const auth: GatewayAuth = { style: "query", name: "access_token", value: accessToken }
-  const res = await callConnector<{ like_count?: number; comments_count?: number }>({
-    connector: "meta",
-    baseUrl: "https://graph.facebook.com",
-    path: `/v18.0/${encodeURIComponent(externalId)}?fields=like_count,comments_count`,
-    method: "GET",
-    auth,
-  })
+  // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+  // adapter (lib/providers/meta/client.ts) instead of the connector gateway.
+  const { graphGet } = await import("@/lib/providers/meta/client")
+  const res = await graphGet<{ like_count?: number; comments_count?: number }>(accessToken, [externalId], { fields: "like_count,comments_count" })
   const d = res.data
   if (!d) throw new Error("empty Graph response")
   return {

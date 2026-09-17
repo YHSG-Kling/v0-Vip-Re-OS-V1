@@ -113,16 +113,14 @@ async function pullFollowUpBoss(apiKey: string, cursor: string | null): Promise<
 }
 
 // internal helper — called in-file by pullCrmPage
+// Wave 71A: routes through the official `@hubspot/api-client` SDK adapter
+// (lib/providers/hubspot/client.ts) instead of the connector-gateway.
 async function pullHubSpot(token: string, cursor: string | null): Promise<CrmPullPage> {
-  const res = await callConnector<{ results?: any[]; paging?: { next?: { after?: string } } }>({
-    connector: "hubspot", baseUrl: "https://api.hubapi.com",
-    path: "/crm/v3/objects/contacts", method: "GET",
-    query: {
-      limit: String(PAGE_SIZE),
-      properties: "firstname,lastname,email,phone,mobilephone,address,city,state,zip,lifecyclestage",
-      ...(cursor ? { after: cursor } : {}),
-    },
-    auth: { style: "bearer", token },
+  const { listContactsPage } = await import("@/lib/providers/hubspot/client")
+  const res = await listContactsPage(token, {
+    limit: PAGE_SIZE,
+    after: cursor,
+    properties: ["firstname", "lastname", "email", "phone", "mobilephone", "address", "city", "state", "zip", "lifecyclestage"],
   })
   if (!res.ok) return { rows: [], nextCursor: null, error: res.error ?? `HubSpot pull failed (${res.status})` }
   return { rows: (res.data?.results ?? []).map(hubspotToRow), nextCursor: res.data?.paging?.next?.after ?? null }

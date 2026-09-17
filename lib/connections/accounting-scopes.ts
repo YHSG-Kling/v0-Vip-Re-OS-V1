@@ -221,7 +221,10 @@ export function accountingOwnerFilter(
 
 // ─── Live: scoped QuickBooks credential (generalizes vendor-quickbooks) ──────
 
-const INTUIT_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+// KEPT ON REST (wave 71A): no official Intuit Node SDK for the QBO
+// business-object surface — see lib/providers/accounting/quickbooks.ts's
+// header for the full reasoning (node-quickbooks verified + declined as
+// community, not Intuit; intuit-oauth adopted for the token lifecycle above).
 const QBO_API_BASE = "https://quickbooks.api.intuit.com/v3/company"
 
 export interface ScopedQuickBooksCredential {
@@ -295,20 +298,15 @@ export async function ensureFreshQuickBooksToken(
     throw new Error("QuickBooks app credentials not configured (QUICKBOOKS_CLIENT_ID/SECRET)")
   }
 
-  const tokenUrl = new URL(INTUIT_TOKEN_URL)
-  const res = await callConnector<{ access_token: string; refresh_token: string; expires_in: number }>({
-    connector: "quickbooks-oauth",
-    baseUrl: tokenUrl.origin,
-    path: tokenUrl.pathname,
-    method: "POST",
-    auth: { style: "basic", username: clientId, password: clientSecret },
-    bodyType: "form",
-    body: { grant_type: "refresh_token", refresh_token: cred.refreshToken },
-  })
+  // Wave 71A: routes through the official `intuit-oauth` SDK adapter
+  // (lib/providers/quickbooks/client.ts) instead of a hand-built Basic-auth
+  // form POST — see that file's header for the official-SDK reasoning.
+  const { refreshQuickBooksToken } = await import("@/lib/providers/quickbooks/client")
+  const res = await refreshQuickBooksToken(clientId, clientSecret, cred.refreshToken)
   if (!res.ok || !res.data) {
     throw new Error(`QuickBooks token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
   }
-  const tokenExpiresAt = new Date(Date.now() + (res.data.expires_in ?? 3600) * 1000).toISOString()
+  const tokenExpiresAt = new Date(Date.now() + res.data.expiresIn * 1000).toISOString()
   // INTUIT ROTATES THE REFRESH TOKEN on every exchange: the one just spent is
   // dead. A silently refused persist leaves the spent token on the row, so the
   // QuickBooks connection dies at the next refresh — hours later, with nothing
@@ -317,8 +315,8 @@ export async function ensureFreshQuickBooksToken(
   const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token,
+      access_token: res.data.accessToken,
+      refresh_token: res.data.refreshToken,
       token_expires_at: tokenExpiresAt,
       updated_at: new Date().toISOString(),
     })
@@ -326,7 +324,7 @@ export async function ensureFreshQuickBooksToken(
   if (persistError) {
     throw new Error(`QuickBooks token refreshed but could not be stored — the stored refresh token is now spent: ${persistError.message}`)
   }
-  return res.data.access_token
+  return res.data.accessToken
 }
 
 /** Single egress choke point for QBO API calls (Bearer, via the connector-gateway). */

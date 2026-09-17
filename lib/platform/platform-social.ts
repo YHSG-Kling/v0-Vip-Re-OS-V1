@@ -33,6 +33,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { graphGet } from "@/lib/providers/meta/client"
 import {
   SOCIAL_OAUTH_CONFIGS,
   socialOAuthEnvStatus,
@@ -358,7 +359,11 @@ interface MetaPage {
 
 const META_PAGE_FIELDS = "id,name,access_token,instagram_business_account{id,username}"
 
-/** Best-effort long-lived user-token exchange (fb_exchange_token). */
+/** Best-effort long-lived user-token exchange (fb_exchange_token). KEPT ON REST
+ *  (wave 71A) — see lib/providers/meta/client.ts's header: the Business SDK
+ *  cannot express the call that MINTS a token (FacebookAdsApi always requires
+ *  an access token to construct), so the OAuth exchange stays on the
+ *  connector gateway. */
 async function exchangeMetaLongLivedToken(
   userToken: string,
 ): Promise<{ ok: true; token: string; expiresInSeconds: number | null } | { ok: false }> {
@@ -375,24 +380,20 @@ async function exchangeMetaLongLivedToken(
   return { ok: true, token: res.data.access_token, expiresInSeconds: res.data.expires_in ?? null }
 }
 
-/** The Pages this user token manages (each with its Page token + linked IG). */
+/** The Pages this user token manages (each with its Page token + linked IG).
+ *  Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+ *  adapter instead of the connector gateway. */
 async function listMetaPages(userToken: string): Promise<{ ok: true; pages: MetaPage[] } | { ok: false; error: string }> {
-  const res = await callConnector<{ data?: MetaPage[]; error?: { message?: string } }>({
-    connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/me/accounts", method: "GET",
-    query: { fields: META_PAGE_FIELDS, limit: "100" },
-    auth: { style: "query", name: "access_token", value: userToken },
-  })
+  const res = await graphGet<{ data?: MetaPage[]; error?: { message?: string } }>(userToken, ["me", "accounts"], { fields: META_PAGE_FIELDS, limit: 100 })
   if (!res.ok) return { ok: false, error: res.data?.error?.message || res.error || "Meta rejected the Pages request" }
   return { ok: true, pages: ((res.data?.data ?? []) as MetaPage[]).filter((p) => p?.id) }
 }
 
-/** One Page (fresh Page token + IG link) via the stored long-lived user token. */
+/** One Page (fresh Page token + IG link) via the stored long-lived user token.
+ *  Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+ *  adapter instead of the connector gateway. */
 async function fetchMetaPage(pageId: string, userToken: string): Promise<{ ok: true; page: MetaPage } | { ok: false; error: string }> {
-  const res = await callConnector<MetaPage & { error?: { message?: string } }>({
-    connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${pageId}`, method: "GET",
-    query: { fields: META_PAGE_FIELDS },
-    auth: { style: "query", name: "access_token", value: userToken },
-  })
+  const res = await graphGet<MetaPage & { error?: { message?: string } }>(userToken, [pageId], { fields: META_PAGE_FIELDS })
   if (!res.ok || !res.data?.id) return { ok: false, error: (res.data as any)?.error?.message || res.error || "Meta rejected the Page lookup" }
   return { ok: true, page: res.data }
 }
@@ -598,11 +599,9 @@ export async function fetchMetaPostPermalink(
   accessToken: string,
 ): Promise<string | null> {
   const field = kind === "facebook" ? "permalink_url" : "permalink"
-  const res = await callConnector<{ permalink_url?: string; permalink?: string }>({
-    connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${postId}`, method: "GET",
-    query: { fields: field },
-    auth: { style: "query", name: "access_token", value: accessToken },
-  })
+  // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+  // adapter instead of the connector gateway.
+  const res = await graphGet<{ permalink_url?: string; permalink?: string }>(accessToken, [postId], { fields: field })
   if (!res.ok) return null
   const link = kind === "facebook" ? res.data?.permalink_url : res.data?.permalink
   return typeof link === "string" && link.startsWith("http") ? link : null
@@ -746,19 +745,15 @@ export async function fetchChannelProfile(
   const provider = CHANNEL_OAUTH_PROVIDER[channel]
   try {
     if (provider === "meta") {
+      // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+      // adapter instead of the connector gateway.
       if (channel === "instagram") {
         if (!accountId) return { ok: false, error: "No Instagram business-account id on file — reconnect the channel" }
-        const res = await callConnector<{ id?: string; username?: string; name?: string }>({
-          connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${accountId}`, method: "GET",
-          query: { fields: "id,username,name" }, auth: { style: "query", name: "access_token", value: accessToken },
-        })
+        const res = await graphGet<{ id?: string; username?: string; name?: string }>(accessToken, [accountId], { fields: "id,username,name" })
         if (!res.ok || !res.data?.id) return { ok: false, error: res.error || "Meta rejected the Instagram token" }
         return { ok: true, accountId: res.data.id, name: res.data.username ? `@${res.data.username}` : res.data.name }
       }
-      const res = await callConnector<{ id?: string; name?: string }>({
-        connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/me", method: "GET",
-        query: { fields: "id,name" }, auth: { style: "query", name: "access_token", value: accessToken },
-      })
+      const res = await graphGet<{ id?: string; name?: string }>(accessToken, ["me"], { fields: "id,name" })
       if (!res.ok || !res.data?.id) return { ok: false, error: res.error || "Meta rejected the token" }
       return { ok: true, accountId: res.data.id, name: res.data.name }
     }

@@ -252,6 +252,17 @@ const nextConfig: NextConfig = {
     "apify-client",
     "zenrows",
     "exa-js",
+    // Wave 71A official-SDK adapters (lib/providers/{peopledata,meta,hubspot,
+    // quickbooks}/client.ts + lib/providers/dispatch.ts's existing `lob`
+    // usage, now also read by lib/providers/lob/client.ts). Same reasoning as
+    // the wave-70 packages above: server-only Node packages, externalised so
+    // the CI compile fits the heap ceiling instead of bundling their source
+    // into server chunks.
+    "peopledatalabs",
+    "facebook-nodejs-business-sdk",
+    "@hubspot/api-client",
+    "intuit-oauth",
+    "lob",
   ],
   reactStrictMode: true,
   poweredByHeader: false,
@@ -325,6 +336,12 @@ const nextConfig: NextConfig = {
         { 'apify-client': 'commonjs apify-client' },
         { zenrows: 'commonjs zenrows' },
         { 'exa-js': 'commonjs exa-js' },
+        // Same pin for the wave-71A SDKs.
+        { peopledatalabs: 'commonjs peopledatalabs' },
+        { 'facebook-nodejs-business-sdk': 'commonjs facebook-nodejs-business-sdk' },
+        { '@hubspot/api-client': 'commonjs @hubspot/api-client' },
+        { 'intuit-oauth': 'commonjs intuit-oauth' },
+        { lob: 'commonjs lob' },
       ]
     }
     // Reduce aggressive file watching to prevent duplicate dev server spawns

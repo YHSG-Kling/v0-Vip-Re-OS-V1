@@ -11,8 +11,7 @@
  */
 import type { AdConnector, AudiencePushArgs, AudienceSyncResult, LookalikeArgs, PerformanceQuery, ProviderPerformanceRow } from "./types"
 import { deriveMetrics } from "./types"
-
-const GRAPH = "https://graph.facebook.com/v19.0"
+import { graphGet, graphPost } from "@/lib/providers/meta/client"
 
 /** Pure: map a Meta Insights data row → our normalized performance row. */
 /** @proofSeam pure mapper, already wired internally by metaConnector.fetchPerformance below; exported for scripts/ad-connector-simulator.ts */
@@ -33,17 +32,35 @@ export function mapInsights(row: Record<string, unknown> | null | undefined): Pr
   return { spend, impressions, clicks, leads, conversions, ctr, costPerLead, revenue }
 }
 
+// Wave 71A: routes through the official `facebook-nodejs-business-sdk` adapter
+// (lib/providers/meta/client.ts) instead of a hand-rolled `fetch`. Keeps this
+// file's calling convention (`graph(path, {method, token, body?})` →
+// `{ok, json, status}`) so publishCampaign/pushCustomAudience/createLookalike/
+// fetchPerformance below needed no further changes — `path` may carry a query
+// string (e.g. `${id}/insights?fields=...&date_preset=...`), split here into
+// SDK path segments + params.
 async function graph(path: string, init: RequestInit & { token: string }): Promise<{ ok: boolean; json: any; status: number }> {
-  const url = `${GRAPH}/${path}${path.includes("?") ? "&" : "?"}access_token=${encodeURIComponent(init.token)}`
-  const res = await fetch(url, init)
-  let json: any = null
-  try { json = await res.json() } catch { /* non-json */ }
-  return { ok: res.ok, json, status: res.status }
+  const method = ((init.method as string) ?? "GET").toUpperCase() as "GET" | "POST"
+  const [rawPath, queryString] = path.split("?")
+  const segments = rawPath.split("/").filter(Boolean)
+  const query = queryString ? Object.fromEntries(new URLSearchParams(queryString)) : {}
+  const body = typeof init.body === "string" ? JSON.parse(init.body) : {}
+  const res = method === "GET"
+    ? await graphGet<any>(init.token, segments, query)
+    : await graphPost<any>(init.token, segments, body)
+  return { ok: res.ok, json: res.data, status: res.status ?? (res.ok ? 200 : 400) }
 }
 
 export const metaConnector: AdConnector = {
   platform: "facebook",
 
+  // NOTE (integrator research, 2026-09-17): as of Marketing API v25, Advantage+
+  // Shopping / Advantage+ App campaigns CANNOT be created via the Marketing
+  // API at all (Meta requires Ads Manager for those objectives) — this is a
+  // platform-side API restriction, not something the SDK swap changes. Any
+  // caller building an Advantage+ Shopping/App structure through
+  // publishCampaign below will get a real Meta error back; record that as a
+  // known limitation rather than a regression if it surfaces.
   async publishCampaign(args): Promise<{ ok: boolean; externalCampaignId?: string; error?: string }> {
     const { cred } = args
     if (!cred.accessToken || !cred.accountId) return { ok: false, error: "meta credential not connected" }

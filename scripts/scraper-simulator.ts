@@ -404,18 +404,23 @@ async function testVendorConnectors() {
   const apifyAdapterSrc = blankComments(readFileSync(join(process.cwd(), "lib/providers/apify/client.ts"), "utf8"))
   check("the adapter itself fails closed on an empty token (positive control: the guard line exists)", /if \(!token\) return \{ ok: false/.test(apifyAdapterSrc))
 
-  // HubSpot CRM sync-out (gateway) — upsert by email, Bearer auth, result mapping.
-  let hsReq: { url: string; body: any; auth: string } | null = null
-  globalThis.fetch = (async (url: any, init: any) => {
-    hsReq = { url: String(url), body: JSON.parse(init.body), auth: init.headers?.Authorization ?? init.headers?.authorization ?? "" }
-    return { ok: true, status: 200, json: async () => ({ results: [{ id: "hs-123" }] }) }
-  }) as unknown as typeof fetch
-  const hsRes = await syncContactToHubSpot({ firstName: "Dana", lastName: "Buyer", email: "dana@example.com", phone: "+15557654321" }, "HSTOKEN")
-  check("HubSpot upserts via /crm/v3/objects/contacts/batch/upsert", !!hsReq && (hsReq as any).url.endsWith("/crm/v3/objects/contacts/batch/upsert"))
-  check("HubSpot upsert keyed by email idProperty", !!hsReq && (hsReq as any).body.inputs[0].idProperty === "email" && (hsReq as any).body.inputs[0].id === "dana@example.com")
-  check("HubSpot maps name/email/phone to properties", !!hsReq && (hsReq as any).body.inputs[0].properties.firstname === "Dana" && (hsReq as any).body.inputs[0].properties.email === "dana@example.com" && (hsReq as any).body.inputs[0].properties.phone === "+15557654321")
-  check("HubSpot uses Bearer auth", !!hsReq && (hsReq as any).auth === "Bearer HSTOKEN")
-  check("HubSpot returns contactId from results[0].id", hsRes.success && hsRes.contactId === "hs-123")
+  // HubSpot CRM sync-out — wave 71A moved this off a mockable raw `fetch` onto
+  // the official `@hubspot/api-client` SDK (lib/providers/hubspot/client.ts),
+  // whose internal Transport expects a spec-compliant fetch Response (a
+  // Headers object, etc.) that the old plain-object mock above does not
+  // provide — so the request-SHAPE assertions are re-anchored on SOURCE TEXT
+  // (the same pattern already used for the Apify SDK migration two blocks
+  // up), not a captured URL/body, per the wave-70 lesson: "re-anchor on the
+  // EARLIEST marker of either spelling (REST or SDK method name)".
+  const hubspotExternalSrc = blankComments(readFileSync(join(process.cwd(), "lib/crm/providers/hubspot.ts"), "utf8"))
+  check("HubSpot sync routes through the official SDK adapter (lib/providers/hubspot/client.ts)", /from\s+["']@\/lib\/providers\/hubspot\/client["']/.test(hubspotExternalSrc) && /upsertContactByEmail\(/.test(hubspotExternalSrc) && /createContact\(/.test(hubspotExternalSrc))
+  check("HubSpot upsert is keyed by email (idProperty=email call site preserved)", /upsertContactByEmail\(apiKey, contact\.email, properties\)/.test(hubspotExternalSrc))
+  const hubspotAdapterSrc = blankComments(readFileSync(join(process.cwd(), "lib/providers/hubspot/client.ts"), "utf8"))
+  check("the HubSpot adapter itself fails closed on an empty token (positive control: the guard line exists)", /if \(!accessToken\) return \{ ok: false/.test(hubspotAdapterSrc))
+  // No real-token call here on purpose: the SDK's Transport calls the real
+  // global `fetch`, and this suite must never make live outbound HTTP. Only
+  // the no-token branch (an early return before any network reach) is
+  // exercised live; the with-token request SHAPE is proven above by source.
   check("HubSpot without token → requiresConfiguration", (await syncContactToHubSpot({ firstName: "X", lastName: "Y" }, null)).requiresConfiguration === true)
 
   // Gateway arraybuffer mode (binary egress, e.g. ElevenLabs TTS audio) — returns raw bytes as Buffer.
@@ -450,19 +455,26 @@ async function testVendorConnectors() {
   check("gateway form: body is urlencoded (incl bracket keys)", !!formReq && (formReq as any).body.includes("amount=5000") && (formReq as any).body.includes("metadata%5Btxn%5D=abc"))
   check("gateway form: bearer auth + parsed json response", !!formReq && (formReq as any).auth === "Bearer sk_test" && formRes.ok && (formRes.data as any).id === "tr_1")
 
-  // Social publisher now egresses through the connector-gateway — verify routing + auth per platform.
+  // Social publisher: LinkedIn still egresses through the connector-gateway
+  // (mockable via globalThis.fetch) — Facebook/Instagram moved to the
+  // official `facebook-nodejs-business-sdk` adapter (wave 71A,
+  // lib/providers/meta/client.ts), whose transport is axios, NOT
+  // globalThis.fetch — mocking fetch does not intercept it, so the request
+  // it makes cannot be captured this way any more (and must never be made
+  // live in this suite). Re-anchored on SOURCE TEXT per the wave-70 lesson:
+  // "re-anchor on the EARLIEST marker of either spelling".
   let socReq: { url: string; auth: string; restli: string } | null = null
   globalThis.fetch = (async (url: any, init: any) => {
     socReq = { url: String(url), auth: init?.headers?.Authorization ?? "", restli: init?.headers?.["X-Restli-Protocol-Version"] ?? "" }
     return { ok: true, status: 200, json: async () => ({ id: "post_1" }) }
   }) as unknown as typeof fetch
-  const fb = await publishToSocialPlatform("facebook", { content: "hi", accessToken: "FBTOK", accountId: "123" })
-  check("social: Facebook routes through gateway to graph.facebook.com w/ access_token query", !!socReq && (socReq as any).url.startsWith("https://graph.facebook.com/v18.0/123/feed") && (socReq as any).url.includes("access_token=FBTOK") && fb.success && fb.externalPostId === "post_1")
   const li = await publishToSocialPlatform("linkedin", { content: "hi", accessToken: "LITOK", accountId: "u1" })
   check("social: LinkedIn uses Bearer + X-Restli header through the gateway", !!socReq && (socReq as any).url === "https://api.linkedin.com/v2/ugcPosts" && (socReq as any).auth === "Bearer LITOK" && (socReq as any).restli === "2.0.0" && li.success)
-  globalThis.fetch = (async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "bad page" } }) })) as unknown as typeof fetch
-  const fbErr = await publishToSocialPlatform("facebook", { content: "x", accessToken: "T", accountId: "1" })
-  check("social: gateway error surfaces provider message (success:false)", !fbErr.success && (fbErr.error ?? "").includes("bad page"))
+  const publisherSrc = blankComments(readFileSync(join(process.cwd(), "lib/social/publisher.ts"), "utf8"))
+  check("Facebook publish routes through the official Meta SDK adapter (lib/providers/meta/client.ts)", /from\s+["']@\/lib\/providers\/meta\/client["']/.test(publisherSrc) && /graphPost[<(][^;]*params\.accessToken, \[params\.accountId, "feed"\]/.test(publisherSrc))
+  check("Instagram publish routes through the same Meta SDK adapter (container + media_publish)", /graphPost[<(][^;]*params\.accessToken, \[params\.accountId, "media"\]/.test(publisherSrc) && /graphPost[<(][^;]*params\.accessToken, \[params\.accountId, "media_publish"\]/.test(publisherSrc))
+  const metaAdapterSrc = blankComments(readFileSync(join(process.cwd(), "lib/providers/meta/client.ts"), "utf8"))
+  check("the Meta adapter itself fails closed on an empty token (positive control: the guard line exists)", /if \(!accessToken\) return \{ ok: false/.test(metaAdapterSrc))
 
   // ShowingTime scheduling now egresses through the connector-gateway (was a bespoke fetch).
   // Verify the connector contract: bearer auth, POST /v2/appointments, json appointment body.

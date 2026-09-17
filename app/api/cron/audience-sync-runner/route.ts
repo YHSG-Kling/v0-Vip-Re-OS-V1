@@ -21,7 +21,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { graphPost } from "@/lib/providers/meta/client"
 import { isAudienceUploadEligible, AUDIENCE_CONSENT_COLUMNS } from "@/lib/ads/audience-eligibility"
 import { describeConsentChange } from "@/lib/audiences/audience-sync"
 import { createHash } from "node:crypto"
@@ -275,22 +275,17 @@ export async function GET(req: NextRequest) {
       continue
     }
 
-    // FB call: POST /<audience_id>/users with payload { schema, data }.
-    const payload = {
-      payload: JSON.stringify({ schema, data }),
-      access_token: accessToken,
-    }
-    const res = await callConnector<{ audience_id?: string; num_received?: number; num_invalid_entries?: number; error?: { message: string } }>({
-      connector: "meta_ads",
-      baseUrl:   "https://graph.facebook.com",
-      path:      `v18.0/${encodeURIComponent(audMeta.external_audience_id)}/users`,
-      method:    "POST",
-      auth:      { style: "none" },
-      bodyType:  "form",
-      body:      payload as unknown as Record<string, string>,
-      responseType: "json",
-      timeoutMs:    30_000,
-    })
+    // FB call: POST /<audience_id>/users with payload { schema, data }. Wave
+    // 71A: routes through the official `facebook-nodejs-business-sdk` adapter
+    // instead of the connector gateway. The app-token (`appId|appSecret`) is
+    // the ONE special case where a caller passes a non-user access token —
+    // the SDK's generic transport treats it identically to any other token
+    // (just a query-param value), so no change to that shape was needed.
+    const res = await graphPost<{ audience_id?: string; num_received?: number; num_invalid_entries?: number; error?: { message: string } }>(
+      accessToken,
+      [audMeta.external_audience_id, "users"],
+      { payload: { schema, data } },
+    )
 
     const synced   = res.ok && res.data?.num_received ? res.data.num_received : 0
     const rejected = res.data?.num_invalid_entries ?? 0
