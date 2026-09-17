@@ -169,9 +169,12 @@ console.log("\n═══ 5. The gate module cannot dial ═══")
 
   const exec = src("lib/voice/twilio-outbound.ts")
   const gateIdx = exec.indexOf("runOutboundCallGates")
-  const dialIdx = exec.indexOf("callConnector")
+  // wave 70: the dial is the official Twilio SDK adapter's placeCall(...)
+  // (lib/providers/twilio/client.ts). EARLIEST dial-shaped marker wins so an
+  // injected connector-gateway call ahead of the stack is still caught.
+  const dialIdx = Math.min(...["placeCall(", "callConnector"].map((m) => exec.indexOf(m)).filter((i) => i > -1), Number.POSITIVE_INFINITY)
   check("placeOutboundAiCall runs the stack, and runs it before the dial",
-    gateIdx >= 0 && dialIdx >= 0 && gateIdx < dialIdx)
+    gateIdx >= 0 && Number.isFinite(dialIdx) && gateIdx < dialIdx)
   const execCode = code("lib/voice/twilio-outbound.ts")
   check("...and does NOT keep a second, private copy of a gate beside the stack\n    (prose naming a gate is not a gate — comments are stripped first)",
     !/\benforceTCPACompliance\s*[({]/.test(execCode) && !/\bcheckVendorBudget\s*[({]/.test(execCode))
