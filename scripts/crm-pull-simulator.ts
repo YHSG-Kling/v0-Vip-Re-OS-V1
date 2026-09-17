@@ -172,7 +172,10 @@ console.log("\n── SOURCE: one pipeline, gated end to end ──")
   check("AVM adapters call the REAL clients (rentcast/batchdata/zenrows via connector gateway)",
     src("lib/avm/provider-chain.ts").includes("getRentcastAVM") &&
     src("lib/property/rentcast.ts").includes('connector: "rentcast"') &&
-    src("lib/external/zenrows-client.ts").includes('connector: "zenrows"'))
+    // wave 70: ZenRows moved onto the official SDK adapter — the "real client"
+    // is lib/providers/zenrows/client.ts now, not a connector-gateway call
+    (src("lib/external/zenrows-client.ts").includes('connector: "zenrows"')
+      || /@\/lib\/providers\/zenrows\/client/.test(src("lib/external/zenrows-client.ts"))))
   check("package.json wires the proof", /"test:crm-pull":/.test(src("package.json")))
 }
 
