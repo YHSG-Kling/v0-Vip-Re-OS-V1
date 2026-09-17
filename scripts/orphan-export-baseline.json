@@ -52,6 +52,7 @@
     "lib/ai/web-search.ts": 1,
     "lib/ai-isa/adaptive-reengagement.ts": 2,
     "lib/ai-isa/appointment-form.ts": 1,
+    "lib/ai-isa/batchdata-isa-tools.ts": 6,
     "lib/ai-isa/callback-task.ts": 2,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
@@ -132,7 +133,6 @@
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
     "lib/external/batchdata-client.ts": 3,
-    "lib/external/batchdata-mcp.ts": 1,
     "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
@@ -281,6 +281,7 @@
     "lib/lead-governance/seller-signal-strength.ts": 4,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
+    "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
     "lib/lead-pipeline/enrichment-column-map.ts": 1,
     "lib/lead-pipeline/exa-sourcer.ts": 1,
     "lib/lead-pipeline/osint-sourcer.ts": 1,
@@ -437,7 +438,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9571,
+  "census": 9589,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2698,6 +2699,7 @@
     "lib/ai-isa/adaptive-reengagement.ts": 4,
     "lib/ai-isa/appointment-form.ts": 4,
     "lib/ai-isa/appointment-scheduler.ts": 1,
+    "lib/ai-isa/batchdata-isa-tools.ts": 7,
     "lib/ai-isa/book-seller-appointment.ts": 1,
     "lib/ai-isa/brand-voice-prompt.ts": 2,
     "lib/ai-isa/build-call-context.ts": 1,
@@ -3115,7 +3117,7 @@
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
     "lib/external/batchdata-client.ts": 23,
-    "lib/external/batchdata-mcp.ts": 12,
+    "lib/external/batchdata-mcp.ts": 13,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
     "lib/external/census-appreciation.ts": 4,
@@ -3599,6 +3601,7 @@
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 3,
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
+    "lib/lead-pipeline/email-engagement-sourcer.ts": 2,
     "lib/lead-pipeline/enrichment-column-map.ts": 5,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
@@ -3930,14 +3933,19 @@
     "lib/providers/email/personal-email-adapter.ts": 2,
     "lib/providers/esign/index.ts": 6,
     "lib/providers/exa/client.ts": 2,
+    "lib/providers/hubspot/client.ts": 3,
     "lib/providers/inbound-router.ts": 1,
+    "lib/providers/lob/client.ts": 1,
     "lib/providers/mailing-cass-gate.ts": 2,
     "lib/providers/messaging/index.ts": 4,
     "lib/providers/messaging/resolve-sms-provider.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 4,
+    "lib/providers/meta/client.ts": 2,
     "lib/providers/openai-ads.ts": 4,
     "lib/providers/outbound-sender.ts": 7,
     "lib/providers/payment/index.ts": 7,
+    "lib/providers/peopledata/client.ts": 1,
+    "lib/providers/quickbooks/client.ts": 1,
     "lib/providers/simli/client.ts": 2,
     "lib/providers/simli/faces.ts": 1,
     "lib/providers/tenancy-matrix.ts": 1,
@@ -13491,6 +13499,15 @@
     "lib/ai-isa/appointment-scheduler.ts": [
       "scheduleISAAppointment"
     ],
+    "lib/ai-isa/batchdata-isa-tools.ts": [
+      "criteriaKey",
+      "resolveBatchDataIsaBudgetCents",
+      "evaluateBudget",
+      "evaluatePageOrder",
+      "toInvestorFacingToolRow",
+      "toIsaFacingToolRow",
+      "batchDataIsaTools"
+    ],
     "lib/ai-isa/book-seller-appointment.ts": [
       "bookSellerListingAppointment"
     ],
@@ -15669,6 +15686,7 @@
       "callBatchDataMcp",
       "listBatchDataMcpTools",
       "batchDataPreferMcp",
+      "extractRows",
       "investorBuyboxPreview",
       "investorBuyboxCount",
       "investorBuyboxPage",
@@ -18219,6 +18237,10 @@
     "lib/lead-pipeline/contact-signal-rescrape.ts": [
       "triggerSignalRescrape"
     ],
+    "lib/lead-pipeline/email-engagement-sourcer.ts": [
+      "normalizeEmailEngagementSignal",
+      "sourceEmailEngagementIntent"
+    ],
     "lib/lead-pipeline/enrichment-column-map.ts": [
       "deriveEducationLevel",
       "peopleDataProfileToContactColumns",
@@ -19850,8 +19872,16 @@
       "rawSearch",
       "neuralSearch"
     ],
+    "lib/providers/hubspot/client.ts": [
+      "upsertContactByEmail",
+      "createContact",
+      "listContactsPage"
+    ],
     "lib/providers/inbound-router.ts": [
       "normalizeInbound"
+    ],
+    "lib/providers/lob/client.ts": [
+      "verifyUsAddress"
     ],
     "lib/providers/mailing-cass-gate.ts": [
       "needsCassCheck",
@@ -19871,6 +19901,10 @@
       "sendViaTelnyx",
       "sendViaBandwidth",
       "isSupportedSMSProvider"
+    ],
+    "lib/providers/meta/client.ts": [
+      "graphGet",
+      "graphPost"
     ],
     "lib/providers/openai-ads.ts": [
       "resolveOpenaiAdsCredential",
@@ -19895,6 +19929,12 @@
       "createConnectedAccount",
       "createAccountLink",
       "getStripeBalance"
+    ],
+    "lib/providers/peopledata/client.ts": [
+      "enrichPerson"
+    ],
+    "lib/providers/quickbooks/client.ts": [
+      "refreshQuickBooksToken"
     ],
     "lib/providers/simli/client.ts": [
       "simliConfigured",
