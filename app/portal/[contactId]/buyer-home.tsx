@@ -53,13 +53,36 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   // Fetch contact basic info
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, contact_type, buyer_stage, agent_id, contact_persona")
+    .select("id, first_name, last_name, contact_type, buyer_stage, agent_id, contact_persona, brokerage_id")
     .eq("id", contactId)
     .maybeSingle()
 
   if (!contact || contactError) {
     if (embedded) return null
     redirect("/portal?error=contact_not_found")
+  }
+
+  // ── INVESTOR OFF-MARKET OPPORTUNITIES (wave 69 owner ruling, verbatim): "investor buyers
+  // portal persona is different than the regular real estate buyer… if it is for the investor
+  // with giving them just off market but most likely to sell, that is just showing them the
+  // properties nothing else." PROPERTY-ONLY — the reader (getInvestorDealMatch, audience
+  // defaults "investor") already redacts owner_name/phone/email/mailing address and
+  // equity_percent (lib/buyer-search/investor-facing.ts); this render adds nothing beyond what
+  // the redacted candidate carries. Regular buyers (contact_persona !== "investor") never fetch
+  // this at all — the two personas are mutually exclusive surfaces here, same as the matching
+  // rails (CLAUDE.md wave 67/69).
+  let offMarketCandidates: Array<Record<string, unknown>> = []
+  if (contact.contact_persona === "investor" && contact.brokerage_id) {
+    try {
+      const { getInvestorDealMatch } = await import("@/lib/buyer-search/investor-offmarket-runner")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const match = await getInvestorDealMatch(createServiceClient(), {
+        contactId, brokerageId: contact.brokerage_id as string,
+      })
+      offMarketCandidates = ((match as any)?.offMarketCandidates ?? []) as Array<Record<string, unknown>>
+    } catch {
+      offMarketCandidates = []
+    }
   }
 
   // Derive persona guidelines for messaging
@@ -659,6 +682,51 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             ))}
           </div>
         </div>
+
+        {/* Investor off-market opportunities — PROPERTY-ONLY card (wave 69 owner ruling).
+            No owner name/phone/email/mailing address, no equity percent, no agent analytics —
+            just the property and a likelihood signal. */}
+        {contact.contact_persona === "investor" && offMarketCandidates.length > 0 && (
+          <div>
+            <p className="text-sm font-semibold mb-3">Off-Market Opportunities</p>
+            <div className="space-y-2">
+              {offMarketCandidates.slice(0, 10).map((c: any) => {
+                const likelihood = c.likelihood as { band: string; source: string } | undefined
+                const bandStyle: Record<string, string> = {
+                  high: "bg-emerald-100 text-emerald-700 border-emerald-200",
+                  medium: "bg-amber-100 text-amber-700 border-amber-200",
+                  low: "bg-gray-100 text-gray-600 border-gray-200",
+                }
+                return (
+                  <Card key={c.id as string}>
+                    <CardContent className="p-3 space-y-1">
+                      <p className="text-sm font-medium truncate">{c.property_address as string}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {[c.city, c.state, c.zip].filter(Boolean).join(", ")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {c.estimated_value != null ? `$${Number(c.estimated_value).toLocaleString()}` : "Value not available"}
+                        {c.beds != null ? ` · ${c.beds} bd` : ""}
+                        {c.baths != null ? ` · ${c.baths} ba` : ""}
+                        {c.property_type ? ` · ${c.property_type}` : ""}
+                      </p>
+                      <div className="flex items-center gap-1 flex-wrap pt-1">
+                        {Array.isArray(c.quicklists) && (c.quicklists as string[]).map((q) => (
+                          <Badge key={q} variant="outline" className="text-[10px]">{q.replace(/-/g, " ")}</Badge>
+                        ))}
+                        {likelihood && (
+                          <Badge variant="outline" className={`text-[10px] ${bandStyle[likelihood.band] ?? ""}`}>
+                            {likelihood.band} likelihood{likelihood.source === "signal-based" ? " · signal-based" : ""}
+                          </Badge>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Saved homes */}
         {savedProperties.length > 0 && (

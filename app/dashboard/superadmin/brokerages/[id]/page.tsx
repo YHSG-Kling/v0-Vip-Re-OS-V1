@@ -15,6 +15,7 @@ import { TenantSnapshotsPanel } from "./tenant-snapshots-panel"
 import { TenantImportPanel } from "./tenant-import-panel"
 import { TenantCrmPullPanel } from "./tenant-crm-pull-panel"
 import { PortalClientsPanel } from "./portal-clients-panel"
+import { ListingSourcesPanel } from "./listing-sources-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -114,6 +115,10 @@ export default async function SuperadminBrokerageDetailPage(
 
       {/* Per-tenant entitlements — feature flags + AI-token quota overrides */}
       <TenantEntitlementsPanel brokerageId={brokerage.id} />
+
+      {/* Platform-managed active-listing sources — the billed BatchData on-market opt-in
+          (wave 69: idx/rentcast is derived, never a tenant or superadmin choice) */}
+      <ListingSourcesPanel brokerageId={brokerage.id} />
 
       {/* Config snapshots — capture this tenant as a template / apply a template here */}
       <TenantSnapshotsPanel brokerageId={brokerage.id} />

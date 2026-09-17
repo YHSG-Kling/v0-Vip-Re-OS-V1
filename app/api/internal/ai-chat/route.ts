@@ -6,6 +6,7 @@ import { convertToModelMessages, tool } from "ai"
 import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import { batchDataMcpTools } from "@/lib/external/batchdata-ai-tools"
+import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -1229,6 +1230,13 @@ export async function POST(req: NextRequest) {
   // a request body (CLAUDE.md §4); each tool call meters its own spend.
   const batchDataTools = await batchDataMcpTools({ brokerageId, userId: user.id })
 
+  // RentCast property-lookup MCP tools (wave 69) — gated: only added when RENTCAST_API_KEY is
+  // configured (rentCastMcpTools resolves {} otherwise). Agent-copilot lookups ONLY — every
+  // scheduled/bulk RentCast pull stays on the typed REST client (lib/property/rentcast.ts);
+  // see lib/external/rentcast-mcp.ts's header for why MCP is copilot-only (billed the same
+  // per-request rate as REST, plus LLM token overhead).
+  const rentCastTools = await rentCastMcpTools({ brokerageId, userId: user.id })
+
   // Routed streaming entry — routing table model, tenant fair-use cap checked
   // BEFORE streaming, cost ledger written on finish (totalUsage, so every
   // tool-calling step is billed). Identity is the session-resolved user +
@@ -1240,7 +1248,7 @@ export async function POST(req: NextRequest) {
       system: systemPrompt,
       messages: await convertToModelMessages(messages),
       maxTokens: 1024,
-      tools: { ...agentTools, ...batchDataTools },
+      tools: { ...agentTools, ...batchDataTools, ...rentCastTools },
       maxSteps: 5,
       userId: user.id,
       brokerageId,

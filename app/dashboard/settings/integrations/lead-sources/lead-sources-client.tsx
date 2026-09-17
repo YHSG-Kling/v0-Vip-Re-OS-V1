@@ -4,90 +4,18 @@ import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Checkbox } from "@/components/ui/checkbox"
 import { saveTenantConnectionAction, type TenantConnectionStatus } from "@/app/actions/tenant-connections"
-import { updateActiveListingSourcesSetting } from "@/app/actions/settings/active-listing-sources"
-import type { ActiveListingSource } from "@/lib/buyer-search/listing-source-order"
+import IDXBrokerSettingsPage from "@/app/dashboard/settings/integrations/idx-broker/page"
 
 const FIELD_LABEL: Record<string, string> = {
   api_key: "API key / token", api_secret: "API secret / client secret", api_url: "API base URL", account_id: "Account / publisher ID",
 }
 
-// Wave 68 — cost hints straight off docs/lead-acquisition-coverage-2026-09.md's worked example
-// (3 markets, 200 active listings/market, daily refresh). Order in this array is the CHECKLIST
-// display order, not the ranking — the ranking is whatever order the brokerage checks them in.
-const SOURCE_INFO: Record<ActiveListingSource, { label: string; hint: string }> = {
-  idx: { label: "IDX Broker feed", hint: "Free — your own MLS credential, never billed to the platform." },
-  rentcast: { label: "RentCast", hint: "~$8–$74/mo for this workload — billed per API request." },
-  batchdata_on_market: {
-    label: "BatchData on-market pull",
-    hint: "~$180–$900/mo for this workload — billed per property record, re-walked daily. Off by default for this reason.",
-  },
-}
-const SOURCE_ORDER: ActiveListingSource[] = ["idx", "rentcast", "batchdata_on_market"]
-
-function ActiveListingSourcesCard({ initial }: { initial: ActiveListingSource[] }) {
-  const [checked, setChecked] = useState<Set<ActiveListingSource>>(new Set(initial))
-  const [msg, setMsg] = useState<string>("")
-  const [pending, start] = useTransition()
-
-  function toggle(source: ActiveListingSource) {
-    setChecked((prev) => {
-      const next = new Set(prev)
-      if (next.has(source)) next.delete(source)
-      else next.add(source)
-      return next
-    })
-    setMsg("")
-  }
-
-  function save() {
-    // Preserve SOURCE_ORDER as the persisted order — the checklist's own display order IS the
-    // ranking (idx first when checked, then rentcast, then batchdata_on_market last), matching
-    // the owner-ruled default precedence.
-    const ordered = SOURCE_ORDER.filter((s) => checked.has(s))
-    start(async () => {
-      const r = await updateActiveListingSourcesSetting(ordered)
-      setMsg(r.success ? "Saved ✓" : (r.error ?? "Failed to save"))
-    })
-  }
-
-  return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">Active-listing sources for buyer smart search</CardTitle>
-        <CardDescription className="text-xs">
-          Which sources feed a regular buyer&apos;s &quot;on the market&quot; smart search, and in what order.
-          IDX and RentCast run by default; the BatchData on-market pull is billed per property record and is
-          off unless you opt in. (Investor-intent buyers are unaffected — they get off-market deals through a
-          separate rail.)
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {SOURCE_ORDER.map((source) => (
-          <label key={source} className="flex items-start gap-2 text-sm">
-            <Checkbox checked={checked.has(source)} onCheckedChange={() => toggle(source)} />
-            <span>
-              <span className="font-medium">{SOURCE_INFO[source].label}</span>
-              <span className="block text-xs text-muted-foreground">{SOURCE_INFO[source].hint}</span>
-            </span>
-          </label>
-        ))}
-        <div className="flex items-center gap-2 pt-1">
-          <Button variant="outline" onClick={save} disabled={pending}>Save</Button>
-          {msg && <p className="text-xs text-muted-foreground">{msg}</p>}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
 export function LeadSourcesClient({
-  connections, portalLeads, initialActiveListingSources,
+  connections, portalLeads,
 }: {
   connections: TenantConnectionStatus[]
   portalLeads: Array<{ portal: string; last30d: number }>
-  initialActiveListingSources: ActiveListingSource[]
 }) {
   const [values, setValues] = useState<Record<string, Record<string, string>>>({})
   const [msg, setMsg] = useState<Record<string, string>>({})
@@ -143,8 +71,17 @@ export function LeadSourcesClient({
         </CardContent>
       </Card>
 
-      {/* Active-listing source order for buyer smart search (wave 68) */}
-      <ActiveListingSourcesCard initial={initialActiveListingSources} />
+      {/* IDX connection setup — wave 69 owner ruling: "the setting page should only allow them
+          to setup their idx connection." RentCast is platform-provided and never a tenant
+          setting; this REUSES the existing IDX Broker form (never a second one) — the same
+          component app/dashboard/settings/integrations/idx-broker/page.tsx mounts on its own
+          route, so there is exactly one place this credential is entered. */}
+      <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        For-sale listings: your IDX feed when connected, otherwise the platform&apos;s RentCast
+        feed. Connect your IDX Broker account below to switch your buyers&apos; smart search to
+        your own board — there is nothing to configure for RentCast, the platform covers it.
+      </div>
+      <IDXBrokerSettingsPage />
 
       {/* Vendor credential slots */}
       {connections.map((c) => (

@@ -1364,7 +1364,10 @@ export interface BatchDataCompsResult {
  *  datasets this repo HAS confirmed); every field is read from the same address/
  *  valuation/lastSale shapes normalizeBatchDataProperty already trusts elsewhere in
  *  this file, so a drift in one place is a drift the whole file already tolerates. */
-function readBatchDataComp(row: Record<string, any>): BatchDataComp {
+// EXPORTED (wave 69 — the MCP comps pre-flight in lib/cma/comp-provider.ts reuses this SAME
+// mapper for `comparable_property_page`'s MCP rows, which are the same provider `comps` dataset
+// shape as the REST path below: one vocabulary, §6, rather than a second field-mapping guess.
+export function readBatchDataComp(row: Record<string, any>): BatchDataComp {
   const addr = row.address ?? {}
   const building = row.building ?? {}
   const lastSale = row.lastSale ?? row.sale ?? {}
@@ -1390,8 +1393,11 @@ function readBatchDataComp(row: Record<string, any>): BatchDataComp {
 
 /** Cost telemetry, cents — no per-comp price independently confirmed; priced the same
  *  as the property-enrichment dataset pull (enrichPropertyDatasetsBatchData) since both
- *  are one address lookup against a named dataset projection. */
-const BATCHDATA_COMPS_COST_CENTS = 5
+ *  are one address lookup against a named dataset projection. EXPORTED (wave 69): the
+ *  MCP comps pre-flight in lib/cma/comp-provider.ts prices its MCP-sourced pull at the
+ *  same conservative estimate — no independently-confirmed MCP-specific comps price
+ *  exists either, and re-declaring the literal would be a second spelling of one cost. */
+export const BATCHDATA_COMPS_COST_CENTS = 5
 
 export async function fetchBatchDataComps(address: string, opts?: { limit?: number }): Promise<BatchDataCompsResult> {
   if (!process.env.BATCHDATA_API_KEY) {

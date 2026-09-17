@@ -18,13 +18,14 @@
  * Every scan reads STRIPPED source (scripts/strip-comments.ts) — a tombstone/comment naming an old
  * quicklist must never count as a live reference (CLAUDE.md §2).
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { blankComments } from "./strip-comments"
 import { INVESTOR_OFFMARKET_QUICKLISTS, BATCHDATA_QUICKLISTS } from "../lib/external/batchdata-client"
 import { normalizeActiveListingSources, DEFAULT_ACTIVE_LISTING_SOURCES, type ActiveListingSource } from "../lib/buyer-search/listing-source-order"
 import { toInvestorFacingCandidate, toInvestorFacingCandidates } from "../lib/buyer-search/investor-facing"
+import { deriveLikelihoodBand } from "../lib/buyer-search/investor-offmarket-match"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -155,11 +156,20 @@ function ownerRedaction() {
     !("owner_name" in investorFacing))
   check("...and every other owner field named in the redactor (phone/email/mailing)",
     !("owner_phone" in investorFacing) && !("owner_email" in investorFacing) && !("owner_mailing_address" in investorFacing))
-  check("...while every NON-owner field survives unchanged", investorFacing.property_address === "9 Distress Rd" && investorFacing.fit_score === 0.8)
+  check("...and equity_percent — a seller-financial fact, not a property fact (wave 69: \"showing them the properties nothing else\")",
+    !("equity_percent" in investorFacing))
+  check("...while every NON-owner, non-financial field survives unchanged", investorFacing.property_address === "9 Distress Rd" && investorFacing.fit_score === 0.8)
+  // POSITIVE CONTROL (§2): a fixture missing the redaction call entirely (raw passthrough)
+  // must still carry equity_percent — proves the check actually exercises the redactor.
+  const unredacted = { ...fixture }
+  check("positive control: an unredacted row still carries equity_percent (the finder can tell them apart)",
+    "equity_percent" in unredacted)
 
   const brokerageFacing = toInvestorFacingCandidate(fixture, "brokerage") as Record<string, unknown>
   check("audience:\"brokerage\" is an explicit no-op — owner_name is KEPT for the agent surface",
     brokerageFacing.owner_name === "Moti Seller")
+  check("...and equity_percent is ALSO kept for the agent surface (brokerage-side needs the seller's financial position)",
+    brokerageFacing.equity_percent === 40)
 
   const arr = toInvestorFacingCandidates([fixture, fixture], "investor")
   check("toInvestorFacingCandidates redacts every row in an array the same way",
@@ -176,6 +186,72 @@ function ownerRedaction() {
   check("the panel's client type marks owner_name OPTIONAL, present only for the resolved agent audience", /owner_name\?:\s*string \| null/.test(panel))
 }
 
+function investorPortalCardShape() {
+  console.log("\n[wave 69 — investor portal card: property-only, likelihood-band proxy]")
+
+  // ── deriveLikelihoodBand · PURE — the proxy table (owner ruling, verbatim, wave 69) ──────
+  check("batchrank_band present → authoritative, passed through unchanged (source: batchrank)",
+    JSON.stringify(deriveLikelihoodBand(["vacant"], "high")) === JSON.stringify({ band: "high", source: "batchrank" }))
+  check("pre-foreclosure → high (signal-based)",
+    JSON.stringify(deriveLikelihoodBand(["preforeclosure"], null)) === JSON.stringify({ band: "high", source: "signal-based" }))
+  check("tired-landlord → medium (signal-based)",
+    JSON.stringify(deriveLikelihoodBand(["tired-landlord"], null)) === JSON.stringify({ band: "medium", source: "signal-based" }))
+  check("absentee-owner + high-equity → medium (signal-based)",
+    JSON.stringify(deriveLikelihoodBand(["absentee-owner", "high-equity"], null)) === JSON.stringify({ band: "medium", source: "signal-based" }))
+  check("absentee-owner ALONE (no high-equity) → NOT medium via that rule (falls to the honest default)",
+    deriveLikelihoodBand(["absentee-owner"], null).band === "medium" && deriveLikelihoodBand(["absentee-owner"], null).source === "signal-based")
+  check("vacant → low (signal-based)",
+    JSON.stringify(deriveLikelihoodBand(["vacant"], null)) === JSON.stringify({ band: "low", source: "signal-based" }))
+  check("inherited → low (signal-based)",
+    JSON.stringify(deriveLikelihoodBand(["inherited"], null)) === JSON.stringify({ band: "low", source: "signal-based" }))
+  check("pre-foreclosure OUTRANKS a co-occurring low-priority tag (priority order, not last-match)",
+    deriveLikelihoodBand(["vacant", "preforeclosure"], null).band === "high")
+  check("no quicklists and no batchrank → honest medium default, never a fabricated high/low",
+    JSON.stringify(deriveLikelihoodBand([], null)) === JSON.stringify({ band: "medium", source: "signal-based" }))
+  // POSITIVE CONTROL (§2): mutate the vacant/inherited branch's slugs — the SAME inputs must
+  // then fail to reach "low", proving the check actually exercises the mapping, not a tautology.
+  const brokenLowRule = (q: string[]) => q.includes("vacant-XXX") || q.includes("inherited-XXX")
+  check("positive control: a mutated (wrong-spelled) low-band rule fails on the real 'vacant' input",
+    !brokenLowRule(["vacant"]))
+
+  // ── SOURCE — the reader carries the new columns + the derived band, never a spread ────────
+  const runner = stripped("lib/buyer-search/investor-offmarket-runner.ts")
+  check("getInvestorOffMarketCandidates SELECTs beds/baths/property_type (m644)",
+    /select\("[^"]*\bbeds\b[^"]*\bbaths\b[^"]*\bproperty_type\b[^"]*"\)/.test(runner))
+  check("every row's likelihood is computed via the ONE pure function (deriveLikelihoodBand), never a second proxy",
+    /likelihood:\s*deriveLikelihoodBand\(r\.quicklists,\s*r\.batchrank_band\)/.test(runner))
+  check("the upsert WRITES beds/baths/property_type explicitly (not a spread of `r` — wave 67 integration lesson)",
+    /beds:\s*r\.beds,\s*baths:\s*r\.baths,\s*property_type:\s*r\.property_type,/.test(runner))
+  check("toOffMarketCandidateRow reads beds/baths/property_type off the BatchDataRecord (r.beds/r.baths/r.propertyType)",
+    /beds:\s*r\.beds\s*\?\?\s*null,\s*baths:\s*r\.baths\s*\?\?\s*null,\s*property_type:\s*r\.propertyType\s*\?\?\s*null,/.test(runner))
+
+  // ── PORTAL SURFACE — the investor sees property fields ONLY, plus the likelihood badge ────
+  const portal = stripped("app/portal/[contactId]/buyer-home.tsx")
+  check("investor portal home fetches getInvestorDealMatch ONLY for contact_persona==='investor'",
+    /contact\.contact_persona === "investor"[\s\S]{0,200}getInvestorDealMatch/.test(portal))
+  check("renders property_address/city/state/zip/estimated_value/beds/baths/property_type",
+    ["property_address", "c.city", "c.state", "c.zip", "estimated_value", "c.beds", "c.baths", "c.property_type"]
+      .every((tok) => portal.includes(tok)))
+  check("renders quicklists and the likelihood band — never owner_name/owner_phone/owner_email/equity_percent literals",
+    /c\.quicklists/.test(portal) && /likelihood/.test(portal) &&
+    !/c\.owner_name/.test(portal) && !/c\.owner_phone/.test(portal) && !/c\.owner_email/.test(portal) && !/c\.equity_percent/.test(portal))
+
+  // ── MIGRATION — RULE, not a waypoint (§2) ──────────────────────────────────────────────────
+  const m644 = raw("supabase/migrations/m644-investor-offmarket-candidates-property-specs.sql")
+  const m644Header = m644.split("\n")[2]
+  const m644Applied = m644Header.includes("APPLIED LIVE")
+  check("m644 header states an honest applied state", m644Applied || m644Header.includes("WRITTEN, NOT APPLIED"))
+  check("once m644 is applied the schema snapshot carries investor_offmarket_candidates.beds/baths/property_type",
+    !m644Applied || (/investor_offmarket_candidates/.test(raw("scripts/schema-snapshot.ts")) &&
+      ["beds", "baths", "property_type"].every((c) => new RegExp(`"${c}"`).test(raw("scripts/schema-snapshot.ts").split("investor_offmarket_candidates")[1]?.slice(0, 800) ?? ""))))
+  check("m644 adds beds/baths/property_type as nullable columns (ADD COLUMN IF NOT EXISTS)",
+    /ADD COLUMN IF NOT EXISTS beds\s+integer/.test(m644) &&
+    /ADD COLUMN IF NOT EXISTS baths\s+numeric/.test(m644) &&
+    /ADD COLUMN IF NOT EXISTS property_type text/.test(m644))
+  check("likelihood_band is DELIBERATELY not a column (computed pure, documented in the migration's own header)",
+    !/ADD COLUMN IF NOT EXISTS likelihood_band/.test(m644) && /DELIBERATELY NOT a column/.test(m644))
+}
+
 function dedupeAndTerritory() {
   console.log("\n[dedupe + territory — cross-checked against the live database facts, not just prose]")
   const runner = stripped("lib/buyer-search/investor-offmarket-runner.ts")
@@ -183,71 +259,90 @@ function dedupeAndTerritory() {
   check("bounded to 2 markets per contact (cost control — never an unbounded territory fan-out)", /\.slice\(0, 2\)/.test(runner))
 }
 
-function activeListingSourceOrderWave68() {
-  console.log("\n[wave 68 — active-listing source order: cost ruling on the BatchData on-market pull]")
+function activeListingSourceOrderWave69() {
+  console.log("\n[wave 69 — active-listing source order: IDX-vs-RentCast DERIVED, never a tenant choice]")
 
   // ── PURE: the resolver's own default + normalization ──────────────────────────────────────
-  check("DEFAULT excludes batchdata_on_market (cost reason — off by default)",
-    !DEFAULT_ACTIVE_LISTING_SOURCES.includes("batchdata_on_market"))
-  check("DEFAULT is exactly [idx, rentcast] in that order (the owner-ruled precedence)",
-    DEFAULT_ACTIVE_LISTING_SOURCES.length === 2 && DEFAULT_ACTIVE_LISTING_SOURCES[0] === "idx" && DEFAULT_ACTIVE_LISTING_SOURCES[1] === "rentcast")
+  check("DEFAULT is the single safe fallback [rentcast] — idx is never guessed, batchdata_on_market never assumed on",
+    DEFAULT_ACTIVE_LISTING_SOURCES.length === 1 && DEFAULT_ACTIVE_LISTING_SOURCES[0] === "rentcast")
   check("normalizer drops an unknown/junk value and keeps the real ones, in order",
     JSON.stringify(normalizeActiveListingSources(["idx", "bogus", "rentcast", 42, null])) === JSON.stringify(["idx", "rentcast"]))
   check("normalizer dedupes (first occurrence wins)",
     JSON.stringify(normalizeActiveListingSources(["rentcast", "idx", "rentcast"])) === JSON.stringify(["rentcast", "idx"]))
-  check("normalizer falls back to the DEFAULT on a non-array (malformed column)",
-    JSON.stringify(normalizeActiveListingSources("not-an-array")) === JSON.stringify(DEFAULT_ACTIVE_LISTING_SOURCES))
-  check("normalizer falls back to the DEFAULT when every entry is junk (never an empty list)",
-    JSON.stringify(normalizeActiveListingSources(["nope", "also-nope"])) === JSON.stringify(DEFAULT_ACTIVE_LISTING_SOURCES))
+  check("normalizer returns EMPTY on a non-array — no fallback to a non-empty default any more (this column only carries an opt-in flag now)",
+    JSON.stringify(normalizeActiveListingSources("not-an-array")) === JSON.stringify([]))
+  check("normalizer returns EMPTY when every entry is junk — an empty batchdata_on_market flag is the valid off state, not an error",
+    JSON.stringify(normalizeActiveListingSources(["nope", "also-nope"])) === JSON.stringify([]))
   // POSITIVE CONTROL (§2): a raw pass-through (no normalization at all) would NOT match the
   // asserted behavior above — proves the assertion actually exercises filtering, not an identity.
   const identity = (v: unknown) => v as ActiveListingSource[]
   check("positive control: an unfiltered pass-through does NOT equal the normalized result (the finder can tell them apart)",
     JSON.stringify(identity(["idx", "bogus", "rentcast"])) !== JSON.stringify(normalizeActiveListingSources(["idx", "bogus", "rentcast"])))
 
-  // ── SOURCE: every consumer calls the ONE resolver ──────────────────────────────────────────
+  // ── RESOLVER: idx-vs-rentcast is DERIVED from the IDX-credential cascade, never stored ──────
+  const resolverSrc = stripped("lib/buyer-search/listing-source-order.ts")
+  check("resolveActiveListingSources imports resolveRentcastEligibility — the SAME cascade IDXBrokerClient.forBrokerage/test:idx-tenant-credential use",
+    /import \{ resolveRentcastEligibility \} from "@\/lib\/property\/rentcast-eligibility"/.test(resolverSrc))
+  check("picks \"idx\" when the credential cascade reports connected", /eligibility\.idx\.status === "connected"[\s\S]{0,40}sources = \["idx"\]/.test(resolverSrc))
+  check("fails CLOSED to the DEFAULT (never guesses idx) when the credential check is unreadable",
+    /eligibility\.idx\.status === "unreadable"[\s\S]{0,260}sources = \[\.\.\.DEFAULT_ACTIVE_LISTING_SOURCES\]/.test(resolverSrc))
+  check("falls to \"rentcast\" only when RentCast itself is eligible (platform key + budget)",
+    /eligibility\.eligible[\s\S]{0,40}sources = \["rentcast"\]/.test(resolverSrc))
+  check("appends batchdata_on_market ONLY from the platform-managed column, never derived",
+    /platformSet\.includes\("batchdata_on_market"\)/.test(resolverSrc))
+  // POSITIVE CONTROL: the same regex must NOT match a mutated resolver that skips the unreadable
+  // fail-closed branch (proves the finder isn't matching on the surrounding scaffolding alone).
+  const resolverNoFailClosed = resolverSrc.replace(
+    /\} else if \(eligibility\.idx\.status === "unreadable"\) \{[\s\S]{0,260}sources = \[\.\.\.DEFAULT_ACTIVE_LISTING_SOURCES\]\s*\n\s*\}/,
+    "}",
+  )
+  check("positive control: deleting the unreadable fail-closed branch breaks the assertion",
+    !/eligibility\.idx\.status === "unreadable"[\s\S]{0,260}sources = \[\.\.\.DEFAULT_ACTIVE_LISTING_SOURCES\]/.test(resolverNoFailClosed))
+
+  // ── SOURCE: every consumer STILL calls the ONE resolver (consumer code untouched this wave) ─
   const mw = stripped("lib/buyer-search/market-watch.ts")
   check("market-watch.ts imports the ONE resolver (no second reader of the setting)",
     /import \{ resolveActiveListingSources \} from "\.\/listing-source-order"/.test(mw))
   const mwGateRe = /const sources = await resolveActiveListingSources\(brokerageId\)[\s\S]*?if \(sources\.includes\("batchdata_on_market"\)\)/
   check("runMarketWatchForBuyer gates the market_active_listings pull on the resolved order", mwGateRe.test(mw))
-  // POSITIVE CONTROL (§2): mutate the gate condition to a different source name — the SAME
-  // regex, over the mutated text, must fail, proving the finder is not a tautology.
   const mwMutated = mw.replace('if (sources.includes("batchdata_on_market")) {', 'if (sources.includes("nonexistent_source")) {')
   check("positive control: mutating the gated source name breaks the same assertion", !mwGateRe.test(mwMutated))
 
   const em = stripped("lib/buyer-search/external-match.ts")
   check("external-match.ts imports the SAME resolver (one vocabulary, §6)",
     /import \{ resolveActiveListingSources \} from "\.\/listing-source-order"/.test(em))
-  check("runExternalMarketWatchForBuyer no-ops when BOTH idx and rentcast are excluded",
+  check("runExternalMarketWatchForBuyer no-ops when BOTH idx and rentcast are absent from the derived order",
     /if \(!sources\.includes\("idx"\) && !sources\.includes\("rentcast"\)\)/.test(em))
-  check("runExternalMarketWatchForBuyer refuses a CONNECTION-chosen tier this brokerage excluded (never overrides the connection precedence, only narrows it)",
-    /if \(!sources\.includes\(result\.source\)\)[\s\S]{0,120}reason: `\$\{result\.source\}_excluded_by_setting`/.test(em))
 
   const feed = stripped("lib/kernel/listings-batchdata-feed.ts")
   check("listings-batchdata-feed.ts imports the SAME resolver",
     /import \{ resolveActiveListingSources \} from "@\/lib\/buyer-search\/listing-source-order"/.test(feed))
   check("runActiveListingDiscoveryForMarket SKIPS the billed pull when batchdata_on_market is excluded",
     /const sources = await resolveActiveListingSources\(market\.brokerage_id\)[\s\S]{0,120}if \(!sources\.includes\("batchdata_on_market"\)\)[\s\S]{0,120}return \{ observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] \}/.test(feed))
-  // POSITIVE CONTROL: the same regex must NOT match the file with the skip line removed.
-  const feedNoSkip = feed.replace(
-    /if \(!sources\.includes\("batchdata_on_market"\)\) \{\s*return \{ observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] \}\s*\}/,
-    "",
-  )
-  check("positive control: deleting the skip block makes the same assertion fail",
-    !/const sources = await resolveActiveListingSources\(market\.brokerage_id\)[\s\S]{0,120}if \(!sources\.includes\("batchdata_on_market"\)\)[\s\S]{0,120}return \{ observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] \}/.test(feedNoSkip))
-  check("the cron caller (app/api/cron/lead-scraping/route.ts) is UNCHANGED — the skip lives inside the function, not the cron",
-    /const r = await runActiveListingDiscoveryForMarket\(supabase, market\)/.test(stripped("app/api/cron/lead-scraping/route.ts")))
 
-  // ── SETTINGS SURFACE ────────────────────────────────────────────────────────────────────────
-  const settingsAction = stripped("app/actions/settings/active-listing-sources.ts")
-  check("settings action reads through requireBrokerageAdmin (gate first, then the client — §4)",
-    /requireBrokerageAdmin\(supabase, acting\.userId\)/.test(settingsAction) && /requireBrokerageAdmin\(supabase, ctx\.userId\)/.test(settingsAction))
-  check("settings write normalizes before persisting (never stores a value the resolver would refuse)",
-    /const normalized = normalizeActiveListingSources\(sources\)/.test(settingsAction))
+  // ── SETTINGS SURFACE — tenant page has NO source checklist, mounts the IDX form ONLY ────────
+  check("the wave-68 tenant write seam is DELETED", !existsSync(join(process.cwd(), "app/actions/settings/active-listing-sources.ts")))
   const leadSourcesClient = stripped("app/dashboard/settings/integrations/lead-sources/lead-sources-client.tsx")
-  check("the settings page renders an ordered checklist with a per-source cost hint",
-    /SOURCE_INFO/.test(leadSourcesClient) && /updateActiveListingSourcesSetting/.test(leadSourcesClient))
+  check("the tenant settings page carries NO ordered-checklist vocabulary any more",
+    !/SOURCE_INFO/.test(leadSourcesClient) && !/updateActiveListingSourcesSetting/.test(leadSourcesClient) && !/ActiveListingSourcesCard/.test(leadSourcesClient))
+  check("...and mounts the EXISTING IDX Broker form (reused, never a second one)",
+    /import IDXBrokerSettingsPage from "@\/app\/dashboard\/settings\/integrations\/idx-broker\/page"/.test(leadSourcesClient) && /<IDXBrokerSettingsPage \/>/.test(leadSourcesClient))
+  const leadSourcesPage = stripped("app/dashboard/settings/integrations/lead-sources/page.tsx")
+  check("the page no longer reads/writes the tenant-facing listing-sources action",
+    !/active-listing-sources/.test(leadSourcesPage))
+
+  // ── PLATFORM-STAFF-ONLY WRITER for the one thing still stored: batchdata_on_market ──────────
+  const superadminAction = stripped("app/actions/superadmin/active-listing-sources.ts")
+  check("the read AND the write both gate on requireSuperadmin (platform cost lever, never a tenant one)",
+    (superadminAction.match(/const auth = await requireSuperadmin\(\)/g) ?? []).length >= 2)
+  check("the writer normalizes before persisting (never stores a value the resolver would refuse)",
+    /const normalized = normalizeActiveListingSources\(params\.sources\)/.test(superadminAction))
+  const superadminPanel = stripped("app/dashboard/superadmin/brokerages/[id]/listing-sources-panel.tsx")
+  check("a superadmin control calls the platform-staff writer",
+    /setBrokerageActiveListingSourcesAction/.test(superadminPanel))
+  const brokerageDetailPage = stripped("app/dashboard/superadmin/brokerages/[id]/page.tsx")
+  check("the superadmin tenant-detail page mounts the panel",
+    /<ListingSourcesPanel brokerageId={brokerage\.id} \/>/.test(brokerageDetailPage))
 
   // ── FEED PANEL ───────────────────────────────────────────────────────────────────────────────
   const actions = stripped("app/actions/lead-scraping-config.ts")
@@ -256,25 +351,35 @@ function activeListingSourceOrderWave68() {
   check("getBatchDataFeedStatus's success return carries activeListingSources",
     (actions.match(/activeListingSources,?/g) ?? []).length >= 3) // resolve line + success return + error-path fallback
   const panel = stripped("app/dashboard/admin/markets/markets-client.tsx")
-  check("admin markets panel shows the exact disabled note",
-    /BatchData on-market pull disabled — IDX\/RentCast serve buyer smart search/.test(panel))
+  check("admin markets panel's disabled note no longer implies a tenant setting page controls this",
+    !/Settings → Lead Sources/.test(panel) && /platform-cost decision/.test(panel))
 
   // ── MIGRATION SHAPE — RULE, not a waypoint (§2): honest state, never pinned to one literal ──
-  const migration = raw("supabase/migrations/m642-active-listing-source-order.sql")
-  const m642Header = migration.split("\n")[2]
+  const migration642 = raw("supabase/migrations/m642-active-listing-source-order.sql")
+  const m642Header = migration642.split("\n")[2]
   const m642Applied = m642Header.includes("APPLIED LIVE")
   check("m642 header states an honest applied state", m642Applied || m642Header.includes("WRITTEN, NOT APPLIED"))
   check("once m642 is applied the schema snapshot carries brokerage_settings.active_listing_sources",
     !m642Applied || /active_listing_sources/.test(raw("scripts/schema-snapshot.ts")))
-  check("adds active_listing_sources as jsonb NOT NULL with the owner-ruled default",
-    /active_listing_sources jsonb NOT NULL DEFAULT '\["idx","rentcast"\]'::jsonb/.test(migration))
-  check("CHECK constraint asserts it is a jsonb ARRAY (jsonb_typeof)",
-    /CHECK \(jsonb_typeof\(active_listing_sources\) = 'array'\)/.test(migration))
+
+  const migration643 = raw("supabase/migrations/m643-active-listing-sources-platform-managed.sql")
+  const m643Header = migration643.split("\n")[2]
+  check("m643 header states an honest state (written-pending or applied-live), never a pinned waypoint",
+    m643Header.includes("WRITTEN, NOT APPLIED") || m643Header.includes("APPLIED LIVE"))
+  check("m643 narrows the column's comment to PLATFORM-STAFF-MANAGED",
+    /PLATFORM-STAFF-MANAGED/.test(migration643))
+  check("m643 drops the DEFAULT to an empty array (idx/rentcast are no longer stored values)",
+    /ALTER COLUMN active_listing_sources SET DEFAULT '\[\]'::jsonb/.test(migration643))
+  // POSITIVE CONTROL: the same regex must not match m642's unrelated default clause.
+  check("positive control: m642's OWN default clause (a different shape) does not satisfy the m643 assertion",
+    !/ALTER COLUMN active_listing_sources SET DEFAULT '\[\]'::jsonb/.test(migration642))
 
   // ── MANAGER REGISTRY ────────────────────────────────────────────────────────────────────────
   const registry = stripped("lib/kernel/manager-registry.ts")
   check("registered in MAINTENANCE_DOMAINS, owned by shopping_agent (the buyer-market-watch owner)",
     /active_listing_source_order:\s*\{\s*manager:\s*"shopping_agent"/.test(registry))
+  check("the registry entry describes DERIVATION, not a stored tenant ranking",
+    /active_listing_source_order:[\s\S]{0,2000}DERIVED/.test(registry))
 }
 
 async function liveLayer() {
@@ -311,8 +416,9 @@ async function main() {
   regularBuyerRailSource()
   contactOnlyDelivery()
   ownerRedaction()
+  investorPortalCardShape()
   dedupeAndTerritory()
-  activeListingSourceOrderWave68()
+  activeListingSourceOrderWave69()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

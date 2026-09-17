@@ -28,6 +28,7 @@ import { RecordEventCard } from "@/app/components/dashboard/listings/lifecycle/r
 import { ListingIntelligenceCard } from "@/app/components/dashboard/listings/lifecycle/listing-intelligence-card"
 import { getListingCopyComplianceGate } from "@/app/actions/ai-listing-intake"
 import { MatchingBuyersPanel } from "@/app/components/dashboard/listings/lifecycle/matching-buyers-panel"
+import { InvestorBuyboxPreviewCard } from "@/app/components/dashboard/listings/lifecycle/investor-buybox-preview-card"
 import { DescriptionApprovalCard } from "@/app/components/dashboard/listings/lifecycle/description-approval-card"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { NeighborNotificationCard } from "../components/neighbor-notification-card"
@@ -680,6 +681,13 @@ const { data: listingVendorBookings } = await supabase
         {/* Matching Buyers — on-demand listing→buyer smart match (System 5.1A) */}
         <div className="mb-4">
           <MatchingBuyersPanel listingId={listingId} buyerOptions={buyerOptions} />
+        </div>
+
+        {/* Investor Buy Box preview — on-demand "N investor buyers matched" (wave 69
+            orphan-export wire-up, lib/external/batchdata-mcp.ts::investorBuyboxPreview).
+            Agent/brokerage-side only; never on a buyer/investor-facing surface. */}
+        <div className="mb-4">
+          <InvestorBuyboxPreviewCard listingId={listingId} />
         </div>
 
         {/* AI-drafted description awaiting the agent's Approve & Publish

@@ -13,6 +13,7 @@ import {
   qualifiedOffMarketDeals,
   boxHasGeography,
   scoreOffMarketFit,
+  deriveLikelihoodBand,
   OFFMARKET_THRESHOLD,
   type OffMarketProperty,
 } from "@/lib/buyer-search/investor-offmarket-match"
@@ -243,6 +244,10 @@ function toOffMarketCandidateRow(
       city: property.city, state: property.state, zip: property.zip,
       quicklists: r.quickLists ?? [trigger],
       estimated_value: estimatedValue, equity_percent: equityPercent, owner_name: ownerName,
+      // m644 (wave 69) — the property specs the investor portal card needs (property-only
+      // surface, owner ruling) and that scoreOffMarketFit already reads off `property` above
+      // for its soft nudges; previously computed and never persisted.
+      beds: r.beds ?? null, baths: r.baths ?? null, property_type: r.propertyType ?? null,
     },
   }
 }
@@ -333,6 +338,9 @@ async function pullAndPersistBatchDataOffMarketCandidates(
       equity_percent: r.equity_percent, owner_name: r.owner_name,
       fit_score: c.matchScore, matched_at: matchedAt,
       batchrank_score: rank?.batchrankScore ?? null, batchrank_band: rank?.batchrankBand ?? null,
+      // m644 (wave 69) — explicit, never a spread of `r` (a spread hides the key set from the
+      // opposite-missing census, per the wave-67 integration lesson this file's own header cites).
+      beds: r.beds, baths: r.baths, property_type: r.property_type,
     }
   })
   const { error } = await svc.from("investor_offmarket_candidates")
@@ -365,7 +373,7 @@ async function stampDelivered(svc: Svc, contactId: string, addressKeys: string[]
  */
 async function getInvestorOffMarketCandidates(svc: Svc, params: { contactId: string; brokerageId: string }) {
   const { data } = await svc.from("investor_offmarket_candidates")
-    .select("id, market_id, address_key, property_address, city, state, zip, quicklists, estimated_value, equity_percent, owner_name, fit_score, batchrank_score, batchrank_band, matched_at, delivered_at, delivered_via, dismissed_at")
+    .select("id, market_id, address_key, property_address, city, state, zip, quicklists, estimated_value, equity_percent, owner_name, fit_score, batchrank_score, batchrank_band, beds, baths, property_type, matched_at, delivered_at, delivered_via, dismissed_at")
     .eq("contact_id", params.contactId).eq("brokerage_id", params.brokerageId)
     .is("dismissed_at", null)
     .order("fit_score", { ascending: false }).limit(25)
@@ -375,13 +383,21 @@ async function getInvestorOffMarketCandidates(svc: Svc, params: { contactId: str
     quicklists: string[]; estimated_value: number | null; equity_percent: number | null
     owner_name: string | null; fit_score: number
     batchrank_score: number | null; batchrank_band: "high" | "medium" | "low" | null
+    beds: number | null; baths: number | null; property_type: string | null
     matched_at: string | null; delivered_at: string | null; delivered_via: string | null; dismissed_at: string | null
   }>
   // BatchRank sort (wave 68): when a band is present it re-orders WITHIN the existing
   // fit_score ordering (High first) — an optional refinement, never a replacement for
   // the geo/distress/equity fit score every candidate always carries.
   const BAND_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 }
-  return [...rows].sort((a, b) => {
+  const withLikelihood = rows.map((r) => ({
+    ...r,
+    // m644 / wave 69 — the investor portal card's "most likely to sell" signal: the
+    // licensed BatchRank verdict when present, else the quicklist-derived proxy. PURE,
+    // one function, proven by scripts/buyer-matching-rails-simulator.ts.
+    likelihood: deriveLikelihoodBand(r.quicklists, r.batchrank_band),
+  }))
+  return [...withLikelihood].sort((a, b) => {
     const ra = a.batchrank_band ? BAND_RANK[a.batchrank_band] : 99
     const rb = b.batchrank_band ? BAND_RANK[b.batchrank_band] : 99
     return ra !== rb ? ra - rb : b.fit_score - a.fit_score

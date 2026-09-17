@@ -603,11 +603,11 @@ export function MarketsSetupClient({
           </p>
           {!initialFeed.activeListingSources.includes("batchdata_on_market") && (
             <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-              BatchData on-market pull disabled — IDX/RentCast serve buyer smart search. This feed still runs
-              for territories opted into other BatchData lanes (motivated sellers, incremental search); the
-              billed on-market discovery pull specifically is off because your active-listing source order
-              (Settings → Lead Sources) doesn&apos;t include it. See docs/lead-acquisition-coverage-2026-09.md
-              for the cost comparison.
+              BatchData on-market pull disabled — your IDX feed when connected, otherwise RentCast, serves
+              buyer smart search. This feed still runs for territories opted into other BatchData lanes
+              (motivated sellers, incremental search); the billed on-market discovery pull specifically is a
+              platform-cost decision, off by default — contact support to opt in. See
+              docs/lead-acquisition-coverage-2026-09.md for the cost comparison.
             </p>
           )}
         </div>

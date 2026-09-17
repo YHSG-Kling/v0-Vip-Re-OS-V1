@@ -107,10 +107,21 @@ function toRentcastPropertyType(raw: string | null | undefined): RentcastQueryPr
   return canonical ? RENTCAST_PROPERTY_TYPE[canonical] : undefined
 }
 
-// Approximate per-call costs at Rentcast's standard tier ($49/mo / 250 calls = $0.196).
-// Used for usage telemetry — actual billing happens via Rentcast directly.
-const COST_PER_LISTING_SEARCH = 0.20
-const COST_PER_AVM_LOOKUP = 0.15
+/**
+ * RentCast bills PER REQUEST — every successful API request counts for billing purposes
+ * regardless of endpoint or page size (developers.rentcast.io, verified 2026-09-17; the same
+ * page states MCP calls count as API requests too, at this SAME rate — see
+ * lib/external/rentcast-ai-tools.ts). Derived from the Foundation plan ($74/mo ÷ 1,000 included
+ * requests = $0.074/request) — Foundation is the assumed default tier; the exact tier is the
+ * owner's commercial decision (docs/lead-acquisition-coverage-2026-09.md carries the full plan
+ * table: Developer $0/50 req free, Foundation $74/1,000, Growth $199/5,000 = $0.0398, Scale
+ * $449/25,000 = $0.01796 — all cheaper per-request at a higher tier). ONE constant for every
+ * RentCast endpoint below: the old per-endpoint estimates (COST_PER_LISTING_SEARCH $0.20,
+ * COST_PER_AVM_LOOKUP $0.15, COST_PER_MARKET_LOOKUP $0.20) were leftovers from RentCast's old
+ * "$49/mo / 250 calls" pricing and invented a DIFFERENT number per endpoint for a vendor that
+ * bills the same way regardless of which endpoint was called — replaced here.
+ */
+export const RENTCAST_USD_PER_REQUEST = 0.074
 
 /**
  * The vendor-ledger lane a RentCast call is attributed to when the caller did
@@ -418,7 +429,7 @@ export async function searchRentcastSaleListings(
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
-      cost: COST_PER_LISTING_SEARCH,
+      cost: RENTCAST_USD_PER_REQUEST,
       endpoint: "/listings/sale",
       systemSource: params.systemSource,
       contactId: params.contactId,
@@ -493,7 +504,7 @@ export async function getRentcastListingStatus(
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
-      cost: COST_PER_LISTING_SEARCH,
+      cost: RENTCAST_USD_PER_REQUEST,
       endpoint: "/listings/sale/{id}",
       systemSource: params.systemSource,
       contactId: params.contactId,
@@ -602,7 +613,7 @@ export async function searchRentcastRentalListings(
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
-      cost: COST_PER_LISTING_SEARCH,
+      cost: RENTCAST_USD_PER_REQUEST,
       endpoint: "/listings/rental/long-term",
       systemSource: params.systemSource,
       contactId: params.contactId,
@@ -689,7 +700,7 @@ export async function getRentcastAVM(
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "avm_lookup",
-      cost: COST_PER_AVM_LOOKUP,
+      cost: RENTCAST_USD_PER_REQUEST,
       endpoint: "/avm/value",
       systemSource: params.systemSource,
       contactId: params.contactId,
@@ -709,8 +720,6 @@ export async function getRentcastAVM(
 // provider for AVM/comps/market stats.
 // ---------------------------------------------------------------------------
 
-const COST_PER_MARKET_LOOKUP = 0.20
-
 /** Fetch zip-level sale market statistics from RentCast. Never throws. */
 export async function getRentcastMarketStats(
   params: RentcastCaller & { zipCode: string },
@@ -724,7 +733,7 @@ export async function getRentcastMarketStats(
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "market_stats",
-      cost: COST_PER_MARKET_LOOKUP,
+      cost: RENTCAST_USD_PER_REQUEST,
       endpoint: "/markets",
       systemSource: params.systemSource,
       contactId: params.contactId,
@@ -807,7 +816,7 @@ export async function getRentcastAvmAndComps(
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "comps_lookup",
-      cost: COST_PER_AVM_LOOKUP,
+      cost: RENTCAST_USD_PER_REQUEST,
       endpoint: "/avm/value(comps)",
       systemSource: params.systemSource,
       contactId: params.contactId,

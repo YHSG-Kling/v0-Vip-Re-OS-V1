@@ -131,8 +131,8 @@
     "lib/embed/widget-modes.ts": 1,
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
-    "lib/external/batchdata-client.ts": 4,
-    "lib/external/batchdata-mcp.ts": 6,
+    "lib/external/batchdata-client.ts": 3,
+    "lib/external/batchdata-mcp.ts": 1,
     "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
@@ -436,7 +436,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9539,
+  "census": 9548,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -704,6 +704,7 @@
     "app/actions/income-engine.ts": 4,
     "app/actions/instant-property-alerts.ts": 2,
     "app/actions/intent-writers.ts": 4,
+    "app/actions/investor-buybox-preview.ts": 1,
     "app/actions/investor-deals.ts": 3,
     "app/actions/isa-phone-numbers.ts": 4,
     "app/actions/jobs.ts": 1,
@@ -865,7 +866,6 @@
     "app/actions/seller-updates.ts": 5,
     "app/actions/sequence-step-ai.ts": 2,
     "app/actions/services-config.ts": 10,
-    "app/actions/settings/active-listing-sources.ts": 2,
     "app/actions/settings/brokerage-identity.ts": 2,
     "app/actions/settings/create-commission-structure.ts": 1,
     "app/actions/settings/create-email-template.ts": 1,
@@ -905,6 +905,7 @@
     "app/actions/stock-video-upload.ts": 2,
     "app/actions/strategy-session.ts": 3,
     "app/actions/superadmin/a2p-verify.ts": 1,
+    "app/actions/superadmin/active-listing-sources.ts": 2,
     "app/actions/superadmin/ai-ops.ts": 6,
     "app/actions/superadmin/brokerage-management.ts": 10,
     "app/actions/superadmin/config-snapshots.ts": 4,
@@ -1028,6 +1029,7 @@
     "app/actions/workflows.ts": 10,
     "app/api/accounting/sync/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
+    "app/api/admin/billing/batchdata-wallet/route.ts": 1,
     "app/api/admin/billing/dashboard/route.ts": 1,
     "app/api/admin/billing/entitlements/[brokerageId]/route.ts": 2,
     "app/api/admin/billing/live-agent-sessions/[brokerageId]/route.ts": 1,
@@ -1488,6 +1490,7 @@
     "app/components/dashboard/listings/lifecycle/completed-documents-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/decision-history-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/description-approval-card.tsx": 1,
+    "app/components/dashboard/listings/lifecycle/investor-buybox-preview-card.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-description-composer.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-forms-panel.tsx": 1,
     "app/components/dashboard/listings/lifecycle/listing-gates-panel.tsx": 1,
@@ -2275,6 +2278,7 @@
     "app/dashboard/superadmin/audit-trail/audit-trail-client.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/enter-tenant-button.tsx": 1,
+    "app/dashboard/superadmin/brokerages/[id]/listing-sources-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/portal-clients-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/tenant-autonomy-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/tenant-crm-pull-panel.tsx": 1,
@@ -2842,7 +2846,7 @@
     "lib/buyer-search/fair-housing.ts": 4,
     "lib/buyer-search/intent-parser.ts": 3,
     "lib/buyer-search/investor-facing.ts": 2,
-    "lib/buyer-search/investor-offmarket-match.ts": 6,
+    "lib/buyer-search/investor-offmarket-match.ts": 7,
     "lib/buyer-search/investor-offmarket-runner.ts": 3,
     "lib/buyer-search/listing-source-order.ts": 2,
     "lib/buyer-search/market-watch.ts": 2,
@@ -3106,7 +3110,7 @@
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
-    "lib/external/batchdata-client.ts": 22,
+    "lib/external/batchdata-client.ts": 23,
     "lib/external/batchdata-mcp.ts": 12,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
@@ -3124,6 +3128,8 @@
     "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 2,
     "lib/external/permit-signals.ts": 15,
+    "lib/external/rentcast-ai-tools.ts": 1,
+    "lib/external/rentcast-mcp.ts": 2,
     "lib/external/rentcast-typed.ts": 2,
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
@@ -6015,6 +6021,9 @@
       "logPropertyUpgrade",
       "setPortalMilestonePreferences"
     ],
+    "app/actions/investor-buybox-preview.ts": [
+      "getInvestorBuyboxPreviewForListing"
+    ],
     "app/actions/investor-deals.ts": [
       "findInvestorDealsAction",
       "getInvestorDealMatchAction",
@@ -7141,10 +7150,6 @@
       "createStageRule",
       "deleteStageRule"
     ],
-    "app/actions/settings/active-listing-sources.ts": [
-      "getActiveListingSourcesSetting",
-      "updateActiveListingSourcesSetting"
-    ],
     "app/actions/settings/brokerage-identity.ts": [
       "getBrokerageIdentity",
       "updateBrokerageIdentity"
@@ -7343,6 +7348,10 @@
     ],
     "app/actions/superadmin/a2p-verify.ts": [
       "verifyA2pPipelineMockAction"
+    ],
+    "app/actions/superadmin/active-listing-sources.ts": [
+      "getBrokerageActiveListingSourcesAction",
+      "setBrokerageActiveListingSourcesAction"
     ],
     "app/actions/superadmin/ai-ops.ts": [
       "getAiOpsAction",
@@ -8166,6 +8175,9 @@
       "POST"
     ],
     "app/api/admin/audit-events/route.ts": [
+      "GET"
+    ],
+    "app/api/admin/billing/batchdata-wallet/route.ts": [
       "GET"
     ],
     "app/api/admin/billing/dashboard/route.ts": [
@@ -9587,6 +9599,9 @@
     ],
     "app/components/dashboard/listings/lifecycle/description-approval-card.tsx": [
       "DescriptionApprovalCard"
+    ],
+    "app/components/dashboard/listings/lifecycle/investor-buybox-preview-card.tsx": [
+      "InvestorBuyboxPreviewCard"
     ],
     "app/components/dashboard/listings/lifecycle/listing-description-composer.tsx": [
       "ListingDescriptionComposer"
@@ -12008,6 +12023,9 @@
     "app/dashboard/superadmin/brokerages/[id]/enter-tenant-button.tsx": [
       "EnterTenantButton"
     ],
+    "app/dashboard/superadmin/brokerages/[id]/listing-sources-panel.tsx": [
+      "ListingSourcesPanel"
+    ],
     "app/dashboard/superadmin/brokerages/[id]/portal-clients-panel.tsx": [
       "PortalClientsPanel"
     ],
@@ -14377,7 +14395,8 @@
       "scoreOffMarketFit",
       "rankOffMarketMatches",
       "qualifiedOffMarketDeals",
-      "boxHasGeography"
+      "boxHasGeography",
+      "deriveLikelihoodBand"
     ],
     "lib/buyer-search/investor-offmarket-runner.ts": [
       "runInvestorOffMarketMatch",
@@ -15618,6 +15637,7 @@
       "enrichPropertyDatasetsBatchData",
       "lookupBatchDataPropertiesByIds",
       "fetchIncrementalPropertySearch",
+      "readBatchDataComp",
       "fetchBatchDataComps",
       "normalizeBuyBoxInvestorRecord",
       "fetchBatchDataWalletBalance",
@@ -15738,6 +15758,13 @@
       "buildPermitSignalRow",
       "permitDedupeKey",
       "ingestPermitSignals"
+    ],
+    "lib/external/rentcast-ai-tools.ts": [
+      "rentCastMcpTools"
+    ],
+    "lib/external/rentcast-mcp.ts": [
+      "callRentcastMcp",
+      "listRentcastMcpTools"
     ],
     "lib/external/rentcast-typed.ts": [
       "callRentcastGet",
@@ -21596,5 +21623,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 6
+  "trulyDead": 0
 }

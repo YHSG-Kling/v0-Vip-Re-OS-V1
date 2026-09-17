@@ -45,6 +45,13 @@ interface FeatureResult {
   error?: string
 }
 
+interface BatchDataWalletResult {
+  success: boolean
+  balanceUsd?: number | null
+  estimatedSpendThisMonthUsd?: number
+  error?: string | null
+}
+
 interface LiveAgentSessionsResult {
   success: boolean
   sessions?: Array<{
@@ -65,6 +72,25 @@ export function BillingDiagnosticsPanel({ defaultBrokerageId }: BillingDiagnosti
   const [brokerageId, setBrokerageId] = useState(defaultBrokerageId)
   const [liveResult, setLiveResult] = useState<LiveAgentSessionsResult | null>(null)
   const [loadingLive, setLoadingLive] = useState(false)
+  const [walletResult, setWalletResult] = useState<BatchDataWalletResult | null>(null)
+  const [loadingWallet, setLoadingWallet] = useState(false)
+
+  // BatchData's OWN live wallet balance (wave 69 orphan-export wire-up — the reader for
+  // lib/external/batchdata-client.ts::fetchBatchDataWalletBalance). Account-wide, not
+  // per-brokerage — platform pays the provider.
+  const checkBatchDataWallet = async () => {
+    setLoadingWallet(true)
+    setWalletResult(null)
+    try {
+      const res = await fetch(`/api/admin/billing/batchdata-wallet`)
+      const data = await res.json()
+      setWalletResult(data)
+    } catch (err) {
+      setWalletResult({ success: false, error: err instanceof Error ? err.message : "Unknown error" })
+    } finally {
+      setLoadingWallet(false)
+    }
+  }
 
   // Live view-agent minutes (D-ID) the tenant was metered for — the reader
   // for the m624 ledger columns; platform pays, tenant is billed (§5).
@@ -260,6 +286,25 @@ export function BillingDiagnosticsPanel({ defaultBrokerageId }: BillingDiagnosti
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2 border-t pt-4">
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={checkBatchDataWallet} disabled={loadingWallet}>
+              {loadingWallet ? "Loading…" : "BatchData wallet balance"}
+            </Button>
+            {walletResult?.success && (
+              <span className="text-xs text-gray-600">
+                balance ≈ ${(walletResult.balanceUsd ?? 0).toFixed(2)} · this month's estimated spend ≈ ${(walletResult.estimatedSpendThisMonthUsd ?? 0).toFixed(2)}
+              </span>
+            )}
+          </div>
+          {walletResult && !walletResult.success && (
+            <div className="flex items-center gap-1.5 text-xs text-red-700">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+              {walletResult.error || "Unknown error"}
             </div>
           )}
         </div>

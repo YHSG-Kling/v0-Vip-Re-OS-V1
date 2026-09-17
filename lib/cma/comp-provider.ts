@@ -89,7 +89,12 @@ import {
 } from "@/lib/property/rentcast-eligibility"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
-import { fetchBatchDataComps, type BatchDataComp } from "@/lib/external/batchdata-client"
+import { fetchBatchDataComps, readBatchDataComp, BATCHDATA_COMPS_COST_CENTS, type BatchDataComp } from "@/lib/external/batchdata-client"
+import {
+  comparablePropertyCount,
+  comparablePropertyPreview,
+  comparablePropertyPage,
+} from "@/lib/external/batchdata-mcp"
 import {
   findCompsViaPerplexity,
   PERPLEXITY_COMP_SEARCH_COST_USD,
@@ -359,6 +364,18 @@ export interface CompProvenance {
   citations: string[]
   /** Provider spend attributable to this pull, in cents. */
   estimatedCostCents: number
+  /**
+   * THE "COMPS AVAILABLE" BADGE SIGNAL (wave 69) — a cheap, no-charge read of BatchData's
+   * MCP `comparable_property_preview` tool, taken independent of whether the sold side
+   * ended up needing a BatchData pull at all (RentCast alone may have met the mix). `true`
+   * = BatchData's preview sample returned at least one comparable for this address; `false`
+   * = the preview ran and returned nothing; `null` = the preview was never reachable (no MCP
+   * token configured, or the call itself failed) — NEVER coerced to `false`, because "we
+   * could not ask" and "we asked and there was nothing" are different facts a CMA UI badge
+   * must not conflate. See PROVIDER_AVM_BASELINE_LABEL for the same discipline applied to
+   * the RentCast AVM.
+   */
+  batchDataMcpPreviewAvailable: boolean | null
 }
 
 export interface SourcedComps {
@@ -536,31 +553,85 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
   // guess. Every row carries `sourceProvider: "batchdata"` so the disclaimer
   // and the appraiser packet can distinguish it from RentCast's own comps.
   let batchDataSoldContribution = 0
+  let batchDataMcpPreviewAvailable: boolean | null = null
   if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY) {
     try {
-      const bd = await fetchBatchDataComps(fullAddress)
-      costCents += Math.round(bd.cost * 100)
+      // ── MCP PRE-FLIGHT (wave 69 owner ruling: "scraping is not frozen so those six
+      // scraping frozen orphan exports should not be blocked" + "keep [provider cost] down
+      // ... try to use an sdk or mcp if it is provided but keeping pricing in mind") ──────
+      // `comparable_property_count` is a cheap/no-charge MCP count — ask it FIRST whether
+      // BatchData has anything at all for this address before paying for the billed `comps`
+      // dataset pull. A confirmed zero SKIPS the pull outright; anything else (a real count,
+      // "unconfigured", or a provider error) falls through unchanged — the pre-flight only
+      // ever SKIPS a pull, it never blocks one it can't be sure about (fail-open on itself).
+      const preflight = await comparablePropertyCount({ address: fullAddress })
+      const preflightConfirmsEmpty = preflight.ok && preflight.count === 0
+
+      // `comparable_property_preview` — the CHEAP, no-charge sample the CMA UI's "comps
+      // available" badge reads (CompProvenance.batchDataMcpPreviewAvailable). Read
+      // regardless of what the pull below does, so the badge reports the true state even
+      // on the empty-preflight path.
+      const preview = await comparablePropertyPreview({ address: fullAddress })
+      batchDataMcpPreviewAvailable = preview.ok ? preview.rows.length > 0 : null
+
       void logVendorUsage({
-        vendorName: "batchdata", usageType: "comps_lookup", unitCount: 1,
-        estimatedCost: bd.cost, systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
-        brokerageId: req.brokerageId,
-        metadata: { purpose: "cma_sold_comp_gap_fill", rows: bd.comps.length, contact_id: req.contactId ?? null },
+        vendorName: "batchdata", usageType: "comps_mcp_preflight", unitCount: 1, estimatedCost: 0,
+        systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE, brokerageId: req.brokerageId,
+        metadata: {
+          purpose: "cma_sold_comp_preflight", preflightOk: preflight.ok, preflightCount: preflight.count,
+          previewOk: preview.ok, previewRows: preview.ok ? preview.rows.length : null, contact_id: req.contactId ?? null,
+        },
       }).catch(() => null)
 
-      if (bd.ok && bd.comps.length > 0) {
-        const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
-        const closedBd = bd.comps
-          .filter((c) => c.status === "closed" && c.address && !seenAddr.has(normalizeAddress(c.address)))
-          .map((c) => toScoredCompFromBatchData(req.subject, c))
-          .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
-        if (closedBd.length > 0) {
-          closedComps.push(...closedBd)
-          batchDataSoldContribution = closedBd.length
-          citations.push("BatchData comparable-property dataset (comps)")
-          notes.push(`${closedBd.length} closed comparable sale(s) came from BatchData's comps dataset, a SECOND real data provider, to fill the sold-side shortfall RentCast left — not an AI gap-fill.`)
+      if (preflightConfirmsEmpty) {
+        notes.push("BatchData's MCP comps pre-flight (comparable_property_count) reported 0 available comparables for this address — the billed comps dataset pull was skipped rather than paying for an empty result.")
+      } else {
+        // The billed pull: MCP `comparable_property_page` tried FIRST (this module's own
+        // header: "agentic callers route property / owner / motivation queries through MCP
+        // when configured, with automatic fallback to the existing REST batchdata-client
+        // path"), REST fetchBatchDataComps as the fallback — never both, never twice-billed.
+        const mcpPage = await comparablePropertyPage({ address: fullAddress, take: REQUIRED_SOLD_COMPS * 3 })
+        let bdComps: BatchDataComp[] = []
+        let compsCostDollars = 0
+        let compsVia: "mcp" | "rest" = "rest"
+        let compsError: string | null = null
+        if (mcpPage.ok && mcpPage.rows.length > 0) {
+          bdComps = mcpPage.rows.map((row) => readBatchDataComp(row as unknown as Record<string, any>))
+          compsVia = "mcp"
+          compsCostDollars = BATCHDATA_COMPS_COST_CENTS / 100
+        } else {
+          if (mcpPage.error && !mcpPage.unconfigured) {
+            notes.push(`BatchData comps dataset (MCP comparable_property_page) failed, falling back to REST: ${mcpPage.error}`)
+          }
+          const rest = await fetchBatchDataComps(fullAddress)
+          bdComps = rest.comps
+          compsCostDollars = rest.cost
+          compsError = rest.ok ? null : rest.error ?? null
         }
-      } else if (!bd.ok) {
-        notes.push(`BatchData comps dataset was tried to fill the sold-side shortfall and failed: ${bd.error}`)
+        costCents += Math.round(compsCostDollars * 100)
+
+        void logVendorUsage({
+          vendorName: "batchdata", usageType: "comps_lookup", unitCount: 1,
+          estimatedCost: compsCostDollars, systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
+          brokerageId: req.brokerageId,
+          metadata: { purpose: "cma_sold_comp_gap_fill", rows: bdComps.length, via: compsVia, contact_id: req.contactId ?? null },
+        }).catch(() => null)
+
+        if (bdComps.length > 0) {
+          const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
+          const closedBd = bdComps
+            .filter((c) => c.status === "closed" && c.address && !seenAddr.has(normalizeAddress(c.address)))
+            .map((c) => toScoredCompFromBatchData(req.subject, c))
+            .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
+          if (closedBd.length > 0) {
+            closedComps.push(...closedBd)
+            batchDataSoldContribution = closedBd.length
+            citations.push(compsVia === "mcp" ? "BatchData comparable-property MCP dataset (comps)" : "BatchData comparable-property dataset (comps)")
+            notes.push(`${closedBd.length} closed comparable sale(s) came from BatchData's comps dataset (via ${compsVia.toUpperCase()}), a SECOND real data provider, to fill the sold-side shortfall RentCast left — not an AI gap-fill.`)
+          }
+        } else if (compsError) {
+          notes.push(`BatchData comps dataset was tried to fill the sold-side shortfall and failed: ${compsError}`)
+        }
       }
     } catch (e) {
       notes.push(`BatchData comps dataset lookup threw and was skipped: ${e instanceof Error ? e.message : String(e)}`)
@@ -822,6 +893,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       notes,
       citations,
       estimatedCostCents: costCents,
+      batchDataMcpPreviewAvailable,
     },
   }
 }

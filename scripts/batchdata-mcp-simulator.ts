@@ -241,5 +241,67 @@ const read = (rel: string) => stripComments(readFileSync(join(root, rel), "utf8"
   ok(/resolveBatchDataToken\("mcp"\)/.test(mcpSrc), "token wiring: batchdata-mcp.ts reads the \"mcp\" purpose")
 }
 
+// ─── 7. WAVE 69 — the six scraping-frozen orphan exports, wired to real readers ────────
+// Owner ruling, verbatim: "scraping is not frozen so those six scraping frozen orphan
+// exports should not be blocked." Every scan below reads STRIPPED source (§2) — a
+// comment naming the pattern must never count as the pattern itself.
+{
+  console.log("\n[wave 69 — count-before-page pre-flight, CMA comps lane]")
+  const compProvider = read("lib/cma/comp-provider.ts")
+  ok(/comparablePropertyCount\s*\(\s*\{\s*address:\s*fullAddress\s*\}\s*\)/.test(compProvider),
+     "CMA comp lane: calls comparablePropertyCount BEFORE the billed comps pull")
+  ok(/preflight\.ok && preflight\.count === 0/.test(compProvider),
+     "CMA comp lane: a confirmed zero count SKIPS the billed comparable_property_page/REST pull")
+  ok(/comparablePropertyPreview\s*\(\s*\{\s*address:\s*fullAddress\s*\}\s*\)/.test(compProvider),
+     "CMA comp lane: calls comparablePropertyPreview for the CMA UI 'comps available' badge")
+  ok(/batchDataMcpPreviewAvailable/.test(compProvider),
+     "CMA comp lane: the preview result rides on CompProvenance (the badge's data)")
+  ok(/comparablePropertyPage\s*\(\s*\{\s*address:\s*fullAddress/.test(compProvider),
+     "CMA comp lane: the billed pull itself tries comparable_property_page (MCP) before the REST fallback")
+  ok(/mcpPage\.ok && mcpPage\.rows\.length > 0/.test(compProvider),
+     "CMA comp lane: only accepts the MCP page result when it actually returned rows (falls back to REST otherwise)")
+  // POSITIVE CONTROL (§2): a fixture that pulls REST FIRST with no pre-flight at all must
+  // fail the "calls comparablePropertyCount before the pull" check.
+  const noPreflightFixture = `const bd = await fetchBatchDataComps(fullAddress)\ncostCents += Math.round(bd.cost * 100)`
+  ok(!/comparablePropertyCount\s*\(\s*\{\s*address:\s*fullAddress\s*\}\s*\)/.test(noPreflightFixture),
+     "positive control: a fixture with no pre-flight correctly fails the pre-flight check")
+
+  console.log("\n[wave 69 — count-before-page pre-flight, listing Buy Box lane]")
+  const feed = read("lib/kernel/listings-batchdata-feed.ts")
+  ok(/investorBuyboxCount\s*\(\s*\{\s*address:\s*listing\.address/.test(feed),
+     "Buy Box lane: calls investorBuyboxCount BEFORE the billed investorBuyboxPage pull, per listing")
+  ok(/preflight\.ok && preflight\.count === 0\) continue/.test(feed),
+     "Buy Box lane: a confirmed zero count SKIPS the page pull for THAT listing (continue, not break)")
+  const countIdx = feed.indexOf("investorBuyboxCount(")
+  const pageIdx = feed.indexOf("investorBuyboxPage(")
+  ok(countIdx > -1 && pageIdx > -1 && countIdx < pageIdx,
+     "Buy Box lane: the count pre-flight appears BEFORE the page pull in source order")
+
+  console.log("\n[wave 69 — listing-concierge preview reader]")
+  const previewAction = read("app/actions/investor-buybox-preview.ts")
+  ok(/investorBuyboxPreview\(/.test(previewAction),
+     "listing-concierge: getInvestorBuyboxPreviewForListing calls investorBuyboxPreview")
+  ok(/eq\("brokerage_id", ctx\.brokerageId\)/.test(previewAction),
+     "listing-concierge: the listing read is scoped to the SESSION's brokerage (§4 — tenant from session, never a param)")
+  const previewCard = read("app/components/dashboard/listings/lifecycle/investor-buybox-preview-card.tsx")
+  ok(/getInvestorBuyboxPreviewForListing/.test(previewCard),
+     "listing-concierge: the 'N investor buyers matched' card calls the reader action")
+  const lifecyclePage = read("app/dashboard/listings/[id]/lifecycle/page.tsx")
+  ok(/InvestorBuyboxPreviewCard/.test(lifecyclePage),
+     "listing-concierge: the card is actually mounted on the listing detail page")
+
+  console.log("\n[wave 69 — BatchData wallet balance reader]")
+  const walletRoute = read("app/api/admin/billing/batchdata-wallet/route.ts")
+  ok(/fetchBatchDataWalletBalance\(\)/.test(walletRoute),
+     "billing diagnostics: the wallet route calls fetchBatchDataWalletBalance")
+  ok(/requireSuperadminAuth\(/.test(walletRoute),
+     "billing diagnostics: gated to platform staff (platform pays the provider — CLAUDE.md §5)")
+  const panel = read("app/components/features/admin/billing-diagnostics-panel.tsx")
+  ok(/\/api\/admin\/billing\/batchdata-wallet/.test(panel),
+     "billing diagnostics: the panel actually calls the wallet route (a real UI reader, not just the route existing)")
+  ok(/balanceUsd/.test(panel) && /estimatedSpendThisMonthUsd/.test(panel),
+     "billing diagnostics: the panel shows BOTH the live balance and this month's estimated spend side by side")
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

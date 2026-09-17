@@ -45,7 +45,7 @@ import {
   type BatchDataInvestorMatch,
   type BatchDataRecord,
 } from "@/lib/external/batchdata-client"
-import { investorBuyboxPage } from "@/lib/external/batchdata-mcp"
+import { investorBuyboxPage, investorBuyboxCount } from "@/lib/external/batchdata-mcp"
 import {
   ACTIVE_LISTING_SIGNAL_TYPE,
   EXPIRED_LISTING_SIGNAL_TYPE,
@@ -379,6 +379,17 @@ export async function runBuyBoxMatchingForMarket(
 
   let investorLeadsCreated = 0
   for (const listing of (activeListings ?? []) as Array<{ id: string; address: string; city: string; state: string; zip: string }> ) {
+    // ── COUNT PRE-FLIGHT (wave 69 owner ruling: "scraping is not frozen so those six
+    // scraping frozen orphan exports should not be blocked" + cost-down posture) ──────────
+    // investor_buybox_count is the same MCP call as the page pull below, minus the actual
+    // match rows — ask it FIRST whether this listing has ANY investor matches before paying
+    // for the billed take:10 page pull. A confirmed zero skips the pull for THIS listing
+    // (cost savings across a book of listings that mostly have none); anything else (a real
+    // count, "unconfigured", or a provider error) falls through to the page pull unchanged —
+    // the pre-flight only ever SKIPS a pull, it never blocks one it can't be sure about.
+    const preflight = await investorBuyboxCount({ address: listing.address, city: listing.city, state: listing.state, zip: listing.zip })
+    if (preflight.ok && preflight.count === 0) continue // nothing to page — no cost, no error
+
     const match = await investorBuyboxPage({ address: listing.address, city: listing.city, state: listing.state, zip: listing.zip, take: 10 })
     if (match.unconfigured) {
       errors.push("BatchData MCP not configured (BATCHDATA_MCP_URL) — Buy Box has no REST fallback, skipping")

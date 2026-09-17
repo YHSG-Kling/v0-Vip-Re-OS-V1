@@ -18,6 +18,17 @@
 
 const OWNER_FIELDS = ["owner_name", "owner_phone", "owner_email", "owner_mailing_address"] as const
 
+/**
+ * Wave 69 owner ruling, verbatim: "investor buyers portal persona is different than the
+ * regular real estate buyer… if it is for the investor with giving them just off market but
+ * most likely to sell, that is just showing them the properties nothing else." equity_percent
+ * is the SELLER'S own financial leverage position — not owner-identifying, but not a property
+ * fact either, and it is not one of the fields the ruling names as investor-visible. Dropped
+ * for the SAME reason as the owner fields (a fact about the seller, never the property), kept
+ * in its own list because it is conceptually distinct from OWNER_FIELDS (identity vs. finances).
+ */
+const INVESTOR_ADDITIONAL_REDACTED_FIELDS = ["equity_percent"] as const
+
 export type CandidateAudience = "investor" | "brokerage"
 
 export interface OffMarketCandidateRow {
@@ -26,11 +37,12 @@ export interface OffMarketCandidateRow {
   owner_phone?: string | null
   owner_email?: string | null
   owner_mailing_address?: string | null
+  equity_percent?: number | null
 }
 
 export type InvestorFacingCandidate<T extends OffMarketCandidateRow> = Omit<
   T,
-  "owner_name" | "owner_phone" | "owner_email" | "owner_mailing_address"
+  "owner_name" | "owner_phone" | "owner_email" | "owner_mailing_address" | "equity_percent"
 >
 
 /**
@@ -55,6 +67,7 @@ export function toInvestorFacingCandidate<T extends OffMarketCandidateRow>(
   if (audience === "brokerage") return row
   const clone: Record<string, unknown> = { ...row }
   for (const f of OWNER_FIELDS) delete clone[f]
+  for (const f of INVESTOR_ADDITIONAL_REDACTED_FIELDS) delete clone[f]
   return clone as InvestorFacingCandidate<T>
 }
 

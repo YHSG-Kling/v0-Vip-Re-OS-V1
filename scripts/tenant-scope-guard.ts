@@ -558,6 +558,8 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
     "platform-staff act-as/support surface, gated by requirePlatformCapability('support') (platform_role).",
   "app/actions/lead-import/crm-pull-actions.ts::getCrmImportStatusAction":
     "platform-staff white-glove migration surface, gated by gateStaffAction('tenants') (platform_role) — tenant is the operator's TARGET by design, never the operator's own.",
+  "app/actions/superadmin/active-listing-sources.ts::getBrokerageActiveListingSourcesAction":
+    "platform-staff act-as/support surface, gated by requireSuperadmin() (platform_role) — the target brokerage is a superadmin console's whole point, same shape as getBrokerageDetailAction above.",
 }
 
 {

@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-16
+ * generated: 2026-09-17
  * source: public.live_schema_json()
- * body-sha256: 99511de3e6376874e6874581ea2e6c00bb62bd9b5ff95abf50339da06736a0b0
+ * body-sha256: 328658e25aa324ab526bc1b3795d265d9f1fb2ed8d042e5238cedbac4ece00af
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -337,7 +337,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   intelligence_signals_log: ["brokerage_id", "contact_id", "detected_at", "id", "ingested_at", "lead_profile_id", "signal_data_json", "signal_strength", "signal_type"],
   intelligent_outreach_log: ["brokerage_id", "channel", "contact_id", "content", "created_at", "id", "outreach_type", "result"],
   investor_deal_matches: ["agent_id", "brokerage_id", "candidate_count", "candidates", "contact_id", "created_at", "id", "last_matched_at", "status", "updated_at"],
-  investor_offmarket_candidates: ["address_key", "batchrank_band", "batchrank_score", "brokerage_id", "city", "contact_id", "created_at", "delivered_at", "delivered_via", "dismissed_at", "equity_percent", "estimated_value", "fit_score", "id", "market_id", "matched_at", "owner_name", "property_address", "quicklists", "state", "updated_at", "zip"],
+  investor_offmarket_candidates: ["address_key", "batchrank_band", "batchrank_score", "baths", "beds", "brokerage_id", "city", "contact_id", "created_at", "delivered_at", "delivered_via", "dismissed_at", "equity_percent", "estimated_value", "fit_score", "id", "market_id", "matched_at", "owner_name", "property_address", "property_type", "quicklists", "state", "updated_at", "zip"],
   isa_outreach_log: ["agent_id", "body_snippet", "brokerage_id", "calendar_event_id", "channel", "compliance_passed", "contact_id", "created_at", "id", "lead_id", "lob_letter_id", "opened_at", "provider_job_id", "replied_at", "sent_at", "status", "subject", "them_first_score"],
   journey_blueprints: ["actions_json", "cards_json", "created_at", "id", "is_active", "persona", "priority_order", "stage", "team_visibility_enabled", "tools_enabled"],
   journey_stage_progress: ["brokerage_id", "completed_at", "contact_id", "created_at", "current_task", "id", "progress_pct", "stage_name", "started_at", "updated_at"],

@@ -327,3 +327,84 @@ shape for "walk every active listing in 3 markets."
   status transitions); if `market_active_listings`' existing session/cursor state ever proves the
   BatchData API delivers a smaller only-changed delta for `on-market`, the BatchData column above
   would shrink — not observed or measured this wave, flagged rather than assumed.
+
+## IDX/RentCast — wave 69 (owner, verbatim, 2026-09-17): "rentcast is platform provided but idx
+is for tenant connected if the tenant has this connection instead of rentcast option for for sale
+properties. the setting page should only allow them to setup their idx connection."
+
+Wave 68 gave the brokerage an ORDERED CHECKLIST that let them reorder or exclude idx/rentcast — a
+tenant CHOICE, persisted through `app/actions/settings/active-listing-sources.ts` and rendered by
+`app/dashboard/settings/integrations/lead-sources`. The owner's ruling corrects this: IDX-vs-
+RentCast is not a preference, it is a FACT about whether the brokerage has connected its own MLS
+feed. That action file is DELETED (tombstone at `lib/buyer-search/listing-source-order.ts:1`).
+
+**What changed:**
+
+- `lib/buyer-search/listing-source-order.ts::resolveActiveListingSources` now DERIVES idx-vs-
+  rentcast on every call from `lib/property/rentcast-eligibility.ts::resolveRentcastEligibility`
+  — the SAME IDX-credential cascade `IDXBrokerClient.forBrokerage` uses
+  (`scripts/idx-tenant-credential-simulator.ts`, `test:idx-tenant-credential`). "idx" when
+  connected, else "rentcast" when RentCast is eligible (platform key + vendor budget), else
+  neither. An unreadable credential check fails CLOSED to `["rentcast"]` rather than guess.
+- The tenant settings page (`app/dashboard/settings/integrations/lead-sources`) now shows ONLY
+  the IDX Broker connection form — reused directly from
+  `app/dashboard/settings/integrations/idx-broker/page.tsx` (never a second form) — plus a
+  read-only line: "For-sale listings: your IDX feed when connected, otherwise the platform's
+  RentCast feed." There is no checklist and no tenant write path for
+  `brokerage_settings.active_listing_sources` any more.
+- The ONE thing left stored in that column is the billed BatchData on-market opt-in flag — a
+  platform cost decision, not a tenant one. `app/actions/superadmin/active-listing-sources.ts::
+  setBrokerageActiveListingSourcesAction` (requireSuperadmin-gated) is the only writer, with a
+  control on `app/dashboard/superadmin/brokerages/[id]/listing-sources-panel.tsx`. m643 narrows
+  the column's COMMENT to state this and drops its DEFAULT to `[]` (no schema change).
+
+### RentCast MCP — copilot-only, priced the same as REST
+
+RESEARCHED (developers.rentcast.io, 2026-09-17): RentCast's MCP server is public at
+`https://developers.rentcast.io/mcp`; sending `X-Api-Key: <RENTCAST_API_KEY>` enables live
+requests. The docs state plainly: **"All successful API requests made using your API key,
+including through the MCP server, will be counted for billing purposes."** An MCP call therefore
+bills at the SAME per-request rate as REST, plus whatever LLM tokens the agent turn spends
+reasoning about the call and its result — strictly more expensive than REST for identical data.
+
+DECISION: production/scheduled/bulk RentCast pulls stay on the typed REST client
+(`lib/property/rentcast.ts` + `lib/external/rentcast-typed.ts`, generated from RentCast's OpenAPI
+spec). The MCP is exposed ONLY to the in-app agent copilot for ad-hoc lookups —
+`lib/external/rentcast-mcp.ts` (transport: official `@modelcontextprotocol/sdk` `Client` +
+`StreamableHTTPClientTransport`, mirroring `lib/external/batchdata-mcp.ts`'s shape with the one
+real difference being the `X-Api-Key` header instead of BatchData's `Authorization: Bearer`) and
+`lib/external/rentcast-ai-tools.ts::rentCastMcpTools(ctx)` (AI-SDK tool surface, dynamic
+catalogue discovery — no hardcoded RentCast tool names — mirroring
+`lib/external/batchdata-ai-tools.ts`), wired into `app/api/internal/ai-chat/route.ts` beside
+`batchDataMcpTools`. Fail-closed without `RENTCAST_API_KEY` (returns `{}` — no tool that errors
+on every call). Proof: `scripts/rentcast-copilot-tools-simulator.ts` (`test:rentcast-copilot-
+tools`) — fail-closed, metering, and that no production pull path imports the MCP client.
+
+### RentCast per-request price — one constant, replacing three invented ones
+
+`lib/property/rentcast.ts` used to meter three DIFFERENT per-call estimates
+(`COST_PER_LISTING_SEARCH` $0.20, `COST_PER_AVM_LOOKUP` $0.15, `COST_PER_MARKET_LOOKUP` $0.20) —
+leftovers from RentCast's old "$49/mo / 250 calls" pricing, for a vendor that bills the SAME way
+(per request) regardless of endpoint. Replaced by ONE constant, `RENTCAST_USD_PER_REQUEST =
+0.074`, derived from the Foundation plan ($74/mo ÷ 1,000 included requests) — see the plan table
+above for the other tiers (Developer $0/50 free, Growth $199/5,000 = $0.0398/req, Scale
+$449/25,000 = $0.01796/req; Foundation is the assumed default tier, plan-dependent, the owner's
+commercial decision). Every metered REST call site in `lib/property/rentcast.ts` and every MCP
+tool call in `lib/external/rentcast-ai-tools.ts` use this SAME constant (§6 — one vocabulary),
+through the existing `logVendorUsage`/`meterVendorSpend` vendor-cost ledger.
+
+### Unresolved (wave 69)
+
+- Two RentCast readers outside `lib/property/rentcast.ts` — `lib/lead-pipeline/
+  contact-signal-rescrape.ts` and `lib/agentic-os/deal-investigator.ts` — read
+  `process.env.RENTCAST_API_KEY` directly and are NOT confirmed to be metered through
+  `logVendorUsage`/`meterVendorSpend`. Both are outside this lane's assigned scope (settings
+  surface, resolver, migration, MCP copilot tools); flagged rather than fixed. A follow-up should
+  confirm whether either issues real HTTP calls and, if so, route them through the ledger.
+- `lib/cma/comp-provider.ts`'s `RENTCAST_COMPS_COST_CENTS = 15` cost-telemetry constant (a
+  cents-denominated mirror of the retired `COST_PER_AVM_LOOKUP`) was not updated to
+  `RENTCAST_USD_PER_REQUEST`'s value (7.4¢) — outside this lane's file scope, flagged for a
+  follow-up so the CMA cost display and the vendor ledger price agree.
+- The Foundation-tier assumption behind `RENTCAST_USD_PER_REQUEST` is a default, not a confirmed
+  account tier — same caveat as the plan table above (read off a third-party mirror, not a live
+  RentCast dashboard).
