@@ -202,6 +202,12 @@ export async function updateScrapingMarket(
     radius_miles: number
     priority: number
     is_active: boolean
+    // Lane 72C — the operator toggle surface wave 71 flagged: which SourceKeys
+    // (lib/lead-pipeline/source-intent-map.ts) this market's scrape tick runs.
+    // Written here so it goes through the SAME tenant-scoped update path (and
+    // the SAME .eq("id", id) row-ownership check) every other market field does
+    // — no second write path onto lead_scraping_markets.
+    enabled_sources: string[]
   }>,
 ) {
   try {

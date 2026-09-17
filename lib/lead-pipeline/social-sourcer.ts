@@ -19,7 +19,7 @@ import {
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
 import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter } from "./scraper-parsers"
-import { buildAgentSeekingPhrases } from "./source-intent-map"
+import { buildAgentSeekingPhrases, buildNewConstructionPhrases } from "./source-intent-map"
 
 export interface SocialMarket {
   city: string | null
@@ -409,6 +409,41 @@ export async function sourceAgentSeekingPhraseIntent(market: SocialMarket): Prom
   if (phrases.length === 0) return { records: [], cost: 0 }
   const r = await scrapeGoogleSearchResults({ queries: phrases.slice(0, 5), resultsPerQuery: 10 }).catch(() => ({ results: [], cost: 0 }))
   return { records: (r.results ?? []).map((x) => normalizeAgentSeekingResult(x, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+// ── New-construction / builder intent — cross-source (Google/Apify today) — lane 72C ─────────
+// docs/lead-acquisition-coverage-2026-09.md item #23, "new-construction/builder lists": the next
+// coverage lane after site_visitor_intent (wave 70) and email_engagement_intent (lane 71C). Reuses
+// the ALREADY-REGISTERED Apify 'google' task (no new vendor relationship, no new actor id to
+// verify) — same shape as sourceAgentSeekingPhraseIntent immediately above, DISTINCT population
+// (new-construction shoppers, not people shopping for an agent).
+
+export function normalizeNewConstructionResult(result: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  const text = `${result.title ?? ""} ${result.description ?? result.snippet ?? ""}`.toLowerCase()
+  const intentSignals = ["new_construction"]
+  if (/incentive/.test(text)) intentSignals.push("builder_incentive")
+  if (/move[- ]in ready/.test(text)) intentSignals.push("move_in_ready")
+  if (/communit/.test(text)) intentSignals.push("new_home_community")
+  return {
+    sourceRecordId: `new-construction-${Buffer.from(String(result.url ?? result.link ?? result.title ?? Date.now())).toString("base64").slice(0, 40)}`,
+    source: "new_construction_intent",
+    behaviorType: "search_signal",
+    intentType: "buyer", // a new-construction search is definitionally a buyer signal
+    intentSignals,
+    city: market.city,
+    state: market.state,
+    sourceUrl: result.url ?? result.link ?? null,
+    motivationScore: 40,
+    rawPayload: result,
+  }
+}
+
+/** New-construction / builder-shopper phrase intent — territory-centric, cross-source. */
+export async function sourceNewConstructionIntent(market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const { phrases } = buildNewConstructionPhrases(market)
+  if (phrases.length === 0) return { records: [], cost: 0 }
+  const r = await scrapeGoogleSearchResults({ queries: phrases.slice(0, 5), resultsPerQuery: 10 }).catch(() => ({ results: [], cost: 0 }))
+  return { records: (r.results ?? []).map((x) => normalizeNewConstructionResult(x, market)).filter(isViableRecord), cost: r.cost ?? 0 }
 }
 
 // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter (ZenRows/Zyte) ──────────

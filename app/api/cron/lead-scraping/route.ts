@@ -34,6 +34,7 @@ import {
   sourceFacebookRecommendRealtor,
   sourceAgentSeekingPhraseIntent,
   sourceRealtySiteChatter,
+  sourceNewConstructionIntent,
 } from "@/lib/lead-pipeline/social-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
@@ -579,7 +580,8 @@ export async function GET(request: Request) {
         enabledSources.has("reddit_relocation") ||
         enabledSources.has("facebook_recommend_realtor") ||
         enabledSources.has("agent_seeking_phrase_intent") ||
-        enabledSources.has("realty_chatter")
+        enabledSources.has("realty_chatter") ||
+        enabledSources.has("new_construction_intent")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -803,6 +805,15 @@ export async function GET(request: Request) {
             const { records, cost } = await sourceAgentSeekingPhraseIntent(socialMarket)
             sourceCostUsd += cost
             await insertSocial(records, "agent_seeking_phrase_intent", "social_intent", cost)
+          }
+
+          // ── New-construction / builder intent — cross-source (Google/Apify today) — lane 72C ──
+          // docs/lead-acquisition-coverage-2026-09.md item #23, the next coverage lane after
+          // site_visitor_intent (wave 70) / email_engagement_intent (lane 71C).
+          if (enabledSources.has("new_construction_intent")) {
+            const { records, cost } = await sourceNewConstructionIntent(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "new_construction_intent", "social_intent", cost)
           }
 
           // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────

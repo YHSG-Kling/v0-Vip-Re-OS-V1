@@ -46,6 +46,8 @@ export type SourceKey =
   | 'site_visitor_intent'         // ON-SITE behavioral acquisition: unidentified, high-dwell tenant-website visitors (own first-party data, $0 marginal cost)
   // ── Lane 71C (carried coverage lane, docs/lead-acquisition-coverage-2026-09.md) — DISTINCT from every source above ──
   | 'email_engagement_intent'     // repeated opens/clicks on the tenant's OWN outbound email (own first-party data, $0 marginal cost)
+  // ── Lane 72C (carried coverage lane, docs/lead-acquisition-coverage-2026-09.md — new-construction/builder lists) — DISTINCT from every source above ──
+  | 'new_construction_intent'     // Google/Apify phrase-intent search for new-construction / builder shoppers, territory-centric
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -518,7 +520,39 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── New-construction / builder intent (lane 72C — docs/lead-acquisition-coverage-2026-09.md's
+  // remaining-lanes matrix item #23, "new-construction/builder lists"). Territory-centric
+  // Google phrase-intent search (via the ALREADY-REGISTERED Apify 'google' task — no new
+  // vendor relationship, same shape as agent_seeking_phrase_intent above) for people actively
+  // shopping new-construction inventory ("new construction homes <city>", "<builder> incentives
+  // <city>", "new home communities <city>"). DISTINCT from google_phrase_intent (generic
+  // buyer/seller listing search) and from agent_seeking_phrase_intent (shopping for an AGENT,
+  // not a house) — never merged (CLAUDE.md §6: one vocabulary per function, but new-construction
+  // shoppers are a different population from either of those two). Buyer-side by construction: a
+  // new-construction search is definitionally a buyer signal, never a seller one.
+  new_construction_intent: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'new_construction_intent',
+    behaviorType:              'search_signal',
+    scoreRange:                [30, 60],
+    baseScore:                 40,
+    boostSignals:              ['new_construction', 'builder_incentive', 'move_in_ready', 'new_home_community'],
+    dampSignals:               ['general_research'],
+    identityPolicy:            'analytics_only',
+    canPromoteBeforeEnrichment: false,
+  },
+
 }
+
+/**
+ * Every canonical SourceKey SOURCE_MAP defines — derived from the map itself (never a hand-copied
+ * list, CLAUDE.md §6: a hand-maintained second list of one vocabulary is how the next SourceKey
+ * gets added to one and not the other). Used by the admin markets page's per-market source-toggle
+ * panel (lane 72C, docs/lead-acquisition-coverage-2026-09.md — the operator toggle surface wave 71
+ * flagged) so a new SourceKey is toggleable the moment it is added here, with no second edit.
+ */
+export const ALL_SOURCE_KEYS: SourceKey[] = Object.keys(SOURCE_MAP) as SourceKey[]
 
 // ─── Fallback for unknown sources ─────────────────────────────────────────────
 
@@ -636,6 +670,10 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   // Lane 71C — email engagement intent, second spelling seen in config/UI copy.
   email_engagement: "email_engagement_intent",
   email_intent: "email_engagement_intent",
+  // Lane 72C — new-construction/builder intent, second spelling seen in config/UI copy.
+  new_construction: "new_construction_intent",
+  builder_intent: "new_construction_intent",
+  new_construction_builder: "new_construction_intent",
 }
 
 /**
@@ -684,6 +722,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   external_behavior:          'apify',  // discovery is Apify; BatchData only enriches the match
   site_visitor_intent:        'internal', // first-party — own pixel/dwell data, no vendor call
   email_engagement_intent:    'internal', // first-party — own email_tracking data, no vendor call
+  new_construction_intent:    'apify',    // Google search via Apify, same vendor as agent_seeking_phrase_intent
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -729,6 +768,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   external_behavior:          'external_behavior',
   site_visitor_intent:        'site_visitor_intent',
   email_engagement_intent:    'email_engagement_intent',
+  new_construction_intent:    'new_construction_intent',
 }
 
 /**
@@ -865,6 +905,45 @@ export function buildAgentSeekingPhrases(market: {
       `need a real estate agent in ${loc}`,
       `recommend a realtor in ${loc}`,
       `best real estate agent in ${loc}`,
+    )
+  }
+  return { phrases }
+}
+
+// ─── buildNewConstructionPhrases ────────────────────────────────────────────────
+// DISTINCT from buildAgentSeekingPhrases (shopping for an AGENT) and buildTerritoryPhrases
+// (generic buyer/seller listing search): this builds the new-construction / builder-shopper
+// phrase set the new_construction_intent lane (lane 72C, docs/lead-acquisition-coverage-2026-09.md
+// item #23) runs against a territory.
+
+export interface NewConstructionPhrases {
+  phrases: string[]
+}
+
+export function buildNewConstructionPhrases(market: {
+  city?:      string | null
+  state?:     string | null
+  zip_codes?: string[] | null
+  counties?:  string[] | null
+}): NewConstructionPhrases {
+  const city    = market.city?.trim()    ?? ''
+  const state   = market.state?.trim()   ?? ''
+  const counties = market.counties       ?? []
+
+  const locationTokens: string[] = [
+    city,
+    ...counties.map(c => c.replace(/\s+county$/i, '').trim()),
+    [city, state].filter(Boolean).join(', '),
+  ].filter(Boolean)
+
+  const phrases: string[] = []
+  for (const loc of locationTokens) {
+    phrases.push(
+      `new construction homes for sale ${loc}`,
+      `new home communities ${loc}`,
+      `builder incentives ${loc}`,
+      `move in ready new construction ${loc}`,
+      `new build homes ${loc}`,
     )
   }
   return { phrases }

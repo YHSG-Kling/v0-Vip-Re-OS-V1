@@ -83,6 +83,11 @@ export default async function MarketsSetupPage() {
             id: m.id, name: m.name, city: m.city, state: m.state,
             zip_codes: Array.isArray(m.zip_codes) ? m.zip_codes : [],
             is_active: m.is_active !== false,
+            // Lane 72C — the toggle surface wave 71 flagged. NULL reads as the cron's own
+            // fallback (["batchdata_motivated"], app/api/cron/lead-scraping/route.ts:231/1031),
+            // never as "everything on" or "everything off" — the panel shows that fallback
+            // explicitly rather than guessing.
+            enabled_sources: Array.isArray(m.enabled_sources) ? m.enabled_sources : null,
             propertyParams: pp
               ? {
                   id: pp.id,

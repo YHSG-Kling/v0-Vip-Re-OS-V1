@@ -503,7 +503,7 @@ opportunities… If we aren't doing this another competitor will."
 | 20 | Active/expired/withdrawn/sold transitions | BatchData quicklist + IDX/RentCast | **Built** (wave 66/68) | IDX $0 → RentCast $0.074/req → BatchData opt-in | per market | relisting-detector |
 | 21 | LinkedIn job-change/relocation | Apify (`linkedin_relocation`) | **Built** | Apify actor rate | territory-derived keywords | yes |
 | 22 | Divorce/probate/tax-lien/pre-foreclosure court records | OSINT (`osint_signal`) | **Built** | per public-records call | `county`/`state` | yes |
-| 23 | New-construction/builder lists | — | **Missing** | — | — | — |
+| 23 | New-construction/builder lists | Apify (Google search, reused) | **Built** (lane 72C) | Apify actor rate | territory-derived phrases | yes |
 | 24 | Rental-to-buyer graduation | — | **Partial** — `rental_listing` (Craigslist `apa`) sources the LANDLORD as a seller lead; nothing follows the TENANT side (a renter approaching lease-end as a future buyer) | — | — | — |
 | 25 | Absentee / out-of-state owner | BatchData quicklist (`absentee`) | **Built** | plan-tier $/record | yes | yes |
 | 26 | Lead magnets (guides, calculators) | `form_submissions` intake | **Built** (pre-existing, outside this pipeline — direct-consent intake, not raw scraping) | $0 | n/a (consented) | contact-direct |
@@ -516,10 +516,10 @@ opportunities… If we aren't doing this another competitor will."
 
 ### Totals
 
-**Built: 26 / 32 · Partial: 1 / 32 · Missing: 5 / 32** (new-construction/builder lists,
-review/reputation-as-acquisition, permit/pre-listing signals, rental-to-buyer graduation's
-tenant-side half, and — until wave 70 — website visitor identification, and — until lane
-71C — email engagement).
+**Built: 27 / 32 · Partial: 1 / 32 · Missing: 4 / 32** (review/reputation-as-acquisition,
+permit/pre-listing signals, rental-to-buyer graduation's tenant-side half, and — until wave
+70 — website visitor identification, and — until lane 71C — email engagement, and — until
+lane 72C — new-construction/builder lists).
 
 ### What this lane built — website visitor identification ($0/record, the cheapest lane possible)
 
@@ -622,6 +622,69 @@ escalation, intentType never invented), the SOURCE_MAP/SOURCE_ALIASES/SOURCE_VEN
 wiring, the dedup contract, and a live round trip (skipped without Supabase creds) that creates a
 tagged test contact + email_tracking rows, sources them for real, and deletes every row it
 created, proving the delete by row count per CLAUDE.md's test-data ruling.
+
+### What lane 72C built — new-construction/builder intent (reused vendor, no new procurement)
+
+**Why this one.** Of the four lanes still missing after lane 71C, new-construction/builder lists
+was the only one buildable with ZERO new vendor procurement: the Apify `google` task
+(`lib/external/apify-actors.ts::ACTOR_REGISTRY.google`) is already registered and already carries
+this repo's fail-closed contract (`runApifyTask` returns empty data / $0 cost with no
+`APIFY_API_TOKEN` or a dead actor — no new key to provision, no new actor id to independently
+verify). Review-as-acquisition and permit/pre-listing signals both need a new vendor relationship
+(a review-aggregator API, a paid public-records feed beyond the Socrata/ArcGIS permit lane this
+repo already runs for signal-ATTACHMENT, not lead-SOURCING — see `lib/external/permit-signals.ts`'s
+own header, which explicitly refuses to mint a lead from a bare address); rental-to-buyer
+graduation's tenant-side half needs a new detection heuristic on top of an existing paid source. New
+construction was picked by cost (zero incremental vendor spend) and by directness (the exact
+"new-construction/builder lists" gap named in the audit, not an adjacent capability).
+
+**Why NOT `lib/external/permit-signals.ts`.** That module already exists, is fully wired
+(`app/api/cron/permit-signal-scan/route.ts`), and reads live — but by explicit design it never
+creates a lead or contact from a bare permit address ("Turning an address into a lead is lead
+SOURCING... not here" — the file's own header). It only ATTACHES a permit signal to a lead or
+contact the brokerage ALREADY owns. Retrofitting it into a raw-lead SourceKey sourcer would reverse
+a deliberate, documented product refusal (an unmatched address becoming a fabricated person), so
+this lane treats permit/pre-listing signals as still-genuinely-missing FOR ACQUISITION (item #32
+stays **Missing** in the matrix above) and picks new-construction/builder lists instead.
+
+**Built:** `lib/lead-pipeline/source-intent-map.ts::buildNewConstructionPhrases` builds
+territory-centric queries ("new construction homes for sale `<city>`", "builder incentives
+`<city>`", "new home communities `<city>`", "move in ready new construction `<city>`", "new build
+homes `<city>`" — an empty market yields zero phrases, never a global sweep, same territory-honesty
+contract as `buildAgentSeekingPhrases`). `lib/lead-pipeline/social-sourcer.ts::sourceNewConstructionIntent`
+/ `normalizeNewConstructionResult` run those phrases through the existing `scrapeGoogleSearchResults`
+wrapper and classify each hit BUYER intent (a new-construction search is definitionally a buyer
+signal — never seller), with boost signals `new_construction` (always), `builder_incentive` /
+`move_in_ready` / `new_home_community` (text-detected). New `SourceKey` `new_construction_intent`:
+SOURCE_MAP entry (scoreRange [30,60], baseScore 40, identityPolicy `analytics_only` — matching
+`google_phrase_intent`/`agent_seeking_phrase_intent`'s raw/analytics posture), `SOURCE_ALIASES`
+(`new_construction`/`builder_intent`/`new_construction_builder`), `SOURCE_VENDOR` = `'apify'`,
+`GATE_TOKEN` entry. Wired into `app/api/cron/lead-scraping/route.ts` behind
+`enabledSources.has("new_construction_intent")`, folded into the existing social-sources block (no
+new `scraper_executions` row shape, no new cron). `sourceChannel='new_construction_intent'`,
+`scrape_category='social_intent'` (matching every other Apify social/search lane — no new
+`scrape_category` value needed). Also added `lib/lead-pipeline/source-intent-map.ts::ALL_SOURCE_KEYS`
+(derived from `SOURCE_MAP` itself, never a hand-copied list — CLAUDE.md §6) and wired it into
+`app/dashboard/admin/markets/markets-client.tsx` as a per-market "Data sources" checkbox panel
+writing `lead_scraping_markets.enabled_sources` through `app/actions/lead-scraping-config.ts::updateScrapingMarket`
+(now accepting `enabled_sources` in its update payload) — the operator toggle surface wave 71
+flagged as missing, covering every `SourceKey` including `site_visitor_intent` and
+`email_engagement_intent`, not only this lane's own.
+
+**Territory:** every phrase carries the territory token (city / county / "city, state") — an empty
+market produces zero phrases and the sourcer short-circuits before any network call. **Dedup:**
+`isViableRecord` + `buildLeadIdentityKey`'s existing identity-key uniqueness carries the load, same
+as every other Apify-routed lane. **Cost:** metered from the real `scrapeGoogleSearchResults`
+response (`r.cost`), never a hardcoded estimate — same contract `sourceAgentSeekingPhraseIntent`
+uses. **Fails closed:** no `APIFY_API_TOKEN` → `runApifyTask` returns `{ data: [], cost: 0,
+actorUsed: null }` for every candidate actor tried — proved by the positive control below without
+any live call.
+
+**Proof:** extended `scripts/scraper-simulator.ts` (`npm run test:scrapers`) — pure normalizer
+classification (buyer intent always, signal detection from free text), the SOURCE_MAP/SOURCE_ALIASES/
+SOURCE_VENDOR/GATE_TOKEN wiring, `buildNewConstructionPhrases`'s territory-centric query builder
+with a POSITIVE CONTROL (empty market ⇒ zero phrases), and `sourceNewConstructionIntent`'s async
+wrapper POSITIVE CONTROL (empty market ⇒ zero records, zero cost, no network call attempted).
 
 ### Fixed in passing — raw_scraped_leads.source_family / scrape_category (m647)
 

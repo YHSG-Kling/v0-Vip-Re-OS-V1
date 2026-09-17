@@ -33,6 +33,10 @@ import {
   type SmartSearchSubscriptionRow,
 } from "@/app/actions/lead-scraping-config"
 import type { ActiveListingSource } from "@/lib/buyer-search/listing-source-order"
+// Lane 72C — the operator toggle surface wave 71 flagged: every SourceKey, derived from
+// SOURCE_MAP itself (CLAUDE.md §6 — never a hand-copied second list), so a newly-added
+// SourceKey is toggleable here the moment source-intent-map.ts defines it, no second edit.
+import { ALL_SOURCE_KEYS, type SourceKey } from "@/lib/lead-pipeline/source-intent-map"
 
 export interface PropertyParamsRow {
   id: string
@@ -61,6 +65,9 @@ export interface MarketRow {
   is_active: boolean
   propertyParams: PropertyParamsRow | null
   motivatedParams: MotivatedParamsRow | null
+  /** Lane 72C. NULL means the row has never been configured — the cron falls back to
+   *  ["batchdata_motivated"] only (app/api/cron/lead-scraping/route.ts), never "everything". */
+  enabled_sources: string[] | null
 }
 
 export interface KeywordRow {
@@ -109,6 +116,17 @@ function num(v: string): number | undefined {
   return v.trim() === "" || Number.isNaN(n) ? undefined : n
 }
 
+/** "new_construction_intent" -> "New construction intent" — no second hand-maintained label
+ *  table (CLAUDE.md §6); every SourceKey is self-describing enough to humanize mechanically. */
+function labelSourceKey(key: string): string {
+  const words = key.replace(/_/g, " ")
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/** The cron's own fallback when a market has never been configured
+ *  (app/api/cron/lead-scraping/route.ts:231/1031) — shown, never silently assumed "everything". */
+const DEFAULT_ENABLED_SOURCES: SourceKey[] = ["batchdata_motivated"]
+
 export function MarketsSetupClient({
   initialMarkets,
   initialKeywords,
@@ -139,6 +157,11 @@ export function MarketsSetupClient({
   const [openParamsFor, setOpenParamsFor] = useState<string | null>(null)
   const [paramsError, setParamsError] = useState<string | null>(null)
   const [paramsNotice, setParamsNotice] = useState<string | null>(null)
+
+  // Lane 72C — per-market source-toggle panel (the operator surface wave 71 flagged).
+  const [openSourcesFor, setOpenSourcesFor] = useState<string | null>(null)
+  const [sourcesError, setSourcesError] = useState<string | null>(null)
+  const [sourcesPending, setSourcesPending] = useState<string | null>(null)
   const [minPrice, setMinPrice] = useState("")
   const [maxPrice, setMaxPrice] = useState("")
   const [minBeds, setMinBeds] = useState("")
@@ -174,7 +197,8 @@ export function MarketsSetupClient({
       setMarkets((prev) => [
         { id: m.id, name: m.name, city: m.city, state: m.state,
           zip_codes: Array.isArray(m.zip_codes) ? m.zip_codes : [], is_active: m.is_active !== false,
-          propertyParams: null, motivatedParams: null },
+          propertyParams: null, motivatedParams: null,
+          enabled_sources: Array.isArray(m.enabled_sources) ? m.enabled_sources : null },
         ...prev,
       ])
       setName(""); setCity(""); setState(""); setZips("")
@@ -270,6 +294,30 @@ export function MarketsSetupClient({
         } : row.motivatedParams,
       } : row))
       setParamsNotice("Scrape parameters saved.")
+    })
+  }
+
+  // Lane 72C — toggles ONE SourceKey for ONE market and writes the full resulting array through
+  // updateScrapingMarket (the SAME tenant-scoped update path every other market field uses — no
+  // second write path onto lead_scraping_markets). Reads back the server row rather than trusting
+  // the optimistic array, so a refused write (a wrong-tenant row, a dropped connection) cannot
+  // leave the panel showing a state the database never actually holds.
+  const toggleSource = (m: MarketRow, key: string, active: boolean) => {
+    setSourcesError(null)
+    const current = m.enabled_sources ?? DEFAULT_ENABLED_SOURCES
+    const next = active
+      ? [...new Set([...current, key])]
+      : current.filter((k) => k !== key)
+    setSourcesPending(`${m.id}:${key}`)
+    startTransition(async () => {
+      const res = await updateScrapingMarket(m.id, { enabled_sources: next })
+      setSourcesPending(null)
+      if (!res.success || !res.market) {
+        setSourcesError(res.error ?? `Could not change "${labelSourceKey(key)}" for ${m.name}.`)
+        return
+      }
+      const saved = (res.market as { enabled_sources?: string[] | null }).enabled_sources ?? null
+      setMarkets((prev) => prev.map((row) => (row.id === m.id ? { ...row, enabled_sources: saved } : row)))
     })
   }
 
@@ -383,6 +431,17 @@ export function MarketsSetupClient({
                   <div className="flex shrink-0 items-center gap-2">
                     <button
                       type="button"
+                      onClick={() => {
+                        setSourcesError(null)
+                        setOpenSourcesFor(openSourcesFor === m.id ? null : m.id)
+                      }}
+                      disabled={pending}
+                      className="rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground"
+                    >
+                      {openSourcesFor === m.id ? "Close" : `Data sources (${(m.enabled_sources ?? DEFAULT_ENABLED_SOURCES).length})`}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => openParams(m)}
                       disabled={pending}
                       className="rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground"
@@ -463,6 +522,35 @@ export function MarketsSetupClient({
                     >
                       {pending ? "Saving…" : "Save parameters"}
                     </button>
+                  </div>
+                )}
+
+                {openSourcesFor === m.id && (
+                  <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                    <p className="text-xs font-semibold">Data sources</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Which scrape/behavioral sources this market&apos;s tick runs. A market with none configured
+                      falls back to {DEFAULT_ENABLED_SOURCES.map(labelSourceKey).join(", ")} only — check the sources
+                      you want, uncheck the ones you don&apos;t. Each change saves immediately.
+                    </p>
+                    {sourcesError && <p className="text-xs text-destructive">{sourcesError}</p>}
+                    <div className="grid gap-1.5 sm:grid-cols-2">
+                      {ALL_SOURCE_KEYS.map((key) => {
+                        const active = (m.enabled_sources ?? DEFAULT_ENABLED_SOURCES).includes(key)
+                        const busy = sourcesPending === `${m.id}:${key}`
+                        return (
+                          <label key={key} className="flex items-center gap-1.5 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={active}
+                              disabled={pending || busy}
+                              onChange={(e) => toggleSource(m, key, e.target.checked)}
+                            />
+                            <span className={busy ? "text-muted-foreground" : undefined}>{labelSourceKey(key)}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
               </li>

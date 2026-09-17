@@ -34,7 +34,7 @@ import {
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
-import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
+import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases, buildNewConstructionPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
 import { normalizeSiteVisitorRow, SITE_VISITOR_MIN_DWELL_SECONDS, SITE_VISITOR_LOOKBACK_HOURS } from "../lib/lead-pipeline/site-visitor-sourcer"
 import {
   detectIntent,
@@ -53,6 +53,8 @@ import {
   sourceFacebookRecommendRealtor,
   sourceAgentSeekingPhraseIntent,
   sourceRealtySiteChatter,
+  normalizeNewConstructionResult,
+  sourceNewConstructionIntent,
 } from "../lib/lead-pipeline/social-sourcer"
 import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
 import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
@@ -1544,6 +1546,52 @@ function testWave65Lanes() {
     }))
 }
 
+// ── 21b. LANE 72C — new-construction / builder intent (docs/lead-acquisition-coverage-2026-09.md
+// item #23, the next coverage lane after site_visitor_intent (wave 70) and email_engagement_intent
+// (lane 71C)). Same territory-honesty positive control as the wave-65 lanes: a market with no
+// city/state must yield zero phrases / zero records, never a global sweep.
+function testLane72CNewConstruction() {
+  console.log("\n[Lane 72C · New-construction / builder intent lane]")
+  const ncResult = normalizeNewConstructionResult(
+    { url: "https://example.com/new-homes", title: "New construction homes for sale in Denver — builder incentives, move in ready" },
+    { city: "Denver", state: "CO" },
+  )
+  check("new_construction_intent → source tagged", ncResult.source === "new_construction_intent")
+  check("new_construction_intent → buyer intent (a new-build search is definitionally a buyer signal)", ncResult.intentType === "buyer")
+  check("new_construction_intent → new_construction signal always present", ncResult.intentSignals.includes("new_construction"))
+  check("new_construction_intent → builder_incentive signal detected from text", ncResult.intentSignals.includes("builder_incentive"))
+  check("new_construction_intent → move_in_ready signal detected from text", ncResult.intentSignals.includes("move_in_ready"))
+  check("new_construction_intent is DISTINCT from google_phrase_intent and agent_seeking_phrase_intent (never merged)",
+    resolveSourceKey("new_construction_intent") !== resolveSourceKey("google") &&
+    resolveSourceKey("new_construction_intent") !== resolveSourceKey("agent_seeking_phrase_intent"))
+  check("new_construction_intent has a REAL scoring entry (not the fallback)", hasScoringEntry("new_construction_intent"))
+  check("new_construction_intent is apify-vendor-routed (reuses the already-registered google task)", SOURCE_VENDOR["new_construction_intent"] === "apify")
+
+  console.log("\n[Lane 72C · buildNewConstructionPhrases — territory-centric query builder]")
+  const ncPhrasesAustin = buildNewConstructionPhrases({ city: "Austin", state: "TX" })
+  check("phrases built for a real market", ncPhrasesAustin.phrases.length > 0)
+  check("every phrase names the territory (no generic global phrase)", ncPhrasesAustin.phrases.every((p) => p.includes("Austin")))
+  check("phrase set covers 'new construction' + 'builder incentives'",
+    ncPhrasesAustin.phrases.some((p) => p.includes("new construction")) && ncPhrasesAustin.phrases.some((p) => p.includes("builder incentives")))
+  // POSITIVE CONTROL — a lane without a territory gate IS caught: an empty market must never
+  // fall back to a global/borderless query.
+  const ncPhrasesEmpty = buildNewConstructionPhrases({ city: null, state: null })
+  check("POSITIVE CONTROL: no territory ⇒ zero phrases (never a global sweep)", ncPhrasesEmpty.phrases.length === 0)
+
+  check("new_construction_intent aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("new_construction") === "new_construction_intent" &&
+    resolveSourceKey("builder_intent") === "new_construction_intent")
+  check("expandEnabledSources activates the new_construction_intent gate token from its canonical key",
+    expandEnabledSources(["new_construction_intent"]).has("new_construction_intent"))
+}
+
+async function testLane72CSourcerHonestlyNoOp() {
+  console.log("\n[Lane 72C · sourcer async wrapper — POSITIVE CONTROL: no territory ⇒ no network call]")
+  const emptyMarket = { city: null, state: null }
+  const nc = await sourceNewConstructionIntent(emptyMarket)
+  check("sourceNewConstructionIntent: no territory ⇒ zero records, zero cost", nc.records.length === 0 && nc.cost === 0)
+}
+
 // ── 22. WAVE 66 CHANNELS — every new sourceChannel scores as ITSELF, never a stranger ────────
 // Owner ruling (wave 66, lane 66C): "processRawRecord must accept the new sourceChannels ...
 // in source-intent-map.ts scoring — a channel with no scoring entry must be a proof failure
@@ -1781,6 +1829,8 @@ async function main() {
   await testZenRowsClient()
   testWave65Lanes()
   await testWave65SourcersHonestlyNoOp()
+  testLane72CNewConstruction()
+  await testLane72CSourcerHonestlyNoOp()
   testWave66Channels()
   testWave70SiteVisitorLane()
   testActorRegistryFreshness()
