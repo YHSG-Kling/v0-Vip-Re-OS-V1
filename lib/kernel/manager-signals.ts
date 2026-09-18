@@ -1727,7 +1727,9 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       if (!error) assigned += 1
     }
     // Welcome the new agent with their first-deal support kickoff.
-    await ctx.supabase.from("notifications").insert({
+    // Blind-spot burn-down (lane 75D, notification fan-out census) — read
+    // the error the SAME way every other write in this file already does.
+    const { error: welcomeError } = await ctx.supabase.from("notifications").insert({
       user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "agent_onboarding",
       title: "Welcome aboard — your first-deal support is ready",
       body: assigned > 0
@@ -1735,7 +1737,9 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         : "The Deal Coordinator has your back on your first transaction — your onboarding kickoff is ready.",
       entity_type: "recruit", entity_id: signal.entityId, priority: "medium", is_read: false,
     })
-    return `assigned ${assigned} onboarding module(s) + welcomed the new agent`
+    return welcomeError
+      ? `assigned ${assigned} onboarding module(s) — welcome notification failed`
+      : `assigned ${assigned} onboarding module(s) + welcomed the new agent`
   },
     "listing_concierge:isa_call_appointment": async (signal, ctx) => {
     if (!signal.contactId) return null
@@ -2241,12 +2245,16 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       if ((aRow as any)?.user_id) agentNotifyUserId = (aRow as any).user_id
     }
     if (agentNotifyUserId) {
-      await ctx.supabase.from("notifications").insert({
+      // Blind-spot burn-down (lane 75D, notification fan-out census) — a
+      // bare `.then()` reads nothing; destructure the error like every
+      // other write in this file.
+      const { error: agentNotifyError } = await ctx.supabase.from("notifications").insert({
         user_id: agentNotifyUserId, brokerage_id: ctx.brokerageId, type: "deal_autopsy",
         title: `Deal autopsy ready — ${reason.replace(/_/g, " ")}`,
         body: `Your ${priceStr} deal was autopsied (${reason.replace(/_/g, " ")}, ${confStr}). Your manager has a coaching brief queued. Check in this week.`,
         entity_type: "transaction", entity_id: signal.entityId, priority: "low", is_read: false,
-      }).then()
+      })
+      if (agentNotifyError) console.error("[manager-signals] deal_autopsy agent notify failed:", agentNotifyError.message)
     }
     return notified > 0
       ? `deal-autopsy coaching prompt surfaced to ${notified} broker/admin${notified === 1 ? "" : "s"}${agentId ? " + agent notified" : ""}`
@@ -2279,12 +2287,13 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     if (agentUserId) {
       const name = [(updated as any).first_name, (updated as any).last_name].filter(Boolean).join(" ").trim() || "A contact"
-      await ctx.supabase.from("notifications").insert({
+      const { error: withdrawNotifyError } = await ctx.supabase.from("notifications").insert({
         user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "consent_withdrawn",
         title: `${name} released — every channel revoked`,
         body: `${name} revoked every channel and the enrichment re-run found no new contact info. The relationship is marked withdrawn — history kept, nothing further will be proposed. If they ever reach out, the chain reopens automatically.`,
         entity_type: "contact", entity_id: signal.entityId, priority: "medium", is_read: false,
       })
+      if (withdrawNotifyError) console.error("[manager-signals] consent_withdrawn agent notify failed:", withdrawNotifyError.message)
     }
     return "relationship marked withdrawn (nurture_status) + agent informed — history preserved"
   },
@@ -2320,12 +2329,13 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       .from("contacts").select("first_name, last_name").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     const name = [(c as any)?.first_name, (c as any)?.last_name].filter(Boolean).join(" ").trim() || "A past client"
 
-    await ctx.supabase.from("notifications").insert({
+    const { error: nextMoveNotifyError } = await ctx.supabase.from("notifications").insert({
       user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "next_move_followup",
       title: `🏡 Re-transaction signal: ${name} — ${intent.replace(/_/g, " ")}`,
       body: `${name} tapped "${intent.replace(/_/g, " ")}" in their lifetime portal. Sphere Manager's delegated next step: ${nextStep}. This is a client-initiated intent — move fast.`,
       entity_type: "contact", entity_id: contactId, priority: "high", is_read: false,
     })
+    if (nextMoveNotifyError) console.error("[manager-signals] next_move_followup notify failed:", nextMoveNotifyError.message)
     return `escalated ${intent} next-move intent to responsible agent (${nextStep})`
   },
   // AI ISA → Sphere: a RELOCATED past client asked for a referral to an agent in their new
@@ -2357,12 +2367,13 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       .from("contacts").select("first_name, last_name").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     const name = [(c as any)?.first_name, (c as any)?.last_name].filter(Boolean).join(" ").trim() || "A past client"
 
-    await ctx.supabase.from("notifications").insert({
+    const { error: relocationNotifyError } = await ctx.supabase.from("notifications").insert({
       user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "relocation_referral_followup",
       title: `📦 Place a referral: ${name}${newArea ? ` → ${newArea}` : ""}`,
       body: `${name} is relocating${newArea ? ` to ${newArea}` : ""} and asked for a trusted agent there. Place an outbound referral — keep the relationship warm and earn a referral fee at close.`,
       entity_type: "contact", entity_id: contactId, priority: "high", is_read: false,
     })
+    if (relocationNotifyError) console.error("[manager-signals] relocation_referral_followup notify failed:", relocationNotifyError.message)
     return `escalated relocation referral to responsible agent${newArea ? ` (${newArea})` : ""}`
   },
 

@@ -26,8 +26,35 @@ RentCast/PeopleData tools each AI-agent surface carries, why, and who pays.
 | Onboarding setup assistant | `app/api/onboarding/assistant/route.ts` | a NEW AGENT learning the platform | **none** (correctly) | n/a — KB-grounded platform Q&A, no property-data need | n/a |
 | Agent reply-draft copilot | `app/api/chat/stream/route.ts` (`agent_chat_stream`) | licensed agent (drafts a suggestion the agent sends in their OWN voice) | **none** (correctly) | n/a — this route never itself talks to a client under a persona | n/a |
 | Internal voice-command dispatcher | `app/api/internal/voice-command/route.ts` | tenant staff (spoken/typed platform commands: "who's hot", "draft save-plays") | **none** (correctly) | n/a — a command CLASSIFIER, not an open-ended chat surface | n/a |
-| Phone/voice ISA (Twilio ConversationRelay reception) | `lib/voice/twilio-voice.ts` (`planReceptionTurn`/`planTurnWithPrompt`) | inbound/outbound caller (lead or contact) | `batchDataIsaTools`, NATIVE AI-SDK multi-step tool-calling, bounded `maxSteps` ≤3 + a hard per-turn deadline (§4) | persona DERIVED per-turn from the call's linked `contacts.id`, else the `buyer` default; property-only tool subset (`lookup_property`, `comparable_property_preview/count`, `verify_address`) | Same budget/metering; bounded by `VOICE_TOOL_ROUND_MAX_STEPS`/`VOICE_TOOL_ROUND_DEADLINE_MS`, a thrown/timed-out round falls back to the plan-only path |
-| Platform prospect/support line | `lib/voice/platform-reception.ts` (`planPlatformReceptionTurn`) | a prospect or existing-customer support caller on the PLATFORM's own line | `platform_faq_lookup` ONLY — a tenant-free platform-KB tool, native calling, SAME bounded ceiling (§4) | n/a — this line has no brokerage/property context, so no property tool; the FAQ tool takes no persona | Free (internal KB read); no BatchData/RentCast tool on this line |
+| Phone/voice ISA — TENANT deployment (Twilio ConversationRelay reception) | `lib/voice/twilio-voice.ts` (`planReceptionTurn({deployment:"tenant"})`/`planTurnWithPrompt`) | inbound/outbound caller (lead or contact) | `batchDataIsaTools` (property-only subset) + `buildCustomerFreeTools` (incl. `record_qualification`, lane 75D) — NATIVE AI-SDK multi-step tool-calling, bounded `maxSteps` ≤3 + a hard per-turn deadline (§4) | persona DERIVED per-turn from the call's linked `contacts.id`/`leads.id`, else the `buyer` default; property-only tool subset (`lookup_property`, `comparable_property_preview/count`, `verify_address`) plus the SAME free capture bundle every chat surface gets | Same budget/metering; bounded by `VOICE_TOOL_ROUND_MAX_STEPS`/`VOICE_TOOL_ROUND_DEADLINE_MS` inside `runVoiceTurnRound`, a thrown/timed-out round falls back to the plan-only path |
+| Phone/voice ISA — PLATFORM deployment (prospect/support line) | `lib/voice/twilio-voice.ts` (`planReceptionTurn({deployment:"platform"})`, prompt/tools from `lib/voice/platform-reception.ts`) | a prospect or existing-customer support caller on the PLATFORM's own line | `platform_faq_lookup` ONLY — a tenant-free platform-KB tool, native calling, SAME `runVoiceTurnRound` bound/deadline (§4) | n/a — this line has no brokerage/property context, so no property tool; the FAQ tool takes no persona | Free (internal KB read); no BatchData/RentCast tool on this line |
+
+**Lane 75D (2026-09-18, wave 75, owner: "make sure that there aren't 2 different
+ai agents that handle ai voice receptionists … what really matters whether it
+is a tenant and their users or the platform and their users") — the two rows
+above are now ONE engine.** `planReceptionTurn` takes `deployment: "tenant" |
+"platform"` and is the ONLY reception turn-planner exported from
+`lib/voice/twilio-voice.ts`. Both branches share the SAME `VoiceTurnPlan`/
+`VoiceTurnAction` contract and `parseTurnPlan` (`lib/voice/reception-brain.ts`,
+which now also carries `PLATFORM_TURN_INSTRUCTIONS`/`PLATFORM_TOOL_TURN_GUIDANCE`
+and the `"prospect"` action variant), and the SAME tool-round engine
+(`runVoiceTurnRound` — bound, deadline, telemetry, timeout→plan-only fallback).
+TOMBSTONE: `lib/voice/platform-reception.ts`'s former standalone
+`planPlatformReceptionTurn`/`PlatformTurnPlan`/`PlatformTurnAction`/
+`parsePlatformTurnPlan`/`PLATFORM_TURN_INSTRUCTIONS`/`PLATFORM_TOOL_TURN_GUIDANCE`
+are retired onto this one entrypoint; `platformFaqTools()` (now exported) is
+unchanged. Capture: the tenant branch's tool round now ALSO offers
+`buildCustomerFreeTools` (get_my_context, search_our_listings always; once a
+contact/lead is linked: request_showing, schedule_callback,
+schedule_home_value_review, book_agent_appointment, send_matching_listings,
+`record_qualification`) — the SAME bundle every chat surface gets, keyed off
+the new `VoiceToolExecContext.leadId` alongside `.contactId` — so a live call
+captures reason-for-call/name/phone/email/intent/persona/address/criteria/
+timeline exactly as an email or portal thread would. The platform branch keeps
+capturing via the existing `"prospect"` action → `capturePhoneProspect` →
+`platform_prospects` (the table the platform reception line has always
+written). Proof: `scripts/voice-lane-simulator.ts` + Layer 5 of
+`scripts/ai-agent-tool-surfaces-simulator.ts`.
 
 ## 2. Persona × tool × cap × tier matrix (lane 73B)
 
@@ -143,8 +170,10 @@ single-call baseline — inside the ~3-5s window voice-UX practice treats as
 this has not been retuned against real production call audio (none exists in
 this environment) — the constant is env-overridable for exactly that reason.
 
-**`lib/voice/platform-reception.ts`'s `planPlatformReceptionTurn`** (item 5 of
-the restructuring) — this line genuinely has NO brokerage/property context
+**The platform branch of `lib/voice/twilio-voice.ts`'s `planReceptionTurn`**
+(item 5 of the restructuring; lane 75D merged the former standalone
+`planPlatformReceptionTurn` onto this ONE entrypoint — see the lane-75D note
+above §1) — this line genuinely has NO brokerage/property context
 (it is the PLATFORM's own prospect/support line, not a tenant's), so it still
 carries none of the persona-scoped property tools. But it DOES now carry ONE
 safe, TENANT-FREE tool: `platform_faq_lookup`, wired the same native way

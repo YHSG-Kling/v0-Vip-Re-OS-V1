@@ -171,7 +171,12 @@ const BANNED_PATTERNS: Array<{ name: string; literal: string; re: RegExp }> = [
   { name: "gemini-2.0-flash-exp (retired Gemini preview)", literal: "google/gemini-2.0-flash-exp", re: /gemini-2\.0-flash-exp/ },
   { name: "claude-haiku-4-2025 (the specific stale Haiku-4 dated id)", literal: "anthropic/claude-haiku-4-20250514", re: /claude-haiku-4-2025/ },
 ]
-const LIB_AI_FILES = ["lib/ai/models.ts", "lib/ai/resolve-model.ts", "lib/ai/cost-tracking.ts"]
+// Lane 75D — lib/ai-isa/personalize-outreach.ts's own dated-literal fallback
+// (`"anthropic/claude-haiku-4-20250514"`) was OUTSIDE this scanner's reach
+// (lib/ai/ only) until it was fixed to resolveModel("claude-haiku"); added
+// here so a FUTURE dated literal in this file is caught too, not only in
+// lib/ai/ itself.
+const LIB_AI_FILES = ["lib/ai/models.ts", "lib/ai/resolve-model.ts", "lib/ai/cost-tracking.ts", "lib/ai-isa/personalize-outreach.ts"]
 for (const pattern of BANNED_PATTERNS) {
   // Positive control FIRST: prove the scanner still recognises the defect it
   // was written for, on a synthetic specimen (comments stripped, string

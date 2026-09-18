@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { getPlatformStripe } from "@/lib/stripe"
 import { verifyStripeWebhook } from "@/lib/billing/stripe-webhook-secrets"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
@@ -212,14 +213,15 @@ export async function POST(request: NextRequest) {
           console.error("[Billing Webhook] Failed to update invoice:", error)
         }
 
-        // Emit payment failed alert notification
-        await supabase.from("notifications").insert({
+        // Emit payment failed alert notification. Blind-spot burn-down (lane
+        // 75D, notification fan-out census) — sentinelWrite (service-role client).
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           brokerage_id: brokerageId,
           type: "billing_alert",
           title: "Payment Failed",
           body: `Your subscription payment of $${(invoice.amount_due / 100).toFixed(2)} failed. Please update your payment method.`,
           priority: "high",
-        })
+        }), { table: "notifications", flow: "billing_payment_failed_alert", brokerageId, reason: "the invoice row itself already recorded the failure; this is only the in-app alert" })
 
         break
       }
@@ -278,13 +280,13 @@ export async function POST(request: NextRequest) {
         await syncBrokeragePlanTier(brokerageId)
 
         // Notify brokerage
-        await supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           brokerage_id: brokerageId,
           type: "billing_alert",
           title: "Subscription Cancelled",
           body: "Your subscription has been cancelled. Your access will be limited.",
           priority: "high",
-        })
+        }), { table: "notifications", flow: "billing_subscription_cancelled_alert", brokerageId, reason: "the tier downgrade itself already applied; this is only the in-app alert" })
 
         break
       }

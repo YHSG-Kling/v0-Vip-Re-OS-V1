@@ -103,7 +103,7 @@ import {
   verifyEquityClaims,
 } from "@/lib/video/anniversary-script"
 import type { Persona, JourneyType } from "@/lib/kernel/types"
-import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells } from "@/lib/video/realism-profile"
+import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells, describeAiTellCoverage } from "@/lib/video/realism-profile"
 
 /**
  * THE WORD BUDGET THE SPOKEN SCRIPT HAS, DERIVED FROM THE COMPOSITION THAT
@@ -634,7 +634,16 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       // own. scanForAiTells is pure/advisory by design (lib/video/
       // realism-profile.ts) and never runs before the redraft has a chance to
       // fix it.
-      const tells = scanForAiTells(s)
+      // Blind-spot burn-down (lane 75D): `draftScript` above is asked to
+      // write the WHOLE script directly in `language` when it is not
+      // DEFAULT_LANGUAGE — the English-lexical AI-tell patterns cannot judge
+      // that text, so `language` is threaded through (scoping them off,
+      // never a false-clean claim) and the documented gap is logged once
+      // rather than staying invisible. Never blocks the redraft — there is
+      // nothing a redraft could do about the scanner's own language scope.
+      const tells = scanForAiTells(s, language)
+      const coverageNote = describeAiTellCoverage(language)
+      if (coverageNote) console.warn(`[intro-video-reactor] ${coverageNote}`)
       return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
     },
     })

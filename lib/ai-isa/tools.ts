@@ -23,6 +23,7 @@
 import { tool } from "ai"
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { haltEngagementForNegativeReply } from "./conversation-handler"
 import { signalScore, signalTemperature } from "./qualification-core"
 import { isIsaCapabilityEnabledForScope } from "./resolve-isa-settings"
@@ -98,7 +99,10 @@ export async function buildISATools(ctx: ISAToolContext) {
             // notification_type/message/metadata insert was phantom — every ISA
             // escalation page FAILED silently and no agent was ever notified).
             // priority check allows low|medium|high|critical → 'normal' maps to medium.
-            await supabase.from("notifications").insert({
+            // Blind-spot burn-down (lane 75D, notification fan-out census) —
+            // sentinelWrite: an escalation the agent never sees is exactly
+            // the kind of loss this ledgers.
+            await sentinelWrite(supabase, supabase.from("notifications").insert({
               user_id: agent.user_id,
               brokerage_id: ctx.brokerageId,
               type: "isa_escalation",
@@ -107,7 +111,7 @@ export async function buildISATools(ctx: ISAToolContext) {
               priority: urgency === "normal" ? "medium" : urgency,
               entity_type: "lead",
               entity_id: ctx.leadId,
-            })
+            }), { table: "notifications", flow: "isa_tool_escalation_notify", brokerageId: ctx.brokerageId, reason: "the escalation tool call itself already ran; this is the agent's only heads-up" })
           }
         }
         // Always log on the lead so the conversation timeline shows it.
@@ -219,7 +223,7 @@ export async function buildISATools(ctx: ISAToolContext) {
           if (agent?.user_id) {
             // Real notifications shape (see escalate_to_agent note) — the phantom
             // insert meant a lead asking to MEET never paged the agent.
-            await supabase.from("notifications").insert({
+            await sentinelWrite(supabase, supabase.from("notifications").insert({
               user_id: agent.user_id,
               brokerage_id: ctx.brokerageId,
               type: "appointment_request",
@@ -228,7 +232,7 @@ export async function buildISATools(ctx: ISAToolContext) {
               priority: "high",
               entity_type: "lead",
               entity_id: ctx.leadId,
-            })
+            }), { table: "notifications", flow: "isa_tool_appointment_request_notify", brokerageId: ctx.brokerageId, reason: "the activity row above already recorded the request; this is the agent's only heads-up" })
           }
         }
         return { success: true, meetingType: meeting_type }

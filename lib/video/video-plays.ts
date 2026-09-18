@@ -36,6 +36,7 @@
 // name; exclude 'cancelled' from both probes so a fixed listing can retry; and
 // increment the success counters only for a row that actually landed.
 import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export interface RateMoment {
   moment: boolean
@@ -275,12 +276,14 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; skip
         .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
       if (dup) continue
       const address = (ren.input_props as any)?.address ?? "your listing"
-      await svc.from("notifications").insert({
+      // Blind-spot burn-down (lane 75D, notification fan-out census) —
+      // sentinelWrite: this cron runs on the service-role client.
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: ren.agent_user_id, brokerage_id: ren.brokerage_id, type: "listing_flyer_ready",
         title: `Print flyer ready — ${address}`,
         body: `Your 8.5x11 open-house flyer (300 DPI, tracked QR) is print-ready: ${ren.output_url} ${marker}`,
         priority: "medium", channel: "in_app", is_read: false,
-      }).then(undefined, () => {})
+      }), { table: "notifications", flow: "listing_flyer_ready_notify", brokerageId: ren.brokerage_id, reason: "the flyer render itself already succeeded; this is only the agent heads-up" })
       out.delivered += 1
     }
   } catch { /* delivery retries next run */ }
@@ -404,12 +407,12 @@ export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; h
         .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
       if (dup) continue
       const address = (ren.input_props as any)?.address ?? "your sold listing"
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: ren.agent_user_id, brokerage_id: ren.brokerage_id, type: "door_hanger_ready",
         title: `Door hangers ready — ${address}`,
         body: `Your just-sold door-knock piece (4.25x11, 300 DPI, scan-to-value QR) is print-ready for the neighborhood: ${ren.output_url} ${marker}`,
         priority: "medium", channel: "in_app", is_read: false,
-      }).then(undefined, () => {})
+      }), { table: "notifications", flow: "door_hanger_ready_notify", brokerageId: ren.brokerage_id, reason: "the door-hanger render itself already succeeded; this is only the agent heads-up" })
       out.hangersDelivered += 1
     }
   } catch { /* delivery retries next run */ }

@@ -327,14 +327,14 @@ async function notifyAgentCoolCall(svc: any, call: any, summary: string): Promis
   const { data: dup } = await svc.from("notifications").select("id")
     .eq("entity_id", call.contact_id).eq("type", "isa_call_attention").ilike("body", `%${tag}%`).limit(1).maybeSingle()
   if (dup) return
-  try {
-    await svc.from("notifications").insert({
-      user_id: notifUserId, brokerage_id: call.brokerage_id, type: "isa_call_attention",
-      title: "A call didn't go smoothly — you may want to reach out",
-      body: `${tag} The AI heard a negative tone (no opt-out — the contact was NOT suppressed). ${(summary || "").slice(0, 160)}`,
-      entity_type: "contact", entity_id: call.contact_id, is_read: false,
-    })
-  } catch { /* best-effort */ }
+  // Blind-spot burn-down (lane 75D, notification fan-out census) — bestEffort,
+  // the SAME wrapper this file already uses elsewhere (§6).
+  await bestEffort(svc.from("notifications").insert({
+    user_id: notifUserId, brokerage_id: call.brokerage_id, type: "isa_call_attention",
+    title: "A call didn't go smoothly — you may want to reach out",
+    body: `${tag} The AI heard a negative tone (no opt-out — the contact was NOT suppressed). ${(summary || "").slice(0, 160)}`,
+    entity_type: "contact", entity_id: call.contact_id, is_read: false,
+  }), "dedup already checked; this is only the agent heads-up on a cool call")
 }
 
 /** Positive call → tell the assigned agent (deduped per call). */
@@ -345,14 +345,12 @@ async function notifyAgentPositive(svc: any, call: any, summary: string, intentP
   const { data: dup } = await svc.from("notifications").select("id")
     .eq("entity_id", call.contact_id).eq("type", "isa_qualified_lead").ilike("body", `%${tag}%`).limit(1).maybeSingle()
   if (dup) return
-  try {
-    await svc.from("notifications").insert({
-      user_id: notifUserId, brokerage_id: call.brokerage_id, type: "isa_qualified_lead",
-      title: "AI call — a contact is ready for your follow-up",
-      body: `${tag} ${intentPrimary || "Positive call"} (urgency ${urgencyScore}/100). ${(summary || "").slice(0, 160)}`,
-      entity_type: "contact", entity_id: call.contact_id, is_read: false,
-    })
-  } catch { /* best-effort */ }
+  await bestEffort(svc.from("notifications").insert({
+    user_id: notifUserId, brokerage_id: call.brokerage_id, type: "isa_qualified_lead",
+    title: "AI call — a contact is ready for your follow-up",
+    body: `${tag} ${intentPrimary || "Positive call"} (urgency ${urgencyScore}/100). ${(summary || "").slice(0, 160)}`,
+    entity_type: "contact", entity_id: call.contact_id, is_read: false,
+  }), "dedup already checked; this is only the agent heads-up on a positive call")
 }
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

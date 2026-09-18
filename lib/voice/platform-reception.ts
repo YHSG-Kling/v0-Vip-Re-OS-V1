@@ -137,7 +137,7 @@ export function buildPlatformReceptionPrompt(id: {
 // when `p_brokerage_id` is NULL, so this can never surface a brokerage's
 // private help content. Wired as a REAL AI-SDK tool (native multi-step
 // calling), same shape as the voice ISA's property tools below.
-async function platformFaqTools(): Promise<Record<string, unknown>> {
+export async function platformFaqTools(): Promise<Record<string, unknown>> {
   const { tool } = await import("ai")
   const { z } = await import("zod")
   const { searchKB } = await import("@/lib/intelligence/kb-search")
@@ -158,14 +158,6 @@ async function platformFaqTools(): Promise<Record<string, unknown>> {
   }
 }
 
-const PLATFORM_TOOL_TURN_GUIDANCE = [
-  "You have a platform FAQ lookup tool available. Call it when the caller asks something factual about the product or how it works that isn't already covered by WHAT THE PRODUCT IS / CURRENT PLANS above — never guess, and never call it for something you can already answer from those.",
-  "This is a LIVE phone call — call at most one or two times, only when genuinely needed.",
-  "Once you have what you need (or decide no lookup is needed), respond with your FINAL turn as the JSON object described above and NOTHING else.",
-].join("\n")
-
-// ── Turn planning (platform contract: continue | prospect | transfer | hangup) ─
-
 // TOMBSTONE (2026-08-27, §6 one-vocabulary): PROSPECT_ROLE_INTERESTS was a
 // second spelling of the SAME five-value role vocabulary the growth funnel
 // owns. Survivor: lib/platform/growth-funnel.ts:13 PROSPECT_ROLES — the list
@@ -173,117 +165,22 @@ const PLATFORM_TOOL_TURN_GUIDANCE = [
 // mapping already key on. One list, so a new tier value cannot land in one
 // speller and not the other (imported at the top of this file).
 
-export type PlatformTurnAction =
-  | { kind: "say" }
-  | { kind: "prospect"; name: string | null; email: string | null; company: string | null; roleInterest: string; note: string | null }
-  | { kind: "transfer" }
-  | { kind: "hangup" }
-
-export interface PlatformTurnPlan {
-  say: string
-  action: PlatformTurnAction
-}
-
-export const PLATFORM_TURN_INSTRUCTIONS = [
-  "Respond with JSON ONLY, no prose around it:",
-  '{ "say": "<what you speak next — one to three short sentences>",',
-  '  "action": "continue" | "prospect" | "transfer" | "hangup",',
-  '  "name": "<caller name, ONLY with action prospect>",',
-  '  "email": "<caller email if they gave one, ONLY with action prospect>",',
-  '  "company": "<their company/team if given, ONLY with action prospect>",',
-  '  "role_interest": "solo_agent" | "team" | "brokerage" | "multi_location" | "unknown",',
-  '  "note": "<one line on what they want, ONLY with action prospect>" }',
-  "Rules: action 'prospect' once the caller has shared contact details and wants follow-up — their phone number is already captured from caller ID, so a name alone is enough.",
-  "action 'transfer' ONLY for existing-customer support when a transfer is offered in your instructions.",
-  "action 'hangup' when the caller says goodbye or the call is complete — say a warm close first.",
-  "Otherwise action 'continue'.",
-].join("\n")
-
-/** PURE: parse the platform turn — malformed output degrades to a safe
- *  clarifier, never a crash mid-call; role_interest is normalized to the
- *  funnel's CHECK list; a garbage email is dropped rather than stored. */
-export function parsePlatformTurnPlan(raw: string): PlatformTurnPlan {
-  try {
-    const match = raw.match(/\{[\s\S]*\}/)
-    if (!match) throw new Error("no json")
-    const p = JSON.parse(match[0]) as Record<string, string | undefined>
-    const say = (p.say ?? "").trim().slice(0, 600)
-    if (!say) throw new Error("empty say")
-    const a = (p.action ?? "continue").toLowerCase()
-    if (a === "transfer") return { say, action: { kind: "transfer" } }
-    if (a === "hangup") return { say, action: { kind: "hangup" } }
-    if (a === "prospect") {
-      const email = (p.email ?? "").trim().toLowerCase()
-      const role = (p.role_interest ?? "unknown").trim().toLowerCase()
-      return {
-        say,
-        action: {
-          kind: "prospect",
-          name: (p.name ?? "").trim().slice(0, 120) || null,
-          email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email.slice(0, 200) : null,
-          company: (p.company ?? "").trim().slice(0, 160) || null,
-          roleInterest: (PROSPECT_ROLES as readonly string[]).includes(role) ? role : "unknown",
-          note: (p.note ?? "").trim().slice(0, 400) || null,
-        },
-      }
-    }
-    return { say, action: { kind: "say" } }
-  } catch {
-    return { say: "Sorry — could you say that once more?", action: { kind: "say" } }
-  }
-}
-
-/**
- * One platform reception turn: transcript + utterance → the brain → plan.
- *
- * Lane 73E: offers `platform_faq_lookup` (native AI-SDK tool-calling, same
- * bounded ceiling as the tenant voice ISA — see lib/voice/twilio-voice.ts's
- * VOICE_TOOL_ROUND_MAX_STEPS/VOICE_TOOL_ROUND_DEADLINE_MS for the shared
- * reasoning). On a timeout/throw, falls back to the plain no-tool call —
- * fail safe, never silence on a live call.
- */
-export async function planPlatformReceptionTurn(
-  ctx: PlatformReceptionContext,
-  transcript: string | null,
-  callerUtterance: string,
-  extraRules?: string,
-): Promise<PlatformTurnPlan> {
-  let { systemPrompt } = buildPlatformReceptionPrompt({
-    brandName: ctx.brandName, tagline: ctx.tagline, tierLines: ctx.tierLines, hasTransfer: !!ctx.forwardNumber,
-    voicePitch: ctx.voicePitch, receptionGreeting: ctx.receptionGreeting, brand: ctx.brand,
-  })
-  if (extraRules) systemPrompt = `${systemPrompt}\n\n${extraRules}`
-  const { transcriptToMessages } = await import("@/lib/voice/reception-brain")
-  const convo = transcriptToMessages(transcript).map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
-  const { generateTextRouted } = await import("@/lib/ai/models")
-
-  const plainCall = async () => {
-    const { text } = await generateTextRouted({
-      feature: "voice_reception_turn",
-      prompt: `${systemPrompt}\n\n${PLATFORM_TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
-      temperature: 0.4,
-      maxTokens: 300,
-    })
-    return parsePlatformTurnPlan(text)
-  }
-
-  try {
-    const { VOICE_TOOL_ROUND_MAX_STEPS, VOICE_TOOL_ROUND_DEADLINE_MS } = await import("@/lib/voice/twilio-voice")
-    const { text } = await generateTextRouted({
-      feature: "voice_reception_turn",
-      prompt: `${systemPrompt}\n\n${PLATFORM_TURN_INSTRUCTIONS}\n\n${PLATFORM_TOOL_TURN_GUIDANCE}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
-      temperature: 0.4,
-      maxTokens: 400,
-      tools: await platformFaqTools(),
-      maxSteps: VOICE_TOOL_ROUND_MAX_STEPS,
-      abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS),
-    })
-    return parsePlatformTurnPlan(text)
-  } catch (e: any) {
-    console.error("[platform-reception] native tool round failed or hit its deadline — falling back to the plan-only path:", e?.message ?? e)
-    return plainCall()
-  }
-}
+// TOMBSTONE (lane 75D, wave 75 — ONE voice receptionist engine): this file's
+// former PlatformTurnAction / PlatformTurnPlan / PLATFORM_TURN_INSTRUCTIONS /
+// PLATFORM_TOOL_TURN_GUIDANCE / parsePlatformTurnPlan / planPlatformReceptionTurn
+// are RETIRED. Survivors:
+//   - the turn CONTRACT merged onto lib/voice/reception-brain.ts's
+//     VoiceTurnAction (its "prospect" variant) / VoiceTurnPlan / parseTurnPlan
+//     (which now accepts the union of both deployments' actions) and that
+//     file's PLATFORM_TURN_INSTRUCTIONS / PLATFORM_TOOL_TURN_GUIDANCE exports
+//     (moved there verbatim, unchanged text).
+//   - the TURN-PLANNING FUNCTION merged onto lib/voice/twilio-voice.ts's
+//     planReceptionTurn({ deployment: "platform", ... }) — same tool-round
+//     engine (runVoiceTurnRound) the tenant deployment always used, offered
+//     `platformFaqTools()` (now exported below, unchanged) instead of the
+//     tenant's persona-scoped property/capture bundle.
+// PROSPECT_ROLES (above) still lives here — capturePhoneProspect below still
+// reads it, and it is re-exported nowhere else, so no import broke.
 
 // ── Prospect capture (into the EXISTING growth funnel) ───────────────────────
 

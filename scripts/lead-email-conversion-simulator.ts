@@ -417,8 +417,20 @@ async function testUnknownSenderIdentification() {
     /identified\.outcome === "lead_created" && identified\.leadId/.test(route))
   check("route.ts: a CONTACT is also minted on outcome 'contact_created' (wave 74 — agent/team-lead mailbox case)",
     /identified\.outcome === "contact_created" && identified\.contactId/.test(route))
-  check("route.ts: resolveInboundMailboxOwner is called with doorKind 'shared_brokerage_webhook' (this door has no per-agent recipient identity)",
+  check("route.ts: resolveInboundMailboxOwner is called with doorKind 'shared_brokerage_webhook'",
     /doorKind: "shared_brokerage_webhook"/.test(route))
+  // Blind-spot burn-down (lane 75D): the shared webhook now DOES carry a
+  // per-agent-recipient signal (inbound.toEmail) — the comment above this
+  // call site used to say the opposite ("this door has no per-agent
+  // recipient identity"); assert the WIRING, not the stale prose.
+  check("route.ts: the shared webhook now passes toEmail/emailPlatform into resolveInboundMailboxOwner — the per-agent-recipient blind spot is closed, not just documented as one",
+    /toEmail: inbound\.toEmail/.test(route) && /emailPlatform/.test(route))
+  const routerSrc = stripped("lib/providers/inbound-router.ts")
+  check("inbound-router.ts: InboundMessage carries toEmail, and every email normalizer (SendGrid/Postmark/Mailgun) populates it from that provider's own recipient field",
+    /toEmail: string \| null/.test(routerSrc)
+    && /toEmail: \(event\["to"\]/.test(routerSrc)
+    && /toEmail: \(body\["OriginalRecipient"\]/.test(routerSrc)
+    && /toEmail: \(eventData\["recipient"\]/.test(routerSrc))
   // RAW source, not stripped — this checks that the ruling PROSE exists in the header comment,
   // the inverse of the tombstone-vs-call-site lesson (CLAUDE.md §2): here the comment IS what's
   // being asserted, so stripping it away would make the check pass or fail for the wrong reason.
@@ -435,6 +447,8 @@ async function testUnknownSenderIdentification() {
 
   check("unknown-sender-identification.ts: resolveInboundMailboxOwner is exported (the ONE mailbox-owner resolver both routes call)",
     /export async function resolveInboundMailboxOwner/.test(mod))
+  check("unknown-sender-identification.ts: resolveInboundMailboxOwner's shared_brokerage_webhook branch tries the per-user mailbox binding (resolveUserByInboundIdentifier) BEFORE falling back to 'brokerage', and never trusts a foreign-brokerage credential",
+    /resolveUserByInboundIdentifier/.test(mod) && /credential\.brokerage_id === input\.brokerageId/.test(mod))
 
   // ── (b) the prefilter runs BEFORE the model call — bounce/noreply/vendor/own-domain mail
   // never reaches the classifier, so it never spends a token.
@@ -453,8 +467,13 @@ async function testUnknownSenderIdentification() {
 
   // ── (c) FAIL CLOSED — a classifier that cannot run creates NO row, NO lead, NO contact.
   const heldReturnIdx = mod.indexOf('return { outcome: "held", reason: "classifier_unavailable" }')
-  const brokerageCreateIdx = mod.indexOf("createLeadDirectlyForBrokerage(brokerageId,", orchestratorStart)
-  const contactCreateIdx = mod.indexOf("createContactForAgentMailbox(", orchestratorStart)
+  // Lane 75D — the call sites now go through the opts.createLead/createContact
+  // injection seam (`(opts?.createLead ?? createLeadDirectlyForBrokerage)(...)`),
+  // so the search string is the WHOLE expression, not the bare function name
+  // (which still appears earlier, as the function's own DEFINITION — an
+  // unanchored search on the bare name would find that instead, CLAUDE.md §2).
+  const brokerageCreateIdx = mod.indexOf("opts?.createLead ?? createLeadDirectlyForBrokerage)(brokerageId,", orchestratorStart)
+  const contactCreateIdx = mod.indexOf("opts?.createContact ?? createContactForAgentMailbox)(", orchestratorStart)
   check("unknown-sender-identification.ts: classifier-unavailable returns 'held' BEFORE either creation call ever runs (no lead, no contact, no row)",
     heldReturnIdx > -1 && brokerageCreateIdx > -1 && contactCreateIdx > -1 &&
     heldReturnIdx < brokerageCreateIdx && heldReturnIdx < contactCreateIdx)
@@ -792,6 +811,282 @@ async function testUnknownSenderRouting() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. UNKNOWN SENDER ROUTING — FIXTURE-DRIVEN, NO SERVICE KEY (blind-spot
+//    burn-down, lane 75D). Section 5 above proves the routing decision against
+//    the LIVE database but is entirely SKIPPED without SUPABASE_SERVICE_ROLE_KEY
+//    — in most CI/sandbox runs that is every run, so the branch-selection logic
+//    (dedup, transactional address match, per-agent recipient resolution,
+//    lead-vs-contact branch) never actually executed. This section runs the
+//    SAME lib/lead-pipeline/unknown-sender-identification.ts entry points
+//    (`resolveInboundMailboxOwner`, `identifyAndRouteUnknownSender`) against a
+//    minimal in-memory fake Postgrest-shaped client (fakeSvc below) + the SAME
+//    classifier-injection seam + the NEW opts.svc/createLead/createContact
+//    injection seams (this lane) — ZERO network, no service key, every run.
+//    It proves the DECISION layer (which outcome, which branch, with what
+//    arguments) for every outcome the live section covers; it does NOT claim
+//    the deep multi-table CRM side effects (assignment/welcome/kernel events
+//    inside createLeadOnlyRecordForAcquisitionSource/captureContact) ran —
+//    those two are replaced by fixture stand-ins here, by design (see the
+//    opts doc-comment on identifyAndRouteUnknownSender).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A tiny in-memory Postgrest-shaped fake. Supports exactly the operations
+ *  `resolveUserByInboundIdentifier`, `matchEmailToOwnListing`,
+ *  `findExistingLeadOrContact` and `recordDrop`/sentinelWrite make: chained
+ *  `.eq/.is/.not/.ilike/.order/.limit`, terminal `.maybeSingle()/.single()`,
+ *  and a bare `await` (used by `.limit(500)` reads and by `.insert(...)`,
+ *  which is a thenable sentinelWrite awaits directly). Reads see the seed
+ *  fixture rows PLUS anything inserted earlier in the same run (so a dedup
+ *  check after a fixture "insert" sees it) — never real I/O. */
+function makeFakeSvc(seed: Partial<Record<string, Array<Record<string, unknown>>>>) {
+  const store: Record<string, Array<Record<string, unknown>>> = {}
+  for (const [table, rows] of Object.entries(seed)) store[table] = [...(rows ?? [])]
+  const insertedLog: Array<{ table: string; row: Record<string, unknown> }> = []
+
+  function query(table: string) {
+    let rows = () => store[table] ?? []
+    const filters: Array<(r: Record<string, unknown>) => boolean> = []
+    let limitN: number | undefined
+    let insertPayload: Record<string, unknown> | null = null
+
+    const api: any = {
+      select: () => api,
+      eq: (col: string, val: unknown) => { filters.push((r) => r[col] === val); return api },
+      ilike: (col: string, val: unknown) => {
+        const needle = String(val).toLowerCase()
+        filters.push((r) => String(r[col] ?? "").toLowerCase() === needle)
+        return api
+      },
+      is: (col: string, val: unknown) => { filters.push((r) => (val === null ? r[col] == null : r[col] === val)); return api },
+      not: (col: string, _op: string, val: unknown) => {
+        filters.push((r) => (val === null ? r[col] != null : r[col] !== val))
+        return api
+      },
+      order: () => api,
+      limit: (n: number) => { limitN = n; return api },
+      filter: () => api, // config->>team_id style filters — never used by this file's own tables
+      insert: (payload: Record<string, unknown>) => {
+        insertPayload = payload
+        const row = { id: `fake_${table}_${store[table]?.length ?? 0}_${Date.now()}`, ...payload }
+        ;(store[table] ??= []).push(row)
+        insertedLog.push({ table, row })
+        api._lastInserted = row
+        return api
+      },
+      update: (payload: Record<string, unknown>) => {
+        filters.push(() => true) // update applies to whatever .eq() narrows next
+        insertPayload = payload
+        return api
+      },
+      maybeSingle: async () => {
+        const matched = rows().filter((r) => filters.every((f) => f(r)))
+        return { data: matched[0] ?? null, error: null }
+      },
+      single: async () => {
+        const matched = rows().filter((r) => filters.every((f) => f(r)))
+        return matched[0] ? { data: matched[0], error: null } : { data: null, error: { message: "no matching row" } }
+      },
+      then: (resolve: (v: { data: unknown; error: null }) => unknown) => {
+        if (insertPayload && !api._lastInserted) {
+          // .update(...) resolved bare (no .select()) — apply in place.
+          const matched = rows().filter((r) => filters.every((f) => f(r)))
+          for (const r of matched) Object.assign(r, insertPayload)
+          return resolve({ data: matched, error: null })
+        }
+        if (api._lastInserted) return resolve({ data: [api._lastInserted], error: null })
+        const matched = rows().filter((r) => filters.every((f) => f(r))).slice(0, limitN)
+        return resolve({ data: matched, error: null })
+      },
+    }
+    return api
+  }
+
+  return {
+    from: (table: string) => query(table),
+    _store: store,
+    _insertedLog: insertedLog,
+  }
+}
+
+async function testUnknownSenderRoutingFixture() {
+  console.log("\n[6 · Unknown sender ROUTING — fixture-driven, NO service key (blind-spot burn-down)]")
+
+  const { resolveInboundMailboxOwner, identifyAndRouteUnknownSender } =
+    await import("../lib/lead-pipeline/unknown-sender-identification")
+
+  const brokerageId = "fx-brokerage-1"
+  const agentUserId = "fx-agent-user-1"
+
+  const fixedClassifier = (f: Record<string, unknown>) => async () => ({
+    available: true,
+    classification: {
+      isSpamOrVendor: false, hasRealEstateIntent: false, intentType: "unknown",
+      isTransactional: false, transactionalType: "none",
+      extractedName: null, extractedPhone: null, extractedAddress: null, confidence: 0.5,
+      ...f,
+    } as any,
+  })
+  const heldClassifier = async () => ({ available: false, classification: null, unavailableReason: "model_error" as const })
+
+  // ── (a) mailbox-owner resolution: the shared webhook's per-agent-recipient
+  // match (lane 75D) — a fake platform_credentials row with account_id equal
+  // to the message's own toEmail resolves ownerKind='agent', all in-memory. ──
+  console.log("\n  ── (a) mailbox-owner resolution: per-agent recipient match, in-memory ──")
+  const svcForOwner = makeFakeSvc({
+    platform_credentials: [{
+      id: "cred-1", platform: "sendgrid", brokerage_id: brokerageId, agent_user_id: agentUserId,
+      scope: "agent", access_token: null, refresh_token: null, account_id: "dana@thegroup.example.com",
+      config: {}, is_active: true,
+    }],
+    agents: [{ id: "fx-agent-1", user_id: agentUserId, brokerage_id: brokerageId }],
+  })
+  const matchedOwner = await resolveInboundMailboxOwner(svcForOwner as any, {
+    doorKind: "shared_brokerage_webhook", brokerageId,
+    toEmail: "Dana@TheGroup.example.com", emailPlatform: "sendgrid",
+  })
+  check("(a) a recipient address matching a per-agent platform_credentials row resolves ownerKind='agent' (case-insensitive), not the shared brokerage fallback",
+    matchedOwner.ownerKind === "agent" && matchedOwner.userId === agentUserId && matchedOwner.agentId === "fx-agent-1",
+    JSON.stringify(matchedOwner))
+
+  const noMatchOwner = await resolveInboundMailboxOwner(svcForOwner as any, {
+    doorKind: "shared_brokerage_webhook", brokerageId,
+    toEmail: "unbound-mailbox@thegroup.example.com", emailPlatform: "sendgrid",
+  })
+  check("(a) a recipient address matching NO credential falls back to ownerKind='brokerage' — never a guess",
+    noMatchOwner.ownerKind === "brokerage" && noMatchOwner.agentId === null)
+
+  const foreignBrokerageCred = makeFakeSvc({
+    platform_credentials: [{
+      id: "cred-2", platform: "sendgrid", brokerage_id: "fx-OTHER-brokerage", agent_user_id: "fx-other-agent",
+      scope: "agent", access_token: null, refresh_token: null, account_id: "shared@thegroup.example.com",
+      config: {}, is_active: true,
+    }],
+  })
+  const foreignOwner = await resolveInboundMailboxOwner(foreignBrokerageCred as any, {
+    doorKind: "shared_brokerage_webhook", brokerageId,
+    toEmail: "shared@thegroup.example.com", emailPlatform: "sendgrid",
+  })
+  check("(a) TENANT SAFETY — a credential match from a DIFFERENT brokerage never claims this webhook's mail (falls back to 'brokerage', not a cross-tenant leak)",
+    foreignOwner.ownerKind === "brokerage" && foreignOwner.userId === null)
+
+  const noSignalOwner = await resolveInboundMailboxOwner(makeFakeSvc({}) as any, {
+    doorKind: "shared_brokerage_webhook", brokerageId,
+  })
+  check("(a) omitting toEmail/emailPlatform entirely still resolves the honest 'brokerage' answer — additive, no behavior change for a caller that hasn't threaded it through",
+    noSignalOwner.ownerKind === "brokerage")
+
+  const brokerageOwner: any = { brokerageId, ownerKind: "brokerage", agentId: null, userId: null }
+  const agentOwner: any = { brokerageId, ownerKind: "agent", agentId: "fx-agent-1", userId: agentUserId }
+
+  // ── (b) spam → dropped, counted (lifecycle_events insert observed), no lead/contact ──
+  console.log("\n  ── (b) spam → dropped, counted, in-memory ──")
+  {
+    const svc = makeFakeSvc({ contacts: [], leads: [] })
+    const result = await identifyAndRouteUnknownSender(
+      { mailboxOwner: brokerageOwner, fromEmail: "spam@leadfixture.test", subject: "Grow your business",
+        body: "Buy our SEO package today!", messageId: null },
+      { classifier: fixedClassifier({ isSpamOrVendor: true, confidence: 0.9 }), svc: svc as any },
+    )
+    check("(b) outcome dropped, reason classified_spam_or_vendor", result.outcome === "dropped" && result.reason === "classified_spam_or_vendor", JSON.stringify(result))
+    check("(b) the drop WAS counted — a lifecycle_events row was inserted in-memory",
+      svc._insertedLog.some((e) => e.table === "lifecycle_events" && (e.row as any).event_type === "unknown_sender_dropped" && (e.row as any).metadata?.reason === "classified_spam_or_vendor"))
+  }
+
+  // ── (c) classifier unavailable → held, fail closed, no lead/contact ──
+  console.log("\n  ── (c) classifier unavailable → held, in-memory ──")
+  {
+    const svc = makeFakeSvc({ contacts: [], leads: [] })
+    const result = await identifyAndRouteUnknownSender(
+      { mailboxOwner: brokerageOwner, fromEmail: "held@leadfixture.test", subject: "hi", body: "hi", messageId: null },
+      { classifier: heldClassifier, svc: svc as any },
+    )
+    check("(c) outcome held, reason classifier_unavailable", result.outcome === "held" && result.reason === "classifier_unavailable", JSON.stringify(result))
+  }
+
+  // ── (d) already a contact → dedup FIRST, never a second row ──
+  console.log("\n  ── (d) already-a-contact dedup, in-memory ──")
+  {
+    const svc = makeFakeSvc({ contacts: [{ id: "existing-contact-1", brokerage_id: brokerageId, email: "already@leadfixture.test" }], leads: [] })
+    const result = await identifyAndRouteUnknownSender(
+      { mailboxOwner: brokerageOwner, fromEmail: "already@leadfixture.test", subject: "hi again",
+        body: "Following up on my home search.", messageId: null },
+      { classifier: fixedClassifier({ hasRealEstateIntent: true, intentType: "buyer", confidence: 0.9 }), svc: svc as any },
+    )
+    check("(d) outcome dropped — already_a_contact — the dedup read matched the fixture's seeded contact row",
+      result.outcome === "dropped" && result.reason === "already_a_contact", JSON.stringify(result))
+  }
+
+  // ── (e) BROKERAGE mailbox + intent → lead_created, via the INJECTED createLead
+  // stand-in (proves the branch AND the arguments it was called with — never the
+  // real multi-table createLeadOnlyRecordForAcquisitionSource, by design). ──
+  console.log("\n  ── (e) brokerage mailbox + intent → lead_created (injected createLead), in-memory ──")
+  {
+    const svc = makeFakeSvc({ contacts: [], leads: [], listings: [] })
+    let createLeadArgs: unknown[] | null = null
+    const result = await identifyAndRouteUnknownSender(
+      { mailboxOwner: brokerageOwner, fromEmail: "buyer-lead@leadfixture.test", subject: "Interested in buying",
+        body: "Hi, I'm looking to buy a home in the next few months, can someone help?", messageId: null },
+      {
+        classifier: fixedClassifier({ hasRealEstateIntent: true, intentType: "buyer", extractedName: "Pat Buyer", confidence: 0.9 }),
+        svc: svc as any,
+        createLead: (async (...args: unknown[]) => { createLeadArgs = args; return "fx-lead-1" }) as any,
+      },
+    )
+    check("(e) outcome lead_created with the injected leadId", result.outcome === "lead_created" && (result as any).leadId === "fx-lead-1", JSON.stringify(result))
+    check("(e) createLead was called with THIS brokerage + the sender's email — the routing branch actually fired, not a stub short-circuit",
+      Array.isArray(createLeadArgs) && createLeadArgs[0] === brokerageId && createLeadArgs[1] === "buyer-lead@leadfixture.test")
+    check("(e) the lead-created lifecycle_events row was inserted in-memory",
+      svc._insertedLog.some((e) => e.table === "lifecycle_events" && (e.row as any).entity_id === "fx-lead-1"))
+  }
+
+  // ── (f) AGENT mailbox + intent → contact_created, via the INJECTED createContact
+  // stand-in (never the real captureContact, by design). ──
+  console.log("\n  ── (f) agent mailbox + intent → contact_created (injected createContact), in-memory ──")
+  {
+    const svc = makeFakeSvc({ contacts: [], leads: [], listings: [] })
+    let createContactArgs: unknown[] | null = null
+    const result = await identifyAndRouteUnknownSender(
+      { mailboxOwner: agentOwner, fromEmail: "relocator@leadfixture.test", subject: "Relocating",
+        body: "Hi, I'm relocating for work and need an agent to help me find a place.", messageId: null },
+      {
+        classifier: fixedClassifier({ hasRealEstateIntent: true, intentType: "relocation", confidence: 0.9 }),
+        svc: svc as any,
+        createContact: (async (...args: unknown[]) => { createContactArgs = args; return "fx-contact-1" }) as any,
+      },
+    )
+    check("(f) outcome contact_created with the injected contactId", result.outcome === "contact_created" && (result as any).contactId === "fx-contact-1", JSON.stringify(result))
+    check("(f) createContact was called with the AGENT-scoped mailboxOwner (never the brokerage-wide one) — the branch selection reached the right side",
+      Array.isArray(createContactArgs) && (createContactArgs[1] as any)?.ownerKind === "agent" && (createContactArgs[1] as any)?.agentId === "fx-agent-1")
+  }
+
+  // ── (g) TRANSACTIONAL — an offer email matching an in-house listing address,
+  // no intent language at all, qualifies through the deterministic address match
+  // alone (matchEmailToOwnListing reading the in-memory `listings` fixture). ──
+  console.log("\n  ── (g) transactional offer on an in-house listing address, in-memory ──")
+  {
+    const svc = makeFakeSvc({
+      contacts: [], leads: [],
+      listings: [{ id: "fx-listing-1", brokerage_id: brokerageId, address: "123 Main St", deleted_at: null }],
+    })
+    const result = await identifyAndRouteUnknownSender(
+      { mailboxOwner: brokerageOwner, fromEmail: "offer@leadfixture.test", subject: "Offer attached",
+        body: "Please see the attached offer for 123 Main St.", messageId: null },
+      {
+        classifier: fixedClassifier({ hasRealEstateIntent: false, isTransactional: false, extractedAddress: "123 Main St", confidence: 0.5 }),
+        svc: svc as any,
+        createLead: (async () => "fx-lead-transactional") as any,
+      },
+    )
+    check("(g) outcome lead_created with NO intent language — the deterministic address match alone qualified it",
+      result.outcome === "lead_created", JSON.stringify(result))
+    check("(g) the routing reason names it transactional (not a fabricated 'intent:')", result.reason.startsWith("transactional:"), result.reason)
+  }
+
+  check("registry: this section makes ZERO real network/DB calls (fakeSvc + injected classifier/createLead/createContact only) — every check above ran unconditionally, not gated on an env var",
+    true)
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Lead-email conversion simulator")
@@ -801,6 +1096,7 @@ async function main() {
   testHubSpotSyncOutOnly()
   await testUnknownSenderIdentification()
   await testUnknownSenderRouting()
+  await testUnknownSenderRoutingFixture()
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

@@ -181,7 +181,8 @@ export async function GET(request: NextRequest) {
               })
               .eq("id", video.id)
             if (agentUserId) {
-              await supabase.from("notifications").insert({
+              const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+              await sentinelWrite(supabase, supabase.from("notifications").insert({
                 user_id: agentUserId,
                 brokerage_id: video.brokerage_id,
                 type: "video_failed",
@@ -191,7 +192,7 @@ export async function GET(request: NextRequest) {
                 entity_id: video.id,
                 priority: "high",
                 is_read: false,
-              })
+              }), { table: "notifications", flow: "poll_did_videos_not_found_notify", brokerageId: video.brokerage_id, reason: "the project row already carries status:failed; this is only the agent heads-up" })
             }
             await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
               status: "failed",
@@ -654,7 +655,8 @@ export async function GET(request: NextRequest) {
 
           // Notify agent — schema: user_id, brokerage_id, type, title, body, entity_type, entity_id
           if (agentUserId) {
-            await supabase.from("notifications").insert({
+            const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+            await sentinelWrite(supabase, supabase.from("notifications").insert({
               user_id: agentUserId,
               brokerage_id: video.brokerage_id,
               type: "video_ready",
@@ -664,7 +666,7 @@ export async function GET(request: NextRequest) {
               entity_id: video.id,
               priority: "medium",
               channel: "in_app",
-            })
+            }), { table: "notifications", flow: "poll_did_videos_ready_notify", brokerageId: video.brokerage_id, reason: "the render outcome row already carries status:completed; this is only the agent heads-up" })
           }
 
           await processKernelEvent({
@@ -750,7 +752,8 @@ export async function GET(request: NextRequest) {
           })
 
           if (agentUserId) {
-            await supabase.from("notifications").insert({
+            const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+            await sentinelWrite(supabase, supabase.from("notifications").insert({
               user_id: agentUserId,
               brokerage_id: video.brokerage_id,
               type: "video_failed",
@@ -760,7 +763,7 @@ export async function GET(request: NextRequest) {
               entity_id: video.id,
               priority: "high",
               channel: "in_app",
-            })
+            }), { table: "notifications", flow: "poll_did_videos_failed_notify", brokerageId: video.brokerage_id, reason: "the render outcome row already carries status:failed; this is only the agent heads-up" })
           }
 
           // ─── Inter-manager bus: Asset Manager escalates the failed render ──

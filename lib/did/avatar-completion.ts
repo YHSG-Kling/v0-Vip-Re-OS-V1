@@ -22,6 +22,7 @@
 
 import { classifyDidError } from "./contract"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /** The subset of a D-ID scene-avatar payload this needs. Shape is identical on
  *  the GET /scenes/avatars/{id} response and the webhook body. */
@@ -231,7 +232,10 @@ export async function applyAvatarOutcome(
     }
 
     if (notifyUserId) {
-      await supabase.from("notifications").insert({
+      // Blind-spot burn-down (lane 75D, notification fan-out census) —
+      // sentinelWrite: both callers of this function (the poll cron, the
+      // D-ID webhook) always hand it the service-role client.
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: notifyUserId,
         brokerage_id: asset.brokerage_id,
         type: "avatar_ready",
@@ -241,7 +245,7 @@ export async function applyAvatarOutcome(
         entity_id: assetId,
         priority: "medium",
         channel: "in_app",
-      })
+      }), { table: "notifications", flow: "avatar_ready_notify", brokerageId: asset.brokerage_id, reason: "the asset row already carries status:ready; this is only the agent heads-up" })
     }
 
     return { applied: true, outcome: "ready", avatarUrl }
@@ -260,7 +264,7 @@ export async function applyAvatarOutcome(
     }).eq("id", assetId)
 
     if (notifyUserId) {
-      await supabase.from("notifications").insert({
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: notifyUserId,
         brokerage_id: asset.brokerage_id,
         type: "avatar_failed",
@@ -270,7 +274,7 @@ export async function applyAvatarOutcome(
         entity_id: assetId,
         priority: "high",
         channel: "in_app",
-      })
+      }), { table: "notifications", flow: "avatar_failed_notify", brokerageId: asset.brokerage_id, reason: "the asset row already carries status:failed; this is only the agent heads-up" })
     }
 
     return { applied: true, outcome: "failed", operatorMessage: failure.operatorMessage }

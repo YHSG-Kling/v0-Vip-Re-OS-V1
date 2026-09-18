@@ -305,8 +305,11 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
   // `notifications` below is the canonical in-app surface and already carries
   // this exact closing event to the same agent — repointed, duplicate removed.
 
-  // In-app notification + activity (existing tables).
-  await supabase.from("notifications").insert({
+  // In-app notification + activity (existing tables). Blind-spot burn-down
+  // (lane 75D, notification fan-out census) — bestEffort (this file's own
+  // wrapper, §6): `supabase` here is the cookie session client, so
+  // sentinelWrite's self_heal_events ledger write would be RLS-refused.
+  await bestEffort(supabase.from("notifications").insert({
     user_id: agent.user_id,
     brokerage_id: txn.brokerage_id,
     type: "preliminary_cd_received",
@@ -316,7 +319,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     entity_id: input.transactionId,
     priority: "high",
     channel: "in_app",
-  })
+  }), "the preliminary CD upload itself already succeeded; this is only the agent heads-up")
 
   // The record that the preliminary CD arrived and a CDA draft is now required.
   // A lost row here is a compliance step nobody knows is outstanding.
@@ -348,7 +351,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     .maybeSingle()
   const tcUserId = (txnFull as any)?.coordinator_id ?? null
   if (tcUserId) {
-    await supabase.from("notifications").insert({
+    await bestEffort(supabase.from("notifications").insert({
       user_id:      tcUserId,
       brokerage_id: txn.brokerage_id,
       type:         "preliminary_cd_received",
@@ -358,7 +361,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       entity_id:    input.transactionId,
       priority:     "high",
       channel:      "in_app",
-    })
+    }), "the preliminary CD upload itself already succeeded; this is only the TC heads-up")
   }
 
   // Create a "Draft and submit CDA" task for the agent so it shows up in
@@ -701,7 +704,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   if (disposition.route === "external_form_platform") {
     // No in-app broker/compliance — the broker-side steps happen through the agent's external form
     // platform. Tell the AGENT the CDA is theirs to route to their brokerage; skip the in-app queue.
-    await supabase.from("notifications").insert({
+    await bestEffort(supabase.from("notifications").insert({
       user_id: auth.userId,
       brokerage_id: cda.brokerage_id,
       type: "cda_route_external",
@@ -711,7 +714,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       entity_id: cda.transaction_id,
       priority: "high",
       channel: "in_app",
-    }).then(() => {}, () => {})
+    }), "the CDA disposition itself already recorded; this is only the agent heads-up")
   } else {
     // Notify in-app compliance for the brokerage.
     const { data: complianceUsers } = await supabase
@@ -721,7 +724,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       .in("user_type", ["compliance_officer", "admin", "broker"])
 
     for (const u of complianceUsers ?? []) {
-      await supabase.from("notifications").insert({
+      await bestEffort(supabase.from("notifications").insert({
         user_id: u.id,
         brokerage_id: cda.brokerage_id,
         type: "cda_submitted",
@@ -731,7 +734,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
         entity_id: cda.transaction_id,
         priority: "medium",
         channel: "in_app",
-      })
+      }), "the CDA submission itself already recorded; this is only the compliance heads-up")
     }
   }
 
@@ -873,7 +876,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
     .in("user_type", ["broker", "admin"])
     .limit(10)
   for (const b of (brokers ?? []) as Array<{ id: string }>) {
-    await supabase.from("notifications").insert({
+    await bestEffort(supabase.from("notifications").insert({
       user_id: b.id,
       brokerage_id: cda.brokerage_id,
       type: "cda_awaiting_broker_signature",
@@ -883,7 +886,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
       entity_id: cda.transaction_id,
       priority: "high",
       channel: "in_app",
-    }).then(() => {}, () => {})
+    }), "the compliance approval itself already recorded; this is only the broker heads-up")
   }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)

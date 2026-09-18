@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature, planReceptionTurn } from "@/lib/voice/twilio-voice"
 import { twimlGatherTurn, twimlTransfer, twimlHangup, appendTranscript } from "@/lib/voice/reception-brain"
-import { isPlatformNumber, resolvePlatformReceptionContext, planPlatformReceptionTurn, capturePhoneProspect } from "@/lib/voice/platform-reception"
+import { isPlatformNumber, resolvePlatformReceptionContext, capturePhoneProspect } from "@/lib/voice/platform-reception"
 
 export const dynamic = "force-dynamic"
 
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
       return xml(twimlHangup(closer))
     }
 
-    const plan = await planPlatformReceptionTurn(pctx, transcript, speech)
+    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: speech })
     const newTranscript = appendTranscript(transcript, speech, plan.say)
     if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
@@ -136,8 +136,10 @@ export async function POST(request: NextRequest) {
         })
         return planTurnWithPrompt(systemPrompt, transcript, speech)
       })()
-    : await planReceptionTurn(ctx, transcript, speech, svc, undefined,
-        call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null } : undefined)
+    : await planReceptionTurn({
+        deployment: "tenant", ctx, transcript, utterance: speech, svc,
+        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null } : undefined,
+      })
   const newTranscript = appendTranscript(transcript, speech, plan.say)
   if (call) {
     await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})

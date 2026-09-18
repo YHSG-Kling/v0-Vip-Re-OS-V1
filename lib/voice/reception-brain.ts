@@ -17,6 +17,7 @@ import type { BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 function brandOf(id: InboundIdentity): BrandPlaybookContext | null | undefined {
   return id.brand as BrandPlaybookContext | null | undefined
 }
+import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
 
 /** PURE: the reception system prompt from the tenant's AI identity — shared by
  *  every engine. Mirrors the Vapi builder's rules exactly (one brain). */
@@ -107,6 +108,17 @@ export type VoiceTurnAction =
   // number than the one they're calling from ("call me back at 555-..."); null
   // means "this number, the one on this call".
   | { kind: "callback"; phone: string | null; whenPhrase: string; reason: string | null }
+  // Lane 75D — ONE voice-receptionist engine (owner, wave 75: "make sure that
+  // there aren't 2 different ai agents that handle ai voice receptionists").
+  // The PLATFORM deployment's own capture action, merged onto this SAME
+  // VoiceTurnAction union (TOMBSTONE: lib/voice/platform-reception.ts's
+  // standalone PlatformTurnAction/PlatformTurnPlan — see planReceptionTurn in
+  // lib/voice/twilio-voice.ts, the deployment-branching entrypoint). A tenant
+  // call never produces this action; a platform call never produces
+  // book/rsvp/seller_lead/callback — the shared PARSER below accepts the
+  // union of both deployments' vocabularies, and each deployment's own
+  // TURN_INSTRUCTIONS only ever asks the model for the subset it can act on.
+  | { kind: "prospect"; name: string | null; email: string | null; company: string | null; roleInterest: string; note: string | null }
   | { kind: "hangup" }                                  // caller done
 
 // TOMBSTONE (lane 73E, 2026-09-18): lane 73B's closed VOICE_TOOL_NAMES enum +
@@ -131,7 +143,13 @@ export const VOICE_TOOL_ALLOWLIST = [
   "comparable_property_count",
   "verify_address",
 ] as const
-export type VoiceToolName = (typeof VOICE_TOOL_ALLOWLIST)[number]
+// Un-exported (lane 75D, opposite-missing census round 20): the last
+// importer (lib/voice/twilio-voice.ts's cast on the selectToolsForPersona
+// result) was removed when planTurnWithPrompt was refactored to merge the
+// free capture bundle in — nothing imports this any more. Module-private
+// until a real importer needs it again (CLAUDE.md §1: un-export rather than
+// delete a type that still documents the allowlist's own shape).
+type VoiceToolName = (typeof VOICE_TOOL_ALLOWLIST)[number]
 
 export interface VoiceTurnPlan {
   say: string
@@ -163,14 +181,56 @@ export const TURN_INSTRUCTIONS = [
 // Native tool-calling replaces the old manual `tool_request` JSON field
 // (TOMBSTONE above) — the model calls a REAL tool via the SDK's own
 // function-calling protocol, not by naming one inside this JSON.
+//
+// Lane 75D — the SAME round also carries the free capture/follow-up bundle
+// (lib/ai-isa/customer-context-tools.ts::buildCustomerFreeTools —
+// get_my_context, search_our_listings, and once a contact/lead is linked:
+// request_showing, schedule_callback, schedule_home_value_review,
+// book_agent_appointment, send_matching_listings, record_qualification),
+// the SAME bundle every chat surface (email/widget/portal/D-ID) already
+// offers — so a live call captures exactly as much (owner, wave 75:
+// "capturing as much useful information about that person for the os").
 export const TOOL_TURN_GUIDANCE = [
   "You have live property-lookup tools available on this call. Call one ONLY when you need REAL data you don't already have (a specific address's details, comparable sales, or a comp count) — never guess, and never call a tool for something you can already answer.",
-  "This is a LIVE phone call — the caller is waiting in silence while you work. Call at most one or two tools, and only when genuinely needed; do not call the same tool twice for the same address.",
+  "You ALSO have free tools for recording what you learn and offering follow-up — call record_qualification as SOON as you learn any of their intent/persona/property-they're-selling/buyer-criteria/timeline/financing (safe to call more than once as more comes up), and call ONE follow-up tool (schedule_callback, send_matching_listings, schedule_home_value_review, book_agent_appointment, or request_showing) once you understand what they want, matching the FOLLOW-UP MENU above — never more than one, never a forced choice.",
+  "This is a LIVE phone call — the caller is waiting in silence while you work. Call at most a couple of tools per turn, and only when genuinely needed; do not call the same tool twice for the same thing.",
   "Once you have what you need (or decide no tool is needed), respond with your FINAL turn as the JSON object described above and NOTHING else — no further tool calls, no prose before or after the JSON.",
 ].join("\n")
 
+// ── Platform-deployment turn contract (lane 75D — moved here from
+// lib/voice/platform-reception.ts so BOTH deployments' instructions/guidance
+// live beside the ONE VoiceTurnPlan/VoiceTurnAction contract and the ONE
+// parser below; TOMBSTONE: platform-reception.ts's former
+// PLATFORM_TURN_INSTRUCTIONS / PLATFORM_TOOL_TURN_GUIDANCE constants and its
+// standalone parsePlatformTurnPlan — see this file's parseTurnPlan, which now
+// accepts the union of both deployments' action vocabularies.) ─────────────
+export const PLATFORM_TURN_INSTRUCTIONS = [
+  "Respond with JSON ONLY, no prose around it:",
+  '{ "say": "<what you speak next — one to three short sentences>",',
+  '  "action": "continue" | "prospect" | "transfer" | "hangup",',
+  '  "name": "<caller name, ONLY with action prospect>",',
+  '  "email": "<caller email if they gave one, ONLY with action prospect>",',
+  '  "company": "<their company/team if given, ONLY with action prospect>",',
+  '  "role_interest": "solo_agent" | "team" | "brokerage" | "multi_location" | "unknown",',
+  '  "note": "<one line on what they want, ONLY with action prospect>" }',
+  "Rules: action 'prospect' once the caller has shared contact details and wants follow-up — their phone number is already captured from caller ID, so a name alone is enough.",
+  "action 'transfer' ONLY for existing-customer support when a transfer is offered in your instructions.",
+  "action 'hangup' when the caller says goodbye or the call is complete — say a warm close first.",
+  "Otherwise action 'continue'.",
+].join("\n")
+
+export const PLATFORM_TOOL_TURN_GUIDANCE = [
+  "You have a platform FAQ lookup tool available. Call it when the caller asks something factual about the product or how it works that isn't already covered by WHAT THE PRODUCT IS / CURRENT PLANS above — never guess, and never call it for something you can already answer from those.",
+  "This is a LIVE phone call — call at most one or two times, only when genuinely needed.",
+  "Once you have what you need (or decide no lookup is needed), respond with your FINAL turn as the JSON object described above and NOTHING else.",
+].join("\n")
+
 /** PURE: parse the model's turn output — malformed JSON degrades to a safe
- *  'continue' with a clarifying line, never a crash mid-call. */
+ *  'continue' with a clarifying line, never a crash mid-call. Handles the
+ *  UNION of both deployments' action vocabularies (lane 75D — the ONE parser
+ *  both tenant and platform turns run through; a tenant deployment's own
+ *  TURN_INSTRUCTIONS never asks for 'prospect' and vice versa, so in
+ *  practice each deployment only ever produces its own subset here). */
 export function parseTurnPlan(raw: string): VoiceTurnPlan {
   try {
     const match = raw.match(/\{[\s\S]*\}/)
@@ -178,6 +238,7 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
     const p = JSON.parse(match[0]) as {
       say?: string; action?: string; date_time?: string; address?: string
       callback_phone?: string; callback_when?: string; callback_reason?: string
+      name?: string; email?: string; company?: string; role_interest?: string; note?: string
     }
     const say = (p.say ?? "").trim().slice(0, 600)
     if (!say) throw new Error("empty say")
@@ -207,6 +268,26 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
           phone: (p.callback_phone ?? "").trim().slice(0, 30) || null,
           whenPhrase,
           reason: (p.callback_reason ?? "").trim().slice(0, 200) || null,
+        },
+      }
+    }
+    // PLATFORM deployment only (lane 75D merge — see PLATFORM_TURN_INSTRUCTIONS
+    // above, formerly parsePlatformTurnPlan in lib/voice/platform-reception.ts).
+    // A garbage email is dropped rather than stored; role_interest is
+    // normalized to the growth funnel's own CHECK vocabulary, never a second
+    // list (CLAUDE.md §6).
+    if (a === "prospect") {
+      const email = (p.email ?? "").trim().toLowerCase()
+      const role = (p.role_interest ?? "unknown").trim().toLowerCase()
+      return {
+        say,
+        action: {
+          kind: "prospect",
+          name: (p.name ?? "").trim().slice(0, 120) || null,
+          email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email.slice(0, 200) : null,
+          company: (p.company ?? "").trim().slice(0, 160) || null,
+          roleInterest: (PROSPECT_ROLES as readonly string[]).includes(role) ? role : "unknown",
+          note: (p.note ?? "").trim().slice(0, 400) || null,
         },
       }
     }

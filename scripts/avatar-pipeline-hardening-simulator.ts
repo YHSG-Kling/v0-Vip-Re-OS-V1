@@ -67,6 +67,8 @@ import {
   AI_TELL_POSITIVE_CONTROLS,
   AI_TELL_NEGATIVE_CONTROL,
   AI_TELL_ADDITIONAL_NEGATIVE_CONTROLS,
+  describeAiTellCoverage,
+  AI_TELL_LEXICAL_COVERAGE_LANGUAGES,
   DID_TALK_REALISM_CONFIG,
   ELEVENLABS_REALISM_VOICE_SETTINGS,
   avatarPipWindowFade,
@@ -292,7 +294,11 @@ function failureSection() {
     /fromManager:\s*["']asset_manager["'][\s\S]{0,80}toManager:\s*["']campaign_orchestrator["'][\s\S]{0,120}video_compliance_failed/.test(coord) ||
     /toManager:\s*["']campaign_orchestrator["'][\s\S]{0,80}signalType:\s*["']video_compliance_failed["']/.test(coord))
   check("poll-did-videos actually CALLS the coordination publish on the error/rejected branch (not just a notification)",
-    /didStatus === ["']error["'] \|\| didStatus === ["']rejected["'][\s\S]{0,1400}publishVideoCoordinationSignals/.test(poll))
+    // Window widened (lane 75D, notification fan-out census): the sentinelWrite
+    // conversion of this branch's agent-notification insert added real lines
+    // between the two anchors — re-anchored on the actual gap, not shrunk to
+    // hide it (CLAUDE.md §2: assert the rule, derive the number).
+    /didStatus === ["']error["'] \|\| didStatus === ["']rejected["'][\s\S]{0,2200}publishVideoCoordinationSignals/.test(poll))
   check("agent notification is a SEPARATE channel from the manager escalation (both fire, neither substitutes)",
     /type:\s*["']video_failed["']/.test(poll) && /publishVideoCoordinationSignals/.test(poll))
 
@@ -741,7 +747,7 @@ function realismSection() {
 
   // ── the directive reaches every SPOKEN-delivery script prompt ─────────────
   check("intro-video-reactor (the welcome/anniversary avatar spine) imports and splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
-    /import \{ SPOKEN_REALISM_DIRECTIVE, scanForAiTells \} from "@\/lib\/video\/realism-profile"/.test(reactor) &&
+    /import \{ SPOKEN_REALISM_DIRECTIVE, scanForAiTells, describeAiTellCoverage \} from "@\/lib\/video\/realism-profile"/.test(reactor) &&
     /SPOKEN_REALISM_DIRECTIVE \+ languageLine \+ violationLine/.test(reactor))
   check("listing-promo-reactor splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
     /SPOKEN_REALISM_DIRECTIVE\}\$\{violationLine\}/.test(promo))
@@ -768,8 +774,8 @@ function realismSection() {
 
   // ── the AI-tell scan reaches the SAME one-redraft gate as compliance, on
   //    every producer that HAS a redraft loop (§6 — not a second retry loop) ──
-  check("intro-video-reactor folds scanForAiTells into the SAME evaluateOutbound gate (one redraft, not two)",
-    /const tells = scanForAiTells\(s\)/.test(reactor) &&
+  check("intro-video-reactor folds scanForAiTells into the SAME evaluateOutbound gate (one redraft, not two) — now language-scoped (lane 75D, §aiTellLanguageScope)",
+    /const tells = scanForAiTells\(s, language\)/.test(reactor) &&
     /allowed: r\.allowed && tells\.length === 0, violations: \[\.\.\.r\.violations, \.\.\.tells\]/.test(reactor))
   check("listing-promo-reactor folds scanForAiTells into the SAME evaluateOutbound gate",
     /const tells = scanForAiTells\(s\)/.test(promo) &&
@@ -855,6 +861,39 @@ function realismSection() {
     scanForAiTells(AI_TELL_POSITIVE_CONTROLS.find((c) => c.label === "uniform_sentence_length")!.text).length === 1)
   check("SPOKEN_REALISM_DIRECTIVE names sentence-length variance explicitly (rule 8), matching the wave-67 audit's own 'robotic pacing: sentence-length variance' phrasing",
     /vary sentence length/i.test(readStripped("lib/video/realism-profile.ts")))
+
+  // ── §aiTellLanguageScope (lane 75D blind-spot burn-down) — the English-
+  // lexical patterns must not silently apply to (or silently be claimed to
+  // cover) a non-English script; the STRUCTURAL patterns must keep applying
+  // regardless of language. ────────────────────────────────────────────────
+  console.log("\n── §aiTellLanguageScope — scanForAiTells is honest about which language it can lexically judge ──")
+  {
+    const enTell = AI_TELL_POSITIVE_CONTROLS.find((c) => c.label === "self_reference")?.text
+      ?? AI_TELL_POSITIVE_CONTROLS[0].text
+    check("CONTROL: an English AI-tell fixture is still caught when language is omitted (default) or explicitly 'en' — no regression for the covered language",
+      scanForAiTells(enTell).length > 0 && scanForAiTells(enTell, "en").length > 0 && scanForAiTells(enTell, undefined).length > 0)
+    check("an ENGLISH-WORDED AI-tell fixture is NOT lexically flagged when the caller declares the script non-English — proves the scope gate is real, not decorative (a mislabeled 'es' script full of English self-reference text would otherwise still 'happen' to be caught, hiding that the gate does nothing for genuinely Spanish text)",
+      scanForAiTells(enTell, "es").length === 0)
+    check("describeAiTellCoverage: null for English (full lexical coverage) or when language is omitted; a one-line documented gap for anything else — never silent",
+      describeAiTellCoverage("en") === null && describeAiTellCoverage(undefined) === null && describeAiTellCoverage(null) === null
+      && typeof describeAiTellCoverage("es") === "string" && (describeAiTellCoverage("es") as string).includes("English-only")
+      && typeof describeAiTellCoverage("fr") === "string")
+    check("AI_TELL_LEXICAL_COVERAGE_LANGUAGES names exactly the covered set (English) — the constant a reader can audit without re-deriving it from the function body",
+      Array.isArray(AI_TELL_LEXICAL_COVERAGE_LANGUAGES) && AI_TELL_LEXICAL_COVERAGE_LANGUAGES.length === 1 && AI_TELL_LEXICAL_COVERAGE_LANGUAGES[0] === "en")
+    // STRUCTURAL checks (leaked audio tag, long sentence, pacing uniformity)
+    // are NOT English-specific and must keep firing for a declared non-
+    // English script — the language scope narrows LEXICAL coverage only.
+    const leakedTagFixture = "Bienvenue chez vous. [chuckles] Cette maison est parfaite pour votre famille."
+    check("a leaked audio-direction tag is STILL caught on a non-English-declared script (structural, not lexical)",
+      scanForAiTells(leakedTagFixture, "fr").some((h) => h.includes("leaked audio-direction tag")))
+    const uniformFrenchFixture = AI_TELL_POSITIVE_CONTROLS.find((c) => c.label === "uniform_sentence_length")!.text
+    check("robotic-pacing (sentence-length uniformity) is STILL caught on a declared non-English script (structural, not lexical)",
+      scanForAiTells(uniformFrenchFixture, "es").some((h) => /robotic pacing/.test(h)))
+    check("intro-video-reactor.ts threads the resolved `language` into scanForAiTells AND logs describeAiTellCoverage's gap — the coverage note is recorded, not invisible, and never blocks the redraft (only `tells` does)",
+      /scanForAiTells\(s, language\)/.test(readStripped("lib/video/intro-video-reactor.ts"))
+      && /describeAiTellCoverage\(language\)/.test(readStripped("lib/video/intro-video-reactor.ts"))
+      && /console\.warn\(`\[intro-video-reactor\] \$\{coverageNote\}`\)/.test(readStripped("lib/video/intro-video-reactor.ts")))
+  }
 
   // POSITIVE CONTROLS (§2) — the avatar-freeze guard
   check("CONTROL: a clip that fills its whole window returns null (no fade — nothing to fix)",

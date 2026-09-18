@@ -19,15 +19,18 @@
 // (fail-closed — a classifier outage HOLDS, never guesses) decides spam/no-intent (dropped,
 // counted) vs qualifying (real-estate intent OR a transactional email — an offer/showing/
 // inspection/escrow/contract on an in-house listing, even with no intent language). This email
-// door is a SHARED BROKERAGE WEBHOOK (the webhook URL is configured one per brokerage; the
-// inbound-router.ts normalizers carry no per-agent recipient identity), so
-// resolveInboundMailboxOwner always resolves ownerKind='brokerage' here — a qualifying sender
-// becomes a LEAD DIRECTLY (never raw_scraped_leads). On a fresh lead, this sets entityType/
-// entityId exactly as an already-matched lead would, so every step below — including Step 8b's
-// processInboundEmail — runs unchanged and the AI ISA starts qualifying on the ORIGINAL email.
-// (The agent/team-lead → CONTACT branch this same module supports is exercised by the OTHER,
-// per-user-aware inbound door, app/api/webhooks/inbound-mail/route.ts — this shared webhook has
-// no per-agent mailbox to resolve one from.) An SMS/WhatsApp sender is NOT routed through this
+// door is a SHARED BROKERAGE WEBHOOK (the webhook URL is configured one per brokerage). BLIND-SPOT
+// FIX (lane 75D, 2026-09-18): inbound-router.ts's normalizers now carry the raw "To"/envelope-
+// recipient address (InboundMessage.toEmail) for every email provider, so resolveInboundMailboxOwner
+// tries the SAME per-user mailbox binding (platform_credentials.account_id) the other inbound door
+// already resolves through BEFORE falling back to the brokerage-wide mailbox — several distinct
+// recipient addresses (an agent's own configured inbound alias, a team's, the brokerage's) can all
+// deliver to this ONE webhook URL, and only the message's own recipient tells them apart. A match
+// resolves ownerKind='agent'/'team_lead' exactly as the per-user-aware door would (→ CONTACT, not a
+// lead); no match still resolves 'brokerage' honestly (→ LEAD DIRECTLY, never raw_scraped_leads). On
+// a fresh lead, this sets entityType/entityId exactly as an already-matched lead would, so every step
+// below — including Step 8b's processInboundEmail — runs unchanged and the AI ISA starts qualifying
+// on the ORIGINAL email. An SMS/WhatsApp sender is NOT routed through this
 // door: texting the tenant's OWN registered line is an existing, distinct owner ruling (wave
 // 49/50 — "texting in IS consent for the thread", the same provenance the inbound-call lane
 // uses) that already requires a stronger signal (knowing and dialing this specific business
@@ -190,10 +193,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       try {
         const { identifyAndRouteUnknownSender, resolveInboundMailboxOwner } =
           await import("@/lib/lead-pipeline/unknown-sender-identification")
-        // This webhook is a SHARED BROKERAGE mailbox (see header) — always ownerKind='brokerage'.
+        // This webhook URL is still configured ONE PER BROKERAGE (see header), but
+        // lane 75D closed the per-agent-recipient blind spot: when the provider's raw
+        // "To"/envelope-recipient (inbound.toEmail) matches a per-agent/team mailbox
+        // binding (platform_credentials.account_id — the SAME lookup the OTHER inbound
+        // door already runs), this now resolves to THAT agent/team lead instead of
+        // always the brokerage-wide mailbox. No match (or a different provider's
+        // recipient the tenant never bound) still falls back to 'brokerage', honestly.
+        const emailPlatform = inbound.providerType === "sendgrid" || inbound.providerType === "postmark" || inbound.providerType === "mailgun"
+          ? inbound.providerType
+          : null
         const mailboxOwner = await resolveInboundMailboxOwner(supabase, {
           doorKind: "shared_brokerage_webhook",
           brokerageId: inbound.brokerageId,
+          toEmail: inbound.toEmail,
+          emailPlatform,
         })
         const identified = await identifyAndRouteUnknownSender({
           mailboxOwner,

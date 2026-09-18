@@ -297,7 +297,7 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
   let executedArgs: any = null
   const finalPlan = await planTurnWithPrompt(
     "You are the receptionist.", null, "What can you tell me about 123 Main St?",
-    { brokerageId: "brokerage-1", agentId: null, contactId: null, conversationKey: "call-1" },
+    { brokerageId: "brokerage-1", agentId: null, contactId: null, leadId: null, conversationKey: "call-1" },
     {
       generateTextRouted: async ({ tools, maxSteps, abortSignal }: any) => {
         seenToolNames = Object.keys(tools ?? {})
@@ -317,33 +317,85 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
       }),
     },
   )
-  check("native round: only the VOICE_TOOL_ALLOWLIST subset reaches `tools:` — verify_phone is filtered out even though the stubbed registry granted it",
-    seenToolNames.length === 1 && seenToolNames[0] === "lookup_property")
+  // Lane 75D — the tool round now ALSO carries the free capture/follow-up
+  // bundle (lib/ai-isa/customer-context-tools.ts::buildCustomerFreeTools),
+  // the SAME one every chat surface offers, so a call with NO linked
+  // contact/lead still reaches get_my_context + search_our_listings (both
+  // register unconditionally) alongside the property-only BatchData subset —
+  // verify_phone (not allowlisted for voice) stays filtered out either way.
+  check("native round: VOICE_TOOL_ALLOWLIST subset (lookup_property) reaches `tools:` ALONGSIDE the free capture bundle's unconditional tools — verify_phone (non-allowlisted BatchData) is still filtered out",
+    seenToolNames.includes("lookup_property") && seenToolNames.includes("get_my_context") && seenToolNames.includes("search_our_listings")
+    && !seenToolNames.includes("verify_phone") && seenToolNames.length === 3)
+  check("native round: free (rank 0) tools sort before the paid BatchData tool — cost-ranked order (CLAUDE.md §6)",
+    seenToolNames.indexOf("get_my_context") < seenToolNames.indexOf("lookup_property")
+    && seenToolNames.indexOf("search_our_listings") < seenToolNames.indexOf("lookup_property"))
   check("native round: maxSteps is the bounded ceiling, not an unbounded loop", seenMaxSteps === VOICE_TOOL_ROUND_MAX_STEPS)
   check("native round: a real per-turn deadline (AbortSignal) is passed through to generateTextRouted", seenAbortSignal instanceof AbortSignal)
   check("native round: the offered tool's execute() actually ran with the model's args", executedArgs?.address === "123 Main St")
   check("native round: the final say comes from the ONE generateTextRouted call — the SDK folds the tool result in itself, never a second manual re-prompt",
     finalPlan.say === "It's a 3-bed built in 1998.")
 
-  // ── cost-avoidance: nothing in this persona's/token's allowlist → skip the tool-enabled call entirely ──
+  // ── CAPTURE (owner, wave 75: "capturing as much useful information about
+  // that person for the os") — once a contact/lead is linked, record_qualification
+  // and the rest of the identity-gated follow-up bundle register too. ──
+  let capturedToolNames: string[] = []
+  await planTurnWithPrompt(
+    "You are the receptionist.", null, "I'm selling my place at 9 Oak Ln, thinking 3-6 months.",
+    { brokerageId: "brokerage-1", agentId: "agent-9", contactId: "contact-42", leadId: null, conversationKey: "call-capture" },
+    {
+      generateTextRouted: async ({ tools }: any) => { capturedToolNames = Object.keys(tools ?? {}); return { text: JSON.stringify({ say: "Got it — I've noted that.", action: "continue" }) } },
+      batchDataIsaTools: async () => ({}),
+    },
+  )
+  check("CAPTURE: with a linked contactId, record_qualification + the identity-gated follow-up menu (schedule_callback, schedule_home_value_review, find/book_listing_appointment, send_matching_listings, request_showing) all reach `tools:` — a live call captures exactly what an email/portal thread would",
+    ["record_qualification", "schedule_callback", "schedule_home_value_review", "find_listing_appointment_slots", "book_listing_appointment", "send_matching_listings", "request_showing", "get_my_context", "search_our_listings"]
+      .every((n) => capturedToolNames.includes(n)))
+
+  let leadCapturedToolNames: string[] = []
+  await planTurnWithPrompt(
+    "You are the receptionist.", null, "Not a contact yet.",
+    { brokerageId: "brokerage-1", agentId: null, contactId: null, leadId: "lead-7", conversationKey: "call-lead" },
+    {
+      generateTextRouted: async ({ tools }: any) => { leadCapturedToolNames = Object.keys(tools ?? {}); return { text: JSON.stringify({ say: "Understood.", action: "continue" }) } },
+      batchDataIsaTools: async () => ({}),
+    },
+  )
+  check("CAPTURE: a pre-conversion LEAD (no contactId yet) still gets record_qualification — the SAME leadId fallback every chat surface's CustomerContextToolsContext already uses, wired onto voice by lane 75D's VoiceToolExecContext.leadId",
+    leadCapturedToolNames.includes("record_qualification") && !leadCapturedToolNames.includes("request_showing") /* request_showing needs a real contactId, not a lead */)
+
+  // ── cost-avoidance: an EMPTY BatchData registry still offers the free
+  // capture bundle (zero vendor spend) — the tool round is never skipped
+  // outright now that free capture always has something to offer, but NO
+  // paid BatchData tool reaches `tools:` without a token/persona grant. ──
   let plainCallSawTools: unknown = "unset"
   const refusedPlan = await planTurnWithPrompt(
     "You are the receptionist.", null, "What can you tell me about 1 Refused Way?",
-    { brokerageId: "brokerage-1", agentId: null, contactId: null, conversationKey: "call-refused" },
+    { brokerageId: "brokerage-1", agentId: null, contactId: "contact-99", leadId: null, conversationKey: "call-refused" },
     {
       generateTextRouted: async ({ tools }: any) => { plainCallSawTools = tools; return { text: JSON.stringify({ say: "I don't have that on hand right now — the team will confirm.", action: "continue" }) } },
-      batchDataIsaTools: async () => ({}), // no token / persona grants none of the 4
+      batchDataIsaTools: async () => ({}), // no token / persona grants none of the 4 BatchData tools
     },
   )
-  check("native round: an EMPTY registry (no token / persona grants none of the 4) skips the tool-enabled call entirely — no `tools:` key, never an empty-map call",
-    plainCallSawTools === undefined)
+  check("cost-avoidance: an EMPTY BatchData registry never sends a paid tool, but the free capture bundle still rides (never a $0-value empty-map call, and never a paid call with no token)",
+    !!plainCallSawTools && !Object.keys(plainCallSawTools as Record<string, unknown>).some((n) => n === "lookup_property" || n === "comparable_property_preview" || n === "verify_address")
+    && Object.keys(plainCallSawTools as Record<string, unknown>).includes("record_qualification"))
   check("...and the turn still completes with a real spoken plan", refusedPlan.say.length > 0)
+
+  // ── true zero-tool case: no toolCtx at all still means literally nothing ──
+  let noToolCtxSawTools: unknown = "unset"
+  await planTurnWithPrompt(
+    "You are the receptionist.", null, "hi",
+    undefined,
+    { generateTextRouted: async ({ tools }: any) => { noToolCtxSawTools = tools; return { text: JSON.stringify({ say: "Hi!", action: "continue" }) } } },
+  )
+  check("true zero-tool case: with NO toolCtx passed at all (the outbound ISA lane), `tools:` is still undefined — the free bundle only ever rides when a call context exists",
+    noToolCtxSawTools === undefined)
 
   // ── FAIL SAFE: a thrown/timed-out native round falls back to the plan-only path ──
   const calls: any[] = []
   const timeoutPlan = await planTurnWithPrompt(
     "You are the receptionist.", null, "Tell me about 500 Timeout Ave",
-    { brokerageId: "brokerage-1", agentId: null, contactId: null, conversationKey: "call-timeout" },
+    { brokerageId: "brokerage-1", agentId: null, contactId: null, leadId: null, conversationKey: "call-timeout" },
     {
       generateTextRouted: async (args: any) => {
         calls.push(args)
@@ -362,26 +414,25 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
   check("FAIL SAFE: the fallback attempt carries NO tools — the plain plan-only path, not a retried tool round", calls[1]?.tools === undefined)
   check("FAIL SAFE: the turn still completes with a real spoken plan after the timeout — never silence on a live call", timeoutPlan.say.length > 0)
 
-  // ── no toolCtx at all (the outbound ISA lane today) → plain call, unchanged ──
-  let noCtxSawTools: unknown = "unset"
-  const noCtxPlan = await planTurnWithPrompt(
-    "You are the receptionist.", null, "Tell me about 1 Never Run Ln", undefined,
-    { generateTextRouted: async ({ tools }: any) => { noCtxSawTools = tools; return { text: JSON.stringify({ say: "Sure.", action: "continue" }) } } },
-  )
-  check("no toolCtx passed → a plain call with no tools, exactly as before lane 73B ever existed (additive, not a silent behavior change)",
-    noCtxSawTools === undefined)
-  check("...and the turn still completes normally", noCtxPlan.say === "Sure.")
-
   // ── platform-reception.ts (item 5): ONE safe, tenant-free tool, native calling ──
   const platformReceptionSrc = stripped("lib/voice/platform-reception.ts")
   check("platform-reception.ts wires platform_faq_lookup as a REAL AI-SDK tool (native calling) — no more toolRequest schema-parity field",
     platformReceptionSrc.includes("platform_faq_lookup") && !platformReceptionSrc.includes("toolRequest"))
   check("the platform FAQ tool calls searchKB with brokerageId: null — tenant-free by construction (the RPC's own WHERE clause degrades to platform-wide rows only)",
     /searchKB\(query, null, 3\)/.test(platformReceptionSrc))
-  check("platform-reception reuses the SAME bounded ceiling/deadline as the tenant voice line — no second, invented budget",
-    platformReceptionSrc.includes("VOICE_TOOL_ROUND_MAX_STEPS") && platformReceptionSrc.includes("VOICE_TOOL_ROUND_DEADLINE_MS"))
   check("platform-reception still carries NO brokerage/property tool (search_properties/comparable_property/etc never appear there) — property lookups stay tenant-scoped",
     !platformReceptionSrc.includes("batchDataIsaTools") && !platformReceptionSrc.includes("lookup_property"))
+
+  // ── lane 75D: ONE voice receptionist engine — platform's tool round now
+  // rides the SAME runVoiceTurnRound/bounded-ceiling/deadline as tenant,
+  // behind ONE planReceptionTurn({deployment}) entrypoint, not a second
+  // hand-copied engine (owner, wave 75). ──
+  const twilioVoiceSrc = stripped("lib/voice/twilio-voice.ts")
+  check("planPlatformReceptionTurn is NO LONGER DECLARED in platform-reception.ts — the bounded ceiling/deadline constants it used to import are gone from this file too (they now live only in twilio-voice.ts's shared runVoiceTurnRound)",
+    !platformReceptionSrc.includes("function planPlatformReceptionTurn") && !platformReceptionSrc.includes("VOICE_TOOL_ROUND_MAX_STEPS"))
+  check("twilio-voice.ts's planReceptionTurn platform branch feeds platformFaqTools() through the SAME runVoiceTurnRound the tenant branch calls — one bound, one deadline, one fallback, for both deployments",
+    twilioVoiceSrc.includes('deployment === "platform"')
+    && twilioVoiceSrc.includes("tools: await platformFaqTools()") && twilioVoiceSrc.includes("runVoiceTurnRound({"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

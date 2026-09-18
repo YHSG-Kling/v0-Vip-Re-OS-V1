@@ -100,13 +100,15 @@ export async function submitClientTestimonial(params: {
     const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
       ?? (agent as { id?: string | null } | null)?.id ?? null
     if (agentUserId) {
-      await svc.from("notifications").insert({
+      // Blind-spot burn-down (lane 75D, notification fan-out census) — sentinelWrite,
+      // the SAME wrapper this file already uses below (§6), not a swallowed .then().
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: access.brokerageId, type: "client_testimonial_received",
         title: params.kind === "video" ? "🎥 A client left you a video testimonial" : "⭐ A client left you a testimonial",
         body: `${reviewerName} shared a ${params.kind} testimonial from their portal. Review and approve it to use in your marketing${params.kind === "video" ? " — your Asset Manager is turning it into a reel." : "."}`,
         // priority CHECK: low|medium|high|critical ('normal' is rejected → silent drop)
         entity_type: "contact", entity_id: params.contactId, priority: "medium", is_read: false,
-      }).then(() => {}, () => {})
+      }), { table: "notifications", flow: "portal_testimonial_received_notify", brokerageId: access.brokerageId, reason: "the testimonial itself already saved; this is only the agent heads-up" })
     }
     // MULTI-MANAGER: a VIDEO testimonial is gold — the Sphere of Influence HANDS it to the Asset Manager
     // (video director) to commission a gated social-proof reel from the clip (Sphere decides → Asset
@@ -170,12 +172,12 @@ export async function submitNextMoveIntent(params: {
       const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
         ?? (agent as { id?: string | null } | null)?.id ?? null
       if (agentUserId) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: access.brokerageId, type: "next_move_intent",
           title: "🏡 A past client is thinking about their next move",
           body: `${clientName} tapped "${params.intent.replace(/_/g, " ")}" in their portal. Proposed next step: ${nextStep}.`,
           entity_type: "contact", entity_id: params.contactId, priority: "high", is_read: false,
-        }).then(() => {}, () => {})
+        }), { table: "notifications", flow: "portal_next_move_intent_notify", brokerageId: access.brokerageId, reason: "the intent itself already saved; this is only the agent heads-up" })
       }
 
       // Audit row + reactor (MESSAGE_FROM_CONTACT has a staff-bell label — the
@@ -315,12 +317,12 @@ export async function requestVendorIntro(params: {
     const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
       ?? (agent as { id?: string | null } | null)?.id ?? null
     if (agentUserId) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: access.brokerageId, type: "vendor_intro_request",
         title: `🔧 ${clientName} wants a ${label} pro`,
         body: `${clientName} asked for an intro to a trusted ${label} provider${reason ? ` (${reason})` : ""}. A quick connection keeps you their go-to resource.`,
         entity_type: "contact", entity_id: params.contactId, priority: "medium", is_read: false,
-      }).then(() => {}, () => {})
+      }), { table: "notifications", flow: "portal_vendor_intro_request_notify", brokerageId: access.brokerageId, reason: "the request itself already saved; this is only the agent heads-up" })
     }
   } catch { /* best-effort — never block the request */ }
 
@@ -422,12 +424,12 @@ export async function requestRelocationReferral(params: {
       const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
         ?? (agent as { id?: string | null } | null)?.id ?? null
       if (agentUserId) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: access.brokerageId, type: "relocation_referral_request",
           title: `📦 ${clientName} needs an agent in their new area`,
           body: `${clientName} asked for a referral to a trusted agent${newArea ? ` in ${newArea}` : " where they're moving"}. Place the referral — goodwill now, a referral fee at close.`,
           entity_type: "contact", entity_id: params.contactId, priority: "high", is_read: false,
-        }).then(() => {}, () => {})
+        }), { table: "notifications", flow: "portal_relocation_referral_request_notify", brokerageId: access.brokerageId, reason: "the request itself already saved; this is only the agent heads-up" })
       }
     }
 

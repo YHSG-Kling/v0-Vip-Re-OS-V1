@@ -106,14 +106,16 @@ export const sendForEsignAdapter: ChannelAdapter = {
     if (!provider || provider === "not_configured") {
       // Notify the agent that they need to connect an eSign provider
       if (agentUserId) {
-        void Promise.resolve(supabase.from("notifications").insert({
+        // Blind-spot burn-down (lane 75D, notification fan-out census) — sentinelWrite,
+        // the SAME wrapper this file already uses for signature_requests above (§6).
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id: agentUserId,
           brokerage_id: brokerageId,
           type: "esign_provider_not_configured",
           title: "Connect an eSign provider",
           body: "A workflow tried to send a document for signature but no eSign provider is connected. Configure Dotloop, DocuSign, or another supported provider in Settings → Integrations.",
           priority: "high",
-        })).catch(() => {})
+        }), { table: "notifications", flow: "esign_provider_not_configured_notify", brokerageId, reason: "the step already reports status:error; this is only the agent heads-up" })
       }
       return {
         status: "error",
@@ -168,7 +170,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
     // require human review/finalization in the FormWizard before signing.
     if (document.status === "needs_agent_input") {
       if (agentUserId) {
-        void Promise.resolve(supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id: agentUserId,
           brokerage_id: brokerageId,
           type: "esign_blocked_packet_pending",
@@ -177,7 +179,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
           priority: "high",
           entity_type: "document",
           entity_id: documentId,
-        })).catch(() => {})
+        }), { table: "notifications", flow: "esign_blocked_packet_pending_notify", brokerageId, reason: "the step already reports the block; this is only the agent heads-up" })
       }
       return {
         status: "skipped",
@@ -400,7 +402,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
     // UI, and report the step honestly as SKIPPED (nothing was sent) so the
     // workflow ledger never claims a signature request that didn't happen.
     if (agentUserId) {
-      void Promise.resolve(supabase.from("notifications").insert({
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: agentUserId,
         brokerage_id: brokerageId,
         type: "esign_provider_manual_send",
@@ -409,7 +411,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
         priority: "high",
         entity_type: "document",
         entity_id: documentId,
-      })).catch(() => {})
+      }), { table: "notifications", flow: "esign_provider_manual_send_notify", brokerageId, reason: "the step already reports status:skipped; this is only the agent heads-up" })
     }
 
     await supabase.from("documents")

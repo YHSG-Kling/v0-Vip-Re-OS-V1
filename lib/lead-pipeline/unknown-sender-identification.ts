@@ -131,10 +131,41 @@ export interface ResolvedMailboxOwner {
 export async function resolveInboundMailboxOwner(
   svc: Svc,
   input:
-    | { doorKind: "shared_brokerage_webhook"; brokerageId: string }
+    | {
+        doorKind: "shared_brokerage_webhook"
+        brokerageId: string
+        /** Blind-spot burn-down (lane 75D) — the raw "To"/envelope-recipient
+         *  address (lib/providers/inbound-router.ts's InboundMessage.toEmail)
+         *  and the provider it arrived on. Several distinct recipient
+         *  addresses can deliver to this SAME per-brokerage webhook URL;
+         *  when BOTH are supplied, this door now tries the SAME per-user
+         *  mailbox binding the `resolved_credential` door already resolves
+         *  through (platform_credentials.account_id) BEFORE falling back to
+         *  the brokerage-wide shared mailbox. Omitted → the prior honest
+         *  'brokerage' answer, unchanged (no per-agent signal reachable). */
+        toEmail?: string | null
+        emailPlatform?: ResolvedInboundProvider["platform"] | null
+      }
     | { doorKind: "resolved_credential"; credential: ResolvedInboundProvider },
 ): Promise<ResolvedMailboxOwner> {
   if (input.doorKind === "shared_brokerage_webhook") {
+    if (input.toEmail && input.emailPlatform) {
+      const { resolveUserByInboundIdentifier } = await import("@/lib/inbound-mail/resolve-user-provider")
+      const credential = await resolveUserByInboundIdentifier({
+        platform: input.emailPlatform,
+        toAddress: input.toEmail,
+        svc: svc as any,
+      })
+      // Tenant safety (CLAUDE.md §4): a matching credential from a DIFFERENT
+      // brokerage never claims ownership of THIS webhook's brokerage-scoped
+      // mail — that would be an IDOR-shaped cross-tenant leak, not a routing
+      // convenience. Only a same-brokerage match is honored; anything else
+      // (no match, or a foreign-brokerage match) falls through to the
+      // brokerage-wide shared mailbox, exactly as before this lane.
+      if (credential && credential.brokerage_id === input.brokerageId) {
+        return resolveInboundMailboxOwner(svc, { doorKind: "resolved_credential", credential })
+      }
+    }
     return { brokerageId: input.brokerageId, ownerKind: "brokerage", agentId: null, userId: null }
   }
 
@@ -693,6 +724,24 @@ export type UnknownSenderClassifierFn = (params: {
  * decision (dedup, mailbox-owner branch, transactional listing match,
  * lead/contact creation) with a fixed classification and ZERO network calls —
  * never a second classifier, the same model call, just not invoked live in CI.
+ *
+ * `opts.svc`/`opts.createLead`/`opts.createContact` — blind-spot burn-down
+ * (lane 75D): the SAME injection idiom as `opts.classifier`, closing the gap
+ * that this whole function previously called `createServiceClient()`
+ * internally with NO seam, so scripts/lead-email-conversion-simulator.ts's
+ * routing proof (§5) could only run with a real SUPABASE_SERVICE_ROLE_KEY —
+ * every environment without one (most CI/sandbox runs) silently skipped the
+ * lead/contact BRANCH-SELECTION logic entirely. Production callers pass
+ * none of these three (defaults: real createServiceClient() +
+ * createLeadDirectlyForBrokerage + createContactForAgentMailbox, unchanged).
+ * A fixture run supplies a minimal in-memory `svc` (covers the read/dedup/
+ * transactional-match/drop-audit calls THIS function makes directly) plus
+ * fake createLead/createContact functions that stand in for the deep,
+ * multi-table `createLeadOnlyRecordForAcquisitionSource`/`captureContact`
+ * machinery those two normally delegate to — proving WHICH branch fires and
+ * WITH WHAT arguments, never a claim that the full downstream CRM side
+ * effects (assignment, welcome, kernel events) themselves ran without a key;
+ * that remains the LIVE section's job.
  */
 export async function identifyAndRouteUnknownSender(
   params: {
@@ -703,9 +752,14 @@ export async function identifyAndRouteUnknownSender(
     messageId: string | null
     raw?: unknown
   },
-  opts?: { classifier?: UnknownSenderClassifierFn },
+  opts?: {
+    classifier?: UnknownSenderClassifierFn
+    svc?: Svc
+    createLead?: typeof createLeadDirectlyForBrokerage
+    createContact?: typeof createContactForAgentMailbox
+  },
 ): Promise<UnknownSenderIdentificationResult> {
-  const svc = createServiceClient()
+  const svc = opts?.svc ?? createServiceClient()
   const brokerageId = params.mailboxOwner.brokerageId
 
   // ── Step 1: cheap deterministic pre-filter — NO model call ────────────────
@@ -765,7 +819,7 @@ export async function identifyAndRouteUnknownSender(
   if (params.mailboxOwner.ownerKind === "brokerage") {
     const leadId = existing?.kind === "lead"
       ? existing.id
-      : await createLeadDirectlyForBrokerage(brokerageId, params.fromEmail, c, listingMatch)
+      : await (opts?.createLead ?? createLeadDirectlyForBrokerage)(brokerageId, params.fromEmail, c, listingMatch)
 
     if (!leadId) {
       await recordDrop(svc, brokerageId, "lead_create_failed", null, params.fromEmail, params.messageId)
@@ -792,7 +846,7 @@ export async function identifyAndRouteUnknownSender(
   }
 
   // agent / team_lead mailbox → CONTACT
-  const contactId = await createContactForAgentMailbox(
+  const contactId = await (opts?.createContact ?? createContactForAgentMailbox)(
     svc, params.mailboxOwner, params.fromEmail, params.subject, params.body, params.messageId, c, listingMatch,
   )
   if (!contactId) {

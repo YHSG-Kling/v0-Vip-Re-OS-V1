@@ -8,7 +8,14 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
-// bestEffort import left with the deleted confirmShowing — see its tombstone below.
+// Blind-spot burn-down (lane 75D, notification fan-out census) — bestEffort,
+// not sentinelWrite: `supabase` here is either the cookie session client
+// (buyer portal / agent dashboard) or a caller-supplied client of unknown
+// kind (the voice-webhook overload) — undecidable at this call site, so the
+// weaker-but-always-safe instrument is correct (a session client's
+// self_heal_events insert would be RLS-refused, per CLAUDE.md's own
+// service-role-only sentinelWrite ruling).
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function requestShowing(data: {
   contactId: string
@@ -289,7 +296,7 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
           .eq("id", contact.agent_id)
           .maybeSingle()
         if (agentRow?.user_id) {
-          await supabase.from("notifications").insert({
+          await bestEffort(supabase.from("notifications").insert({
             user_id:      agentRow.user_id,
             brokerage_id: brokerageId,
             type:         "showing.request",
@@ -299,7 +306,7 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
             entity_id:    showing.id,
             priority:     "high",
             channel:      "in_app",
-          })
+          }), "the showing request itself already succeeded; this is only the agent heads-up")
         }
       }
     } catch { /* non-critical */ }
@@ -324,7 +331,7 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
             .eq("id", listing.agent_id)
             .maybeSingle()
           if (listingAgentRow?.user_id) {
-            await supabase.from("notifications").insert({
+            await bestEffort(supabase.from("notifications").insert({
               user_id:      listingAgentRow.user_id,
               brokerage_id: brokerageId,
               type:         "showing.request.listing",
@@ -334,7 +341,7 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
               entity_id:    showing.id,
               priority:     "high",
               channel:      "in_app",
-            })
+            }), "the showing request itself already succeeded; this is only the listing agent heads-up")
           }
         }
 
@@ -342,7 +349,7 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
         //    PortalNotificationBell so they see incoming showing requests
         //    on their listing, not just their agent.
         if (listing?.seller_contact_id) {
-          await supabase.from("notifications").insert({
+          await bestEffort(supabase.from("notifications").insert({
             contact_id:   listing.seller_contact_id,
             brokerage_id: brokerageId,
             type:         "showing.request.seller",
@@ -352,7 +359,7 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
             entity_id:    showing.id,
             priority:     "high",
             channel:      "in_app",
-          })
+          }), "the showing request itself already succeeded; this is only the seller's portal heads-up")
         }
       } catch { /* non-critical */ }
     }

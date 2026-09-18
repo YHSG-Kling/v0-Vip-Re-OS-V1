@@ -8,6 +8,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { emitLifecycleTransition } from '@/lib/buyer-lifecycle/lifecycle-logger'
 import { updateBuyerPreferences } from '@/lib/behavior-learning'
 import { isValidUUID } from '@/lib/validations'
@@ -440,8 +441,10 @@ export async function createTourPlan(params: CreateTourParams) {
     metadata:      { tour_id: tourId },
   }).catch(() => {})
 
-  // Notification for agent
-  await supabase.from('notifications').insert({
+  // Notification for agent — sentinelWrite (blind-spot burn-down, lane 75D
+  // notification fan-out census): a service-role write must ledger its loss,
+  // not swallow it silently.
+  await sentinelWrite(supabase, supabase.from('notifications').insert({
     user_id:     agentUserId,
     brokerage_id: brokerageId,
     type:        'tour.plan_created',
@@ -451,7 +454,7 @@ export async function createTourPlan(params: CreateTourParams) {
     entity_id:   tourId,
     priority:    'medium',
     channel:     'in_app',
-  })
+  }), { table: 'notifications', flow: 'tour_plan_created_notify', brokerageId, reason: 'the tour plan itself already exists; this is only the agent heads-up' })
 
   const stopIds = (insertedStops ?? [])
     .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
@@ -687,7 +690,7 @@ export async function finalizeTour(params: {
   // above under `.eq('brokerage_id', brokerageId)`, so its `contact_id` is
   // tenant-proven and cannot be pointed at another brokerage's contact.
   try {
-    await supabase.from('notifications').insert({
+    await sentinelWrite(supabase, supabase.from('notifications').insert({
       user_id:      agentUserId,
       brokerage_id: brokerageId,
       type:         'tour.confirmed',
@@ -697,7 +700,7 @@ export async function finalizeTour(params: {
       entity_id:    tourId,
       priority:     'high',
       channel:      'in_app',
-    })
+    }), { table: 'notifications', flow: 'tour_confirmed_notify', brokerageId, reason: 'the tour confirmation itself already succeeded; this is only the agent heads-up' })
   } catch { /* non-critical */ }
 
   if (tour.contact_id) {
@@ -866,7 +869,7 @@ export async function confirmTourStop(params: ConfirmStopParams) {
       .update({ all_confirmed: true, status: 'confirmed' })
       .eq('id', tourId)
 
-    await supabase.from('notifications').insert({
+    await sentinelWrite(supabase, supabase.from('notifications').insert({
       user_id:     agentUserId,
       brokerage_id: brokerageId,
       type:        'tour.all_confirmed',
@@ -876,7 +879,7 @@ export async function confirmTourStop(params: ConfirmStopParams) {
       entity_id:   tourId,
       priority:    'high',
       channel:     'in_app',
-    })
+    }), { table: 'notifications', flow: 'tour_all_confirmed_notify', brokerageId, reason: 'the tour status update itself already succeeded; this is only the agent heads-up' })
   }
 
   return { success: true, allConfirmed }

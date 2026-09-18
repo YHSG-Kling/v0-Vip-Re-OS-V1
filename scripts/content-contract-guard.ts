@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs"
 import { walkTs } from "./runtime-roots"
 import { LIVE_TABLES } from "./live-tables"
 import { blankComments, stripComments } from "./strip-comments"
+import { listingAttributionLine } from "../lib/listings/attribution"
 import {
   CONTENT_CONTRACT, isSupplied, missingContentProps, describeMissingContent,
   VOICEOVER_CONSUMING_COMPOSITIONS, consumesVoiceover, stagesVoiceover,
@@ -1099,6 +1100,52 @@ console.log("\n═══ 18. every companion-card producer supplies a seoHint (t
     && directorShareCard("JustListedReel", listingProps, { hookLine: "", audienceType: "customer_facing" }).card === null)
   ok("...and never completes the card from the composition's own sample agent name — a listing reel\n    stages no agentName, so the BROKERAGE name is the attribution, never \"Your Agent\"",
     (directorShareCard("JustListedReel", listingProps, { hookLine: gatedHook, audienceType: "customer_facing" }).card as Record<string, unknown>).agentName === "Harbour & Co.")
+}
+
+console.log("\n═══ 19. CMAReel attribution — the RentCast/IDX/BatchData legal line cannot regress silently (lane 75D) ═══")
+{
+  // Owner ruling (wave 70, verbatim, lib/listings/attribution.ts's own header):
+  // "...rentcast i know legally when we display a listing it must say provided
+  // from rentcast, etc." Lane 74D wired this through CMAReel's comps display;
+  // this section is the REGRESSION PROOF (blind-spot burn-down, lane 75D) that
+  // keeps that wiring honest — the source→prop→producer→render chain, not
+  // just that a field named `attribution` exists somewhere.
+  ok("listingAttributionLine: rentcast/idx/idxbroker/batchdata each get their\n    own required sentence — never a shared, generic line",
+    listingAttributionLine("rentcast") === "Listing data provided by RentCast"
+    && listingAttributionLine("idx") === "Listing courtesy of the local MLS via IDX"
+    && listingAttributionLine("idxbroker") === "Listing courtesy of the local MLS via IDX"
+    && listingAttributionLine("batchdata") === "Comparable data provided by BatchData"
+    && listingAttributionLine("perplexity").includes("unverified"))
+  ok("listingAttributionLine: the platform's OWN listings/comps get an EMPTY line\n    (own data needs no third-party credit) — the negative control this rule needs",
+    listingAttributionLine("platform") === "" && listingAttributionLine("own") === ""
+    && listingAttributionLine("none") === "" && listingAttributionLine(null) === "" && listingAttributionLine(undefined) === "")
+
+  const orchestratorSrc = stripComments(src("lib/video/cma-reel-orchestrator.ts"))
+  const chartsSrc = stripComments(src("lib/charts/cma-reel-data.ts"))
+  const sectionRenderSrc = stripComments(src("lib/listing-presentation/section-render.ts"))
+  const cmaReelTsx = stripComments(src("remotion/CMAReel.tsx"))
+
+  ok("cma-reel-orchestrator.ts: enqueueCmaReelRender still accepts + THREADS attribution into buildCmaReelInputProps (a param nobody forwards is a dead prop, not a wired one)",
+    /attribution\??:\s*string/.test(orchestratorSrc) && /attribution:\s*params\.attribution/.test(orchestratorSrc))
+  ok("cma-reel-data.ts: buildCmaReelInputProps still writes attribution onto the returned inputProps, defaulting to \"\" (never undefined — Remotion's defaultProps merge would resurrect the Studio sample otherwise)",
+    /attribution:\s*input\.attribution\s*\?\?\s*""/.test(chartsSrc))
+  ok("section-render.ts (the REAL producer, not just the plumbing): still imports listingAttributionLine and threads a computed `attribution` into enqueueCmaReelRender — the wiring has a live caller, not only a pass-through signature",
+    /import\s*\{\s*listingAttributionLine/.test(sectionRenderSrc)
+    && /const\s+attribution\s*=/.test(sectionRenderSrc)
+    && /enqueueCmaReelRender\(/.test(sectionRenderSrc) && /attribution,/.test(sectionRenderSrc))
+  ok("CMAReel.tsx: actually RENDERS props.attribution when supplied (conditionally — an unsupplied attribution renders NOTHING, never a fabricated fallback sentence)",
+    /\{props\.attribution\s*&&/.test(cmaReelTsx) && /\{props\.attribution\}/.test(cmaReelTsx))
+  ok("CMAReel.tsx: the attribution prop is OPTIONAL in its own props type (a caller with nothing to attribute — the platform's own comps — never crashes and never renders an empty line)",
+    /attribution\?:\s*string/.test(stripComments(src("remotion/CMAReel.tsx"))))
+
+  // POSITIVE CONTROL — prove these regexes still recognise the defect they
+  // guard against (CLAUDE.md §2): a specimen where the field is DECLARED but
+  // never forwarded/rendered must fail the same assertions above.
+  const brokenOrchestrator = 'export async function enqueueCmaReelRender(params: { attribution?: string }) { const inputProps = buildCmaReelInputProps({ comps: params.comps }) }'
+  const brokenTsx = 'export function CMAReel(props: { attribution?: string }) { return <div>{props.comps}</div> }'
+  ok("...and the finder still DISCRIMINATES: a specimen where attribution is declared but never forwarded (orchestrator) or never rendered (CMAReel) fails the same checks — not a blanket pass",
+    !/attribution:\s*params\.attribution/.test(brokenOrchestrator)
+    && !/\{props\.attribution\s*&&/.test(brokenTsx))
 }
 
 console.log(`\n${"═".repeat(70)}`)

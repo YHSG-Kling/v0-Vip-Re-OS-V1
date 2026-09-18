@@ -860,31 +860,74 @@ function roughSentences(text: string): string[] {
  * see intro-video-reactor.ts / listing-promo-reactor.ts's `gate` functions,
  * which now fold this scan's findings into the SAME one-redraft loop rather
  * than adding a second retry mechanism, §6) or simply surface them.
+ *
+ * BLIND-SPOT BURN-DOWN (lane 75D) — LANGUAGE SCOPE. Every pattern above
+ * (self-reference, robotic opener, formal transition, robotic signoff,
+ * uncontracted-phrase count) is an ENGLISH lexical/grammar tell — "as an AI",
+ * "furthermore", "do not" vs. "don't" have no meaning in a script the model
+ * was asked to draft directly in Spanish/French/etc. (intro-video-reactor.ts's
+ * `draftScript` does exactly that when a contact's resolved language is not
+ * DEFAULT_LANGUAGE). Before this, a non-English script silently produced ZERO
+ * lexical findings and read as "clean" — CLAUDE.md §2's exact trap: a broken/
+ * inapplicable regex and a genuinely clean script both report zero. This does
+ * NOT invent translated tell-phrases (a mistranslated "AI-tell" regex would be
+ * worse than none — a confident false negative OR false positive in a
+ * language nobody here reads and verified). Instead the scope is made
+ * EXPLICIT and provable: `AI_TELL_LEXICAL_COVERAGE_LANGUAGES` names exactly
+ * which languages the lexical patterns apply to (English only, honestly), the
+ * optional `language` param SKIPS them for anything else (they were already
+ * behaviorally inert against non-English text — this makes that a stated
+ * contract, not an accident, and defends against a coincidental cross-
+ * language false match), and the STRUCTURAL checks that are NOT English-
+ * specific — a leaked ElevenLabs audio-direction tag, an unnaturally long
+ * sentence, robotic pacing uniformity — keep running for every language,
+ * because those are about the SHAPE of the text, not its vocabulary.
+ * `describeAiTellCoverage` (below) is the honest, non-blocking companion: it
+ * lets a caller RECORD "lexical AI-tell coverage does not exist for this
+ * language" instead of the gap staying invisible, without turning that
+ * documentation into a redraft-blocking finding no redraft could ever fix.
  */
-export function scanForAiTells(script: string | null | undefined): string[] {
+export const AI_TELL_LEXICAL_COVERAGE_LANGUAGES: readonly string[] = ["en"]
+
+/** PURE. Null when `language` has full lexical coverage (English, or
+ *  omitted/DEFAULT_LANGUAGE); otherwise a one-line note naming the gap, for a
+ *  caller to log/record (never to block a redraft on — there is nothing a
+ *  redraft could do about a scanner's own language scope). */
+export function describeAiTellCoverage(language: string | null | undefined): string | null {
+  const lang = (language ?? "en").trim().toLowerCase()
+  if (AI_TELL_LEXICAL_COVERAGE_LANGUAGES.includes(lang)) return null
+  return `AI-tell scan note: lexical patterns (self-reference, robotic opener, formal transition, ` +
+    `robotic signoff, uncontracted-phrase count) are English-only and did NOT run against this ` +
+    `"${lang}" script — only structural checks (leaked audio tags, sentence length, pacing uniformity) ` +
+    "applied. This is a documented scope gap, not a claim the script is free of language-specific AI tells."
+}
+
+export function scanForAiTells(script: string | null | undefined, language?: string | null): string[] {
   const text = (script ?? "").trim()
   if (!text) return []
   const hits: string[] = []
+  const lang = (language ?? "en").trim().toLowerCase()
+  const lexicalCoverage = AI_TELL_LEXICAL_COVERAGE_LANGUAGES.includes(lang)
 
-  if (AI_TELL_SELF_REFERENCE_PATTERNS.some((p) => p.test(text))) {
+  if (lexicalCoverage && AI_TELL_SELF_REFERENCE_PATTERNS.some((p) => p.test(text))) {
     hits.push(
       "AI-tell: the script refers to itself as an AI / language model / assistant, or names itself as generated — " +
       "the avatar must speak as the agent, in first person, never acknowledging it is AI-made.",
     )
   }
-  if (AI_TELL_ROBOTIC_OPENER_PATTERNS.some((p) => p.test(text))) {
+  if (lexicalCoverage && AI_TELL_ROBOTIC_OPENER_PATTERNS.some((p) => p.test(text))) {
     hits.push(
       "AI-tell: opens with a generic self-introduction (\"hi, i'm ... from ...\") instead of a hook — " +
       "lead with a fact, a number, or the viewer's situation.",
     )
   }
-  if (AI_TELL_FORMAL_TRANSITION_PATTERNS.some((p) => p.test(text))) {
+  if (lexicalCoverage && AI_TELL_FORMAL_TRANSITION_PATTERNS.some((p) => p.test(text))) {
     hits.push(
       "AI-tell: a formal written-register transition (\"furthermore\", \"additionally\", \"it is worth noting\") — " +
       "nobody says this out loud; use \"but\", \"so\", or \"here's the thing\" instead.",
     )
   }
-  if (AI_TELL_ROBOTIC_SIGNOFF_PATTERNS.some((p) => p.test(text))) {
+  if (lexicalCoverage && AI_TELL_ROBOTIC_SIGNOFF_PATTERNS.some((p) => p.test(text))) {
     hits.push(
       "AI-tell: a canned video sign-off (\"thanks for watching\", \"subscribe\") — " +
       "close with a specific next step said the way a person actually talks.",
@@ -898,7 +941,7 @@ export function scanForAiTells(script: string | null | undefined): string[] {
       "strip them (stripExpressiveAudioTags / stripNaturalPauseMarkup) before this reaches a caption, transcript, or preview.",
     )
   }
-  const uncontractedCount = UNCONTRACTED_PATTERNS.filter((p) => p.test(text)).length
+  const uncontractedCount = lexicalCoverage ? UNCONTRACTED_PATTERNS.filter((p) => p.test(text)).length : 0
   if (uncontractedCount >= 3) {
     hits.push(
       `AI-tell: ${uncontractedCount} uncontracted phrases ("do not", "it is", "you are", …) — ` +

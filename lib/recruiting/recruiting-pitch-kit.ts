@@ -29,6 +29,7 @@
  */
 import { createHash } from "crypto"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { ClientPdfSection, ClientPdfSpec, ClientPdfBrand } from "@/lib/documents/client-pdf"
 import { benefitsPitchSection, loadBenefitOfferings, type BenefitOfferings } from "@/lib/recruiting/benefit-offerings"
 
@@ -361,12 +362,14 @@ export async function runRecruitingPitchKits(svc: any): Promise<{ pitchKits: num
       const { data: broker } = await svc.from("users").select("id")
         .eq("brokerage_id", b.id).order("created_at", { ascending: true }).limit(1).maybeSingle()
       if (broker?.id) {
-        await svc.from("notifications").insert({
+        // Blind-spot burn-down (lane 75D, notification fan-out census) —
+        // sentinelWrite: this cron runs on the service-role client.
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: broker.id, brokerage_id: b.id, type: "recruiting_pitch_ready",
           title: "Your recruiting pitch kit is ready",
           body: `The recruit-facing one-pager (your pitch, the AI team, your terms${facts.recruitedGciDollars ? ", measured recruited-agent production" : ""}) is print-ready: ${produced.pdfUrl} [recruit-pitch:${hash}]`,
           priority: "medium", channel: "in_app", is_read: false,
-        }).then(undefined, () => {})
+        }), { table: "notifications", flow: "recruiting_pitch_ready_brokerage_notify", brokerageId: b.id, reason: "the pitch kit PDF itself already generated; this is only the broker heads-up" })
       }
       out.pitchKits++
     } catch { out.pitchErrors++ }
@@ -432,12 +435,12 @@ export async function runRecruitingPitchKits(svc: any): Promise<{ pitchKits: num
         notifyUserId = (broker as any)?.id ?? null
       }
       if (notifyUserId) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: notifyUserId, brokerage_id: t.brokerage_id, type: "recruiting_pitch_ready",
           title: `${facts.brokerageName} — team recruiting pitch ready`,
           body: `The recruit-facing one-pager for your team (your pitch, the AI team, your terms) is print-ready: ${produced.pdfUrl} [recruit-pitch:${hash}]`,
           priority: "medium", channel: "in_app", is_read: false,
-        }).then(undefined, () => {})
+        }), { table: "notifications", flow: "recruiting_pitch_ready_team_notify", brokerageId: t.brokerage_id, reason: "the pitch kit PDF itself already generated; this is only the team lead heads-up" })
       }
       out.pitchKits++
     } catch { out.pitchErrors++ }
