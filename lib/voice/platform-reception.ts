@@ -108,6 +108,47 @@ export function buildPlatformReceptionPrompt(id: {
   return { firstMessage, systemPrompt }
 }
 
+// ── Tenant-free platform FAQ tool (lane 73E) ──────────────────────────────────
+//
+// Item 5 of the voice-turn-engine restructuring: this line has NO
+// brokerage/property context by design (it is the PLATFORM's own prospect/
+// support line, never a tenant's), so none of lib/ai-isa/batchdata-isa-
+// tools.ts's persona-scoped property tools belong here — that stays true.
+// But it DOES have a SAFE, tenant-free capability the onboarding assistant
+// already exercises: lib/intelligence/kb-search.ts's help_topics_kb search,
+// scoped to `brokerage_id IS NULL` (platform-wide FAQ/help rows) by passing
+// `brokerageId: null` — the RPC's own WHERE clause (`h.brokerage_id IS NULL
+// OR h.brokerage_id = p_brokerage_id`) already degrades to exactly that set
+// when `p_brokerage_id` is NULL, so this can never surface a brokerage's
+// private help content. Wired as a REAL AI-SDK tool (native multi-step
+// calling), same shape as the voice ISA's property tools below.
+async function platformFaqTools(): Promise<Record<string, unknown>> {
+  const { tool } = await import("ai")
+  const { z } = await import("zod")
+  const { searchKB } = await import("@/lib/intelligence/kb-search")
+  return {
+    platform_faq_lookup: tool({
+      description: "Search the platform's own public FAQ / help-topic knowledge base for facts about the product, how it works, or pricing plans. Tenant-free — only platform-wide entries are ever returned, never a brokerage's private content. Use this before saying \"I don't know\" to a product question.",
+      inputSchema: z.object({ query: z.string().min(2).max(200) }),
+      execute: async ({ query }: { query: string }) => {
+        try {
+          const results = await searchKB(query, null, 3)
+          if (results.length === 0) return { success: true, found: false }
+          return { success: true, found: true, topics: results.map((r) => ({ title: r.title, content: r.content.slice(0, 600) })) }
+        } catch (e: any) {
+          return { success: false, error: e?.message ?? "FAQ lookup failed" }
+        }
+      },
+    }),
+  }
+}
+
+const PLATFORM_TOOL_TURN_GUIDANCE = [
+  "You have a platform FAQ lookup tool available. Call it when the caller asks something factual about the product or how it works that isn't already covered by WHAT THE PRODUCT IS / CURRENT PLANS above — never guess, and never call it for something you can already answer from those.",
+  "This is a LIVE phone call — call at most one or two times, only when genuinely needed.",
+  "Once you have what you need (or decide no lookup is needed), respond with your FINAL turn as the JSON object described above and NOTHING else.",
+].join("\n")
+
 // ── Turn planning (platform contract: continue | prospect | transfer | hangup) ─
 
 // TOMBSTONE (2026-08-27, §6 one-vocabulary): PROSPECT_ROLE_INTERESTS was a
@@ -126,16 +167,6 @@ export type PlatformTurnAction =
 export interface PlatformTurnPlan {
   say: string
   action: PlatformTurnAction
-  /** Lane 73B — the schema field exists for parity with
-   *  lib/voice/reception-brain.ts's VoiceTurnPlan, but this line has NO
-   *  tenant/brokerage and no property context at all (it is the PLATFORM's
-   *  own prospect/support line, not a tenant's) — there is nothing a
-   *  persona-scoped property tool could look up here. ALWAYS null; the model
-   *  is never instructed to populate it (PLATFORM_TURN_INSTRUCTIONS has no
-   *  tool_request line) and nothing executes it. Recorded as UNRESOLVED per
-   *  CLAUDE.md §1 rather than silently wired past a context this line does
-   *  not have. */
-  toolRequest?: null
 }
 
 export const PLATFORM_TURN_INSTRUCTIONS = [
@@ -187,7 +218,15 @@ export function parsePlatformTurnPlan(raw: string): PlatformTurnPlan {
   }
 }
 
-/** One platform reception turn: transcript + utterance → the brain → plan. */
+/**
+ * One platform reception turn: transcript + utterance → the brain → plan.
+ *
+ * Lane 73E: offers `platform_faq_lookup` (native AI-SDK tool-calling, same
+ * bounded ceiling as the tenant voice ISA — see lib/voice/twilio-voice.ts's
+ * VOICE_TOOL_ROUND_MAX_STEPS/VOICE_TOOL_ROUND_DEADLINE_MS for the shared
+ * reasoning). On a timeout/throw, falls back to the plain no-tool call —
+ * fail safe, never silence on a live call.
+ */
 export async function planPlatformReceptionTurn(
   ctx: PlatformReceptionContext,
   transcript: string | null,
@@ -202,13 +241,33 @@ export async function planPlatformReceptionTurn(
   const { transcriptToMessages } = await import("@/lib/voice/reception-brain")
   const convo = transcriptToMessages(transcript).map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
   const { generateTextRouted } = await import("@/lib/ai/models")
-  const { text } = await generateTextRouted({
-    feature: "voice_reception_turn",
-    prompt: `${systemPrompt}\n\n${PLATFORM_TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
-    temperature: 0.4,
-    maxTokens: 300,
-  })
-  return parsePlatformTurnPlan(text)
+
+  const plainCall = async () => {
+    const { text } = await generateTextRouted({
+      feature: "voice_reception_turn",
+      prompt: `${systemPrompt}\n\n${PLATFORM_TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
+      temperature: 0.4,
+      maxTokens: 300,
+    })
+    return parsePlatformTurnPlan(text)
+  }
+
+  try {
+    const { VOICE_TOOL_ROUND_MAX_STEPS, VOICE_TOOL_ROUND_DEADLINE_MS } = await import("@/lib/voice/twilio-voice")
+    const { text } = await generateTextRouted({
+      feature: "voice_reception_turn",
+      prompt: `${systemPrompt}\n\n${PLATFORM_TURN_INSTRUCTIONS}\n\n${PLATFORM_TOOL_TURN_GUIDANCE}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
+      temperature: 0.4,
+      maxTokens: 400,
+      tools: await platformFaqTools(),
+      maxSteps: VOICE_TOOL_ROUND_MAX_STEPS,
+      abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS),
+    })
+    return parsePlatformTurnPlan(text)
+  } catch (e: any) {
+    console.error("[platform-reception] native tool round failed or hit its deadline — falling back to the plan-only path:", e?.message ?? e)
+    return plainCall()
+  }
 }
 
 // ── Prospect capture (into the EXISTING growth funnel) ───────────────────────

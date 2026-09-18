@@ -139,17 +139,24 @@ const voiceCommandSrc = stripped("app/api/internal/voice-command/route.ts")
 check("internal voice-command is a STAFF COMMAND CLASSIFIER (extracts names/entities to dispatch existing actions), not an open-ended chat surface — no property-data tool set belongs on it",
   !voiceCommandSrc.includes("batchDataIsaTools") && !voiceCommandSrc.includes("batchDataMcpTools"))
 
-// The phone/voice ISA (Twilio ConversationRelay reception brain) uses a
-// STRUCTURED JSON-PLAN turn engine (planTurnWithPrompt / planPlatformReceptionTurn),
-// not AI-SDK tool()-calling — a deliberate latency-sensitive design from
-// earlier waves (callback-task loop, wave 55). Lane 73B adds a BOUNDED,
-// ONE-CALL-PER-TURN manual tool round on TOP of that JSON-plan engine (see
-// Layer 5 below) rather than restructuring it into a full multi-step AI-SDK
-// tool-calling loop — that larger architecture change remains UNRESOLVED,
-// recorded here rather than silently claimed as done.
+// The phone/voice ISA (Twilio ConversationRelay reception brain) STILL
+// returns the structured JSON-PLAN VoiceTurnPlan (say/action) every route
+// consumes — that OUTPUT CONTRACT is unchanged. But lane 73E restructured HOW
+// that plan gets produced when property tools are on offer: instead of wave
+// 73B's hand-rolled "ask for a tool in your JSON, executor parses the field,
+// runs at most one call, re-plans once" protocol, `planTurnWithPrompt` now
+// makes ONE `generateTextRouted` call with REAL AI-SDK `tools:` +
+// `maxSteps: VOICE_TOOL_ROUND_MAX_STEPS` (≤3) + a hard
+// `abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS)` — genuine
+// multi-step tool-calling, bounded and deadline-protected for
+// ConversationRelay's real-time turn-taking budget. See Layer 5 below.
 const twilioVoiceSrc = stripped("lib/voice/twilio-voice.ts")
-check("the phone/voice ISA's turn engine is STILL a JSON-PLAN generator (generateTextRouted → parseTurnPlan), never native AI-SDK tool-calling (`tools:` passed to generateTextRouted) — the bounded manual round (Layer 5) is the smallest hook, not a full turn-engine rewrite",
-  twilioVoiceSrc.includes("generateTextRouted") && !/generateTextRouted\(\{[\s\S]{0,200}tools:/.test(twilioVoiceSrc))
+check("the phone/voice ISA's turn engine now uses REAL native AI-SDK multi-step tool-calling (`tools:` + `maxSteps` passed to generateTextRouted) — restructured off wave 73B's manual toolRequest round (lane 73E)",
+  twilioVoiceSrc.includes("tools: voiceTools") && twilioVoiceSrc.includes("maxSteps: VOICE_TOOL_ROUND_MAX_STEPS"))
+check("the native tool round carries a hard per-turn deadline (AbortSignal.timeout) — an unbounded tool loop would blow ConversationRelay's real-time turn-taking budget",
+  /abortSignal: AbortSignal\.timeout\(VOICE_TOOL_ROUND_DEADLINE_MS\)/.test(twilioVoiceSrc))
+check("the step ceiling is bounded to ≤3 in source (the turn-engine design ceiling), not left to the SDK's own default",
+  /VOICE_TOOL_ROUND_MAX_STEPS = 3/.test(twilioVoiceSrc))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYER 2 — NO USER-FACING TOOL-INVOCATION UI. A dashboard page/button that
@@ -240,117 +247,137 @@ check("widget conversationKey is the session row's own id (stable per visitor), 
   /conversationKey: session\.id,/.test(widgetSrc))
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LAYER 5 (lane 73B, item 3) — the voice ISA's turn plan carries an OPTIONAL
-// `toolRequest`, executed AT MOST ONCE per turn against the SAME persona
-// registry every chat surface uses, then re-planned once with the result —
-// bounded, never chained. Proved with an INJECTED generateTextRouted (module
-// mock) and a STUBBED batchDataIsaTools registry so this file makes NO
-// network call and spends NO real BatchData/AI budget.
+// LAYER 5 (lane 73E) — the voice ISA's turn engine on GENUINE native AI-SDK
+// multi-step tool-calling: `tools:` + `maxSteps` (≤3) + a hard per-turn
+// `abortSignal` deadline, replacing wave 73B's hand-rolled
+// plan→execute→re-plan protocol (TOMBSTONE in lib/voice/reception-brain.ts).
+// Proved with an INJECTED generateTextRouted (module mock) and a STUBBED
+// batchDataIsaTools registry so this file makes NO network call and spends NO
+// real BatchData/AI budget — the mock plays the AI SDK's own role of calling
+// the ONE tool it was offered before returning final text, which is exactly
+// what this repo's other native tool-calling call sites (handle-inbound-
+// email.ts, the in-app/portal/widget AI-chat routes) already trust the real
+// SDK to do; this proof is about OUR wiring (which tools, what step bound,
+// whether a deadline is set, and the timeout→plan-only fallback), not a
+// re-test of the SDK's own multi-step loop.
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n[Layer 5 · voice ISA toolRequest — one bounded call per turn, fail closed without a token]")
+console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded + deadline-protected + fail-safe]")
 
 {
-  const { parseTurnPlan, parseVoiceToolRequest, VOICE_TOOL_NAMES } = await import("../lib/voice/reception-brain")
+  const { parseTurnPlan, VOICE_TOOL_ALLOWLIST } = await import("../lib/voice/reception-brain")
+  const { planTurnWithPrompt, VOICE_TOOL_ROUND_MAX_STEPS, VOICE_TOOL_ROUND_DEADLINE_MS } = await import("../lib/voice/twilio-voice")
 
-  // Schema-level: parseTurnPlan reads tool_request off the model's JSON.
-  const withRequest = parseTurnPlan(JSON.stringify({
-    say: "Let me check that for you.",
-    action: "continue",
-    tool_request: { name: "lookup_property", address: "123 Main St", city: "Austin", state: "TX", zip: "78701" },
-  }))
-  check("parseTurnPlan: reads a well-formed tool_request off the model's JSON", withRequest.toolRequest?.name === "lookup_property" && withRequest.toolRequest?.address === "123 Main St")
+  check("VOICE_TOOL_ALLOWLIST is the closed, property-only subset (no skip-trace/dnc/tcpa on the voice line)",
+    (VOICE_TOOL_ALLOWLIST as readonly string[]).length === 4 &&
+    !(VOICE_TOOL_ALLOWLIST as readonly string[]).includes("skip_trace_property") &&
+    !(VOICE_TOOL_ALLOWLIST as readonly string[]).includes("check_dnc_status"))
+  check("VOICE_TOOL_ROUND_MAX_STEPS obeys the turn-engine's ≤3 design ceiling",
+    VOICE_TOOL_ROUND_MAX_STEPS >= 1 && VOICE_TOOL_ROUND_MAX_STEPS <= 3)
+  check("VOICE_TOOL_ROUND_DEADLINE_MS is a positive, finite ms budget (env-tunable, default 4000)",
+    VOICE_TOOL_ROUND_DEADLINE_MS > 0 && Number.isFinite(VOICE_TOOL_ROUND_DEADLINE_MS))
 
-  const badName = parseVoiceToolRequest({ name: "skip_trace_property", address: "123 Main St" })
-  check("parseVoiceToolRequest: an OUT-OF-ENUM tool name (e.g. skip_trace_property) is REJECTED — degrades to null, never reaches the executor", badName === null)
-  const noAddress = parseVoiceToolRequest({ name: "lookup_property", address: "" })
-  check("parseVoiceToolRequest: a blank address is REJECTED — degrades to null", noAddress === null)
-  check("VOICE_TOOL_NAMES is the closed, property-only enum (no skip-trace/dnc/tcpa on the voice line)",
-    (VOICE_TOOL_NAMES as readonly string[]).length === 4 &&
-    !(VOICE_TOOL_NAMES as readonly string[]).includes("skip_trace_property") &&
-    !(VOICE_TOOL_NAMES as readonly string[]).includes("check_dnc_status"))
+  // TOMBSTONE positive control: a raw `tool_request` field in the model's
+  // JSON is simply IGNORED now — VoiceTurnPlan carries no such field, proving
+  // the manual mechanism is actually gone, not merely unused.
+  const withStaleField = parseTurnPlan(JSON.stringify({
+    say: "Let me check that for you.", action: "continue",
+    tool_request: { name: "lookup_property", address: "123 Main St" },
+  })) as Record<string, unknown>
+  check("parseTurnPlan: a stale tool_request field in the model's JSON is a no-op (native tool-calling replaced it, lane 73E tombstone)",
+    !("toolRequest" in withStaleField))
 
-  const withoutRequest = parseTurnPlan(JSON.stringify({ say: "Sure thing.", action: "continue" }))
-  check("parseTurnPlan: toolRequest is undefined/null when the model omits tool_request entirely", !withoutRequest.toolRequest)
-
-  // Executor round: INJECT generateTextRouted + batchDataIsaTools (VoiceToolRoundDeps,
-  // a @proofSeam on lib/voice/twilio-voice.ts) so the WHOLE round (plan → execute →
-  // re-plan) runs with zero network I/O and zero real AI-gateway/BatchData spend.
-  const { planTurnWithPrompt } = await import("../lib/voice/twilio-voice")
-
-  let generateCallCount = 0
-  let lastPromptSeenToolResult = false
+  // ── native round: tools reach the SDK call, persona-filtered, bounded, deadline set ──
+  let seenToolNames: string[] = []
+  let seenMaxSteps: number | undefined
+  let seenAbortSignal: unknown
   let executedArgs: any = null
   const finalPlan = await planTurnWithPrompt(
     "You are the receptionist.", null, "What can you tell me about 123 Main St?",
     { brokerageId: "brokerage-1", agentId: null, contactId: null, conversationKey: "call-1" },
     {
-      generateTextRouted: async ({ prompt }: { prompt: string }) => {
-        generateCallCount++
-        if (generateCallCount === 1) {
-          return { text: JSON.stringify({ say: "Checking now.", action: "continue", tool_request: { name: "lookup_property", address: "123 Main St", city: null, state: null, zip: null } }) }
-        }
-        lastPromptSeenToolResult = /TOOL RESULT for lookup_property/.test(prompt)
-        // A SECOND toolRequest in the re-plan response — proves the executor
-        // discards it rather than chaining another round.
-        return { text: JSON.stringify({ say: "It's a 3-bed built in 1998.", action: "continue", tool_request: { name: "comparable_property_preview", address: "999 Should Not Run" } }) }
+      generateTextRouted: async ({ tools, maxSteps, abortSignal }: any) => {
+        seenToolNames = Object.keys(tools ?? {})
+        seenMaxSteps = maxSteps
+        seenAbortSignal = abortSignal
+        // Play the AI SDK's own role for this proof: call the tool it was
+        // offered, then return the final JSON with the result folded in —
+        // exactly once, never a second manual re-prompt on our side.
+        if (tools?.lookup_property) await tools.lookup_property.execute({ address: "123 Main St", city: null, state: null, zip: null }, { toolCallId: "t1", messages: [] })
+        return { text: JSON.stringify({ say: "It's a 3-bed built in 1998.", action: "continue" }) }
       },
       batchDataIsaTools: async () => ({
-        lookup_property: {
-          execute: async (args: any) => { executedArgs = args; return { success: true, data: { address: args.address } } },
-        },
+        lookup_property: { execute: async (args: any) => { executedArgs = args; return { success: true, data: { address: args.address } } } },
+        // NOT in VOICE_TOOL_ALLOWLIST — proves the voice line's property-only
+        // subset filter applies even when a persona's fuller registry grants it.
+        verify_phone: { execute: async () => ({ success: true }) },
       }),
     },
   )
-  check("executeVoiceToolRound: exactly TWO generateTextRouted calls (the plan, then ONE re-plan) — never a third", generateCallCount === 2)
-  check("executeVoiceToolRound: the tool actually ran with the model's requested address", executedArgs?.address === "123 Main St")
-  check("executeVoiceToolRound: the re-plan prompt carries the tool's result", lastPromptSeenToolResult)
-  check("executeVoiceToolRound: the FINAL plan's toolRequest is discarded even though the re-plan asked for a second one — bounded to ONE call per turn", finalPlan.toolRequest == null)
-  check("executeVoiceToolRound: the final say comes from the SECOND (post-tool) generation, not the first", finalPlan.say === "It's a 3-bed built in 1998.")
+  check("native round: only the VOICE_TOOL_ALLOWLIST subset reaches `tools:` — verify_phone is filtered out even though the stubbed registry granted it",
+    seenToolNames.length === 1 && seenToolNames[0] === "lookup_property")
+  check("native round: maxSteps is the bounded ceiling, not an unbounded loop", seenMaxSteps === VOICE_TOOL_ROUND_MAX_STEPS)
+  check("native round: a real per-turn deadline (AbortSignal) is passed through to generateTextRouted", seenAbortSignal instanceof AbortSignal)
+  check("native round: the offered tool's execute() actually ran with the model's args", executedArgs?.address === "123 Main St")
+  check("native round: the final say comes from the ONE generateTextRouted call — the SDK folds the tool result in itself, never a second manual re-prompt",
+    finalPlan.say === "It's a 3-bed built in 1998.")
 
-  // Persona not in the allowlist / no BatchData token → the injected registry is empty,
-  // proving the round REFUSES cleanly (no crash, no fabricated tool result) rather than
-  // silently skipping straight to a final plan.
-  let refusedGenerateCallCount = 0
-  let refusalResultText = ""
+  // ── cost-avoidance: nothing in this persona's/token's allowlist → skip the tool-enabled call entirely ──
+  let plainCallSawTools: unknown = "unset"
   const refusedPlan = await planTurnWithPrompt(
     "You are the receptionist.", null, "What can you tell me about 1 Refused Way?",
     { brokerageId: "brokerage-1", agentId: null, contactId: null, conversationKey: "call-refused" },
     {
-      generateTextRouted: async ({ prompt }: { prompt: string }) => {
-        refusedGenerateCallCount++
-        if (refusedGenerateCallCount === 1) {
-          return { text: JSON.stringify({ say: "One moment.", action: "continue", tool_request: { name: "lookup_property", address: "1 Refused Way" } }) }
-        }
-        const m = prompt.match(/TOOL RESULT for lookup_property: (.+)/)
-        refusalResultText = m?.[1] ?? ""
-        return { text: JSON.stringify({ say: "I don't have that on hand right now — the team will confirm.", action: "continue" }) }
-      },
-      batchDataIsaTools: async () => ({}), // FAIL CLOSED / not in this persona's allowlist
+      generateTextRouted: async ({ tools }: any) => { plainCallSawTools = tools; return { text: JSON.stringify({ say: "I don't have that on hand right now — the team will confirm.", action: "continue" }) } },
+      batchDataIsaTools: async () => ({}), // no token / persona grants none of the 4
     },
   )
-  check("executeVoiceToolRound: a tool NOT in the registry (unconfigured token or persona refusal) is reported to the model plainly, never a crash", /not available/i.test(refusalResultText))
-  check("executeVoiceToolRound: the turn still completes with a real plan after a tool refusal", refusedPlan.say.length > 0)
+  check("native round: an EMPTY registry (no token / persona grants none of the 4) skips the tool-enabled call entirely — no `tools:` key, never an empty-map call",
+    plainCallSawTools === undefined)
+  check("...and the turn still completes with a real spoken plan", refusedPlan.say.length > 0)
 
-  // FAIL CLOSED WITHOUT A TOKEN: planTurnWithPrompt called with NO toolCtx at
-  // all never attempts to execute a toolRequest — the field is parsed and
-  // simply returned, proving the hook is additive/optional, not a silent
-  // behavior change for every existing caller (the outbound ISA lane today).
-  const plan = await planTurnWithPrompt(
-    "You are the receptionist.", null, "Tell me about 1 Never Run Ln", undefined,
-    { generateTextRouted: async () => ({ text: JSON.stringify({ say: "Sure.", action: "continue", tool_request: { name: "lookup_property", address: "1 Never Run Ln" } }) }) },
+  // ── FAIL SAFE: a thrown/timed-out native round falls back to the plan-only path ──
+  const calls: any[] = []
+  const timeoutPlan = await planTurnWithPrompt(
+    "You are the receptionist.", null, "Tell me about 500 Timeout Ave",
+    { brokerageId: "brokerage-1", agentId: null, contactId: null, conversationKey: "call-timeout" },
+    {
+      generateTextRouted: async (args: any) => {
+        calls.push(args)
+        if (calls.length === 1) {
+          const err: any = new Error("The operation was aborted.")
+          err.name = "TimeoutError"
+          throw err
+        }
+        return { text: JSON.stringify({ say: "Let me have the team call you back with that.", action: "continue" }) }
+      },
+      batchDataIsaTools: async () => ({ lookup_property: { execute: async () => ({ success: true }) } }),
+    },
   )
-  check("FAIL CLOSED WITHOUT A TOKEN: no toolCtx passed → toolRequest is returned UNEXECUTED (the model's plan still carries it, but nothing ran)", plan.toolRequest?.name === "lookup_property")
+  check("FAIL SAFE: exactly two generateTextRouted attempts — the (failed) tool round, then ONE plan-only fallback", calls.length === 2)
+  check("FAIL SAFE: the first (failed) attempt carried tools", !!calls[0]?.tools && Object.keys(calls[0].tools).length > 0)
+  check("FAIL SAFE: the fallback attempt carries NO tools — the plain plan-only path, not a retried tool round", calls[1]?.tools === undefined)
+  check("FAIL SAFE: the turn still completes with a real spoken plan after the timeout — never silence on a live call", timeoutPlan.say.length > 0)
 
-  // platform-reception.ts carries the schema field for PARITY but NEVER executes
-  // it — no brokerage/property context exists on the platform prospect line.
-  // The "reason on record" half is a DOC COMMENT — read RAW source for it on
-  // purpose (same discipline as the chat-stream check in Layer 1C above).
+  // ── no toolCtx at all (the outbound ISA lane today) → plain call, unchanged ──
+  let noCtxSawTools: unknown = "unset"
+  const noCtxPlan = await planTurnWithPrompt(
+    "You are the receptionist.", null, "Tell me about 1 Never Run Ln", undefined,
+    { generateTextRouted: async ({ tools }: any) => { noCtxSawTools = tools; return { text: JSON.stringify({ say: "Sure.", action: "continue" }) } } },
+  )
+  check("no toolCtx passed → a plain call with no tools, exactly as before lane 73B ever existed (additive, not a silent behavior change)",
+    noCtxSawTools === undefined)
+  check("...and the turn still completes normally", noCtxPlan.say === "Sure.")
+
+  // ── platform-reception.ts (item 5): ONE safe, tenant-free tool, native calling ──
   const platformReceptionSrc = stripped("lib/voice/platform-reception.ts")
-  const platformReceptionRawSrc = readFileSync("lib/voice/platform-reception.ts", "utf8")
-  check("platform-reception.ts's PlatformTurnPlan carries the toolRequest FIELD (schema parity)",
-    platformReceptionSrc.includes("toolRequest"))
-  check("...and its own doc comment records WHY it is never executed there (UNRESOLVED, not silently wired)",
-    platformReceptionRawSrc.includes("UNRESOLVED"))
+  check("platform-reception.ts wires platform_faq_lookup as a REAL AI-SDK tool (native calling) — no more toolRequest schema-parity field",
+    platformReceptionSrc.includes("platform_faq_lookup") && !platformReceptionSrc.includes("toolRequest"))
+  check("the platform FAQ tool calls searchKB with brokerageId: null — tenant-free by construction (the RPC's own WHERE clause degrades to platform-wide rows only)",
+    /searchKB\(query, null, 3\)/.test(platformReceptionSrc))
+  check("platform-reception reuses the SAME bounded ceiling/deadline as the tenant voice line — no second, invented budget",
+    platformReceptionSrc.includes("VOICE_TOOL_ROUND_MAX_STEPS") && platformReceptionSrc.includes("VOICE_TOOL_ROUND_DEADLINE_MS"))
+  check("platform-reception still carries NO brokerage/property tool (search_properties/comparable_property/etc never appear there) — property lookups stay tenant-scoped",
+    !platformReceptionSrc.includes("batchDataIsaTools") && !platformReceptionSrc.includes("lookup_property"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

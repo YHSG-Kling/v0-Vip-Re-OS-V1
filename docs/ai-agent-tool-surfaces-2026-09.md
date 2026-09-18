@@ -1,4 +1,4 @@
-# AI-agent tool surfaces — audit (2026-09-17, lane 72B; widened 2026-09-18, lane 73B)
+# AI-agent tool surfaces — audit (2026-09-17, lane 72B; widened 2026-09-18, lane 73B; voice turn engine restructured 2026-09-18, lane 73E)
 
 Owner correction (verbatim, wave 72): *"I didn't want you to create tools
 that didn't make sense. these tools are not for users to use but the ai
@@ -26,8 +26,8 @@ RentCast/PeopleData tools each AI-agent surface carries, why, and who pays.
 | Onboarding setup assistant | `app/api/onboarding/assistant/route.ts` | a NEW AGENT learning the platform | **none** (correctly) | n/a — KB-grounded platform Q&A, no property-data need | n/a |
 | Agent reply-draft copilot | `app/api/chat/stream/route.ts` (`agent_chat_stream`) | licensed agent (drafts a suggestion the agent sends in their OWN voice) | **none** (correctly) | n/a — this route never itself talks to a client under a persona | n/a |
 | Internal voice-command dispatcher | `app/api/internal/voice-command/route.ts` | tenant staff (spoken/typed platform commands: "who's hot", "draft save-plays") | **none** (correctly) | n/a — a command CLASSIFIER, not an open-ended chat surface | n/a |
-| Phone/voice ISA (Twilio ConversationRelay reception) | `lib/voice/twilio-voice.ts` (`planReceptionTurn`/`planTurnWithPrompt`) | inbound/outbound caller (lead or contact) | `batchDataIsaTools`, ONE bounded call per turn via `toolRequest` (§4) | persona DERIVED per-turn from the call's linked `contacts.id`, else the `buyer` default; property-only tool subset (`lookup_property`, `comparable_property_preview/count`, `verify_address`) | Same budget/metering; a call NEVER runs more than one BatchData tool per spoken turn |
-| Platform prospect/support line | `lib/voice/platform-reception.ts` (`planPlatformReceptionTurn`) | a prospect or existing-customer support caller on the PLATFORM's own line | **none — carries the `toolRequest` schema field for parity, never executes it (§4)** | n/a — this line has no brokerage/property context at all | n/a |
+| Phone/voice ISA (Twilio ConversationRelay reception) | `lib/voice/twilio-voice.ts` (`planReceptionTurn`/`planTurnWithPrompt`) | inbound/outbound caller (lead or contact) | `batchDataIsaTools`, NATIVE AI-SDK multi-step tool-calling, bounded `maxSteps` ≤3 + a hard per-turn deadline (§4) | persona DERIVED per-turn from the call's linked `contacts.id`, else the `buyer` default; property-only tool subset (`lookup_property`, `comparable_property_preview/count`, `verify_address`) | Same budget/metering; bounded by `VOICE_TOOL_ROUND_MAX_STEPS`/`VOICE_TOOL_ROUND_DEADLINE_MS`, a thrown/timed-out round falls back to the plan-only path |
+| Platform prospect/support line | `lib/voice/platform-reception.ts` (`planPlatformReceptionTurn`) | a prospect or existing-customer support caller on the PLATFORM's own line | `platform_faq_lookup` ONLY — a tenant-free platform-KB tool, native calling, SAME bounded ceiling (§4) | n/a — this line has no brokerage/property context, so no property tool; the FAQ tool takes no persona | Free (internal KB read); no BatchData/RentCast tool on this line |
 
 ## 2. Persona × tool × cap × tier matrix (lane 73B)
 
@@ -82,47 +82,81 @@ current month's platform BatchData spend reaches the cap, a configured
 downgrade never goes further to `"off"` on spend alone — an explicit `off`
 env value is required for that, an operator decision, never automatic.
 
-## 4. Voice ISA — bounded, one-call-per-turn tool requests (lane 73B, item 3)
+## 4. Voice ISA — native multi-step AI-SDK tool-calling (lane 73E, restructured off 73B)
 
-`lib/voice/reception-brain.ts`'s `VoiceTurnPlan` (the JSON contract every
-Twilio ConversationRelay turn returns) now carries an OPTIONAL `toolRequest`
-field — a closed enum (`lookup_property`, `comparable_property_preview`,
-`comparable_property_count`, `verify_address`; `VOICE_TOOL_NAMES`) plus an
-address. `lib/voice/twilio-voice.ts::planReceptionTurn` (the INBOUND tenant
-reception brain) executes it: at most ONE tool call per turn, against the
-SAME persona-scoped `batchDataIsaTools` registry every chat surface uses
-(persona resolved from the call's linked `contacts.id`, else `buyer`), then
-RE-PLANS exactly once with the result folded into the prompt — a
-`toolRequest` in that RE-PLAN's own response is discarded, never chained.
+**Wave 73B** (2026-09-18, earlier this wave) bolted a hand-rolled
+`toolRequest` JSON field onto the turn-plan contract and a manual
+plan→execute→re-plan protocol in `lib/voice/twilio-voice.ts`, bounded to
+exactly one tool call per turn, because the turn engine had never been
+restructured onto real AI-SDK tool-calling. **Lane 73E did that
+restructuring.** That manual field/enum/parser are TOMBSTONED in
+`lib/voice/reception-brain.ts`, naming this section as the survivor.
+
+**The design now**: `lib/voice/twilio-voice.ts::planTurnWithPrompt` — the
+shared engine both the inbound reception brain (`planReceptionTurn`) and the
+outbound-brief lane ride — takes an OPTIONAL `VoiceToolExecContext` (`{
+brokerageId, agentId, contactId, conversationKey }`, resolved from the CALL
+row, never the caller's speech). When present, it:
+
+1. Resolves the call's tool persona the same way every other AI-agent surface
+   does (`resolveToolPersona` off the linked contact's `contact_type`/
+   `contact_persona`/`home_owner_status`, defaulting `buyer` for an anonymous
+   caller).
+2. Builds the SAME persona-scoped `batchDataIsaTools` registry every chat
+   surface uses, narrowed to `VOICE_TOOL_ALLOWLIST` — the same four names
+   wave 73B's closed enum named (`lookup_property`,
+   `comparable_property_preview`, `comparable_property_count`,
+   `verify_address`; never skip-trace/dnc/tcpa on a phone call).
+3. If that narrowed set is non-empty (a token is configured AND this
+   persona's policy grants at least one), makes ONE `generateTextRouted` call
+   with a REAL `tools:` map + `maxSteps: VOICE_TOOL_ROUND_MAX_STEPS` (bounded
+   to ≤3 — the turn-engine design ceiling; the SDK's own multi-step loop
+   decides whether/how many times to call, so a turn CAN now use more than
+   one tool, unlike 73B's hard one-call cap) + a hard
+   `abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS)`. Every
+   tool result is folded into the model's own context by the SDK's loop —
+   exactly once, no manual re-prompt construction on this repo's side.
+4. If that call throws for ANY reason (including the deadline firing —
+   an AI-SDK abort surfaces as a thrown error, so this repo does not need to
+   special-case its exact shape), it FALLS BACK to the plain, no-tools
+   single-call path — **fail safe, never silence on a live call**. That
+   fallback is the SAME code path used when `toolCtx` is omitted entirely, or
+   when the narrowed tool set is empty (nothing to offer costs nothing —
+   the tool-enabled call is skipped outright rather than made with an empty
+   `tools:` map).
+
 Wired at both call sites that already resolve a `voice_calls` row
 (`app/api/voice/twilio/turn/route.ts`, `app/api/voice/relay/plan/route.ts`),
-passing `{ callId, contactId }` from the row they already select.
+passing `{ callId, contactId }` unchanged from wave 73B.
 
-**FAIL CLOSED WITHOUT A TOKEN / WITHOUT A CALL CONTEXT**: `planTurnWithPrompt`
-takes the execution context (`VoiceToolExecContext`) as an OPTIONAL fourth
-argument. Any existing caller that does not pass it (the outbound ISA lane
-today, `app/api/voice/relay/plan/route.ts`'s `brief` branch) still PARSES a
-`toolRequest` off the model's plan but never executes it — additive, not a
-silent behavior change. Inside the executor itself, a tool name the resolved
-persona's policy (or the platform tier) does not grant simply is not in the
-registry `batchDataIsaTools` returns, so the round reports "not available for
-this call" back to the model rather than crashing or fabricating a result.
+**The per-turn deadline (`VOICE_TOOL_ROUND_DEADLINE_MS`, env-tunable, default
+4000ms)** is a DERIVED policy ceiling (CLAUDE.md §2 — published with its
+reasoning, not asserted as a measurement): `docs/twilio-vs-elevenlabs-voice-2026-09.md`
+records ConversationRelay's OWN transport latency at ~491ms median
+(versusref.com, Jul 2026) and this engine's turn-based `<Gather>` round trip —
+one no-tool model call, the same shape as the plan-only fallback above — at
+"~1-2s" in that same comparison table. A bounded native round can run up to
+`VOICE_TOOL_ROUND_MAX_STEPS` sequential model round trips, some interleaved
+with a live BatchData MCP call, so the default budgets roughly 2-3x the
+single-call baseline — inside the ~3-5s window voice-UX practice treats as
+"still feels live" before dead air reads as a dropped call. **UNRESOLVED**:
+this has not been retuned against real production call audio (none exists in
+this environment) — the constant is env-overridable for exactly that reason.
 
-**UNRESOLVED, unchanged in kind from wave 71/72**: this is a bounded MANUAL
-round bolted onto the existing JSON-plan turn engine, not a full multi-step
-AI-SDK `tool()`-calling loop — `generateTextRouted` is still never called with
-a `tools:` argument on the voice lane. Restructuring the whole turn engine
-into native tool-calling (so the model could, in principle, request more than
-one tool per turn, or the SDK could manage the loop itself) remains a
-turn-ENGINE architecture change out of this lane's scope, recorded here
-rather than silently claimed as fully solved.
-
-`lib/voice/platform-reception.ts`'s `PlatformTurnPlan` (the PLATFORM
-prospect/support line) carries the SAME `toolRequest` field for schema parity
-but is documented, in its own doc comment, as ALWAYS `null` and never
-executed — that line has no brokerage or property context at all, so there is
-nothing a persona-scoped property tool could look up. Recorded as UNRESOLVED
-per CLAUDE.md §1 rather than silently wired past a context it does not have.
+**`lib/voice/platform-reception.ts`'s `planPlatformReceptionTurn`** (item 5 of
+the restructuring) — this line genuinely has NO brokerage/property context
+(it is the PLATFORM's own prospect/support line, not a tenant's), so it still
+carries none of the persona-scoped property tools. But it DOES now carry ONE
+safe, TENANT-FREE tool: `platform_faq_lookup`, wired the same native way
+(`tools:` + the SAME `VOICE_TOOL_ROUND_MAX_STEPS`/`_DEADLINE_MS` ceiling +
+plan-only fallback on throw). It calls `lib/intelligence/kb-search.ts::searchKB(query, null, 3)`
+— `brokerageId: null` — which the `match_help_topics` RPC's own WHERE clause
+(`h.brokerage_id IS NULL OR h.brokerage_id = p_brokerage_id`) degrades to
+"only platform-wide `help_topics_kb` rows" when `p_brokerage_id` is NULL, so
+this can never surface a brokerage's private help content — the SAME
+tenant-free KB rail `app/api/onboarding/assistant/route.ts` already reads
+(its own `searchKB` call passes a real `brokerageId` and additionally sees
+that tenant's own rows; the platform line only ever sees the `IS NULL` set).
 
 ## 5. Investor-persona property-only enforcement (unchanged in RULE, generalized in SCOPE)
 
@@ -175,13 +209,15 @@ voice lane's `toolRequest` field now does and what remains UNRESOLVED there.
 ## 7. Proof
 
 `scripts/ai-agent-tool-surfaces-simulator.ts` (`npm run test:ai-agent-tool-surfaces`)
-— 57 assertions, 6 layers: strip-comments positive control, the surface
-inventory above (tool set matches audience, investor/seller personas never
-carry skip-trace tools), the no-user-facing-tool-UI scan (with positive
-control), the portal/widget persona-derivation wiring, the voice ISA
-`toolRequest` bounded round (§4 — plan → execute → re-plan, a second request
-discarded, fail-closed without a token/call-context, the platform-reception
-line's parity-only field), and the skip-trace unit-cost constant.
+— strip-comments positive control, the surface inventory above (tool set
+matches audience, investor/seller personas never carry skip-trace tools), the
+no-user-facing-tool-UI scan (with positive control), the portal/widget
+persona-derivation wiring, the voice ISA's native multi-step tool-calling
+turn engine (§4 — persona-filtered `tools:` reaching `generateTextRouted`,
+the `maxSteps`/deadline bound, cost-avoidance when nothing is offered, the
+timeout→plan-only fail-safe fallback, no toolCtx → unchanged plain call, and
+the platform-reception line's ONE tenant-free FAQ tool), and the skip-trace
+unit-cost constant.
 `scripts/batchdata-isa-tools-simulator.ts` (120 assertions — persona
 allowlists, cost-tier constriction incl. the monthly-cap-trips-to-lean
 downgrade, `resolveToolPersona` derivation, redaction, budget/ordering) and

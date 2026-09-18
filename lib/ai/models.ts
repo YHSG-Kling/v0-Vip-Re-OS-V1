@@ -714,6 +714,18 @@ export interface RoutedTextRequest {
   /** Multi-step tool calling: stop after N steps. Defaults to 1 (text only)
    *  in the SDK; set higher for tool-using flows (typical: 5). */
   maxSteps?: number
+  /**
+   * Lane 73E — real-time callers (the Twilio ConversationRelay voice turn
+   * engine) need a HARD per-call deadline the underlying `generateText`
+   * itself enforces, not just a caller-side race, because the AI SDK's own
+   * multi-step tool loop can otherwise run an unbounded number of provider
+   * round trips before this function ever gets control back. Passed straight
+   * through to BOTH the primary and (if it fires) the fallback-model attempt
+   * — an already-aborted signal makes the fallback fail fast instead of
+   * spending a second full timeout window. Omitted → unbounded, exactly
+   * today's behavior for every existing caller.
+   */
+  abortSignal?: AbortSignal
 }
 
 /**
@@ -909,12 +921,17 @@ export async function generateTextRouted(
       messages: request.messages as any,
       tools: request.tools as any,
       stopWhen,
+      abortSignal: request.abortSignal,
       providerOptions: gatewayProviderOptions(fallback) as any,
     })
     inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
     outputTokens = (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text)
     resultText   = result.text
-  } catch {
+  } catch (primaryErr) {
+    // An already-fired deadline: the fallback attempt would fail identically
+    // (same signal) after paying nothing for it — skip straight to the
+    // caller's own catch rather than losing time on a doomed retry.
+    if (request.abortSignal?.aborted) throw primaryErr
     // Automatic fallback to secondary model via gateway
     const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
     const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
@@ -928,6 +945,7 @@ export async function generateTextRouted(
       messages: request.messages as any,
       tools: request.tools as any,
       stopWhen,
+      abortSignal: request.abortSignal,
     })
     modelUsed    = fallback
     inputTokens  = (result.usage as any)?.inputTokens  ?? (result.usage as any)?.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))

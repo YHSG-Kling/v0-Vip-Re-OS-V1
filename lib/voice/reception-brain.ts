@@ -92,43 +92,33 @@ export type VoiceTurnAction =
   | { kind: "callback"; phone: string | null; whenPhrase: string; reason: string | null }
   | { kind: "hangup" }                                  // caller done
 
-// Lane 73B — the subset of lib/ai-isa/batchdata-isa-tools.ts's registry names a
-// VOICE turn may request. Deliberately narrow (property lookup/comps/address
-// verification only, never skip-trace/dnc/tcpa — a phone call has no persona
-// registered until the executor resolves one from the call's own contact_id,
-// same as every other surface) and a closed enum so a malformed/hallucinated
-// tool name degrades to "no tool request" rather than an arbitrary string
-// reaching the executor.
-export const VOICE_TOOL_NAMES = [
+// TOMBSTONE (lane 73E, 2026-09-18): lane 73B's closed VOICE_TOOL_NAMES enum +
+// VoiceToolRequest + parseVoiceToolRequest + VoiceTurnPlan.toolRequest — a
+// hand-rolled "ask for a tool in your JSON, executor parses the field, runs
+// AT MOST ONE call, re-plans once" protocol bolted on top of this file's
+// JSON-plan engine — are RETIRED. The capability now lives natively:
+// lib/voice/twilio-voice.ts's `planTurnWithPrompt` passes the SAME
+// persona-scoped registry (lib/ai-isa/batchdata-isa-tools.ts, narrowed to the
+// same property-only subset that enum used to name — VOICE_TOOL_ALLOWLIST
+// below, now just a plain string-name allowlist with no JSON-schema duty)
+// straight into `generateTextRouted({ tools, maxSteps: 3, abortSignal })` —
+// real AI-SDK multi-step tool-calling, the model choosing whether/how many
+// times to call, the SDK folding each result into its own context, no manual
+// re-prompt. See docs/ai-agent-tool-surfaces-2026-09.md §4. `toolRequest` was
+// never read by any route (app/api/voice/twilio/turn, app/api/voice/relay/
+// plan only ever read `.say`/`.action`), so its removal from VoiceTurnPlan
+// does not touch the OUTPUT CONTRACT those routes consume.
+export const VOICE_TOOL_ALLOWLIST = [
   "lookup_property",
   "comparable_property_preview",
   "comparable_property_count",
   "verify_address",
 ] as const
-export type VoiceToolName = (typeof VOICE_TOOL_NAMES)[number]
-
-export interface VoiceToolRequest {
-  name: VoiceToolName
-  address: string
-  city: string | null
-  state: string | null
-  zip: string | null
-}
+export type VoiceToolName = (typeof VOICE_TOOL_ALLOWLIST)[number]
 
 export interface VoiceTurnPlan {
   say: string
   action: VoiceTurnAction
-  /** OPTIONAL — present only when the model needs a live property lookup to
-   *  answer this turn. The executor (lib/voice/twilio-voice.ts::planReceptionTurn)
-   *  runs AT MOST ONE of these per turn against the SAME persona-scoped
-   *  registry every other surface uses, then RE-PLANS once with the tool's
-   *  result folded in — a second toolRequest in that re-plan is discarded,
-   *  never chained. Never present alongside "book"/"rsvp"/"transfer" in the
-   *  SAME turn in practice (the model is instructed to request a tool, wait
-   *  for the result, THEN decide the action) but the schema does not forbid
-   *  it — the executor runs the tool regardless of `action` and lets the
-   *  re-plan choose the final action. */
-  toolRequest?: VoiceToolRequest | null
 }
 
 /** The JSON contract the model must return each turn. */
@@ -140,16 +130,26 @@ export const TURN_INSTRUCTIONS = [
   '  "address": "<the property address, ONLY when action is rsvp or seller_lead>",',
   '  "callback_phone": "<a DIFFERENT callback number the caller gave, ONLY when action is callback and they gave one other than the number they are calling from — otherwise omit>",',
   '  "callback_when": "<the caller\'s OWN words for when, ONLY when action is callback — e.g. \\"3pm today\\", \\"tomorrow morning\\", \\"in an hour\\". Never convert it yourself.>",',
-  '  "callback_reason": "<one short phrase for why they want a call back, ONLY when action is callback>",',
-  '  "tool_request": { "name": "lookup_property" | "comparable_property_preview" | "comparable_property_count" | "verify_address", "address": "<street address>", "city": "<city or omit>", "state": "<state or omit>", "zip": "<zip or omit>" } }',
+  '  "callback_reason": "<one short phrase for why they want a call back, ONLY when action is callback>" }',
   "Rules: action 'transfer' when the caller asks for the agent / is urgent / office-hours rule says so.",
   "action 'book' ONLY after the caller has confirmed a specific date and time out loud.",
   "action 'rsvp' ONLY after the caller says yes to attending an open house from the LIVE INVENTORY list — include that listing's address.",
   "action 'seller_lead' when the caller asks what their home is worth or mentions selling — include their property address if they gave it. Never quote a value yourself; say the team will prepare a real valuation.",
   "action 'callback' when you have told the caller someone will call them back, OR they asked for a call back at a specific time — capture callback_when in their own words (never compute a date yourself) and confirm it back to them out loud in your 'say'.",
   "action 'hangup' when the caller says goodbye or the call is complete — say a warm close first.",
-  "Include 'tool_request' ONLY when you need a REAL live property lookup (e.g. the caller asked about a specific address's details, comps, or count) and you have a real address to look up — omit it otherwise. You get AT MOST ONE tool call per turn; wait for its result before requesting another.",
   "Otherwise action 'continue'.",
+].join("\n")
+
+// Lane 73E — appended to the prompt ONLY on turns where real AI-SDK tools are
+// being offered (lib/voice/twilio-voice.ts::planTurnWithPrompt, when the
+// call's persona-scoped registry has at least one property tool available).
+// Native tool-calling replaces the old manual `tool_request` JSON field
+// (TOMBSTONE above) — the model calls a REAL tool via the SDK's own
+// function-calling protocol, not by naming one inside this JSON.
+export const TOOL_TURN_GUIDANCE = [
+  "You have live property-lookup tools available on this call. Call one ONLY when you need REAL data you don't already have (a specific address's details, comparable sales, or a comp count) — never guess, and never call a tool for something you can already answer.",
+  "This is a LIVE phone call — the caller is waiting in silence while you work. Call at most one or two tools, and only when genuinely needed; do not call the same tool twice for the same address.",
+  "Once you have what you need (or decide no tool is needed), respond with your FINAL turn as the JSON object described above and NOTHING else — no further tool calls, no prose before or after the JSON.",
 ].join("\n")
 
 /** PURE: parse the model's turn output — malformed JSON degrades to a safe
@@ -161,24 +161,22 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
     const p = JSON.parse(match[0]) as {
       say?: string; action?: string; date_time?: string; address?: string
       callback_phone?: string; callback_when?: string; callback_reason?: string
-      tool_request?: { name?: string; address?: string; city?: string; state?: string; zip?: string }
     }
     const say = (p.say ?? "").trim().slice(0, 600)
     if (!say) throw new Error("empty say")
-    const toolRequest = parseVoiceToolRequest(p.tool_request)
     const a = (p.action ?? "continue").toLowerCase()
-    if (a === "transfer") return { say, action: { kind: "transfer" }, toolRequest }
-    if (a === "hangup") return { say, action: { kind: "hangup" }, toolRequest }
+    if (a === "transfer") return { say, action: { kind: "transfer" } }
+    if (a === "hangup") return { say, action: { kind: "hangup" } }
     if (a === "book" && p.date_time && !Number.isNaN(new Date(p.date_time).getTime())) {
-      return { say, action: { kind: "book", dateTime: new Date(p.date_time).toISOString() }, toolRequest }
+      return { say, action: { kind: "book", dateTime: new Date(p.date_time).toISOString() } }
     }
     // rsvp needs a real address to match a listing; without one it degrades to
     // continue (the model is told to include it — garbage never RSVPs).
     if (a === "rsvp" && (p.address ?? "").trim().length >= 4) {
-      return { say, action: { kind: "rsvp", address: (p.address as string).trim().slice(0, 200) }, toolRequest }
+      return { say, action: { kind: "rsvp", address: (p.address as string).trim().slice(0, 200) } }
     }
     if (a === "seller_lead") {
-      return { say, action: { kind: "seller_lead", address: (p.address ?? "").trim().slice(0, 200) || null }, toolRequest }
+      return { say, action: { kind: "seller_lead", address: (p.address ?? "").trim().slice(0, 200) || null } }
     }
     // callback needs a real WHEN — a caller-back promise with no time to act on
     // it is not a callback, it degrades to continue (never a task with no due
@@ -193,33 +191,11 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
           whenPhrase,
           reason: (p.callback_reason ?? "").trim().slice(0, 200) || null,
         },
-        toolRequest,
       }
     }
-    return { say, action: { kind: "say" }, toolRequest }
+    return { say, action: { kind: "say" } }
   } catch {
     return { say: "Sorry — could you say that once more?", action: { kind: "say" } }
-  }
-}
-
-/** PURE — validates a raw `tool_request` object against the closed
- *  `VOICE_TOOL_NAMES` enum and requires a non-empty address. Anything else
- *  (unknown name, missing/blank address, not an object) degrades to `null` —
- *  "no tool request", never a malformed request reaching the executor. */
-export function parseVoiceToolRequest(
-  raw: { name?: string; address?: string; city?: string; state?: string; zip?: string } | null | undefined,
-): VoiceToolRequest | null {
-  if (!raw || typeof raw !== "object") return null
-  const name = (raw.name ?? "").trim()
-  if (!(VOICE_TOOL_NAMES as readonly string[]).includes(name)) return null
-  const address = (raw.address ?? "").trim().slice(0, 200)
-  if (address.length < 4) return null
-  return {
-    name: name as VoiceToolName,
-    address,
-    city: (raw.city ?? "").trim().slice(0, 100) || null,
-    state: (raw.state ?? "").trim().slice(0, 2).toUpperCase() || null,
-    zip: (raw.zip ?? "").trim().slice(0, 10) || null,
   }
 }
 

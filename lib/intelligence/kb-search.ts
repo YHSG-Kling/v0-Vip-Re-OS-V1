@@ -18,10 +18,18 @@ export interface KBResult {
  * embedder (lib/knowledge/embedding-service, the AI gateway) — the raw-OpenAI
  * second pipeline was retired; this module keeps only its distinct value (the
  * 0.55 threshold, the ILIKE fallback, and the KBResult shape its callers read).
+ *
+ * `brokerageId: null` (lane 73E) — a TENANT-FREE search. The RPC's own WHERE
+ * clause (`h.brokerage_id IS NULL OR h.brokerage_id = p_brokerage_id`) already
+ * degrades to "only platform-wide rows" when `p_brokerage_id` is NULL — no new
+ * predicate needed here, just letting a caller with no tenant context (the
+ * platform's own reception line, lib/voice/platform-reception.ts) pass one.
+ * This can never leak a BROKERAGE's private help content: a null id matches
+ * nothing but rows that are ALREADY brokerage_id IS NULL in the table.
  */
 export async function searchKB(
   query: string,
-  brokerageId: string,
+  brokerageId: string | null,
   limit = 5
 ): Promise<KBResult[]> {
   const supabase = createServiceClient()
@@ -72,18 +80,25 @@ export async function searchKB(
  */
 async function searchKBFallback(
   query: string,
-  brokerageId: string,
+  brokerageId: string | null,
   limit: number
 ): Promise<KBResult[]> {
   const supabase = createServiceClient()
 
-  const { data, error } = await supabase
+  // brokerageId === null → tenant-free caller: only platform-wide rows ever
+  // match (`.eq(brokerage_id, <string>)` would be a type error and
+  // `.or('brokerage_id.eq.null,...')` is not valid PostgREST syntax for a
+  // real NULL, so this is a SEPARATE filter, not a string-interpolated OR).
+  let q = supabase
     .from('help_topics_kb')
     .select('id, title, content, topic_category:category, tags')
-    .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
     .eq('is_active', true)
     .or(`title.ilike.%${query}%,content.ilike.%${query}%`)
     .limit(limit)
+  q = brokerageId
+    ? q.or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
+    : q.is('brokerage_id', null)
+  const { data, error } = await q
 
   if (error) {
     console.error('[kb-search] ILIKE fallback error:', error.message)

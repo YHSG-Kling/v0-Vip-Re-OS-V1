@@ -484,6 +484,30 @@ console.log("\n── SOURCE: wiring ──")
     && "sms_unified_inbox" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.sms_unified_inbox.manager === "ai_isa")
   check("rentcast MCP fixes: rental long-term path + range params", src("lib/property/rentcast.ts").includes("/listings/rental/long-term") && src("lib/property/rentcast.ts").includes("MCP-verified contract"))
   check("package.json wires the proof", /"test:voice-lane":/.test(src("package.json")))
+
+  // ── Lane 73E: voice turn engine on native AI-SDK multi-step tool-calling ──
+  // (deep tool-round behavior — persona filtering, step/deadline bound,
+  // cost-avoidance, timeout fail-safe — is proved in
+  // scripts/ai-agent-tool-surfaces-simulator.ts Layer 5; these checks are the
+  // ConversationRelay-latency angle this file already owns: the turn/relay
+  // routes stay fast-path shaped, the JSON contract the routes consume is
+  // unchanged, and the manual toolRequest mechanism is actually gone from the
+  // prompt the model reads, not just unused.)
+  check("TURN_INSTRUCTIONS no longer teaches the model a manual tool_request JSON field — native AI-SDK tool-calling replaced it",
+    !TURN_INSTRUCTIONS.includes("tool_request"))
+  check("TOOL_TURN_GUIDANCE (appended only when real tools are offered) tells the model this is a LIVE call and to wrap up efficiently — the latency discipline lives in the prompt, not just the step cap",
+    src("lib/voice/reception-brain.ts").includes("TOOL_TURN_GUIDANCE") && src("lib/voice/reception-brain.ts").includes("LIVE phone call"))
+  check("twilio-voice.ts exports the bounded ceiling + deadline as NAMED constants (VOICE_TOOL_ROUND_MAX_STEPS / VOICE_TOOL_ROUND_DEADLINE_MS) — not inline magic numbers a proof can't pin",
+    voiceLib.includes("export const VOICE_TOOL_ROUND_MAX_STEPS = 3") && voiceLib.includes("export const VOICE_TOOL_ROUND_DEADLINE_MS ="))
+  check("the native tool round is gated behind a real persona-scoped registry lookup (resolveVoiceToolPersona / batchDataIsaTools), never a hardcoded tool list bypassing persona policy",
+    voiceLib.includes("resolveVoiceToolPersona") && voiceLib.includes("batchDataIsaToolsFn("))
+  check(".env.example documents the new deadline env var (test:env-var-parity's own domain, cross-checked here since this file owns the voice lane's env surface)",
+    src(".env.example").includes("VOICE_TOOL_ROUND_DEADLINE_MS"))
+  check("the turn/relay routes still call planReceptionTurn/planTurnWithPrompt exactly as before — the routes' own call sites did not need to change for the engine swap underneath them",
+    turn.includes("planReceptionTurn(ctx, transcript, speech, svc,")
+    && src("app/api/voice/relay/plan/route.ts").includes("planTurnWithPrompt("))
+  check("platform-reception.ts carries no leftover toolRequest schema field now that it has a REAL tool (platform_faq_lookup)",
+    !src("lib/voice/platform-reception.ts").includes("toolRequest") && src("lib/voice/platform-reception.ts").includes("platform_faq_lookup"))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

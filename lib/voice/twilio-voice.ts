@@ -13,7 +13,11 @@
 // X-Twilio-Signature against the TENANT's own auth token (subaccount creds).
 
 import { createHmac, timingSafeEqual } from "node:crypto"
-import { buildReceptionPrompt, parseTurnPlan, transcriptToMessages, TURN_INSTRUCTIONS, type VoiceTurnPlan } from "./reception-brain"
+import {
+  buildReceptionPrompt, parseTurnPlan, transcriptToMessages, TURN_INSTRUCTIONS, TOOL_TURN_GUIDANCE,
+  VOICE_TOOL_ALLOWLIST, type VoiceToolName, type VoiceTurnPlan,
+} from "./reception-brain"
+import type { ToolPersona } from "@/lib/ai-isa/persona-tool-policy"
 import type { InboundIdentity } from "./inbound-number-binding"
 
 /** Twilio request signature: HMAC-SHA1(url + sorted concatenated POST params, authToken), base64. */
@@ -292,12 +296,13 @@ export async function createCallbackTaskFromCall(
 }
 
 /**
- * Lane 73B — the CALL-scoped context a voice turn's `toolRequest` executes
- * against. Deliberately a SEPARATE, smaller shape than the AI-SDK chat
- * surfaces' contexts (portal/widget/custom-llm/handle-inbound-email) because a
- * voice turn resolves its own persona from the CALL's linked contact (or has
- * none — an anonymous caller resolves to the 'buyer' default, same posture as
- * every other surface), never from a request body.
+ * Lane 73B (context object) / 73E (native execution) — the CALL-scoped
+ * context a voice turn's live property tools execute against. Deliberately a
+ * SEPARATE, smaller shape than the AI-SDK chat surfaces' contexts (portal/
+ * widget/custom-llm/handle-inbound-email) because a voice turn resolves its
+ * own persona from the CALL's linked contact (or has none — an anonymous
+ * caller resolves to the 'buyer' default, same posture as every other
+ * surface), never from a request body.
  */
 export interface VoiceToolExecContext {
   brokerageId: string
@@ -311,15 +316,19 @@ export interface VoiceToolExecContext {
   conversationKey: string
 }
 
-type GenerateTextRoutedFn = (args: { feature: string; prompt: string; temperature: number; maxTokens: number }) => Promise<{ text: string }>
+type GenerateTextRoutedFn = (args: {
+  feature: string; prompt: string; temperature: number; maxTokens: number
+  tools?: Record<string, unknown>; maxSteps?: number; abortSignal?: AbortSignal
+}) => Promise<{ text: string }>
 type BatchDataIsaToolsFn = (ctx: {
-  brokerageId: string; agentId: string | null; persona: string; conversationKey: string; contactId: string | null
+  brokerageId: string; agentId: string | null; persona: ToolPersona; conversationKey: string; contactId: string | null
 }) => Promise<Record<string, unknown>>
 
-/** Injectable dependencies for `planTurnWithPrompt`/`executeVoiceToolRound` —
- *  @proofSeam so a proof can exercise the WHOLE bounded-round loop (plan →
- *  execute → re-plan, discard a second request) with zero network calls and
- *  zero real AI-gateway/BatchData spend. Production callers omit `deps`
+/** Injectable dependencies for `planTurnWithPrompt` — @proofSeam so a proof
+ *  can exercise the WHOLE native tool-calling turn (persona resolution →
+ *  tools map → bounded `generateTextRouted({tools, maxSteps, abortSignal})`
+ *  → JSON parse, plus the timeout→plan-only fallback) with zero network calls
+ *  and zero real AI-gateway/BatchData spend. Production callers omit `deps`
  *  entirely; the real `generateTextRouted`/`batchDataIsaTools` are imported
  *  lazily exactly as before this lane. */
 export interface VoiceToolRoundDeps {
@@ -327,26 +336,37 @@ export interface VoiceToolRoundDeps {
   batchDataIsaTools?: BatchDataIsaToolsFn
 }
 
-/** Runs AT MOST ONE tool call for `plan.toolRequest` against the SAME
- *  persona-scoped registry every chat surface uses, then re-plans ONCE with
- *  the result folded into the prompt — bounded, never chained: whatever
- *  `toolRequest` the RE-PLAN itself asks for is discarded, not executed. */
-async function executeVoiceToolRound(
-  plan: VoiceTurnPlan,
-  toolCtx: VoiceToolExecContext,
-  systemPrompt: string,
-  convo: string,
-  callerUtterance: string,
-  deps: VoiceToolRoundDeps,
-): Promise<VoiceTurnPlan> {
-  const req = plan.toolRequest
-  if (!req) return plan
+/**
+ * Lane 73E — hard per-turn deadline for the native tool-calling attempt.
+ * `AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS)` bounds the WHOLE
+ * `generateTextRouted({tools, maxSteps: VOICE_TOOL_ROUND_MAX_STEPS})` call —
+ * every step the SDK's own multi-step loop runs (each a real model round
+ * trip, some interleaved with a live BatchData MCP call) has to fit inside
+ * this window or the turn aborts and falls back to the plan-only path below.
+ *
+ * DERIVED, not measured (CLAUDE.md §2 — this is a policy ceiling, published
+ * with its reasoning, not a claimed measurement): this repo's own latency
+ * research (docs/twilio-vs-elevenlabs-voice-2026-09.md) records ConversationRelay's
+ * transport itself at ~491ms median (versusref.com, Jul 2026) and this
+ * engine's turn-based `<Gather>` round trip — ONE no-tool model call, same as
+ * today's plan-only fallback — at "~1-2s" (that doc's own comparison table).
+ * A bounded native round can run up to VOICE_TOOL_ROUND_MAX_STEPS sequential
+ * model calls, each potentially interleaved with a live vendor call, so this
+ * budgets roughly 2-3x the single-call baseline — inside the ~3-5s window
+ * voice-UX practice treats as "still feels live" before dead air reads as a
+ * dropped call — rather than letting an unbounded tool loop run past it.
+ * Env-tunable (`VOICE_TOOL_ROUND_DEADLINE_MS`) so ops can retune against real
+ * production call audio once it exists; that measurement is UNRESOLVED here.
+ */
+export const VOICE_TOOL_ROUND_DEADLINE_MS = Number(process.env.VOICE_TOOL_ROUND_DEADLINE_MS) || 4000
+/** ≤ 3 per the turn-engine design ceiling — up to two tool-call steps plus
+ *  the final JSON-only step, the SDK's own loop deciding how many it needs. */
+export const VOICE_TOOL_ROUND_MAX_STEPS = 3
 
-  const batchDataIsaToolsFn: BatchDataIsaToolsFn =
-    deps.batchDataIsaTools ??
-    ((await import("@/lib/ai-isa/batchdata-isa-tools")).batchDataIsaTools as unknown as BatchDataIsaToolsFn)
+/** PURE-ish (one DB read, no AI/network call): resolve this call's tool
+ *  persona from its linked contact, same derivation every chat surface uses. */
+async function resolveVoiceToolPersona(toolCtx: VoiceToolExecContext): Promise<ToolPersona> {
   const { resolveToolPersona } = await import("@/lib/ai-isa/persona-tool-policy")
-
   let contactType: string | null = null
   let contactPersona: string | null = null
   let homeOwnerStatus: string | null = null
@@ -364,54 +384,31 @@ async function executeVoiceToolRound(
       homeOwnerStatus = (contact as any)?.home_owner_status ?? null
     } catch { /* an unreadable contact row just resolves the default persona below */ }
   }
-  const persona = resolveToolPersona({ contactType, contactPersona, homeOwnerStatus })
-
-  const registry = await batchDataIsaToolsFn({
-    brokerageId: toolCtx.brokerageId,
-    agentId: toolCtx.agentId,
-    persona,
-    conversationKey: toolCtx.conversationKey,
-    contactId: toolCtx.contactId,
-  })
-
-  const toolDef = (registry as Record<string, any>)[req.name]
-  let toolResultText: string
-  if (!toolDef || typeof toolDef.execute !== "function") {
-    // Not in this persona's allowlist (or the platform tier/BatchData token
-    // refused it) — the model is told plainly so it can say so out loud,
-    // never silently retried or substituted.
-    toolResultText = `"${req.name}" is not available for this call.`
-  } else {
-    try {
-      const result = await toolDef.execute(
-        { address: req.address, street: req.address, city: req.city, state: req.state, zip: req.zip },
-        { toolCallId: `voice-${Date.now()}`, messages: [] },
-      )
-      toolResultText = JSON.stringify(result).slice(0, 2000)
-    } catch (e: any) {
-      toolResultText = `"${req.name}" failed: ${e?.message ?? "unknown error"}`
-    }
-  }
-
-  const generateFn: GenerateTextRoutedFn = deps.generateTextRouted ?? (await import("@/lib/ai/models")).generateTextRouted
-  const { text } = await generateFn({
-    feature: "voice_reception_turn",
-    prompt: `${systemPrompt}\n\n${TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nTOOL RESULT for ${req.name}: ${toolResultText}\n\nGive your FINAL JSON turn now, using this result. Do NOT include tool_request this time — you already had your one tool call for this turn.\n\nYour JSON:`,
-    temperature: 0.4,
-    maxTokens: 300,
-  })
-  const finalPlan = parseTurnPlan(text)
-  // Bounded to ONE call per turn regardless of what the re-plan asks for.
-  return { ...finalPlan, toolRequest: null }
+  return resolveToolPersona({ contactType, contactPersona, homeOwnerStatus })
 }
 
 /** One turn against ANY system prompt (reception or outbound brief) — the
- *  shared engine both directions ride. `toolCtx` is OPTIONAL: when omitted
- *  (e.g. the outbound ISA lane today), a `toolRequest` in the model's plan is
- *  returned as-is and simply never executed — the smallest possible hook
- *  rather than a silent behavior change for a caller that has not opted in.
- *  `deps` is a @proofSeam (see VoiceToolRoundDeps) — production callers never
- *  pass it. */
+ *  shared engine both directions ride.
+ *
+ * `toolCtx` is OPTIONAL: when omitted (the outbound ISA lane today), this is
+ * a single plain `generateTextRouted` call with no tools — unchanged from
+ * before lane 73B ever existed.
+ *
+ * Lane 73E — when `toolCtx` IS passed, this resolves the call's persona,
+ * narrows lib/ai-isa/batchdata-isa-tools.ts's registry to
+ * `VOICE_TOOL_ALLOWLIST` (property lookup/comps/address verification only —
+ * never skip-trace/dnc/tcpa on a phone call), and — ONLY if that narrowed set
+ * is non-empty — makes ONE `generateTextRouted` call with REAL AI-SDK
+ * `tools:` + `maxSteps: VOICE_TOOL_ROUND_MAX_STEPS` + a hard
+ * `abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS)`. The SDK's
+ * own multi-step loop decides whether/how many times to call a tool (bounded
+ * by the step cap) and folds each tool's result into its own context exactly
+ * once — no manual re-prompt. If that call throws (including a timeout —
+ * AI SDK abort errors surface as a thrown error, so ANY throw here is treated
+ * the same way) it FALLS BACK to the plain no-tools call below: fail safe,
+ * the caller always gets a spoken reply, never silence on a live call.
+ * `deps` is a @proofSeam (see VoiceToolRoundDeps) — production callers never
+ * pass it. */
 export async function planTurnWithPrompt(
   systemPrompt: string,
   transcript: string | null,
@@ -422,15 +419,53 @@ export async function planTurnWithPrompt(
   const history = transcriptToMessages(transcript)
   const convo = history.map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
   const generateFn: GenerateTextRoutedFn = deps.generateTextRouted ?? (await import("@/lib/ai/models")).generateTextRouted
-  const { text } = await generateFn({
-    feature: "voice_reception_turn",
-    prompt: `${systemPrompt}\n\n${TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
-    temperature: 0.4,
-    maxTokens: 300,
+
+  const plainCall = async (): Promise<VoiceTurnPlan> => {
+    const { text } = await generateFn({
+      feature: "voice_reception_turn",
+      prompt: `${systemPrompt}\n\n${TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
+      temperature: 0.4,
+      maxTokens: 300,
+    })
+    return parseTurnPlan(text)
+  }
+
+  if (!toolCtx) return plainCall()
+
+  const batchDataIsaToolsFn: BatchDataIsaToolsFn =
+    deps.batchDataIsaTools ?? (await import("@/lib/ai-isa/batchdata-isa-tools")).batchDataIsaTools
+  const persona = await resolveVoiceToolPersona(toolCtx)
+  const registry = await batchDataIsaToolsFn({
+    brokerageId: toolCtx.brokerageId,
+    agentId: toolCtx.agentId,
+    persona,
+    conversationKey: toolCtx.conversationKey,
+    contactId: toolCtx.contactId,
   })
-  const plan = parseTurnPlan(text)
-  if (!plan.toolRequest || !toolCtx) return plan
-  return executeVoiceToolRound(plan, toolCtx, systemPrompt, convo, callerUtterance, deps)
+  const voiceTools: Partial<Record<VoiceToolName, unknown>> = {}
+  for (const name of VOICE_TOOL_ALLOWLIST) {
+    if ((registry as Record<string, unknown>)[name]) voiceTools[name] = (registry as Record<string, unknown>)[name]
+  }
+  // No token configured, or this persona's allowlist grants none of the four
+  // voice-line tools — nothing to offer the model, so skip the tool-enabled
+  // call entirely rather than paying for one with an empty `tools:` map.
+  if (Object.keys(voiceTools).length === 0) return plainCall()
+
+  try {
+    const { text } = await generateFn({
+      feature: "voice_reception_turn",
+      prompt: `${systemPrompt}\n\n${TURN_INSTRUCTIONS}\n\n${TOOL_TURN_GUIDANCE}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
+      temperature: 0.4,
+      maxTokens: 400,
+      tools: voiceTools,
+      maxSteps: VOICE_TOOL_ROUND_MAX_STEPS,
+      abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS),
+    })
+    return parseTurnPlan(text)
+  } catch (e: any) {
+    console.error("[twilio-voice] native tool round failed or hit its deadline — falling back to the plan-only path (fail safe, never silence on a live call):", e?.message ?? e)
+    return plainCall()
+  }
 }
 
 /** The booking side-effect BOTH transports share (Gather turn + relay plan):
@@ -493,12 +528,13 @@ export async function planReceptionTurn(
   callerUtterance: string,
   svc?: any,
   extraRules?: string,
-  /** Lane 73B — when the CALLER passes the call row's own id + linked contact
-   *  (voice_calls.id / .contact_id), a `toolRequest` in this turn's plan
-   *  executes for real (see executeVoiceToolRound above). Omitted → the
-   *  field is still PARSED (the schema exists on every turn) but never run —
-   *  the smallest hook, not a silent behavior change for a caller that has
-   *  not threaded a call id through yet. */
+  /** Lane 73B (hook) / 73E (native execution) — when the CALLER passes the
+   *  call row's own id + linked contact (voice_calls.id / .contact_id), this
+   *  turn's persona-scoped property tools become available to the model for
+   *  real (native AI-SDK tool-calling — see planTurnWithPrompt above).
+   *  Omitted → a plain no-tools call, exactly as before lane 73B ever
+   *  existed — additive, never a silent behavior change for a caller that
+   *  has not threaded a call id through yet. */
   voiceToolCtx?: { callId: string; contactId: string | null },
 ): Promise<VoiceTurnPlan> {
   const { systemPrompt } = buildReceptionPrompt(ctx.identity)
