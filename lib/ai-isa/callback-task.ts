@@ -39,6 +39,13 @@ export interface CallbackNote {
   rawPhrase: string
   /** The voice_calls row this callback was requested on, when there is one. */
   voiceCallId: string | null
+  /** leads.id when the callback was asked for by a NOT-YET-CONVERTED lead
+   *  (lane 76A identity fix). `tasks` carries a contact_id (contacts.id) and
+   *  no lead column, so a lead's callback used to lose its lead identity
+   *  entirely — createCallbackTask accepted `leadId` and wrote it nowhere, and
+   *  the executor re-guessed a lead by PHONE match. The lead id rides in the
+   *  note, never in the contacts.id slot (a leads.id is not a contacts.id). */
+  leadId?: string | null
   /** How many times the executor cron has already tried to place this call.
    *  The claim/attempt stamp the executor needs to be idempotent AND bounded —
    *  without it a transiently-failing dial (no active tenant number, Twilio
@@ -59,6 +66,7 @@ export function encodeCallbackNote(note: CallbackNote): string {
     reason: note.reason?.slice(0, 200) ?? null,
     rawPhrase: note.rawPhrase.slice(0, 120),
     voiceCallId: note.voiceCallId,
+    leadId: note.leadId ?? null,
     attempts: note.attempts ?? 0,
   })
   return `${CALLBACK_NOTE_TAG} ${human}\n${blob}`.slice(0, 2000)
@@ -81,6 +89,7 @@ export function decodeCallbackNote(description: string | null | undefined): Call
       reason: typeof p.reason === "string" ? p.reason : null,
       rawPhrase: typeof p.rawPhrase === "string" ? p.rawPhrase : "",
       voiceCallId: typeof p.voiceCallId === "string" ? p.voiceCallId : null,
+      leadId: typeof p.leadId === "string" && p.leadId ? p.leadId : null,
       attempts: typeof p.attempts === "number" && p.attempts >= 0 ? p.attempts : 0,
     }
   } catch {
@@ -335,6 +344,9 @@ export async function createCallbackTask(svc: any, params: CreateCallbackTaskPar
     reason: params.reason,
     rawPhrase: params.whenPhrase,
     voiceCallId: params.voiceCallId,
+    // leads.id rides in the note (see CallbackNote.leadId) — tasks.contact_id
+    // below is a contacts.id slot and must never receive it.
+    leadId: params.contactId ? null : params.leadId ?? null,
   })
 
   const { data, error } = await svc

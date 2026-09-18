@@ -40,7 +40,7 @@ import {
 // working — the implementation lives in qualification-signals.ts (§6, the
 // ONE writer both the staff tool and every customer-safe tool below share).
 export { writeFollowUpActivity }
-import { buildNewCatalogueTools, loadEnabledCapabilities, type CustomerCapabilityContext } from "@/lib/ai-isa/capability-catalogue"
+import { buildNewCatalogueTools, buildGetListingDetailsTool, loadEnabledCapabilities, type CustomerCapabilityContext } from "@/lib/ai-isa/capability-catalogue"
 
 export interface CustomerContextToolsContext {
   brokerageId: string
@@ -383,43 +383,57 @@ export function buildScheduleCallbackTool(ctx: CustomerContextToolsContext) {
  *  lib/buyer-search/conversation-criteria.ts's shape) so it keeps sending. */
 export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) {
   return tool({
-    description: "Send the properties matching the buyer/renter criteria they just described, and keep sending as new matches come in. Use once they've given you at least an area or a price range.",
+    description: "Send the properties matching the buyer/renter/investor criteria they just described, and keep sending as new matches come in. Use once they've given you at least an area or a price range. Set listing_type to 'rent' for a renter (monthly rent budget) — our own listings first, then RentCast sale or RENTAL listings.",
     inputSchema: z.object({
+      listing_type: z.enum(["sale", "rent"]).nullable().describe("'rent' for a renter, else 'sale' (default)"),
       city: z.string().nullable(),
       state: z.string().nullable().describe("Two-letter state code, or null"),
       zip: z.string().nullable(),
-      min_price: z.number().nullable(),
-      max_price: z.number().nullable(),
+      min_price: z.number().nullable().describe("Min list price, or min MONTHLY rent when listing_type is rent"),
+      max_price: z.number().nullable().describe("Max list price, or max MONTHLY rent when listing_type is rent"),
       min_beds: z.number().nullable(),
       min_baths: z.number().nullable(),
       property_type: z.string().nullable().describe("e.g. Single Family, Condo, Townhouse — or null"),
     }),
     execute: async (args: {
+      listing_type?: "sale" | "rent" | null
       city: string | null; state: string | null; zip: string | null
       min_price: number | null; max_price: number | null; min_beds: number | null; min_baths: number | null
       property_type: string | null
     }) => {
       const svc = createServiceClient()
+      const forRent = args.listing_type === "rent"
+      const listings: Array<Record<string, unknown>> = []
 
-      // 1. Own DB — free, always tried first.
-      let ownQuery = svc.from("listings")
-        .select("id, address, city, state, zip, list_price, bedrooms, bathrooms, property_type, status")
-        .eq("brokerage_id", ctx.brokerageId).in("status", ["active", "coming_soon", "pending"]).limit(10)
-      if (args.city) ownQuery = ownQuery.ilike("city", `%${args.city}%`)
-      if (args.state) ownQuery = ownQuery.eq("state", args.state.toUpperCase())
-      if (args.zip) ownQuery = ownQuery.eq("zip", args.zip)
-      if (args.min_price !== null) ownQuery = ownQuery.gte("list_price", args.min_price)
-      if (args.max_price !== null) ownQuery = ownQuery.lte("list_price", args.max_price)
-      if (args.min_beds !== null) ownQuery = ownQuery.gte("bedrooms", args.min_beds)
-      const { data: ownListings } = await ownQuery
-      const listings: Array<Record<string, unknown>> = (ownListings ?? []).map((l) => ({ ...l, source: "our_listings" }))
+      // 1. Own DB — free, always tried first. The live `listings` table is
+      // FOR-SALE inventory (status/property_type CHECKs carry no rental
+      // spelling — scripts/check-vocabularies.ts), so a rental search goes
+      // straight to RentCast's rental endpoint rather than matching our
+      // for-sale rows against a monthly-rent budget (blind spot published in
+      // the lane notes: no own-DB rental inventory exists to search).
+      if (!forRent) {
+        let ownQuery = svc.from("listings")
+          .select("id, address, city, state, zip, list_price, bedrooms, bathrooms, property_type, status")
+          .eq("brokerage_id", ctx.brokerageId).in("status", ["active", "coming_soon", "pending"]).limit(10)
+        if (args.city) ownQuery = ownQuery.ilike("city", `%${args.city}%`)
+        if (args.state) ownQuery = ownQuery.eq("state", args.state.toUpperCase())
+        if (args.zip) ownQuery = ownQuery.eq("zip", args.zip)
+        if (args.min_price !== null) ownQuery = ownQuery.gte("list_price", args.min_price)
+        if (args.max_price !== null) ownQuery = ownQuery.lte("list_price", args.max_price)
+        if (args.min_beds !== null) ownQuery = ownQuery.gte("bedrooms", args.min_beds)
+        const { data: ownListings } = await ownQuery
+        for (const l of ownListings ?? []) listings.push({ ...l, source: "our_listings" })
+      }
 
       // 2. RentCast active listings — only when our own inventory is thin, and
-      // only when this brokerage is eligible (searchRentcastSaleListings gates
-      // through the SAME resolveRentcastEligibility every AVM/comp reader uses).
+      // only when this brokerage is eligible (both readers gate through the
+      // SAME resolveRentcastEligibility every AVM/comp reader uses). Rental
+      // mode uses the RENTAL endpoint (searchRentcastRentalListings — the
+      // reader wave 66 corrected to the same range syntax as the sale reader).
       if (listings.length < 10) {
-        const { searchRentcastSaleListings } = await import("@/lib/property/rentcast")
-        const rc = await searchRentcastSaleListings({
+        const { searchRentcastSaleListings, searchRentcastRentalListings } = await import("@/lib/property/rentcast")
+        const search = forRent ? searchRentcastRentalListings : searchRentcastSaleListings
+        const rc = await search({
           brokerageId: ctx.brokerageId,
           contactId: ctx.contactId ?? null,
           filters: {
@@ -428,20 +442,26 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
             zipCode: args.zip ?? undefined,
             bedroomsMin: args.min_beds ?? undefined,
             bathroomsMin: args.min_baths ?? undefined,
+            priceMin: args.min_price ?? undefined,
+            priceMax: args.max_price ?? undefined,
+            propertyType: args.property_type ?? undefined,
             limit: 10 - listings.length,
           },
         })
         if (rc.success) {
-          for (const l of rc.listings) listings.push({ ...l, source: "rentcast" })
+          for (const l of rc.listings) listings.push({ ...l, source: forRent ? "rentcast_rental" : "rentcast" })
         }
       }
 
       // 3. Enroll/create the existing listing-alert record so it keeps
       // sending — contact-only (property_alerts.contact_id is NOT NULL); a
       // lead-only thread still gets the listings above, just no standing
-      // alert until they convert.
+      // alert until they convert. FOR-SALE only: property_alerts carries no
+      // rental/listing-type column (scripts/schema-snapshot.ts), so a rental
+      // criteria set would be re-run against for-sale matches — published as
+      // a blind spot rather than enrolled wrong.
       let alertId: string | null = null
-      if (ctx.contactId) {
+      if (ctx.contactId && !forRent) {
         const marker = `[AI_QUALIFICATION:${[args.city, args.state, args.zip, args.min_price, args.max_price, args.min_beds].join(":")}]`
         const { data: existing } = await svc.from("property_alerts").select("id")
           .eq("contact_id", ctx.contactId).ilike("alert_name", `%${marker}%`).limit(1).maybeSingle()
@@ -719,19 +739,36 @@ const RECORD_QUALIFICATION_TIMELINES = [
   "immediate", "1-3_months", "3-6_months", "6-12_months", "12+_months", "researching",
 ] as const
 const RECORD_QUALIFICATION_FINANCING = ["cash", "pre_approved", "needs_pre_approval", "unknown"] as const
+// Lane 76A — the seller's SITUATION (what a listing agent asks before the
+// appointment). No live column carries condition / reason / listing status
+// (scripts/schema-snapshot.ts: contacts & leads have neither), so they land in
+// qualification_summary — the appended one-line trace — EXCEPT listing_status
+// 'fsbo' / 'expired', which ARE contact_persona/leads.persona CHECK values
+// (m589) and are written there (one vocabulary, §6 — never a second spelling).
+const RECORD_QUALIFICATION_CONDITION = ["move_in_ready", "needs_minor_updates", "needs_major_work", "unknown"] as const
+const RECORD_QUALIFICATION_LISTING_STATUS = ["not_listed", "fsbo", "expired", "listed_with_agent", "unknown"] as const
 
 export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
   return tool({
-    description: "Record what you've learned about this person's qualification — call this as soon as you learn ANY of: their intent (buy/sell/both/invest/rent/relocate), persona, the property they're selling, buyer criteria, timeline, or financing status. Safe to call multiple times as more comes up.",
+    description: "Record what you've learned about this person's qualification — call this as soon as you learn ANY of: their intent (buy/sell/both/invest/rent/relocate), persona, the property they're selling, their seller situation (reason for moving, condition, whether it's listed/FSBO/expired, whether they also need to buy), buyer/renter criteria (incl. move-in date and pets for a renter), timeline, or financing status. Safe to call multiple times as more comes up.",
     inputSchema: z.object({
       intent: z.enum(["buy", "sell", "both", "invest", "rent", "relocate"]).nullable(),
       persona: z.enum(RECORD_QUALIFICATION_PERSONAS).nullable(),
       seller_property_address: z.string().nullable(),
+      seller_situation: z.object({
+        reason_for_move: z.string().nullable().describe("In their own words, or null"),
+        condition: z.enum(RECORD_QUALIFICATION_CONDITION).nullable(),
+        listing_status: z.enum(RECORD_QUALIFICATION_LISTING_STATUS).nullable(),
+        needs_to_buy_next: z.boolean().nullable(),
+      }).nullable(),
       buyer_criteria: z.object({
         city: z.string().nullable(), state: z.string().nullable(),
         min_price: z.number().nullable(), max_price: z.number().nullable(),
         min_beds: z.number().nullable(), min_baths: z.number().nullable(),
         property_type: z.string().nullable(),
+        must_haves: z.array(z.string()).nullable().describe("Must-have features in their words, or null"),
+        move_in_date: z.string().nullable().describe("Renter: desired move-in (their words), or null"),
+        pets: z.string().nullable().describe("Renter: pets, or null"),
       }).nullable(),
       timeline: z.enum(RECORD_QUALIFICATION_TIMELINES).nullable(),
       financing_status: z.enum(RECORD_QUALIFICATION_FINANCING).nullable(),
@@ -740,7 +777,8 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
       intent: "buy" | "sell" | "both" | "invest" | "rent" | "relocate" | null
       persona: (typeof RECORD_QUALIFICATION_PERSONAS)[number] | null
       seller_property_address: string | null
-      buyer_criteria: { city: string | null; state: string | null; min_price: number | null; max_price: number | null; min_beds: number | null; min_baths: number | null; property_type: string | null } | null
+      seller_situation: { reason_for_move: string | null; condition: (typeof RECORD_QUALIFICATION_CONDITION)[number] | null; listing_status: (typeof RECORD_QUALIFICATION_LISTING_STATUS)[number] | null; needs_to_buy_next: boolean | null } | null
+      buyer_criteria: { city: string | null; state: string | null; min_price: number | null; max_price: number | null; min_beds: number | null; min_baths: number | null; property_type: string | null; must_haves?: string[] | null; move_in_date?: string | null; pets?: string | null } | null
       timeline: (typeof RECORD_QUALIFICATION_TIMELINES)[number] | null
       financing_status: (typeof RECORD_QUALIFICATION_FINANCING)[number] | null
     }) => {
@@ -765,12 +803,32 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
       if (args.intent === "invest" && !args.persona) patch[personaColumn] = "investor"
       if (args.intent === "rent") patch.home_owner_status = "renter"
       if (args.seller_property_address) { patch.address = args.seller_property_address; summaryBits.push(`selling: ${args.seller_property_address}`) }
+      if (args.seller_situation) {
+        const s = args.seller_situation
+        if (s.reason_for_move) summaryBits.push(`reason: ${s.reason_for_move.slice(0, 160)}`)
+        if (s.condition && s.condition !== "unknown") summaryBits.push(`condition: ${s.condition}`)
+        if (s.listing_status && s.listing_status !== "unknown") {
+          summaryBits.push(`listing status: ${s.listing_status}`)
+          // fsbo / expired ARE persona vocabulary — write the real column, never a second spelling.
+          if ((s.listing_status === "fsbo" || s.listing_status === "expired") && !args.persona) patch[personaColumn] = s.listing_status
+        }
+        if (s.needs_to_buy_next === true) {
+          summaryBits.push("also needs to buy next")
+          if (args.intent === "sell" || (!args.intent && ctx.contactId)) patch[typeColumn] = "both" // the live 'both' value — a move-up seller is both
+        }
+      }
       if (args.buyer_criteria?.property_type) patch.property_type = args.buyer_criteria.property_type
+      if (args.buyer_criteria?.must_haves?.length) summaryBits.push(`must-haves: ${args.buyer_criteria.must_haves.slice(0, 6).join(", ").slice(0, 160)}`)
+      if (args.buyer_criteria?.move_in_date) summaryBits.push(`move-in: ${args.buyer_criteria.move_in_date.slice(0, 60)}`)
+      if (args.buyer_criteria?.pets) summaryBits.push(`pets: ${args.buyer_criteria.pets.slice(0, 60)}`)
       if (args.timeline) { patch.timeline = args.timeline; summaryBits.push(`timeline: ${args.timeline}`) }
       if (args.financing_status) { patch.lender_status = args.financing_status; summaryBits.push(`financing: ${args.financing_status}`) }
 
       let wrote = false
-      if (Object.keys(patch).length > 0) {
+      // Lane 76A — a summary-only learning (reason for the move, condition,
+      // must-haves) has no typed column; it must still land, so the trace is
+      // written whenever there is anything to say, not only beside a column patch.
+      if (Object.keys(patch).length > 0 || summaryBits.length > 0) {
         if (summaryBits.length > 0) {
           const { data: current } = await svc.from(table).select("qualification_summary").eq("id", id).maybeSingle()
           const prior = (current as { qualification_summary?: string | null } | null)?.qualification_summary ?? ""
@@ -828,18 +886,46 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
  * short TTL cache, same posture as brand-playbook-context.ts).
  */
 export async function buildCustomerFreeTools(ctx: CustomerContextToolsContext): Promise<Record<string, unknown>> {
+  const enabledCapabilities = await loadEnabledCapabilities(ctx.brokerageId)
+  const disabled = enabledCapabilities.disabled
+
+  // Lane 76A — a VENDOR persona (contacts.contact_type='vendor', a live CHECK
+  // value) is the ONE persona with a disjoint tool set: their own status
+  // lookup, a callback, a call/meeting request and their own context. Never
+  // listings, never a home-value review, never a newsletter or process video
+  // (capability-catalogue.ts::VENDOR_SAFE_CAPABILITIES is the one list).
+  if (ctx.persona === "vendor") {
+    const vendorOut: Record<string, unknown> = { get_my_context: buildGetMyContextTool(ctx) }
+    if (ctx.contactId) vendorOut.request_showing = buildRequestShowingTool({ ...ctx, contactId: ctx.contactId })
+    if (ctx.contactId || ctx.leadId) {
+      vendorOut.schedule_callback = buildScheduleCallbackTool(ctx)
+      Object.assign(vendorOut, await buildNewCatalogueTools(ctx as CustomerCapabilityContext, enabledCapabilities))
+    }
+    return vendorOut
+  }
+
   const out: Record<string, unknown> = {
     get_my_context: buildGetMyContextTool(ctx),
     search_our_listings: buildSearchOurListingsTool(ctx),
   }
+  // Lane 76A — "is the house on Oak Street still available?" needs no identity
+  // (own-DB read, public listing fields only), same posture as search_our_listings.
+  if (!disabled.includes("get_listing_details")) {
+    out.get_listing_details = buildGetListingDetailsTool(ctx as CustomerCapabilityContext)
+  }
   if (ctx.contactId) {
     out.request_showing = buildRequestShowingTool({ ...ctx, contactId: ctx.contactId })
   }
-  const enabledCapabilities = await loadEnabledCapabilities(ctx.brokerageId)
+  // The six CORE follow-up tools register on IDENTITY, not persona: "buyer" is
+  // the unknown default and buy+sell ("both") is a live contact_type, so a
+  // buyer-defaulted thread that turns out to be a move-up seller must still
+  // reach schedule_home_value_review / book_listing_appointment (capability-
+  // catalogue.ts CapabilityDefinition.personas documents the OFFER, the
+  // playbook's PERSONA_QUESTION_GUIDE steers it).
   if (ctx.contactId || ctx.leadId) {
     out.schedule_callback = buildScheduleCallbackTool(ctx)
     out.schedule_home_value_review = buildScheduleHomeValueReviewTool(ctx)
-    if (!enabledCapabilities.disabled.includes("book_listing_appointment")) {
+    if (!disabled.includes("book_listing_appointment")) {
       out.find_listing_appointment_slots = buildFindListingAppointmentSlotsTool(ctx)
       out.book_listing_appointment = buildBookListingAppointmentTool(ctx)
     }
@@ -867,6 +953,7 @@ export async function buildCustomerFreeTools(ctx: CustomerContextToolsContext): 
 const RECORDABLE_QUALIFICATION_KEYS: ReadonlySet<string> = new Set(QUALIFICATION_GOALS.map((g) => g.key))
 const RECORD_ARG_TO_GOAL: Record<string, string> = {
   intent: "intent", persona: "persona", seller_property_address: "seller_address",
+  seller_situation: "seller_situation",
   buyer_criteria: "buyer_criteria", timeline: "timeline", financing_status: "financing_status",
 }
 /** Drops any argument whose playbook goal is not recordable — a goal removed

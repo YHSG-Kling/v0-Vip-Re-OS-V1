@@ -323,9 +323,12 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
   // contact/lead still reaches get_my_context + search_our_listings (both
   // register unconditionally) alongside the property-only BatchData subset —
   // verify_phone (not allowlisted for voice) stays filtered out either way.
-  check("native round: VOICE_TOOL_ALLOWLIST subset (lookup_property) reaches `tools:` ALONGSIDE the free capture bundle's unconditional tools — verify_phone (non-allowlisted BatchData) is still filtered out",
-    seenToolNames.includes("lookup_property") && seenToolNames.includes("get_my_context") && seenToolNames.includes("search_our_listings")
-    && !seenToolNames.includes("verify_phone") && seenToolNames.length === 3)
+  // Lane 76A — get_listing_details ("is the house on Oak Street still
+  // available?") rides unconditionally beside search_our_listings, so the
+  // no-identity bundle is now THREE free tools + the one allowlisted BatchData tool.
+  check("native round: VOICE_TOOL_ALLOWLIST subset (lookup_property) reaches `tools:` ALONGSIDE the free capture bundle's unconditional tools (get_my_context, search_our_listings, get_listing_details) — verify_phone (non-allowlisted BatchData) is still filtered out",
+    seenToolNames.includes("lookup_property") && seenToolNames.includes("get_my_context") && seenToolNames.includes("search_our_listings") && seenToolNames.includes("get_listing_details")
+    && !seenToolNames.includes("verify_phone") && seenToolNames.length === 4)
   check("native round: free (rank 0) tools sort before the paid BatchData tool — cost-ranked order (CLAUDE.md §6)",
     seenToolNames.indexOf("get_my_context") < seenToolNames.indexOf("lookup_property")
     && seenToolNames.indexOf("search_our_listings") < seenToolNames.indexOf("lookup_property"))

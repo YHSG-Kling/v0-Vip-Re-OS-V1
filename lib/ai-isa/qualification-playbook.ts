@@ -95,6 +95,10 @@
  *   - send_newsletter           — stay in the loop without committing further
  *   - send_market_report        — condition/trend for their area, never a $
  *   - send_explainer_video      — a buying/selling process explainer video
+ *   - request_vendor_referral   — a lender intro (pre-approval) or a trusted
+ *                                 vendor from the brokerage's own bench (76A)
+ *   - capture_referral          — a sphere contact's friend/family referral,
+ *                                 onto the existing referrals rail (76A)
  * The model picks ONE that matches what the PERSON asked for — never
  * several at once, never a forced choice. lib/ai-isa/capability-catalogue.ts
  * (lane 75B) is the wider registry these mirror — see its header.
@@ -158,7 +162,12 @@ export const QUALIFICATION_GOALS: readonly QualificationGoal[] = [
   { key: "intent", label: "Intent", detail: "are they buying, selling, both, investing, renting, or relocating" },
   { key: "persona", label: "Persona", detail: "what's driving the move — first-time buyer, downsizing, upsizing, relocating, investor, luxury, military, senior, or a situation like divorce, probate, foreclosure, or an expired/FSBO listing — read from what they SAY, never guessed" },
   { key: "seller_address", label: "Property they're selling", detail: "if they mention selling, the address of the home they own and are selling" },
-  { key: "buyer_criteria", label: "Buyer criteria", detail: "if they're buying or renting: the area, price range, bedrooms/bathrooms, and property type they want" },
+  // Lane 76A — what a working listing agent actually asks a seller BEFORE the
+  // appointment (Structurely/Lofty/Noem seller intake: reason for selling,
+  // condition/updates, whether it is already listed/FSBO/expired, and whether
+  // they need to buy next — the 'both' case). Written by record_qualification.
+  { key: "seller_situation", label: "Seller's situation", detail: "if they're selling: why they're moving (in their own words), the home's condition — move-in ready, needs minor updates, or needs major work — whether it's already listed, for-sale-by-owner, or an expired listing, and whether they'll also need to buy their next home" },
+  { key: "buyer_criteria", label: "Buyer criteria", detail: "if they're buying or renting: the area, price range (or monthly rent), bedrooms/bathrooms, property type, must-haves, and for a renter the move-in date and pets" },
   { key: "timeline", label: "Timeline", detail: "a realistic window — right away, 1-3 months, 3-6 months, 6-12 months, 12+ months, or still just researching" },
   { key: "financing_status", label: "Financing status", detail: "for a buyer: paying cash, already pre-approved, still needs pre-approval, or not sure yet" },
 ] as const
@@ -187,7 +196,119 @@ export const QUALIFICATION_FOLLOW_UP_MENU: readonly FollowUpOption[] = [
   { tool: "send_newsletter", label: "Send the newsletter", when: "they want to stay in the loop without committing to anything else right now" },
   { tool: "send_market_report", label: "Send a market report for their area", when: "they ask about the market, pricing trends, or whether now is a good time — share the CONDITION and TREND, never a dollar figure" },
   { tool: "send_explainer_video", label: "Send a process explainer video", when: "a first-time buyer or an unsure seller wants to understand the steps before committing to anything" },
+  // Lane 76A — the two persona asks the menu did not cover: a buyer who still
+  // needs pre-approval (a lender intro from the brokerage's own bench — a lender
+  // is a VENDOR CATEGORY, CLAUDE.md §4) or a past client who needs a plumber/
+  // contractor/mover, and a sphere contact who mentions a friend/family member
+  // who is buying or selling (the referral capture every past-client program is
+  // built around).
+  { tool: "request_vendor_referral", label: "Connect them with a trusted vendor (lender, inspector, mover, contractor…)", when: "a buyer still needs pre-approval and wants a lender to talk to, or a past client / seller needs a trusted vendor — offer an intro from the brokerage's own bench, never a random name" },
+  { tool: "capture_referral", label: "Capture a referral", when: "a past client, friend or sphere contact mentions someone else who is thinking of buying, selling or renting — get the person's name and a way to reach them, with permission, and hand it to the agent" },
 ] as const
+
+// ─── PER-PERSONA QUESTION GUIDE (lane 76A) ───────────────────────────────────
+//
+// Owner, wave 76 verbatim: "the persona tools I believe are not realistic as
+// far as the questions or info that they would be looking for." The seven
+// goals above are the WHAT; this table is the HOW for each persona — the
+// questions a working agent actually asks and the things they actually offer,
+// distilled from the 2026 competitor scan (Structurely/Aisa Holmes, Ylopo
+// rAIya, Lofty Sales Agent tags, CINC AI script goals, Alma/Noem/Hyperleap
+// receptionist intake, TalkLuna leasing/vendor intake — sources cited in the
+// lane notes). Every `offers` entry names a REGISTERED tool by its exact name
+// (scripts/qualification-playbook-simulator.ts holds this table against the
+// capability catalogue), so the prompt can never promise a tool that does not
+// exist. `staff`/platform are NOT personas here (see the header).
+export interface PersonaQuestionGuide {
+  /** The questions this persona expects, in the order a conversation earns them. */
+  asks: readonly string[]
+  /** Tool names this persona is realistically OFFERED (subset of the registered tools). */
+  offers: readonly string[]
+}
+
+export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> = {
+  seller: {
+    asks: [
+      "the address of the home they're selling",
+      "what's prompting the move (their words — never assume)",
+      "their timeline in a bucket: right away, 1-3, 3-6, 6-12 months, or just researching",
+      "the home's condition and any recent updates",
+      "whether it's already listed, for-sale-by-owner, or an expired listing",
+      "whether they'll also need to buy their next home (then run the buyer questions too)",
+    ],
+    offers: ["schedule_home_value_review", "book_listing_appointment", "send_market_report", "send_explainer_video", "schedule_callback", "request_vendor_referral"],
+  },
+  buyer: {
+    asks: [
+      "the area(s) or neighborhoods they're focused on",
+      "price range, bedrooms/bathrooms, property type and must-haves",
+      "their timeline bucket",
+      "whether they're pre-approved, paying cash, or still need a lender",
+      "whether they also have a home to sell first",
+      "whether there's a specific listing that prompted the conversation, and if they'd like to see it",
+    ],
+    offers: ["send_matching_listings", "get_listing_details", "request_showing", "request_vendor_referral", "send_explainer_video", "send_market_report", "schedule_callback"],
+  },
+  investor: {
+    asks: [
+      "their buy box: area, price range, property type, and strategy (buy-and-hold, flip, multi-family)",
+      "whether they're financing or paying cash",
+      "how soon they want to place capital",
+      "whether they'd like to be sent matching on-market and off-market opportunities",
+    ],
+    // Property-only by ruling (wave 68/69): comps/search PREVIEW and matching
+    // listings, never an owner's contact details. No explainer video.
+    offers: ["send_matching_listings", "get_listing_details", "request_showing", "send_market_report", "schedule_callback"],
+  },
+  renter: {
+    asks: [
+      "the area they want to rent in",
+      "monthly budget, bedrooms, and move-in date",
+      "pets and lease length",
+      "whether they'd like to tour a specific rental",
+    ],
+    offers: ["send_matching_listings", "get_listing_details", "request_showing", "schedule_callback"],
+  },
+  relocation: {
+    asks: [
+      "where they're moving to and roughly when",
+      "whether they're buying or renting on arrival, and their price range",
+      "commute or other practical constraints THEY raise (never characterize an area for them)",
+      "whether they need to sell a home where they are now",
+      "whether a virtual tour or a visit trip is planned",
+    ],
+    offers: ["send_matching_listings", "send_market_report", "get_listing_details", "request_showing", "request_vendor_referral", "schedule_callback"],
+  },
+  sphere: {
+    asks: [
+      "how they've been since closing / their home anniversary",
+      "whether they'd like an updated look at their home's equity (the AGENT prepares and speaks the number)",
+      "whether they need a trusted vendor — contractor, plumber, mover, lender for a refinance",
+      "whether anyone they know is thinking of buying, selling or renting",
+      "whether they themselves are thinking of a move (then run the seller or buyer questions)",
+    ],
+    offers: ["schedule_home_value_review", "request_vendor_referral", "capture_referral", "send_market_report", "send_newsletter", "schedule_callback"],
+  },
+  vendor: {
+    asks: [
+      "which placement, assignment or job they're calling about",
+      "whether it's an invoice/document or a payout they're asking after",
+      "what they need from the agent and when",
+    ],
+    offers: ["get_my_vendor_status", "schedule_callback", "request_showing"],
+  },
+}
+
+function personaGuideBlock(persona: ToolPersona | null | undefined): string {
+  if (!persona) return ""
+  const g = PERSONA_QUESTION_GUIDE[persona]
+  if (!g) return ""
+  const lines = [`THIS PERSON LOOKS LIKE A ${persona.toUpperCase()} — what they usually need to be asked (one at a time):`]
+  for (const a of g.asks) lines.push(`- ${a}`)
+  lines.push(`Follow-ups that fit this persona: ${g.offers.join(", ")}.`)
+  if (persona === "buyer") lines.push("Note: 'buyer' is also the default for an unknown contact — confirm early whether they are buying, selling, or both.")
+  return lines.join("\n")
+}
 
 /** PURE — the "never salesy" conversational rules, shared by every surface
  *  that talks to a person (customer-facing or platform-prospect-facing
@@ -210,16 +331,21 @@ export function conversationalRulesBlock(): string {
 function goalsBlock(persona: ToolPersona | null | undefined): string {
   const lines = ["WHAT TO LEARN, OVER THE COURSE OF THE CONVERSATION (one at a time, as it comes up naturally):"]
   for (const g of QUALIFICATION_GOALS) {
-    if (g.key === "seller_address" && persona && persona !== "seller") continue
-    if (g.key === "buyer_criteria" && persona === "seller") continue
-    if (g.key === "financing_status" && (persona === "seller" || persona === "sphere")) continue
+    // A "buyer" is the UNKNOWN default (persona-tool-policy.ts) and may also be
+    // selling ("both" is a live contact_type), so the seller goals are only
+    // withheld from personas that are POSITIVELY not selling their own home.
+    const notSellingOwnHome = persona === "investor" || persona === "renter" || persona === "vendor"
+    if ((g.key === "seller_address" || g.key === "seller_situation") && notSellingOwnHome) continue
+    if (g.key === "buyer_criteria" && (persona === "seller" || persona === "vendor")) continue
+    if (g.key === "financing_status" && (persona === "seller" || persona === "sphere" || persona === "vendor")) continue
+    if (persona === "vendor" && (g.key === "persona" || g.key === "timeline" || g.key === "intent")) continue
     lines.push(`- ${g.label}: ${g.detail}`)
   }
   return lines.join("\n")
 }
 
 function followUpMenuBlock(): string {
-  const lines = ["FOLLOW-UP MENU — once you understand what they want, offer ONE of these that fits (never all five, never forced):"]
+  const lines = ["FOLLOW-UP MENU — once you understand what they want, offer ONE of these that fits (never several at once, never forced):"]
   for (const f of QUALIFICATION_FOLLOW_UP_MENU) {
     lines.push(`- ${f.label} (${f.tool}): ${f.when}`)
   }
@@ -289,14 +415,17 @@ export function buildQualificationPrompt(input: BuildQualificationPromptInput): 
       "WHEN DRAFTING A CLIENT-FACING MESSAGE (draft_ai_reply), follow the shared qualification playbook:",
       conversationalRulesBlock(),
       goalsBlock(input.persona ?? null),
+      personaGuideBlock(input.persona ?? null),
       followUpMenuBlock(),
     ].filter(Boolean).join("\n\n")
   }
 
+  const realEstatePersona = REAL_ESTATE_SURFACES.includes(input.surface) ? (input.persona ?? null) : null
   const parts = [
     brandBlock,
     conversationalRulesBlock(),
-    goalsBlock(REAL_ESTATE_SURFACES.includes(input.surface) ? (input.persona ?? null) : null),
+    goalsBlock(realEstatePersona),
+    personaGuideBlock(realEstatePersona),
     followUpMenuBlock(),
     knownFactsBlock(input.known),
   ].filter(Boolean)

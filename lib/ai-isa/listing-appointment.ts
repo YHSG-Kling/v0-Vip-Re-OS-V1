@@ -465,11 +465,17 @@ export async function bookListingAppointment(
 
   // Manager hand-off — ai_isa found the slot and booked the hold; listing_concierge
   // (the seller-side manager) is told a confirmation is waiting.
+  // IDENTITY CLASS (lane 76A fix): the signal is keyed on the calendar_events
+  // row so the dedupe is per-APPOINTMENT (a reschedule is a new signal), and
+  // that id is a calendar_events.id — it was written under entityType
+  // "contact", which put a calendar id in a contacts.id slot (CLAUDE.md §3).
+  // contactId still carries the contacts.id the handler
+  // (proposeQualificationConfirmation) actually reads.
   await publishManagerSignal({
     brokerageId: params.brokerageId, fromManager: "ai_isa", toManager: "listing_concierge",
     signalType: "listing_appointment_pending_confirmation",
     message: `A listing appointment at ${params.propertyAddress} is pending the agent's confirmation.`,
-    entityType: "contact", entityId: calendarEventId, contactId: params.contactId,
+    entityType: "calendar_event", entityId: calendarEventId, contactId: params.contactId,
     payload: { calendarEventId, propertyAddress: params.propertyAddress, startAt: params.slot.startTime },
   }).catch((e) => console.error("[listing-appointment] publishManagerSignal failed:", e))
 

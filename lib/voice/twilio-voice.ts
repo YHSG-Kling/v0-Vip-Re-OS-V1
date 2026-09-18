@@ -328,6 +328,11 @@ export async function createCallbackTaskFromCall(
  */
 export interface VoiceToolExecContext {
   brokerageId: string
+  /** agents.id (voice_calls.agent_id — NEVER InboundCallContext.agentUserId,
+   *  which is a users.id; the two are disjoint, CLAUDE.md §3). Lane 76A
+   *  identity fix: this was hardcoded `null` by planReceptionTurn, so on every
+   *  live call find_listing_appointment_slots/book_listing_appointment refused
+   *  ("No agent is assigned yet") and notifyAssignedAgent no-op'd. */
   agentId: string | null
   /** contacts.id linked to this call, when known — feeds resolveToolPersona
    *  AND lets verify_address persist its verdict, same as every chat surface. */
@@ -395,7 +400,11 @@ export const VOICE_TOOL_ROUND_DEADLINE_MS = Number(process.env.VOICE_TOOL_ROUND_
 export const VOICE_TOOL_ROUND_MAX_STEPS = 3
 
 /** PURE-ish (one DB read, no AI/network call): resolve this call's tool
- *  persona from its linked contact, same derivation every chat surface uses. */
+ *  persona from its linked contact — or, lane 76A, from its linked LEAD when
+ *  no contact exists yet (leads.lead_type / persona / home_owner_status, the
+ *  SAME fallback app/actions/ai-isa/handle-inbound-email.ts already uses) —
+ *  the same derivation every chat surface uses. A leads.id is read from the
+ *  `leads` table only; it is never used to query `contacts`. */
 async function resolveVoiceToolPersona(toolCtx: VoiceToolExecContext): Promise<ToolPersona> {
   const { resolveToolPersona } = await import("@/lib/ai-isa/persona-tool-policy")
   let contactType: string | null = null
@@ -414,6 +423,20 @@ async function resolveVoiceToolPersona(toolCtx: VoiceToolExecContext): Promise<T
       contactPersona = (contact as any)?.contact_persona ?? null
       homeOwnerStatus = (contact as any)?.home_owner_status ?? null
     } catch { /* an unreadable contact row just resolves the default persona below */ }
+  } else if (toolCtx.leadId) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: lead } = await svc
+        .from("leads")
+        .select("lead_type, persona, home_owner_status")
+        .eq("id", toolCtx.leadId)
+        .maybeSingle()
+      const leadType = (lead as any)?.lead_type ?? null
+      contactType = leadType === "seller" ? "seller" : leadType ? "buyer" : null
+      contactPersona = (lead as any)?.persona ?? null
+      homeOwnerStatus = (lead as any)?.home_owner_status ?? null
+    } catch { /* an unreadable lead row just resolves the default persona below */ }
   }
   return resolveToolPersona({ contactType, contactPersona, homeOwnerStatus })
 }
@@ -584,8 +607,12 @@ export async function planTurnWithPrompt(
   // (wave 75 integration) buildCustomerFreeTools is async since lane 75B —
   // it reads the brand's capability toggles — so it MUST be awaited; a bare
   // spread of the promise silently emptied the capture bundle on every call.
+  // Lane 76A — the resolved persona now reaches the bundle (a vendor caller
+  // gets only VENDOR_SAFE_CAPABILITIES; everyone else the identity-gated set),
+  // and agentId is the call row's agents.id (see VoiceToolExecContext).
   const freeTools = await buildCustomerFreeTools({
     brokerageId: toolCtx.brokerageId, contactId: toolCtx.contactId, leadId: toolCtx.leadId, agentId: toolCtx.agentId,
+    persona,
   })
   // Lane 74B — cost-ranked order applies to voice too (owner: "tools for the
   // ai agents should not be using batchdata tools if there are less
@@ -717,7 +744,16 @@ export type ReceptionTurnInput =
        *  AI-SDK tool-calling). Omitted → a plain no-tools call, exactly as
        *  before lane 73B ever existed — additive, never a silent behavior
        *  change for a caller that has not threaded a call id through yet. */
-      voiceToolCtx?: { callId: string; contactId: string | null; leadId?: string | null }
+      voiceToolCtx?: {
+        callId: string
+        contactId: string | null
+        leadId?: string | null
+        /** voice_calls.agent_id — an agents.id (lane 76A). NOT ctx.agentUserId
+         *  (users.id): the free bundle's find/book_listing_appointment and
+         *  notifyAssignedAgent all take agents.id and cross to users via
+         *  agents.user_id themselves. */
+        agentId?: string | null
+      }
     }
   | {
       deployment: "platform"
@@ -754,9 +790,14 @@ export async function planReceptionTurn(input: ReceptionTurnInput, deps: VoiceTo
     if (inventory) prompt = `${prompt}\n\n${inventory}`
   }
   if (input.extraRules) prompt = `${prompt}\n\n${input.extraRules}`
+  // IDENTITY CLASS (lane 76A fix): agentId is the call row's agents.id passed
+  // by the route (voice_calls.agent_id). It was hardcoded `null` here — the
+  // only id in reach was ctx.agentUserId, a users.id, which does NOT belong in
+  // an agents.id slot (CLAUDE.md §3) — so the listing-appointment and
+  // agent-notify tools never had an agent on any live call.
   const toolCtx: VoiceToolExecContext | undefined = input.voiceToolCtx
     ? {
-        brokerageId: input.ctx.brokerageId, agentId: null,
+        brokerageId: input.ctx.brokerageId, agentId: input.voiceToolCtx.agentId ?? null,
         contactId: input.voiceToolCtx.contactId, leadId: input.voiceToolCtx.leadId ?? null,
         conversationKey: input.voiceToolCtx.callId,
       }

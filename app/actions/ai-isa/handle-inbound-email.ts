@@ -28,6 +28,7 @@ import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
 import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
+import { TENANT_ADMIN_USER_TYPES } from '@/lib/auth/resolve-user-role'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -251,7 +252,7 @@ export async function processInboundEmail(params: {
        motivation_type, property_interest, budget_min, budget_max,
        timeline, lead_score, lifecycle_state, lead_type,
        contact_id, preferred_channel, call_stop_flag,
-       persona, home_owner_status`
+       persona, home_owner_status, dnc_status, email_opt_out`
     )
     .eq('id', params.leadId)
   if (callerBrokerageId) {
@@ -278,24 +279,40 @@ export async function processInboundEmail(params: {
     : { data: null }
 
   // ── Guard 2: kernel compliance gate — correct EvaluateOutboundParams ──────
-  const complianceContact = contact ?? {
-    id: lead.id,
-    first_name: lead.first_name ?? '',
-    last_name: lead.last_name ?? '',
-    email: lead.email ?? undefined,
-    contact_type: 'buyer' as const,
-    tcpa_consent: false,
-    isa_reengage_allowed: false,
-    dnc_status: false,
+  //
+  // IDENTITY CLASS (lane 76A fixes, CLAUDE.md §3 — owner: "you made some
+  // mistakes with assigning contactid with leadid"):
+  //   (a) A lead-only thread used to pass `{ id: lead.id, … }` as the gate's
+  //       CONTACT: evaluateOutbound then queried `contacts` by a leads.id
+  //       (always empty), called hasActiveRepresentation with it, and wrote
+  //       compliance_events.entity_type='contact' / entity_id=<leads.id>. The
+  //       lead-side opt-out is now checked HERE against the LEAD's own columns
+  //       (fail closed) and the gate receives no contact for a lead-only
+  //       thread — the documented "contact omitted" mode. Once the lead is
+  //       linked, the real contacts row goes in as before.
+  //   (b) actorContext.userId carried lead.brokerage_id — a brokerages.id in a
+  //       users.id slot. compliance_events.actor_user_id FKs users(id)
+  //       (scripts/schema-fk-map.ts), so EVERY ISA-email compliance ledger row
+  //       was refused (23503) and logged as "this decision is UNRECORDED". The
+  //       actor is now the lead's assigned agent's users.id (agents.user_id —
+  //       the one legal crossing), else a tenant admin user; no resolvable
+  //       actor refuses the reply rather than forging one.
+  if (!contact && (lead.dnc_status === true || lead.email_opt_out === true)) {
+    return { success: false, responded: false, reason: 'compliance:lead_opted_out' }
   }
 
   const messageType: MessageType = 'email'
   const persona: Persona = (lead.motivation_type as Persona) ?? 'other'
   const journeyType = (lead.lead_type === 'seller' ? 'seller' : 'buyer') as 'buyer' | 'seller'
 
+  const actorUserId = await resolveIsaActorUserId(supabase, lead.brokerage_id, lead.agent_id ?? null)
+  if (!actorUserId) {
+    return { success: false, responded: false, reason: 'compliance:no_actor_user_for_brokerage' }
+  }
+
   const compliance = await evaluateOutbound({
     actorContext: {
-      userId: lead.brokerage_id,
+      userId: actorUserId,
       role: 'isa',
       brokerageId: lead.brokerage_id,
     },
@@ -303,7 +320,7 @@ export async function processInboundEmail(params: {
     persona,
     messageType,
     content: params.body,
-    contact: complianceContact,
+    contact: contact ?? undefined,
   })
 
   if (!compliance.allowed) {
@@ -600,4 +617,35 @@ export async function processInboundEmail(params: {
     qualificationSignals,
     responsePreview: replyBody.slice(0, 200),
   }
+}
+
+/**
+ * Module-private (a 'use server' file's EXPORTS are public endpoints — this is
+ * deliberately not one). The users.id the ISA acts AS for the compliance ledger
+ * (compliance_events.actor_user_id FKs users(id)): the lead's assigned agent
+ * crossed through agents.user_id — the ONE legal agents→users crossing
+ * (CLAUDE.md §3: agents.id and users.id are disjoint) — else a tenant admin of
+ * the SAME brokerage (the roster is spread from TENANT_ADMIN_USER_TYPES, never
+ * restated). Null when neither resolves; the caller refuses rather than forging
+ * an actor.
+ */
+async function resolveIsaActorUserId(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  agentRecordId: string | null,
+): Promise<string | null> {
+  if (agentRecordId) {
+    const { data: agentRow } = await supabase
+      .from('agents').select('user_id').eq('id', agentRecordId).eq('brokerage_id', brokerageId).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (userId) return userId
+  }
+  const { data: adminRow } = await supabase
+    .from('users').select('id')
+    .eq('brokerage_id', brokerageId)
+    .in('user_type', [...TENANT_ADMIN_USER_TYPES])
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  return (adminRow as { id?: string } | null)?.id ?? null
 }

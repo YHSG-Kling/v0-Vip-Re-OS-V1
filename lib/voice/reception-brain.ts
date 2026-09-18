@@ -192,7 +192,11 @@ export const TURN_INSTRUCTIONS = [
 // "capturing as much useful information about that person for the os").
 export const TOOL_TURN_GUIDANCE = [
   "You have live property-lookup tools available on this call. Call one ONLY when you need REAL data you don't already have (a specific address's details, comparable sales, or a comp count) — never guess, and never call a tool for something you can already answer.",
-  "You ALSO have free tools for recording what you learn and offering follow-up — call record_qualification as SOON as you learn any of their intent/persona/property-they're-selling/buyer-criteria/timeline/financing (safe to call more than once as more comes up), and call ONE follow-up tool (schedule_callback, send_matching_listings, schedule_home_value_review, book_agent_appointment, or request_showing) once you understand what they want, matching the FOLLOW-UP MENU above — never more than one, never a forced choice.",
+  // Lane 76A: this line named the RETIRED book_agent_appointment (tombstoned in
+  // lib/ai-isa/customer-context-tools.ts) — a promise the model could not keep.
+  // The names below are the REGISTERED ones (scripts/identity-class-tool-
+  // context-guard.ts holds this string against the follow-up menu).
+  "You ALSO have free tools for recording what you learn and offering follow-up — call record_qualification as SOON as you learn any of their intent/persona/property-they're-selling/seller-situation/buyer-criteria/timeline/financing (safe to call more than once as more comes up), and call ONE follow-up tool (schedule_callback, send_matching_listings, schedule_home_value_review, find_listing_appointment_slots then book_listing_appointment, request_showing, request_vendor_referral, or capture_referral) once you understand what they want, matching the FOLLOW-UP MENU above — never more than one, never a forced choice. get_listing_details answers a question about one of OUR listings for free.",
   "This is a LIVE phone call — the caller is waiting in silence while you work. Call at most a couple of tools per turn, and only when genuinely needed; do not call the same tool twice for the same thing.",
   "Once you have what you need (or decide no tool is needed), respond with your FINAL turn as the JSON object described above and NOTHING else — no further tool calls, no prose before or after the JSON.",
 ].join("\n")

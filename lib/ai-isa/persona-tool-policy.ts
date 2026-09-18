@@ -75,6 +75,26 @@
  *                conversation is confirming a number is safe to call BEFORE
  *                the outbound gate runs (lib/communication/tcpa-gate.ts),
  *                never a substitute for it.
+ *   vendor     — ZERO BatchData, ZERO RentCast (lane 76A). contacts.contact_type
+ *                'vendor' is a LIVE CHECK value (contacts_contact_type_check —
+ *                never invented here); a vendor who reaches a customer surface
+ *                (calls the office line, is captured as a contact) asks about
+ *                THEIR OWN placement/assignment, invoice/document and payout
+ *                status — lib/ai-isa/capability-catalogue.ts::get_my_vendor_status
+ *                — never about property data, so no paid tool has anything to
+ *                buy for them.
+ *
+ * ── WHAT EACH PERSONA ACTUALLY ASKS (lane 76A research, sources in
+ *    scratchpad lane76A-notes.md — Structurely/Aisa Holmes, Ylopo rAIya, Lofty
+ *    Sales Agent qualification tags, CINC AI script goals, Alma/Noem/Hyperleap
+ *    receptionist intake fields, TalkLuna vendor/leasing intake) ────────────
+ * The PROMPT half of this table lives in lib/ai-isa/qualification-playbook.ts
+ * ::PERSONA_QUESTION_GUIDE (one place, mounted on every surface); the TOOL
+ * half is the free catalogue (lib/ai-isa/capability-catalogue.ts) — cheapest
+ * first: own DB (search_our_listings / get_listing_details / send_matching_
+ * listings) → RentCast (rentcast_* by persona pattern; send_matching_listings'
+ * rental mode) → BatchData preview/count ONLY where nothing cheaper covers the
+ * need (investor off-market/comps preview — the one explicit exception).
  *
  * `staff` (the in-app agent copilot, app/api/internal/ai-chat) is
  * DELIBERATELY NOT a `ToolPersona` value — wave 72B's own docs already record
@@ -107,9 +127,9 @@
  * spend alone would justify.
  */
 
-export type ToolPersona = "buyer" | "seller" | "investor" | "renter" | "relocation" | "sphere"
+export type ToolPersona = "buyer" | "seller" | "investor" | "renter" | "relocation" | "sphere" | "vendor"
 
-export const TOOL_PERSONAS: readonly ToolPersona[] = ["buyer", "seller", "investor", "renter", "relocation", "sphere"]
+export const TOOL_PERSONAS: readonly ToolPersona[] = ["buyer", "seller", "investor", "renter", "relocation", "sphere", "vendor"]
 
 export interface ToolPersonaInput {
   /** contacts.contact_type / leads.lead_type-derived ('buyer'|'seller'|...) */
@@ -127,11 +147,17 @@ export interface ToolPersonaInput {
  * 'relocated' > home_owner_status 'renter' > contact_type 'seller' >
  * contact_type 'sphere'/'referral_partner'/'lifetime_customer' (past clients
  * and referral-network contacts are the sphere_of_influence manager's
- * territory — wave 47's own CLOSED→sphere_of_influence ruling) > default
+ * territory — wave 47's own CLOSED→sphere_of_influence ruling) > contact_type
+ * 'vendor' (lane 76A — a live contacts_contact_type_check value; a vendor is
+ * never a property buyer, so it must not fall to the buyer default) > default
  * 'buyer'. The 'buyer' default mirrors lib/campaigns/contact-sources.ts's
  * own documented posture ("an unknown type is treated as a buyer rather than
  * dropped, so a capture never falls out of the funnel") — contact_type
- * 'both'/'lead'/'prospect'/'vendor'/'other'/unset all land here too.
+ * 'both'/'lead'/'prospect'/'other'/unset all land here too. NOTE the default
+ * is an UNKNOWN, not knowledge: a "buyer" may also be selling ("both" is a
+ * live contact_type), which is why the free follow-up bundle never withholds
+ * the seller tools from a buyer-defaulted thread — the playbook's per-persona
+ * guide steers which one is OFFERED.
  */
 export function resolveToolPersona(input: ToolPersonaInput): ToolPersona {
   const persona = (input.contactPersona ?? "").trim().toLowerCase()
@@ -144,6 +170,7 @@ export function resolveToolPersona(input: ToolPersonaInput): ToolPersona {
   const type = (input.contactType ?? "").trim().toLowerCase()
   if (type === "seller") return "seller"
   if (type === "sphere" || type === "referral_partner" || type === "lifetime_customer") return "sphere"
+  if (type === "vendor") return "vendor"
 
   return "buyer"
 }
@@ -235,6 +262,16 @@ export const PERSONA_TOOL_POLICY: Record<ToolPersona, PersonaToolPolicy> = {
     rentCastEnabled: false,
     rentCastNamePattern: null,
     capCents: 50,
+    redaction: "identity",
+  },
+  vendor: {
+    // Lane 76A — a vendor asks about THEIR OWN placement/document/payout
+    // status (capability-catalogue.ts::get_my_vendor_status); there is no
+    // property-data need, so no paid tool of either provider is ever offered.
+    batchDataToolNames: [],
+    rentCastEnabled: false,
+    rentCastNamePattern: null,
+    capCents: 0,
     redaction: "identity",
   },
 }
@@ -446,7 +483,14 @@ export const FREE_INTERNAL_TOOL_NAMES: readonly string[] = [
   "send_newsletter",
   "send_market_report",
   "send_explainer_video",
-  "book_listing_appointment",
+  // Lane 76A — persona-realistic free tools (lib/ai-isa/capability-catalogue.ts):
+  // a specific listing's facts from OUR OWN table, a trusted-vendor / lender
+  // intro from the brokerage's own bench, a sphere referral captured onto the
+  // existing referrals rail, and a vendor's own placement/document/payout status.
+  "get_listing_details",
+  "request_vendor_referral",
+  "capture_referral",
+  "get_my_vendor_status",
 ]
 
 /** PURE — the cost rank for one tool NAME. Generic over any registry's key

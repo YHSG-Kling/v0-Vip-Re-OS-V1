@@ -6,6 +6,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
+import { insertReferralRecord } from "@/lib/referrals/referral-record"
 import {
   DEFAULT_REFERRAL_STATUS,
   isReferralStatus,
@@ -191,9 +192,14 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
     }
   }
 
-  // Step 2: INSERT referrals
-  const status = params.status ?? DEFAULT_REFERRAL_STATUS
-
+  // Step 2: INSERT referrals — TOMBSTONE (lane 76A, CLAUDE.md §1.1): the insert
+  // shape that stood here moved to lib/referrals/referral-record.ts::
+  // insertReferralRecord so the customer-facing AI tool (lib/ai-isa/
+  // capability-catalogue.ts::buildCaptureReferralTool — the referrer is the
+  // person talking, not a staff session, so it can never call this "use server"
+  // export) writes the SAME row. The closed_at/converted_at-on-arrival rule and
+  // the referral_name fix live there now.
+  //
   // referrals.referral_name is what every pipeline card renders. Nothing wrote
   // it, so every card created through the app rendered a blank title even though
   // the create dialog asks for the name and makes it required.
@@ -202,41 +208,27 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
       .filter((p) => p && p.trim())
       .join(" ")
       .trim() || null
-  const { data: referral, error: insertError } = await db
-    .from("referrals")
-    .insert({
-      brokerage_id: brokerageId,
-      agent_id: agentId,
-      partner_id: params.partnerId ?? null,
-      referred_contact_id: referredContactId,
-      referred_lead_id: params.referredLeadId ?? null,
-      status,
-      referral_name: referralName,
-      referral_source: params.referralSource ?? null,
-      commission_amount: params.commissionAmount ?? null,
-      value_estimate: params.valueEstimate ?? null,
-      commission_potential: params.commissionPotential ?? null,
-      referred_by: params.referredBy?.trim() || null,
-      source_contact_name: params.sourceContactName?.trim() || null,
-      notes: params.notes?.trim() || null,
-      // A referral can ARRIVE already closed (a partner tells you about a deal
-      // that has since settled). updateReferralStatus stamps closed_at on the
-      // transition; nothing stamped it on creation, so such a row read as an
-      // open referral forever.
-      //
-      // converted_at rides along for the same reason it does on the transition
-      // (BURN-C 2026-09-04): the ROI rollups key on converted_at, so a referral
-      // that arrived already won counted as closed and as never converted.
-      ...(status === REFERRAL_TERMINAL_WON
-        ? { closed_at: new Date().toISOString(), converted_at: new Date().toISOString() }
-        : { closed_at: null, converted_at: null }),
-    })
-    .select("id")
-    .single()
-
-  if (insertError || !referral) {
-    throw new Error(`Failed to create referral: ${insertError?.message ?? "no row returned"}`)
+  const inserted = await insertReferralRecord(db, {
+    brokerageId: brokerageId ?? "",
+    agentId,
+    partnerId: params.partnerId ?? null,
+    referredContactId,
+    referredLeadId: params.referredLeadId ?? null,
+    status: params.status ?? DEFAULT_REFERRAL_STATUS,
+    referralName,
+    referralSource: params.referralSource ?? null,
+    commissionAmount: params.commissionAmount ?? null,
+    valueEstimate: params.valueEstimate ?? null,
+    commissionPotential: params.commissionPotential ?? null,
+    referredBy: params.referredBy ?? null,
+    sourceContactName: params.sourceContactName ?? null,
+    notes: params.notes ?? null,
+  })
+  if (!inserted.ok) {
+    throw new Error(`Failed to create referral: ${inserted.error}`)
   }
+  const referral = { id: inserted.id }
+  const status = inserted.status
 
   // Step 3: UPDATE referral_partners SET total_referrals_received += 1
   // Skipped entirely when the referral has no partner — there is no counter to bump.

@@ -315,12 +315,38 @@ check("every menu tool name is a real catalogue capability id",
 // person" — get_my_context is a silent lookup, record_qualification is a silent write,
 // search_our_listings is used ad hoc, not offered) — this is the documented, expected
 // remainder, not a mismatch.
-const EXPECTED_CATALOGUE_ONLY = new Set(["get_my_context", "search_our_listings", "record_qualification"])
+// Lane 76A adds two more silent/ad-hoc ones: get_listing_details (answers a
+// question about ONE of our listings — a lookup, not an offer) and
+// get_my_vendor_status (a vendor's own status read — a lookup, not an offer).
+const EXPECTED_CATALOGUE_ONLY = new Set(["get_my_context", "search_our_listings", "record_qualification", "get_listing_details", "get_my_vendor_status"])
 const unexpectedCatalogueOnly = catalogueOnlyNonMenu.filter((c) => !EXPECTED_CATALOGUE_ONLY.has(c))
-check("every OTHER catalogue capability (beyond the 3 documented non-offered ones) is on the follow-up menu",
+check("every OTHER catalogue capability (beyond the 5 documented non-offered ones) is on the follow-up menu",
   unexpectedCatalogueOnly.length === 0, unexpectedCatalogueOnly.length ? unexpectedCatalogueOnly.join(", ") : undefined)
-check("CAPABILITY_CATALOGUE has exactly 11 entries (the 7 pre-existing + 4 new lane-75B capabilities)",
-  CAPABILITY_CATALOGUE.length === 11)
+// The RULE, not a waypoint (CLAUDE.md §2): the catalogue is exactly the menu
+// plus the documented non-offered lookups — derived, never a hardcoded count.
+check("CAPABILITY_CATALOGUE is exactly the follow-up menu ∪ the documented non-offered lookups (derived, not a pinned count)",
+  CAPABILITY_CATALOGUE.length === menuTools.size + EXPECTED_CATALOGUE_ONLY.size && catalogueIds.size === CAPABILITY_CATALOGUE.length,
+  `catalogue=${CAPABILITY_CATALOGUE.length} menu=${menuTools.size} nonOffered=${EXPECTED_CATALOGUE_ONLY.size}`)
+check("lane 76A's four persona-realistic capabilities are catalogued (get_listing_details, request_vendor_referral, capture_referral, get_my_vendor_status)",
+  ["get_listing_details", "request_vendor_referral", "capture_referral", "get_my_vendor_status"].every((c) => catalogueIds.has(c)))
+{
+  // Persona-realism: the guide's every offer is a catalogue id, and the two
+  // personas the owner named (sellers → home value/listing appointment;
+  // sphere/lifetime → equity update, vendor referral, referral capture) are
+  // offered exactly those.
+  const { PERSONA_QUESTION_GUIDE } = await import("../lib/ai-isa/qualification-playbook")
+  check("PERSONA_QUESTION_GUIDE.seller offers schedule_home_value_review + book_listing_appointment (never a value spoken)",
+    PERSONA_QUESTION_GUIDE.seller.offers.includes("schedule_home_value_review") && PERSONA_QUESTION_GUIDE.seller.offers.includes("book_listing_appointment"))
+  check("PERSONA_QUESTION_GUIDE.sphere offers the equity update (schedule_home_value_review), request_vendor_referral and capture_referral",
+    ["schedule_home_value_review", "request_vendor_referral", "capture_referral"].every((t) => PERSONA_QUESTION_GUIDE.sphere.offers.includes(t)))
+  check("PERSONA_QUESTION_GUIDE.investor stays property-only (no explainer video, no home-value review, no vendor bench)",
+    !PERSONA_QUESTION_GUIDE.investor.offers.some((t) => t === "send_explainer_video" || t === "schedule_home_value_review" || t === "request_vendor_referral"))
+  check("PERSONA_QUESTION_GUIDE.vendor offers only its own status lookup + callback/meeting",
+    PERSONA_QUESTION_GUIDE.vendor.offers.every((t) => ["get_my_vendor_status", "schedule_callback", "request_showing"].includes(t)))
+  const { isCapabilityEnabled: capEnabled } = await import("../lib/ai-isa/capability-catalogue")
+  check("a vendor persona is withheld the persona-null universal capabilities (send_newsletter) and granted only its own status lookup",
+    !capEnabled("send_newsletter", "vendor" as any, []) && capEnabled("get_my_vendor_status", "vendor" as any, []) && !capEnabled("get_my_vendor_status", "buyer" as any, []))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 9 · schedule_home_value_review NEVER emits a number — positive control]")

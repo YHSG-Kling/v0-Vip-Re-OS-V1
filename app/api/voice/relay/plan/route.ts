@@ -76,7 +76,10 @@ export async function POST(request: NextRequest) {
   const brief = (call as any)?.direction === "outbound" ? decodeOutboundBrief((call as any)?.ai_notes) : null
 
   // Deterministic opt-out on outbound — same law, same writer as the turn route.
-  if (brief && call && (call as any).contact_id) {
+  // Lane 76A identity fix: a LEAD-only outbound leg (voice_calls.lead_id, no
+  // contact_id) was skipped here entirely — the turn route already honoured it
+  // under entityType "lead". Same rule, same entity class, both transports.
+  if (brief && call && ((call as any).contact_id || (call as any).lead_id)) {
     const { detectOptOutIntent } = await import("@/lib/ai-isa/opt-out-utils")
     const opt = detectOptOutIntent(req.utterance)
     if (opt.isOptOut && opt.confidence === "high") {
@@ -84,7 +87,9 @@ export async function POST(request: NextRequest) {
       try {
         const { processOptOut } = await import("@/app/actions/ai-isa/process-opt-out")
         await processOptOut({
-          entityType: "contact", entityId: (call as any).contact_id,
+          // Leads are NOT contacts — the opt-out lands on the right entity class.
+          entityType: (call as any).contact_id ? "contact" : "lead",
+          entityId: (call as any).contact_id ?? (call as any).lead_id,
           channel: opt.channel === "all" ? "all" : "phone",
           source: "inbound_call", rawMessage: req.utterance.slice(0, 300), brokerageId: ctx.brokerageId,
         })
@@ -101,7 +106,8 @@ export async function POST(request: NextRequest) {
         transcript, req.utterance)
     : await planReceptionTurn({
         deployment: "tenant", ctx, transcript, utterance: req.utterance, svc, extraRules: pacing,
-        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null } : undefined,
+        // agentId = voice_calls.agent_id (agents.id) — never ctx.agentUserId (users.id). Lane 76A.
+        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null, agentId: (call as any).agent_id ?? null } : undefined,
       })
   const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
   if (call) await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})

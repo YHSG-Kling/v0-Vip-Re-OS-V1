@@ -104,6 +104,11 @@ export type CapabilityId =
   | "send_market_report"
   | "send_explainer_video"
   | "book_listing_appointment"
+  // Lane 76A — persona-realistic customer-care capabilities (see the entries).
+  | "get_listing_details"
+  | "request_vendor_referral"
+  | "capture_referral"
+  | "get_my_vendor_status"
 
 export interface CapabilityDefinition {
   id: CapabilityId
@@ -111,8 +116,17 @@ export interface CapabilityDefinition {
   /** Why this exists for customer care (owner: "don't create tools that is
    *  not useful for customer care in the real estate business"). */
   usefulFor: string
-  /** Which lib/ai-isa/persona-tool-policy.ts personas this capability serves.
-   *  `null` = every persona (the universal free tools). */
+  /** Which lib/ai-isa/persona-tool-policy.ts personas this capability serves —
+   *  the personas the playbook OFFERS it to (PERSONA_QUESTION_GUIDE) and the
+   *  gate `isCapabilityEnabled` applies to the catalogue-built tools. `null` =
+   *  every persona. NOTE (lane 76A): the six CORE follow-up tools
+   *  (schedule_callback, send_matching_listings, schedule_home_value_review,
+   *  find/book_listing_appointment, record_qualification, request_showing) are
+   *  registered on IDENTITY, not persona, because "buyer" is the UNKNOWN default
+   *  and buy+sell ("both") is a live contact_type — withholding the seller
+   *  tools from a buyer-defaulted thread would lose the move-up seller. The
+   *  ONE hard persona exclusion is `vendor`, which gets only its own
+   *  VENDOR_SAFE set (see isCapabilityEnabled). */
   personas: readonly ToolPersona[] | null
   /** costRankForTool's bucket — every catalogue capability is 0 (free,
    *  internal, no vendor spend), the SAME rank persona-tool-policy.ts's
@@ -158,7 +172,7 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
     id: "request_showing",
     label: "Request a showing, call, or meeting",
     usefulFor: "the person wants to see a property, meet, or talk right now",
-    personas: ["buyer", "seller", "renter", "relocation"],
+    personas: ["buyer", "seller", "renter", "relocation", "investor", "sphere", "vendor"],
     costRank: 0,
     signalType: "(notification only — no manager signal)",
     requiresIdentity: true,
@@ -177,8 +191,8 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
   {
     id: "send_matching_listings",
     label: "Send matching listings",
-    usefulFor: "they described buyer/renter criteria — send what matches now and keep sending as new matches come in",
-    personas: ["buyer", "renter", "relocation"],
+    usefulFor: "they described buyer/renter/investor criteria — send what matches now (own listings first, then RentCast sale or RENTAL listings) and keep sending as new matches come in",
+    personas: ["buyer", "renter", "relocation", "investor"],
     costRank: 0,
     signalType: "qualification_criteria_captured",
     requiresIdentity: true,
@@ -187,8 +201,8 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
   {
     id: "schedule_home_value_review",
     label: "Look up their home's value (never spoken)",
-    usefulFor: "they mentioned selling or asked what their home is worth — record the address and book a callback; the AGENT states the number, never the AI",
-    personas: ["seller"],
+    usefulFor: "they mentioned selling, asked what their home is worth, or (a past client) want an equity/anniversary update — record the address and book a callback; the AGENT states the number, never the AI",
+    personas: ["seller", "sphere"],
     costRank: 0,
     signalType: "qualification_valuation_handoff",
     requiresIdentity: true,
@@ -217,8 +231,8 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
   {
     id: "send_market_report",
     label: "Send a market report for their area",
-    usefulFor: "they ask about the market, pricing trends, or \"is now a good time\" for their area",
-    personas: ["buyer", "seller", "renter", "relocation", "investor"],
+    usefulFor: "they ask about the market, pricing trends, or \"is now a good time\" for their area — or a past client wants a market update",
+    personas: ["buyer", "seller", "renter", "relocation", "investor", "sphere"],
     costRank: 0,
     signalType: "qualification_market_report_sent",
     requiresIdentity: true,
@@ -244,7 +258,57 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
     requiresIdentity: true,
     survivor: "lib/home-value/listing-appointment.ts + calendar_events(event_type='listing_appointment')",
   },
+  // ── Lane 76A — the persona asks the catalogue did not cover ────────────
+  {
+    id: "get_listing_details",
+    label: "Answer a question about one of our listings",
+    usefulFor: "\"is the house on Oak Street still available / what's the price / how many beds / HOA?\" — answered from OUR OWN listings table (free), never invented, never a paid lookup",
+    personas: null,
+    costRank: 0,
+    signalType: "(read-only — no signal)",
+    requiresIdentity: false,
+    survivor: "lib/ai-isa/capability-catalogue.ts::buildGetListingDetailsTool over listings (same table search_our_listings reads)",
+  },
+  {
+    id: "request_vendor_referral",
+    label: "Connect them with a trusted vendor / lender",
+    usefulFor: "a buyer who still needs pre-approval wants a lender to talk to (a lender is a VENDOR CATEGORY, CLAUDE.md §4), or a past client / seller needs a plumber, contractor, mover, inspector — from the brokerage's own curated bench",
+    personas: ["buyer", "seller", "sphere", "relocation", "renter"],
+    costRank: 0,
+    signalType: "(notification + follow-up activity only — no manager signal)",
+    requiresIdentity: true,
+    survivor: "lib/vendor-marketplace/resolve-contact-vendors.ts::resolveContactVendors + lib/kernel/lender-linkage.ts::LENDER_BENCH_CATEGORIES + lib/ai-isa/qualification-signals.ts::scheduleFollowUp/notifyAssignedAgent",
+  },
+  {
+    id: "capture_referral",
+    label: "Capture a referral",
+    usefulFor: "a past client / sphere contact mentions a friend or family member who is buying, selling or renting — capture them onto the existing referrals rail so the agent follows up",
+    personas: ["sphere", "buyer", "seller", "relocation", "renter", "investor"],
+    costRank: 0,
+    signalType: "referral_received (KernelEvent — the SAME event createReferral emits)",
+    requiresIdentity: true,
+    survivor: "lib/referrals/referral-record.ts::insertReferralRecord (extracted from app/actions/referrals/referral-actions.ts::createReferral) + lib/contact-pipeline/contact-capture.ts::captureContact",
+  },
+  {
+    id: "get_my_vendor_status",
+    label: "Look up my own placement / document / payout status",
+    usefulFor: "a vendor (contacts.contact_type='vendor') asks where their assignment, invoice or payout stands — their OWN rows only, never another vendor's and never a brokerage financial",
+    personas: ["vendor"],
+    costRank: 0,
+    signalType: "(read-only — no signal)",
+    requiresIdentity: true,
+    survivor: "vendors / vendor_assignments / vendor_invoices / vendor_payouts (live tables, scripts/live-tables.ts), resolved from the contact's own email/phone within the tenant",
+  },
 ] as const
+
+/** Lane 76A — the ONLY capabilities a `vendor` persona may reach, even among
+ *  the persona-null "universal" ones: a vendor is not a buyer/seller and must
+ *  never be offered listings, a home-value review, a newsletter or a process
+ *  video. Held in one set so isCapabilityEnabled and the free-bundle builder
+ *  agree (CLAUDE.md §6). */
+export const VENDOR_SAFE_CAPABILITIES: ReadonlySet<CapabilityId> = new Set<CapabilityId>([
+  "get_my_context", "get_my_vendor_status", "schedule_callback", "request_showing",
+])
 
 export const CAPABILITY_IDS: readonly CapabilityId[] = CAPABILITY_CATALOGUE.map((c) => c.id)
 
@@ -354,10 +418,24 @@ export function isCapabilityEnabled(id: CapabilityId, persona: ToolPersona | nul
   if (disabled.includes(id)) return false
   const def = CAPABILITY_CATALOGUE.find((c) => c.id === id)
   if (!def) return false
+  // Lane 76A — a vendor is the ONE persona with a disjoint tool set (see
+  // VENDOR_SAFE_CAPABILITIES): persona-null "universal" capabilities do NOT
+  // reach it.
+  if (persona === "vendor") return VENDOR_SAFE_CAPABILITIES.has(id)
   if (!def.personas) return true
+  // A vendor-ONLY capability (its own status lookup) never mounts for an
+  // unresolved or non-vendor persona — the "do not withhold when unresolved"
+  // posture below is for buyer/seller-shaped tools, where the default persona
+  // is an unknown; a vendor's own records are not.
+  if (def.personas.length === 1 && def.personas[0] === "vendor") return false
   if (!persona) return true // persona not yet resolved — do not withhold, the identity gate still applies
   return (def.personas as readonly string[]).includes(persona)
 }
+
+/** Capabilities whose EXECUTE needs a contacts.id (they read the contact's own
+ *  row) — never mounted on a lead-only thread, the same registration-time
+ *  discipline request_showing already follows in customer-context-tools.ts. */
+const CONTACT_ONLY_CAPABILITIES: ReadonlySet<CapabilityId> = new Set<CapabilityId>(["get_my_vendor_status"])
 
 // ─── NEW capability #1 — send_newsletter ───────────────────────────────────
 
@@ -502,6 +580,261 @@ export function buildSendExplainerVideoTool(ctx: CustomerCapabilityContext) {
 // persona allowlist and follow-up menu still govern it; registration happens
 // in buildCustomerFreeTools, which honours settings.disabled for this id.
 
+// ─── Lane 76A capability #5 — get_listing_details ──────────────────────────
+// "Is the house on Oak Street still available? What's the price? HOA?" — the
+// single most common buyer/renter question on a live call (Noem/Hyperleap
+// receptionist intake). Answered from OUR OWN listings table — the SAME table
+// search_our_listings reads — never a paid lookup, never invented. Public,
+// listing-facing fields only: showing_instructions / seller_walkaway_price /
+// commission_rate / marketing_budget are internal and never selected.
+export function buildGetListingDetailsTool(ctx: CustomerCapabilityContext) {
+  return tool({
+    description: "Answer a question about ONE specific listing of ours by address — availability/status, list price, beds/baths, square footage, property type, year built, HOA dues, and the public remarks. Free — use before any paid lookup. If nothing matches, say the agent will confirm; never invent details.",
+    inputSchema: z.object({
+      address: z.string().describe("The street address (or enough of it to match) the person asked about"),
+      city: z.string().nullable().describe("City, or null"),
+    }),
+    execute: async ({ address, city }: { address: string; city: string | null }) => {
+      const hint = address.replace(/[%,]/g, "").trim().slice(0, 80)
+      if (hint.length < 3) return { success: false, error: "Need at least a street name to look a listing up" }
+      const svc = createServiceClient()
+      let q = svc
+        .from("listings")
+        .select("id, address, city, state, zip, status, list_price, bedrooms, bathrooms, sqft, property_type, year_built, hoa_dues, has_pool, public_remarks, open_house_event_date")
+        .eq("brokerage_id", ctx.brokerageId)
+        .is("deleted_at", null)
+        .ilike("address", `%${hint}%`)
+        .limit(3)
+      if (city) q = q.ilike("city", `%${city.replace(/[%,]/g, "").slice(0, 60)}%`)
+      const { data, error } = await q
+      if (error) return { success: false, error: error.message }
+      const rows = (data ?? []).map((l: Record<string, unknown>) => ({
+        ...l,
+        public_remarks: typeof l.public_remarks === "string" ? (l.public_remarks as string).slice(0, 600) : null,
+      }))
+      if (rows.length === 0) return { success: true, found: false, message: "No listing of ours matches that address — offer to have the agent confirm." }
+      return { success: true, found: true, listings: rows }
+    },
+  })
+}
+
+// ─── Lane 76A capability #6 — request_vendor_referral ──────────────────────
+// A buyer who "hasn't talked to a lender yet" (Lofty's 'AI: Need Financing'
+// tag, Alma's Mortgage Pre-Qual hand-off) and a past client who needs a
+// plumber/contractor/mover are the two vendor asks every competitor routes.
+// Survivors: resolveContactVendors (the SAME curated, tier-gated, portal-
+// visible bench the contact's own portal shows — never an un-curated vendor
+// row), LENDER_BENCH_CATEGORIES (a lender is a VENDOR CATEGORY, never a user
+// type — CLAUDE.md §4), and the follow-up writer/notifier every other
+// follow-up tool uses. Returns business contact details only (name, phone,
+// website, rating) — never a vendor's financials or another client's data.
+export function buildRequestVendorReferralTool(ctx: CustomerCapabilityContext) {
+  return tool({
+    description: "Offer an intro to a trusted vendor from the brokerage's own bench — a LENDER when a buyer still needs pre-approval or a past client asks about refinancing, or a contractor / inspector / mover / plumber / cleaner etc. when they need one. Use only when THEY ask or accept the offer; returns up to 3 vetted names and tells the agent to make the intro.",
+    inputSchema: z.object({
+      category: z.string().describe("What kind of vendor — e.g. lender, inspector, contractor, mover, plumber, handyman, cleaner, insurance, title"),
+      need: z.string().describe("In their words, what they need it for"),
+    }),
+    execute: async ({ category, need }: { category: string; need: string }) => {
+      if (!ctx.contactId && !ctx.leadId) return { success: false, error: "No contact or lead is linked to this conversation yet" }
+      const svc = createServiceClient()
+      const wanted = category.trim().toLowerCase()
+      const { LENDER_BENCH_CATEGORIES, isLenderVendorCategory } = await import("@/lib/kernel/lender-linkage")
+      const wantsLender = isLenderVendorCategory(wanted) || /refinanc|mortgage|pre-?approv|financ/.test(wanted)
+
+      // Audience tags from the contact's OWN row (lead-only threads use the
+      // brokerage-wide bench — entries with no audience_tags).
+      let audienceTags: string[] = []
+      if (ctx.contactId) {
+        const { data: c } = await svc.from("contacts").select("contact_type, contact_persona, buyer_stage").eq("id", ctx.contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+        const { buildVendorAudienceTags } = await import("@/lib/vendor-marketplace/resolve-contact-vendors")
+        audienceTags = buildVendorAudienceTags({
+          contactType: (c as { contact_type?: string | null } | null)?.contact_type ?? null,
+          contactPersona: (c as { contact_persona?: string | null } | null)?.contact_persona ?? null,
+          buyerStage: (c as { buyer_stage?: string | null } | null)?.buyer_stage ?? null,
+        }).audienceTags
+      }
+      const { resolveContactVendors } = await import("@/lib/vendor-marketplace/resolve-contact-vendors")
+      const bench = await resolveContactVendors(svc, {
+        contactId: ctx.contactId ?? "", brokerageId: ctx.brokerageId, teamId: null, stage: null, audienceTags,
+      })
+      const matches = bench.filter((v) => {
+        const cat = (v.category ?? "").toLowerCase()
+        if (wantsLender) return (LENDER_BENCH_CATEGORIES as readonly string[]).includes(cat) || isLenderVendorCategory(cat)
+        return cat === wanted || cat.includes(wanted) || wanted.includes(cat)
+      }).slice(0, 3)
+
+      // The agent makes the intro — logged as a follow-up on the SAME rail
+      // every other follow-up tool uses, never a bare insert.
+      const { scheduleFollowUp, notifyAssignedAgent } = await import("@/lib/ai-isa/qualification-signals")
+      await scheduleFollowUp(ctx, {
+        activityType: "call",
+        scheduledAt: new Date().toISOString(),
+        notes: `Vendor intro requested — ${wantsLender ? "lender" : category}: ${need}${matches.length ? `\nBench matches: ${matches.map((m) => m.name).filter(Boolean).join(", ")}` : "\n(no bench match — agent to source)"}`,
+        title: `Vendor referral requested: ${wantsLender ? "lender" : category}`,
+      })
+      await notifyAssignedAgent(ctx, {
+        type: "vendor_referral_requested",
+        title: `Client wants a ${wantsLender ? "lender" : category} intro`,
+        body: need.slice(0, 300),
+        entityType: ctx.contactId ? "contact" : "lead",
+        entityId: (ctx.contactId ?? ctx.leadId) as string,
+      })
+      return {
+        success: true,
+        category: wantsLender ? "lender" : category,
+        vendors: matches.map((m) => ({ name: m.name, category: m.category, phone: m.phone, website: m.website, rating: m.rating, preferred: m.preferred })),
+        agentWillIntroduce: true,
+        note: matches.length ? "Share the names; the agent makes the introduction." : "No vetted match on the bench yet — tell them the agent will send a recommendation.",
+      }
+    },
+  })
+}
+
+// ─── Lane 76A capability #7 — capture_referral ─────────────────────────────
+// The past-client conversation every referral program is built around
+// ("anyone you know thinking of buying or selling?"). Survivors:
+// captureContact (Track B — the SAME capture the staff createReferral dialog
+// runs, source 'referral', no TCPA consent implied — the referred person
+// never consented to anything) and insertReferralRecord (the ONE referrals
+// insert, extracted from createReferral so both write the same row). The
+// referrer is LOCKED to ctx: contacts.id → referrer_contact_id; a lead-only
+// referrer lands in the free-text referred_by column (never in a contacts
+// slot — a leads.id is not a contacts.id).
+export function buildCaptureReferralTool(ctx: CustomerCapabilityContext) {
+  return tool({
+    description: "Capture a referral when the person mentions someone ELSE who is thinking of buying, selling or renting. Only with their permission to pass the name along. Needs the referred person's name and at least a phone or email; the agent follows up.",
+    inputSchema: z.object({
+      referred_first_name: z.string().describe("The referred person's first name"),
+      referred_last_name: z.string().nullable(),
+      referred_phone: z.string().nullable().describe("Their phone, or null"),
+      referred_email: z.string().nullable().describe("Their email, or null"),
+      what_they_need: z.string().describe("Buying / selling / renting, area, timing — in the referrer's words"),
+      permission_given: z.boolean().describe("Did the referrer explicitly OK passing the name along?"),
+    }),
+    execute: async (args: { referred_first_name: string; referred_last_name: string | null; referred_phone: string | null; referred_email: string | null; what_they_need: string; permission_given: boolean }) => {
+      if (!ctx.contactId && !ctx.leadId) return { success: false, error: "No contact or lead is linked to this conversation yet" }
+      if (!args.permission_given) return { success: false, error: "Ask the referrer if it's OK to pass the name along before capturing it" }
+      if (!args.referred_phone && !args.referred_email) return { success: false, error: "Need a phone or email for the referred person" }
+      const svc = createServiceClient()
+
+      // Who is referring — read off the LOCKED ctx row, never a model argument.
+      let referrerName = "a client"
+      if (ctx.contactId) {
+        const { data: c } = await svc.from("contacts").select("first_name, last_name").eq("id", ctx.contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+        referrerName = [(c as { first_name?: string | null } | null)?.first_name, (c as { last_name?: string | null } | null)?.last_name].filter(Boolean).join(" ") || referrerName
+      } else if (ctx.leadId) {
+        const { data: l } = await svc.from("leads").select("first_name, last_name").eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+        referrerName = [(l as { first_name?: string | null } | null)?.first_name, (l as { last_name?: string | null } | null)?.last_name].filter(Boolean).join(" ") || referrerName
+      }
+
+      const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+      let referredContactId: string | null = null
+      try {
+        const captured = await captureContact({
+          brokerageId: ctx.brokerageId,
+          first_name: args.referred_first_name,
+          last_name: args.referred_last_name ?? null,
+          email: args.referred_email ?? null,
+          phone: args.referred_phone ?? null,
+          source: "referral",
+          tcpa_consent: false,
+          notes: `Referred by ${referrerName} via AI conversation: ${args.what_they_need}`.slice(0, 500),
+        })
+        referredContactId = captured.contactId
+      } catch (e) {
+        return { success: false, error: `Could not capture the referred person: ${(e as Error).message}` }
+      }
+
+      const { insertReferralRecord } = await import("@/lib/referrals/referral-record")
+      const inserted = await insertReferralRecord(svc, {
+        brokerageId: ctx.brokerageId,
+        agentId: ctx.agentId ?? null,
+        referredContactId,
+        referrerContactId: ctx.contactId ?? null,
+        referredBy: ctx.contactId ? null : referrerName,
+        sourceContactName: referrerName,
+        referralName: [args.referred_first_name, args.referred_last_name].filter(Boolean).join(" "),
+        referralSource: "ai_conversation",
+        notes: args.what_they_need,
+      })
+      if (!inserted.ok) return { success: false, error: inserted.error }
+
+      // The SAME kernel event the staff dialog emits — sequences keyed on
+      // referral_received enroll from either door.
+      try {
+        const { emitKernelEvent } = await import("@/lib/kernel/emit")
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await emitKernelEvent({
+          entityType: "contact",
+          entityId: referredContactId,
+          brokerageId: ctx.brokerageId,
+          event: KernelEvent.REFERRAL_RECEIVED,
+          contactId: referredContactId,
+          metadata: { referral_id: inserted.id, source: "ai_conversation", referrer_contact_id: ctx.contactId ?? null, referrer_lead_id: ctx.contactId ? null : ctx.leadId ?? null },
+        })
+      } catch (e) {
+        console.error("[capability-catalogue] referral_received emit failed (referral row already written):", e)
+      }
+      const { notifyAssignedAgent } = await import("@/lib/ai-isa/qualification-signals")
+      await notifyAssignedAgent(ctx, {
+        type: "referral_captured",
+        title: `${referrerName} referred ${args.referred_first_name}`,
+        body: args.what_they_need.slice(0, 300),
+        entityType: "contact",
+        entityId: referredContactId,
+      })
+      return { success: true, referralId: inserted.id, referredContactId, note: "Thank them — the agent will reach out to the person they referred." }
+    },
+  })
+}
+
+// ─── Lane 76A capability #8 — get_my_vendor_status ─────────────────────────
+// A vendor who reaches a customer surface (calls the office line and is
+// resolved/captured as a contacts.contact_type='vendor' row) asks where THEIR
+// OWN job, invoice or payout stands (TalkLuna's vendor-call intake: ETA,
+// work-order reference, callback). contacts carries no FK to vendors, so the
+// vendors row is resolved by the contact's OWN email/phone digits within the
+// tenant — an honest "not linked" when neither matches, never a guess and
+// never another vendor's rows. Own rows only: a vendor's own invoice total and
+// payout amount are THEIR financials (CLAUDE.md §5 "only their own").
+export function buildGetMyVendorStatusTool(ctx: CustomerCapabilityContext) {
+  return tool({
+    description: "For a VENDOR asking about their own work: look up their open assignments/placements, invoices (status, due date) and payouts (status) with this brokerage. Their own records only. If the vendor account can't be matched, say the agent will follow up.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      if (!ctx.contactId) return { success: false, error: "No contact is linked to this conversation yet" }
+      const svc = createServiceClient()
+      const { data: contact, error: cErr } = await svc.from("contacts").select("email, phone_digits").eq("id", ctx.contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      if (cErr || !contact) return { success: false, error: cErr?.message ?? "Contact not found" }
+      const email = ((contact as { email?: string | null }).email ?? "").trim().toLowerCase()
+      const digits = ((contact as { phone_digits?: string | null }).phone_digits ?? "").trim()
+      if (!email && !digits) return { success: false, linked: false, error: "No email or phone on file to match a vendor account — the agent will follow up" }
+
+      const { data: vendors } = await svc.from("vendors").select("id, name, category, email, phone, status").eq("brokerage_id", ctx.brokerageId).limit(200)
+      const vendor = (vendors ?? []).find((v: { email?: string | null; phone?: string | null }) =>
+        (email && (v.email ?? "").trim().toLowerCase() === email) ||
+        (digits && (v.phone ?? "").replace(/\D/g, "").endsWith(digits.slice(-10)) && digits.length >= 10),
+      ) as { id: string; name: string | null; category: string | null; status: string | null } | undefined
+      if (!vendor) return { success: false, linked: false, error: "No vendor account matches this contact's email/phone — the agent will follow up" }
+
+      const [{ data: assignments }, { data: invoices }, { data: payouts }] = await Promise.all([
+        svc.from("vendor_assignments").select("id, assignment_type, status, scheduled_date, completed_date").eq("vendor_id", vendor.id).eq("brokerage_id", ctx.brokerageId).order("scheduled_date", { ascending: false }).limit(5),
+        svc.from("vendor_invoices").select("id, invoice_number, status, invoice_date, due_date, paid_at, total_amount").eq("vendor_id", vendor.id).eq("brokerage_id", ctx.brokerageId).order("invoice_date", { ascending: false }).limit(5),
+        svc.from("vendor_payouts").select("id, status, amount, initiated_at, completed_at, payout_method").eq("vendor_id", vendor.id).eq("brokerage_id", ctx.brokerageId).order("initiated_at", { ascending: false }).limit(5),
+      ])
+      return {
+        success: true,
+        linked: true,
+        vendor: { name: vendor.name, category: vendor.category, status: vendor.status },
+        assignments: assignments ?? [],
+        invoices: invoices ?? [],
+        payouts: payouts ?? [],
+      }
+    },
+  })
+}
+
 // ─── Assembly ───────────────────────────────────────────────────────────────
 
 const NEW_CAPABILITY_BUILDERS: Partial<Record<CapabilityId, (ctx: CustomerCapabilityContext) => unknown>> = {
@@ -509,6 +842,12 @@ const NEW_CAPABILITY_BUILDERS: Partial<Record<CapabilityId, (ctx: CustomerCapabi
   send_market_report: buildSendMarketReportTool,
   send_explainer_video: buildSendExplainerVideoTool,
   // book_listing_appointment: registered by customer-context-tools.ts (see tombstone above)
+  // Lane 76A — identity-gated (the caller checks contactId/leadId first).
+  // get_listing_details needs NO identity and is registered unconditionally
+  // by customer-context-tools.ts::buildCustomerFreeTools beside search_our_listings.
+  request_vendor_referral: buildRequestVendorReferralTool,
+  capture_referral: buildCaptureReferralTool,
+  get_my_vendor_status: buildGetMyVendorStatusTool,
 }
 
 /**
@@ -526,6 +865,7 @@ export async function buildNewCatalogueTools(
   const out: Record<string, unknown> = {}
   for (const [id, builder] of Object.entries(NEW_CAPABILITY_BUILDERS) as Array<[CapabilityId, (ctx: CustomerCapabilityContext) => unknown]>) {
     if (!isCapabilityEnabled(id, ctx.persona, settings.disabled)) continue
+    if (CONTACT_ONLY_CAPABILITIES.has(id) && !ctx.contactId) continue // a leads.id cannot stand in for a contacts.id
     out[id] = builder(ctx)
   }
   return out

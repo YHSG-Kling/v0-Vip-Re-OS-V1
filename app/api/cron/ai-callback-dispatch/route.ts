@@ -148,11 +148,20 @@ export async function GET(request: Request) {
           const { data: a } = await svc.from("agents").select("user_id").eq("id", agentRowId).maybeSingle()
           agentUserId = (a as any)?.user_id ?? null
         }
+      } else if (note.leadId) {
+        // Lane 76A — the lead that asked for this callback is carried in the
+        // note itself (lib/ai-isa/callback-task.ts CallbackNote.leadId), so the
+        // executor dials the SAME lead, tenant-checked, instead of re-guessing
+        // one by phone. A leads.id never lands in tasks.contact_id.
+        const { data: leadRow } = await svc.from("leads").select("id")
+          .eq("id", note.leadId).eq("brokerage_id", brokerageId).maybeSingle()
+        leadId = (leadRow as any)?.id ?? null
       } else {
-        // No contact yet — this callback came off a raw caller. Best-effort
-        // match to an open lead by phone so the de-conflict/suppression gates
-        // (which accept a leadId) see the same over-touch protection a
-        // promoted contact would get.
+        // No contact and no lead id on the note (a callback written before
+        // lane 76A, or off a raw caller with no lead row). Best-effort match
+        // to an open lead by phone so the de-conflict/suppression gates (which
+        // accept a leadId) see the same over-touch protection a promoted
+        // contact would get.
         const { data: leadRow } = await svc.from("leads").select("id")
           .eq("brokerage_id", brokerageId).eq("phone", note.phone).limit(1).maybeSingle()
         leadId = (leadRow as any)?.id ?? null

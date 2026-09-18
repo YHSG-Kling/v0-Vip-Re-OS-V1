@@ -138,7 +138,8 @@ export async function POST(request: NextRequest) {
       })()
     : await planReceptionTurn({
         deployment: "tenant", ctx, transcript, utterance: speech, svc,
-        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null } : undefined,
+        // agentId = voice_calls.agent_id (agents.id) — never ctx.agentUserId (users.id). Lane 76A.
+        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null, agentId: (call as any).agent_id ?? null } : undefined,
       })
   const newTranscript = appendTranscript(transcript, speech, plan.say)
   if (call) {
