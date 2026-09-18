@@ -450,7 +450,9 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
             contact_id: ctx.contactId,
             agent_user_id: null,
             alert_name: `AI-qualified criteria ${marker}`,
-            source: "ai_agent_qualification",
+            // property_alerts.source CHECK vocabulary (scripts/check-vocabularies.ts):
+            // the AI agent captured these criteria in a text conversation.
+            source: "text_conversation",
             is_active: true,
             min_price: args.min_price, max_price: args.max_price,
             bedrooms_min: args.min_beds, bathrooms_min: args.min_baths,

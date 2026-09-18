@@ -223,4 +223,80 @@ assertions, each with a positive control against the pre-fix literal shape) —
   GA date, flagged rather than resolved).
 - Whether audio-tag prompting is safe to add to this repo's compliance-first
   script writer without a new `scanForAiTells` control for a leaked literal
-  tag is unresolved — named as the blocker in §3, not built.
+  tag is unresolved — named as the blocker in §3, not built. **RESOLVED wave
+  73D** (the very next wave, 2026-09-18, commit `d4b2b4fb`): `ALLOWED_V3_EXPRESSIVE_TAGS`
+  (laughs/chuckles/sighs/whispers), `MAX_EXPRESSIVE_TAGS_PER_100_WORDS`,
+  `enforceExpressiveAudioTagBudget` (caps tags on the v3 lane, strips them
+  entirely elsewhere), and `scanForAiTells`'s leaked-bracket-tag check now
+  exist in `lib/video/realism-profile.ts`. Lane 74D's re-audit (below) found
+  and closed the one gap this created: the budget-capped script (which may
+  still carry an authorized tag) was never stripped before reaching
+  `buildCaptionPlan`'s even-distribution fallback — a literal `[laughs]`
+  could have rendered as an on-screen caption.
+
+## 7. Lane 74D re-audit (2026-09-18, ≤3 Exa calls) — provider pricing re-check after wave 73D
+
+Owner brief: re-check D-ID Express pricing/features, Simli, and one alternative,
+after the google-fonts + ElevenLabs v3 audio-tag wave (73D). Research method:
+3 Exa web searches (`web_search_exa`), 2026-09-18 — no fetch beyond the search
+snippets was needed; every figure below is quoted directly from a source dated
+within the last six weeks.
+
+**D-ID Express v4 — UNCHANGED, re-confirmed.** The Spatius pricing breakdown
+this repo has relied on since wave 61 was re-published 2026-09-07 (11 days
+before this check) with the IDENTICAL table this repo's `DID_USD_PER_STREAMING_MINUTE`
+constant derives from: Build $18/64 credits (32 streaming min), Launch
+$50/$99/$149 (90/180/270 min), Scale $198/$248/$297 (400/500/600 min),
+Enterprise custom. D-ID's own 2026-03-16 V4 launch post (re-surfaced by this
+search) still confirms "all D-ID plans starting from as little as $5.90 a
+month" for V4 access. **No pricing or feature change found — the derived
+constant is still current.**
+
+**Simli — UNCHANGED on price, ONE clarification.** Trinity-1 still marketed at
+"less than $0.01 per streaming minute," $10 signup credit + 50 free
+minutes/month, confirmed by a 2026-08-25 independent review (aitwin.me) and
+Simli's own site. **Clarification found** (codeables.dev, 2026-04-12, Simli-
+authored): production/enterprise procurement DOES get DPA, SOC2-equivalent,
+and SLA documentation "shared directly by the team during procurement" — this
+was previously recorded as "no public security docs," which is still true, but
+"unavailable" would overstate the gap; a brokerage's compliance team CAN get
+these under NDA once volume justifies the conversation. Worth noting if a
+tenant's security review ever blocks Simli-as-backup adoption. No code change
+— Simli is unused today (still zero live SIMLI_API_KEY sessions, per
+`docs/face-render-backup-simli-2026-09.md`).
+
+**Tavus — the one alternative, priced for the first time in this repo's docs.**
+Tavus is a bundled, real-time Conversational Video Interface (CVI): perception
+(Raven-1) + turn-taking (Sparrow-1/2) + LLM orchestration + TTS + rendering
+(Phoenix-4) in ONE metered minute, unlike D-ID (rendering-focused; this repo
+supplies its own LLM via `/api/did/custom-llm` + ElevenLabs TTS separately) or
+Simli (rendering-only STV layer, explicitly "bring your own STT/LLM/TTS").
+Confirmed pricing (tavus.io/pricing + Spatius's 2026-09-04 mirror, consistent
+across both): Free/Basic (25 conversational min/mo), Starter $59/mo (100 min
+included, $0.35-0.37/min overage), Growth $397/mo (1,250 min, $0.31-0.32/min
+overage — two sources disagree on the exact 2nd decimal, flagged rather than
+resolved), Business $975/mo (4,000 min, ~$0.26/min), Enterprise custom
+(SOC2/HIPAA). Every conversation carries a 30-second minimum charge, billed
+from connect (not from first word), a real cost risk for a short "just
+checking availability" caller pattern this repo's receptionist/ISA lanes
+produce often.
+
+**Verdict — NOT adopted, D-ID Express v4 stays primary + Simli backup.**
+Tavus's own per-minute rate ($0.26-0.59 depending on volume) lands in the SAME
+range as D-ID's Scale-tier derived rate (~$0.50/min) — but Tavus's number
+already includes the LLM + TTS this repo pays for SEPARATELY under D-ID
+(AI Gateway tokens + ElevenLabs), so switching would not obviously be cheaper
+once those are added back, and would mean giving up the brand-voice-cascade
+custom LLM brain (`loadBrandVoicePrompt`) for Tavus's own Persona/Replica
+config — an architecture change, not a drop-in swap, and out of scope for an
+audit wave. The 30-second-per-call minimum is also a worse fit than D-ID's
+per-second-class metering for this OS's expected call pattern (many short
+availability/hours-check calls). Recorded as a priced, considered alternative
+— not a recommendation to switch.
+
+**Unresolved (this re-check):** Tavus's Growth-tier overage rate is stated as
+both $0.31/min and $0.32/min across two sections of its OWN pricing page (per
+an independent August-2026 audit of that page, revenueflow.com) — a written
+quote would be needed before sizing any real deployment, moot here since
+Tavus is not being adopted. Simli's real negotiated enterprise rate remains
+unpublished (still true as of this check, same as wave 62/72D).

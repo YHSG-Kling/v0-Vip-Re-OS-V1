@@ -112,7 +112,7 @@ export const SCRAPE_TERRITORY_SELECT = `
   lead_scraping_property_params (id, min_price, max_price, min_beds, max_beds,
     property_types, days_on_market_min),
   lead_scraping_motivated_params (id, is_active, signal_types, lookback_days,
-    facebook_group_urls, reddit_subreddits)
+    facebook_group_urls, reddit_subreddits, review_source_urls)
 `
 
 /**

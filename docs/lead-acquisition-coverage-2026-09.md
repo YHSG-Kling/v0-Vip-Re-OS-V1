@@ -504,22 +504,130 @@ opportunities… If we aren't doing this another competitor will."
 | 21 | LinkedIn job-change/relocation | Apify (`linkedin_relocation`) | **Built** | Apify actor rate | territory-derived keywords | yes |
 | 22 | Divorce/probate/tax-lien/pre-foreclosure court records | OSINT (`osint_signal`) | **Built** | per public-records call | `county`/`state` | yes |
 | 23 | New-construction/builder lists | Apify (Google search, reused) | **Built** (lane 72C) | Apify actor rate | territory-derived phrases | yes |
-| 24 | Rental-to-buyer graduation | — | **Partial** — `rental_listing` (Craigslist `apa`) sources the LANDLORD as a seller lead; nothing follows the TENANT side (a renter approaching lease-end as a future buyer) | — | — | — |
+| 24 | **Rental-to-buyer graduation** | internal (`contacts.home_owner_status`/`length_of_residence`) | **Was Partial → Built lane 74D (tenant side)** | **$0** | brokerage-scoped (own contacts) | contact-side, cooldown-deduped |
 | 25 | Absentee / out-of-state owner | BatchData quicklist (`absentee`) | **Built** | plan-tier $/record | yes | yes |
 | 26 | Lead magnets (guides, calculators) | `form_submissions` intake | **Built** (pre-existing, outside this pipeline — direct-consent intake, not raw scraping) | $0 | n/a (consented) | contact-direct |
 | 27 | IDX/portal behavior (saved searches, favorites) | internal (`lead_idx_property_interactions`, m630/m631) | **Built** (pre-existing) | $0 | n/a | n/a |
 | 28 | **Website visitor identification (anonymous, own site)** | internal (`website_visitors`) | **Was Missing → Built this wave** | **$0** | brokerage-scoped (own site) | identity-key dedup |
 | 29 | **Email engagement (opens/clicks)** | internal (`email_tracking`) | **Was Missing → Built lane 71C** | **$0** | brokerage-scoped (own outbound) | identity-key (email) dedup |
 | 30 | Open-house sign-ins | `form_submissions` (open_house context) + conversion-welcome | **Built** (pre-existing, consented intake) | $0 | n/a | contact-direct |
-| 31 | Review/reputation chatter (as an ACQUISITION signal, not just reputation response) | — | **Missing** as acquisition — `lib/reputation/*` exists for the tenant's OWN review responses, not for sourcing new leads from public review chatter | — | — | — |
+| 31 | **Review/reputation chatter (as an ACQUISITION signal, not just reputation response)** | ZenRows→Zyte + schema extraction | **Was Missing → Built lane 74D** | metered per call (ZenRows/Zyte), quote/provider-gated on `review_source_urls` being configured | reviewer's own words; page URL is tenant-configured, not territory-derived | exact-name attach-vs-mint + `isViableRecord`/identity-key |
 | 32 | **Permit / pre-listing signals** | Exa neural search | **Was Missing → Built lane 73D** | `costDollars.total` per call, `0.005 × numResults` fallback | territory-derived queries (city/county/"city, state") | address-match attach-vs-mint + `isViableRecord`/identity-key |
 
 ### Totals
 
-**Built: 28 / 32 · Partial: 1 / 32 · Missing: 3 / 32** (review/reputation-as-acquisition,
-rental-to-buyer graduation's tenant-side half, and — until wave
-70 — website visitor identification, and — until lane 71C — email engagement, and — until
-lane 72C — new-construction/builder lists, and — until lane 73D — permit/pre-listing signals).
+**Built: 30 / 32 · Partial: 0 / 32 · Missing: 0 / 32** (all 32 lanes from the wave-70 coverage
+audit are now built — items #28 website visitor identification and #29 email engagement wave 70/
+lane 71C, #23 new-construction/builder lists lane 72C, #32 permit/pre-listing signals lane 73D,
+and — closing the matrix this wave — #24 rental-to-buyer graduation's tenant-side half and #31
+review-as-acquisition, both lane 74D, 2026-09-18).
+
+Quote/provider-gated (need a real vendor call or a tenant-supplied configuration value to run,
+never guessed): #16-#20/#25 BatchData (plan tier + wallet budget), #31 review-as-acquisition
+(needs `lead_scraping_motivated_params.review_source_urls` configured per market — no plausible
+guess exists for a tenant's specific Google Business Profile/Zillow/Facebook page URL, unlike
+`facebook_group_urls`'s generic-city-group fallback), #32 permit/pre-listing (`EXA_API_KEY`),
+#1-#6/#9-#15/#21-#23 ZenRows/Zyte/Apify (their respective API keys). $0/first-party, always-on
+once enabled: #24 rental-to-buyer graduation, #26-#30 (lead magnets, IDX/portal behavior, website
+visitor identification, email engagement, open-house sign-ins).
+
+## Lane 74D — the last two coverage rows (2026-09-18)
+
+Owner ruling (task brief, verbatim): "make sure we have covered every area of lead acquisition
+and enrichment scraping opportunities… territory centric… no compliance gating for intelligence."
+This lane closed the coverage matrix's final two rows.
+
+### #24 — Rental-to-buyer graduation, tenant side
+
+**The gap.** `rental_listing` (Craigslist `apa`, pre-wave-65) already sources the LANDLORD side —
+an owner listing a rental is a prospective seller. Nothing ever followed the TENANT side: a renter
+already in the brokerage's own `contacts` whose situation suggests they are ready to stop renting
+and buy.
+
+**Researched first.** This repo has no live `leases` table (confirmed against
+`scripts/schema-snapshot.ts` before writing any code — the task brief's "renter portal" language
+does not correspond to a distinct table or portal surface in this codebase; the closest real thing
+is the general contact portal plus `lib/ai-isa/persona-tool-policy.ts`'s `renter` `ToolPersona`,
+which already derives from `contacts.home_owner_status`). What exists first-class: `home_owner_status`
+('renter') and `length_of_residence` (free-text tenure, parsed by the ONE parser this repo has,
+`lib/avm/provider-chain.ts::parseLengthOfResidence` — reused, never re-derived, CLAUDE.md §6).
+
+**Built.** `lib/lead-pipeline/rental-graduation-sourcer.ts`. `normalizeRentalGraduationSignal`
+gates on `RENTAL_GRADUATION_MIN_TENURE_YEARS` (0.8 — a renter this far in has very likely already
+faced one 12-month lease renewal decision; the STATED reasoning, never a fabricated
+`lease_end_date`, which this repo has no column for). `contacts.household_income` /
+`funds_max_purchase` presence is an OPTIONAL boost signal only (`income_signal_present`) — this
+repo has no parser for a household-income band, so no affordability number is invented from it.
+`sourceRentalToBuyerGraduation` reads one brokerage's renter contacts with tenure on file, skips
+`call_stop_flag` contacts, and for every qualifying contact not already signaled within
+`RENTAL_GRADUATION_SIGNAL_COOLDOWN_DAYS` (90 — a direct `manager_signals` cooldown read, since the
+underlying tenure fact barely changes tick to tick) publishes `contact_rental_graduation_reengage`
+(shopping_agent, who owns the buyer journey, → ai_isa). `records` stays PERMANENTLY empty — same
+contract as `email_engagement_intent` — the person is already a contact, never a raw lead. New
+`SourceKey rental_to_buyer_graduation` (SOURCE_MAP/SOURCE_ALIASES/`SOURCE_VENDOR('internal', $0)`/
+GATE_TOKEN). Wired into `app/api/cron/lead-scraping/route.ts` running ONCE per brokerage
+(`rentalGraduationBrokeragesRun`), no new cron. `SIGNAL_REGISTRY` + `SIGNAL_HANDLERS` entries
+(handler reuses `isaPickUpRecoveryCall`, the SAME helper `contact_email_reengage` uses); the signal
+name carries "reengage" so `classifyCoordination` reads it as a `handoff`, proved directly by
+`test:signal-integrity`. No migration needed — every column this lane reads already exists live.
+
+### #31 — Review-as-acquisition
+
+**The gap.** `lib/reputation/review-landed.ts::onReviewLanded` and `lib/kernel/reputation.ts` exist
+for the tenant's OWN review COLLECTION (a client leaves a review through this repo's own request
+flow) — response/relationship management, not acquisition. Nothing read the tenant's PUBLIC
+Google Business/Zillow/Facebook pages for reviews or questions from STRANGERS.
+
+**Built.** `lib/external/review-extract.ts` — the schema-bound HTML→JSON extraction core (same
+shape as `lib/external/nextdoor-extract.ts`: the model extracts OBSERVABLE FACTS ONLY, reviewer
+name/text/rating/url/date; `classifyReviewIntent` computes the buyer/seller/agent_seeking bucket
+deterministically, never model-authored). Re-exports `REVIEW_PLATFORMS` from
+`lib/kernel/reputation.ts` rather than a second platform vocabulary (CLAUDE.md §6 — proved by
+reference-identity in the simulator, not just value-equality). `lib/lead-pipeline/
+review-acquisition-sourcer.ts::sourceReviewAcquisitionIntent` scrapes configured
+`lead_scraping_motivated_params.review_source_urls` (**migration m652, written, pending apply** —
+same table/shape as the existing `facebook_group_urls` column) via `scrapeSiteWithBestProvider`
+(ZenRows primary / Zyte fallback, wave 65) + `extractFromHtml`. No configured URLs means zero
+scrape before any network call — unlike `facebook_group`'s generic-city-group URL guess, there is
+no plausible guess for a tenant's specific Google Business Profile.
+
+**The identity split (the actual point of this lane).** Same attach-vs-mint shape as
+`permit-sourcer.ts`, but matched on NAME rather than address (a public review carries a display
+name, never a property address). `routeReviewAcquisitionHits` matches each qualifying reviewer's
+EXACT normalized full name (never fuzzy — a false-positive name-collision signal on the wrong
+contact is a real harm, so this stays conservative) against the brokerage's own contacts. A match
+publishes `contact_review_intent_reengage` (campaign_orchestrator, who owns reputation & brand per
+m618, → ai_isa — same `isaPickUpRecoveryCall` handler, "reengage" reads as `handoff`). An unmatched
+reviewer mints a raw lead through the normal pipeline (`insertSocial`/`ingestRawSourceBatch`),
+exactly like every other `SourceKey`. New `SourceKey review_acquisition_intent`
+(`SOURCE_VENDOR('zenrows')`, `identityPolicy: 'enrichment_first'`). Wired into
+`app/api/cron/lead-scraping/route.ts` behind `enabledSources.has('review_acquisition_intent')`,
+folded into the existing social-sources block; cost metered per-provider (ZenRows/Zyte) separately
+from the composite `apify_social` ledger entry, the same way `realty_site_chatter`'s spend is.
+
+**Proofs.** `scripts/rental-graduation-sourcer-simulator.ts` (`test:rental-graduation-sourcer`) and
+`scripts/review-acquisition-sourcer-simulator.ts` (`test:review-acquisition-sourcer`) — pure
+classifiers with positive controls, source-intent-map.ts wiring, fail-closed positive controls, and
+a live round trip (skipped without Supabase creds) that tags rows, proves the manager signal and
+the attach-vs-mint split, and deletes every row it creates. `scripts/scraper-simulator.ts` gained a
+`testLane74DRemainingAcquisitionLanes` block asserting both `SourceKey` registrations.
+
+### Unresolved (lane 74D)
+
+- Migration m652 is WRITTEN, pending the integrator's apply — until then,
+  `review_source_urls` does not exist on the live `lead_scraping_motivated_params` table and the
+  cron's review-acquisition block reads `[]` for every market (fails closed, no scrape, no error —
+  the select list change in `lib/lead-pipeline/scrape-territories.ts` will itself error against the
+  live schema until the column exists, so the migration must land before this code path is
+  exercised against production).
+- `platformFromUrl` (review-acquisition-sourcer.ts) guesses the review platform from the
+  configured URL's host for TAGGING purposes only (never gates anything) — a URL on a custom
+  domain or a redirector would tag as `'internal'` rather than one of the five real platforms;
+  flagged rather than treated as authoritative.
+- Rental-to-buyer graduation's `RENTAL_GRADUATION_MIN_TENURE_YEARS` (0.8) and
+  `RENTAL_GRADUATION_SIGNAL_COOLDOWN_DAYS` (90) are reasoned defaults (stated in the sourcer's own
+  header), not measured against real renter-to-buyer conversion data this repo does not yet have —
+  a future wave with enough closed-deal history could tune them from evidence instead.
 
 ### What this lane built — website visitor identification ($0/record, the cheapest lane possible)
 

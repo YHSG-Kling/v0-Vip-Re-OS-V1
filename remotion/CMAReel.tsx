@@ -43,6 +43,11 @@ export interface CMAReelProps {
   qrCodeDataUrl?: string | null
   qrCaption?:     string
   mlsClean?:      boolean
+  /** LANE 74D — legal attribution line(s) for the comps this reel displays
+   *  (e.g. "Listing data provided by RentCast"), lib/listings/attribution.ts
+   *  ::listingAttributionLine, joined by the caller when comps mix providers.
+   *  "" / absent → nothing renders (the platform's own comps need no credit). */
+  attribution?:   string
   // NO CAPTIONS (wave 62 — decided with the code, not invented here).
   // captionsCues/captionScript were declared and mounted here since wave 61
   // but NEVER fed: cma-reel-orchestrator.ts stages a voiceoverUrl AUDIO track
@@ -129,6 +134,16 @@ export const CMAReel: React.FC<CMAReelProps> = (props) => {
           <span>{brand.brokerageName ?? ""}</span>
           {brand.showEhoMark && <span>Equal Housing Opportunity</span>}
         </div>
+        {/* LANE 74D — the comps this reel displays (price trend / comps-bar /
+            affordability) are RentCast/BatchData/IDX-fed data, same legal
+            obligation as every other listing-display surface
+            (lib/listings/attribution.ts's own header). Below the EHO line,
+            never competing with it for the same reading line. */}
+        {props.attribution && (
+          <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 14, fontFamily: "system-ui", marginTop: 6 }}>
+            {props.attribution}
+          </div>
+        )}
       </AbsoluteFill>
 
       {/* NO CAPTION LAYER (wave 62) — see the CMAReelProps note above:

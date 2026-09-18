@@ -130,7 +130,10 @@ export const CONTENT_CONTRACT: Record<string, CompositionContentContract> = {
   },
   CMAReel: {
     required: ["subjectAddress", "areaName", "priceTrend", "comps", "daysOnMarket", "affordability"],
-    cosmetic: [...CHROME],
+    // LANE 74D — RentCast/BatchData/IDX legal attribution line for the comps
+    // above; cosmetic (never blocks a render on its own — an unsupplied comp
+    // set is what already refuses via `required`, not the credit line).
+    cosmetic: [...CHROME, "attribution"],
     why:
       "A comparative market analysis IS its data. Every chart here is a " +
       "valuation input a seller prices their home on. `daysOnMarket` is a " +

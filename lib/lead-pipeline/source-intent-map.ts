@@ -65,6 +65,19 @@ export type SourceKey =
   // neural-search SELLER/pre-listing lane over recent building-permit filings, estate/probate
   // notices, "coming soon" pre-listing chatter, and contractor-bid posts, territory-centric.
   | 'permit_prelisting_intent'
+  // ── Lane 74D (docs/lead-acquisition-coverage-2026-09.md's remaining-lanes matrix, items #24
+  // and #31 — the last two "Missing"/"Partial" rows) — each DISTINCT from every source above. ──
+  // Renters already in the tenant's own `contacts` whose tenure crosses the graduation bar. NEVER
+  // a raw lead (the person is already a contact) — see lib/lead-pipeline/rental-graduation-
+  // sourcer.ts's header for why `records` stays permanently empty for this key, same posture as
+  // email_engagement_intent.
+  | 'rental_to_buyer_graduation'
+  // Reviewers/commenters on the tenant's PUBLIC Google Business/Zillow/Facebook pages whose own
+  // words carry a real-estate QUESTION — lib/lead-pipeline/review-acquisition-sourcer.ts. Unlike
+  // rental_to_buyer_graduation, THIS key DOES mint raw leads (a name-unmatched reviewer is a
+  // genuinely new person) alongside routing matched-contact hits as a signal — see that file's
+  // attach-vs-mint split.
+  | 'review_acquisition_intent'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -609,6 +622,49 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: true,
   },
 
+  // ── Rental-to-buyer graduation, tenant side (lane 74D) ──────────────────────────────────────
+  // A renter already in `contacts` (home_owner_status='renter') whose tenure
+  // (contacts.length_of_residence, parsed by the ONE parser this repo has for it —
+  // lib/avm/provider-chain.ts::parseLengthOfResidence) crosses a graduation bar reads as
+  // approaching a lease-renewal decision — buy vs. renew again. ALWAYS buyer-side; ALWAYS
+  // 'immediate' would be wrong here (the person already has full identity as a contact — this
+  // key exists for the SCORING/toggle vocabulary, never for a raw-lead promotion path, since
+  // lib/lead-pipeline/rental-graduation-sourcer.ts's `records` output is permanently empty).
+  rental_to_buyer_graduation: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'rental_to_buyer_graduation',
+    behaviorType:              'rental_to_buyer_graduation',
+    scoreRange:                [25, 55],
+    baseScore:                 35,
+    boostSignals:              ['renter_tenure_threshold', 'long_tenure', 'income_signal_present', 'graduation_ready'],
+    dampSignals:               ['short_tenure', 'recently_moved'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
+  // ── Review-as-acquisition (lane 74D) ────────────────────────────────────────────────────────
+  // A reviewer/commenter on the tenant's PUBLIC Google Business/Zillow/Facebook page whose own
+  // text asks a real-estate question ("do you have any listings in…", "what's my home worth?",
+  // "looking for an agent in…"). DISTINCT from lib/reputation/* (that lane records/closes the
+  // tenant's OWN review requests — response, not acquisition) and from realty_site_chatter above
+  // (that lane targets "contact agent"/saved-search DOM markers on listing PORTALS, not review
+  // pages). identityPolicy 'enrichment_first' — a display name alone (no email/phone) is what a
+  // public review carries; PeopleData enrichment resolves the rest downstream, same posture every
+  // social/search lane with a name-only identity anchor already takes.
+  review_acquisition_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'review_acquisition_intent',
+    behaviorType:              'review_question_intent',
+    scoreRange:                [35, 70],
+    baseScore:                 45,
+    boostSignals:              ['review_question_intent', 'agent_referral_request', 'looking_to_buy', 'looking_to_sell'],
+    dampSignals:               ['general_research'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
 }
 
 /**
@@ -747,6 +803,13 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   permit_intent: "permit_prelisting_intent",
   permit_prelisting: "permit_prelisting_intent",
   pre_listing_intent: "permit_prelisting_intent",
+  // Lane 74D — second spellings seen in config/UI copy.
+  rental_graduation: "rental_to_buyer_graduation",
+  renter_graduation: "rental_to_buyer_graduation",
+  rental_to_buyer: "rental_to_buyer_graduation",
+  review_acquisition: "review_acquisition_intent",
+  review_intent: "review_acquisition_intent",
+  reputation_acquisition: "review_acquisition_intent",
 }
 
 /**
@@ -798,6 +861,13 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   new_construction_intent:    'apify',    // Google search via Apify, same vendor as agent_seeking_phrase_intent
   inbound_email_unknown:      'internal', // first-party — the tenant's own inbound mailbox, no vendor call (the AI classification cost books to ai_tool_usage, not vendor_usage_tracking)
   permit_prelisting_intent:  'exa',      // Exa neural search (owner ruling wave 73: "exa is good at looking for leads like permit")
+  // Lane 74D — first-party: the contact this repo already owns, no vendor call.
+  rental_to_buyer_graduation: 'internal',
+  // Lane 74D — contract owner is ZenRows (Zyte configured-key fallback, same posture as
+  // realty_site_chatter above); 'zyte' is a distinct union member so the ledger can attribute a
+  // run that actually fell back, without this contract map pretending to know which provider
+  // serves any given call.
+  review_acquisition_intent: 'zenrows',
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -846,6 +916,8 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   new_construction_intent:    'new_construction_intent',
   inbound_email_unknown:      'inbound_email_unknown',
   permit_prelisting_intent:  'permit_prelisting_intent',
+  rental_to_buyer_graduation: 'rental_to_buyer_graduation',
+  review_acquisition_intent: 'review_acquisition_intent',
 }
 
 /**

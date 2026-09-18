@@ -307,12 +307,23 @@ Return only the improved script text, no explanations.`
     }
   }
 
+  // REALISM (lane 74D) — this rewrite is a genuine second model call
+  // (app/actions/video/generate-script.ts's own scanForAiTells ran on the
+  // ORIGINAL draft, never on what this function's model produces) and its
+  // "more_engaging"/"luxury" prompts are exactly the kind of instruction that
+  // invites a manufactured-sounding phrase. Same advisory posture as
+  // generate-script.ts: never a hold, folded into the same warnings array the
+  // agent already sees.
+  const { scanForAiTells } = await import("@/lib/video/realism-profile")
+  const aiTellHits = scanForAiTells(text)
+  const advisoryWarnings = [...(complianceWarnings ?? []), ...aiTellHits]
+
   return {
     success: true,
     script: text,
     wordCount: text.split(/\s+/).filter(Boolean).length,
     // Warnings PASS THROUGH (§5: warnings pass, only a hard flag escalates).
-    ...(complianceWarnings && complianceWarnings.length > 0 ? { complianceWarnings } : {}),
+    ...(advisoryWarnings.length > 0 ? { complianceWarnings: advisoryWarnings } : {}),
   }
 }
 
@@ -328,6 +339,9 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   complianceReviewId?: string
   /** Everything the agent needs to be told about the hold. */
   complianceReasons?: string[]
+  /** ADVISORY (never blocking, §5) — scanForAiTells findings on the final script,
+   *  whatever its origin (AI-drafted, AI-drafted-then-rewritten, or hand-typed). */
+  realismWarnings?: string[]
 }> {
   if (!isValidUUID(params.brokerageId) || !isValidUUID(params.agentUserId)) {
     return { success: false, error: "Invalid brokerage or agent ID" }
@@ -381,6 +395,30 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
         complianceReasons: hold.reasons,
         error: hold.reasons[0] ?? "This video is held for human compliance review.",
       }
+    }
+  }
+
+  // REALISM SCAN — the render-path choke point (lane 74D). app/actions/video/
+  // generate-script.ts already runs scanForAiTells on a FRESHLY AI-drafted
+  // script, but that is only one of three ways a script reaches this function:
+  // (1) AI-drafted and left alone — already scanned upstream, this is a
+  //     harmless re-scan; (2) AI-drafted then rewritten via improveScript
+  //     above ("make it more engaging"/"luxury"/… — a model call with NO
+  //     realism scan of its own); (3) hand-typed by the agent in the wizard —
+  //     NEVER scanned anywhere. Every one of the three ends up here, in
+  //     params.script, on the way to becoming the video's spoken/captioned
+  //     text, so THIS is the one place that can see all three. Same advisory
+  //     posture as every other realism check in this codebase (§5: warnings
+  //     pass through, never a hold) — scanForAiTells never throws and never
+  //     blocks; findings are surfaced on the response the same way
+  //     lib/did/agents.ts::ensureDIDAgent returns `realismWarnings` for a
+  //     live-agent greeting.
+  let realismWarnings: string[] = []
+  if (params.script?.trim()) {
+    const { scanForAiTells } = await import("@/lib/video/realism-profile")
+    realismWarnings = scanForAiTells(params.script)
+    if (realismWarnings.length > 0) {
+      console.warn(`[create-video-project] realism findings on "${params.title}":`, realismWarnings)
     }
   }
 
@@ -567,7 +605,11 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   revalidatePath("/dashboard/videos")
   revalidatePath("/dashboard/videos/create")
 
-  return { success: true, project: project as VideoProject }
+  return {
+    success: true,
+    project: project as VideoProject,
+    ...(realismWarnings.length > 0 ? { realismWarnings } : {}),
+  }
 }
 
 // ─── SUBMIT AVATAR VIDEO RENDER — DELETED (orphan doctrine §1.1, 2026-09-03) ─

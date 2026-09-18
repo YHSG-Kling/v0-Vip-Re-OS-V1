@@ -41,6 +41,8 @@ import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-terri
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
 import { sourceEmailEngagementIntent } from "@/lib/lead-pipeline/email-engagement-sourcer"
+import { sourceRentalToBuyerGraduation } from "@/lib/lead-pipeline/rental-graduation-sourcer"
+import { sourceReviewAcquisitionIntent, routeReviewAcquisitionHits } from "@/lib/lead-pipeline/review-acquisition-sourcer"
 import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
 import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
@@ -214,6 +216,11 @@ export async function GET(request: Request) {
     // siteVisitorBrokeragesRun immediately above: email_tracking is a brokerage-wide signal
     // (one set of outbound sends, one engagement stream), not a per-territory one.
     const emailEngagementBrokeragesRun = new Set<string>()
+
+    // Lane 74D — rental-to-buyer-graduation lane runs ONCE per BROKERAGE, same reasoning as
+    // emailEngagementBrokeragesRun immediately above: `contacts` is a brokerage-wide table, not a
+    // per-territory one — a renter contact does not belong to any one market row.
+    const rentalGraduationBrokeragesRun = new Set<string>()
 
     for (const market of markets) {
       results.markets_processed++
@@ -583,7 +590,8 @@ export async function GET(request: Request) {
         enabledSources.has("agent_seeking_phrase_intent") ||
         enabledSources.has("realty_chatter") ||
         enabledSources.has("new_construction_intent") ||
-        enabledSources.has("permit_prelisting_intent")
+        enabledSources.has("permit_prelisting_intent") ||
+        enabledSources.has("review_acquisition_intent")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -610,6 +618,10 @@ export async function GET(request: Request) {
         // tracked SEPARATELY from sourceCostUsd (which feeds the single composite "apify_social"
         // ledger entry after this block) — see the realty_chatter block for why.
         let realtyChatterCostUsd = 0
+        // Review-acquisition (ZenRows/Zyte) spend, same reason realtyChatterCostUsd is tracked
+        // separately: metered per-provider inline in that block, not folded into sourceCostUsd's
+        // composite "apify_social" ledger entry.
+        let reviewAcquisitionCostUsd = 0
         let sourceErr: Error | null = null
 
         try {
@@ -841,6 +853,39 @@ export async function GET(request: Request) {
             await insertSocial(routed.toMint, "permit_prelisting_intent", "search_signal", cost)
           }
 
+          // ── Review-as-acquisition (ZenRows→Zyte + schema extraction) — lane 74D ──────
+          // docs/lead-acquisition-coverage-2026-09.md item #31, the second-to-last "Missing" row.
+          // Territory-honest: no configured `review_source_urls` (m652) ⇒
+          // sourceReviewAcquisitionIntent returns zero records before any network call — see that
+          // file's header for why this lane never guesses a profile URL the way facebook_group
+          // guesses a group URL. A reviewer whose name matches a contact this brokerage already
+          // owns is routed to a manager signal (contact_review_intent_reengage) BEFORE
+          // insertSocial ever sees it — an owned name never mints a duplicate person.
+          if (enabledSources.has("review_acquisition_intent")) {
+            const reviewUrls: string[] = motivatedParams?.review_source_urls?.length
+              ? motivatedParams.review_source_urls
+              : []
+            const { records, cost, provider } = await sourceReviewAcquisitionIntent(socialMarket, reviewUrls)
+            reviewAcquisitionCostUsd += cost
+            const routed = await routeReviewAcquisitionHits({ supabase, brokerageId: market.brokerage_id }, records)
+            if (routed.errors.length > 0) {
+              results.errors.push(...routed.errors.map((e) => `Review acquisition routing error for ${market.name}: ${e}`))
+            }
+            if (routed.signaled > 0 || routed.toMint.length > 0) {
+              console.log(`[Lead Scraping Cron] Review acquisition ${market.name}: signaled=${routed.signaled} minting=${routed.toMint.length}`)
+            }
+            if (cost > 0 && provider) {
+              await meterVendorSpend({
+                vendorName: provider,
+                usageType: "review_acquisition_intent",
+                cost,
+                brokerageId: market.brokerage_id,
+                metadata: { market_id: market.id, scraper_type: "review_acquisition_intent" },
+              })
+            }
+            await insertSocial(routed.toMint, "review_acquisition_intent", "social_intent", cost)
+          }
+
           // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────
           // (ZenRows primary, Zyte fallback — lib/external/zenrows-client.ts::
           // scrapeSiteWithBestProvider). Homes.com is NEW coverage this wave. Each site keeps
@@ -887,7 +932,7 @@ export async function GET(request: Request) {
           completed_at: new Date().toISOString(),
           total_items_found: socialLeadsCreated,
           leads_created: socialLeadsCreated,
-          api_cost: sourceCostUsd + realtyChatterCostUsd,
+          api_cost: sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd,
           error_message: sourceErr?.message ?? null,
         }).eq("id", execRecord?.id).then(() => {}, () => {})
 
@@ -905,9 +950,10 @@ export async function GET(request: Request) {
           metadata: { market_id: market.id, scraper_type: "social_intent" },
         })
 
-        // realtyChatterCostUsd was already metered per-provider above (ZenRows/Zyte, not Apify) —
-        // add it to the territory total here so budget tracking still sees the full spend.
-        territorySpendUsd += sourceCostUsd + realtyChatterCostUsd
+        // realtyChatterCostUsd / reviewAcquisitionCostUsd were already metered per-provider above
+        // (ZenRows/Zyte, not Apify) — add them to the territory total here so budget tracking
+        // still sees the full spend.
+        territorySpendUsd += sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd
       }
 
       // ── OSINT public-records source — distressed-seller filings ─────────────
@@ -1007,6 +1053,25 @@ export async function GET(request: Request) {
           }
         } catch (err) {
           results.errors.push(`Email engagement intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── RENTAL-TO-BUYER GRADUATION (tenant side) — lane 74D, $0 marginal cost ─
+      // A renter already in this brokerage's own `contacts` whose tenure crosses the
+      // graduation bar (lib/lead-pipeline/rental-graduation-sourcer.ts). NEVER a raw lead —
+      // the person is already a contact — a manager signal (shopping_agent, who owns the buyer
+      // journey → ai_isa) carries the buy-vs-renew moment instead. Runs ONCE per brokerage (see
+      // rentalGraduationBrokeragesRun above this loop), same shape as email_engagement_intent
+      // immediately above.
+      if (enabledSources.has("rental_to_buyer_graduation") && market.brokerage_id && !rentalGraduationBrokeragesRun.has(market.brokerage_id)) {
+        rentalGraduationBrokeragesRun.add(market.brokerage_id)
+        try {
+          const { rowsExamined, contactsNotified } = await sourceRentalToBuyerGraduation(supabase, market.brokerage_id)
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Rental-to-buyer graduation ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} notified=${contactsNotified}`)
+          }
+        } catch (err) {
+          results.errors.push(`Rental-to-buyer graduation error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
 

@@ -23,6 +23,7 @@ import { missingContentProps, describeMissingContent } from "@/lib/remotion/cont
 // PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
 import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
+import { listingAttributionLine, type ListingAttributionSource } from "@/lib/listings/attribution"
 
 type SectionRenderResult =
   | { ok: true; renderId: string }
@@ -55,7 +56,7 @@ async function renderCmaSectionForPresentation(
 
   const { data: rows } = await supabase
     .from("cma_comparables")
-    .select("address, sale_price, list_price, adjusted_price, days_on_market")
+    .select("address, sale_price, list_price, adjusted_price, days_on_market, source_provider")
     .eq("cma_id", cma.id)
     .limit(8)
   const comparables: CmaComp[] = (rows ?? []).map((r: any) => ({
@@ -66,6 +67,21 @@ async function renderCmaSectionForPresentation(
     days_on_market: r.days_on_market,
   }))
   if (comparables.length === 0) return { ok: false, skipped: "no comparables to render" }
+
+  // LANE 74D — the reel displays these exact comps (CompsBar), so it carries
+  // the same legal attribution obligation as every other listing/comp display
+  // surface (lib/listings/attribution.ts's own header). One line per DISTINCT
+  // provider actually represented among the comps rendered — reuses
+  // listingAttributionLine per row rather than inventing a second sentence
+  // (CLAUDE.md §6); 'idxbroker'/'perplexity'/platform rows contribute no line
+  // or their own established one, same as every other attribution call site.
+  const attribution = Array.from(
+    new Set(
+      (rows ?? [])
+        .map((r: any) => listingAttributionLine(r.source_provider as ListingAttributionSource))
+        .filter((line: string) => line.length > 0),
+    ),
+  ).join(" · ")
 
   // Market median from comparable SALE prices (public market fact — never the
   // subject's valuation). Drives the seller-safe affordability donut.
@@ -86,6 +102,7 @@ async function renderCmaSectionForPresentation(
       subject:           { address: pres.property_address ?? "Your Home", areaName: "", estimatedPrice: marketMedian },
       comparables,
       marketMedianPrice: marketMedian,
+      attribution,
       entityType:        "listing_presentation",
       entityId:          presentationId,
       requestedVia:      "cron",

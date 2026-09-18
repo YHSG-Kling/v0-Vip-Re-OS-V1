@@ -31,6 +31,20 @@
  * (scripts/captions-simulator.ts).
  */
 import { spokenWords } from "./script-structure"
+// LANE 74D — closes the gap named in this file's own sibling module (realism-profile.ts
+// §"SCRIPT AUDIO TAGS → CAPTIONS": "once withNaturalPauses lands, whatever module emits the
+// TAGGED script for TTS must hand buildCaptionPlan/captionScript the UNTAGGED string — a
+// contract this file cannot enforce from here because the tagged producer does not exist yet").
+// Both withNaturalPauses (wave 57) AND enforceExpressiveAudioTagBudget (wave 73D — ElevenLabs v3
+// [laughs]/[chuckles]/[sighs]/[whispers] tags, kept up to a per-script budget ON THE SCRIPT TEXT
+// ITSELF for the v3 lane) now exist, and neither producer strips its own tags before the SAME
+// script/alignment reaches a caption path — app/actions/video/generate-script.ts stores the
+// budget-capped script (which may still carry authorized tags) as the one value both TTS
+// (lib/video/reel-voiceover.ts) and captions read. Rather than trust every future caller to
+// remember the two-step "strip before you hand this to captions" contract, this IS "the one
+// place a viewer would actually see raw text" the sibling module's own comment names — every cue
+// this function returns is stripped, unconditionally, regardless of caller or timing path.
+import { stripExpressiveAudioTags, stripNaturalPauseMarkup } from "./realism-profile"
 
 // ── Alignment shape (mirrors ElevenLabs CharacterAlignmentResponseModel) ──────
 /**
@@ -129,9 +143,10 @@ export function buildCaptionPlan(
 
   // ── Path A — REAL alignment (word-accurate) ──────────────────────────────
   if (isAlignment(source)) {
-    const cues = cuesFromAlignment(source, usableFrames, safeFps, maxWords, minCueFrames)
+    const cues = stripTagsFromCues(cuesFromAlignment(source, usableFrames, safeFps, maxWords, minCueFrames))
     if (cues.length > 0) return { cues, timingSource: "alignment" }
-    // Alignment present but unusable (all-whitespace / empty arrays) → empty.
+    // Alignment present but unusable (all-whitespace / empty arrays, or every
+    // word an authorized tag that stripped to nothing) → empty.
     return { cues: [], timingSource: "empty" }
   }
 
@@ -140,8 +155,27 @@ export function buildCaptionPlan(
   const words = splitWords(text)
   if (words.length === 0) return { cues: [], timingSource: "empty" }
 
-  const cues = cuesFromEvenDistribution(words, usableFrames, maxWords, minCueFrames)
+  const cues = stripTagsFromCues(cuesFromEvenDistribution(words, usableFrames, maxWords, minCueFrames))
   return { cues, timingSource: cues.length > 0 ? "even" : "empty" }
+}
+
+/**
+ * PURE. The choke point named in this file's header comment above — applied to EVERY cue this
+ * function ever returns, on both timing paths: strips ElevenLabs v3 expressive audio tags
+ * ("[laughs]", …) and natural-pause markup from the cue TEXT (never touches timing), then drops
+ * any cue that stripped down to nothing (a cue that was ENTIRELY a tag — e.g. a standalone
+ * "[laughs]" phrase — would otherwise render a blank caption box; a real cue's timing/duration is
+ * untouched, so a dropped tag-only cue simply leaves its neighbour's caption on screen slightly
+ * longer, the same "caption-free is a normal state" posture this file already takes for an empty
+ * plan).
+ */
+function stripTagsFromCues(cues: CaptionCue[]): CaptionCue[] {
+  const out: CaptionCue[] = []
+  for (const cue of cues) {
+    const text = stripExpressiveAudioTags(stripNaturalPauseMarkup(cue.text)).trim()
+    if (text) out.push({ ...cue, text })
+  }
+  return out
 }
 
 // ─── Path A: alignment → word-timed phrase cues ──────────────────────────────

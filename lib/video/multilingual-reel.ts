@@ -84,6 +84,7 @@ export {
 // literal so the video_metadata this function stamps stays honest about
 // which model actually renders the audio (wave 57).
 import { elevenLabsModelForLane } from "@/lib/video/realism-profile"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 // ─── resolveContactLanguage — THE ONE LANGUAGE RESOLVER (§6) ─────────────────
 
@@ -292,7 +293,10 @@ export async function translateReelScript(
 
   try {
     const res = await gatewayChat({
-      model: "anthropic/claude-sonnet-4-20250514",
+      // LANE 74D — was a dated -20250514 literal (wave 59's stale-catalog
+      // ruling: "NEVER write a dated literal; use resolveModel('claude-sonnet')
+      // etc."). One alias table, lib/ai/resolve-model.ts, never re-typed here.
+      model: resolveModel("claude-sonnet") as string,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user",   content: userPrompt },

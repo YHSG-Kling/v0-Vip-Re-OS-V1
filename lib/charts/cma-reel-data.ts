@@ -77,6 +77,12 @@ export interface BuildCmaReelInput {
   /** Market median sale price (public market data) — used for customer-facing
    *  affordability so the subject's value is never revealed. */
   marketMedianPrice?: number
+  /** LANE 74D — legal attribution line for the comps this reel displays,
+   *  derived by the caller from `cma_comparables.source_provider` via
+   *  lib/listings/attribution.ts::listingAttributionLine (never invented
+   *  here — this file stays a pure data→chart bridge with no provenance
+   *  logic of its own). "" / absent renders nothing. */
+  attribution?: string
 }
 
 export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string, unknown> {
@@ -151,6 +157,7 @@ export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string,
       ? "Your home's value — revealed at our meeting."
       : "Want this analysis for your home?",
     brand,
+    attribution:    input.attribution ?? "",
   }
 }
 

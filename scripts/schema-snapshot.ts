@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-17
+ * generated: 2026-09-18
  * source: public.live_schema_json()
- * body-sha256: 434b3b0ec6e113b935368a95c4e83ca0586a006c165c5c788ba36a9bb6e0cdfa
+ * body-sha256: ffeb00297eb820bb80044c9b9e41a92414b0b524a28133b1b24f722211e381c6
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -364,7 +364,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   lead_scraping_jobs: ["brokerage_id", "completed_at", "created_at", "error_message", "id", "job_type", "leads_created", "leads_found", "market_id", "metadata", "source", "started_at", "status"],
   lead_scraping_keywords: ["brokerage_id", "created_at", "id", "is_active", "keyword", "keyword_type", "sources", "weight"],
   lead_scraping_markets: ["agent_id", "brokerage_id", "city", "counties", "created_at", "enabled_sources", "id", "is_active", "last_scraped_at", "max_records_per_run", "monthly_budget_usd", "name", "priority", "radius_miles", "spend_this_month", "state", "team_id", "territory_scope", "zip_codes"],
-  lead_scraping_motivated_params: ["facebook_group_urls", "id", "is_active", "lookback_days", "market_id", "reddit_subreddits", "signal_types"],
+  lead_scraping_motivated_params: ["facebook_group_urls", "id", "is_active", "lookback_days", "market_id", "reddit_subreddits", "review_source_urls", "signal_types"],
   lead_scraping_property_params: ["days_on_market_min", "id", "market_id", "max_beds", "max_price", "min_beds", "min_price", "property_types"],
   lead_sla_tracking: ["agent_id", "breach_notified", "breached", "brokerage_id", "completed_at", "created_at", "id", "lead_id", "sla_type", "target_at"],
   lead_value_journey: ["became_client", "brokerage_id", "contact_id", "conversion_value", "created_at", "first_interaction_date", "guides_downloaded", "id", "roi_multiple", "time_to_conversion_days", "tools_used", "total_value_received", "touchpoints_count", "updated_at"],

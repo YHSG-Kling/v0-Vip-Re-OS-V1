@@ -34,6 +34,11 @@ export interface EnqueueCmaReelParams {
   audience?:      "agent" | "customer"
   /** Optional voiceover track (e.g. ElevenLabs narration of the CMA). */
   voiceoverUrl?:  string | null
+  /** LANE 74D — legal attribution line for the comps rendered (RentCast/
+   *  BatchData/IDX) — see lib/charts/cma-reel-data.ts's BuildCmaReelInput
+   *  field of the same name for where this flows. Pass "" / omit for an
+   *  all-platform comp set. */
+  attribution?:   string
   entityType?:    string | null
   entityId?:      string | null
   /** 'api' (default), 'manual', 'cron', 'asset_manager', 'ad_creator'. */
@@ -61,6 +66,7 @@ export async function enqueueCmaReelRender(
     affordability:     params.affordability,
     marketMedianPrice: params.marketMedianPrice,
     audience:          params.audience,
+    attribution:       params.attribution,
   })
   const voiceoverUrl = params.voiceoverUrl ?? null
 

@@ -68,6 +68,7 @@ import {
 // content-contract, both DB-free) — the companion-card gate and the hint cutter.
 import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { describeMissingContent } from "@/lib/remotion/content-contract"
+import { scanForAiTells } from "@/lib/video/realism-profile"
 
 export { AVATAR_EXPLAINER_PRESETS }
 export type { AvatarExplainerPreset, ExplainerVoiceSource }
@@ -376,6 +377,15 @@ Return the JSON now.`
             v.push(`narration is ${n} words — ${budget.compositionId} can speak at most ${budget.maxWords} (${budget.compositionSeconds}s composition)`)
           }
         }
+        // REALISM (lane 74D) — this narration reaches a D-ID avatar's spoken
+        // delivery with no other gate in the way (avatar-explainer.ts had NO
+        // scanForAiTells call anywhere before this). Same one-redraft-loop
+        // idiom intro-video-reactor.ts / listing-promo-reactor.ts already use:
+        // an AI-tell is exactly as disqualifying as a compliance finding for
+        // THIS purpose, so both ride the SAME retry (§6) rather than a second
+        // mechanism. scanForAiTells only judges the SPOKEN field — eyebrow/
+        // title/bullets/cta are on-screen text, not delivery.
+        if (parsed) v.push(...scanForAiTells(parsed.narration))
         return { allowed: v.length === 0, violations: v }
       },
     })

@@ -36,6 +36,13 @@ import {
 } from "../lib/lead-pipeline/raw-record-types"
 import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases, buildNewConstructionPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
 import { normalizeSiteVisitorRow, SITE_VISITOR_MIN_DWELL_SECONDS, SITE_VISITOR_LOOKBACK_HOURS } from "../lib/lead-pipeline/site-visitor-sourcer"
+// lib/lead-pipeline/rental-graduation-sourcer.ts statically imports lib/avm/provider-chain.ts,
+// which imports `server-only` (throws outside a Server Component) — NOT imported at the top of
+// this file for that reason; testLane74DRemainingAcquisitionLanes below shims the require cache
+// and loads it via a deferred dynamic import instead, the same idiom
+// scripts/accounting-scopes-simulator.ts established for the identical class of defect.
+import { normalizeReviewAcquisitionEntry, sourceReviewAcquisitionIntent } from "../lib/lead-pipeline/review-acquisition-sourcer"
+import { classifyReviewIntent } from "../lib/external/review-extract"
 import {
   detectIntent,
   isInvestor,
@@ -1976,6 +1983,54 @@ function testWave70SiteVisitorLane() {
   check("site_visitor_intent → lookback matches the cron's own 6-hour cadence", SITE_VISITOR_LOOKBACK_HOURS === 6)
 }
 
+async function testLane74DRemainingAcquisitionLanes() {
+  console.log("\n[Lane 74D · rental-to-buyer graduation + review-as-acquisition — wiring]")
+  console.log("(full pure-classifier + positive-control coverage lives in scripts/rental-graduation-sourcer-simulator.ts")
+  console.log(" and scripts/review-acquisition-sourcer-simulator.ts — this block proves the source-intent-map.ts wiring")
+  console.log(" both lanes register against, same as testWave70SiteVisitorLane does for its own lane.)")
+
+  // Deferred dynamic import — see the header comment on this file's import block for why.
+  const { createRequire } = await import("module")
+  const _require = createRequire(import.meta.url)
+  try {
+    const soPath = _require.resolve("server-only")
+    _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
+  } catch { /* server-only not resolvable — nothing to shim */ }
+  const { normalizeRentalGraduationSignal, RENTAL_GRADUATION_MIN_TENURE_YEARS } = await import("../lib/lead-pipeline/rental-graduation-sourcer")
+
+  check("rental_to_buyer_graduation has a REAL scoring entry (not the silent fallback)", hasScoringEntry("rental_to_buyer_graduation"))
+  check("rental_to_buyer_graduation is internal-vendor-routed ($0, first-party contacts data)", SOURCE_VENDOR.rental_to_buyer_graduation === "internal")
+  check("rental_to_buyer_graduation aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("rental_graduation") === "rental_to_buyer_graduation" && resolveSourceKey("rental_to_buyer") === "rental_to_buyer_graduation")
+  check("expandEnabledSources activates the rental_to_buyer_graduation gate token", expandEnabledSources(["rental_to_buyer_graduation"]).has("rental_to_buyer_graduation"))
+  // POSITIVE CONTROL — an owner never qualifies (tenure/renter gate actually gates).
+  check("POSITIVE CONTROL: normalizeRentalGraduationSignal refuses a non-renter",
+    normalizeRentalGraduationSignal({ contactId: "c1", firstName: "A", lastName: "B", city: null, state: null, homeOwnerStatus: "owner", lengthOfResidence: "5 years", householdIncome: null, fundsMaxPurchase: null }) === null)
+  check("a qualifying renter (tenure ≥ bar) DOES normalize",
+    normalizeRentalGraduationSignal({ contactId: "c2", firstName: "A", lastName: "B", city: "Austin", state: "TX", homeOwnerStatus: "renter", lengthOfResidence: `${RENTAL_GRADUATION_MIN_TENURE_YEARS + 0.5} years`, householdIncome: null, fundsMaxPurchase: null }) !== null)
+
+  check("review_acquisition_intent has a REAL scoring entry (not the silent fallback)", hasScoringEntry("review_acquisition_intent"))
+  check("review_acquisition_intent is zenrows-vendor-routed (Zyte fallback by configured key, same posture as realty_site_chatter)", SOURCE_VENDOR.review_acquisition_intent === "zenrows")
+  check("review_acquisition_intent aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("review_acquisition") === "review_acquisition_intent" && resolveSourceKey("review_intent") === "review_acquisition_intent")
+  check("expandEnabledSources activates the review_acquisition_intent gate token", expandEnabledSources(["review_acquisition_intent"]).has("review_acquisition_intent"))
+  check("both lane 74D SourceKeys are DISTINCT from every other lane (never merged)",
+    resolveSourceKey("rental_to_buyer_graduation") !== resolveSourceKey("review_acquisition_intent") &&
+    resolveSourceKey("review_acquisition_intent") !== resolveSourceKey("permit_prelisting_intent"))
+
+  // POSITIVE CONTROL — ordinary review praise (no real-estate question) never becomes a candidate.
+  check("POSITIVE CONTROL: classifyReviewIntent + normalizeReviewAcquisitionEntry refuse ordinary praise",
+    normalizeReviewAcquisitionEntry(
+      { reviewer_name: "Chris Lee", review_text: "Wonderful experience, thank you!", rating: 5, url: null, posted_at: null, matched_signals: [], intentType: classifyReviewIntent("Wonderful experience, thank you!").intentType, extraction: "llm_schema" },
+      { city: "Austin", state: "TX" }, "google",
+    ) === null)
+
+  // POSITIVE CONTROL — territory-honesty: no configured review_source_urls ⇒ zero scrape, no network call.
+  const noUrls = await sourceReviewAcquisitionIntent({ city: "Austin", state: "TX" }, [])
+  check("POSITIVE CONTROL: sourceReviewAcquisitionIntent with no configured URLs makes NO network call (zero records/cost/urlsScanned)",
+    noUrls.records.length === 0 && noUrls.cost === 0 && noUrls.urlsScanned === 0)
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
@@ -2016,6 +2071,7 @@ async function main() {
   await testLane73DAttachVsMint()
   testWave66Channels()
   testWave70SiteVisitorLane()
+  await testLane74DRemainingAcquisitionLanes()
   testActorRegistryFreshness()
   await testZyteClientAndProviderPicker()
 
