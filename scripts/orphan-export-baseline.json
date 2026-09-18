@@ -52,10 +52,11 @@
     "lib/ai/web-search.ts": 1,
     "lib/ai-isa/adaptive-reengagement.ts": 2,
     "lib/ai-isa/appointment-form.ts": 1,
-    "lib/ai-isa/batchdata-isa-tools.ts": 6,
+    "lib/ai-isa/batchdata-isa-tools.ts": 7,
     "lib/ai-isa/callback-task.ts": 2,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
+    "lib/ai-isa/customer-context-tools.ts": 3,
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
@@ -63,6 +64,7 @@
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
     "lib/ai-isa/next-best-touch.ts": 1,
+    "lib/ai-isa/persona-tool-policy.ts": 5,
     "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
@@ -138,7 +140,7 @@
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
-    "lib/external/permit-signals.ts": 13,
+    "lib/external/permit-signals.ts": 11,
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
@@ -286,6 +288,7 @@
     "lib/lead-pipeline/exa-sourcer.ts": 1,
     "lib/lead-pipeline/osint-sourcer.ts": 1,
     "lib/lead-pipeline/parked-retention.ts": 4,
+    "lib/lead-pipeline/permit-sourcer.ts": 4,
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
     "lib/lead-pipeline/promotion-address-verification.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
@@ -295,6 +298,7 @@
     "lib/lead-pipeline/source-intent-map.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
+    "lib/lead-pipeline/unknown-sender-identification.ts": 3,
     "lib/lead-scoring/behavioral-events.ts": 1,
     "lib/lead-scoring/record-behavioral-event.ts": 1,
     "lib/learning-router/composer.ts": 1,
@@ -418,13 +422,14 @@
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
     "lib/video/promo-composition.ts": 1,
-    "lib/video/realism-profile.ts": 3,
+    "lib/video/realism-profile.ts": 5,
     "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/platform-reception.ts": 2,
+    "lib/voice/reception-brain.ts": 1,
     "lib/voice/reception-inventory.ts": 2,
     "lib/voice/studio-session.ts": 7,
     "lib/voice/twilio-outbound.ts": 1,
@@ -438,7 +443,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9592,
+  "census": 9623,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2699,7 +2704,7 @@
     "lib/ai-isa/adaptive-reengagement.ts": 4,
     "lib/ai-isa/appointment-form.ts": 4,
     "lib/ai-isa/appointment-scheduler.ts": 1,
-    "lib/ai-isa/batchdata-isa-tools.ts": 7,
+    "lib/ai-isa/batchdata-isa-tools.ts": 8,
     "lib/ai-isa/book-seller-appointment.ts": 1,
     "lib/ai-isa/brand-voice-prompt.ts": 2,
     "lib/ai-isa/build-call-context.ts": 1,
@@ -2711,6 +2716,7 @@
     "lib/ai-isa/conversation-handler.ts": 3,
     "lib/ai-isa/convert-buyer-lead-on-intent.ts": 1,
     "lib/ai-isa/convert-seller-lead-on-intent.ts": 1,
+    "lib/ai-isa/customer-context-tools.ts": 5,
     "lib/ai-isa/direct-mail-trigger.ts": 2,
     "lib/ai-isa/email-generator.ts": 2,
     "lib/ai-isa/first-touch-copy.ts": 1,
@@ -2731,6 +2737,7 @@
     "lib/ai-isa/next-best-touch.ts": 4,
     "lib/ai-isa/opt-out-utils.ts": 1,
     "lib/ai-isa/outreach-identity.ts": 2,
+    "lib/ai-isa/persona-tool-policy.ts": 11,
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
@@ -3616,6 +3623,7 @@
     "lib/lead-pipeline/offer-rejection-recovery.ts": 1,
     "lib/lead-pipeline/osint-sourcer.ts": 2,
     "lib/lead-pipeline/parked-retention.ts": 6,
+    "lib/lead-pipeline/permit-sourcer.ts": 6,
     "lib/lead-pipeline/perplexity-enrichment.ts": 1,
     "lib/lead-pipeline/persona-drift-runner.ts": 1,
     "lib/lead-pipeline/persona-drift.ts": 1,
@@ -3646,6 +3654,7 @@
     "lib/lead-pipeline/stale-preapproval-reengage.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 2,
     "lib/lead-pipeline/tavily-sourcer.ts": 2,
+    "lib/lead-pipeline/unknown-sender-identification.ts": 4,
     "lib/lead-pipeline/variant-winner.ts": 1,
     "lib/lead-promotion/eligibility-core.ts": 1,
     "lib/lead-promotion/eligibility-evaluator.ts": 1,
@@ -4196,7 +4205,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 15,
+    "lib/video/realism-profile.ts": 18,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -4230,7 +4239,7 @@
     "lib/voice/outbound-call-gates.ts": 1,
     "lib/voice/parse-team-command.ts": 1,
     "lib/voice/platform-reception.ts": 7,
-    "lib/voice/reception-brain.ts": 9,
+    "lib/voice/reception-brain.ts": 10,
     "lib/voice/reception-inventory.ts": 3,
     "lib/voice/recording-playback-path.ts": 1,
     "lib/voice/render-voice-drop.ts": 1,
@@ -13504,6 +13513,7 @@
     "lib/ai-isa/batchdata-isa-tools.ts": [
       "criteriaKey",
       "resolveBatchDataIsaBudgetCents",
+      "resolvePersonaBudgetCents",
       "evaluateBudget",
       "evaluatePageOrder",
       "toInvestorFacingToolRow",
@@ -13560,6 +13570,13 @@
     ],
     "lib/ai-isa/convert-seller-lead-on-intent.ts": [
       "convertSellerLeadOnIntent"
+    ],
+    "lib/ai-isa/customer-context-tools.ts": [
+      "writeFollowUpActivity",
+      "buildGetMyContextTool",
+      "buildRequestShowingTool",
+      "buildSearchOurListingsTool",
+      "buildCustomerFreeTools"
     ],
     "lib/ai-isa/direct-mail-trigger.ts": [
       "shouldTriggerDirectMail",
@@ -13652,6 +13669,19 @@
     "lib/ai-isa/outreach-identity.ts": [
       "resolveLeadPresenterUserId",
       "resolveContactPresenterUserId"
+    ],
+    "lib/ai-isa/persona-tool-policy.ts": [
+      "resolveToolPersona",
+      "isToolAllowedForPersona",
+      "redactionModeForPersona",
+      "resolveConfiguredBatchDataToolTier",
+      "resolveBatchDataToolMonthlyCapCents",
+      "evaluateEffectiveBatchDataTier",
+      "readPlatformBatchDataMonthlySpendCents",
+      "resolveEffectiveBatchDataToolTier",
+      "isToolAllowedForTier",
+      "filterToolsByTier",
+      "filterRentCastToolsForPersona"
     ],
     "lib/ai-isa/personalize-outreach.ts": [
       "buildPersonalizationFacts",
@@ -18300,6 +18330,14 @@
       "loadParkedRetention",
       "executeStaleParkedPurge"
     ],
+    "lib/lead-pipeline/permit-sourcer.ts": [
+      "buildPermitSearchQueries",
+      "extractApplicantName",
+      "extractPropertyAddress",
+      "normalizePermitSearchResult",
+      "sourcePermitPrelistingIntent",
+      "routePermitPrelistingHits"
+    ],
     "lib/lead-pipeline/perplexity-enrichment.ts": [
       "enrichViaPerplexity"
     ],
@@ -18448,6 +18486,12 @@
     "lib/lead-pipeline/tavily-sourcer.ts": [
       "normalizeTavilyResult",
       "sourceTavilyIntent"
+    ],
+    "lib/lead-pipeline/unknown-sender-identification.ts": [
+      "extractInboundHeaderText",
+      "preFilterAutomatedSender",
+      "classifyUnknownSenderIntent",
+      "identifyAndRouteUnknownSender"
     ],
     "lib/lead-pipeline/variant-winner.ts": [
       "pickWinningVariant"
@@ -21102,6 +21146,9 @@
       "withNaturalPauses",
       "stripNaturalPauseMarkup",
       "alignmentWithoutPauseMarkup",
+      "budgetForWordCount",
+      "stripExpressiveAudioTags",
+      "enforceExpressiveAudioTagBudget",
       "sentenceLengthCoefficientOfVariation",
       "scanForAiTells",
       "avatarPipWindowFade",
@@ -21302,6 +21349,7 @@
       "buildReceptionPrompt",
       "buildOutboundPrompt",
       "parseTurnPlan",
+      "parseVoiceToolRequest",
       "transcriptToMessages",
       "appendTranscript",
       "twimlGatherTurn",

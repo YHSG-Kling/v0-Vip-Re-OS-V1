@@ -129,13 +129,14 @@ import {
   isToolAllowedForPersona,
   redactionModeForPersona,
   resolveEffectiveBatchDataToolTier,
-  filterToolsByTier,
-} from "@/lib/ai-isa/persona-tool-policy"
+  filterToolsByTier, TOOL_PERSONAS } from "@/lib/ai-isa/persona-tool-policy"
 
 /** @deprecated alias for `ToolPersona` (lib/ai-isa/persona-tool-policy.ts) — kept so any
  *  external importer of the old name keeps compiling; every new caller should import
  *  `ToolPersona` directly. */
-export type BatchDataIsaPersona = ToolPersona
+// TOMBSTONE (wave 73 integration): `BatchDataIsaPersona` was an exported alias of
+// ToolPersona with no importer (opposite-missing category 3). The survivor is
+// lib/ai-isa/persona-tool-policy.ts::ToolPersona — one persona vocabulary (§6).
 export type { ToolPersona }
 
 export interface BatchDataIsaToolsContext {
@@ -381,6 +382,9 @@ const PhoneShape = {
 export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<Record<string, unknown>> {
   if (!resolveBatchDataToken("mcp")) return {}
   if (!ctx.brokerageId || !ctx.conversationKey) return {}
+  // FAIL CLOSED on an unknown persona (wave 73 integration): a persona outside the
+  // catalogue has no allowlist and no cap, so it gets NO tools rather than a guess.
+  if (!(TOOL_PERSONAS as readonly string[]).includes(ctx.persona)) return {}
 
   const state = getConversationState(ctx.conversationKey)
   const budgetCents = resolvePersonaBudgetCents(ctx.persona)

@@ -291,7 +291,7 @@ which of the 720 pre-existing entries are essay-grade adjudications and which
 manager roster, cross-cooperation rules, or signal-routing invariants those
 guards check. `npx tsc --noEmit` on `lib/kernel/manager-registry.ts` alone is
 clean. Two collisions were found and fixed during insertion: a JS-illegal
-object key (`test:e2e:flows` → key `e2e_flows`, not `e2e:flows`) and one
+object key (`test:e2e-flows` → key `e2e_flows`, not `e2e:flows`) and one
 key that happened to already exist under a different proof
 (`buyer_nl_search` already named `test:doc-kernel`; the new entry was
 renamed `buyer_nl_search_fh_correctness` to avoid silently overwriting the

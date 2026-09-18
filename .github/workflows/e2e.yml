@@ -35,7 +35,7 @@ jobs:
       - name: Type-check
         run: npm run type-check
       - name: Run end-to-end business-process flows (live DB seed/assert/cleanup)
-        run: npm run test:e2e:flows
+        run: npm run test:e2e-flows
       # LIVE-SCHEMA DRIFT (round 18): the per-push drift guard proves code vs
       # the COMMITTED snapshot; this proves the snapshot vs the LIVE database —
       # DDL applied between deploys is caught within a day, not by a customer.

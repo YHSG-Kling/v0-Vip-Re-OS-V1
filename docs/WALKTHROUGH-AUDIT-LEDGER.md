@@ -625,7 +625,7 @@ script in `package.json` against what CI actually invokes:
 | never run by anything | **429** |
 
 CI has exactly four entry points — `guard` and `guard:compliance` (`guards.yml`),
-`test:e2e:flows` (`e2e.yml`), and `test:production-smoke` (`post-deploy-smoke.yml`). The other
+`test:e2e-flows` (`e2e.yml`), and `test:production-smoke` (`post-deploy-smoke.yml`). The other
 429 simulators are invoked by nothing: not a workflow, not a chain, not another script.
 
 **That headline number overstates the problem, and the split is the point.** 275 of the orphans
@@ -659,7 +659,7 @@ baselined unreviewed.
 Four scripts resolve to no simulator file, and none is a coverage gap:
 
 - `test:e2e` / `test:e2e:ui` — Playwright against a running server; `e2e.yml` runs
-  `test:e2e:flows` instead.
+  `test:e2e-flows` instead.
 - `harness:integrity` — an alias for 11 guards that are **all already in `guard`**. Redundant,
   not missing.
 - `check:kernel-client-leaks` — a bare `rg` with no pass/fail semantics. It exits 0 on 58

@@ -189,7 +189,7 @@ export function preFilterAutomatedSender(input: {
 // 2. AI REAL-ESTATE-INTENT CLASSIFICATION — the cheapest routed lane
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type UnknownSenderIntentType =
+type UnknownSenderIntentType =
   | "buyer" | "seller" | "investor" | "renter" | "relocation" | "agent_seeking" | "unknown"
 
 const UnknownSenderClassificationSchema = z.object({

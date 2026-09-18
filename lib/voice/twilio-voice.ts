@@ -343,7 +343,8 @@ async function executeVoiceToolRound(
   if (!req) return plan
 
   const batchDataIsaToolsFn: BatchDataIsaToolsFn =
-    deps.batchDataIsaTools ?? (await import("@/lib/ai-isa/batchdata-isa-tools")).batchDataIsaTools
+    deps.batchDataIsaTools ??
+    ((await import("@/lib/ai-isa/batchdata-isa-tools")).batchDataIsaTools as unknown as BatchDataIsaToolsFn)
   const { resolveToolPersona } = await import("@/lib/ai-isa/persona-tool-policy")
 
   let contactType: string | null = null
