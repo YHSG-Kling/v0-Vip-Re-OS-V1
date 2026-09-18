@@ -429,7 +429,6 @@
     "lib/video/video-qr.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/platform-reception.ts": 2,
-    "lib/voice/reception-brain.ts": 1,
     "lib/voice/reception-inventory.ts": 2,
     "lib/voice/studio-session.ts": 7,
     "lib/voice/twilio-outbound.ts": 1,
@@ -443,7 +442,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9623,
+  "census": 9622,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4239,7 +4238,7 @@
     "lib/voice/outbound-call-gates.ts": 1,
     "lib/voice/parse-team-command.ts": 1,
     "lib/voice/platform-reception.ts": 7,
-    "lib/voice/reception-brain.ts": 10,
+    "lib/voice/reception-brain.ts": 9,
     "lib/voice/reception-inventory.ts": 3,
     "lib/voice/recording-playback-path.ts": 1,
     "lib/voice/render-voice-drop.ts": 1,
@@ -21349,7 +21348,6 @@
       "buildReceptionPrompt",
       "buildOutboundPrompt",
       "parseTurnPlan",
-      "parseVoiceToolRequest",
       "transcriptToMessages",
       "appendTranscript",
       "twimlGatherTurn",
