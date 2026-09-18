@@ -57,7 +57,7 @@
  *     agent action already confirms from. The same table's customer_copy
  *     doubles as the contact's portal in-app push (getCustomerPortalFeed
  *     already reads it) — one row, two readers, never a second table.
- *   · lib/providers/messaging/index.ts::sendEmail — extended with an optional
+ *   · lib/providers/dispatch.ts::dispatchEmail (→ messaging sendEmail) — extended with an optional
  *     ICS attachment (this wave) for the auto calendar emails.
  *   · lib/kernel/appointment-noshow-autopilot.ts — "listing_appointment" is
  *     added to APPOINTMENT_EVENT_TYPES (this wave) so the existing within-24h
@@ -81,7 +81,9 @@ import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver
 import { CalendarEventType } from "@/lib/kernel/calendar-types"
 import { getAvailabilityViaPersonal, createEventViaPersonal, updateEventViaPersonal } from "@/lib/providers/calendar/personal-calendar"
 import { DEFAULT_WORKING_HOURS, type WorkingHours, type FreeSlot } from "@/lib/providers/calendar/free-slots"
-import { sendEmail } from "@/lib/providers/messaging"
+// Emails go through the ONE governed egress (lib/providers/dispatch.ts) — the
+// low-level messaging sender is never imported here (egress-send-guard).
+import { dispatchEmail } from "@/lib/providers/dispatch"
 import { daysBetween } from "@/lib/format/dates"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -550,16 +552,21 @@ export async function confirmListingAppointment(
       location: propertyAddress, organizerEmail: a.email, attendeeEmail: c.email,
     })
     const [contactSend, agentSend] = await Promise.all([
-      sendEmail({
+      dispatchEmail({
         to: c.email, subject: `Confirmed: ${summary}`,
         html: `<p>Hi ${c.first_name ?? ""},</p><p>Your listing appointment is confirmed for <strong>${new Date(r.start_at).toLocaleString()}</strong> at ${propertyAddress}.</p>`,
         contactId: r.entity_id, brokerageId: params.brokerageId,
+        systemSource: "listing_appointment", channelPurpose: "transactional",
         icsAttachment: { filename: "appointment.ics", content: ics },
       }).catch((e) => ({ success: false, error: String(e) })),
-      sendEmail({
+      dispatchEmail({
         to: a.email, subject: `Confirmed: ${summary}`,
         html: `<p>Your listing appointment with ${c.first_name ?? "the client"} is confirmed for <strong>${new Date(r.start_at).toLocaleString()}</strong> at ${propertyAddress}.</p>`,
-        brokerageId: params.brokerageId, skipVerificationGate: true,
+        // r.agent_user_id is a USERS id (calendar_events.agent_user_id), so it
+        // goes in as userId — DispatchActorContext.agentId is an AGENTS id and
+        // the two are disjoint (CLAUDE.md §3).
+        brokerageId: params.brokerageId, userId: r.agent_user_id,
+        systemSource: "listing_appointment", channelPurpose: "transactional",
         icsAttachment: { filename: "appointment.ics", content: ics },
       }).catch((e) => ({ success: false, error: String(e) })),
     ])
@@ -625,9 +632,10 @@ export async function sendListingAppointmentReminders(svc: Svc = createServiceCl
       : `Reminder: your listing appointment at ${propertyAddress} is coming up (${when}).`
 
     if (c?.email) {
-      await sendEmail({
+      await dispatchEmail({
         to: c.email, subject: "Listing appointment reminder", html: `<p>Hi ${c.first_name ?? ""},</p><p>${copy}</p>`,
         contactId: row.entity_id, brokerageId: row.brokerage_id,
+        systemSource: "listing_appointment", channelPurpose: "transactional",
       }).catch((e) => console.error("[listing-appointment] reminder email failed:", e))
     }
     await sentinelWrite(

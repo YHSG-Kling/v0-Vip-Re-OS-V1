@@ -22,8 +22,16 @@
  * SMS is supported via the existing Twilio messaging provider.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const LobSDK = require("lob")
+// `lob` ships no TypeScript types, so it is loaded at runtime rather than
+// imported. createRequire, NOT a bare `require(...)`: package.json is "type":
+// "module" and the proof scripts (scripts/*.ts) load this module through tsx's
+// ESM loader, where the global `require` that Next's CJS-transpiled server
+// bundle provides does not exist ("ReferenceError: require is not defined in
+// ES module scope" — hit by test:listing-appointment the first time a proof
+// imported the dispatcher for real, wave 75). Same idiom as
+// lib/providers/lob/client.ts:36 and lib/providers/hubspot/client.ts:51.
+import { createRequire } from "node:module"
+const LobSDK = createRequire(import.meta.url)("lob")
 
 import { resolveProvider } from "@/lib/kernel/providers"
 // placeCall is deliberately NOT imported here any more: the phone dispatcher was
@@ -329,6 +337,14 @@ export interface DispatchEmailParams extends DispatchActorContext {
    * human" sets it.
    */
   sendAsAgentUserId?: string
+  /**
+   * Optional calendar invite (wave 75 — listing appointments). Forwarded to
+   * lib/providers/messaging:sendEmail, which attaches it as text/calendar and
+   * skips the personal-mailbox tier for it (see icsAttachment's own doc there).
+   * Lives on the GOVERNED dispatcher so the appointment emails never bypass
+   * the egress gate (scripts/egress-send-guard-simulator.ts).
+   */
+  icsAttachment?: { filename: string; content: string }
   metadata?: Record<string, unknown>
 }
 
@@ -493,6 +509,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       html:        assembled.html,
       text:        assembled.text,
       agentUserId: params.sendAsAgentUserId,
+      icsAttachment: params.icsAttachment,
     })
     result = {
       success: raw.success,

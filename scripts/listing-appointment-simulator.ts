@@ -159,8 +159,16 @@ check(`sentinelWrite is used at least 6 times in ${LISTING_APPT_PATH} (supersede
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 8 · confirmListingAppointment — calendar emails (ICS) + portal push]")
 
-check("sends an email to the CONTACT with an icsAttachment", /sendEmail\(\{[\s\S]{0,300}to:\s*c\.email[\s\S]{0,300}icsAttachment:/.test(apptSrc))
-check("sends an email to the AGENT with an icsAttachment (skipVerificationGate — staff mail, not a contact-facing send)", /sendEmail\(\{[\s\S]{0,300}to:\s*a\.email[\s\S]{0,300}skipVerificationGate:\s*true[\s\S]{0,300}icsAttachment:/.test(apptSrc))
+// Both sends go through the GOVERNED dispatcher (lib/providers/dispatch.ts),
+// never the low-level lib/providers/messaging sendEmail — that is what
+// egress-send-guard enforces, and the ICS rides through as
+// DispatchEmailParams.icsAttachment.
+check("the module does NOT import the low-level lib/providers/messaging sender (egress governance: dispatchEmail only)",
+  !/from\s+"@\/lib\/providers\/messaging"/.test(apptSrc) && /from\s+"@\/lib\/providers\/dispatch"/.test(apptSrc))
+check("sends an email to the CONTACT via dispatchEmail with an icsAttachment and systemSource listing_appointment",
+  /dispatchEmail\(\{[\s\S]{0,300}to:\s*c\.email[\s\S]{0,300}systemSource:\s*"listing_appointment"[\s\S]{0,200}icsAttachment:/.test(apptSrc))
+check("sends an email to the AGENT via dispatchEmail with an icsAttachment (userId = calendar_events.agent_user_id, a USERS id — never agentId)",
+  /dispatchEmail\(\{[\s\S]{0,300}to:\s*a\.email[\s\S]{0,400}userId:\s*r\.agent_user_id[\s\S]{0,300}icsAttachment:/.test(apptSrc) && !/agentId:\s*a\.id/.test(apptSrc))
 check("buildAppointmentIcs is called once per confirm (one ICS shared by both sends)", (apptSrc.match(/buildAppointmentIcs\(\{/g) ?? []).length === 1)
 check("pushes a CONFIRMED portal_event_stream card (event_type LISTING_APPOINTMENT_CONFIRMED_EVENT_TYPE)",
   /portal_event_stream"\)\s*\.insert\(\{[\s\S]{0,300}event_type:\s*LISTING_APPOINTMENT_CONFIRMED_EVENT_TYPE/.test(apptSrc))

@@ -113,8 +113,11 @@ function registerNextHeadersShim(): boolean {
     //     a React Server environment; the drill IS server-side, so it no-ops.
     //   - "next/headers": same empty cookie store as the ESM shim.
     const nodeModule: any = createRequire(import.meta.url)("node:module")
-    // Some production modules (e.g. lib/providers/dispatch.ts) use bare require();
+    // Some production modules (lib/remotion/music-mixer.ts and
+    // voiceover-mixer.ts, lazily requiring ffmpeg-static) use bare require();
     // under an ESM execution context that identifier must exist globally.
+    // lib/providers/dispatch.ts moved to createRequire in wave 75 and no
+    // longer needs this shim.
     if (typeof (globalThis as any).require === "undefined") {
       ;(globalThis as any).require = createRequire(import.meta.url)
     }

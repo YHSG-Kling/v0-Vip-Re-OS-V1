@@ -53,14 +53,17 @@
     "lib/ai-isa/adaptive-reengagement.ts": 2,
     "lib/ai-isa/appointment-form.ts": 1,
     "lib/ai-isa/batchdata-isa-tools.ts": 7,
+    "lib/ai-isa/brand-playbook-context.ts": 1,
     "lib/ai-isa/callback-task.ts": 2,
+    "lib/ai-isa/capability-catalogue.ts": 5,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
-    "lib/ai-isa/customer-context-tools.ts": 8,
+    "lib/ai-isa/customer-context-tools.ts": 9,
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 1,
+    "lib/ai-isa/listing-appointment.ts": 5,
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
     "lib/ai-isa/next-best-touch.ts": 1,
@@ -432,7 +435,7 @@
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
-    "lib/voice/platform-reception.ts": 2,
+    "lib/voice/platform-reception.ts": 1,
     "lib/voice/reception-inventory.ts": 2,
     "lib/voice/studio-session.ts": 7,
     "lib/voice/twilio-outbound.ts": 1,
@@ -446,7 +449,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9644,
+  "census": 9675,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -499,6 +502,7 @@
     "app/actions/agent-settings.ts": 2,
     "app/actions/agentic-tokens.ts": 3,
     "app/actions/agents.ts": 9,
+    "app/actions/ai-agent-capabilities.ts": 4,
     "app/actions/ai-agent-goals.ts": 6,
     "app/actions/ai-agent-onboarding.ts": 3,
     "app/actions/ai-auto-response.ts": 6,
@@ -1178,6 +1182,7 @@
     "app/api/cron/letter-audio-renderer/route.ts": 1,
     "app/api/cron/lifetime-customer-touchpoints/route.ts": 1,
     "app/api/cron/lifetime-npv-forecast-rollup/route.ts": 2,
+    "app/api/cron/listing-appointment-reminders/route.ts": 1,
     "app/api/cron/listing-health-scan/route.ts": 2,
     "app/api/cron/listing-presentation-prep/route.ts": 1,
     "app/api/cron/listing-promo-catchup/route.ts": 1,
@@ -2225,6 +2230,7 @@
     "app/dashboard/reporting/reporting-client.tsx": 1,
     "app/dashboard/reports/reports-client.tsx": 1,
     "app/dashboard/settings/assistant/auto-response-panel.tsx": 1,
+    "app/dashboard/settings/assistant/capabilities-panel.tsx": 1,
     "app/dashboard/settings/assistant/listening-preferences-panel.tsx": 1,
     "app/dashboard/settings/assistant/reply-style-panel.tsx": 1,
     "app/dashboard/settings/calendar/CopyToClipboardButton.tsx": 1,
@@ -2709,10 +2715,12 @@
     "lib/ai-isa/appointment-scheduler.ts": 1,
     "lib/ai-isa/batchdata-isa-tools.ts": 8,
     "lib/ai-isa/book-seller-appointment.ts": 1,
+    "lib/ai-isa/brand-playbook-context.ts": 2,
     "lib/ai-isa/brand-voice-prompt.ts": 2,
     "lib/ai-isa/build-call-context.ts": 1,
     "lib/ai-isa/buyer-intent-router.ts": 1,
     "lib/ai-isa/callback-task.ts": 7,
+    "lib/ai-isa/capability-catalogue.ts": 9,
     "lib/ai-isa/cold-contact-escalation.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 2,
     "lib/ai-isa/contact-reel-situation.ts": 9,
@@ -2734,6 +2742,7 @@
     "lib/ai-isa/lead-channel-policy.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 2,
     "lib/ai-isa/lead-reel-brief.ts": 1,
+    "lib/ai-isa/listing-appointment.ts": 9,
     "lib/ai-isa/long-term-nurture.ts": 2,
     "lib/ai-isa/meeting-followthrough.ts": 5,
     "lib/ai-isa/meeting-recap.ts": 9,
@@ -2747,6 +2756,7 @@
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
     "lib/ai-isa/qualification-playbook.ts": 2,
+    "lib/ai-isa/qualification-signals.ts": 4,
     "lib/ai-isa/reengagement-policy.ts": 10,
     "lib/ai-isa/resolve-isa-settings.ts": 5,
     "lib/ai-isa/saved-home-nudge.ts": 1,
@@ -3735,6 +3745,7 @@
     "lib/managers/regional-convention-review.ts": 1,
     "lib/managers/team-argument-map.ts": 1,
     "lib/managers/teamwork-metrics.ts": 3,
+    "lib/market-intelligence/report-builder.ts": 1,
     "lib/marketing/annual-home-value-report.ts": 2,
     "lib/marketing/attribution.ts": 2,
     "lib/marketing/audience-resolver.ts": 1,
@@ -4212,7 +4223,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 18,
+    "lib/video/realism-profile.ts": 19,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -4245,7 +4256,7 @@
     "lib/voice/number-provisioning.ts": 4,
     "lib/voice/outbound-call-gates.ts": 1,
     "lib/voice/parse-team-command.ts": 1,
-    "lib/voice/platform-reception.ts": 7,
+    "lib/voice/platform-reception.ts": 6,
     "lib/voice/reception-brain.ts": 9,
     "lib/voice/reception-inventory.ts": 3,
     "lib/voice/recording-playback-path.ts": 1,
@@ -4598,6 +4609,12 @@
       "updateGoalProgress",
       "getAgentStats",
       "getBrokerageStats"
+    ],
+    "app/actions/ai-agent-capabilities.ts": [
+      "getCapabilitiesSettings",
+      "setCapabilityEnabled",
+      "saveCustomTool",
+      "deleteCustomTool"
     ],
     "app/actions/ai-agent-goals.ts": [
       "getAgentGoals",
@@ -8647,6 +8664,9 @@
       "GET",
       "POST"
     ],
+    "app/api/cron/listing-appointment-reminders/route.ts": [
+      "GET"
+    ],
     "app/api/cron/listing-health-scan/route.ts": [
       "GET",
       "POST"
@@ -11850,6 +11870,9 @@
     "app/dashboard/settings/assistant/auto-response-panel.tsx": [
       "AutoResponsePanel"
     ],
+    "app/dashboard/settings/assistant/capabilities-panel.tsx": [
+      "AiAgentCapabilitiesPanel"
+    ],
     "app/dashboard/settings/assistant/listening-preferences-panel.tsx": [
       "ListeningPreferencesPanel"
     ],
@@ -13532,6 +13555,10 @@
     "lib/ai-isa/book-seller-appointment.ts": [
       "bookSellerListingAppointment"
     ],
+    "lib/ai-isa/brand-playbook-context.ts": [
+      "parseBusinessProcesses",
+      "loadBrandPlaybookContext"
+    ],
     "lib/ai-isa/brand-voice-prompt.ts": [
       "brandVoiceContextForVideo",
       "loadBrandVoicePrompt"
@@ -13550,6 +13577,17 @@
       "resolveCallbackDueDate",
       "createCallbackTask",
       "detectCallbackRequest"
+    ],
+    "lib/ai-isa/capability-catalogue.ts": [
+      "isCapabilityId",
+      "parseCapabilitiesSettings",
+      "validateCustomToolDefinition",
+      "loadEnabledCapabilities",
+      "isCapabilityEnabled",
+      "buildSendNewsletterTool",
+      "buildSendMarketReportTool",
+      "buildSendExplainerVideoTool",
+      "buildNewCatalogueTools"
     ],
     "lib/ai-isa/cold-contact-escalation.ts": [
       "escalateColdContact"
@@ -13581,14 +13619,14 @@
       "convertSellerLeadOnIntent"
     ],
     "lib/ai-isa/customer-context-tools.ts": [
-      "writeFollowUpActivity",
       "buildGetMyContextTool",
       "buildRequestShowingTool",
       "buildSearchOurListingsTool",
       "buildScheduleCallbackTool",
       "buildSendMatchingListingsTool",
       "buildScheduleHomeValueReviewTool",
-      "buildBookAgentAppointmentTool",
+      "buildFindListingAppointmentSlotsTool",
+      "buildBookListingAppointmentTool",
       "buildRecordQualificationTool",
       "buildCustomerFreeTools"
     ],
@@ -13648,6 +13686,17 @@
     ],
     "lib/ai-isa/lead-reel-brief.ts": [
       "buildLeadIntroReelBrief"
+    ],
+    "lib/ai-isa/listing-appointment.ts": [
+      "isAtLeastMinDaysOut",
+      "reminderTierForAppointment",
+      "filterSlotsByPreference",
+      "resolveWorkingHours",
+      "buildAppointmentIcs",
+      "findAgentAppointmentSlots",
+      "bookListingAppointment",
+      "confirmListingAppointment",
+      "sendListingAppointmentReminders"
     ],
     "lib/ai-isa/long-term-nurture.ts": [
       "runMonthlyNurtureCadence",
@@ -13729,6 +13778,12 @@
     "lib/ai-isa/qualification-playbook.ts": [
       "conversationalRulesBlock",
       "buildQualificationPrompt"
+    ],
+    "lib/ai-isa/qualification-signals.ts": [
+      "writeFollowUpActivity",
+      "scheduleFollowUp",
+      "notifyAssignedAgent",
+      "publishQualificationSignal"
     ],
     "lib/ai-isa/reengagement-policy.ts": [
       "ghostReengagementStopReason",
@@ -18895,6 +18950,9 @@
       "composeTeamworkLines",
       "loadTeamworkMetrics"
     ],
+    "lib/market-intelligence/report-builder.ts": [
+      "buildMarketReportAnalysis"
+    ],
     "lib/marketing/annual-home-value-report.ts": [
       "generateAnnualHomeValueReportsCronTick",
       "generateQuarterlyHomeValueReportsCronTick"
@@ -21187,6 +21245,7 @@
       "stripExpressiveAudioTags",
       "enforceExpressiveAudioTagBudget",
       "sentenceLengthCoefficientOfVariation",
+      "describeAiTellCoverage",
       "scanForAiTells",
       "avatarPipWindowFade",
       "estimateAvatarRenderCostUsd",
@@ -21378,8 +21437,7 @@
       "composeTierLines",
       "resolvePlatformReceptionContext",
       "buildPlatformReceptionPrompt",
-      "parsePlatformTurnPlan",
-      "planPlatformReceptionTurn",
+      "platformFaqTools",
       "capturePhoneProspect"
     ],
     "lib/voice/reception-brain.ts": [
