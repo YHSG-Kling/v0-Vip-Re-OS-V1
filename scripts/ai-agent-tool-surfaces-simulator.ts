@@ -282,7 +282,7 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
   const withStaleField = parseTurnPlan(JSON.stringify({
     say: "Let me check that for you.", action: "continue",
     tool_request: { name: "lookup_property", address: "123 Main St" },
-  })) as Record<string, unknown>
+  })) as unknown as Record<string, unknown>
   check("parseTurnPlan: a stale tool_request field in the model's JSON is a no-op (native tool-calling replaced it, lane 73E tombstone)",
     !("toolRequest" in withStaleField))
 
