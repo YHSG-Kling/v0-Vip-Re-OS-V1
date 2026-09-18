@@ -52,6 +52,7 @@
  */
 import { readFileSync } from "node:fs"
 import { stripComments } from "./strip-comments"
+import { graphShowAsFor } from "../lib/providers/calendar/personal-calendar"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -267,6 +268,29 @@ const pkg = raw("package.json")
 check(`"test:listing-appointment" script is registered`, /"test:listing-appointment":\s*"tsx --conditions=react-server scripts\/listing-appointment-simulator\.ts"/.test(pkg))
 check("the guard chain runs it immediately after test:scrapers (the exact anchor this lane's brief named)",
   pkg.includes("npm run test:scrapers && npm run test:listing-appointment && npm run test:qualification-playbook"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 14 · Microsoft Graph tentative state (lane 76C blind-spot burn-down).
+// Wave 75 left the Outlook branch a "documented no-op": Graph has no lifecycle
+// `tentative` for an organizer-created event. It DOES carry an availability
+// field — event.showAs ∈ free|tentative|busy|oof|workingElsewhere|unknown
+// (learn.microsoft.com/graph/api/resources/event, fetched 2026-09-18) — so the
+// tentative hold and the confirm PATCH now map onto it. Source-asserted on
+// STRIPPED text (a comment naming showAs is not a call site, CLAUDE.md §2).
+console.log("\n[Layer 14 · Microsoft Graph — tentative hold maps onto event.showAs, confirm flips it to busy]")
+{
+  const calSrc = stripped("lib/providers/calendar/personal-calendar.ts")
+  check("graphShowAsFor: tentative → 'tentative' (a Graph showAs value, not Google's status vocabulary)", graphShowAsFor("tentative") === "tentative")
+  check("graphShowAsFor: confirmed → 'busy' (the only Graph availability that reads as a firm hold)", graphShowAsFor("confirmed") === "busy")
+  const graphCreate = calSrc.slice(calSrc.indexOf('path: "/me/events", method: "POST"'), calSrc.indexOf("export async function getAvailabilityViaPersonal"))
+  check("the Graph CREATE body carries showAs derived from event.status (and omits it when no status was given — Graph's own default, never a fabricated one)",
+    /\.\.\.\(event\.status \? \{ showAs: graphShowAsFor\(event\.status\) \} : \{\}\)/.test(graphCreate))
+  const graphUpdate = calSrc.slice(calSrc.indexOf("export async function updateEventViaPersonal"), calSrc.indexOf("export async function deleteEventViaPersonal"))
+  check("the Graph UPDATE (confirm PATCH) sets body.showAs from updates.status — the Outlook branch is no longer a no-op for status",
+    /if \(updates\.status\) body\.showAs = graphShowAsFor\(updates\.status\)/.test(graphUpdate))
+  check("POSITIVE CONTROL: the same finders reject the wave-75 no-op shape (a Graph body with no showAs)",
+    !/showAs/.test('body: { subject: event.title, start: { dateTime: event.startTime, timeZone: "UTC" } }'))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n" + "─".repeat(60))

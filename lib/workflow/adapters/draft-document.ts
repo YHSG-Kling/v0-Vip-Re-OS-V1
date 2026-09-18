@@ -188,17 +188,18 @@ export const draftDocumentAdapter: ChannelAdapter = {
 
     // Notify agent that a document draft was created and may need review
     if (agentUserId) {
-      void Promise.resolve(
-        supabase.from("notifications").insert({
-          brokerage_id: brokerageId,
-          type: "document_draft_ready",
-          title: `Document Draft Created: ${docType.replace(/_/g, " ")}`,
-          body: contact
-            ? `A ${docType.replace(/_/g, " ")} draft has been created for ${contact.first_name ?? ""} ${contact.last_name ?? ""}. Review and finalize in Documents.`
-            : `A ${docType.replace(/_/g, " ")} draft requires your review.`,
-          priority: "medium",
-        })
-      ).catch(() => {})
+      // Awaited and error-read (lane 76C): the fire-and-forget `.catch(() => {})`
+      // made a refused insert indistinguishable from a delivered bell.
+      const { error: notifyError } = await supabase.from("notifications").insert({
+        brokerage_id: brokerageId,
+        type: "document_draft_ready",
+        title: `Document Draft Created: ${docType.replace(/_/g, " ")}`,
+        body: contact
+          ? `A ${docType.replace(/_/g, " ")} draft has been created for ${contact.first_name ?? ""} ${contact.last_name ?? ""}. Review and finalize in Documents.`
+          : `A ${docType.replace(/_/g, " ")} draft requires your review.`,
+        priority: "medium",
+      })
+      if (notifyError) console.warn("[draft-document] notifications insert refused — the bell will not ring:", notifyError.message)
     }
 
     return {

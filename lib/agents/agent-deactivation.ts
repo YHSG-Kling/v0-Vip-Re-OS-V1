@@ -21,6 +21,7 @@
 // NOT server-only (the simulator drives it end-to-end); only ever writes through a
 // caller-supplied/service client.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
@@ -329,12 +330,12 @@ export async function executeAgentDeactivation(
 
   // ── Notify the successor of the inherited book (one summary notification) ──
   if (successorUserId && (result.reassignedContacts > 0 || result.reassignedLeads > 0)) {
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: successorUserId, brokerage_id: brokerageId, type: "book_reassigned",
       title: "You've inherited a departing agent's book",
       body: `${result.reassignedContacts} contact(s) and ${result.reassignedLeads} lead(s) were reassigned to you${result.inFlightForcedReassign > 0 ? `, including ${result.inFlightForcedReassign} with an in-flight deal — review those first` : ""}.`,
       entity_type: "agent", entity_id: agentId, priority: result.inFlightForcedReassign > 0 ? "high" : "medium", is_read: false,
-    }).then(() => {}, () => {})
+    }), { table: "notifications", flow: "agent_deactivation_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   // ── Managers working together: the Deal Coordinator realigns the transaction team for

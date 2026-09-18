@@ -51,6 +51,7 @@
  * Response: OpenAI-format SSE stream piped straight back to D-ID.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -138,7 +139,7 @@ async function notifyAgentOfEscalation(params: {
 }) {
   if (!params.agentUserId) return
   const supabase = createServiceClient()
-  await supabase.from("notifications").insert({
+  await sentinelWrite(supabase, supabase.from("notifications").insert({
     user_id: params.agentUserId,
     brokerage_id: params.brokerageId,
     type: params.source === "portal" ? "portal_ai_escalation" : "embed_ai_escalation",
@@ -147,7 +148,7 @@ async function notifyAgentOfEscalation(params: {
     entity_type: params.contactId ? "contact" : null,
     entity_id: params.contactId,
     priority: "high",
-  }).then(() => {}, () => {})
+  }), { table: "notifications", flow: "route_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 }
 
 // ─── Context loader — portal-rich (contact known) ──────────────────────────

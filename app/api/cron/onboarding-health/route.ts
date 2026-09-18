@@ -3,6 +3,7 @@
 // Cron job to detect stalled onboarding and create smart assistant suggestions
 // Schedule: Daily via Vercel Cron
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -144,7 +145,7 @@ export async function GET(request: NextRequest) {
         .in('user_type', ['admin', 'broker'])
 
       for (const admin of admins || []) {
-        await supabase.from('notifications').insert({
+        await sentinelWrite(supabase, supabase.from('notifications').insert({
           user_id: admin.id,
           brokerage_id: onboarding.brokerage_id,
           type: 'onboarding_stalled',
@@ -154,9 +155,7 @@ export async function GET(request: NextRequest) {
           body: `${agentName} has not made onboarding progress in ${STALLED_DAYS_THRESHOLD}+ days (currently on Day ${onboarding.current_day}).`,
           is_read: false,
           priority: 'high',
-        }).then(() => {}, (err: unknown) => {
-          console.error('[OnboardingHealth] Failed to create admin notification:', err)
-        })
+        }), { table: "notifications", flow: "route_notify", brokerageId: onboarding.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
     }
   }

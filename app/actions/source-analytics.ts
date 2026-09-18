@@ -912,7 +912,7 @@ export async function emailSourceReport(
 </table>
 `
 
-    await supabase.from("email_queue").insert({
+    const { error: notifyError } = await supabase.from("email_queue").insert({
       brokerage_id: brokerageId,
       to_email: toEmail,
       to_name: toName,
@@ -921,6 +921,7 @@ export async function emailSourceReport(
       status: "pending",
       attempts: 0,
     })
+    if (notifyError) console.warn("[source-analytics.ts] email_queue insert refused — the bell will not ring:", notifyError.message)
 
     return { success: true }
   } catch (err) {

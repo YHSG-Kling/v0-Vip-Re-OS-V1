@@ -5,6 +5,7 @@
 // This module handles certification eligibility checks, awarding certifications,
 // and completing onboarding when all required certifications are earned.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -500,7 +501,7 @@ export async function completeOnboarding(
     .in('user_type', ['admin', 'broker'])
 
   for (const admin of admins || []) {
-    await supabase.from('notifications').insert({
+    await sentinelWrite(supabase, supabase.from('notifications').insert({
       user_id: admin.id,
       brokerage_id: brokerageId,
       type: 'onboarding_completed',
@@ -509,7 +510,7 @@ export async function completeOnboarding(
       title: 'Agent Onboarding Complete',
       body: `${agentName} has completed onboarding and is ready to start.`,
       is_read: false,
-    })
+    }), { table: "notifications", flow: "certification_engine_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   console.log(`[CertificationEngine] Onboarding completed for agent ${agentId}`)

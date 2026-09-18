@@ -5,6 +5,7 @@
 // (CLAUDE.md §4). Its only caller is app/api/cron/stale-lead-monitor/route.ts,
 // which gates on the cron secret and iterates tenants itself; the parameter is
 // now an in-process contract. `server-only` fails a future client import.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -132,7 +133,7 @@ export async function processStaleLeadsAndSLA(
           .limit(5)
 
         for (const admin of adminUsers ?? []) {
-          await supabase.from("notifications").insert({
+          await sentinelWrite(supabase, supabase.from("notifications").insert({
             user_id:     admin.id,
             brokerage_id: brokerageId,
             type:        "sla_breach",
@@ -143,7 +144,7 @@ export async function processStaleLeadsAndSLA(
             title:       `SLA Breached: ${row.sla_type} for lead ${row.lead_id}`,
             body:        `The ${row.sla_type} SLA was due at ${new Date(row.target_at).toLocaleString()} and has not been completed.`,
             is_read:     false,
-          })
+          }), { table: "notifications", flow: "stale_lead_processor_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
 
         // c) Mark breach_notified

@@ -19,6 +19,7 @@
  * social API is connected.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { collectError } from '@/lib/errors/collect-error'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
@@ -750,13 +751,13 @@ async function dispatchToChannel(
 
     // Notify agent to send manually if handle is missing
     if (!socialHandle) {
-      await supabase.from('notifications').insert({
+      await sentinelWrite(supabase, supabase.from('notifications').insert({
         brokerage_id: lead.brokerage_id,
         type: 'action_required',
         title: `Social outreach needed — ${channel}`,
         body: `AI ISA cannot send ${channel} to ${lead.first_name ?? 'lead'} — no handle on file. Please send manually.`,
         created_at: new Date().toISOString(),
-      })
+      }), { table: "notifications", flow: "initiate_engagement_notify", brokerageId: lead.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
 
     return {

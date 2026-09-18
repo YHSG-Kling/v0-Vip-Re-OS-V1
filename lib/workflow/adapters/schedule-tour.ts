@@ -107,16 +107,17 @@ export const scheduleTourAdapter: ChannelAdapter = {
 
     // Notify buyer via portal notification
     if (contact?.id) {
-      void Promise.resolve(
-        supabase.from("notifications").insert({
-          brokerage_id: brokerageId,
-          contact_id: contact.id,
-          type: "tour_scheduled",
-          title: "Tour Scheduled",
-          body: `Your property tour has been scheduled for ${tourDate.toLocaleDateString()}. ${orderedProps.length} propert${orderedProps.length === 1 ? "y" : "ies"} to visit.`,
-          priority: "medium",
-        })
-      ).catch(() => {})
+      // Awaited and error-read (lane 76C): the fire-and-forget `.catch(() => {})`
+      // made a refused insert indistinguishable from a delivered portal bell.
+      const { error: notifyError } = await supabase.from("notifications").insert({
+        brokerage_id: brokerageId,
+        contact_id: contact.id,
+        type: "tour_scheduled",
+        title: "Tour Scheduled",
+        body: `Your property tour has been scheduled for ${tourDate.toLocaleDateString()}. ${orderedProps.length} propert${orderedProps.length === 1 ? "y" : "ies"} to visit.`,
+        priority: "medium",
+      })
+      if (notifyError) console.warn("[schedule-tour] notifications insert refused — the portal bell will not ring:", notifyError.message)
     }
 
     return {

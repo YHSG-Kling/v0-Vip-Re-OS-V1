@@ -138,12 +138,13 @@ export async function deliverCompletedReels(
       const { data: admins } = await svc.from("users").select("id")
         .eq("brokerage_id", ren.brokerage_id).in("user_type", ["broker", "admin"]).limit(5)
       for (const u of ((admins ?? []) as any[])) {
-        await svc.from("notifications").insert({
+        const { error: notifyError } = await svc.from("notifications").insert({
           user_id: u.id, brokerage_id: ren.brokerage_id, type: p.notificationType,
           title: p.title,
           body: `${p.bodyIntro} Watch: ${ren.output_url} ${marker}`,
           priority: "medium", channel: "in_app", is_read: false,
         }).then(undefined, () => {})
+        if (notifyError) console.warn("[reel-brand.ts] notifications insert refused — the bell will not ring:", notifyError.message)
         out.notified += 1
       }
     }

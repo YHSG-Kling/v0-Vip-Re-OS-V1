@@ -17,6 +17,7 @@
  * Campaign Orchestrator delivers the gated 1:1 to the client. One reel per tick (serialized — D-ID +
  * Remotion are memory-heavy on a single function instance). CRON_SECRET auth. Never throws the loop.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -115,12 +116,12 @@ export async function GET(request: Request) {
         await svc.from("ai_video_projects")
           .update({ status: "awaiting_presenter_setup", error_message: "agent has no D-ID avatar configured", updated_at: new Date().toISOString() })
           .eq("id", row.id)
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: brokerageId, type: "avatar_setup_needed",
           title: "Finish your avatar to unlock AI videos",
           body: "Your AI team is ready to make personal videos for your clients — set up your avatar + voice in Settings → Voice & Avatar to turn them on.",
           entity_type: "video_project", entity_id: row.id, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "route_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         return NextResponse.json({ ran_at: ranAt, processed: 1, render_id: row.id, result: "awaiting_presenter_setup" })
       }
 

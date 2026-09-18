@@ -127,11 +127,12 @@ async function notifyReconnect(svc: any, row: SocialTokenRow, now: Date): Promis
   }
   const expires = row.token_expires_at ? new Date(row.token_expires_at).toLocaleDateString() : "soon"
   for (const uid of userIds) {
-    await svc.from("notifications").insert({
+    const { error: notifyError } = await svc.from("notifications").insert({
       user_id: uid, brokerage_id: row.brokerage_id, type: "social_token_expiring",
       title: `Reconnect ${row.platform ?? "social"} — posting stops ${expires}`,
       body: `The ${row.platform ?? "social"} connection${row.account_name ? ` (${row.account_name})` : ""} is expiring and can't be renewed automatically. Reconnect it in Settings → Social to keep scheduled posts flowing. ${isoWeekTag}`,
       entity_type: "social_media_account", entity_id: row.id, priority: "high", channel: "in_app", is_read: false,
     }).then(undefined, () => {})
+    if (notifyError) console.warn("[token-refresh.ts] notifications insert refused — the bell will not ring:", notifyError.message)
   }
 }

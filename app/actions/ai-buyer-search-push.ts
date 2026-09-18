@@ -23,6 +23,7 @@
 // RLS-scoped client otherwise. A self-made cookie client here was the shape that
 // silently refused every support write under act-as. The import outlived its last
 // call site by one commit.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { searchPropertiesCore, type BuyerSearchResult } from "@/lib/buyer-search/search-engine"
@@ -132,7 +133,7 @@ export async function searchAndPushToBuyer(params: {
       ? `Your agent says: "${agentNote}". ${results[0]?.headline ?? ""}`
       : results[0]?.headline ?? `Your agent found properties matching: ${searchQuery}`
 
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: contact.user_id,
       brokerage_id: ctx.brokerageId,
       title: noteTitle,
@@ -142,7 +143,7 @@ export async function searchAndPushToBuyer(params: {
       entity_type: "property_search",
       entity_id: contactId,
       priority: "medium",
-    })
+    }), { table: "notifications", flow: "ai_buyer_search_push_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   const topMatches = results.slice(0, 5).map((r) => ({

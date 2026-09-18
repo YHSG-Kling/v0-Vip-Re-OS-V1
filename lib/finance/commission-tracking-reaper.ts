@@ -108,7 +108,7 @@ export async function reapCommissionTrackingDrift(
 
     escalated++
     if (actorUserId) {
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: actorUserId,
         brokerage_id: brokerageId,
         type: "commission_tracking_drift",
@@ -118,7 +118,8 @@ export async function reapCommissionTrackingDrift(
         entity_id: txnId,
         priority: "high",
         channel: "in_app",
-      }).then(() => {}, () => {})
+      })
+      if (notifyError) console.warn("[commission-tracking-reaper.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
   }
 

@@ -108,7 +108,7 @@ export async function recordInboundMessage(svc: any, input: {
   }
 
   if (draftAgentUserId) {
-    await svc.from("notifications").insert({
+    const { error: notifyError } = await svc.from("notifications").insert({
       user_id: draftAgentUserId,
       brokerage_id: input.brokerageId,
       type: "inbound_text_received",
@@ -120,6 +120,7 @@ export async function recordInboundMessage(svc: any, input: {
       channel: "in_app",
       is_read: false,
     }).then(undefined, () => {})
+    if (notifyError) console.warn("[sms-inbound.ts] notifications insert refused — the bell will not ring:", notifyError.message)
   }
   return { recorded: true, messageId: (inserted as any)?.id, conversationId, agentUserId: draftAgentUserId }
 }

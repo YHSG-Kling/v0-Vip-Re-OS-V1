@@ -101,6 +101,26 @@ function seamExportsSection() {
     (seam.match(/estimateUsdPerMinute:/g) ?? []).length >= 1 &&
     (seam.match(/async startSession\(params\)/g) ?? []).length >= 1)
 
+  // ── Key-absent readiness (lane 76C blind-spot burn-down) ──────────────────
+  // With no SIMLI_API_KEY the seam must FAIL CLOSED with a message that names
+  // the missing key, AND the platform readiness board must be able to show the
+  // seam dark — which it derives from PLATFORM_PROVIDER_KEYS + PROVIDER_TENANCY,
+  // neither of which knew Simli existed.
+  const simliClient = readStripped("lib/providers/simli/client.ts")
+  check("mintSimliSessionToken refuses with a message NAMING the env var when SIMLI_API_KEY is absent (fail closed, never a silent mock)",
+    /if \(!key\) return \{ ok: false, error: "SIMLI_API_KEY is not configured" \}/.test(simliClient))
+  check("simliConfigured() is the key-presence predicate the adapter's isConfigured delegates to",
+    /return !!\(process\.env\.SIMLI_API_KEY \?\? ""\)\.trim\(\)/.test(simliClient) && /isConfigured: simliConfigured/.test(seam))
+  check(".env.example documents SIMLI_API_KEY", /^SIMLI_API_KEY=/m.test(readRaw(".env.example")))
+  const probe = readStripped("lib/agentic-os/connector-probe.ts")
+  check("PLATFORM_PROVIDER_KEYS carries simli → SIMLI_API_KEY (the readiness board + guardian key-presence audit derive from it)",
+    /simli: "SIMLI_API_KEY"/.test(probe))
+  const tenancy = readStripped("lib/providers/tenancy-matrix.ts")
+  check("PROVIDER_TENANCY carries a simli row (platform_metered, SIMLI_API_KEY) so getBrokerageProviderReadiness renders platform_dark when the key is absent",
+    /provider: "simli",\s*models: \["platform_metered"\],[\s\S]{0,600}envVars: \["SIMLI_API_KEY"\]/.test(tenancy))
+  check("POSITIVE CONTROL: the tenancy finder rejects a simli row typed tenant-owned",
+    !/provider: "simli",\s*models: \["platform_metered"\]/.test('{ provider: "simli", models: ["user_oauth"], envVars: ["SIMLI_API_KEY"] }'))
+
   // CONTROL: a made-up export name is correctly absent.
   check("[control] the seam does NOT export a made-up 'startFaceRenderSession' function",
     !/export (async )?function startFaceRenderSession/.test(seam))

@@ -63,10 +63,11 @@ export async function runOsSelfAudit(svc: Svc, now: Date = new Date()): Promise<
     if (extraUserId) recipients.add(extraUserId)
     if (recipients.size === 0) { r.skipped += 1; return false }
     for (const uid of recipients) {
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: uid, brokerage_id: brokerageId, type: "os_self_audit",
         title, body: `${body} ${tag}`.slice(0, 480), priority: "high", channel: "in_app", is_read: false,
-      }).then(undefined, () => {})
+      })
+      if (notifyError) console.warn("[os-self-audit.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
     return true
   }

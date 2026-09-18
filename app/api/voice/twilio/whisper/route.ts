@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -96,12 +97,12 @@ export async function POST(request: NextRequest) {
       if ((call as any)?.agent_id) {
         const { data: a } = await svc.from("agents").select("user_id").eq("id", (call as any).agent_id).maybeSingle()
         if ((a as any)?.user_id) {
-          await svc.from("notifications").insert({
+          await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: (a as any).user_id, brokerage_id: bId, type: "warm_bridge_missed",
             title: "You missed a live warm transfer",
             body: `${label} was holding for you${topic ? ` about ${topic}` : ""} — they were told you'll call right back. Transcript on the call record.`,
             entity_type: "voice_call", entity_id: voiceCallId, priority: "high", channel: "in_app", is_read: false,
-          }).then(undefined, () => {})
+          }), { table: "notifications", flow: "route_notify", brokerageId: bId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
       }
     }

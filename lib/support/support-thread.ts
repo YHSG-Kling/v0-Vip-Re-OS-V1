@@ -7,6 +7,7 @@
 // platform staff). Reused by the platform support console AND the tenant help UI so both sides stay on the
 // same page.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { notifyPlatformStaff } from "@/lib/notifications/platform-staff"
 import { ticketAnsweredBy } from "@/lib/support/ticket-constants"
@@ -81,11 +82,11 @@ export async function postTicketReply(
         uid = ((ag as any)?.user_id as string | null) ?? null
       }
       if (uid) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: uid, brokerage_id: brokerageId, type: "support_reply",
           title: "Support replied to your ticket", body: `“${(ticket as any).subject ?? "Your ticket"}” — ${body.slice(0, 180)}`,
           entity_type: "support_ticket", entity_id: params.ticketId, priority: "medium", is_read: false,
-        }).then(undefined, () => {})
+        }), { table: "notifications", flow: "support_thread_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
     } else if (ticketAnsweredBy(lane) === "brokerage_office" && brokerageId) {
       // Lane 2 asking side → the BROKERAGE's own office staff. Never the platform.

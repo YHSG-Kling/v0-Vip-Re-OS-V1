@@ -5,6 +5,7 @@
 // otherwise funds can't split correctly and the closing stalls. Pure policy in
 // cda-delivery-policy.ts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyUndeliveredCda } from "./cda-delivery-policy"
 
@@ -72,7 +73,7 @@ export async function reapUndeliveredCdas(
       continue
     }
 
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: userId,
       brokerage_id: brokerageId,
       type: "cda_undelivered",
@@ -82,7 +83,7 @@ export async function reapUndeliveredCdas(
       entity_id: row.id,
       priority: "high",
       is_read: false,
-    })
+    }), { table: "notifications", flow: "cda_delivery_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     result.escalated++
   }
 

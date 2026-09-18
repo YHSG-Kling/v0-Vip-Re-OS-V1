@@ -33,10 +33,12 @@ export interface CalendarEvent {
   /** Google Calendar's own event status (confirmed | tentative | cancelled) —
    *  lib/ai-isa/listing-appointment.ts creates a listing appointment TENTATIVE
    *  on the agent's calendar until they confirm, then PATCHes it to confirmed.
-   *  Only the Google branch of personal-calendar.ts honors this — Microsoft
-   *  Graph events created by an organizer have no equivalent tentative state,
-   *  so an Outlook-connected agent's event is created normally and this field
-   *  is a documented no-op there (no fabricated status). */
+   *  On Microsoft Graph an organizer-created event has no equivalent
+   *  LIFECYCLE state, so personal-calendar.ts maps this onto the event's
+   *  AVAILABILITY instead — `showAs: "tentative"` (Outlook renders the block
+   *  hatched) and `showAs: "busy"` once confirmed — via graphShowAsFor
+   *  (lane 76C, verified against the Graph event resource docs 2026-09-18;
+   *  previously a documented no-op on the Outlook branch). */
   status?: "confirmed" | "tentative"
 }
 

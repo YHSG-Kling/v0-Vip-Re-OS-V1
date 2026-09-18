@@ -314,7 +314,7 @@ export const CAPABILITY_IDS: readonly CapabilityId[] = CAPABILITY_CATALOGUE.map(
 
 /** PURE — is `id` a real catalogue capability? Used by both the settings
  *  toggle reader and custom-tool-definition validation below. */
-export function isCapabilityId(id: string): id is CapabilityId {
+function isCapabilityId(id: string): id is CapabilityId {
   return (CAPABILITY_IDS as readonly string[]).includes(id)
 }
 
@@ -439,7 +439,7 @@ const CONTACT_ONLY_CAPABILITIES: ReadonlySet<CapabilityId> = new Set<CapabilityI
 
 // ─── NEW capability #1 — send_newsletter ───────────────────────────────────
 
-export function buildSendNewsletterTool(ctx: CustomerCapabilityContext) {
+function buildSendNewsletterTool(ctx: CustomerCapabilityContext) {
   return tool({
     description: "Enrol the person in the brand's newsletter so they keep hearing from us without committing to anything else right now. Use when they ask to \"stay in the loop\", \"keep me posted\", or similar — a low-pressure ask.",
     inputSchema: z.object({}),
@@ -470,7 +470,7 @@ export function buildSendNewsletterTool(ctx: CustomerCapabilityContext) {
 
 // ─── NEW capability #2 — send_market_report ────────────────────────────────
 
-export function buildSendMarketReportTool(ctx: CustomerCapabilityContext) {
+function buildSendMarketReportTool(ctx: CustomerCapabilityContext) {
   return tool({
     description: "Prepare and send a market report/update for the person's area — overall condition, price trend direction, and inventory level. Use when they ask about the market, pricing trends, or whether now is a good time. Speak only the CONDITION and TREND back to them (e.g. \"a balanced market, prices holding steady\") — never quote a specific dollar figure from the report.",
     inputSchema: z.object({
@@ -518,7 +518,7 @@ export function buildSendMarketReportTool(ctx: CustomerCapabilityContext) {
 
 // ─── NEW capability #3 — send_explainer_video ──────────────────────────────
 
-export function buildSendExplainerVideoTool(ctx: CustomerCapabilityContext) {
+function buildSendExplainerVideoTool(ctx: CustomerCapabilityContext) {
   return tool({
     description: "Commission and send a short explainer video walking the person through the BUYING or SELLING process — what to expect, step by step. Use when a first-time buyer or an unsure seller wants to understand the process before committing to anything, not for property-specific questions.",
     inputSchema: z.object({

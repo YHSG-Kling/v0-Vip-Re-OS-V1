@@ -456,7 +456,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .eq("brokerage_id", inbound.brokerageId)
           .in("user_type", ["compliance_officer", "admin", "broker"])
         for (const r of reviewers ?? []) {
-          await supabase.from("notifications").insert({
+          await sentinelWrite(supabase, supabase.from("notifications").insert({
             user_id: r.id,
             brokerage_id: inbound.brokerageId,
             type: "opt_out_review_required",
@@ -466,7 +466,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             entity_id: entityId ?? null,
             priority: "high",
             channel: "in_app",
-          })
+          }), { table: "notifications", flow: "route_notify", brokerageId: inbound.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
       } catch (e) {
         console.error("[InboundRouter] failed to alert compliance of possible opt-out:", e)

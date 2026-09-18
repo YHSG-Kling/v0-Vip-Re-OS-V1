@@ -1,5 +1,6 @@
 'use server'
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -112,7 +113,7 @@ export async function acceptAIISAHandoff(params: {
   // Notify the human actor (UI callers only — 'system' is not a users.id).
   if (!isSystemCaller) {
     try {
-      await service.from('notifications').insert({
+      await sentinelWrite(service, service.from('notifications').insert({
         brokerage_id: lead.brokerage_id,
         user_id: params.actorUserId,
         type: 'ai_handoff_completed',
@@ -121,7 +122,7 @@ export async function acceptAIISAHandoff(params: {
         entity_type: 'contact',
         entity_id: contactId,
         priority: 'high',
-      })
+      }), { table: "notifications", flow: "accept_handoff_notify", brokerageId: lead.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     } catch { /* non-blocking */ }
   }
 

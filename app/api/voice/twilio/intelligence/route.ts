@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -135,12 +136,12 @@ export async function POST(request: NextRequest) {
           .eq("brokerage_id", brokerageId)
           .in("user_type", ["compliance_officer", "admin", "broker"]).limit(10)
         for (const r of (reviewers ?? []) as any[]) {
-          await svc.from("notifications").insert({
+          await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: r.id, brokerage_id: brokerageId, type: "call_compliance_watch",
             title: "A call tripped a compliance watch operator",
             body: `Twilio Conversational Intelligence flagged: ${hits.map((h) => h?.name ?? h?.operator_type).join(", ")}. Review the call transcript.`,
             entity_type: "voice_call", entity_id: (call as any).id, priority: "high", channel: "in_app", is_read: false,
-          }).then(undefined, () => {})
+          }), { table: "notifications", flow: "route_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
         complianceEscalations = hits.length
       }

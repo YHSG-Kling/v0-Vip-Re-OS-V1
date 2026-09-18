@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
 
         // Send notification if user specified
         if (notifyUserId && errorRecord) {
-          await supabase
+          const { error: notifyError } = await supabase
             .from("notifications")
             .insert({
               user_id: notifyUserId,
@@ -115,6 +115,7 @@ export async function POST(request: NextRequest) {
               entity_type: "automation_error",
               entity_id: id,
             })
+          if (notifyError) console.warn("[errors/escalate] notifications insert refused — the bell will not ring:", notifyError.message)
         }
 
         results.push({ errorId: id, success: true })

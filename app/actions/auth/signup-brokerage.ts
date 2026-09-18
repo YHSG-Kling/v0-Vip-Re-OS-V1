@@ -546,14 +546,14 @@ export async function signupBrokerageAction(
       }, { onConflict: "agent_user_id,module_id", ignoreDuplicates: true })
       if (!error) assigned += 1
     }
-    await service.from("notifications").insert({
+    await sentinelWrite(service, service.from("notifications").insert({
       user_id: newUser.id, brokerage_id: brokerage.id, type: "agent_onboarding",
       title: "Welcome — meet your AI team",
       body: assigned > 0
         ? `Your ${input.tier.replace(/_/g, " ")} plan is live. Start with your ${assigned}-lesson onboarding path — your eleven AI managers are already on duty.`
         : `Your ${input.tier.replace(/_/g, " ")} plan is live — your eleven AI managers are already on duty. Your onboarding wizard is ready.`,
       priority: "high", is_read: false,
-    })
+    }), { table: "notifications", flow: "signup_brokerage_notify", brokerageId: brokerage.id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   } catch (err) {
     console.warn("[signupBrokerage] onboarding education failed (non-fatal):", err)
   }

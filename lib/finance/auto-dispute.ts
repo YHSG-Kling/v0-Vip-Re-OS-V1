@@ -101,12 +101,13 @@ export async function autoDetectCommissionDispute(
       .from("notifications")
       .select("id").eq("user_id", userId).eq("type", "cda_contract_mismatch").eq("entity_id", commissionId).gte("created_at", since).limit(1)
     if (!existing || existing.length === 0) {
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: userId, brokerage_id: params.brokerageId, type: "cda_contract_mismatch",
         title: "Check your CDA before your brokerage signs",
         body: `${reason}. Because your brokerage isn't on the platform, raise this with them directly through your form platform before it's finalized.`,
         entity_type: "agent_commission", entity_id: commissionId, priority: "high", channel: "in_app",
-      }).then(() => {}, () => {})
+      })
+      if (notifyError) console.warn("[auto-dispute.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
   }
   return { acted: "agent_flagged", reason }

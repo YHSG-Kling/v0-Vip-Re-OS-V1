@@ -59,6 +59,12 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
     envVars: ["DID_API_KEY"],
   },
   {
+    provider: "simli",
+    models: ["platform_metered"],
+    why: "BACKUP live face-render behind lib/live-agent/face-render.ts (owner 2026-09-14: 'building Simli as a backup makes more sense than HeyGen') — platform key, per-streamed-minute metering (SIMLI_USD_PER_STREAMING_MINUTE), each agent's face a per-agent asset on the platform account, same shape as D-ID. Lane 76C: without this row the readiness board never showed the seam dark when the key was absent.",
+    envVars: ["SIMLI_API_KEY"],
+  },
+  {
     provider: "remotion",
     models: ["platform_metered"],
     why: "Programmatic video renders run on OUR serverless infrastructure (no per-render vendor) — platform-owned by construction; the company license is a platform obligation once team size crosses Remotion's threshold.",

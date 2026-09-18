@@ -339,7 +339,7 @@ export function evaluateEffectiveBatchDataTier(
  * so a transient ledger-read failure must never itself take a customer chat
  * down by assuming the platform is already over budget.
  */
-export async function readPlatformBatchDataMonthlySpendCents(): Promise<number> {
+async function readPlatformBatchDataMonthlySpendCents(): Promise<number> {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()

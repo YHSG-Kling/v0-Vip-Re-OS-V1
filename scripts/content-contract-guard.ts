@@ -31,7 +31,7 @@ import { readFileSync } from "node:fs"
 import { walkTs } from "./runtime-roots"
 import { LIVE_TABLES } from "./live-tables"
 import { blankComments, stripComments } from "./strip-comments"
-import { listingAttributionLine } from "../lib/listings/attribution"
+import { listingAttributionLine, listingAttributionHref } from "../lib/listings/attribution"
 import {
   CONTENT_CONTRACT, isSupplied, missingContentProps, describeMissingContent,
   VOICEOVER_CONSUMING_COMPOSITIONS, consumesVoiceover, stagesVoiceover,
@@ -1119,6 +1119,24 @@ console.log("\n═══ 19. CMAReel attribution — the RentCast/IDX/BatchData 
   ok("listingAttributionLine: the platform's OWN listings/comps get an EMPTY line\n    (own data needs no third-party credit) — the negative control this rule needs",
     listingAttributionLine("platform") === "" && listingAttributionLine("own") === ""
     && listingAttributionLine("none") === "" && listingAttributionLine(null) === "" && listingAttributionLine(undefined) === "")
+  // Lane 76C blind-spot burn-down: the RentCast line now LINKS to RentCast's
+  // governing Terms of Use (https://www.rentcast.io/terms, fetched live
+  // 2026-09-18 — a real Terms page, licensed by Fortnoff Financial LLC), and
+  // the shared <ListingAttribution /> component renders that link. Sources
+  // with no verified terms page keep a plain sentence (null href).
+  ok("listingAttributionHref: rentcast → https://www.rentcast.io/terms (the ONE constant RENTCAST_TERMS_URL); idx/batchdata/perplexity/own → null (no verified terms page, so no invented link)",
+    listingAttributionHref("rentcast") === "https://www.rentcast.io/terms"
+    && listingAttributionHref("idx") === null && listingAttributionHref("batchdata") === null
+    && listingAttributionHref("perplexity") === null && listingAttributionHref("own") === null && listingAttributionHref(null) === null)
+  {
+    const attrTsx = stripComments(src("app/components/listings/ListingAttribution.tsx"))
+    ok("<ListingAttribution /> renders the href as an <a target=_blank rel=noopener noreferrer> around the SAME line, and falls back to the plain sentence when href is null",
+      /listingAttributionHref\(source\)/.test(attrTsx)
+      && /<a href=\{href\} target="_blank" rel="noopener noreferrer"/.test(attrTsx)
+      && /\{href \? \(/.test(attrTsx) && /\) : \(\s*line\s*\)/.test(attrTsx))
+    ok("POSITIVE CONTROL: the anchor finder rejects the pre-76C component body (a bare {line} span, no href)",
+      !/<a href=\{href\}/.test('<span data-listing-attribution={source ?? "none"}>{line}</span>'))
+  }
 
   const orchestratorSrc = stripComments(src("lib/video/cma-reel-orchestrator.ts"))
   const chartsSrc = stripComments(src("lib/charts/cma-reel-data.ts"))

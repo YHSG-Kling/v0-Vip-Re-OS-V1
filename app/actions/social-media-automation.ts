@@ -388,7 +388,7 @@ export async function scheduleSocialPost(params: {
         .limit(5)
 
       for (const broker of brokerUsers ?? []) {
-        await supabase.from("notifications").insert({
+        const { error: notifyError } = await supabase.from("notifications").insert({
           user_id: broker.id,
           brokerage_id: brokerageId,
           type: "social_post_pending_approval",
@@ -399,6 +399,7 @@ export async function scheduleSocialPost(params: {
           is_read: false,
           created_at: new Date().toISOString(),
         })
+        if (notifyError) console.warn("[social-media-automation.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       }
     }
 

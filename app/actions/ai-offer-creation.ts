@@ -886,7 +886,9 @@ export async function generateOfferDraft(params: {
 
     // ── Notify agent that the packet is ready for review ─────────────────
     if (params.agentUserId) {
-      void Promise.resolve(supabase.from("notifications").insert({
+      // Awaited and error-read (lane 76C): the fire-and-forget `.catch(() => {})`
+      // made an RLS/CHECK refusal indistinguishable from a delivered bell.
+      const { error: notifyError } = await supabase.from("notifications").insert({
         user_id: params.agentUserId,
         brokerage_id: params.brokerageId,
         type: "offer_packet_ready",
@@ -896,7 +898,8 @@ export async function generateOfferDraft(params: {
         entity_type: "document",
         entity_id: params.documentId ?? null,
         channel: "in_app",
-      })).catch(() => {})
+      })
+      if (notifyError) console.warn("[ai-offer-creation] notifications insert refused — the bell will not ring:", notifyError.message)
     }
 
     return { success: true, documentId: params.documentId ?? undefined }

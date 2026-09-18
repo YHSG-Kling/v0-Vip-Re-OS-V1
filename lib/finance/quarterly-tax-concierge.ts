@@ -113,7 +113,7 @@ export async function runQuarterlyTaxConcierge(
       if (existing && existing.length > 0) continue
 
       const dueLabel = new Date(`${due.dueDate}T00:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: a.user_id,
         brokerage_id: brokerageId,
         type: "quarterly_tax_reminder",
@@ -124,6 +124,7 @@ export async function runQuarterlyTaxConcierge(
         priority: "high",
         channel: "in_app",
       })
+      if (notifyError) console.warn("[quarterly-tax-concierge.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       remindersSent++
     } catch (e: any) {
       errors.push(`${a.id}: ${e?.message ?? String(e)}`)

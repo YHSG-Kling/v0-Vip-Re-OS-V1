@@ -1246,7 +1246,9 @@ export async function generateListingAgreement(params: {
 
     // Notify the agent — the packet awaits their review/finalization
     if (params.agentUserId) {
-      void Promise.resolve(supabase.from("notifications").insert({
+      // Awaited and error-read (lane 76C): the fire-and-forget `.catch(() => {})`
+      // made an RLS/CHECK refusal indistinguishable from a delivered bell.
+      const { error: notifyError } = await supabase.from("notifications").insert({
         user_id: params.agentUserId,
         brokerage_id: params.brokerageId,
         type: "listing_agreement_packet_ready",
@@ -1256,7 +1258,8 @@ export async function generateListingAgreement(params: {
         entity_type: "document",
         entity_id: params.documentId ?? null,
         channel: "in_app",
-      })).catch(() => {})
+      })
+      if (notifyError) console.warn("[ai-listing-intake] notifications insert refused — the bell will not ring:", notifyError.message)
     }
 
     return { success: true, documentId: params.documentId ?? undefined }

@@ -4,6 +4,7 @@
 // warm candidate (especially one with an offer out) never goes cold from neglect.
 // Pure stage-SLA policy in stale-recruit-policy.ts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStaleRecruit, slaDaysForStage } from "./stale-recruit-policy"
 
@@ -56,7 +57,7 @@ export async function reapStaleRecruits(
 
     const stage = (row.status ?? "pipeline").toString().replace(/_/g, " ")
     const sla = slaDaysForStage(row.status)
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: agentUserId,
       brokerage_id: brokerageId,
       type: "recruit_gone_cold",
@@ -66,7 +67,7 @@ export async function reapStaleRecruits(
       entity_id: row.id,
       priority: (row.status ?? "").toLowerCase() === "offer_extended" ? "high" : "medium",
       is_read: false,
-    })
+    }), { table: "notifications", flow: "stale_recruit_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     result.escalated++
   }
 

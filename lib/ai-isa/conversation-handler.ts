@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { isLeadHandedOff, isLeadSuppressed } from '@/lib/lead-pipeline/lead-lifecycle'
 
@@ -127,7 +128,7 @@ export async function haltEngagementForNegativeReply(params: {
   }
 
   // Notify the agent
-  await supabase.from('notifications').insert({
+  await sentinelWrite(supabase, supabase.from('notifications').insert({
     brokerage_id: params.brokerageId,
     type: 'lead_opted_out',
     title: 'Lead requested to be removed',
@@ -137,7 +138,7 @@ export async function haltEngagementForNegativeReply(params: {
     entity_type: 'lead',
     entity_id: params.leadId,
     is_read: false,
-  })
+  }), { table: "notifications", flow: "conversation_handler_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   return { halted: true, contactSuppressionError }
 }

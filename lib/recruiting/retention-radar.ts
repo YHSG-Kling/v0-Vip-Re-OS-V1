@@ -6,6 +6,7 @@
 // broker "save play" (targeted to the driving signals) so a slipping agent is caught before they leave.
 // Nothing auto-sends. Best-effort; never throws into a caller.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeRetentionScore, isAtRisk, scoreTrendOf, type RetentionSignals } from "@/lib/recruiting/retention-score"
 import { daysSince } from "@/lib/format/dates"
@@ -136,7 +137,7 @@ export async function runRetentionRadar(
         const { data: seen } = await svc.from("notifications").select("id").eq("user_id", mId).eq("entity_type", "agent").eq("entity_id", a.id).eq("type", "agent_retention_risk").gte("created_at", new Date(now.getTime() - 7 * 86_400_000).toISOString()).limit(1).maybeSingle()
         if (seen) continue
         const driverText = rs.drivingSignals.length ? rs.drivingSignals.join("; ") : "engagement is slipping across the board"
-        await svc.from("notifications").insert({ user_id: mId, brokerage_id: params.brokerageId, type: "agent_retention_risk", title: `${agentName} is at retention risk (${rs.score}/100)`, body: driverText, entity_type: "agent", entity_id: a.id, priority: "high", is_read: false })
+        await sentinelWrite(svc, svc.from("notifications").insert({ user_id: mId, brokerage_id: params.brokerageId, type: "agent_retention_risk", title: `${agentName} is at retention risk (${rs.score}/100)`, body: driverText, entity_type: "agent", entity_id: a.id, priority: "high", is_read: false }), { table: "notifications", flow: "retention_radar_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
     } catch { /* best-effort */ }
   }

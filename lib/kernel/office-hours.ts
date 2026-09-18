@@ -100,8 +100,9 @@ export async function runOfficeHoursDrop(
     const stillPending = new Set(((props ?? []) as any[]).map((p) => p.id))
     const sweepIds = userPings.filter((p) => p.entity_id && stillPending.has(p.entity_id)).map((p) => p.id)
     if (sweepIds.length > 0) {
-      const { data: updated } = await supabase.from("notifications")
+      const { data: updated, error: sweepError } = await supabase.from("notifications")
         .update({ is_read: true }).in("id", sweepIds).select("id")
+      if (sweepError) console.warn("[office-hours] notifications sweep refused — pings stay unread beside the digest:", sweepError.message)
       swept += (updated ?? []).length
     }
   }

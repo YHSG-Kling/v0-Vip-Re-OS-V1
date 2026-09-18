@@ -15,6 +15,7 @@
  * Any mismatch → reject.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core"
 
@@ -111,7 +112,7 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
     console.error("[agentPublicProfile] profile_inquiry activity REJECTED — the contact's timeline will not show this inquiry:", inquiryActivityError.message)
   }
 
-  await svc.from("notifications").insert({
+  await sentinelWrite(svc, svc.from("notifications").insert({
     user_id: agent.user_id,
     brokerage_id: agent.brokerage_id,
     title: "📩 New profile inquiry",
@@ -121,7 +122,7 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
     entity_id: contact.id,
     priority: "high",
     is_read: false,
-  })
+  }), { table: "notifications", flow: "agent_public_profile_notify", brokerageId: agent.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   return { success: true, contactId: contact.id }
 }

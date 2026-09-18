@@ -74,7 +74,7 @@ export interface CustomerContextToolsContext {
  * few logged activities, so the model can ground its replies without a paid
  * lookup.
  */
-export function buildGetMyContextTool(ctx: CustomerContextToolsContext) {
+function buildGetMyContextTool(ctx: CustomerContextToolsContext) {
   return tool({
     description: "Look up YOUR OWN contact/lead profile and recent activity — name, stage, and the last few logged interactions. Use this before asking the person to repeat information already on file.",
     inputSchema: z.object({}),
@@ -135,7 +135,7 @@ export function buildGetMyContextTool(ctx: CustomerContextToolsContext) {
  * or pre-capture conversation with neither contactId nor leadId simply has no
  * tool to call (buildCustomerContextTools omits it entirely, see below).
  */
-export function buildRequestShowingTool(ctx: CustomerContextToolsContext & { contactId: string }) {
+function buildRequestShowingTool(ctx: CustomerContextToolsContext & { contactId: string }) {
   return tool({
     description: "Request a showing, call, or meeting for YOURSELF. Logs the request and notifies your agent — they will confirm a specific time. Use when the person asks to see a property, schedule a call, or meet.",
     inputSchema: z.object({
@@ -162,7 +162,7 @@ export function buildRequestShowingTool(ctx: CustomerContextToolsContext & { con
         const svc = createServiceClient()
         const { data: agent } = await svc.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
         if (agent?.user_id) {
-          await svc.from("notifications").insert({
+          await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: agent.user_id,
             brokerage_id: ctx.brokerageId,
             type: "appointment_request",
@@ -171,7 +171,7 @@ export function buildRequestShowingTool(ctx: CustomerContextToolsContext & { con
             priority: "high",
             entity_type: "contact",
             entity_id: ctx.contactId,
-          }).then(undefined, () => {})
+          }), { table: "notifications", flow: "customer_context_tools_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
       }
       return { success: true, meetingType: meeting_type, activityId: result.activityId }
@@ -184,7 +184,7 @@ export function buildRequestShowingTool(ctx: CustomerContextToolsContext & { con
  * (never a paid vendor call), scoped to the brokerage and active/coming-soon/
  * pending statuses. Every persona gets this — it costs the platform nothing.
  */
-export function buildSearchOurListingsTool(ctx: CustomerContextToolsContext) {
+function buildSearchOurListingsTool(ctx: CustomerContextToolsContext) {
   return tool({
     description: "Search this brokerage's OWN active listings by city/state/zip/price range/beds/baths. Free — always try this before a paid property-data tool.",
     inputSchema: z.object({

@@ -153,12 +153,13 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
         .in("user_type", ["broker", "admin"]).limit(20)
       const adminRows = (admins ?? []) as Array<{ id: string; email: string | null }>
       if (adminRows.length > 0) {
-        await svc.from("notifications").insert(adminRows.map((a) => ({
+        const { error: notifyError } = await svc.from("notifications").insert(adminRows.map((a) => ({
           user_id: a.id, brokerage_id: sub.brokerage_id, type: "billing_dunning",
           title: msg.subject.slice(0, 200), body: msg.body.slice(0, 480),
           entity_type: "subscription", entity_id: sub.id, priority: "high",
           channel: "in_app", is_read: false,
         })))
+        if (notifyError) console.warn("[dunning.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       }
 
       // Email best-effort — canonical provider sender, SendGrid-gated (honest no-op without creds).

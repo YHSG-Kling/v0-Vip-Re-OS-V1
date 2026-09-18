@@ -61,7 +61,7 @@ export async function celebrateCapCrush(
   const { data: agent } = await svc.from("agents").select("user_id").eq("id", params.agentId).maybeSingle()
   const userId = (agent as { user_id?: string | null } | null)?.user_id ?? null
   if (userId) {
-    await svc.from("notifications").insert({
+    const { error: notifyError } = await svc.from("notifications").insert({
       user_id: userId,
       brokerage_id: params.brokerageId,
       type: "cap_crushed",
@@ -71,7 +71,8 @@ export async function celebrateCapCrush(
       entity_id: params.agentId,
       priority: "high",
       channel: "in_app",
-    }).then(() => { celebrated = true }, () => {})
+    })
+    if (notifyError) console.warn("[cap-crush.ts] notifications insert refused — the bell will not ring:", notifyError.message)
   }
 
   let signaled = false

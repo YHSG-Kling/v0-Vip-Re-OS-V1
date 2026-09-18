@@ -91,11 +91,12 @@ export async function runWarmHandoff(
       const { data: agentRow } = await svc.from("agents").select("user_id").eq("id", c.agent_id).maybeSingle()
       const agentUserId = (agentRow as any)?.user_id
       if (agentUserId) {
-        const { data: notif } = await svc.from("notifications").insert({
+        const { data: notif, error: notifyError } = await svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: brokerageId, type: "warm_handoff",
           title: handoffTitle(contactName), body: brief.suggestedFocus,
           entity_type: "contact", entity_id: contactId, priority: "high",
         }).select("id").single()
+        if (notifyError) console.warn("[warm-handoff-runner] notifications insert refused — the handoff bell will not ring:", notifyError.message)
         notificationId = (notif as any)?.id
       }
     }

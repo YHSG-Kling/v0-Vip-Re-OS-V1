@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -100,7 +101,7 @@ export async function checkAndTriggerGiftOrder(params: {
   // Notify TC
   // Real notifications shape (type/body/entity_*; no notification_type/message/link
   // columns — the phantom insert failed silently and the TC was never notified).
-  await supabase.from("notifications").insert({
+  await sentinelWrite(supabase, supabase.from("notifications").insert({
     user_id: params.userId,
     type: 'task_assigned',
     title: 'Order Closing Gift',
@@ -108,7 +109,7 @@ export async function checkAndTriggerGiftOrder(params: {
     entity_type: 'transaction',
     entity_id: params.transactionId,
     brokerage_id: params.brokerageId
-  })
+  }), { table: "notifications", flow: "gift_order_trigger_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   return { triggered: true }
 }

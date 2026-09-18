@@ -24,6 +24,14 @@ import type {
 const GOOGLE_CAL = "https://www.googleapis.com/calendar/v3"
 const GRAPH = "https://graph.microsoft.com/v1.0"
 
+/** PURE: CalendarEvent.status → Microsoft Graph event `showAs`. Google's
+ *  `status: "tentative"` is a lifecycle state; Graph has none for an
+ *  organizer-created event, so the honest fallback is its AVAILABILITY
+ *  field, which does carry `tentative` — and `busy` once confirmed. */
+export function graphShowAsFor(status: "confirmed" | "tentative"): "tentative" | "busy" {
+  return status === "tentative" ? "tentative" : "busy"
+}
+
 /**
  * READINESS PREDICATE for this connection: does this agent have a Google or
  * Microsoft account connected with a token we can still use? True means the
@@ -80,6 +88,16 @@ export async function createEventViaPersonal(agentUserId: string, event: Calenda
       end: { dateTime: event.endTime, timeZone: "UTC" },
       location: event.location ? { displayName: event.location } : undefined,
       attendees: event.attendees?.map((a) => ({ emailAddress: { address: a.email, name: a.name }, type: "required" })),
+      // Microsoft Graph's own free/busy status on the event body — `showAs`
+      // takes free | tentative | busy | oof | workingElsewhere | unknown
+      // (learn.microsoft.com/graph/api/resources/event, verified 2026-09-18,
+      // lane 76C). This is the closest honest Graph equivalent of Google's
+      // event `status: "tentative"`: an organizer-created Graph event has no
+      // "unconfirmed" lifecycle state, but it DOES carry a tentative
+      // availability that Outlook renders hatched until the agent confirms
+      // and the PATCH below flips it to busy. Omitted when the caller gave
+      // no status, so Graph's own default applies (never a fabricated one).
+      ...(event.status ? { showAs: graphShowAsFor(event.status) } : {}),
     },
   })
   if (!res.ok) return { success: false, error: `Microsoft Graph (${res.status}): ${res.error ?? ""}` }
@@ -143,6 +161,10 @@ export async function updateEventViaPersonal(agentUserId: string, eventId: strin
   if (updates.location) body.location = { displayName: updates.location }
   if (updates.startTime) body.start = { dateTime: updates.startTime, timeZone: "UTC" }
   if (updates.endTime) body.end = { dateTime: updates.endTime, timeZone: "UTC" }
+  // The confirm PATCH (lib/ai-isa/listing-appointment.ts) sends status:
+  // "confirmed" — on Graph that is showAs: "busy", the hatched tentative
+  // block becoming a solid one on the agent's Outlook calendar.
+  if (updates.status) body.showAs = graphShowAsFor(updates.status)
   const res = await callConnector({
     connector: "outlook_calendar", baseUrl: GRAPH, path: `/me/events/${encodeURIComponent(eventId)}`, method: "PATCH",
     auth: { style: "bearer", token: tok.accessToken }, body,

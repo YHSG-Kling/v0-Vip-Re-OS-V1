@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
@@ -1021,7 +1022,7 @@ export async function sendOfferForESign(
 
   const name = contact ? `${contact.first_name} ${contact.last_name}` : "Buyer"
 
-  await supabase.from("notifications").insert({
+  await sentinelWrite(supabase, supabase.from("notifications").insert({
     brokerage_id: brokerageId,
     user_id:      agentUserId,
     type:         "offer.esign_sent",
@@ -1031,7 +1032,7 @@ export async function sendOfferForESign(
     entity_id:    offerId,
     priority:     "high",
     channel:      "in_app",
-  })
+  }), { table: "notifications", flow: "buyer_offers_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   return { success: true }
 }

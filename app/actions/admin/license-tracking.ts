@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { licenseNeedsManualReview, manualReviewOutcome } from "@/lib/onboarding/license-review"
@@ -273,7 +274,7 @@ export async function reviewLicenseManually(input: {
   // Tell the agent the outcome.
   const { data: agentRow } = await service.from("agents").select("user_id").eq("id", lic.agent_id).maybeSingle()
   if (agentRow?.user_id) {
-    await service.from("notifications").insert({
+    await sentinelWrite(service, service.from("notifications").insert({
       user_id: agentRow.user_id,
       brokerage_id: lic.brokerage_id,
       type: passed ? "license_verified" : "license_rejected",
@@ -285,7 +286,7 @@ export async function reviewLicenseManually(input: {
       entity_id: lic.id,
       priority: passed ? "normal" : "high",
       channel: "in_app",
-    })
+    }), { table: "notifications", flow: "license_tracking_notify", brokerageId: lic.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   return { success: true }

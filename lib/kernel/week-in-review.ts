@@ -200,12 +200,13 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         } catch { /* audio is best-effort — the text brief still lands */ }
       }
 
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: a.user_id, brokerage_id: a.brokerage_id, type: "week_in_review",
         title: "Your week in review — from your AI team",
         body: `${audioUrl ? `▶ Listen: ${audioUrl} — ` : ""}${script}`.slice(0, 480) + ` [${isoWeek}]`,
         priority: "medium", channel: "in_app", is_read: false,
       })
+      if (notifyError) console.warn("[week-in-review.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       r.briefed += 1
 
       // Delegation close: the TOP action as ONE gated proposal (deduped per week).

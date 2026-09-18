@@ -19,8 +19,15 @@
  * time of writing (CRAWL_NOT_FOUND against developers.rentcast.io's ToU/
  * attribution path) — the wording above is the owner's own stated requirement,
  * used verbatim rather than guessed at from a page that would not resolve.
- * UNRESOLVED: the exact RentCast Terms-of-Use attribution-clause URL — record
- * and confirm it before this wording is treated as legally final.
+ *
+ * RESOLVED (lane 76C, 2026-09-18): https://www.rentcast.io/terms fetched live
+ * — it is RentCast's platform Terms of Use ("end user software license
+ * agreement … created and maintained by Fortnoff Financial LLC"). It is a
+ * TERMS page, not a dedicated attribution clause: §3.3 ("Our Marks") reserves
+ * RentCast's trademarks, so the attribution line links to the terms as the
+ * governing document rather than restating them. Every rendered RentCast
+ * attribution now carries that link (RENTCAST_TERMS_URL / listingAttributionHref
+ * below, <ListingAttribution />); the wording itself stays the owner's.
  *
  * IDX BOARD WORDING: this codebase stores no per-board MLS name anywhere —
  * checked first (scripts/schema-snapshot.ts): brokerage_settings carries only
@@ -50,6 +57,19 @@ export type ListingAttributionSource =
   | undefined
 
 const RENTCAST_ATTRIBUTION = "Listing data provided by RentCast"
+/** RentCast's governing Terms of Use — verified live 2026-09-18 (see header).
+ *  ONE constant (§6); every rendered RentCast attribution links here. */
+export const RENTCAST_TERMS_URL = "https://www.rentcast.io/terms"
+
+/**
+ * The link an attribution line should carry, or null when the source has no
+ * published terms page this codebase has verified (IDX boards differ per MLS;
+ * BatchData/Perplexity comps are labelled, not linked). Kept beside
+ * listingAttributionLine so wording and link never drift apart.
+ */
+export function listingAttributionHref(source: ListingAttributionSource): string | null {
+  return source === "rentcast" ? RENTCAST_TERMS_URL : null
+}
 /** No per-board name is stored anywhere in this codebase — see file header. */
 const IDX_ATTRIBUTION = "Listing courtesy of the local MLS via IDX"
 /**

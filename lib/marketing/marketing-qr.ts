@@ -9,6 +9,7 @@
  * Every code is IDEMPOTENT per (listing/brokerage, kind) so re-generating a packet reuses the same
  * tracked code, and uses only destination_type values the video path already proved enum-valid.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { mintTrackedQr, normalizeOrigin, type MintedTrackedQr } from "./tracked-qr"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -119,7 +120,7 @@ async function notifyOwnerToAssignUrl(
     }
 
     for (const userId of recipients) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: userId,
         brokerage_id: args.brokerageId,
         type: "qr_url_assignment_needed",
@@ -129,7 +130,7 @@ async function notifyOwnerToAssignUrl(
         entity_id: args.qrCodeId,
         priority: "medium",
         channel: "in_app",
-      })
+      }), { table: "notifications", flow: "marketing_qr_notify", brokerageId: args.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
   } catch {
     /* best-effort */

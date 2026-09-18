@@ -7,6 +7,7 @@
  * Command Center; APPROVING sends it (portal card) and records the audit trail.
  * Nothing reaches a client without a human in the loop.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { inferOutreachReason } from "@/lib/kernel/outreach-reasons"
 import { evalManagerMessage } from "@/lib/agents/manager-outbound-eval"
@@ -93,12 +94,12 @@ export async function proposeClientMessage(
       const label = (input.agentKind in MANAGERS)
         ? MANAGERS[input.agentKind as keyof typeof MANAGERS].label
         : "A manager"
-      await supabase.from("notifications").insert({
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: agentUserId, brokerage_id: input.brokerageId, type: "approval_needed",
         title: `${label} needs your approval`,
         body: input.subject ? `${input.subject} — tap to review & approve.` : "A client message is awaiting your approval — tap to review.",
         entity_type: "agent_client_message", entity_id: messageId, priority: "medium", is_read: false,
-      })
+      }), { table: "notifications", flow: "agent_client_messages_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
   } catch (e) {
     console.error("[proposeClientMessage] real-time approval alert failed:", e)

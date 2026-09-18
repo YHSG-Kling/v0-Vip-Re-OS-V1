@@ -19,6 +19,7 @@
  *   - on-demand action (agent presses "Prepare for appointment now")
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -604,7 +605,9 @@ export async function buildListingPresentation(
 
     // 8. Notify agent
     if (input.agentUserId) {
-      void Promise.resolve(svc.from("notifications").insert({
+      // Ledgered, not swallowed (lane 76C): the fire-and-forget `.catch(() => {})`
+      // hid a refused insert; sentinelWrite reads the error and records the loss.
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id:      input.agentUserId,
         brokerage_id: input.brokerageId,
         type:         "listing_presentation_ready",
@@ -614,7 +617,7 @@ export async function buildListingPresentation(
         entity_type:  "listing_presentation",
         entity_id:    pres.id,
         channel:      "in_app",
-      })).catch(() => {})
+      }), { table: "notifications", flow: "listing_presentation_builder_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the presentation it follows" })
     }
 
     return {

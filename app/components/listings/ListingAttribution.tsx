@@ -9,7 +9,7 @@
  * Server- and client-safe: no hooks, no "use client" directive needed, no I/O.
  */
 
-import { listingAttributionLine, type ListingAttributionSource } from "@/lib/listings/attribution"
+import { listingAttributionLine, listingAttributionHref, type ListingAttributionSource } from "@/lib/listings/attribution"
 
 export function ListingAttribution({
   source,
@@ -20,9 +20,19 @@ export function ListingAttribution({
 }) {
   const line = listingAttributionLine(source)
   if (!line) return null
+  // A RentCast line links to RentCast's governing Terms of Use (verified live
+  // 2026-09-18, lane 76C — lib/listings/attribution.ts RENTCAST_TERMS_URL);
+  // sources with no verified terms page render the plain sentence.
+  const href = listingAttributionHref(source)
   return (
     <span className={className ?? "text-[11px] text-muted-foreground"} data-listing-attribution={source ?? "none"}>
-      {line}
+      {href ? (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:underline">
+          {line}
+        </a>
+      ) : (
+        line
+      )}
     </span>
   )
 }

@@ -14,7 +14,12 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
-import { percentile, classifyManagerSlo, MANAGER_SLO } from "../lib/platform/manager-ops"
+import {
+  percentile, classifyManagerSlo, MANAGER_SLO,
+  recommendVoiceToolRoundDeadlineMs, parseContextJson,
+  VOICE_DEADLINE_CANDIDATE_LADDER_MS, VOICE_DEADLINE_RECOMMENDATION_MIN_ATTEMPTS,
+} from "../lib/platform/manager-ops"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -25,6 +30,42 @@ function pureLayer() {
   console.log("\n[percentile + SLO classifier · pure]")
   check("p95 is nearest-rank (95th of 1..100 = 95)", percentile(Array.from({ length: 100 }, (_, i) => i + 1), 95) === 95)
   check("empty sample → 0", percentile([], 95) === 0)
+
+  // ── Voice tool-round deadline telemetry (lane 76C blind-spot burn-down) ──
+  // Two wave-74 defects made the stat read "0 attempts" forever and, had it
+  // ever read anything, unshippable through the action boundary:
+  //   (1) ai_tool_usage.context_json is TEXT live; the reader compared a JSON
+  //       STRING's `.toolRound` against `true`.
+  //   (2) the struct carried a FUNCTION (hitRateAtMs), which React's server-
+  //       action serializer refuses — the panel's promise rejected silently.
+  console.log("\n[voice tool-round deadline · pure — text context_json parse + measured recommendation]")
+  check("parseContextJson: a JSON STRING (what the TEXT column hands back) parses to an object with toolRound",
+    parseContextJson('{"toolRound":true,"deadlineHit":false}')?.toolRound === true)
+  check("parseContextJson: an already-parsed object passes through unchanged",
+    parseContextJson({ toolRound: true })?.toolRound === true)
+  check("POSITIVE CONTROL: the wave-74 comparison on the raw string never matched (the defect the parse fixes)",
+    (('{"toolRound":true}' as unknown as Record<string, unknown> | null)?.toolRound === true) === false)
+  check("parseContextJson: malformed text / null / a number → null, never a throw",
+    parseContextJson("{not json") === null && parseContextJson(null) === null && parseContextJson(42) === null)
+  const fifty = Array.from({ length: 50 }, (_, i) => 1000 + i * 40) // 1000..2960ms, p95 = 2920
+  check("recommendVoiceToolRoundDeadlineMs: p95 + 10% headroom, rounded UP to 250ms (50 rows 1000..2960 → p95 2920 → 3212 → 3250)",
+    recommendVoiceToolRoundDeadlineMs(fifty) === 3250)
+  check("recommendation is WITHHELD (null) under the attempts floor — a p95 over a handful of calls is noise, not a measurement",
+    recommendVoiceToolRoundDeadlineMs(fifty.slice(0, VOICE_DEADLINE_RECOMMENDATION_MIN_ATTEMPTS - 1)) === null)
+  check("recommendation clamps to [2000, 8000] (a 200ms sample → 2000; a 20s sample → 8000)",
+    recommendVoiceToolRoundDeadlineMs(Array(60).fill(200)) === 2000 && recommendVoiceToolRoundDeadlineMs(Array(60).fill(20_000)) === 8000)
+  check("the candidate ladder brackets the 4000ms policy default on both sides",
+    VOICE_DEADLINE_CANDIDATE_LADDER_MS.some((c) => c < 4000) && VOICE_DEADLINE_CANDIDATE_LADDER_MS.includes(4000) && VOICE_DEADLINE_CANDIDATE_LADDER_MS.some((c) => c > 4000))
+  const opsSrc = stripComments(src("lib/platform/manager-ops.ts"))
+  const statsIface = opsSrc.slice(opsSrc.indexOf("export interface VoiceToolRoundDeadlineStats"), opsSrc.indexOf("export const VOICE_DEADLINE_CANDIDATE_LADDER_MS"))
+  check("VoiceToolRoundDeadlineStats carries NO function-valued field (it crosses a 'use server' action into a client component — plain data only)",
+    statsIface.length > 0 && !/=>\s*number/.test(statsIface) && /hitRateAtMs:\s*Array<\{/.test(statsIface))
+  check("POSITIVE CONTROL: the finder recognises the wave-74 function-valued shape",
+    /=>\s*number/.test("hitRateAtMs: (candidateMs: number) => number"))
+  check("the loader parses context_json through parseContextJson and READS the query error (a refused read is warned, never rendered as 'no attempts')",
+    /parseContextJson\(r\.context_json\)/.test(opsSrc) && /const \{ data, error \} = await svc\s*\.from\("ai_tool_usage"\)/.test(opsSrc))
+  check(".env.example documents the deadline as env-tunable AND names the ai-ops panel as the measured-p95 source",
+    src(".env.example").includes("VOICE_TOOL_ROUND_DEADLINE_MS=") && /superadmin\/ai-ops/.test(src(".env.example")))
   check("under all ceilings → ok", classifyManagerSlo({ costCents: 100, p95Ms: 2000, errorRate: 0.01 }) === "ok")
   check("cost over the breach ceiling → breach", classifyManagerSlo({ costCents: MANAGER_SLO.costCentsBreach, p95Ms: 100, errorRate: 0 }) === "breach")
   check("p95 in the warn band → warn", classifyManagerSlo({ costCents: 0, p95Ms: MANAGER_SLO.p95WarnMs, errorRate: 0 }) === "warn")

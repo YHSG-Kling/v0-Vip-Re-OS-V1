@@ -14,6 +14,7 @@
  *   3. notify_parties      — agent + TC + compliance manager notified
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
 
@@ -158,7 +159,7 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
             priority: "high",
             is_read: false,
           }))
-          await svc.from("notifications").insert(rows)
+          await sentinelWrite(svc, svc.from("notifications").insert(rows), { table: "notifications", flow: "compliance_transaction_auto_create_notify", reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
 
         return { success: true, output: { notifiedCount: notifyTargets.length } }

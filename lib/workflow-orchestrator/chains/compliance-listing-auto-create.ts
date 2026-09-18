@@ -12,6 +12,7 @@
  *   3. notify_agent            — push notification + activity log
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
 import { STATUS_AT_LISTING_AGREEMENT_SIGNED } from "@/lib/listings/listing-status-sync"
@@ -232,7 +233,7 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           return { success: false, error: "Missing listingId or agentUserId" }
         }
 
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: ctx.agentUserId,
           brokerage_id: ctx.brokerageId,
           title: "Listing created from signed agreement",
@@ -242,7 +243,7 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           entity_id: listingId,
           priority: "high",
           is_read: false,
-        })
+        }), { table: "notifications", flow: "compliance_listing_auto_create_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
         // The record that compliance passing an agreement AUTO-CREATED a
         // listing — the provenance of a row nobody typed.

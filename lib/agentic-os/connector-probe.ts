@@ -166,6 +166,15 @@ export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
   // web-push (VAPID browser push) has no GET-probeable endpoint — like the
   // Exa/BatchData POST-only exemption above, it is key-presence-audited only.
   web_push: "VAPID_PRIVATE_KEY",
+  // Simli — the BACKUP live face-render provider (lib/live-agent/face-render.ts,
+  // lib/providers/simli/client.ts). Lane 76C: the key was in .env.example and
+  // the seam failed closed on it ("SIMLI_API_KEY is not configured"), but the
+  // provider-readiness board derived from THIS list + the tenancy matrix never
+  // showed the seam dark, so an absent key read as nothing rather than as a
+  // platform_dark row. Key-presence-audited only (no PROBE_SPEC: Simli's
+  // documented surface is the POST /compose/token mint — a probe would MINT a
+  // session; probeConnector returns null for it and the guardian moves on).
+  simli: "SIMLI_API_KEY",
 }
 
 export interface ProbeResult {

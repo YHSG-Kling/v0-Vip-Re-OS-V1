@@ -104,7 +104,7 @@ export interface LoadBrandPlaybookContextInput {
 
 /** PURE — settings.business_processes → the typed list, tolerant of a
  *  missing or malformed key (never throws on a tenant that never set one). */
-export function parseBusinessProcesses(settings: Record<string, unknown> | null | undefined): BrandPlaybookBusinessProcess[] {
+function parseBusinessProcesses(settings: Record<string, unknown> | null | undefined): BrandPlaybookBusinessProcess[] {
   const raw = (settings as Record<string, unknown> | null | undefined)?.business_processes
   if (!Array.isArray(raw)) return []
   const out: BrandPlaybookBusinessProcess[] = []

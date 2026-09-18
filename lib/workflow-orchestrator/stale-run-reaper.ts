@@ -7,6 +7,7 @@
 // alone. Idempotent; best-effort; never throws. The third reaper (signals, video, now chains) that
 // guarantees every manager workflow has an owner.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStaleWorkflowRun, WORKFLOW_RUN_STALE_HOURS } from "./stale-run-policy"
@@ -39,12 +40,12 @@ export async function reapStaleWorkflowRuns(
         .update({ status: "failed", failed_at: now.toISOString(), error_message: `stalled in '${r.status}' for ${Math.round(ageHours)}h — reaped by the Campaign Orchestrator`, updated_at: now.toISOString() })
         .eq("id", r.id)
       if (r.agent_user_id) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: r.agent_user_id, brokerage_id: brokerageId, type: "workflow_stalled",
           title: "An automation stalled and was flagged",
           body: `The "${r.chain_key ?? "automation"}" workflow got stuck and your AI team flagged it so it doesn't sit unfinished. You can re-trigger it if it's still needed.`,
           entity_type: "workflow_run", entity_id: r.id, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "stale_run_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
       result.escalated++
     } catch { /* best-effort per run */ }

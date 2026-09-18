@@ -37,6 +37,7 @@
 // widget route (tenant from the minted chat_sessions row), and the server-only
 // kernel barrel. The module already reached `server-only` through ./emit; it is
 // now declared here so the boundary guards read it off this file directly.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -963,7 +964,7 @@ export async function notifyAssignedAgentForNextAction(params: {
 
   if (!agent?.user_id) return { success: false, error: "Agent not found" }
 
-  await supabase.from("notifications").insert({
+  await sentinelWrite(supabase, supabase.from("notifications").insert({
     user_id:      agent.user_id,
     brokerage_id: params.brokerageId,
     type:         "new_contact",
@@ -975,7 +976,7 @@ export async function notifyAssignedAgentForNextAction(params: {
     channel:      "in_app",
     is_read:      false,
     created_at:   new Date().toISOString(),
-  })
+  }), { table: "notifications", flow: "crm_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   await supabase.from("lifecycle_events").insert({
     entity_type:  "contact",

@@ -182,12 +182,13 @@ export async function runNetSheetSurpriseGuard(input: NetSheetGuardInput, client
 
     try {
       if (agentUserId) {
-        const { data: notif } = await svc.from("notifications").insert({
+        const { data: notif, error: notifyError } = await svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: input.brokerageId, type: "net_sheet_surprise",
           title: recon.surpriseLevel === "severe" ? "⚠️ Net-sheet surprise — final net is materially short" : "Net-sheet variance — reconcile before closing",
           body: draft.body, entity_type: "transaction", entity_id: t.id,
           priority: recon.surpriseLevel === "severe" ? "critical" : "high",
         }).select("id").single()
+        if (notifyError) console.warn("[net-sheet-guard-runner] notifications insert refused — the surprise bell will not ring:", notifyError.message)
         notificationId = (notif as any)?.id
       }
       // The Deal Coordinator hands the seller conversation to the Listing Concierge.

@@ -22,6 +22,7 @@
 // lead on team tier) or a brokerage manager role — a regular agent can never
 // take another agent's contact. Audited in lifecycle_events; counters honest.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { ACTIVE_DEAL_STATUSES } from "@/lib/agents/agent-deactivation"
@@ -279,7 +280,9 @@ export async function reassignContactAction(input: {
   if (targetUserId) {
     const contactName =
       [(contact as any).first_name, (contact as any).last_name].filter(Boolean).join(" ").trim() || "A contact"
-    await svc
+    // Ledgered, not swallowed (lane 76C): the `.then(() => {}, () => {})` tail
+    // hid a refused insert; sentinelWrite reads the error and records the loss.
+    await sentinelWrite(svc, svc
       .from("notifications")
       .insert({
         user_id: targetUserId,
@@ -292,8 +295,7 @@ export async function reassignContactAction(input: {
         priority: result.dealRolesMoved > 0 ? "high" : "medium",
         channel: "in_app",
         is_read: false,
-      })
-      .then(() => {}, () => {})
+      }), { table: "notifications", flow: "contact_reassignment_notify", brokerageId: auth.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the reassignment it follows" })
   }
 
   // ── GAMIFICATION AWARD, PORTED ONTO THE SURVIVOR (§1 merge, wave 26) ───────

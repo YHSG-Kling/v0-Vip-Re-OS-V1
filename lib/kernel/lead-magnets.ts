@@ -2,6 +2,7 @@
 // Kernel OS: Canonical Lead Magnet Commands
 // No mocks, stubs, or placeholders. All operations read/write real Supabase data.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { CONTACT_SOURCE_LEAD_MAGNET } from "@/lib/campaigns/contact-sources"
 import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
@@ -819,7 +820,7 @@ export async function captureFormSubmission(
 
       if (agentRow?.user_id) {
         const submitterName = [data.first_name, data.last_name].filter(Boolean).join(" ") || data.email || "Someone"
-        await supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id:     agentRow.user_id,
           brokerage_id: input.brokerageId,
           type:        "lead_magnet_submission",
@@ -831,7 +832,7 @@ export async function captureFormSubmission(
           priority:    "high",
           channel:     "in_app",
           created_at:  submittedAt,
-        })
+        }), { table: "notifications", flow: "lead_magnets_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
         // EMAIL NOTIFICATION (was "coming soon") — the email twin of the in-app
         // alert, opt-in per magnet via settings.notify_on_submission (the flag the

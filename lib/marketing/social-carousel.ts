@@ -308,12 +308,13 @@ export async function runListingCarousels(svc: any): Promise<ListingCarouselsRes
         const { data: dupNote } = await svc.from("notifications").select("id")
           .eq("brokerage_id", brokerageId).ilike("body", `%${marker}%`).limit(1).maybeSingle()
         if (!dupNote) {
-          await svc.from("notifications").insert({
+          const { error: notifyError } = await svc.from("notifications").insert({
             user_id: agentUserId, brokerage_id: brokerageId, type: "social_carousel_ready",
             title: `Carousel ready — ${address}`,
             body: `${mediaUrls.length}-slide Instagram carousel is finished${account?.id ? " and staged for your approval" : " (connect Instagram to publish from here)"}: ${mediaUrls[0]} ${marker}`,
             priority: "medium", channel: "in_app", is_read: false,
           }).then(undefined, () => {})
+          if (notifyError) console.warn("[social-carousel.ts] notifications insert refused — the bell will not ring:", notifyError.message)
         }
       }
     }

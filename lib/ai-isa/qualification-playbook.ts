@@ -314,7 +314,7 @@ function personaGuideBlock(persona: ToolPersona | null | undefined): string {
  *  that talks to a person (customer-facing or platform-prospect-facing
  *  alike). Doubles as the fair-housing-safe-phrasing rule for the writing
  *  prompt (CLAUDE.md §5). */
-export function conversationalRulesBlock(): string {
+function conversationalRulesBlock(): string {
   return [
     "CONVERSATION STYLE — never salesy:",
     "- Be helpful and curious, not a script being read at someone.",

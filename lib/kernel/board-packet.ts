@@ -211,12 +211,13 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
       const { data: admins } = await svc.from("users").select("id")
         .eq("brokerage_id", b.id).in("user_type", ["broker", "admin"]).limit(5)
       for (const u of (admins ?? []) as any[]) {
-        await svc.from("notifications").insert({
+        const { error: notifyError } = await svc.from("notifications").insert({
           user_id: u.id, brokerage_id: b.id, type: "board_packet_ready",
           title: `Your ${monthLabel} board packet is ready`,
           body: `Production, pipeline, and the AI team's measurable month — ${packetUrl}`,
           priority: "medium", channel: "in_app", is_read: false,
         }).then(undefined, () => {})
+        if (notifyError) console.warn("[board-packet.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       }
       // The packet as a VIDEO — the AI team presents the month (PartnersMeetingReel
       // composition reused; earned cards + attribution receipts). Best-effort:

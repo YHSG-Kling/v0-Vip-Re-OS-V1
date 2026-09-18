@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { convertToModelMessages } from 'ai'
 import type { UIMessage } from 'ai'
 import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
@@ -156,7 +157,7 @@ ${kbContext || 'No specific documentation found for this query.'}${memoryContext
               .eq('brokerage_id', brokerageId)
               .in('user_type', ['admin', 'broker', 'superadmin'])
             for (const adm of admins ?? []) {
-              await service.from('notifications').insert({
+              await sentinelWrite(service, service.from('notifications').insert({
                 user_id: adm.id,
                 brokerage_id: brokerageId,
                 type: 'onboarding_setup_escalation',
@@ -166,7 +167,7 @@ ${kbContext || 'No specific documentation found for this query.'}${memoryContext
                 entity_id: agentId,
                 priority: 'medium',
                 channel: 'in_app',
-              })
+              }), { table: "notifications", flow: "route_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
             }
           } catch (e) {
             console.error('[onboarding/assistant] failed to notify admins of escalation:', e)

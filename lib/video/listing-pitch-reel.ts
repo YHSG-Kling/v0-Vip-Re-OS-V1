@@ -248,12 +248,13 @@ export async function deliverListingPitchReels(svc: any, now: Date = new Date())
       .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
     if (dup) continue
     const address = (ren.input_props as any)?.weekLabel ?? "your listing appointment"
-    await svc.from("notifications").insert({
+    const { error: notifyError } = await svc.from("notifications").insert({
       user_id: ren.agent_user_id, brokerage_id: ren.brokerage_id, type: "listing_presentation_ready",
       title: `Your pitch video for ${address} is ready`,
       body: `Open it on the seller's kitchen table — you, the team, and the measured proof, on camera. Watch: ${ren.output_url} ${marker}`,
       priority: "high", channel: "in_app", is_read: false,
     }).then(undefined, () => {})
+    if (notifyError) console.warn("[listing-pitch-reel.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     out.notified += 1
   }
   return out

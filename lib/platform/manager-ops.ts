@@ -125,10 +125,71 @@ export interface VoiceToolRoundDeadlineStats {
   deadlineHitRate: number
   avgMs: number
   p95Ms: number
-  /** How many of the p95 population would ALSO have hit a tighter or looser
-   *  ceiling — lets an operator ask "what if the deadline were 3000ms
-   *  instead of 4000ms" directly from the same sample, not a fresh query. */
-  hitRateAtMs: (candidateMs: number) => number
+  /** How many of the sample would ALSO have hit a tighter or looser ceiling —
+   *  lets an operator ask "what if the deadline were 3000ms instead of
+   *  4000ms" directly from the same sample, not a fresh query. PRECOMPUTED
+   *  over VOICE_DEADLINE_CANDIDATE_LADDER_MS (lane 76C): the wave-74 shape was
+   *  a FUNCTION-valued field, and this struct crosses a "use server" action
+   *  boundary (app/actions/superadmin/ai-ops.ts) into a client component —
+   *  React's server-action serializer refuses a function, so the action
+   *  rejected and the panel's `.then` never set state. Plain data only. */
+  hitRateAtMs: Array<{ candidateMs: number; hitRate: number }>
+  /** Telemetry-derived tuning proposal (recommendVoiceToolRoundDeadlineMs) —
+   *  null until the sample is large enough to trust (see that function). */
+  recommendedDeadlineMs: number | null
+  /** The floor `recommendedDeadlineMs` waits for, published beside the number
+   *  so a null reads as "not enough calls yet", never as "no recommendation". */
+  recommendationMinAttempts: number
+}
+
+/** Candidate ceilings the ladder is evaluated at, bracketing the 4000ms policy
+ *  default both ways so an operator can see the trade-off on one line. */
+export const VOICE_DEADLINE_CANDIDATE_LADDER_MS = [2000, 3000, 4000, 5000, 6000, 8000] as const
+
+/** Fewer attempts than this and the p95 is one or two calls' noise — the
+ *  recommendation withholds itself rather than tuning a live-call deadline
+ *  from a handful of rows. */
+export const VOICE_DEADLINE_RECOMMENDATION_MIN_ATTEMPTS = 50
+
+/**
+ * PURE: the deadline the measured sample argues for. p95 of the tool-round
+ * durations, plus 10% headroom so the 95th-percentile call itself does not
+ * sit exactly on the ceiling, rounded UP to the next 250ms, clamped to
+ * [2000, 8000] — below 2s the round cannot fit one model call, above 8s dead
+ * air on a live call reads as a dropped call (twilio-voice.ts's own header).
+ * Null when the sample is too small to trust (never a number from noise).
+ */
+export function recommendVoiceToolRoundDeadlineMs(
+  durationsMs: number[],
+  minAttempts = VOICE_DEADLINE_RECOMMENDATION_MIN_ATTEMPTS,
+): number | null {
+  const xs = durationsMs.filter((v) => Number.isFinite(v) && v >= 0)
+  if (xs.length < minAttempts) return null
+  const p95 = percentile(xs, 95)
+  const withHeadroom = Math.ceil((p95 * 1.1) / 250) * 250
+  return Math.min(8000, Math.max(2000, withHeadroom))
+}
+
+/**
+ * PURE: `ai_tool_usage.context_json` is a TEXT column on the live schema
+ * (confirmed against information_schema 2026-09-18, lane 76C), and
+ * lib/ai/cost-tracking.ts inserts an OBJECT into it — PostgREST serialises
+ * that to a JSON string on the way in, and supabase-js hands the string back
+ * on the way out. The wave-74 reader compared `context_json?.toolRound ===
+ * true` against that STRING, so the filter matched nothing and the stat read
+ * "0 attempts" forever, whatever the calls did. Parse a string, pass an
+ * object through, and refuse anything else as null.
+ */
+export function parseContextJson(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null
+  if (typeof raw === "object") return raw as Record<string, unknown>
+  if (typeof raw !== "string") return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
 }
 
 /** Cross-tenant — the deadline is one platform-wide constant
@@ -139,7 +200,7 @@ export async function loadVoiceToolRoundDeadlineStats(client?: Svc, windowHours 
   const svc = client ?? createServiceClient()
   const since = new Date(Date.now() - windowHours * 3_600_000).toISOString()
 
-  const { data } = await svc
+  const { data, error } = await svc
     .from("ai_tool_usage")
     .select("execution_time_ms, success, context_json")
     .eq("tool_name", "ai_model")
@@ -147,10 +208,13 @@ export async function loadVoiceToolRoundDeadlineStats(client?: Svc, windowHours 
     .eq("manager", "ai_isa")
     .gte("created_at", since)
     .limit(50_000)
+  if (error) console.warn("[manager-ops] voice tool-round telemetry read refused:", error.message)
 
-  const rows = ((data ?? []) as any[]).filter((r) => (r.context_json as Record<string, unknown> | null)?.toolRound === true)
+  const rows = ((data ?? []) as any[])
+    .map((r) => ({ ...r, ctx: parseContextJson(r.context_json) }))
+    .filter((r) => r.ctx?.toolRound === true)
   const durations = rows.map((r) => Number(r.execution_time_ms)).filter((v) => Number.isFinite(v))
-  const hits = rows.filter((r) => (r.context_json as Record<string, unknown> | null)?.deadlineHit === true)
+  const hits = rows.filter((r) => r.ctx?.deadlineHit === true)
 
   return {
     windowHours,
@@ -159,7 +223,11 @@ export async function loadVoiceToolRoundDeadlineStats(client?: Svc, windowHours 
     deadlineHitRate: rows.length ? hits.length / rows.length : 0,
     avgMs: durations.length ? Math.round(durations.reduce((s, v) => s + v, 0) / durations.length) : 0,
     p95Ms: percentile(durations, 95),
-    hitRateAtMs: (candidateMs: number) =>
-      durations.length ? durations.filter((v) => v >= candidateMs).length / durations.length : 0,
+    hitRateAtMs: VOICE_DEADLINE_CANDIDATE_LADDER_MS.map((candidateMs) => ({
+      candidateMs,
+      hitRate: durations.length ? durations.filter((v) => v >= candidateMs).length / durations.length : 0,
+    })),
+    recommendedDeadlineMs: recommendVoiceToolRoundDeadlineMs(durations),
+    recommendationMinAttempts: VOICE_DEADLINE_RECOMMENDATION_MIN_ATTEMPTS,
   }
 }

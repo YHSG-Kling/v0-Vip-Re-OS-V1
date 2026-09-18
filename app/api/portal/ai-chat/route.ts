@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { convertToModelMessages } from 'ai'
@@ -414,7 +415,9 @@ export async function POST(request: Request) {
         .maybeSingle()
         .then(({ data: agent }) => {
           if (agent?.user_id) {
-            serviceClient.from('notifications').insert({
+            // Ledgered, not swallowed (lane 76C): sentinelWrite reads the error
+            // and records a refused escalation bell on self_heal_events.
+            return sentinelWrite(serviceClient, serviceClient.from('notifications').insert({
               user_id:     agent.user_id,
               brokerage_id: contact.brokerage_id,
               type:        'portal_ai_escalation',
@@ -423,7 +426,7 @@ export async function POST(request: Request) {
               entity_type: 'contact',
               entity_id:   contactId,
               priority:    'high',
-            }).then(() => {}, () => {})
+            }), { table: "notifications", flow: "portal_ai_chat_escalation_notify", brokerageId: contact.brokerage_id, reason: "in-app escalation bell — a lost row is a missed alert, never the escalation record it follows" })
           }
         })
         .then(() => {}, () => {})

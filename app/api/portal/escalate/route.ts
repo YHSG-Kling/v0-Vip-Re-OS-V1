@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  await serviceClient.from("notifications").insert({
+  await sentinelWrite(serviceClient, serviceClient.from("notifications").insert({
     user_id: agentUserId,
     brokerage_id: contact.brokerage_id,
     type: "portal_live_agent_request",
@@ -75,7 +76,7 @@ export async function POST(request: NextRequest) {
     ].filter(Boolean).join(" "),
     priority: "high",
     is_read: false,
-  })
+  }), { table: "notifications", flow: "route_notify", brokerageId: contact.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   return NextResponse.json({ ok: true })
 }

@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 
@@ -234,7 +235,7 @@ export async function fileDataSubjectRequestFromPortal(params: {
       .limit(5)
 
     for (const u of (staff ?? []) as Array<{ id: string }>) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: u.id,
         brokerage_id: access.brokerageId,
         type: "data_subject_request_received",
@@ -246,7 +247,7 @@ export async function fileDataSubjectRequestFromPortal(params: {
         entity_id: params.contactId,
         priority: "high",
         is_read: false,
-      }).then(() => {}, () => {})
+      }), { table: "notifications", flow: "portal_settings_notify", brokerageId: access.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
 
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")

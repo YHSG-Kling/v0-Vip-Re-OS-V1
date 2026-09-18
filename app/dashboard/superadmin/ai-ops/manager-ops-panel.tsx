@@ -70,14 +70,23 @@ export function ManagerOpsPanel() {
             </table>
           </div>
         )}
-        {voiceDeadline && voiceDeadline.attempts > 0 && (
+        {voiceDeadline && (
           <div className="border-t px-4 py-3 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">Voice tool-round deadline (7d):</span>{' '}
-            {voiceDeadline.attempts.toLocaleString()} attempt{voiceDeadline.attempts === 1 ? '' : 's'} ·
-            {' '}avg {voiceDeadline.avgMs}ms · p95 {voiceDeadline.p95Ms}ms ·{' '}
-            {(voiceDeadline.deadlineHitRate * 100).toFixed(0)}% hit the ceiling
-            ({voiceDeadline.deadlineHits} of {voiceDeadline.attempts}) — retune
-            VOICE_TOOL_ROUND_DEADLINE_MS from this, not from the derived policy ceiling alone.
+            {voiceDeadline.attempts === 0 ? (
+              <>no tool-round attempts recorded in the window — no live call has run a bounded tool round yet, so VOICE_TOOL_ROUND_DEADLINE_MS still rests on its derived policy ceiling.</>
+            ) : (
+              <>
+                {voiceDeadline.attempts.toLocaleString()} attempt{voiceDeadline.attempts === 1 ? '' : 's'} ·
+                {' '}avg {voiceDeadline.avgMs}ms · p95 {voiceDeadline.p95Ms}ms ·{' '}
+                {(voiceDeadline.deadlineHitRate * 100).toFixed(0)}% hit the ceiling
+                ({voiceDeadline.deadlineHits} of {voiceDeadline.attempts}) ·{' '}
+                ladder {voiceDeadline.hitRateAtMs.map((l) => `${l.candidateMs}ms→${(l.hitRate * 100).toFixed(0)}%`).join(' · ')} ·{' '}
+                {voiceDeadline.recommendedDeadlineMs !== null
+                  ? <>measured recommendation <span className="font-medium text-foreground">VOICE_TOOL_ROUND_DEADLINE_MS={voiceDeadline.recommendedDeadlineMs}</span> (p95 + 10% headroom, 250ms steps, clamped 2000–8000)</>
+                  : <>recommendation withheld until {voiceDeadline.recommendationMinAttempts} attempts (a p95 over fewer rows is noise, not a measurement)</>}
+              </>
+            )}
           </div>
         )}
       </CardContent>

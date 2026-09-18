@@ -6,6 +6,7 @@
 // Director reel pipeline, marks genuinely-stalled rows failed (so they surface + stop being re-scanned),
 // and notifies the responsible agent. Idempotent (marking failed removes it from the scan). Never throws.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStaleVideo, VIDEO_STALE_HOURS } from "./video-pipeline-reaper-policy"
@@ -46,12 +47,12 @@ export async function reapStaleVideoWorkflows(
         console.warn(`[video-pipeline-reaper] no users row behind agents.id=${r.agent_id} (project ${r.id}) — stall notice skipped`)
       }
       if (ownerUserId) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: ownerUserId, brokerage_id: brokerageId, type: "video_stalled",
           title: "A video stalled and was flagged",
           body: `${r.title ?? "A commissioned video"} got stuck in rendering and your AI team flagged it. You can re-request it from the listing's video tools.`,
           entity_type: "video_project", entity_id: r.id, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "video_pipeline_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
       result.escalated++
     } catch { /* best-effort per row */ }

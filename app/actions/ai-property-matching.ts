@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { generateObject } from "@/lib/ai/generate"
@@ -334,7 +335,7 @@ export async function notifyNewMatches(params: {
     })
 
     // Log the notification
-    await supabase.from("notifications").insert({
+    await sentinelWrite(supabase, supabase.from("notifications").insert({
       contact_id: params.contactId,
       user_id: ctx.userId, // notifications targets users.id (no agent_id column)
       brokerage_id: ctx.brokerageId,
@@ -343,7 +344,7 @@ export async function notifyNewMatches(params: {
       body: notification,
       entity_type: "contact",
       entity_id: params.contactId,
-    })
+    }), { table: "notifications", flow: "ai_property_matching_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
     // Wave 59 — buyer property-match reel AUTO-handoff (deliverable-gated): produce a
     // personalized "homes matching your search" video into the render queue. Best-effort

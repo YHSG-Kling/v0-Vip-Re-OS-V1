@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
@@ -143,7 +144,7 @@ export async function uploadBusinessCard(params: {
       .single()
 
     if (agentRow?.user_id) {
-      await supabase.from("notifications").insert({
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: agentRow.user_id,
         brokerage_id: brokerageId,
         type: "business_card_scan",
@@ -154,7 +155,7 @@ export async function uploadBusinessCard(params: {
         priority: "low",
         channel: "in_app",
         is_read: false,
-      })
+      }), { table: "notifications", flow: "business_card_actions_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
 
     return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: null, target: "contact", cardSubjectType: "unknown", subjectUserId: null, viable: false }

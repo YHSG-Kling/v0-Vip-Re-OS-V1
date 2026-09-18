@@ -8,6 +8,7 @@
  * kernel event → portal invite with magic link. Then hand the seller intent to the Listing Concierge.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 
@@ -103,7 +104,7 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
   }
 
   // Notify the agent — surfaces in their morning brief with the AVM context.
-  await svc.from("notifications").insert({
+  await sentinelWrite(svc, svc.from("notifications").insert({
     user_id: input.agentUserId,
     brokerage_id: input.brokerageId,
     title: "🏠 New home value lead",
@@ -115,7 +116,7 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     entity_id: contactId,
     priority: "high",
     is_read: false,
-  })
+  }), { table: "notifications", flow: "home_value_lead_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   // MANAGER-ORCHESTRATED — a "what's my home worth" request is the strongest inbound SELLER intent.
   // Hand it to the Listing Concierge over the bus so it responds like a human listing lead (a gated

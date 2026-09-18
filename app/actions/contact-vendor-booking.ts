@@ -14,6 +14,7 @@
  *   5. Agent reviews in transaction or contact view; can confirm or decline
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -142,7 +143,7 @@ export async function requestContactVendorBooking(
 
   // Notify the agent
   if (agentUserId) {
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: agentUserId,
       brokerage_id: contact.brokerage_id,
       title: "🛠️ Vendor request from your client",
@@ -152,7 +153,7 @@ export async function requestContactVendorBooking(
       entity_id: booking.id,
       priority: "medium",
       is_read: false,
-    })
+    }), { table: "notifications", flow: "contact_vendor_booking_notify", brokerageId: contact.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   // VENDOR LOOP — propose a client vendor-intro into the gate (Deal Coordinator).

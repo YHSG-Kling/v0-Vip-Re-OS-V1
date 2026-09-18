@@ -8,6 +8,7 @@
 // lost (it does not force the transaction — the compliance gate is real). Idempotent (one alert per
 // offer). Best-effort; never throws. Mirrors the manager-signals / video / workflow-run reapers.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStrandedOffer, STRANDED_OFFER_GRACE_HOURS } from "./stranded-offer-policy"
@@ -71,12 +72,12 @@ export async function reapStrandedAcceptedOffers(
         recipient_contact_id: row.contact_id, entity_type: "listing", entity_id: row.listing_id,
       })
       if (!agentUserId) continue
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: brokerageId, type: "accepted_offer_stranded",
         title: "⚠️ An accepted offer isn't a tracked deal yet",
         body: "You accepted an offer but it hasn't become a transaction — finish the executed contract and compliance so the Deal Coordinator opens the deal and starts the milestone clock.",
         entity_type: "offer", entity_id: row.id, priority: "high", is_read: false,
-      })
+      }), { table: "notifications", flow: "stranded_offer_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       result.escalated += 1
     } catch (e) {
       console.error("[stranded-offer-reaper] escalation failed:", e)
