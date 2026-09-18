@@ -3,26 +3,36 @@
 // No CRON_SECRET — uses provider signature validation via inbound-router.ts.
 // The Kernel remains the authority on what happens next.
 //
-// ── RULING (wave 73, owner verbatim, 2026-09-18): "unknown inbound senders first need to be
-// identified before adding a spam or non real estate business email records into the os. if
-// there is intent to or interest in real estate then we should add them in as a lead so the ai
-// isa can qualify before converting to contact. if spam, then that gets dropped." ──────────────
+// ── RULING (wave 74, owner verbatim, 2026-09-18, correcting wave 73A): "you got the inbound
+// email unknown process incorrect. if this email is coming into a tenant or user account, that
+// email needs to be processed to their crm so if it is a brokerage account, comes in as a lead
+// not a raw lead and if it is an agent or team lead, then a new contact but only if they have
+// real estate intent or could be a transactional email like an offer for an in-house listing,
+// etc." ─────────────────────────────────────────────────────────────────────────────────────
 // An EMAIL sender who matches no CONTACT (Step 3) and no active LEAD (Step 4) used to silently
-// no-op (`{ linked: false }`, no row, no count — wave 72A recorded this). Step 5 below now runs
-// that sender through lib/lead-pipeline/unknown-sender-identification.ts BEFORE giving up: a
+// no-op (`{ linked: false }`, no row, no count — wave 72A recorded this); wave 73A fixed the
+// silent no-op but routed EVERY intent-carrying sender through the RAW SCRAPED pipeline
+// regardless of which mailbox received the mail — wrong per this wave's correction. Step 5d
+// below now runs that sender through lib/lead-pipeline/unknown-sender-identification.ts: a
 // cheap deterministic pre-filter (bounce/no-reply/mailer-daemon/vendor-domain/our-own-domain,
-// zero model spend) drops automated mail; a small AI real-estate-intent read (fail-closed — a
-// classifier outage HOLDS, never guesses) decides spam/no-intent (dropped, counted) vs a real
-// person with real-estate intent (a LEAD, SourceKey 'inbound_email_unknown', through the SAME
-// linear pipeline every other source uses — never a contact directly). On a fresh lead, this
-// sets entityType/entityId exactly as an already-matched lead would, so every step below —
-// including Step 8b's processInboundEmail — runs unchanged and the AI ISA starts qualifying
-// on the ORIGINAL email. An SMS/WhatsApp sender is NOT routed through this door: texting the
-// tenant's OWN registered line is an existing, distinct owner ruling (wave 49/50 — "texting in
-// IS consent for the thread", the same provenance the inbound-call lane uses) that already
-// requires a stronger signal (knowing and dialing this specific business number) than an
-// unsolicited email ever carries; see lib/voice/sms-inbound.ts::captureTextingContact, reviewed
-// against this ruling and left unchanged (§ report).
+// zero model spend) drops automated mail; a small AI real-estate-intent + transactional read
+// (fail-closed — a classifier outage HOLDS, never guesses) decides spam/no-intent (dropped,
+// counted) vs qualifying (real-estate intent OR a transactional email — an offer/showing/
+// inspection/escrow/contract on an in-house listing, even with no intent language). This email
+// door is a SHARED BROKERAGE WEBHOOK (the webhook URL is configured one per brokerage; the
+// inbound-router.ts normalizers carry no per-agent recipient identity), so
+// resolveInboundMailboxOwner always resolves ownerKind='brokerage' here — a qualifying sender
+// becomes a LEAD DIRECTLY (never raw_scraped_leads). On a fresh lead, this sets entityType/
+// entityId exactly as an already-matched lead would, so every step below — including Step 8b's
+// processInboundEmail — runs unchanged and the AI ISA starts qualifying on the ORIGINAL email.
+// (The agent/team-lead → CONTACT branch this same module supports is exercised by the OTHER,
+// per-user-aware inbound door, app/api/webhooks/inbound-mail/route.ts — this shared webhook has
+// no per-agent mailbox to resolve one from.) An SMS/WhatsApp sender is NOT routed through this
+// door: texting the tenant's OWN registered line is an existing, distinct owner ruling (wave
+// 49/50 — "texting in IS consent for the thread", the same provenance the inbound-call lane
+// uses) that already requires a stronger signal (knowing and dialing this specific business
+// number) than an unsolicited email ever carries; see lib/voice/sms-inbound.ts::
+// captureTextingContact, reviewed against this ruling and left unchanged (§ report).
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -170,7 +180,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     }
 
-    // ── Step 5d: UNKNOWN EMAIL SENDER — identify before adding a lead/contact (wave 73) ────
+    // ── Step 5d: UNKNOWN EMAIL SENDER — identify before adding a lead/contact (wave 74) ────
     // Only the email path reaches here un-captured; Twilio's own hand-raise branch above
     // already handles the SMS/WhatsApp case (and is deliberately NOT routed through this
     // door — see the header ruling). A sender already matched at Steps 3/4 never reaches
@@ -178,9 +188,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // replies) or an existing contact never re-enters here either.
     if ((!entityType || !entityId) && inbound.providerType !== "twilio" && inbound.fromEmail) {
       try {
-        const { identifyAndRouteUnknownSender } = await import("@/lib/lead-pipeline/unknown-sender-identification")
-        const identified = await identifyAndRouteUnknownSender({
+        const { identifyAndRouteUnknownSender, resolveInboundMailboxOwner } =
+          await import("@/lib/lead-pipeline/unknown-sender-identification")
+        // This webhook is a SHARED BROKERAGE mailbox (see header) — always ownerKind='brokerage'.
+        const mailboxOwner = await resolveInboundMailboxOwner(supabase, {
+          doorKind: "shared_brokerage_webhook",
           brokerageId: inbound.brokerageId,
+        })
+        const identified = await identifyAndRouteUnknownSender({
+          mailboxOwner,
           fromEmail:   inbound.fromEmail,
           subject:     inbound.subject,
           body:        inbound.text ?? inbound.subject ?? "",
@@ -190,6 +206,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (identified.outcome === "lead_created" && identified.leadId) {
           entityType = "lead"
           entityId = identified.leadId
+        } else if (identified.outcome === "contact_created" && identified.contactId) {
+          entityType = "contact"
+          entityId = identified.contactId
         }
         // "dropped" (spam/vendor/automated) and "held" (classifier unavailable, fail-closed)
         // both fall through unchanged — entityType stays null and the route responds

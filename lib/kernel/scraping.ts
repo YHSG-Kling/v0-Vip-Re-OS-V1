@@ -74,9 +74,13 @@ export interface IngestRawSourceBatchParams {
    *  an EXPLICIT brokerage-configured/triggered scrape, owned by that brokerage immediately.
    *  Drives raw_scraped_leads.source_origin ('platform' | 'brokerage') — never a body value. */
   brokerageId: string | null
-  /** null = a non-territory, first-party source with no lead_scraping_markets row to attach to
-   *  (lane 73A, m648: inbound_email_unknown — the owning brokerage is resolved directly, never
-   *  by scraped geography). Every territory-scraped source still passes a real market id. */
+  /** null = a non-territory, first-party source with no lead_scraping_markets row to attach to.
+   *  m648 (still APPLIED, still harmless) was written for lane 73A's inbound_email_unknown,
+   *  which no longer calls this function at all as of wave 74 (see
+   *  lib/lead-pipeline/unknown-sender-identification.ts's header tombstone — it now creates a
+   *  lead/contact DIRECTLY); the nullable column stays available to any other non-territory,
+   *  first-party source that reaches this path. Every territory-scraped source still passes a
+   *  real market id. */
   marketId: string | null
   source: string
   // SCRAPE CATEGORY (e.g. 'property_search' | 'motivated_seller' | 'social_intent') — lands on

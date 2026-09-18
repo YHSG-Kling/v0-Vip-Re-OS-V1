@@ -560,13 +560,21 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Inbound email — unknown sender, identified as real-estate intent (lane 73A) ─────────────
+  // ── Inbound email — unknown sender, identified as real-estate intent (lane 73A/74A) ─────────
   // An unknown sender's email alone is an IMMEDIATE identity anchor (the same posture as
   // batchdata_motivated/external_behavior above — this record already carries a reachable
   // channel, unlike a social-intent post that needs enrichment before it has one). The
   // AI classifier's per-record intentType (buyer/seller/investor/renter/relocation/
   // agent_seeking → mapped to buyer/seller/unknown on the record) overrides this map's
   // 'unknown' default per NormalizedScrapedRecord.intentType, same as zenrows_zillow.
+  //
+  // WAVE 74 CORRECTION — this entry STAYS registered (intelligence/cost-tracking identity,
+  // SOURCE_VENDOR 'internal', $0) but is NO LONGER routed through the raw pipeline
+  // (ingestRawSourceBatch/processRawRecord) this map entry was originally written to feed.
+  // lib/lead-pipeline/unknown-sender-identification.ts now creates a lead DIRECTLY for a
+  // brokerage mailbox (lib/kernel/crm.ts::createLeadOnlyRecordForAcquisitionSource) or a
+  // contact for an agent/team-lead mailbox (lib/contact-pipeline/contact-capture.ts::
+  // captureContact) — see that module's header for the full tombstone.
   inbound_email_unknown: {
     intentType:                'unknown',
     leadType:                  'unknown',

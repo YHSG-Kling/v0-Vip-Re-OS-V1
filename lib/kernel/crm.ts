@@ -446,6 +446,18 @@ export async function createContactManually(
 /**
  * Creates a leads row (not a contacts row) for scraped / unconsented acquisition.
  * Track A (lead-first). Never creates a contact row — that is done by convertLeadToContact().
+ *
+ * `agent_id` WIDENED TO OPTIONAL (lane 74A, wave 74 ruling). This was the ONE
+ * lead-insert site in the tree that REQUIRED an agent — every other one (the
+ * pipeline-processor.ts Step 5 insert every scraped/enriched record promotes
+ * through) never sets `leads.agent_id` at all, because CLAUDE.md §5 is explicit:
+ * "Leads belong to the BROKERAGE. Agents never claim leads." A brokerage-owned
+ * lead legitimately has no agent until assignment, so forcing a caller to invent
+ * one was the defect, not a caller's job to work around. This function had ZERO
+ * in-tree callers before this wave (only re-exported from lib/kernel/index.ts and
+ * named in scripts/enrichment-suppression-simulator.ts's list of the tree's three
+ * `leads` insert sites) — lib/lead-pipeline/unknown-sender-identification.ts is
+ * its first live caller, for exactly the brokerage-owned case this fixes.
  */
 export async function createLeadOnlyRecordForAcquisitionSource(params: {
   first_name?: string
@@ -457,7 +469,8 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
   source_family?: string
   source_channel?: string
   motivation_type?: string
-  agent_id: string
+  /** agents.id — omit for a brokerage-owned lead with no agent yet (the normal case). */
+  agent_id?: string | null
   brokerage_id: string
   raw_record_id?: string
 }): Promise<CRMResult> {
@@ -471,7 +484,7 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
     .insert({
       // tenant anchor (scope burn-down): the tenant + owner stamps lead the row
       brokerage_id:     params.brokerage_id,
-      agent_id:         params.agent_id,
+      agent_id:         params.agent_id ?? null,
       first_name:       params.first_name ?? null,
       last_name:        params.last_name ?? null,
       email:            params.email ? normalizeEmail(params.email) : null,

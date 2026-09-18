@@ -13,6 +13,21 @@
  * (their own); brokerage staff use the transactional provider on the
  * brokerage's domain. lib/inbound-mail/resolve-user-provider.ts walks the
  * cascade (user → team → brokerage) to find the right credential row.
+ *
+ * ── RULING (wave 74, owner verbatim, 2026-09-18): "if this email is coming into
+ * a tenant or user account, that email needs to be processed to their crm so if
+ * it is a brokerage account, comes in as a lead not a raw lead and if it is an
+ * agent or team lead, then a new contact but only if they have real estate
+ * intent or could be a transactional email like an offer for an in-house
+ * listing, etc." An unknown sender (no offer/deal-doc match, no portal-lead
+ * match, no known contact) now runs through lib/lead-pipeline/
+ * unknown-sender-identification.ts — the SAME module + classifier
+ * app/api/providers/inbound/route.ts uses, never a second one. Because this
+ * door is PER-USER-AWARE (resolvedCredential carries scope: 'agent' | 'team' |
+ * 'brokerage'), resolveInboundMailboxOwner can resolve an AGENT or TEAM-LEAD
+ * mailbox here (unlike the other door's shared brokerage webhook) — a
+ * qualifying sender becomes a CONTACT assigned to that person, never a raw
+ * lead, never a brokerage-wide lead for an individual's own inbox.
  */
 
 import { type NextRequest, NextResponse } from "next/server"
@@ -131,10 +146,12 @@ export async function POST(request: NextRequest) {
   const results: Array<{ email_from: string; uploads: number }> = []
 
   for (const email of emails) {
-    if (email.attachments.length === 0) {
-      results.push({ email_from: email.fromEmail, uploads: 0 })
-      continue
-    }
+    // WAVE 74 CORRECTION: this used to skip a zero-attachment email ENTIRELY, before
+    // brokerage/contact resolution ever ran — which meant portal-lead notification
+    // emails (no attachment) and any genuine inquiry with no attachment never reached
+    // the portal-lead intake or (now) unknown-sender identification below. The
+    // attachment gate now applies only to the attachment-upload loop at the bottom,
+    // where it always did the real work; every email still gets resolved + routed.
 
     // Determine brokerage scope. For OAuth: from resolvedCredential.brokerage_id.
     // For transactional: from the matched credential OR via contact lookup.
@@ -297,6 +314,46 @@ export async function POST(request: NextRequest) {
         }
       } catch (e) {
         console.error("[inbound-mail] portal-lead intake failed (non-fatal):", e)
+      }
+    }
+
+    // ── UNKNOWN SENDER IDENTIFICATION (wave 74, owner ruling) ──────────────────
+    // No offer/deal-doc match, no portal-lead match, no known contact — but the
+    // brokerage IS known (from the resolved per-user/per-brokerage credential,
+    // never the email body, CLAUDE.md §4). Route through the SAME module the
+    // OTHER inbound door (app/api/providers/inbound/route.ts) uses — no second
+    // classifier. This route is the PER-USER-AWARE door, so its mailbox owner
+    // can be an AGENT or TEAM LEAD (not always 'brokerage' the way the shared
+    // webhook door is) — resolveInboundMailboxOwner reads resolvedCredential's
+    // own scope (user → team → brokerage cascade, lib/inbound-mail/
+    // resolve-user-provider.ts's existing mailbox/user binding table).
+    if (!contactId && brokerageId && email.fromEmail && resolvedCredential) {
+      try {
+        const { identifyAndRouteUnknownSender, resolveInboundMailboxOwner } =
+          await import("@/lib/lead-pipeline/unknown-sender-identification")
+        const mailboxOwner = await resolveInboundMailboxOwner(supabase, {
+          doorKind: "resolved_credential",
+          credential: resolvedCredential,
+        })
+        const identified = await identifyAndRouteUnknownSender({
+          mailboxOwner,
+          fromEmail: email.fromEmail,
+          subject:   email.subject ?? null,
+          body:      email.bodyText ?? "",
+          messageId: null,
+          raw:       email,
+        })
+        if (identified.outcome === "contact_created" && identified.contactId) {
+          contactId = identified.contactId
+        }
+        // "lead_created" (brokerage mailbox), "dropped" (spam/vendor/automated/
+        // no-intent) and "held" (classifier unavailable, fail-closed) all leave
+        // contactId null — a fresh LEAD has no contact to file an attachment
+        // under yet, so this email's own attachments (if any) are not filed
+        // anywhere by THIS route; the module itself counts the outcome
+        // (lifecycle_events), never a silent no-op.
+      } catch (err) {
+        console.error("[inbound-mail] unknown-sender identification failed (non-blocking):", err)
       }
     }
 
