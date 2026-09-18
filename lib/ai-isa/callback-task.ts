@@ -134,6 +134,16 @@ export function regexParseCallbackPhrase(phrase: string, nowMs: number): string 
   if (!text) return null
   const now = new Date(nowMs)
 
+  // ISO 8601 PASSTHROUGH — a caller that already resolved a real timestamp
+  // (e.g. a chat tool's own `when_iso` argument, already validated with
+  // Date.parse before it got here) is trusted directly rather than run back
+  // through English-phrase heuristics that would never match it and would
+  // otherwise fall through to a needless gateway call.
+  if (/^\d{4}-\d{2}-\d{2}t\d{2}:\d{2}/.test(text)) {
+    const parsed = new Date(phrase.trim()).getTime()
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString()
+  }
+
   // "right away" / "asap" / "now" / "immediately" → 5 minutes out (never truly
   // instant — the executor cron polls on its own cadence).
   if (/\b(right away|asap|immediately|now)\b/.test(text)) {

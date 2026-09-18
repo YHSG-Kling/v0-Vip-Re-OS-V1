@@ -282,6 +282,23 @@ async function testLive() {
     check("(b) the ASSIGNMENT call fired — assignment_log carries a row for this lead (brokerage/team-lead assignment_rules ran)",
       (assignCount ?? 0) >= 1, `assignment_log rows=${assignCount}`)
 
+    // ── (b2) WAVE 75 — assignment triggers THE WELCOME (never stops at lead
+    // creation / conversion). handleLeadAssigned (lib/kernel/lead-acquisition-
+    // handlers.ts) calls deliverConversionWelcome unconditionally on a fresh
+    // assignment, and that call grants the portal_contact_invites row FIRST
+    // and unconditionally (conversion-welcome.ts's own header: "the access
+    // grant and the email are different things" — only the EMAIL waits on a
+    // video render, the portal invite never does). Proving that row exists is
+    // the durable, race-free signal that the welcome path actually ran.
+    if (routedPositive.contactId) {
+      reg("portal_contact_invites", "contact_id", routedPositive.contactId)
+      const { data: inviteRow } = await svc
+        .from("portal_contact_invites").select("id, contact_id, status")
+        .eq("contact_id", routedPositive.contactId).maybeSingle()
+      check("(b2) WAVE 75 — assignment fired THE WELCOME: a portal_contact_invites row exists for the newly-assigned contact (deliverConversionWelcome ran, not just conversion+assignment)",
+        (inviteRow as any)?.contact_id === routedPositive.contactId, JSON.stringify(inviteRow))
+    }
+
     // ── (c) no clear intent → ISA reply only, no conversion ───────────────────
     console.log("\n  ── (c) lead email, no clear intent → nurtured (ISA reply only, no conversion) ──")
     const { data: leadRow2, error: lead2Err } = await svc.from("leads").insert({
@@ -624,6 +641,46 @@ async function testUnknownSenderRouting() {
       (leadRow as any)?.brokerage_id === brokerageId && (leadRow as any)?.source === "inbound_email_unknown")
     check("(b) the lead has NO agent_id (brokerage-owned, unassigned until assignment — CLAUDE.md §5)",
       !(leadRow as any)?.agent_id)
+
+    // ── (b1) WAVE 75 — THE FULL CHAIN, end to end, for THIS wave-74A brokerage
+    // lead: "for brokerage emails that have a lead that is not converted yet
+    // and shows a positive intent, that lead would then qualify and be
+    // converted" (owner verbatim). Section (b) above proves the FIRST hop
+    // (email → lead). This proves the SECOND hop on the SAME lead id: the
+    // exact classifyAndRouteInbound call processInboundEmail's Step 8b makes
+    // (app/api/providers/inbound/route.ts) → conversion → assignment →
+    // welcome — never stopping at lead creation. Uses the classifier
+    // INJECTION seam (the same idiom section 2's LIVE test already uses) so
+    // this stays a zero-network, zero-model-spend proof.
+    console.log("\n  ── (b1) the SAME lead, positive intent → qualify → convert → assign → welcome ──")
+    if (resultB.leadId) {
+      const { classifyAndRouteInbound } = await import("../lib/ai-isa/inbound-intent-classifier")
+      const fixedIntent: InboundClassifier = () => ({ side: "buyer", reason: "criteria_request" })
+      const routedBrokerageLead = await classifyAndRouteInbound(
+        { leadId: resultB.leadId, brokerageId, message: "Looking for a 3bd under $500k in the next few months" },
+        { classifier: fixedIntent },
+      )
+      check("(b1) the wave-74A brokerage lead QUALIFIES AND CONVERTS on positive intent (never stuck at lead creation)",
+        routedBrokerageLead.outcome === "converted", JSON.stringify(routedBrokerageLead))
+      if (routedBrokerageLead.contactId) {
+        reg("contacts", "id", routedBrokerageLead.contactId)
+        reg("portal_contact_invites", "contact_id", routedBrokerageLead.contactId)
+      }
+      reg("activities", "contact_id", routedBrokerageLead.contactId ?? resultB.leadId)
+      reg("assignment_log", "lead_id", resultB.leadId)
+
+      const { count: b1AssignCount } = await svc.from("assignment_log").select("id", { count: "exact", head: true }).eq("lead_id", resultB.leadId)
+      check("(b1) ASSIGNMENT fired for the wave-74A brokerage lead (brokerage/team-lead assignment_rules ran)",
+        (b1AssignCount ?? 0) >= 1, `assignment_log rows=${b1AssignCount}`)
+
+      if (routedBrokerageLead.contactId) {
+        const { data: b1Invite } = await svc
+          .from("portal_contact_invites").select("id, contact_id")
+          .eq("contact_id", routedBrokerageLead.contactId).maybeSingle()
+        check("(b1) WELCOME fired for the wave-74A brokerage lead's new contact (portal_contact_invites row exists — deliverConversionWelcome ran)",
+          (b1Invite as any)?.contact_id === routedBrokerageLead.contactId, JSON.stringify(b1Invite))
+      }
+    }
 
     // ── (c) AGENT mailbox + intent → CONTACT for that agent (never a raw lead) ──
     console.log("\n  ── (c) agent mailbox + intent → contact assigned to the agent ──")

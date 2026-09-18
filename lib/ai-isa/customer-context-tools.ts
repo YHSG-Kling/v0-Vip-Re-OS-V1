@@ -334,7 +334,35 @@ async function publishQualificationSignal(input: {
   }
 }
 
-/** schedule_callback — "call them again when they're ready." */
+/**
+ * schedule_callback — "call them again when they're ready." PERSONA-SCOPED
+ * (wave 75, owner verbatim): "if a person says to call back again, that lead
+ * has not been qualified yet and the ai isa needs to call them back."
+ *
+ *   • LEAD (no contactId yet — not yet qualified): the callback is placed by
+ *     the AI ISA ITSELF, through the EXISTING outbound-callback door
+ *     (lib/ai-isa/callback-task.ts::createCallbackTask → the every-5-minute
+ *     executor at app/api/cron/ai-callback-dispatch — the SAME machinery the
+ *     voice receptionist's own "call me back" turn action already uses, §6,
+ *     never a second callback pipeline). NEVER a conversion, NEVER an agent
+ *     task — assigneeType is hardcoded 'ai_isa', never 'agent' (a lead has no
+ *     agent to assign one to per CLAUDE.md §5).
+ *   • CONTACT (already qualified/converted): unchanged — the agent-side
+ *     follow-up (an `activities` row, the agent notified, a gated
+ *     confirmation signal).
+ *
+ * TOMBSTONE: before this fix, a LEAD's callback ask only deferred nurture
+ * (`leads.next_followup_at`/`next_followup_reason` — read ONLY by the
+ * reactivation enroller's "don't nag before this date" check, never by
+ * anything that actually PLACES a call) and published a manager signal whose
+ * handler (lib/kernel/manager-signals.ts `proposeQualificationConfirmation`)
+ * no-ops for a lead-stage thread ("no contact linked yet"). The promise "I'll
+ * have someone call you back" produced a note and nothing behind it — the
+ * exact defect wave 55's ruling on the RECEPTION brain already fixed for
+ * VOICE callbacks (lib/ai-isa/callback-task.ts), just never reached this
+ * TEXT/EMAIL-side follow-up tool. This wires the SAME survivor in, rather
+ * than building a second one.
+ */
 export function buildScheduleCallbackTool(ctx: CustomerContextToolsContext) {
   return tool({
     description: "Schedule a callback for when THEY say they're ready — not now, but later. Use when the person is interested but wants to be called back rather than continue right now.",
@@ -344,7 +372,70 @@ export function buildScheduleCallbackTool(ctx: CustomerContextToolsContext) {
       notes: z.string().describe("Why they want a callback / what to follow up on"),
     }),
     execute: async ({ when_iso, when_description, notes }: { when_iso: string | null; when_description: string; notes: string }) => {
-      const scheduledAt = when_iso && !Number.isNaN(Date.parse(when_iso)) ? when_iso : new Date().toISOString()
+      const isoIsUsable = !!when_iso && !Number.isNaN(Date.parse(when_iso))
+
+      // ── LEAD, NOT YET QUALIFIED — the AI ISA calls back itself, never a human task ──
+      if (ctx.leadId && !ctx.contactId) {
+        const svc = createServiceClient()
+        const { data: leadRow } = await svc
+          .from("leads").select("phone").eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+        const phone = (leadRow as { phone?: string | null } | null)?.phone ?? null
+        if (!phone) {
+          // No phone on file — the ISA has no number to dial. Record the ask on
+          // the lead's own follow-up column (the honest degraded case) rather
+          // than losing it silently.
+          await scheduleFollowUp(ctx, {
+            activityType: "call",
+            scheduledAt: isoIsUsable ? (when_iso as string) : new Date().toISOString(),
+            notes: [`They said: ${when_description}`, notes, "(no phone on file — the AI ISA cannot place an outbound callback)"].filter(Boolean).join("\n"),
+            title: "Callback requested — no phone on file",
+          })
+          return { success: false, error: "no phone number on file for this lead — the ask was recorded, but the AI ISA cannot dial without a number" }
+        }
+
+        const { createCallbackTask } = await import("@/lib/ai-isa/callback-task")
+        const created = await createCallbackTask(svc, {
+          brokerageId: ctx.brokerageId,
+          contactId: null,
+          leadId: ctx.leadId,
+          phone,
+          whenPhrase: isoIsUsable ? (when_iso as string) : when_description,
+          reason: notes || null,
+          voiceCallId: null,
+          assigneeType: "ai_isa", // NEVER 'agent' — never a human task for an unqualified lead
+        })
+        if (!created.ok) return { success: false, error: created.error }
+
+        // Mirror the resolved due time onto leads.next_followup_at so the
+        // reactivation enroller's "don't nag before this date" check
+        // (followupSuppresses) does not also re-enroll the lead in nurture
+        // before the ISA's own callback fires.
+        await sentinelWrite(
+          svc,
+          svc.from("leads").update({
+            next_followup_at: created.dueIso,
+            next_followup_reason: `AI ISA callback scheduled — ${when_description}`.slice(0, 500),
+          }).eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId),
+          { table: "leads", flow: "lead_isa_callback_scheduled", brokerageId: ctx.brokerageId },
+        )
+
+        // Visibility only, never a gated human confirmation — a lead has no
+        // portal contact yet, and SIGNAL_HANDLERS' proposeQualificationConfirmation
+        // already no-ops correctly for a lead-stage thread (signal.contactId absent).
+        await publishQualificationSignal({
+          brokerageId: ctx.brokerageId,
+          toManager: "shopping_agent",
+          signalType: "qualification_call_requested",
+          message: `AI ISA scheduled its own outbound callback to an unqualified lead: ${when_description}`,
+          contactId: null,
+          leadId: ctx.leadId,
+        })
+
+        return { success: true, scheduledVia: "ai_isa_callback" as const, dueAt: created.dueIso }
+      }
+
+      // ── CONTACT (already qualified/converted) — unchanged: the agent-side follow-up ──
+      const scheduledAt = isoIsUsable ? (when_iso as string) : new Date().toISOString()
       const result = await scheduleFollowUp(ctx, {
         activityType: "call",
         scheduledAt,
@@ -356,8 +447,8 @@ export function buildScheduleCallbackTool(ctx: CustomerContextToolsContext) {
         type: "qualification_callback_requested",
         title: "Client asked for a callback",
         body: `${when_description}${notes ? ` — ${notes}` : ""}`,
-        entityType: ctx.contactId ? "contact" : "lead",
-        entityId: (ctx.contactId ?? ctx.leadId) as string,
+        entityType: "contact",
+        entityId: ctx.contactId as string,
       })
       await publishQualificationSignal({
         brokerageId: ctx.brokerageId,
@@ -365,7 +456,7 @@ export function buildScheduleCallbackTool(ctx: CustomerContextToolsContext) {
         signalType: "qualification_call_requested",
         message: `AI qualification scheduled a callback: ${when_description}`,
         contactId: ctx.contactId ?? null,
-        leadId: ctx.leadId ?? null,
+        leadId: null,
       })
       return { success: true, scheduledVia: result.via }
     },

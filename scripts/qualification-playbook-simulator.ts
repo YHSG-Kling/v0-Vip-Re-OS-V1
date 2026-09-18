@@ -30,8 +30,21 @@
  *   Layer 6 — the four qualification signal types are registered in
  *             SIGNAL_REGISTRY with a real SIGNAL_HANDLERS consumer for every
  *             declared consumer (no dead promise).
+ *   Layer 7 (wave 75) — owner verbatim: "if a person says to call back again,
+ *             that lead has not been qualified yet and the ai isa needs to
+ *             call them back." schedule_callback is persona-scoped: a LEAD
+ *             (not yet qualified) gets a REAL AI ISA outbound callback via the
+ *             EXISTING lib/ai-isa/callback-task.ts::createCallbackTask door
+ *             (source, from stripped code); a CONTACT (already qualified)
+ *             keeps today's agent-side follow-up. LIVE section (gated on
+ *             SUPABASE_SERVICE_ROLE_KEY, tagged rows deleted in the same run):
+ *             a LEAD callback ask writes an assignee_type:'ai_isa' `tasks` row
+ *             — NEVER converts the lead, NEVER writes an agent-assigned task —
+ *             and the POSITIVE CONTROL, a CONTACT callback ask, still writes
+ *             the agent-side `activities` row it always has.
  *
- * No DB, no network. Run:
+ * No DB, no network for Layers 1-6; Layer 7's LIVE half needs
+ * SUPABASE_SERVICE_ROLE_KEY (skips cleanly without it). Run:
  *   npx tsx scripts/qualification-playbook-simulator.ts
  */
 import { readFileSync } from "node:fs"
@@ -220,6 +233,142 @@ for (const type of QUALIFICATION_SIGNALS) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 7 · schedule_callback is persona-scoped — LEAD → AI ISA callback, CONTACT → agent follow-up]")
+
+{
+  // ── SOURCE (stripped) — the branch exists, and the LEAD arm calls the
+  // EXISTING ISA outbound-callback door, never a second implementation. ──────
+  const cbSrc = toolsSrc // already stripped above (Layer 3)
+  const leadBranchIdx = cbSrc.indexOf("if (ctx.leadId && !ctx.contactId)")
+  check("buildScheduleCallbackTool branches on `ctx.leadId && !ctx.contactId` — a LEAD-only thread is NOT the same arm as a CONTACT thread",
+    leadBranchIdx >= 0)
+  // The CONTACT arm starts at its own `const scheduledAt =` line (a CODE token,
+  // not a stripped comment — CLAUDE.md §2's "tombstone is not a call site" cuts
+  // both ways: a marker used to slice arms must survive comment-stripping too).
+  const contactArmIdx = cbSrc.indexOf('const scheduledAt = isoIsUsable ? (when_iso as string) : new Date().toISOString()')
+  check("the CONTACT arm comes AFTER the LEAD arm in source order (LEAD is checked first, never falls through unnoticed)",
+    contactArmIdx > leadBranchIdx && leadBranchIdx >= 0)
+  const leadArmSlice = leadBranchIdx >= 0 ? cbSrc.slice(leadBranchIdx, contactArmIdx > leadBranchIdx ? contactArmIdx : undefined) : ""
+  check("the LEAD arm imports/calls the EXISTING ISA callback writer (lib/ai-isa/callback-task.ts::createCallbackTask), never a second callback pipeline",
+    /import\(["']@\/lib\/ai-isa\/callback-task["']\)/.test(leadArmSlice) && /createCallbackTask\(/.test(leadArmSlice))
+  check("the LEAD arm hardcodes assigneeType 'ai_isa' — NEVER 'agent' (a lead has no agent to hand a task to, CLAUDE.md §5)",
+    /assigneeType:\s*["']ai_isa["']/.test(leadArmSlice) && !/assigneeType:\s*["']agent["']/.test(leadArmSlice))
+  check("the LEAD arm never calls notifyAssignedAgent (no agent task for an unqualified lead)",
+    !/notifyAssignedAgent\(/.test(leadArmSlice))
+  const contactArmSlice = contactArmIdx >= 0 ? cbSrc.slice(contactArmIdx) : ""
+  check("the CONTACT arm keeps calling notifyAssignedAgent (today's agent-side follow-up, unchanged)",
+    /notifyAssignedAgent\(/.test(contactArmSlice))
+}
+
+if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.log("  ⏭  LIVE half skipped — SUPABASE_SERVICE_ROLE_KEY not set.")
+} else {
+  const { createServiceClient } = await import("../lib/supabase/service")
+  const { buildScheduleCallbackTool } = await import("../lib/ai-isa/customer-context-tools")
+  const svc = createServiceClient()
+  const TAG = `__cbscoped_${Date.now()}__`
+  const cleanup: Array<{ table: string; column: string; value: string }> = []
+  const reg = (table: string, column: string, value: string | null | undefined) => { if (value) cleanup.push({ table, column, value }) }
+
+  try {
+    const { data: agent } = await svc
+      .from("agents").select("id, brokerage_id")
+      .not("brokerage_id", "is", null).eq("is_active", true).limit(1).single()
+    if (!agent) {
+      console.log("  ⏭  LIVE half skipped — need an active agent with a brokerage_id.")
+    } else {
+      const brokerageId = (agent as any).brokerage_id as string
+
+      // ── (a) LEAD callback → a REAL ai_isa `tasks` row, no conversion ────────
+      const { data: leadRow, error: leadErr } = await svc.from("leads").insert({
+        brokerage_id: brokerageId, first_name: TAG, last_name: "CallbackLead",
+        email: `${TAG}_lead@example.com`, phone: "+15125550100",
+        lead_type: "buyer", motivation_type: "buyer",
+        lifecycle_state: "isa_qualifying", is_active: true, ai_isa_owner: true,
+      }).select("id").single()
+      if (leadErr || !leadRow) {
+        check("(7a) seed tagged lead", false, leadErr?.message)
+      } else {
+        const leadId = (leadRow as any).id as string
+        reg("leads", "id", leadId)
+        const leadTool = buildScheduleCallbackTool({ brokerageId, leadId, contactId: null, agentId: null })
+        const leadResult: any = await (leadTool as any).execute(
+          { when_iso: null, when_description: "next Tuesday afternoon", notes: "wants to talk pricing" },
+          { toolCallId: "t-lead-callback", messages: [] },
+        )
+        check("(7a) LEAD callback tool reports scheduledVia 'ai_isa_callback'",
+          leadResult?.success === true && leadResult?.scheduledVia === "ai_isa_callback", JSON.stringify(leadResult))
+
+        const { data: taskRow } = await svc
+          .from("tasks").select("id, contact_id, assignee_type, source, status, due_date")
+          .eq("brokerage_id", brokerageId).eq("source", "ai_callback")
+          .order("created_at", { ascending: false }).limit(1).maybeSingle()
+        if ((taskRow as any)?.id) reg("tasks", "id", (taskRow as any).id)
+        check("(7a) a REAL `tasks` row was written — source='ai_callback', assignee_type='ai_isa' (the AI ISA's own executor claims this, not a human)",
+          (taskRow as any)?.source === "ai_callback" && (taskRow as any)?.assignee_type === "ai_isa", JSON.stringify(taskRow))
+        check("(7a) the task carries NO contact_id — the lead never converted to place this callback",
+          (taskRow as any)?.contact_id === null || (taskRow as any)?.contact_id === undefined)
+
+        const { data: leadAfter } = await svc.from("leads").select("contact_id, is_active").eq("id", leadId).maybeSingle()
+        check("(7a) the lead did NOT convert — no contact_id, still active (a callback ask is not qualification)",
+          !(leadAfter as any)?.contact_id && (leadAfter as any)?.is_active === true, JSON.stringify(leadAfter))
+
+        const { count: agentActivityCount } = await svc
+          .from("activities").select("id", { count: "exact", head: true })
+          .eq("entity_id", leadId).eq("activity_type", "call")
+        check("(7a) NO agent-assigned follow-up activity was written for the lead (never an agent task for an unqualified lead)",
+          (agentActivityCount ?? 0) === 0, `activities=${agentActivityCount}`)
+      }
+
+      // ── (7b) POSITIVE CONTROL — a CONTACT callback still gets the agent-side follow-up ──
+      const { data: contactRow, error: contactErr } = await svc.from("contacts").insert({
+        brokerage_id: brokerageId, agent_id: (agent as any).id, first_name: TAG, last_name: "CallbackContact",
+        email: `${TAG}_contact@example.com`, contact_type: "buyer",
+      }).select("id").single()
+      if (contactErr || !contactRow) {
+        check("(7b) seed tagged contact", false, contactErr?.message)
+      } else {
+        const contactId = (contactRow as any).id as string
+        reg("contacts", "id", contactId)
+        const beforeTaskCount = (await svc.from("tasks").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", brokerageId).eq("source", "ai_callback")).count ?? 0
+        const contactTool = buildScheduleCallbackTool({ brokerageId, contactId, leadId: null, agentId: (agent as any).id })
+        const contactResult: any = await (contactTool as any).execute(
+          { when_iso: null, when_description: "tomorrow morning", notes: "wants a market update" },
+          { toolCallId: "t-contact-callback", messages: [] },
+        )
+        check("(7b) POSITIVE CONTROL: CONTACT callback tool reports scheduledVia 'activity' (unchanged agent-side path)",
+          contactResult?.success === true && contactResult?.scheduledVia === "activity", JSON.stringify(contactResult))
+
+        const { data: activityRow } = await svc
+          .from("activities").select("id, contact_id, activity_type")
+          .eq("contact_id", contactId).eq("activity_type", "call")
+          .order("created_at", { ascending: false }).limit(1).maybeSingle()
+        if ((activityRow as any)?.id) reg("activities", "id", (activityRow as any).id)
+        check("(7b) POSITIVE CONTROL: a real `activities` row was written for the contact (the agent-side follow-up)",
+          (activityRow as any)?.contact_id === contactId, JSON.stringify(activityRow))
+
+        const afterTaskCount = (await svc.from("tasks").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", brokerageId).eq("source", "ai_callback")).count ?? 0
+        check("(7b) POSITIVE CONTROL: NO new ai_callback `tasks` row was written for the contact's own callback ask (that door is lead-only)",
+          afterTaskCount === beforeTaskCount, `before=${beforeTaskCount} after=${afterTaskCount}`)
+      }
+    }
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      const { table, column, value } = cleanup[i]
+      try { await svc.from(table).delete().eq(column, value) } catch { /* noop */ }
+    }
+    let remaining = 0
+    for (const { table, column, value } of cleanup) {
+      const { count } = await svc.from(table).select("id", { count: "exact", head: true }).eq(column, value)
+      remaining += count ?? 0
+    }
+    check("(Layer 7) cleanup verified — 0 seeded rows remain", remaining === 0, `remaining=${remaining}`)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 console.log("\n" + "─".repeat(60))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) {
@@ -228,5 +377,5 @@ if (failed > 0) {
   console.log("\n❌ QUALIFICATION_PLAYBOOK — see failures above")
   process.exit(1)
 } else {
-  console.log(" ✅ QUALIFICATION_PLAYBOOK — one shared builder mounted everywhere, follow-up tools id-locked and cost-ranked, record_qualification writes only live columns")
+  console.log(" ✅ QUALIFICATION_PLAYBOOK — one shared builder mounted everywhere, follow-up tools id-locked and cost-ranked, record_qualification writes only live columns, schedule_callback routes a LEAD to a real AI ISA outbound callback (never a conversion, never an agent task) and keeps a CONTACT on the agent-side follow-up")
 }
