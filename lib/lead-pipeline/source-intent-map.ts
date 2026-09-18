@@ -48,6 +48,16 @@ export type SourceKey =
   | 'email_engagement_intent'     // repeated opens/clicks on the tenant's OWN outbound email (own first-party data, $0 marginal cost)
   // ── Lane 72C (carried coverage lane, docs/lead-acquisition-coverage-2026-09.md — new-construction/builder lists) — DISTINCT from every source above ──
   | 'new_construction_intent'     // Google/Apify phrase-intent search for new-construction / builder shoppers, territory-centric
+  // ── Lane 73A (wave 73 ruling, owner verbatim: "unknown inbound senders first need to be
+  // identified before adding a spam or non real estate business email records into the os. if
+  // there is intent to or interest in real estate then we should add them in as a lead so the ai
+  // isa can qualify before converting to contact.") — an inbound email to a tenant that matches NO
+  // existing contact/lead is identified (cheap bounce/vendor prefilter, then an AI real-estate-
+  // intent read) before it becomes anything at all. Spam/vendor/automated → dropped, never a raw
+  // row. Real-estate intent → THIS SourceKey, through the SAME linear pipeline every other source
+  // uses (lib/lead-pipeline/unknown-sender-identification.ts). DISTINCT from every source above —
+  // this is a first-party signal (the tenant's OWN inbound mailbox), never a vendor scrape.
+  | 'inbound_email_unknown'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -543,6 +553,26 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── Inbound email — unknown sender, identified as real-estate intent (lane 73A) ─────────────
+  // An unknown sender's email alone is an IMMEDIATE identity anchor (the same posture as
+  // batchdata_motivated/external_behavior above — this record already carries a reachable
+  // channel, unlike a social-intent post that needs enrichment before it has one). The
+  // AI classifier's per-record intentType (buyer/seller/investor/renter/relocation/
+  // agent_seeking → mapped to buyer/seller/unknown on the record) overrides this map's
+  // 'unknown' default per NormalizedScrapedRecord.intentType, same as zenrows_zillow.
+  inbound_email_unknown: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'inbound_email_intent',
+    behaviorType:              'inbound_email_unknown',
+    scoreRange:                [30, 70],
+    baseScore:                 45,
+    boostSignals:              ['looking_to_buy', 'looking_to_sell', 'timeline', 'pre_approved', 'relocating', 'investor', 'cash_buyer'],
+    dampSignals:               ['just_browsing', 'no_timeline'],
+    identityPolicy:            'immediate',
+    canPromoteBeforeEnrichment: true,
+  },
+
 }
 
 /**
@@ -674,6 +704,9 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   new_construction: "new_construction_intent",
   builder_intent: "new_construction_intent",
   new_construction_builder: "new_construction_intent",
+  // Lane 73A — inbound email from an unknown sender, second spelling seen in config/UI copy.
+  inbound_email: "inbound_email_unknown",
+  unknown_inbound_email: "inbound_email_unknown",
 }
 
 /**
@@ -723,6 +756,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   site_visitor_intent:        'internal', // first-party — own pixel/dwell data, no vendor call
   email_engagement_intent:    'internal', // first-party — own email_tracking data, no vendor call
   new_construction_intent:    'apify',    // Google search via Apify, same vendor as agent_seeking_phrase_intent
+  inbound_email_unknown:      'internal', // first-party — the tenant's own inbound mailbox, no vendor call (the AI classification cost books to ai_tool_usage, not vendor_usage_tracking)
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -769,6 +803,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   site_visitor_intent:        'site_visitor_intent',
   email_engagement_intent:    'email_engagement_intent',
   new_construction_intent:    'new_construction_intent',
+  inbound_email_unknown:      'inbound_email_unknown',
 }
 
 /**

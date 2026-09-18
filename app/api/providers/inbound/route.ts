@@ -2,6 +2,27 @@
 // Single ingress for all inbound provider events (email / SMS).
 // No CRON_SECRET — uses provider signature validation via inbound-router.ts.
 // The Kernel remains the authority on what happens next.
+//
+// ── RULING (wave 73, owner verbatim, 2026-09-18): "unknown inbound senders first need to be
+// identified before adding a spam or non real estate business email records into the os. if
+// there is intent to or interest in real estate then we should add them in as a lead so the ai
+// isa can qualify before converting to contact. if spam, then that gets dropped." ──────────────
+// An EMAIL sender who matches no CONTACT (Step 3) and no active LEAD (Step 4) used to silently
+// no-op (`{ linked: false }`, no row, no count — wave 72A recorded this). Step 5 below now runs
+// that sender through lib/lead-pipeline/unknown-sender-identification.ts BEFORE giving up: a
+// cheap deterministic pre-filter (bounce/no-reply/mailer-daemon/vendor-domain/our-own-domain,
+// zero model spend) drops automated mail; a small AI real-estate-intent read (fail-closed — a
+// classifier outage HOLDS, never guesses) decides spam/no-intent (dropped, counted) vs a real
+// person with real-estate intent (a LEAD, SourceKey 'inbound_email_unknown', through the SAME
+// linear pipeline every other source uses — never a contact directly). On a fresh lead, this
+// sets entityType/entityId exactly as an already-matched lead would, so every step below —
+// including Step 8b's processInboundEmail — runs unchanged and the AI ISA starts qualifying
+// on the ORIGINAL email. An SMS/WhatsApp sender is NOT routed through this door: texting the
+// tenant's OWN registered line is an existing, distinct owner ruling (wave 49/50 — "texting in
+// IS consent for the thread", the same provenance the inbound-call lane uses) that already
+// requires a stronger signal (knowing and dialing this specific business number) than an
+// unsolicited email ever carries; see lib/voice/sms-inbound.ts::captureTextingContact, reviewed
+// against this ruling and left unchanged (§ report).
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -148,6 +169,37 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         entityId = captured
       }
     }
+
+    // ── Step 5d: UNKNOWN EMAIL SENDER — identify before adding a lead/contact (wave 73) ────
+    // Only the email path reaches here un-captured; Twilio's own hand-raise branch above
+    // already handles the SMS/WhatsApp case (and is deliberately NOT routed through this
+    // door — see the header ruling). A sender already matched at Steps 3/4 never reaches
+    // this block at all, so a portal-forwarded lead (already a lead/contact by the time it
+    // replies) or an existing contact never re-enters here either.
+    if ((!entityType || !entityId) && inbound.providerType !== "twilio" && inbound.fromEmail) {
+      try {
+        const { identifyAndRouteUnknownSender } = await import("@/lib/lead-pipeline/unknown-sender-identification")
+        const identified = await identifyAndRouteUnknownSender({
+          brokerageId: inbound.brokerageId,
+          fromEmail:   inbound.fromEmail,
+          subject:     inbound.subject,
+          body:        inbound.text ?? inbound.subject ?? "",
+          messageId:   inbound.messageId,
+          raw:         inbound.raw,
+        })
+        if (identified.outcome === "lead_created" && identified.leadId) {
+          entityType = "lead"
+          entityId = identified.leadId
+        }
+        // "dropped" (spam/vendor/automated) and "held" (classifier unavailable, fail-closed)
+        // both fall through unchanged — entityType stays null and the route responds
+        // { linked: false } below, exactly as an unmatched sender always has. The module
+        // itself is what counts the drop (lifecycle_events) — never a silent no-op.
+      } catch (err) {
+        console.error("[InboundRouter] unknown-sender identification failed (non-blocking):", err)
+      }
+    }
+
     if (!entityType || !entityId) return NextResponse.json({ linked: false })
   }
 

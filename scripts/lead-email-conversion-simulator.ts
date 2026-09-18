@@ -80,6 +80,13 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { blankComments } from "./strip-comments"
 import type { ClassifiedIntent, InboundClassifier } from "../lib/ai-isa/inbound-intent-classifier"
+import { SOURCE_MAP, SOURCE_VENDOR, ALL_SOURCE_KEYS } from "../lib/lead-pipeline/source-intent-map"
+// Lane 73A — pure, no-network exports only (preFilterAutomatedSender / extractInboundHeaderText
+// do no I/O and no model call; classifyUnknownSenderIntent/identifyAndRouteUnknownSender are
+// deliberately NEVER imported here — this file makes no network calls, per the lane's own rule).
+// unknown-sender-identification.ts imports "server-only" itself, same as inbound-intent-
+// classifier.ts above — loaded via a runtime `await import(...)` (below, after the shim has
+// already run), never a static import, for the SAME reason the type-only import above exists.
 
 let passed = 0
 let failed = 0
@@ -362,6 +369,127 @@ function testHubSpotSyncOutOnly() {
     !/listContactsPage/.test(blankComments(commentFixture)))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. UNKNOWN SENDER IDENTIFICATION (lane 73A, wave 73 owner ruling) — SOURCE +
+//    PURE-function proofs only. No network calls: the AI classifier itself
+//    (classifyUnknownSenderIntent) is never invoked here — that would be a
+//    real model call — its fail-closed CONTRACT is proven by SOURCE below.
+// ─────────────────────────────────────────────────────────────────────────────
+async function testUnknownSenderIdentification() {
+  console.log("\n[4 · Unknown inbound sender identification — wave 73]")
+
+  const { preFilterAutomatedSender, extractInboundHeaderText } =
+    await import("../lib/lead-pipeline/unknown-sender-identification")
+
+  const route = stripped("app/api/providers/inbound/route.ts")
+
+  // ── (a) structural: the unknown-sender door can ONLY run after Steps 3+4
+  // both failed to match — a contact OR an active lead sender never reaches it.
+  const step5Idx = route.indexOf('if (!entityType || !entityId) {')
+  const step5dIdx = route.indexOf("identifyAndRouteUnknownSender")
+  check("route.ts: the unknown-sender identification call is INSIDE the '!entityType || !entityId' block (never reached once Step 3/4 matched)",
+    step5Idx > -1 && step5dIdx > step5Idx)
+  check("route.ts: the unknown-sender door is gated on providerType !== 'twilio' && fromEmail (SMS/WhatsApp routes through the separate, existing hand-raise capture, never this door)",
+    /providerType !== "twilio" && inbound\.fromEmail/.test(route))
+  check("route.ts: a lead is only minted on outcome 'lead_created' — 'dropped'/'held' leave entityType untouched (falls through to { linked: false }, same as before)",
+    /identified\.outcome === "lead_created" && identified\.leadId/.test(route))
+  // RAW source, not stripped — this checks that the ruling PROSE exists in the header comment,
+  // the inverse of the tombstone-vs-call-site lesson (CLAUDE.md §2): here the comment IS what's
+  // being asserted, so stripping it away would make the check pass or fail for the wrong reason.
+  check("route.ts: the ruling is recorded in the file header (CLAUDE.md-style — the rule travels with the code)",
+    /unknown inbound senders first need to be/.test(src("app/api/providers/inbound/route.ts")))
+
+  const mod = stripped("lib/lead-pipeline/unknown-sender-identification.ts")
+
+  // ── (b) the prefilter runs BEFORE the model call — bounce/noreply/vendor/own-domain mail
+  // never reaches the classifier, so it never spends a token.
+  const orchestratorStart = mod.indexOf("export async function identifyAndRouteUnknownSender")
+  // Search FROM the orchestrator's own start — preFilterAutomatedSender/classifyUnknownSenderIntent
+  // are also DEFINED earlier in the file (sections 1/2), so an unanchored indexOf would find the
+  // function declarations, not the CALL SITES inside the orchestrator this check cares about.
+  const prefilterCallIdx = orchestratorStart > -1 ? mod.indexOf("preFilterAutomatedSender(", orchestratorStart) : -1
+  const classifierCallIdx = orchestratorStart > -1 ? mod.indexOf("classifyUnknownSenderIntent(", orchestratorStart) : -1
+  check("unknown-sender-identification.ts: identifyAndRouteUnknownSender calls the PRE-FILTER before the AI classifier (bounce/noreply/vendor mail never reaches the model)",
+    orchestratorStart > -1 && prefilterCallIdx > orchestratorStart && classifierCallIdx > prefilterCallIdx)
+  check("unknown-sender-identification.ts: an automated prefilter verdict returns BEFORE the classifier is ever called (no model spend)",
+    mod.indexOf("if (pre.isAutomated)", orchestratorStart) > -1 && mod.indexOf("if (pre.isAutomated)", orchestratorStart) < classifierCallIdx)
+
+  // ── (c) FAIL CLOSED — a classifier that cannot run creates NO row and NO lead.
+  const heldReturnIdx = mod.indexOf('return { outcome: "held", reason: "classifier_unavailable" }')
+  const pipelineCallIdx = mod.indexOf("createLeadFromUnknownSender(svc, params, c)")
+  check("unknown-sender-identification.ts: classifier-unavailable returns 'held' BEFORE the pipeline/lead-creation call ever runs (no lead, no contact, no row)",
+    heldReturnIdx > -1 && pipelineCallIdx > -1 && heldReturnIdx < pipelineCallIdx)
+  check("unknown-sender-identification.ts: the held path is a COUNTED drop (lifecycle_events), never a silent no-op",
+    /recordDrop\(svc, params\.brokerageId, "classifier_unavailable"/.test(mod))
+
+  // ── (d) spam / no real-estate intent → dropped, counted, never a lead.
+  const spamCheckIdx = mod.indexOf("c.isSpamOrVendor || !c.hasRealEstateIntent")
+  check("unknown-sender-identification.ts: spam OR no-real-estate-intent is checked BEFORE the pipeline call (never promoted to a lead)",
+    spamCheckIdx > -1 && spamCheckIdx < pipelineCallIdx)
+
+  // ── (e) real-estate intent → the SAME linear pipeline every other source uses, then the
+  // route's EXISTING Step 8b hands the ORIGINAL email to the ISA (never a second invocation).
+  check("unknown-sender-identification.ts: routes through ingestRawSourceBatch (the ONE governed raw-lead writer) — never a second raw-insert",
+    /ingestRawSourceBatch\(/.test(mod))
+  check("unknown-sender-identification.ts: promotes via processRawRecord (the canonical dedup→enrich→dedup→gate pipeline) — never a bespoke insert into leads",
+    /processRawRecord\(/.test(mod))
+  check("unknown-sender-identification.ts: never calls processInboundEmail itself — Step 8b in route.ts is the ONE ISA-handoff call site (no second invocation)",
+    !/processInboundEmail/.test(mod))
+  check("route.ts Step 8b still calls processInboundEmail for ANY entityType==='lead' with an email — including a lead THIS module just created (same code path, no special-casing)",
+    /if \(entityType === "lead" && entityId && inbound\.fromEmail\)/.test(route))
+
+  // ── (f) AI ledger — booked under manager 'ai_isa', the cheapest routed model lane.
+  check("unknown-sender-identification.ts: books the classifier call to ai_tool_usage under manager 'ai_isa' (never unassigned)",
+    /manager: "ai_isa"/.test(mod))
+  check("unknown-sender-identification.ts: uses gpt-4o-mini — AI_TASK_ROUTING's own documented \"Cheapest option\" lane, not an arbitrary model",
+    /gpt-4o-mini/.test(mod))
+  check("unknown-sender-identification.ts: calls guardedGenerateText (the Data Guard chokepoint), never the raw SDK generateText",
+    /guardedGenerateText\(/.test(mod) && !/\bimport\s*\{\s*generateText\s*\}\s*from\s*"ai"/.test(mod))
+
+  // ── (g) SourceKey registered — one vocabulary, no second definition.
+  check("source-intent-map.ts: SourceKey 'inbound_email_unknown' has a SOURCE_MAP entry",
+    "inbound_email_unknown" in SOURCE_MAP)
+  check("source-intent-map.ts: SOURCE_VENDOR marks it 'internal' ($0 vendor cost — the tenant's own mailbox, not a vendor scrape)",
+    SOURCE_VENDOR.inbound_email_unknown === "internal")
+  check("source-intent-map.ts: ALL_SOURCE_KEYS derives it (no hand-copied second list, CLAUDE.md §6)",
+    ALL_SOURCE_KEYS.includes("inbound_email_unknown"))
+
+  // ── (h) PURE prefilter — bounce/noreply/vendor/own-domain/list-unsubscribe, zero I/O.
+  console.log("\n  ── pure prefilter (no network, no model) ──")
+  check("bounce/mailer-daemon local part is automated",
+    preFilterAutomatedSender({ fromEmail: "mailer-daemon@some-mta.example.com" }).isAutomated === true)
+  check("noreply@ local part is automated",
+    preFilterAutomatedSender({ fromEmail: "noreply@somesender.com" }).isAutomated === true)
+  check("a known ESP/newsletter domain is automated",
+    preFilterAutomatedSender({ fromEmail: "campaign@mailchimpapp.net" }).isAutomated === true &&
+    preFilterAutomatedSender({ fromEmail: "campaign@mailchimpapp.net" }).reason === "known_vendor_or_newsletter_domain")
+  check("our OWN sending domain replying to itself is a mail loop, not a customer",
+    preFilterAutomatedSender({ fromEmail: "anything@vip-re.com" }).isAutomated === true &&
+    preFilterAutomatedSender({ fromEmail: "anything@vip-re.com" }).reason === "own_domain_loop")
+  check("a List-Unsubscribe header marks the sender automated even with an ordinary-looking address",
+    preFilterAutomatedSender({
+      fromEmail: "campaigns@some-random-esp-domain.io",
+      raw: { headers: "From: campaigns@some-random-esp-domain.io\nList-Unsubscribe: <mailto:unsub@x.io>\n" },
+    }).isAutomated === true)
+  check("invalid email syntax is automated (never reaches the classifier)",
+    preFilterAutomatedSender({ fromEmail: "not-an-email" }).isAutomated === true)
+  // POSITIVE CONTROL (CLAUDE.md §2): the prefilter must still recognise the ORDINARY, real
+  // human sender it exists to let through — a broken always-true prefilter would report the
+  // same "automated" verdict for everything and this suite would never catch it.
+  check("POSITIVE CONTROL: an ordinary human sender at a real, non-listed domain is NOT automated",
+    preFilterAutomatedSender({ fromEmail: "jane.doe@gmail.com" }).isAutomated === false)
+
+  console.log("\n  ── header-text extraction (provider-shape-agnostic) ──")
+  check("extractInboundHeaderText reads SendGrid's flat 'headers' string field",
+    extractInboundHeaderText({ headers: "List-Unsubscribe: <mailto:x@y.com>" }).includes("List-Unsubscribe"))
+  check("extractInboundHeaderText reads Postmark's 'Headers' array of {Name,Value}",
+    extractInboundHeaderText({ Headers: [{ Name: "List-Unsubscribe", Value: "<mailto:x@y.com>" }] }).includes("List-Unsubscribe"))
+  check("extractInboundHeaderText never throws on a shape with no header field, and never fabricates a List-Unsubscribe marker",
+    !extractInboundHeaderText({ from: "a@b.com" }).includes("List-Unsubscribe"))
+  check("extractInboundHeaderText never throws on null/undefined raw",
+    extractInboundHeaderText(null) === "" && extractInboundHeaderText(undefined) === "")
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Lead-email conversion simulator")
@@ -369,6 +497,7 @@ async function main() {
   testSourceWiring()
   await testLive()
   testHubSpotSyncOutOnly()
+  await testUnknownSenderIdentification()
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
@@ -381,7 +510,11 @@ async function main() {
     " LEAD_EMAIL_CONVERSION_PASS — an inbound email from an already-a-contact sender never " +
     "reaches the lead path; an inbound email from a LEAD with positive intent converts + assigns " +
     "through the canonical lane and stops further lead-stage ISA sends; a lead email with no clear " +
-    "intent gets the ISA reply only, no conversion; the HubSpot inbound pull stays retired.",
+    "intent gets the ISA reply only, no conversion; the HubSpot inbound pull stays retired; an " +
+    "UNKNOWN sender is identified before anything is created — bounce/noreply/vendor mail never " +
+    "reaches the model, real-estate intent becomes a lead through the linear pipeline and the " +
+    "SAME Step 8b hands it to the ISA, spam/no-intent is dropped and counted, and a classifier " +
+    "outage HOLDS (no lead, no contact, no row) rather than guessing.",
   )
 }
 main().catch((e) => { console.error(e); process.exit(1) })

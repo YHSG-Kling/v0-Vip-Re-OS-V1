@@ -567,6 +567,12 @@ export enum KernelEvent {
   SCRAPING_CRON_COMPLETED            = 'scraping_cron_completed',
   SCRAPING_CRON_FAILED               = 'scraping_cron_failed',
 
+  // ── Unknown inbound sender identification (lane 73A, wave 73 ruling) ────
+  // Emitted by lib/lead-pipeline/unknown-sender-identification.ts — counted,
+  // never silent (CLAUDE.md §2: "a count that moves is the finding").
+  UNKNOWN_SENDER_DROPPED             = 'unknown_sender_dropped',
+  UNKNOWN_SENDER_IDENTIFIED_AS_LEAD  = 'unknown_sender_identified_as_lead',
+
   // ── CRM / Contact OS ────────────────────────────────────────────────────
   // Emitted by lib/kernel/crm.ts and app/actions/contacts.ts.
   // Downstream: notification rules, automation triggers, audit log.

@@ -74,7 +74,10 @@ export interface IngestRawSourceBatchParams {
    *  an EXPLICIT brokerage-configured/triggered scrape, owned by that brokerage immediately.
    *  Drives raw_scraped_leads.source_origin ('platform' | 'brokerage') — never a body value. */
   brokerageId: string | null
-  marketId: string
+  /** null = a non-territory, first-party source with no lead_scraping_markets row to attach to
+   *  (lane 73A, m648: inbound_email_unknown — the owning brokerage is resolved directly, never
+   *  by scraped geography). Every territory-scraped source still passes a real market id. */
+  marketId: string | null
   source: string
   // SCRAPE CATEGORY (e.g. 'property_search' | 'motivated_seller' | 'social_intent') — lands on
   // raw_scraped_leads.scrape_category (m647), NEVER on source_family, whose live CHECK admits
@@ -544,11 +547,16 @@ export async function ingestRawSourceBatch(
   // to the DB lookup so callers like the territory-gate simulator are unaffected.
   let marketGeo = params.marketGeo
   if (marketGeo === undefined) {
-    const { data: gateMarket } = await supabase
-      .from("lead_scraping_markets")
-      .select("city, state, zip_codes")
-      .eq("id", params.marketId)
-      .maybeSingle()
+    // marketId null (lane 73A, m648: a non-territory first-party source) — there is no
+    // lead_scraping_markets row to look up at all; `.eq("id", null)` would be a malformed
+    // PostgREST filter, not an honest "no geography" answer, so this short-circuits instead.
+    const { data: gateMarket } = params.marketId
+      ? await supabase
+          .from("lead_scraping_markets")
+          .select("city, state, zip_codes")
+          .eq("id", params.marketId)
+          .maybeSingle()
+      : { data: null }
     marketGeo = gateMarket
       ? { city: (gateMarket as any).city, state: (gateMarket as any).state, zip_codes: (gateMarket as any).zip_codes }
       : null
