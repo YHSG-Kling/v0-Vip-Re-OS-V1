@@ -58,6 +58,13 @@ export type SourceKey =
   // uses (lib/lead-pipeline/unknown-sender-identification.ts). DISTINCT from every source above —
   // this is a first-party signal (the tenant's OWN inbound mailbox), never a vendor scrape.
   | 'inbound_email_unknown'
+  // ── Lane 73D (owner ruling wave 73, verbatim: "exa is good at looking for leads like permit").
+  // DISTINCT from lib/external/permit-signals.ts (Socrata/ArcGIS permit-PORTAL rows, ATTACH-ONLY —
+  // never mints a lead from a bare address, per that file's own header) and from
+  // lib/lead-pipeline/exa-sourcer.ts's exa_buyer_intent (buyer-only neural search): this is an Exa
+  // neural-search SELLER/pre-listing lane over recent building-permit filings, estate/probate
+  // notices, "coming soon" pre-listing chatter, and contractor-bid posts, territory-centric.
+  | 'permit_prelisting_intent'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -572,6 +579,27 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     identityPolicy:            'immediate',
     canPromoteBeforeEnrichment: true,
   },
+  // ── Permit / pre-listing intent (lane 73D — owner ruling wave 73, verbatim: "exa is good at
+  // looking for leads like permit"). SELLER-side: a recent remodel/addition/roof/pool permit, an
+  // estate/probate notice, "coming soon" pre-listing chatter, or a contractor-bid post are all
+  // signals somebody is preparing a home for sale. `property_required` (like craigslist_fsbo) — the
+  // Exa hit's property address is the concrete anchor; PeopleData enrichment resolves the owner's
+  // name downstream (wave 72 ruling) when the hit itself carries none. When the hit's address
+  // matches a lead/contact the brokerage ALREADY owns, lib/lead-pipeline/permit-sourcer.ts routes it
+  // to lib/external/permit-signals.ts's ATTACH path instead of minting here — see that file's own
+  // "no lead is created from a bare address" refusal.
+  permit_prelisting_intent: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'permit_prelisting_intent',
+    behaviorType:              'search_signal',
+    scoreRange:                [40, 75],
+    baseScore:                 50,
+    boostSignals:              ['demolition', 'probate', 'estate_sale', 'inherited', 'contractor_bid', 'coming_soon'],
+    dampSignals:               ['general_research'],
+    identityPolicy:            'property_required',
+    canPromoteBeforeEnrichment: true,
+  },
 
 }
 
@@ -707,6 +735,10 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   // Lane 73A — inbound email from an unknown sender, second spelling seen in config/UI copy.
   inbound_email: "inbound_email_unknown",
   unknown_inbound_email: "inbound_email_unknown",
+  // Lane 73D — permit/pre-listing intent, second spellings seen in config/UI copy.
+  permit_intent: "permit_prelisting_intent",
+  permit_prelisting: "permit_prelisting_intent",
+  pre_listing_intent: "permit_prelisting_intent",
 }
 
 /**
@@ -757,6 +789,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   email_engagement_intent:    'internal', // first-party — own email_tracking data, no vendor call
   new_construction_intent:    'apify',    // Google search via Apify, same vendor as agent_seeking_phrase_intent
   inbound_email_unknown:      'internal', // first-party — the tenant's own inbound mailbox, no vendor call (the AI classification cost books to ai_tool_usage, not vendor_usage_tracking)
+  permit_prelisting_intent:  'exa',      // Exa neural search (owner ruling wave 73: "exa is good at looking for leads like permit")
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -804,6 +837,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   email_engagement_intent:    'email_engagement_intent',
   new_construction_intent:    'new_construction_intent',
   inbound_email_unknown:      'inbound_email_unknown',
+  permit_prelisting_intent:  'permit_prelisting_intent',
 }
 
 /**

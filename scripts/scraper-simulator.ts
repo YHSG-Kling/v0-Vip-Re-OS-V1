@@ -56,6 +56,16 @@ import {
   normalizeNewConstructionResult,
   sourceNewConstructionIntent,
 } from "../lib/lead-pipeline/social-sourcer"
+import {
+  buildPermitSearchQueries,
+  normalizePermitSearchResult,
+  extractApplicantName,
+  extractPropertyAddress,
+  sourcePermitPrelistingIntent,
+  routePermitPrelistingHits,
+  EXA_PERMIT_DETECTED_VIA,
+} from "../lib/lead-pipeline/permit-sourcer"
+import { PERMIT_SIGNAL_TYPE } from "../lib/external/permit-signals"
 import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
 import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
 import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
@@ -1592,6 +1602,176 @@ async function testLane72CSourcerHonestlyNoOp() {
   check("sourceNewConstructionIntent: no territory ⇒ zero records, zero cost", nc.records.length === 0 && nc.cost === 0)
 }
 
+// ── 21c. LANE 73D — permit / pre-listing intent (Exa) (owner ruling wave 73, verbatim:
+// "exa is good at looking for leads like permit"). DISTINCT from lib/external/
+// permit-signals.ts's Socrata/ArcGIS ATTACH-ONLY lane and from exa_buyer_intent
+// (buyer-only). Covers: territory-centric query builder, normalizer classification,
+// the fail-closed no-network positive control, and the attach-vs-mint decision.
+function testLane73DPermitSourcerPure() {
+  console.log("\n[Lane 73D · permit/pre-listing intent (Exa) — territory-centric query builder]")
+  const queries = buildPermitSearchQueries({ city: "Austin", state: "TX" })
+  check("queries built for a real territory", queries.length > 0)
+  check("every query names the territory (no generic global query)", queries.every((q) => q.query.includes("Austin")))
+  check("all four owner-named evidence categories present (permit/probate/coming_soon/contractor_bid)",
+    (["permit", "probate", "coming_soon", "contractor_bid"] as const).every((c) => queries.some((q) => q.category === c)))
+  // POSITIVE CONTROL — a lane without a territory gate IS caught: an empty market must
+  // never fall back to a global/borderless query.
+  const emptyQueries = buildPermitSearchQueries({ city: null, state: null })
+  check("POSITIVE CONTROL: no territory ⇒ zero queries (never a global sweep)", emptyQueries.length === 0)
+
+  console.log("\n[Lane 73D · normalizer — applicant name / property address extraction + classification]")
+  const permitHit = normalizePermitSearchResult(
+    {
+      id: "p1", url: "https://county.gov/permits/1",
+      title: "Permit issued to John Smith for 123 Main St, Austin",
+      text: "A building permit was issued to John Smith at 123 Main St for a kitchen remodel and roof replacement.",
+      author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+  check("permit hit → source tagged permit_prelisting_intent", permitHit.source === "permit_prelisting_intent")
+  check("permit hit → seller intent (a permit/pre-listing hit is definitionally a seller signal, never buyer)", permitHit.intentType === "seller")
+  check("permit hit → applicant name extracted from 'permit was issued to <Name>'", permitHit.firstName === "John" && permitHit.lastName === "Smith")
+  check("permit hit → property address extracted", permitHit.propertyAddress === "123 Main St")
+  check("permit hit → category + lane signal present", permitHit.intentSignals.includes("permit_prelisting_intent") && permitHit.intentSignals.includes("permit"))
+  check("permit hit is viable (name + city)", isViableRecord(permitHit))
+
+  const demoHit = normalizePermitSearchResult(
+    {
+      id: "p2", url: "https://x/2", title: "Demolition permit filed for teardown at 45 Oak Ave, Austin",
+      text: "A demolition permit was filed to raze the structure at 45 Oak Ave.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+  check("demolition language → demolition signal + the strong-tier motivation score (classifyPermitStrength reused, not re-derived)",
+    demoHit.intentSignals.includes("demolition") && (demoHit.motivationScore ?? 0) >= 65)
+
+  const probateHit = normalizePermitSearchResult(
+    {
+      id: "p3", url: "https://x/3", title: "Estate of Mary Jones — property to be sold",
+      text: "The estate of Mary Jones is preparing the probate property for sale.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "probate",
+  )
+  check("probate hit → applicant name extracted from 'estate of <Name>'", probateHit.firstName === "Mary" && probateHit.lastName === "Jones")
+  check("probate hit → probate signal present", probateHit.intentSignals.includes("probate"))
+
+  // POSITIVE CONTROLS — the extractors must never fabricate a match out of unrelated text.
+  check("POSITIVE CONTROL: extractApplicantName never fabricates a name from unrelated text", extractApplicantName("Nothing here mentions anyone at all.") === null)
+  check("POSITIVE CONTROL: extractPropertyAddress never fabricates an address from unrelated text", extractPropertyAddress("Nothing here mentions any address at all.") === null)
+
+  check("permit_prelisting_intent has a REAL scoring entry (not the silent fallback)", hasScoringEntry("permit_prelisting_intent"))
+  check("permit_prelisting_intent is exa-vendor-routed (owner: 'exa is good at looking for leads like permit')", SOURCE_VENDOR.permit_prelisting_intent === "exa")
+  check("permit_prelisting_intent is DISTINCT from exa_buyer_intent — never merged (seller vs buyer, CLAUDE.md §6)",
+    resolveSourceKey("permit_prelisting_intent") !== resolveSourceKey("exa"))
+  check("permit_prelisting_intent aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("permit_intent") === "permit_prelisting_intent" && resolveSourceKey("pre_listing_intent") === "permit_prelisting_intent")
+  check("expandEnabledSources activates the permit_prelisting_intent gate token from its canonical key",
+    expandEnabledSources(["permit_prelisting_intent"]).has("permit_prelisting_intent"))
+}
+
+async function testLane73DSourcerHonestlyNoOp() {
+  console.log("\n[Lane 73D · sourcer async wrapper — POSITIVE CONTROL: no territory ⇒ no network call]")
+  const emptyMarket = { city: null, state: null }
+  const nc = await sourcePermitPrelistingIntent(emptyMarket)
+  check("sourcePermitPrelistingIntent: no territory ⇒ zero records, zero cost", nc.records.length === 0 && nc.cost === 0)
+
+  console.log("\n[Lane 73D · fail-closed — POSITIVE CONTROL: no EXA_API_KEY ⇒ no network call even with a real territory]")
+  const savedKey = process.env.EXA_API_KEY
+  delete process.env.EXA_API_KEY
+  try {
+    const r = await sourcePermitPrelistingIntent({ city: "Austin", state: "TX" })
+    check("sourcePermitPrelistingIntent: real territory but no EXA_API_KEY ⇒ zero records, zero cost, no throw (exaSearch's own fail-closed gate)",
+      r.records.length === 0 && r.cost === 0)
+  } finally {
+    if (savedKey === undefined) delete process.env.EXA_API_KEY
+    else process.env.EXA_API_KEY = savedKey
+  }
+}
+
+/** A supabase double for `routePermitPrelistingHits` — RESOLVES its refusals exactly
+ *  as supabase-js does (CLAUDE.md §3), never throws. Tables: leads, contacts,
+ *  motivated_seller_signals (existing-read + insert). Modeled on
+ *  batchdata-seller-signal-simulator.ts's `fakeSupabase`. */
+function fakePermitSupabase(opts: {
+  leads?: Array<{ id: string; address: string | null }>
+  contacts?: Array<{ id: string; address: string | null }>
+  existing?: Array<{ signal_details: { dedupe_key?: string } | null }>
+  insertError?: { message: string }
+}) {
+  const inserted: any[] = []
+  const client = {
+    from(table: string) {
+      const q: any = {
+        select: () => q,
+        eq: () => q,
+        is: () => q,
+        not: () => q,
+        limit: () => q,
+        insert: (rows: any) => {
+          const arr = Array.isArray(rows) ? rows : [rows]
+          if (opts.insertError) return { select: () => Promise.resolve({ data: null, error: opts.insertError }) }
+          inserted.push(...arr)
+          return { select: () => Promise.resolve({ data: arr.map((_: any, i: number) => ({ id: `id-${inserted.length + i}` })), error: null }) }
+        },
+        then: (res: any) => {
+          if (table === "leads") return Promise.resolve({ data: opts.leads ?? [], error: null }).then(res)
+          if (table === "contacts") return Promise.resolve({ data: opts.contacts ?? [], error: null }).then(res)
+          return Promise.resolve({ data: opts.existing ?? [], error: null }).then(res)
+        },
+      }
+      return q
+    },
+  }
+  return { client, inserted }
+}
+
+async function testLane73DAttachVsMint() {
+  console.log("\n[Lane 73D · attach-vs-mint routing — the permit-signals reuse]")
+  const owned = normalizePermitSearchResult(
+    {
+      id: "p4", url: "https://x/4", title: "Roof permit issued to Pat Owner for 500 Congress Ave, Austin",
+      text: "A roof replacement permit was issued to Pat Owner at 500 Congress Ave.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+  const unowned = normalizePermitSearchResult(
+    {
+      id: "p5", url: "https://x/5", title: "Remodel permit issued to Sam Stranger for 900 Elm St, Austin",
+      text: "A remodel permit was issued to Sam Stranger at 900 Elm St.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+
+  const f = fakePermitSupabase({ leads: [{ id: "lead-1", address: "500 Congress Ave, Austin, TX" }] })
+  const routed = await routePermitPrelistingHits({ supabase: f.client as any, brokerageId: "brok-1", records: [owned, unowned] })
+  check("a hit whose address matches a lead THIS BROKERAGE already owns is ATTACHED, not minted",
+    !routed.toMint.some((r) => r.sourceRecordId === owned.sourceRecordId))
+  check("an unmatched hit is left to MINT as a normal raw lead", routed.toMint.some((r) => r.sourceRecordId === unowned.sourceRecordId))
+  check("attached count reflects the one match, filed under lead_id", routed.attached === 1 && routed.attachedByEntity.lead === 1)
+  check("the written signal carries THIS lane's own detected_via ('exa'), distinct from the Socrata/ArcGIS lane's ('socrata'/'arcgis')",
+    f.inserted[0]?.detected_via === EXA_PERMIT_DETECTED_VIA && f.inserted[0]?.signal_type === PERMIT_SIGNAL_TYPE)
+  check("the written row points at the tenant's OWN lead (never a body/provider-supplied id)", f.inserted[0]?.lead_id === "lead-1")
+
+  // Re-run with the SAME dedupe_key already recorded — idempotent, writes nothing new,
+  // but the owned address still never mints (matched ⇒ excluded regardless of idempotency).
+  const dedupeKey = f.inserted[0]?.signal_details?.dedupe_key
+  const f2 = fakePermitSupabase({
+    leads: [{ id: "lead-1", address: "500 Congress Ave, Austin, TX" }],
+    existing: [{ signal_details: { dedupe_key: dedupeKey } }],
+  })
+  const routed2 = await routePermitPrelistingHits({ supabase: f2.client as any, brokerageId: "brok-1", records: [owned] })
+  check("a re-run against an already-recorded dedupe_key writes NOTHING new (idempotent)", f2.inserted.length === 0 && routed2.alreadyRecorded === 1)
+  check("…and the owned address still never mints on the idempotent path", routed2.toMint.length === 0)
+
+  // POSITIVE CONTROL — a hit with no address at all has nothing to attach-match on and
+  // always mints, with NO database read even attempted (no leads/contacts fetch needed).
+  const noAddress: NormalizedScrapedRecord = { ...unowned, propertyAddress: null, sourceRecordId: "permit-exa-no-addr" }
+  const f3 = fakePermitSupabase({})
+  const routed3 = await routePermitPrelistingHits({ supabase: f3.client as any, brokerageId: "brok-1", records: [noAddress] })
+  check("POSITIVE CONTROL: a hit with no property address always mints (nothing to match on)", routed3.toMint.length === 1 && f3.inserted.length === 0)
+}
+
 // ── 22. WAVE 66 CHANNELS — every new sourceChannel scores as ITSELF, never a stranger ────────
 // Owner ruling (wave 66, lane 66C): "processRawRecord must accept the new sourceChannels ...
 // in source-intent-map.ts scoring — a channel with no scoring entry must be a proof failure
@@ -1831,6 +2011,9 @@ async function main() {
   await testWave65SourcersHonestlyNoOp()
   testLane72CNewConstruction()
   await testLane72CSourcerHonestlyNoOp()
+  testLane73DPermitSourcerPure()
+  await testLane73DSourcerHonestlyNoOp()
+  await testLane73DAttachVsMint()
   testWave66Channels()
   testWave70SiteVisitorLane()
   testActorRegistryFreshness()

@@ -512,14 +512,14 @@ opportunities… If we aren't doing this another competitor will."
 | 29 | **Email engagement (opens/clicks)** | internal (`email_tracking`) | **Was Missing → Built lane 71C** | **$0** | brokerage-scoped (own outbound) | identity-key (email) dedup |
 | 30 | Open-house sign-ins | `form_submissions` (open_house context) + conversion-welcome | **Built** (pre-existing, consented intake) | $0 | n/a | contact-direct |
 | 31 | Review/reputation chatter (as an ACQUISITION signal, not just reputation response) | — | **Missing** as acquisition — `lib/reputation/*` exists for the tenant's OWN review responses, not for sourcing new leads from public review chatter | — | — | — |
-| 32 | Permit / pre-listing signals | — | **Missing** | — | — | — |
+| 32 | **Permit / pre-listing signals** | Exa neural search | **Was Missing → Built lane 73D** | `costDollars.total` per call, `0.005 × numResults` fallback | territory-derived queries (city/county/"city, state") | address-match attach-vs-mint + `isViableRecord`/identity-key |
 
 ### Totals
 
-**Built: 27 / 32 · Partial: 1 / 32 · Missing: 4 / 32** (review/reputation-as-acquisition,
-permit/pre-listing signals, rental-to-buyer graduation's tenant-side half, and — until wave
+**Built: 28 / 32 · Partial: 1 / 32 · Missing: 3 / 32** (review/reputation-as-acquisition,
+rental-to-buyer graduation's tenant-side half, and — until wave
 70 — website visitor identification, and — until lane 71C — email engagement, and — until
-lane 72C — new-construction/builder lists).
+lane 72C — new-construction/builder lists, and — until lane 73D — permit/pre-listing signals).
 
 ### What this lane built — website visitor identification ($0/record, the cheapest lane possible)
 
@@ -644,8 +644,75 @@ creates a lead or contact from a bare permit address ("Turning an address into a
 SOURCING... not here" — the file's own header). It only ATTACHES a permit signal to a lead or
 contact the brokerage ALREADY owns. Retrofitting it into a raw-lead SourceKey sourcer would reverse
 a deliberate, documented product refusal (an unmatched address becoming a fabricated person), so
-this lane treats permit/pre-listing signals as still-genuinely-missing FOR ACQUISITION (item #32
-stays **Missing** in the matrix above) and picks new-construction/builder lists instead.
+this lane (72C) treats permit/pre-listing signals as still-genuinely-missing FOR ACQUISITION (item
+#32 stayed **Missing** in the matrix above at the time) and picks new-construction/builder lists
+instead. **Superseded by lane 73D below**, which closes this gap on a DIFFERENT evidence shape
+(Exa web content, which can carry a NAME) rather than retrofitting the address-only Socrata/ArcGIS
+lane — `lib/external/permit-signals.ts` keeps its own refusal untouched and is REUSED, not
+retrofitted, as the attach-decision engine lane 73D calls when a hit turns out to be owned already.
+
+### What lane 73D built — permit/pre-listing intent (Exa neural search)
+
+**Why this one, and why now.** Owner ruling wave 73, verbatim: "exa is good at looking for leads
+like permit." Of the remaining gaps after lane 72C (review-as-acquisition, permit/pre-listing,
+rental-to-buyer graduation's tenant-side half), this is the one the owner named a provider for
+directly, and Exa (`lib/providers/exa/client.ts`, the official `exa-js` adapter adopted wave 70B)
+was already installed and already metered (`exa_buyer_intent`, lane pre-65) — no new vendor
+relationship to procure, unlike review-as-acquisition (needs a review-aggregator API).
+
+**Built:** `lib/lead-pipeline/permit-sourcer.ts`. `buildPermitSearchQueries` builds
+territory-centric Exa queries (city / county / "city, state" — empty territory ⇒ zero queries,
+same territory-honesty contract as every sourcer since wave 65) across the four evidence shapes
+the owner's ruling covers: recent residential building permits (remodel/addition/roof/pool),
+estate/probate notices, "coming soon"/pre-listing chatter, and contractor-bid posts.
+`normalizePermitSearchResult` extracts a best-effort APPLICANT/OWNER name (`extractApplicantName`
+— "permit was/is issued to `<Name>`", "estate of `<Name>`", "owner: `<Name>`", "posted by `<Name>`";
+null rather than a fabricated match when none of those patterns fire) and a best-effort property
+address (`extractPropertyAddress` — a conservative house-number + street-suffix regex; null rather
+than a guessed fragment), tags SELLER intent always (a permit/pre-listing hit is definitionally a
+seller signal, never buyer — mirroring `new_construction_intent`'s buyer-always posture in reverse),
+and reuses `classifyPermitStrength` (permit-signals.ts, not re-derived — CLAUDE.md §6) to grade the
+hit's motivation score. `sourcePermitPrelistingIntent` runs those queries (capped at 5/run) through
+`lib/external/exa-client.ts::exaSearch` — the SAME wrapper `exa_buyer_intent` already uses, which
+reads `EXA_API_KEY` and returns `{results:[],cost:0}` with **no network call** when it is absent,
+so a missing key fails this lane closed exactly like every other Exa caller. New `SourceKey`
+`permit_prelisting_intent`: `SOURCE_MAP` entry (scoreRange [40,75], baseScore 50, identityPolicy
+`property_required` — matching `craigslist_fsbo`'s posture: the address is the concrete anchor,
+`canPromoteBeforeEnrichment: true`), `SOURCE_ALIASES` (`permit_intent`/`permit_prelisting`/
+`pre_listing_intent`), `SOURCE_VENDOR = 'exa'`, `GATE_TOKEN` entry. Wired into
+`app/api/cron/lead-scraping/route.ts` behind `enabledSources.has("permit_prelisting_intent")`,
+folded into the existing social-sources block (no new `scraper_executions` row shape, no new
+cron). `sourceChannel='permit_prelisting_intent'`, `scrape_category='search_signal'`.
+
+**The attach-vs-mint reuse (the actual point of lane 73D).** A raw Exa hit whose property address
+normalizes (via `matchPermitsToLeads`, which calls `normalizeStreetAddress` internally — ONE
+address vocabulary, never a second normalizer, CLAUDE.md §6) to the SAME key as a lead or contact
+this brokerage ALREADY owns is not a new person — it is new information about someone already on
+the board. `routePermitPrelistingHits` (lib/lead-pipeline/permit-sourcer.ts) fetches the
+brokerage's own unconverted leads (`excludeConvertedLeads`, the ONE conversion guard) + contacts,
+runs the match, and for every hit that matches writes a `motivated_seller_signals` row the SAME
+way `lib/external/permit-signals.ts::ingestPermitSignals` does for its own Socrata/ArcGIS rows —
+same table, same `signal_type` (`PERMIT_SIGNAL_TYPE`, reused), but its OWN `detected_via` ('exa',
+distinct from that file's 'socrata'/'arcgis' — the same "one table, several provenances" pattern
+that file already established for its own two providers) and its OWN idempotency read (scoped to
+`detected_via='exa'`, so it can never collide with or re-suppress the Socrata/ArcGIS lane's rows).
+Matched hits are removed from the mint list BEFORE `insertSocial` ever sees them — an owned
+address never mints a duplicate `raw_scraped_leads` row. Unmatched hits (a genuinely new address,
+or a hit with no address at all — a probate/bid post naming only a person) proceed through the
+normal raw-lead pipeline exactly like every other `SourceKey`.
+
+**Cost.** `docs/provider-matrix-2026-09.md`'s Exa row states the unit price the repo already
+records: `costDollars.total` returned per call when Exa states one, `0.005 × numResults` fallback
+estimate — reused verbatim via `exaSearch`, never invented a second time here.
+
+**Proof:** extended `scripts/scraper-simulator.ts` (`npm run test:scrapers`) — `buildPermitSearchQueries`'s
+territory-centric query builder with a POSITIVE CONTROL (empty market ⇒ zero queries), the
+normalizer's applicant-name/address extraction + seller-intent classification with POSITIVE
+CONTROLS (unrelated text never fabricates a name or address), `sourcePermitPrelistingIntent`'s
+fail-closed no-network POSITIVE CONTROL (a real territory but no `EXA_API_KEY` ⇒ zero records,
+zero cost, no throw), and `routePermitPrelistingHits`'s attach-vs-mint decision (an owned address
+attaches and is idempotent on re-run; an unmatched or address-less hit always mints) against a
+supabase double modeled on `batchdata-seller-signal-simulator.ts`'s `fakeSupabase`.
 
 **Built:** `lib/lead-pipeline/source-intent-map.ts::buildNewConstructionPhrases` builds
 territory-centric queries ("new construction homes for sale `<city>`", "builder incentives

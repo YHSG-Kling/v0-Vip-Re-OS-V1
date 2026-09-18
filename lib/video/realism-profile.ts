@@ -465,14 +465,17 @@ export interface PauseableAlignment {
  * alignmentWithoutPauseMarkup — PURE. The PREFERRED caption path
  * (lib/voice/elevenlabs-tts.ts synthesizeSpeechWithTimestamps) returns
  * character-level alignment for whatever TEXT was actually sent — which, once
- * withNaturalPauses runs before synthesis, includes the inserted markup.
+ * withNaturalPauses runs before synthesis, includes the inserted pause
+ * markup, AND (lane 73D) may already have carried an authorized expressive
+ * tag from the script writer BEFORE withNaturalPauses ever touched it.
  * ElevenLabs has published no statement on whether its alignment response
  * includes or omits audio-tag/break characters, so this function is written
  * to be CORRECT EITHER WAY: it finds every markup span inside the joined
- * `characters` array by the SAME PAUSE_MARKUP_PATTERN withNaturalPauses
- * inserts (§6 — one vocabulary for "what pause markup looks like") and drops
- * every character index that falls inside one. If ElevenLabs already omits
- * tag characters, no span is found and this is a no-op — verified by the
+ * `characters` array by the COMBINED pause-markup + expressive-tag pattern
+ * (§6 — one vocabulary for "what control markup looks like", spanning both
+ * the downstream-inserted and the upstream-authored kinds) and drops every
+ * character index that falls inside one. If ElevenLabs already omits tag
+ * characters, no span is found and this is a no-op — verified by the
  * "already tag-free" positive control alongside the "has tag characters"
  * one in the avatar-pipeline-hardening simulator.
  *
@@ -489,7 +492,10 @@ export function alignmentWithoutPauseMarkup(
 
   const joined = characters.join("")
   const dropRanges: Array<[number, number]> = []
-  const re = new RegExp(PAUSE_MARKUP_PATTERN.source, "g")
+  // Union of both control-markup vocabularies — see the header note above for
+  // why alignmentWithoutPauseMarkup covers both while stripNaturalPauseMarkup
+  // stays pause-only.
+  const re = new RegExp(`${PAUSE_MARKUP_PATTERN.source}|${EXPRESSIVE_AUDIO_TAG_PATTERN.source}`, "gi")
   let m: RegExpExecArray | null
   while ((m = re.exec(joined))) dropRanges.push([m.index, m.index + m[0].length])
   if (dropRanges.length === 0) return alignment
@@ -504,6 +510,111 @@ export function alignmentWithoutPauseMarkup(
     keepEnds.push(ends[i])
   }
   return { characters: keepChars, character_start_times_seconds: keepStarts, character_end_times_seconds: keepEnds }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § V3 EXPRESSIVE AUDIO TAGS (lane 73D) — a BOUNDED, CONSERVATIVE set of
+//   performance directions the script writer (app/actions/video/generate-
+//   script.ts) may emit, ONLY on the v3 narration lane, so an avatar/reel
+//   video's delivery can carry a genuine laugh or a dropped-voice aside
+//   instead of reading as flatly narrated — while never letting the literal
+//   tag leak into what a viewer sees.
+//
+// A SEPARATE stripper from stripNaturalPauseMarkup above, deliberately: pause
+// markup is INSERTED downstream, by withNaturalPauses, over a script that
+// never had any to begin with, so stripNaturalPauseMarkup's contract can stay
+// "the exact inverse of withNaturalPauses' insertions" (the invariant
+// lib/video/reel-voiceover.ts checks). An expressive tag is authored
+// UPSTREAM, by the script writer, as part of the script's own content — a
+// script may legitimately carry one before withNaturalPauses ever runs. Two
+// different stages, two different stripping problems; folding them into one
+// pattern would have made stripNaturalPauseMarkup strip content it never
+// inserted and broken that invariant. Both strippers ARE composed at the one
+// place a viewer would actually see raw text (captions/on-screen), which is
+// what "strip them from captions/on-screen text" means in practice — apply
+// BOTH stripNaturalPauseMarkup and stripExpressiveAudioTags to any script
+// text before it reaches a caption fallback or a transcript.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * BOUNDED ON PURPOSE. ElevenLabs' full v3 tag vocabulary
+ * (elevenlabs.io/blog/v3-audiotags) includes tags with no place in a real-
+ * estate agent's spoken delivery (`[gunshot]`, `[explosion]`, `[applause]`,
+ * `[singing]`) — this repo authorizes only the handful that plausibly occur
+ * in an agent talking naturally about a listing or a market update.
+ */
+export const ALLOWED_V3_EXPRESSIVE_TAGS: readonly string[] = ["laughs", "chuckles", "sighs", "whispers"]
+
+/**
+ * CONSERVATIVE ON PURPOSE (owner: keep audio tags conservative). Two tags per
+ * hundred words is roughly one aside per 45-second reel at natural speaking
+ * pace (~150 wpm) — enough to read as a genuine performance beat, not so much
+ * that every other sentence carries a stage direction. `budgetForWordCount`
+ * derives the per-script cap from this constant rather than a second
+ * hardcoded number at the call site.
+ */
+export const MAX_EXPRESSIVE_TAGS_PER_100_WORDS = 2
+
+/** Matches ONLY the authorized set above — narrower than
+ *  `AI_TELL_LEAKED_AUDIO_TAG_PATTERN` (which flags ANY bracket tag as a
+ *  potential leak) on purpose: this pattern is used to COUNT and STRIP tags
+ *  this repo actually authorizes, not to police every conceivable one. */
+const EXPRESSIVE_AUDIO_TAG_PATTERN = new RegExp(`\\[(?:${ALLOWED_V3_EXPRESSIVE_TAGS.join("|")})\\]`, "gi")
+
+/**
+ * PURE. The per-script tag budget for a given word count — `MAX_EXPRESSIVE_
+ * TAGS_PER_100_WORDS` scaled to the script's own length, with a floor of one
+ * tag for any script long enough to plausibly carry a beat (≥20 spoken
+ * words) so a typical 15s avatar reel (~35-45 words) is not budgeted to zero
+ * by the per-100-words scaling alone.
+ */
+export function budgetForWordCount(wordCount: number): number {
+  const scaled = Math.floor((wordCount / 100) * MAX_EXPRESSIVE_TAGS_PER_100_WORDS)
+  return Math.max(wordCount >= 20 ? 1 : 0, scaled)
+}
+
+/**
+ * PURE. Removes every AUTHORIZED expressive tag from `text` — the reader-side
+ * half of "strip them from captions/on-screen text." Unlike
+ * `stripNaturalPauseMarkup`, this has no "exact inverse of an insertion"
+ * invariant to preserve (nothing here inserts these tags), so it is safe to
+ * call on the SCRIPT itself wherever a caption/transcript/preview is built
+ * from it, independent of whether `withNaturalPauses` has run.
+ */
+export function stripExpressiveAudioTags(text: string | null | undefined): string {
+  return (text ?? "").replace(EXPRESSIVE_AUDIO_TAG_PATTERN, " ").replace(/\s+/g, " ").trim()
+}
+
+/**
+ * PURE. THE gate for "ONLY on the v3 model lane" (§ task 2b). `model` is
+ * whatever `elevenLabsModelForLane` resolved for THIS script's narration
+ * lane:
+ *   · model !== ELEVENLABS_NARRATION_MODEL_ID (e.g. the phone lane's Flash
+ *     v2.5) → every authorized tag is STRIPPED, never spoken. Non-v3 models
+ *     read a bracket tag as literal words (this file's own research header,
+ *     hivebook.wiki: "tags pasted into a Multilingual v2 or Flash request are
+ *     read aloud literally as words") — leaving one in would put the literal
+ *     text "laughs" into a phone call.
+ *   · model === ELEVENLABS_NARRATION_MODEL_ID → tags beyond
+ *     `budgetForWordCount`'s cap are stripped (earliest occurrences kept, in
+ *     order); never inserts a tag that was not already there.
+ * Called on the RAW script the writer drafted, before `withNaturalPauses`
+ * (which paces the ALREADY-budgeted script) and before any caption path
+ * consumes it.
+ */
+export function enforceExpressiveAudioTagBudget(script: string | null | undefined, model: string): string {
+  const text = (script ?? "").trim()
+  if (!text) return text
+  if (model !== ELEVENLABS_NARRATION_MODEL_ID) return stripExpressiveAudioTags(text)
+
+  const wordCount = spokenWords(text).length
+  const budget = budgetForWordCount(wordCount)
+
+  let kept = 0
+  return text.replace(EXPRESSIVE_AUDIO_TAG_PATTERN, (tag) => {
+    kept++
+    return kept <= budget ? tag : ""
+  }).replace(/\s+/g, " ").trim()
 }
 
 /**
@@ -636,6 +747,25 @@ const AI_TELL_ROBOTIC_SIGNOFF_PATTERNS: RegExp[] = [
   /\bdon'?t forget to subscribe\b/i,
 ]
 
+/**
+ * LEAKED AUDIO-DIRECTION TAG (lane 73D — ElevenLabs v3 audio tags). A short,
+ * lowercase, punctuation-free bracket span is the shape every ElevenLabs-
+ * documented v3 tag takes (elevenlabs.io/blog/v3-audiotags: `[laughs]`,
+ * `[whispers]`, `[sighs]`, `[clears throat]`, `[short pause]`, `[long
+ * pause]`, …). These are TTS PERFORMANCE directions — text sent to
+ * SYNTHESIS, never text a viewer reads. Deliberately BROADER than
+ * `ALLOWED_V3_EXPRESSIVE_TAGS` below (it also catches a tag this repo never
+ * authorizes, e.g. a model-invented `[gunshot]`) because any bracket tag
+ * reaching rendered text — caption, transcript, or a script preview — is the
+ * same defect regardless of which tag it is. Run against a SCRIPT (pre-TTS),
+ * a legitimately-inserted, budget-compliant tag WILL fire this — expected
+ * and harmless, since scanForAiTells is advisory-only (§5's "advisory
+ * passes" ruling) and the tag is removed by `stripExpressiveAudioTags` /
+ * `stripNaturalPauseMarkup` long before it reaches a caption or transcript;
+ * run against RENDERED caption/transcript text, any hit here is a real leak.
+ */
+const AI_TELL_LEAKED_AUDIO_TAG_PATTERN = /\[[a-z][a-z ]{1,24}\]/i
+
 /** Formal → contraction pairs. Each PATTERN matches the UNCONTRACTED form;
  *  three or more distinct hits in one script is the "reads as stiff" signal —
  *  a single "do not" is normal spoken emphasis, not a tell. */
@@ -760,6 +890,14 @@ export function scanForAiTells(script: string | null | undefined): string[] {
       "close with a specific next step said the way a person actually talks.",
     )
   }
+  const leakedTagMatch = AI_TELL_LEAKED_AUDIO_TAG_PATTERN.exec(text)
+  if (leakedTagMatch) {
+    hits.push(
+      `AI-tell: a leaked audio-direction tag ${leakedTagMatch[0]} — ElevenLabs v3 performance tags ` +
+      '("[laughs]", "[whispers]", "[short pause]", …) are TTS instructions, never on-screen text — ' +
+      "strip them (stripExpressiveAudioTags / stripNaturalPauseMarkup) before this reaches a caption, transcript, or preview.",
+    )
+  }
   const uncontractedCount = UNCONTRACTED_PATTERNS.filter((p) => p.test(text)).length
   if (uncontractedCount >= 3) {
     hits.push(
@@ -829,6 +967,12 @@ export const AI_TELL_POSITIVE_CONTROLS: ReadonlyArray<{ label: string; text: str
   {
     label: "long_sentence",
     text: "This home, which sits on a quiet street near the elementary school and the new coffee shop that just opened last spring, has been completely renovated from top to bottom including the roof, the plumbing, and the electrical system, and it is priced to sell quickly this week.",
+  },
+  {
+    // Lane 73D — a leaked ElevenLabs v3 audio-direction tag reaching text a
+    // viewer would read (a caption, a transcript, a script preview).
+    label: "leaked_audio_tag",
+    text: "The kitchen was just renovated. [laughs] Honestly, it's stunning in person.",
   },
   {
     // wave 67 — MAX_SENTENCE_LENGTH_UNIFORMITY_CV's positive control. Five

@@ -84,6 +84,11 @@ import {
   estimateAvatarRenderCostUsd,
   sentenceLengthCoefficientOfVariation,
   MAX_SENTENCE_LENGTH_UNIFORMITY_CV,
+  ALLOWED_V3_EXPRESSIVE_TAGS,
+  MAX_EXPRESSIVE_TAGS_PER_100_WORDS,
+  budgetForWordCount,
+  stripExpressiveAudioTags,
+  enforceExpressiveAudioTagBudget,
 } from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -742,8 +747,22 @@ function realismSection() {
     /SPOKEN_REALISM_DIRECTIVE\}\$\{violationLine\}/.test(promo))
   check("chapter-video-generator splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
     /\$\{SPOKEN_REALISM_DIRECTIVE\}`/.test(chapter))
+  // Re-anchored lane 73D (CLAUDE.md §2 — never pin an assertion to a
+  // waypoint): the literal adjacency "SPOKEN_REALISM_DIRECTIVE,\n`Write ONLY
+  // the script content" broke the moment a v3 audio-tag instruction was
+  // legitimately inserted between the two. Assert the RULE instead — the
+  // directive rides the array, AND the "no stage directions" instruction
+  // still exists somewhere in the same file (now inside audioTagInstruction,
+  // which also carries the bounded v3 tag allowance).
   check("the video wizard (generate-script.ts) includes SPOKEN_REALISM_DIRECTIVE in its system prompt array",
-    /SPOKEN_REALISM_DIRECTIVE,\s*\n\s*`Write ONLY the script content/.test(wizard))
+    /SPOKEN_REALISM_DIRECTIVE,\s*\n\s*audioTagInstruction,/.test(wizard))
+  check("…and audioTagInstruction still forbids stage directions/speaker labels while bounding v3 tags to the authorized set + budget",
+    /Write ONLY the script content — no stage directions, no \[pause\] markers, no speaker labels\./.test(wizard) &&
+    /ALLOWED_V3_EXPRESSIVE_TAGS/.test(wizard) &&
+    /MAX_EXPRESSIVE_TAGS_PER_100_WORDS/.test(wizard))
+  check("…gated to the v3 narration lane via elevenLabsModelForLane, never assumed",
+    /narrationModel = elevenLabsModelForLane\("avatar_narration"\)/.test(wizard) &&
+    /narrationModel === ELEVENLABS_NARRATION_MODEL_ID/.test(wizard))
   check("ai-copy.ts's generic copy engine carries the directive too, gated to spoken/video channels (§1 — built ahead of a caller rather than skipped)",
     /SPOKEN_COPY_CHANNELS\.has\(req\.channel\)/.test(aiCopy) && /SPOKEN_REALISM_DIRECTIVE/.test(aiCopy))
 
@@ -1067,6 +1086,74 @@ function v3Section() {
     })())
   check("alignmentWithoutPauseMarkup(null) is null, never a throw",
     alignmentWithoutPauseMarkup(null) === null)
+
+  // ── Lane 73D — bounded v3 expressive audio tags, ONLY on the v3 lane ────
+  console.log("\n── §v3 audio tags (lane 73D) — bounded expressive tags, ONLY on the v3 model lane ──")
+  // ≥20 spoken words (budgetForWordCount's documented floor for a 1-tag
+  // budget) — a typical 15s avatar reel per SPOKEN_REALISM_DIRECTIVE's own
+  // ~35-45 word target, not the artificially short fixture that under-shot
+  // the floor and made the budget-KEEPS check below fail for the wrong
+  // reason (0 budget on a 10-word script, not a broken cap).
+  const TAGGED_SCRIPT =
+    "The kitchen was just renovated with quartz counters and brand new stainless appliances throughout. " +
+    "[laughs] Honestly, it's absolutely stunning in person, and the sellers are thrilled with how it turned out."
+  check("stripExpressiveAudioTags removes every AUTHORIZED tag",
+    !stripExpressiveAudioTags(TAGGED_SCRIPT).includes("["))
+  check("stripExpressiveAudioTags reconstructs the surrounding wording",
+    stripExpressiveAudioTags(TAGGED_SCRIPT).replace(/\s+/g, " ") ===
+      "The kitchen was just renovated with quartz counters and brand new stainless appliances throughout. " +
+      "Honestly, it's absolutely stunning in person, and the sellers are thrilled with how it turned out.")
+  check("CONTROL: stripExpressiveAudioTags is a true no-op on tag-free text",
+    stripExpressiveAudioTags("Three days on market, two offers already.") === "Three days on market, two offers already.")
+  check("ALLOWED_V3_EXPRESSIVE_TAGS is a BOUNDED, conservative set (never the full ElevenLabs vocabulary — no [gunshot]/[explosion])",
+    ALLOWED_V3_EXPRESSIVE_TAGS.length > 0 && ALLOWED_V3_EXPRESSIVE_TAGS.length <= 6 &&
+    !ALLOWED_V3_EXPRESSIVE_TAGS.some((t) => /gunshot|explosion|applause|singing/.test(t)))
+
+  check("enforceExpressiveAudioTagBudget on the v3 lane KEEPS a tag within budget",
+    enforceExpressiveAudioTagBudget(TAGGED_SCRIPT, ELEVENLABS_NARRATION_MODEL_ID).includes("[laughs]"))
+  check("enforceExpressiveAudioTagBudget on a NON-v3 lane (phone Flash v2.5) STRIPS every tag — a v2/Flash request speaks a bracket tag literally",
+    !enforceExpressiveAudioTagBudget(TAGGED_SCRIPT, ELEVENLABS_PHONE_MODEL_ID).includes("["))
+  check("CONTROL: enforceExpressiveAudioTagBudget never INSERTS a tag that was not already there",
+    enforceExpressiveAudioTagBudget("Three days on market, two offers already.", ELEVENLABS_NARRATION_MODEL_ID) === "Three days on market, two offers already.")
+
+  // Over-budget script — three tags on a ~30-word script (budget = 1, floored
+  // for a short script per budgetForWordCount's documented floor).
+  const OVER_BUDGET_SCRIPT =
+    "[laughs] Three days on market and two offers already. [whispers] The sellers are thrilled. " +
+    "[sighs] It's been a long process but it's finally paying off for them."
+  const budgeted = enforceExpressiveAudioTagBudget(OVER_BUDGET_SCRIPT, ELEVENLABS_NARRATION_MODEL_ID)
+  const budgetedTagCount = (budgeted.match(/\[(?:laughs|chuckles|sighs|whispers)\]/g) ?? []).length
+  check(`enforceExpressiveAudioTagBudget CAPS an over-budget script to budgetForWordCount's limit (kept ${budgetedTagCount})`,
+    budgetedTagCount === budgetForWordCount(OVER_BUDGET_SCRIPT.split(/\s+/).filter(Boolean).length) && budgetedTagCount < 3)
+  check("…keeping the EARLIEST tag(s), never a later one out of order",
+    budgeted.startsWith("[laughs]"))
+  check(`MAX_EXPRESSIVE_TAGS_PER_100_WORDS is conservative (owner: keep audio tags conservative) — ${MAX_EXPRESSIVE_TAGS_PER_100_WORDS} per 100 words`,
+    MAX_EXPRESSIVE_TAGS_PER_100_WORDS <= 2)
+
+  check("POSITIVE CONTROL: scanForAiTells flags a leaked audio-direction tag reaching rendered text",
+    scanForAiTells(TAGGED_SCRIPT).some((h) => h.includes("leaked audio-direction tag")))
+  check("…and the SAME leak is gone once stripExpressiveAudioTags has run (the strip is what makes the leak fixable)",
+    scanForAiTells(stripExpressiveAudioTags(TAGGED_SCRIPT)).length === 0)
+
+  // alignmentWithoutPauseMarkup must ALSO strip an expressive tag's
+  // characters — an alignment fixture built the same way
+  // PAUSE_MARKUP_ALIGNMENT_FIXTURE is (realism-profile.ts), just with an
+  // authorized expressive tag instead of a pause tag.
+  const EXPRESSIVE_TAG_ALIGNMENT_FIXTURE_TEXT = "Nice. [whispers] Right there."
+  const expressiveChars = EXPRESSIVE_TAG_ALIGNMENT_FIXTURE_TEXT.split("")
+  const EXPRESSIVE_TAG_ALIGNMENT_FIXTURE = {
+    characters: expressiveChars,
+    character_start_times_seconds: expressiveChars.map((_, i) => i * 0.05),
+    character_end_times_seconds: expressiveChars.map((_, i) => (i + 1) * 0.05),
+  }
+  check("POSITIVE CONTROL: alignmentWithoutPauseMarkup ALSO strips an authorized expressive tag's characters (not pause-tags only)",
+    !alignmentWithoutPauseMarkup(EXPRESSIVE_TAG_ALIGNMENT_FIXTURE)!.characters.join("").includes("["))
+  check("…leaving the surrounding wording intact",
+    alignmentWithoutPauseMarkup(EXPRESSIVE_TAG_ALIGNMENT_FIXTURE)!.characters.join("") === "Nice.  Right there.")
+
+  const genScript = readStripped("app/actions/video/generate-script.ts")
+  check("generate-script.ts (the script writer) runs its draft through enforceExpressiveAudioTagBudget before saving/returning it",
+    /enforceExpressiveAudioTagBudget/.test(genScript))
 
   check("reel-voiceover.ts feeds withNaturalPauses' OUTPUT (pacedScript) to synthesis, never the raw script",
     /const pacedScript = withNaturalPauses\(script, model\)/.test(reelVoiceover) &&

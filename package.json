@@ -924,6 +924,7 @@
     "@radix-ui/react-tooltip": "1.2.8",
     "@remotion/bundler": "4.0.521",
     "@remotion/cli": "4.0.521",
+    "@remotion/google-fonts": "^4.0.521",
     "@remotion/media": "4.0.521",
     "@remotion/renderer": "4.0.521",
     "@sendgrid/mail": "^8.1.6",

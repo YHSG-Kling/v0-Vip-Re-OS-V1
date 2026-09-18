@@ -36,6 +36,7 @@ import {
   sourceRealtySiteChatter,
   sourceNewConstructionIntent,
 } from "@/lib/lead-pipeline/social-sourcer"
+import { sourcePermitPrelistingIntent, routePermitPrelistingHits } from "@/lib/lead-pipeline/permit-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
@@ -581,7 +582,8 @@ export async function GET(request: Request) {
         enabledSources.has("facebook_recommend_realtor") ||
         enabledSources.has("agent_seeking_phrase_intent") ||
         enabledSources.has("realty_chatter") ||
-        enabledSources.has("new_construction_intent")
+        enabledSources.has("new_construction_intent") ||
+        enabledSources.has("permit_prelisting_intent")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -814,6 +816,29 @@ export async function GET(request: Request) {
             const { records, cost } = await sourceNewConstructionIntent(socialMarket)
             sourceCostUsd += cost
             await insertSocial(records, "new_construction_intent", "social_intent", cost)
+          }
+
+          // ── Permit / pre-listing intent (Exa) — lane 73D, owner ruling wave 73 ──────
+          // "exa is good at looking for leads like permit." Territory-centric Exa search
+          // for recent permits, probate/estate notices, "coming soon" chatter and
+          // contractor-bid posts (lib/lead-pipeline/permit-sourcer.ts). A hit whose
+          // address matches a lead/contact THIS BROKERAGE already owns is routed to the
+          // existing permit-signals ATTACH path (motivated_seller_signals) instead of
+          // minting a duplicate raw lead — routePermitPrelistingHits does that split
+          // BEFORE insertSocial ever sees the matched records.
+          if (enabledSources.has("permit_prelisting_intent")) {
+            const { records, cost } = await sourcePermitPrelistingIntent(socialMarket)
+            sourceCostUsd += cost
+            const routed = await routePermitPrelistingHits({
+              supabase, brokerageId: market.brokerage_id, records,
+            })
+            if (routed.errors.length > 0) {
+              results.errors.push(...routed.errors.map((e) => `Permit attach routing error for ${market.name}: ${e}`))
+            }
+            if (routed.attached > 0 || routed.alreadyRecorded > 0) {
+              console.log(`[Lead Scraping Cron] Permit/pre-listing ${market.name}: attached=${routed.attached} (lead=${routed.attachedByEntity.lead} contact=${routed.attachedByEntity.contact}) alreadyRecorded=${routed.alreadyRecorded} minting=${routed.toMint.length}`)
+            }
+            await insertSocial(routed.toMint, "permit_prelisting_intent", "search_signal", cost)
           }
 
           // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────

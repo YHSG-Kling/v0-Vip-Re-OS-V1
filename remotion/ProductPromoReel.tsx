@@ -14,9 +14,23 @@
  */
 import React from "react"
 import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion"
+import { loadFont } from "@remotion/google-fonts/Inter"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+
+// REPLACES the tombstone that used to sit where `base.fontFamily` is built
+// below (lane 73D, wave 73). The tombstone made the declaration truthful
+// (system-ui, matching every other composition) after the prior "Inter" name
+// was a lie — nothing in the bundle loaded it. This is the real fix the
+// tombstone pointed at: `@remotion/google-fonts` (installed at 4.0.521,
+// pinned to the same 4.0.x line as `remotion` itself — `npm view
+// @remotion/google-fonts version` / `npm view remotion version` both resolve
+// 4.0.521 exactly) + `loadFont()` (see .claude/skills/remotion-best-practices
+// → remotion-markup/google-fonts.md) blocks rendering until Inter is ready,
+// so `fontFamily` below is the REAL Google Font, not a name the renderer
+// silently falls through past.
+const { fontFamily: loadedInterFamily } = loadFont("normal", { weights: ["400", "700", "800"], subsets: ["latin"] })
 
 export interface ProductPromoReelProps {
   hook: string
@@ -127,21 +141,17 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
   const frame = useCurrentFrame()
   const { width, height } = useVideoConfig()
   const pad = Math.round(width * 0.09)
-  // FONT: the stack every other composition in remotion/ uses (§6, one
-  // vocabulary). This used to lead with "Inter", which NOTHING in this repo
-  // loads — no @remotion/google-fonts, no @font-face, no <link> in the bundle —
-  // so the renderer silently fell through to the next entry and this reel was
-  // the one composition rendering in a different typeface from the other 32
-  // while the code claimed otherwise. The canonical fix is
-  // `loadFont()` from @remotion/google-fonts/Inter (see the skill at
-  // .claude/skills/remotion-best-practices/remotion-markup/google-fonts.md);
-  // that package is NOT installed and adding a dependency is not this change's
-  // call, so the declaration is made TRUTHFUL instead of left lying. To adopt
-  // Inter for real, install @remotion/google-fonts and set the stack from
-  // loadFont().fontFamily here — do not re-add the bare name.
+  // FONT: `loadedInterFamily` (module scope, above) is the real, loaded Inter
+  // family name @remotion/google-fonts hands back — never the bare string
+  // "Inter" again, which is the exact lie this line used to tell. The
+  // system-ui fallback chain stays appended so this composition keeps the
+  // SAME fallback vocabulary the other 37 compositions in remotion/ use
+  // (§6) for the (offline-render / font-block-timeout) case where the
+  // Google Font hasn't resolved yet — it is a fallback tail now, not the
+  // primary declaration.
   const base: React.CSSProperties = {
     backgroundColor: primary, color: "white",
-    fontFamily: "system-ui, -apple-system, sans-serif", padding: pad, justifyContent: "center",
+    fontFamily: `${loadedInterFamily}, system-ui, -apple-system, sans-serif`, padding: pad, justifyContent: "center",
   }
   const beats = (proofs ?? []).slice(0, 3)
   const grid = Math.round(width / 14)

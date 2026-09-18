@@ -258,7 +258,20 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   // by a D-ID avatar (buildTypeSystemContext's own system lines say so:
   // "avatar video", "digital twin"), so SPOKEN_REALISM_DIRECTIVE applies
   // unconditionally here, not per-videoType.
-  const { SPOKEN_REALISM_DIRECTIVE } = await import("@/lib/video/realism-profile")
+  const {
+    SPOKEN_REALISM_DIRECTIVE, elevenLabsModelForLane, ELEVENLABS_NARRATION_MODEL_ID,
+    ALLOWED_V3_EXPRESSIVE_TAGS, MAX_EXPRESSIVE_TAGS_PER_100_WORDS,
+  } = await import("@/lib/video/realism-profile")
+  // LANE 73D — every script this wizard writes is spoken by an avatar/reel
+  // narration, which elevenLabsModelForLane always resolves to the v3
+  // narration model (never the phone lane's Flash v2.5 — this file never
+  // produces a phone-lane script). Resolved explicitly, not assumed, so the
+  // instruction below and enforceExpressiveAudioTagBudget after generation
+  // (a few lines down) agree on the SAME model the moment that ever changes.
+  const narrationModel = elevenLabsModelForLane("avatar_narration")
+  const audioTagInstruction = narrationModel === ELEVENLABS_NARRATION_MODEL_ID
+    ? `You may use AT MOST ${MAX_EXPRESSIVE_TAGS_PER_100_WORDS} ElevenLabs v3 audio tag(s) per 100 words, ONLY from this exact set: ${ALLOWED_V3_EXPRESSIVE_TAGS.map((t) => `[${t}]`).join(", ")} — use them sparingly, only where a real person would actually laugh, sigh, or drop their voice. Do NOT invent any other tag. Beyond this, write ONLY the script content — no stage directions, no [pause] markers, no speaker labels.`
+    : `Write ONLY the script content — no stage directions, no [pause] markers, no speaker labels.`
   const systemPrompt = [
     typeSystemContext[params.videoType] ?? typeSystemContext.custom,
     TONE_INSTRUCTIONS[params.tone] ?? TONE_INSTRUCTIONS.professional,
@@ -269,7 +282,7 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
     ...complianceBlocks,
     SCRIPT_QUALITY_CHARTER,
     SPOKEN_REALISM_DIRECTIVE,
-    `Write ONLY the script content — no stage directions, no [pause] markers, no speaker labels.`,
+    audioTagInstruction,
     `Target approximately ${wordTarget} words (for a ${duration}-second video at a natural speaking pace).`,
     `Do NOT include any greeting before the script or explanation after it. Output the script only.`,
   ]
@@ -308,6 +321,20 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   } catch (err: any) {
     return { success: false, error: `AI generation failed: ${err.message}` }
   }
+
+  // LANE 73D — DEFENSIVE ENFORCEMENT, not merely an instruction. A model can
+  // ignore audioTagInstruction above (over-tag, or invent a tag outside
+  // ALLOWED_V3_EXPRESSIVE_TAGS — enforceExpressiveAudioTagBudget's own regex
+  // only ever recognizes the authorized set, so an invented tag is left as
+  // ordinary text rather than budgeted, and is caught instead by
+  // scanForAiTells' leaked-audio-tag check a few lines below). On
+  // `narrationModel`, this caps authorized tags to the budget (earliest
+  // kept); on any other model it strips every authorized tag outright — this
+  // file never resolves a non-v3 lane today, but the call stays explicit
+  // rather than assuming so the day it does, this does not silently start
+  // shipping a literal "[laughs]" into a Flash/Turbo request.
+  const { enforceExpressiveAudioTagBudget } = await import("@/lib/video/realism-profile")
+  script = enforceExpressiveAudioTagBudget(script, narrationModel)
 
   // ── Post-generation compliance check: advisory (all gates, warnings only) ────
   // AI-generated content has already followed brand voice + ThemFirst + Fair Housing
