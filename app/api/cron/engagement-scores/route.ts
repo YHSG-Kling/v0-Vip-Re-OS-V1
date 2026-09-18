@@ -8,7 +8,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export async function GET(req: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
@@ -57,12 +57,18 @@ export async function GET(req: NextRequest) {
 
         const score = Math.min(100, (count ?? 0) * 10)
 
-        await bestEffort(
+        await sentinelWrite(
+          supabase,
           supabase
             .from("contacts")
             .update({ engagement_score: score, updated_at: new Date().toISOString() })
             .eq("id", contactId),
-          "derived engagement score recomputed from scratch on every cron pass; the activities count it is derived from is the record of fact, so one contact's refused stamp must not abort the remaining 99 in the batch",
+          {
+            table: "contacts",
+            flow: "engagement_score_recompute_cron",
+            reason:
+              "derived engagement score recomputed from scratch on every cron pass; the activities count it is derived from is the record of fact, so one contact's refused stamp must not abort the remaining 99 in the batch",
+          },
         )
 
         processed++

@@ -20,7 +20,7 @@
  * channel resolver, lead-eligibility) immediately see the result.
  */
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { assertCanActOnContact } from "@/lib/auth/contact-access"
 import { revalidatePath } from "next/cache"
 
@@ -45,9 +45,16 @@ export async function runDealInvestigatorAction(params: {
       const profile = { ...((existing?.enrichment_profile as Record<string, unknown>) ?? {}),
                         last_investigation_summary: r.summary,
                         last_investigation_at:      new Date().toISOString() }
-      await bestEffort(
+      await sentinelWrite(
+        svc,
         svc.from("contacts").update({ enrichment_profile: profile }).eq("id", params.contactId),
-        "caches the investigation summary onto enrichment_profile; the summary itself is returned to the caller and re-running the (paid) investigation regenerates it — a lost cache costs a re-run, not a fact",
+        {
+          table: "contacts",
+          flow: "deal_investigator_summary_cache",
+          brokerageId: gate.contact.brokerage_id,
+          reason:
+            "caches the investigation summary onto enrichment_profile; the summary itself is returned to the caller and re-running the (paid) investigation regenerates it — a lost cache costs a re-run, not a fact",
+        },
       )
     }
     revalidatePath(`/dashboard/contacts/${params.contactId}`)
@@ -67,9 +74,16 @@ export async function verifyContactEmailAction(params: {
     const mod = await import("@/lib/external/email-verifier")
     const r = params.deep ? await mod.verifyEmailDeep(gate.contact.email) : await mod.checkEmailMx(gate.contact.email)
     const svc = createServiceClient()
-    await bestEffort(
+    await sentinelWrite(
+      svc,
       svc.from("contacts").update({ email_verified: r.verified }).eq("id", params.contactId),
-      "caches the deliverability verdict; the verdict is returned to the caller and re-verifying regenerates it. NOTE this is a DELIVERABILITY flag, not a consent flag — it never widens who may be contacted",
+      {
+        table: "contacts",
+        flow: "contact_email_verification_cache",
+        brokerageId: gate.contact.brokerage_id,
+        reason:
+          "caches the deliverability verdict; the verdict is returned to the caller and re-verifying regenerates it. NOTE this is a DELIVERABILITY flag, not a consent flag — it never widens who may be contacted",
+      },
     )
     revalidatePath(`/dashboard/contacts/${params.contactId}`)
     return { success: true, verified: r.verified, reason: r.reason, tier: r.tier, cost: r.cost }

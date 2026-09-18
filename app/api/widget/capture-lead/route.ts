@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { KernelEvent } from '@/lib/kernel/events'
 import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-consent'
 
@@ -124,7 +124,8 @@ export async function POST(req: NextRequest) {
     // ── Emit lifecycle event (merged from /api/widget/capture) ────────────
     // The kernel's CONTACT_CAPTURED consumers (notification engine, timeline)
     // saw captures from every other intake but not from the wired widget door.
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase.from('lifecycle_events').insert({
         brokerage_id: session.brokerage_id,
         entity_type: 'contact',
@@ -132,12 +133,19 @@ export async function POST(req: NextRequest) {
         event_type: KernelEvent.CONTACT_CAPTURED,
         metadata: { source: 'website_widget', action },
       }),
-      'the contact and its session link are already written; a lifecycle row must not turn a captured lead into a 500 the visitor sees',
+      {
+        table: 'lifecycle_events',
+        flow: 'widget_capture_lifecycle_event',
+        brokerageId: session.brokerage_id,
+        reason:
+          'the contact and its session link are already written; a lifecycle row must not turn a captured lead into a 500 the visitor sees',
+      },
     )
 
     // ── Log activity note if provided ─────────────────────────────────────
     if (notes) {
-      await bestEffort(
+      await sentinelWrite(
+        supabase,
         supabase.from('activities').insert({
           activity_type: 'widget_capture',
           contact_id: contactId,
@@ -145,7 +153,13 @@ export async function POST(req: NextRequest) {
           title: 'Widget lead capture',
           description: notes,
         }),
-        "this is a PUBLIC widget endpoint and the contact plus the chat_sessions link are already written above; a note row must not turn a captured lead into a 500 the visitor sees",
+        {
+          table: 'activities',
+          flow: 'widget_capture_note',
+          brokerageId: session.brokerage_id,
+          reason:
+            "this is a PUBLIC widget endpoint and the contact plus the chat_sessions link are already written above; a note row must not turn a captured lead into a 500 the visitor sees",
+        },
       )
     }
 

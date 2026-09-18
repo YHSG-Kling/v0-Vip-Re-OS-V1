@@ -21,7 +21,7 @@ import type { FirstTouchConsentInput } from "@/lib/ai-isa/speed-to-lead-policy"
 import { initiateAIISAEngagement } from "@/app/actions/ai-isa/initiate-engagement"
 import { engageContact }           from "@/app/actions/ai-isa/engage-contact"
 import { excludeConvertedLeads }   from "@/lib/contact-promotion/conversion-finality"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -210,7 +210,8 @@ export async function runSpeedToLead(
       })
 
       if (result?.success !== false) {
-        await bestEffort(
+        await sentinelWrite(
+          supabase,
           supabase
             .from("contacts")
             .update({
@@ -220,7 +221,13 @@ export async function runSpeedToLead(
             })
             .eq("id", contact.id)
             .is("first_touched_at", null), // idempotency guard
-          "first-touch ledger claim, written AFTER the engagement already went out; the `.is(null)` guard means a lost claim only risks a second stand-down race with the drip lane, never an extra unconsented touch (dispatch re-gates every send)",
+          {
+            table: "contacts",
+            flow: "speed_to_lead_first_touch_claim",
+            brokerageId: contact.brokerage_id,
+            reason:
+              "first-touch ledger claim, written AFTER the engagement already went out; the `.is(null)` guard means a lost claim only risks a second stand-down race with the drip lane, never an extra unconsented touch (dispatch re-gates every send)",
+          },
         )
 
         contactsTouched++

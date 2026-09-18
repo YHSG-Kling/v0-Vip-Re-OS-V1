@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { getLeadScore } from "@/app/actions/ai-auto-response"
 
 export interface ContactIntelligence {
@@ -183,7 +183,8 @@ export async function setContactAIPilot(params: {
   if (!updated?.length) return { success: false, error: "Contact not found in your brokerage" }
 
   // Activity log for audit trail
-  await bestEffort(
+  await sentinelWrite(
+    supabase,
     supabase.from("activities").insert({
       brokerage_id: brokerageId,
       agent_id: agentId,
@@ -192,7 +193,13 @@ export async function setContactAIPilot(params: {
       title: `AI Pilot set to ${params.level}`,
       metadata: { level: params.level, enabled },
     }),
-    "the autopilot level is already set on contacts above and that write's error IS checked and returned; this row only narrates the change on the timeline and must not turn a setting that took effect into an error the agent sees",
+    {
+      table: "activities",
+      flow: "contact_ai_pilot_activity_log",
+      brokerageId,
+      reason:
+        "the autopilot level is already set on contacts above and that write's error IS checked and returned; this row only narrates the change on the timeline and must not turn a setting that took effect into an error the agent sees",
+    },
   )
 
   return { success: true, level: params.level }

@@ -19,7 +19,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { bestEffort } from '@/lib/db/best-effort'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { collectError } from '@/lib/errors/collect-error'
 import {
@@ -539,12 +539,19 @@ async function dispatchContactChannel(
     })
 
     // Update contact last_contacted_at
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase
         .from('contacts')
         .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq('id', contact.id),
-      'recency stamp after the ISA email already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is (the next sweep re-engages), never less consented',
+      {
+        table: 'contacts',
+        flow: 'ai_isa_email_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ISA email already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is (the next sweep re-engages), never less consented',
+      },
     )
 
     // Trigger direct mail if eligible.
@@ -665,12 +672,19 @@ async function dispatchContactChannel(
       summary: `AI ISA SMS (trigger: ${reason})`,
     })
 
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase
         .from('contacts')
         .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq('id', contact.id),
-      'recency stamp after the ISA SMS already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is, never less consented',
+      {
+        table: 'contacts',
+        flow: 'ai_isa_sms_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ISA SMS already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is, never less consented',
+      },
     )
 
     await emitLifecycleEvent({
@@ -812,9 +826,16 @@ async function dispatchContactChannel(
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'phone',
       activity_type: 'call', outcome: 'initiated', summary: `AI ISA call (trigger: ${reason})`,
     }).then(() => {}, () => {})
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),
-      'recency stamp after the ISA call was already placed with Twilio — the call SID is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+      {
+        table: 'contacts',
+        flow: 'ai_isa_call_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ISA call was already placed with Twilio — the call SID is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+      },
     )
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_CALL_INITIATED', entityType: 'contact', entityId: contact.id,
@@ -903,9 +924,16 @@ async function tryVoiceDrop(
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'voicedrop',
       activity_type: 'voicedrop', outcome: 'sent', summary: `AI ISA voice drop (trigger: ${reason})`,
     }).then(() => {}, () => {})
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),
-      'recency stamp after the ringless voicemail was already dropped — the drop is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+      {
+        table: 'contacts',
+        flow: 'ai_isa_voicedrop_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ringless voicemail was already dropped — the drop is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+      },
     )
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_VOICEDROP_SENT', entityType: 'contact', entityId: contact.id,
