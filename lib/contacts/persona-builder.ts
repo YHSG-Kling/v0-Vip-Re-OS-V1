@@ -28,6 +28,11 @@ export interface PersonaFacts {
   householdIncome?: string | null
   homeOwnerStatus?: string | null
   homeValue?: number | string | null
+  // m640: PeopleData's estimated net worth range / credit score range — financial-
+  // capacity signals for investor-intent and financing-readiness reads (buying
+  // triggers / pain points below), not the agent-tracked credit-pipeline band.
+  netWorth?: string | null
+  creditScoreRange?: string | null
   occupation?: string | null
   industry?: string | null
   education?: string | null
@@ -36,7 +41,7 @@ export interface PersonaFacts {
 }
 
 /** Deterministic persona name from the strongest real signals. */
-export function derivePersonaName(f: PersonaFacts): string {
+function derivePersonaName(f: PersonaFacts): string {
   const lifecycle =
     f.homeOwnerStatus?.toLowerCase().includes("own") ? "Homeowner"
     : f.homeOwnerStatus?.toLowerCase().includes("rent") ? "First-Time Buyer"
@@ -48,33 +53,64 @@ export function derivePersonaName(f: PersonaFacts): string {
   return `${family} ${lifecycle}`
 }
 
-export function derivePersonaType(f: PersonaFacts): string {
+function derivePersonaType(f: PersonaFacts): string {
   const t = (f.contactType ?? "").toLowerCase()
   if (["seller", "investor", "buyer"].includes(t)) return t
   if (t === "both") return "buyer_seller"
   return f.homeOwnerStatus?.toLowerCase().includes("own") ? "potential_seller" : "buyer"
 }
 
-export function deriveBuyingTriggers(f: PersonaFacts): string[] {
+// PeopleData's ranges are free-text ("$500K-$1M", "$1M+", "650-700", "<600") — this
+// pulls the first number out (in thousands for net worth, so "$1M" -> 1000) rather
+// than assuming one exact format, since the provider is not contractually bound to one.
+function firstNumber(range: string | null | undefined): number | null {
+  if (!range) return null
+  const m = range.match(/([\d,.]+)\s*(K|M)?/i)
+  if (!m) return null
+  const n = Number(m[1].replace(/,/g, ""))
+  if (!Number.isFinite(n)) return null
+  const unit = m[2]?.toUpperCase()
+  return unit === "M" ? n * 1000 : n
+}
+
+/** True when the range's low end reads as $500K+ net worth (investor/cash-buyer capacity). */
+function isHighNetWorthRange(range: string | null | undefined): boolean {
+  const n = firstNumber(range)
+  return n !== null && n >= 500
+}
+
+/** True when the range's low end reads under 650 (subprime/near-prime — financing risk). */
+function isSubprimeCreditRange(range: string | null | undefined): boolean {
+  const n = firstNumber(range)
+  return n !== null && n > 0 && n < 650
+}
+
+function deriveBuyingTriggers(f: PersonaFacts): string[] {
   const triggers: string[] = []
   for (const ev of f.lifeEvents ?? []) triggers.push(`life_event:${String(ev).toLowerCase().replace(/\s+/g, "_")}`)
   if ((f.childrenCount ?? 0) > 0) triggers.push("growing_household_space_needs")
   if (f.homeOwnerStatus?.toLowerCase().includes("rent")) triggers.push("rent_to_own_equity_motivation")
   if (f.homeOwnerStatus?.toLowerCase().includes("own")) triggers.push("equity_unlock_or_upsize")
+  // m640: a $500K+ estimated net worth is a cash-buyer / investor-capacity signal —
+  // feeds the off-market/investor-box matching the wave-67 ruling calls for.
+  if (isHighNetWorthRange(f.netWorth)) triggers.push("investment_capacity_signal")
   return triggers
 }
 
-export function derivePainPoints(f: PersonaFacts): string[] {
+function derivePainPoints(f: PersonaFacts): string[] {
   const pains: string[] = []
   if (f.homeOwnerStatus?.toLowerCase().includes("rent")) pains.push("down_payment_uncertainty", "qualification_anxiety")
   if (f.homeOwnerStatus?.toLowerCase().includes("own")) pains.push("sell_before_buy_timing", "current_rate_lock_in")
   if ((f.childrenCount ?? 0) > 0) pains.push("school_district_constraints")
+  // m640: a sub-650 estimated credit range is a genuine financing-readiness concern —
+  // distinct from the agent-tracked credit_score_band pipeline, additive here.
+  if (isSubprimeCreditRange(f.creditScoreRange)) pains.push("credit_qualification_risk")
   if (pains.length === 0) pains.push("market_timing_uncertainty")
   return pains
 }
 
 /** Deterministic summary — the honest floor the AI paragraph improves on. */
-export function composeFallbackSummary(f: PersonaFacts): string {
+function composeFallbackSummary(f: PersonaFacts): string {
   const bits: string[] = []
   if (f.ageRange) bits.push(`${f.ageRange}`)
   if (f.maritalStatus) bits.push(f.maritalStatus)

@@ -15,7 +15,11 @@
  * (brokerage attribution + license + EHO + document disclaimer).
  *
  * No DB and no network in here — callers assemble data, then host the bytes
- * via hostRenderedMedia (Supabase storage first — we host the delivery URL).
+ * via hostRenderedMedia into lib/storage/document-buckets.ts
+ * #GENERATED_DOCUMENT_BUCKET, a DOCUMENT-class bucket, so the delivery URL is
+ * SIGNED and expiring. What this engine composes is a document — a client's
+ * valuation, a seller's proceeds, a brokerage's terms — and a permanent
+ * unauthenticated URL is never correct for one.
  */
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb, type RGB } from "pdf-lib"
 

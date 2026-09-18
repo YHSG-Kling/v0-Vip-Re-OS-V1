@@ -33,6 +33,11 @@ export function validateHomeQuestion(raw: string | null | undefined): QuestionVa
   return { ok: true, clean: q }
 }
 
+// NOT merged into lib/format/money.ts's `usdOrNull` (§1/§6, 2026-09-08) despite
+// being its byte-equivalent source — this file's header contract is "Pure,
+// import-free helpers" so scripts/home-assistant-simulator.ts can exercise it
+// with zero module resolution. `usdOrNull` there is documented as this
+// function's canonical text; keep the two in sync by hand if either changes.
 const usd = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n)
     ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)

@@ -16,9 +16,16 @@ import { notifyPlatformStaff } from "@/lib/notifications/platform-staff"
 export type SubscriptionState =
   | "trialing" | "trial_expiring" | "active" | "renewal_due" | "past_due" | "cancelled" | "no_subscription"
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: RENEWAL_WARN_DAYS, TRIAL_WARN_DAYS.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Days-out thresholds that flip a trial/renewal into the attention queue. */
-export const TRIAL_WARN_DAYS = 7
-export const RENEWAL_WARN_DAYS = 7
+const TRIAL_WARN_DAYS = 7
+const RENEWAL_WARN_DAYS = 7
 
 export interface ClassifyInput {
   /** subscriptions.status (active/trialing/past_due/cancelled/…) — null when there is no subscription row. */
@@ -93,6 +100,22 @@ export interface SubscriptionOversightRow {
   daysToRenewal: number | null
   attention: boolean
   reason: string
+  /**
+   * MERGED IN (orphan doctrine §1.1, BURN-C 2026-09-04) from the duplicate
+   * app/actions/billing.ts:getDelinquentAccounts, now deleted.
+   *
+   * This row already covered that action's whole past-due set and then some —
+   * it detects past_due from subscriptions.status AND from the latest unpaid
+   * invoice, where the duplicate filtered on `status = 'past_due'` alone. The
+   * single thing the duplicate carried that this row did not was the brokerage
+   * EMAIL, and on a dunning queue that is not a decoration: it is who you
+   * contact about the missed payment. Without it the survivor could tell an
+   * operator a tenant was past due and not who to reach, which is why the
+   * duplicate could not simply be deleted first.
+   *
+   * Null when the brokerage row has no email on file.
+   */
+  email: string | null
 }
 
 export interface SubscriptionOversight {
@@ -130,7 +153,7 @@ type Svc = ReturnType<typeof createServiceClient>
 export async function loadSubscriptionOversight(client?: Svc, now: Date = new Date()): Promise<SubscriptionOversight> {
   const svc = client ?? createServiceClient()
   const [brokeragesR, subsR, tiersR, invoicesR] = await Promise.all([
-    svc.from("brokerages").select("id, name, plan_tier, trial_ends_at, status").is("archived_at", null).limit(2000),
+    svc.from("brokerages").select("id, name, email, plan_tier, trial_ends_at, status").is("archived_at", null).limit(2000),
     svc.from("subscriptions").select("brokerage_id, tier_id, status, trial_end, current_period_end, cancel_at, cancelled_at").limit(2000),
     svc.from("subscription_tiers").select("id, display_name, monthly_price_cents").limit(200),
     svc.from("billing_invoices").select("brokerage_id, status, due_date, invoice_date").order("invoice_date", { ascending: false }).limit(5000),
@@ -164,6 +187,9 @@ export async function loadSubscriptionOversight(client?: Svc, now: Date = new Da
       tier: tier?.display ?? (b.plan_tier ?? "—"),
       state: c.state, mrrCents: tier?.priceCents ?? 0,
       daysToTrialEnd: c.daysToTrialEnd, daysToRenewal: c.daysToRenewal, attention: c.attention, reason: c.reason,
+      // The dunning contact, merged from the deleted getDelinquentAccounts. A
+      // past-due row that cannot say who to email is only half an alert.
+      email: (b.email ?? null) || null,
     })
   }
 

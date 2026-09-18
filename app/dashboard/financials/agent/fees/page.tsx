@@ -18,8 +18,10 @@ const STATUS_COLOR: Record<string, string> = {
   disputed: "bg-orange-100 text-orange-800",
 }
 
-function fmt(n: number) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n)
+// Each charge carries its own currency (agent_fee_charges.currency, stamped from
+// the fee type). Hardcoding USD here was reading a number and ignoring its unit.
+function fmt(n: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n)
 }
 
 export default async function AgentFeesPage() {
@@ -31,6 +33,10 @@ export default async function AgentFeesPage() {
 
   const open = charges.filter((c) => c.status === "open" || c.status === "overdue")
   const paid = charges.filter((c) => c.status === "paid")
+  // Waived charges were filtered out entirely, so a fee the broker forgave
+  // simply vanished from the agent's ledger — along with the reason the broker
+  // wrote into agent_fee_charges.notes for the agent to see.
+  const waived = charges.filter((c) => c.status === "waived")
   const totalOwed = open.reduce((s, c) => s + c.amount, 0)
   const totalPaid = paid.reduce((s, c) => s + c.amount, 0)
 
@@ -81,7 +87,7 @@ export default async function AgentFeesPage() {
                       {c.dueDate && ` · due ${new Date(c.dueDate).toLocaleDateString()}`}
                     </p>
                   </div>
-                  <span className="font-semibold">{fmt(c.amount)}</span>
+                  <span className="font-semibold">{fmt(c.amount, c.currency)}</span>
                   <Badge className={`text-xs capitalize ${STATUS_COLOR[c.status]}`}>{c.status}</Badge>
                 </div>
               ))}
@@ -104,7 +110,30 @@ export default async function AgentFeesPage() {
                       {c.paymentMethod && ` · ${c.paymentMethod}`}
                     </p>
                   </div>
-                  <span className="font-semibold">{fmt(c.amount)}</span>
+                  <span className="font-semibold">{fmt(c.amount, c.currency)}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {waived.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-sm">Waived Charges</CardTitle></CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y">
+              {waived.map((c) => (
+                <div key={c.id} className="px-4 py-3 flex items-center justify-between gap-3 text-sm">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium">{c.feeTypeName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Period: {new Date(c.periodStart).toLocaleDateString()}
+                      {c.notes && ` · ${c.notes}`}
+                    </p>
+                  </div>
+                  <span className="font-semibold line-through text-muted-foreground">{fmt(c.amount, c.currency)}</span>
+                  <Badge className={`text-xs capitalize ${STATUS_COLOR.waived}`}>waived</Badge>
                 </div>
               ))}
             </div>

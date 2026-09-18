@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const TABLE_CHECKS = [
   {
@@ -33,7 +34,7 @@ const TABLE_CHECKS = [
 export async function GET() {
   // Role gate — broker/admin/superadmin only
   const context = await getAgentContext()
-  if (!context?.brokerageId || !["admin", "broker", "superadmin"].includes(context.userType)) {
+  if (!context?.brokerageId || !isAdminOrBroker({ user_type: context.userType })) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 

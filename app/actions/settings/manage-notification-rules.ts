@@ -1,6 +1,11 @@
 'use server'
 
-import { createClient } from "@/lib/supabase/server"
+// ★ ACT-AS WRITE SEAM ★ — the kernel is handed the EFFECTIVE user id (the
+// impersonated seat under an active FULL grant, whose users row carries the
+// real tenant), not the raw staff auth id (NULL brokerage → refused). The
+// kernel's own admin gate (requireBrokerageAdmin over the service client) then
+// evaluates the IMPERSONATED identity; read_only grants are refused here first.
+import { resolveWriteContext } from "@/lib/platform/acting-context"
 import {
   createNotificationRule,
   updateNotificationRule,
@@ -44,14 +49,12 @@ export async function createRule(input: {
   recipient_role: string
   is_active: boolean
 }): Promise<{ id: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user?.id) {
-    throw new Error("Unauthorized")
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) {
+    throw new Error(ctx.error)
   }
 
-  return await createNotificationRule({ userId: user.id, rule: input })
+  return await createNotificationRule({ userId: ctx.userId, rule: input })
 }
 
 export async function editRule(
@@ -64,24 +67,20 @@ export async function editRule(
     is_active?: boolean
   }
 ): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user?.id) {
-    throw new Error("Unauthorized")
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) {
+    throw new Error(ctx.error)
   }
 
   const cleanUpdates = buildRuleUpdates(updates)
-  await updateNotificationRule({ userId: user.id, ruleId, updates: cleanUpdates })
+  await updateNotificationRule({ userId: ctx.userId, ruleId, updates: cleanUpdates })
 }
 
 export async function removeRule(ruleId: string): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user?.id) {
-    throw new Error("Unauthorized")
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) {
+    throw new Error(ctx.error)
   }
 
-  await deleteNotificationRule({ userId: user.id, ruleId })
+  await deleteNotificationRule({ userId: ctx.userId, ruleId })
 }

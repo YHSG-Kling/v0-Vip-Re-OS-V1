@@ -29,6 +29,7 @@ import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2, Zap, Mic, MicOff, Phone, Volume2 } from "lucide-react"
+import { useEnterToSubmit } from "@/hooks/use-enter-to-submit"
 
 // ─── Suggested questions by role ─────────────────────────────────────────────
 
@@ -643,6 +644,12 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     })
       .then(async (res) => {
         if (!res.ok || !res.body) {
+          // Surface the refusal reason (never silent) before the graceful
+          // browser-TTS fallback — census: route-response-field.
+          try {
+            const { error, code } = await res.json()
+            if (error) console.warn(`voice-tts refused: ${error}${code ? ` (${code})` : ""}`)
+          } catch {}
           speakViaBrowser()
           return
         }
@@ -671,6 +678,18 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
         body: JSON.stringify({ transcript, sessionId }),
       })
       const data = await res.json()
+
+      if (!res.ok) {
+        // A refusal (unauthorized / no agent profile / bad transcript) has no
+        // spokenResponse — data.ok is false only on the "not ready yet" 409,
+        // data.error on every other refusal. Either way the assistant must
+        // SAY something, never process silently as if nothing came back.
+        const refusalMsg = data.ok === false ? data.spoken : data.error
+        const msg = refusalMsg ?? "Sorry, I couldn't process that command. Please try again."
+        setVoiceResponse(msg)
+        speakText(msg)
+        return
+      }
 
       if (data.spokenResponse) {
         setVoiceResponse(data.spokenResponse)
@@ -894,12 +913,10 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     setInput("")
   }, [input, isStreaming, sendMessage, prepareNote])
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
+  // `handleKeyDown` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to hooks/use-enter-to-submit.ts `useEnterToSubmit`
+  // (used below).
+  const handleKeyDown = useEnterToSubmit<HTMLTextAreaElement>(handleSend)
 
   // ── Note draft helpers ──────────────────────────────────────────────────────
   const updateDraft = useCallback((cardId: string, updates: Partial<NoteDraft>) => {

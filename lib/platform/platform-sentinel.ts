@@ -151,7 +151,7 @@ const DAY_MS = 86_400_000
  * Weekly, not daily, so a persistent condition proposes at most once a week
  * while the unacted row itself keeps sitting in the queue.
  */
-export function sentinelBucket(now: Date): string {
+function sentinelBucket(now: Date): string {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   const dow = d.getUTCDay() // 0=Sun … 6=Sat
   d.setUTCDate(d.getUTCDate() - ((dow + 6) % 7)) // back to Monday
@@ -466,7 +466,7 @@ export interface SentinelVerdictSummary {
   byKind: Record<string, SentinelVerdictStats>
 }
 
-export function sentinelKindTenantKey(kind: string, brokerageId: string | null): string {
+function sentinelKindTenantKey(kind: string, brokerageId: string | null): string {
   return `${kind}:${brokerageId ?? "none"}`
 }
 

@@ -4,8 +4,8 @@ import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { FileText, Download, BarChart3, Loader2, TrendingUp, TrendingDown } from "lucide-react"
-import { getComplianceStatistics } from "@/app/actions/content-compliance"
+import { FileText, Download, BarChart3, Loader2, TrendingUp, TrendingDown, History } from "lucide-react"
+import { getComplianceStatistics, getEvaluationHistory } from "@/app/actions/content-compliance"
 import { generateComplianceReport } from "@/app/actions/compliance-monitoring"
 
 interface ComplianceStats {
@@ -15,6 +15,17 @@ interface ComplianceStats {
   review_required_rate: number
   top_violation_types: Array<{ type: string; count: number }>
   trend: "improving" | "declining" | "stable"
+}
+
+/** One row of compliance_events, as returned by getEvaluationHistory. */
+interface EvaluationEvent {
+  id: string
+  gate_name: string
+  allowed: boolean
+  violations: string[]
+  blocked_reason: string | null
+  entity_type: string | null
+  created_at: string
 }
 
 interface PolicyReportingPanelProps {
@@ -31,14 +42,24 @@ export function PolicyReportingPanel({
   totalCommunications,
 }: PolicyReportingPanelProps) {
   const [stats, setStats] = useState<ComplianceStats | null>(null)
+  const [statsError, setStatsError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const [isGenerating, setIsGenerating] = useState(false)
 
+  // The rolled-up rates above answer "how are we doing"; the history answers
+  // "on what". Both are scoped to the signed-in agent by the action itself —
+  // getEvaluationHistory derives agent_id from the session and ignores any
+  // agent_id passed in.
+  const [history, setHistory] = useState<EvaluationEvent[] | null>(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyPending, startHistory] = useTransition()
+
   const handleLoadStats = () => {
     startTransition(async () => {
+      setStatsError(null)
       const today = new Date()
       const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
-      
+
       const result = await getComplianceStatistics({
         date_range: {
           start: thirtyDaysAgo.toISOString(),
@@ -46,9 +67,24 @@ export function PolicyReportingPanel({
         },
       })
 
-      if (result.success && result.stats) {
-        setStats(result.stats as ComplianceStats)
+      if (!result.success || !result.stats) {
+        setStatsError(result.error ?? "Could not load compliance statistics")
+        return
       }
+      setStats(result.stats as ComplianceStats)
+    })
+  }
+
+  const handleLoadHistory = () => {
+    startHistory(async () => {
+      setHistoryError(null)
+      const result = await getEvaluationHistory({ limit: 15 })
+      if (!result.success) {
+        setHistory(null)
+        setHistoryError(result.error ?? "Could not load evaluation history")
+        return
+      }
+      setHistory((result.history ?? []) as EvaluationEvent[])
     })
   }
 
@@ -180,6 +216,62 @@ export function PolicyReportingPanel({
             )}
           </div>
         )}
+
+        {statsError && <p className="text-xs text-destructive">{statsError}</p>}
+
+        {/* Evaluation history — the individual gate decisions behind the rates */}
+        {!history ? (
+          <Button variant="outline" className="w-full" onClick={handleLoadHistory} disabled={historyPending}>
+            {historyPending ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Loading History...
+              </>
+            ) : (
+              <>
+                <History className="mr-2 h-4 w-4" />
+                Recent Evaluations
+              </>
+            )}
+          </Button>
+        ) : history.length === 0 ? (
+          <p className="text-xs text-muted-foreground text-center py-2">
+            No compliance evaluations recorded for you yet.
+          </p>
+        ) : (
+          <div className="space-y-2 pt-2 border-t">
+            <p className="text-xs font-medium text-muted-foreground">Recent Evaluations</p>
+            {history.map((event) => (
+              <div key={event.id} className="flex items-start justify-between gap-2 text-xs">
+                <div className="min-w-0">
+                  <span className="text-foreground">{event.gate_name.replace(/_/g, " ")}</span>
+                  {event.blocked_reason && (
+                    <p className="text-muted-foreground truncate">{event.blocked_reason}</p>
+                  )}
+                  {!event.blocked_reason && event.violations?.length > 0 && (
+                    <p className="text-muted-foreground truncate">{event.violations.join(", ")}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="text-muted-foreground">
+                    {new Date(event.created_at).toLocaleDateString()}
+                  </span>
+                  <Badge
+                    className={
+                      event.allowed
+                        ? "bg-green-500 text-white text-[10px]"
+                        : "bg-destructive text-destructive-foreground text-[10px]"
+                    }
+                  >
+                    {event.allowed ? "pass" : "fail"}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {historyError && <p className="text-xs text-destructive">{historyError}</p>}
       </CardContent>
     </Card>
   )

@@ -10,6 +10,8 @@
 // exist (creds-gated, never faked). Nothing here suspends an account — the
 // paywall (billing-access) already gates access; dunning is the communication.
 
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
+
 export interface DunningStep {
   step: number
   /** Days past due before this step fires. */
@@ -45,10 +47,13 @@ export const DUNNING_LADDER: DunningStep[] = [
   },
 ]
 
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
+// lib/format/dates.ts:daysBetween. The never-negative clamp is dunning's own
+// policy (a past-due episode can't have negative days-late), not shared date
+// math, so it stays as a thin wrapper around the survivor.
 /** PURE: whole days between two ISO timestamps (floored, never negative). */
 export function daysBetween(fromIso: string, nowIso: string): number {
-  const ms = new Date(nowIso).getTime() - new Date(fromIso).getTime()
-  return Math.max(0, Math.floor(ms / 86_400_000))
+  return Math.max(0, dateDaysBetween(fromIso, nowIso, { round: "floor" }))
 }
 
 /**
@@ -107,7 +112,12 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
   const { data: subs } = await svc
     .from("subscriptions")
     .select("id, brokerage_id, status, updated_at")
-    .in("status", ["past_due", "unpaid"])
+    // 'unpaid' was a rider here: subscriptions.status admits
+    // active|past_due|cancelled|trialing|paused, and lib/billing/stripe-status.ts
+    // normalizes Stripe's 'unpaid' to 'past_due' before anything is stored — so no
+    // row has ever carried it. Harmless inside an .in(), and exactly the kind of
+    // dead literal that teaches the next reader a state exists when it cannot.
+    .eq("status", "past_due")
     .limit(500)
 
   for (const sub of (subs ?? []) as Array<{ id: string; brokerage_id: string; status: string; updated_at: string | null }>) {
@@ -140,7 +150,7 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
       const { data: admins } = await svc
         .from("users").select("id, email")
         .eq("brokerage_id", sub.brokerage_id)
-        .in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+        .in("user_type", ["broker", "admin"]).limit(20)
       const adminRows = (admins ?? []) as Array<{ id: string; email: string | null }>
       if (adminRows.length > 0) {
         await svc.from("notifications").insert(adminRows.map((a) => ({

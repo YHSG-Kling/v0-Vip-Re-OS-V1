@@ -19,10 +19,12 @@ import {
   CheckCircle,
   Loader2,
   Play,
-  Download,
   Trash2,
   ChevronDown,
   Video,
+  Download,
+  Info,
+  MessageSquare,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -32,6 +34,8 @@ import {
   getVideoQueue,
   deleteVideo,
   getUserOrganizations,
+  getVideoDetails,
+  generateSocialCaption,
 } from "@/app/actions/link-to-video"
 import { cn } from "@/lib/utils"
 
@@ -45,7 +49,15 @@ export default function LinkToVideoGenerator() {
   const [compliance, setCompliance] = useState<any>(null)
   const [videoQueue, setVideoQueue] = useState<any[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
+  // ── THE DETAIL VIEW ─────────────────────────────────────────────────────────
+  // `selectedVideo` state existed here with nothing that ever set it. What it
+  // was for is getVideoDetails: the queue row plus the PROJECT it renders on and
+  // that project's render attempts (video_render_log) — provider, job id, cost,
+  // and the error message for each try. A queue row alone can only say "failed".
   const [selectedVideo, setSelectedVideo] = useState<any>(null)
+  const [detailsError, setDetailsError] = useState<string | null>(null)
+  const [loadingDetailsId, setLoadingDetailsId] = useState<string | null>(null)
+  const [captioningId, setCaptioningId] = useState<string | null>(null)
   const [publishSettings, setPublishSettings] = useState({
     publishToSocials: false,
     platforms: [] as string[],
@@ -62,11 +74,13 @@ export default function LinkToVideoGenerator() {
       setOrganizations(orgs)
       if (orgs.length > 0) setSelectedOrg(orgs[0])
       setVideoQueue(queue)
+      return queue
     } catch (error) {
       console.error("[v0] Load data error:", error)
       setOrganizations([{ id: "default-org", name: "Default Organization", type: "brokerage" }])
       setSelectedOrg({ id: "default-org", name: "Default Organization", type: "brokerage" })
       setVideoQueue([])
+      return []
     }
   }
 
@@ -77,6 +91,7 @@ export default function LinkToVideoGenerator() {
     }
 
     setIsGenerating(true)
+    setCompliance(null)
     try {
       const result = await generateVideoScript({
         url,
@@ -88,8 +103,27 @@ export default function LinkToVideoGenerator() {
       if (result.success && result.videoQueue) {
         setScript(result.videoQueue.ai_generated_script)
         setCurrentVideoId(result.videoQueue.id)
-        toast.success("Script generated successfully!")
-        loadData()
+        // The kernel gate runs alongside the AI compliance pass. Its findings
+        // are merged into compliance_flags on the queue row, but say so here
+        // too — "generated successfully" over a flagged script is a lie.
+        if (result.complianceWarnings?.length) {
+          toast.warning(`Script generated with ${result.complianceWarnings.length} compliance note(s)`, {
+            description: result.complianceWarnings.join(" • "),
+          })
+        } else {
+          toast.success("Script generated successfully!")
+        }
+        // `result.videoQueue` is the row as INSERTed, before checkCompliance()
+        // and the kernel-flag merge above wrote compliance_check_passed /
+        // compliance_flags onto it — the badge needs the row AFTER those
+        // writes, so pull it back from the just-refreshed queue rather than
+        // from the stale local object (unread-state-census: `compliance` had
+        // no writer at all).
+        const refreshed = await loadData()
+        const withCompliance = refreshed.find((v: any) => v.id === result.videoQueue.id)
+        if (withCompliance) {
+          setCompliance({ passed: withCompliance.compliance_check_passed, flags: withCompliance.compliance_flags ?? [] })
+        }
       } else {
         toast.error(result.error || "Failed to generate script")
       }
@@ -104,9 +138,21 @@ export default function LinkToVideoGenerator() {
     if (!currentVideoId) return
 
     try {
-      await updateVideoScript(currentVideoId, script)
+      // updateVideoScript RETURNS { success:false, error } and never throws,
+      // so the catch below was dead and this claimed a COMPLIANCE RE-CHECK
+      // that had not happened. Marketing copy then proceeded on the user's
+      // belief that it had been screened.
+      const res = await updateVideoScript(currentVideoId, script)
+      if (!res?.success) {
+        toast.error(res?.error ?? "The script was not saved, so it was not re-checked")
+        return
+      }
       toast.success("Script updated and re-checked for compliance")
-      loadData()
+      const refreshed = await loadData()
+      const withCompliance = refreshed.find((v: any) => v.id === currentVideoId)
+      if (withCompliance) {
+        setCompliance({ passed: withCompliance.compliance_check_passed, flags: withCompliance.compliance_flags ?? [] })
+      }
     } catch (error) {
       toast.error("Failed to update script")
     }
@@ -116,7 +162,14 @@ export default function LinkToVideoGenerator() {
     if (!currentVideoId) return
 
     try {
-      await startVideoGeneration(currentVideoId)
+      // Same contract. Worse consequence: on a silent failure this cleared the
+      // script and the URL, so the user's work was unrecoverable and the queue
+      // simply never populated. Check first, and only then reset.
+      const started = await startVideoGeneration(currentVideoId)
+      if (!started?.success) {
+        toast.error(started?.error ?? "Video generation did not start — your script has been kept")
+        return
+      }
       toast.success("Video generation started! Check the queue below.")
       setScript("")
       setUrl("")
@@ -124,6 +177,47 @@ export default function LinkToVideoGenerator() {
       loadData()
     } catch (error) {
       toast.error("Failed to start video generation")
+    }
+  }
+
+  async function handleViewDetails(videoId: string) {
+    if (selectedVideo?.id === videoId) {
+      setSelectedVideo(null)
+      return
+    }
+    setLoadingDetailsId(videoId)
+    setDetailsError(null)
+    setSelectedVideo(null)
+    try {
+      const details = await getVideoDetails(videoId)
+      setSelectedVideo(details)
+    } catch (error) {
+      // getVideoDetails THROWS on refusal (not authenticated / not your video /
+      // read error). Report it — a silently empty panel would read as "this
+      // video has no history", which is a different claim.
+      setDetailsError(error instanceof Error ? error.message : "Could not load render history")
+    } finally {
+      setLoadingDetailsId(null)
+    }
+  }
+
+  async function handleGenerateCaption(videoId: string) {
+    setCaptioningId(videoId)
+    try {
+      const result = await generateSocialCaption(videoId)
+      if (!result.success) {
+        toast.error(result.error ?? "Could not write a caption")
+        return
+      }
+      toast.success("Caption written and saved to this video")
+      // The caption is persisted on the queue row — reload so the table shows
+      // what was actually stored, not what the call returned.
+      loadData()
+      if (selectedVideo?.id === videoId) handleViewDetails(videoId)
+    } catch (error) {
+      toast.error("Could not write a caption")
+    } finally {
+      setCaptioningId(null)
     }
   }
 
@@ -430,11 +524,67 @@ export default function LinkToVideoGenerator() {
                     <TableCell>{new Date(video.created_at).toLocaleDateString()}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">
-                        {video.status === "completed" && (
-                          <Button size="sm" variant="ghost">
-                            <Download className="h-4 w-4" />
+                        {/* The Download control was removed when there was
+                            genuinely nothing to download: the queue has no
+                            rendered-output column and startVideoGeneration only
+                            set status='generating_audio' with no renderer behind
+                            it. Both are fixed — the job now runs on
+                            ai_video_projects, whose video_url is the real file,
+                            and the queue row follows its project to a terminal
+                            status through the m365 trigger. So the control is
+                            back, pointed at a field that exists. */}
+                        {video.ai_video_projects?.video_url && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            asChild
+                            title="Download the rendered video"
+                          >
+                            <a
+                              href={video.ai_video_projects.video_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download
+                            >
+                              <Download className="h-4 w-4" />
+                            </a>
                           </Button>
                         )}
+                        {/* A failed render must say WHY, not just show a red badge. */}
+                        {video.status === "failed" && video.ai_video_projects?.error_message && (
+                          <span
+                            className="text-xs text-destructive max-w-[220px] truncate"
+                            title={video.ai_video_projects.error_message}
+                          >
+                            {video.ai_video_projects.error_message}
+                          </span>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleGenerateCaption(video.id)}
+                          disabled={captioningId === video.id}
+                          title="Write a compliant social caption for this video"
+                        >
+                          {captioningId === video.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <MessageSquare className="h-4 w-4" />
+                          )}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleViewDetails(video.id)}
+                          disabled={loadingDetailsId === video.id}
+                          title="Render history for this video"
+                        >
+                          {loadingDetailsId === video.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Info className="h-4 w-4" />
+                          )}
+                        </Button>
                         <Button size="sm" variant="ghost" onClick={() => handleDeleteVideo(video.id)}>
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -444,7 +594,69 @@ export default function LinkToVideoGenerator() {
                 ))}
               </TableBody>
             </Table>
-          ) : (
+          ) : null}
+
+          {(detailsError || selectedVideo) && (
+            <div className="mt-4 rounded-md border bg-muted/40 p-3 space-y-2">
+              {detailsError && <p className="text-sm text-destructive">{detailsError}</p>}
+              {selectedVideo && (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium">Render history</p>
+                    <Button size="sm" variant="ghost" onClick={() => setSelectedVideo(null)}>
+                      Close
+                    </Button>
+                  </div>
+                  {selectedVideo.social_caption && (
+                    <p className="text-xs">
+                      <span className="font-medium">Saved caption:</span> {selectedVideo.social_caption}
+                    </p>
+                  )}
+                  {selectedVideo.ai_video_projects ? (
+                    <div className="text-xs space-y-1">
+                      <p className="text-muted-foreground">
+                        {selectedVideo.ai_video_projects.title} · {selectedVideo.ai_video_projects.status}
+                        {selectedVideo.ai_video_projects.video_provider
+                          ? ` · ${selectedVideo.ai_video_projects.video_provider}`
+                          : ""}
+                      </p>
+                      {(selectedVideo.ai_video_projects.video_render_log ?? []).length === 0 ? (
+                        <p className="text-muted-foreground">No render attempts recorded yet.</p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {(selectedVideo.ai_video_projects.video_render_log as any[]).map((r) => (
+                            <li key={r.id} className="flex flex-wrap gap-2">
+                              <Badge variant={r.status === "failed" ? "destructive" : "outline"}>
+                                {r.status}
+                              </Badge>
+                              <span className="text-muted-foreground">
+                                {r.provider ?? "provider unknown"}
+                                {r.render_duration_seconds ? ` · ${r.render_duration_seconds}s` : ""}
+                                {r.cost_usd ? ` · $${r.cost_usd}` : ""}
+                                {r.created_at ? ` · ${new Date(r.created_at).toLocaleString()}` : ""}
+                              </span>
+                              {r.error_message && (
+                                <span className="text-destructive">{r.error_message}</span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ) : (
+                    // The queue row exists but no project hangs off it — the job
+                    // never reached the renderer. Said plainly rather than shown
+                    // as an empty history.
+                    <p className="text-xs text-muted-foreground">
+                      This queue row has no render job attached yet.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {videoQueue.length === 0 && (
             <div className="text-center py-12">
               <Video className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <p className="text-muted-foreground mb-2">No videos in queue yet.</p>

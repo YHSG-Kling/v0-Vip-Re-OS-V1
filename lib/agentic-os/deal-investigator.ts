@@ -47,7 +47,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   const svc = createServiceClient()
   const { data: contact } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, enrichment_profile")
+    .select("id, brokerage_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, enrichment_profile")
     .eq("id", params.contactId)
     .maybeSingle()
   if (!contact) {
@@ -73,18 +73,25 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   if (result.cost >= cap) { result.warnings.push("cap reached after PDL — skipping MLS + property"); return result }
 
   // (2) MLS — RentCast typed-helper. AVM-by-address gives sale + rent estimates.
+  // FIX (wave 70, lane 70C): this used to read RENTCAST_API_KEY and call callRentcastGet
+  // directly — unmetered (the flat `cost: 0.01` was never logged to vendor_usage_tracking)
+  // and skipped the platform vendor-budget gate every other RentCast caller goes through.
+  // Routed through the ONE metered client (lib/property/rentcast.ts::getRentcastAVM) so
+  // every RentCast request is booked at RENTCAST_USD_PER_REQUEST.
   try {
     if (contact.mailing_address && contact.mailing_zip) {
-      const apiKey = process.env.RENTCAST_API_KEY
-      if (apiKey) {
-        const { callRentcastGet } = await import("@/lib/external/rentcast-typed")
-        const avm = await callRentcastGet("/avm/value", {
-          address: address,
-        } as any, apiKey)
-        result.cost += 0.01
-        result.sources.mls = avm.data as unknown as Record<string, unknown> | null
+      if (!contact.brokerage_id) {
+        result.warnings.push("rentcast: contact has no brokerage_id to meter against")
       } else {
-        result.warnings.push("rentcast: RENTCAST_API_KEY not configured")
+        const { getRentcastAVM, RENTCAST_USD_PER_REQUEST } = await import("@/lib/property/rentcast")
+        const avm = await getRentcastAVM({
+          brokerageId: contact.brokerage_id,
+          address,
+          systemSource: "deal_investigator",
+          contactId: contact.id,
+        })
+        result.cost += RENTCAST_USD_PER_REQUEST
+        result.sources.mls = avm.value !== null ? (avm as unknown as Record<string, unknown>) : null
       }
     }
   } catch (e) { result.warnings.push(`rentcast: ${(e as Error).message}`) }

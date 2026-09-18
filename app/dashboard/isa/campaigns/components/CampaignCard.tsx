@@ -1,11 +1,9 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube } from "lucide-react"
-import { toggleCampaignStatus, sendCampaignTestTouch } from "@/app/actions/ai-isa"
+import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube, Rocket, CheckCircle2, Pencil } from "lucide-react"
+import { toggleCampaignStatus, sendCampaignTestTouch, launchAIISACampaign, completeISACampaign } from "@/app/actions/ai-isa"
 import type { ISACampaignRow } from "@/app/actions/ai-isa"
 
 const TYPE_BADGE: Record<string, string> = {
@@ -29,13 +27,22 @@ const CHANNEL_ICON: Record<string, React.ReactNode> = {
 interface Props {
   campaign: ISACampaignRow
   onStatusChange: () => void
+  /**
+   * Open the campaign's settings for editing. The owner
+   * (ISACampaignsClient) renders CreateCampaignDrawer in edit mode with this
+   * row; the write is app/actions/ai-isa.ts:updateISACampaign.
+   */
+  onEdit?: (campaign: ISACampaignRow) => void
 }
 
-export function CampaignCard({ campaign, onStatusChange }: Props) {
-  const router = useRouter()
+export function CampaignCard({ campaign, onStatusChange, onEdit }: Props) {
+  const canEdit = !!onEdit && campaign.status !== "completed"
   const [loading, setLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
+  const [launching, setLaunching] = useState(false)
+  const [completing, setCompleting] = useState(false)
+  const [launchResult, setLaunchResult] = useState<{ ok: boolean; text: string } | null>(null)
 
   const rate = campaign.leads_targeted > 0
     ? ((campaign.conversions / campaign.leads_targeted) * 100).toFixed(1)
@@ -46,6 +53,52 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
     await toggleCampaignStatus(campaign.id, campaign.status)
     setLoading(false)
     onStatusChange()
+  }
+
+  // Retire the campaign. This card already GREYED the badge and disabled both
+  // Launch and Pause on status === "completed" (below) while nothing in the
+  // tree could produce that status — the terminal state was decorative. The
+  // writer is app/actions/ai-isa.ts:completeISACampaign (session-gated,
+  // brokerage-pinned). One-way, hence the confirm.
+  async function handleComplete() {
+    if (!confirm(`Mark “${campaign.name}” completed? A completed campaign can no longer be launched or resumed.`)) return
+    setCompleting(true)
+    const result = await completeISACampaign(campaign.id)
+    setCompleting(false)
+    if (result.success) onStatusChange()
+    else setLaunchResult({ ok: false, text: result.error ?? "Could not complete campaign." })
+  }
+
+  // Launch = resolve this campaign type's contact segment and ENROLL it into
+  // the matching compliance-gated sequence cadence (never dials). The result
+  // reports honest per-contact counts: enrolled / already in cadence /
+  // consent-skipped / refused.
+  async function handleLaunch() {
+    setLaunching(true)
+    setLaunchResult(null)
+    const result = await launchAIISACampaign({
+      campaignId:   campaign.id,
+      campaignType: campaign.campaign_type,
+    })
+    if (result.success) {
+      const parts = [`Enrolled ${result.enrolled ?? 0}`]
+      if (result.alreadyEnrolled) parts.push(`${result.alreadyEnrolled} already in cadence`)
+      if (result.skipped) {
+        const reasons = Object.entries(result.skipReasons ?? {})
+          .map(([r, n]) => `${n} ${r}`)
+          .join(", ")
+        parts.push(`${result.skipped} skipped${reasons ? ` (${reasons})` : ""}`)
+      }
+      if (result.errors?.length) parts.push(`${result.errors.length} refused: ${result.errors[0]}`)
+      setLaunchResult({
+        ok: true,
+        text: `${parts.join(" · ")} — sequence “${result.sequenceName ?? result.sequenceId}”.`,
+      })
+      onStatusChange()
+    } else {
+      setLaunchResult({ ok: false, text: result.error ?? "Launch failed." })
+    }
+    setLaunching(false)
   }
 
   async function handleTestTouch() {
@@ -83,14 +136,24 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
         </span>
       </div>
 
-      {/* Channel icons — clickable to open campaign settings for that channel */}
+      {/* Channel icons — which channels this campaign rides. Each icon opens the
+          campaign's settings (the same drawer the Edit button below opens, in
+          edit mode) — the capability these icons ORIGINALLY router.push'd toward
+          (`/dashboard/isa/campaigns/${id}?channel=${ch}`, a route that never
+          existed; downgraded to plain indicators 2026-09-02). The half that was
+          missing is now built: app/actions/ai-isa.ts:updateISACampaign
+          (session-gated, brokerage-pinned) behind CreateCampaignDrawer's
+          `campaign` prop, opened via onEdit. No [campaignId] route — the drawer
+          is the settings surface. */}
       <div className="flex items-center gap-2">
         {(campaign.channels ?? []).map((ch) => (
           <button
             key={ch}
-            title={`Configure ${ch} channel`}
-            className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
-            onClick={() => router.push(`/dashboard/isa/campaigns/${campaign.id}?channel=${ch}`)}
+            type="button"
+            title={canEdit ? `${ch} channel — edit campaign settings` : `${ch} channel`}
+            className={`p-1 rounded ${canEdit ? "hover:bg-muted" : "cursor-default"}`}
+            disabled={!canEdit}
+            onClick={() => canEdit && onEdit?.(campaign)}
           >
             {CHANNEL_ICON[ch] ?? null}
           </button>
@@ -128,6 +191,16 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
       <div className="flex gap-2">
         <Button
           size="sm"
+          className="flex-1 gap-1"
+          onClick={handleLaunch}
+          disabled={launching || campaign.status === "completed"}
+          title="Enroll this type's matching contacts into the sequence cadence — no calls are placed"
+        >
+          <Rocket className="h-3.5 w-3.5" />
+          {launching ? "Launching…" : campaign.status === "draft" ? "Launch campaign" : "Enroll matches"}
+        </Button>
+        <Button
+          size="sm"
           variant="outline"
           className="flex-1 gap-1"
           onClick={handleToggle}
@@ -142,12 +215,39 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
           size="sm"
           variant="ghost"
           className="gap-1"
+          onClick={() => onEdit?.(campaign)}
+          disabled={!canEdit}
+          title={campaign.status === "completed"
+            ? "A completed campaign cannot be edited"
+            : "Edit name, channels, cadence and score threshold"}
+        >
+          <Pencil className="h-3.5 w-3.5" /> Edit
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="gap-1"
           onClick={handleTestTouch}
           disabled={testLoading}
         >
           <TestTube className="h-3.5 w-3.5" /> Test
         </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="gap-1"
+          onClick={handleComplete}
+          disabled={completing || campaign.status === "completed" || campaign.status === "draft"}
+          title="Retire this campaign — it can no longer be launched or resumed"
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" /> {completing ? "…" : "Complete"}
+        </Button>
       </div>
+      {launchResult && (
+        <p className={launchResult.ok ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
+          {launchResult.text}
+        </p>
+      )}
       {testResult && (
         <p className="text-xs text-muted-foreground">{testResult}</p>
       )}

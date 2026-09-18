@@ -5,6 +5,31 @@
 // the single entry point that lets agents "find the answer with context" instead of
 // re-deriving vendor routing + gating at every call site.
 
+// ─── /api/agentic-os/resolve-capability WAS NOT RETIRED (wave 14) ────────────
+// A route census called that endpoint a duplicate of this module. It is not, and
+// this module could not stand in for it if it were:
+//   · `import "server-only"` (line below) means nothing outside this Node process
+//     can reach this function. The route is the only door a BROWSER has.
+//   · The route carries three things that live nowhere else: the
+//     requirePlatformStaffAuth gate, validation of `capability` against
+//     VENDOR_CAPABILITY_REGISTRY (with the available list in the 400), and a GET
+//     discovery listing of the whole registry.
+//
+// ── ONE HALF OF THAT NOTE WAS WRONG, AND IT IS THE HALF THAT EXCUSED THE SILENCE.
+// Wave 14 wrote "the route is the ONLY door an EXTERNAL AGENT has" and filed the
+// endpoint as unreferenced-by-design. It is not reachable by an external agent at
+// all: requirePlatformStaffAuth → requireAuth reads a SUPABASE SESSION, and a
+// `vos_…` agent bearer token resolves through resolveAgenticCaller, which never
+// mints one — so a token caller gets 401 here, always. External agents reach the
+// vendor surface through /api/agentic-os/actions and /api/agentic-os/connectivity,
+// which are deliberately vendor-anonymous; this route names vendors and shows the
+// downgrade ladder precisely because it is PLATFORM-STAFF ONLY.
+// So it was not unreferenced by design — it was a staff door with no staff surface
+// walking through it. Its caller now exists:
+// app/dashboard/superadmin/connectors/capability-resolver-card.tsx (GET for the
+// registry picker, POST to resolve one capability for one tenant), on the page that
+// already owns provider posture behind the same `providers` capability gate.
+
 import "server-only"
 import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
 import {

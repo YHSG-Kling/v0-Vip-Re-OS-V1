@@ -19,6 +19,10 @@ interface ReferralFormProps {
   contactId: string
 }
 
+// Mirrors the server cap in submitReferral (app/actions/portal-lifetime.ts) so
+// the counter the client sees and the length the row keeps agree.
+const REFERRAL_NOTE_MAX = 500
+
 export function ReferralForm({ contactId }: ReferralFormProps) {
   const [name, setName] = useState("")
   const [phone, setPhone] = useState("")
@@ -43,6 +47,11 @@ export function ReferralForm({ contactId }: ReferralFormProps) {
         referredName: name.trim(),
         referredContact: contactInfo,
         relationship: relationship || undefined,
+        // The note the client typed. This state existed, was reset on submit
+        // and on "Submit Another", and was neither rendered nor sent — the
+        // textarea below and the `notes` parameter on submitReferral are the
+        // two halves that were missing.
+        notes: notes.trim() || undefined,
       })
       setIsSubmitted(true)
       // Reset form after short delay
@@ -144,6 +153,20 @@ export function ReferralForm({ contactId }: ReferralFormProps) {
             <SelectItem value="other">Other</SelectItem>
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="referral-notes">Anything your agent should know? (optional)</Label>
+        <Textarea
+          id="referral-notes"
+          placeholder="e.g. They're relocating for work in the spring and want a yard."
+          value={notes}
+          onChange={(e) => setNotes(e.target.value.slice(0, REFERRAL_NOTE_MAX))}
+          maxLength={REFERRAL_NOTE_MAX}
+          rows={3}
+          disabled={isSubmitting}
+        />
+        <p className="text-xs text-muted-foreground text-right">{notes.length}/{REFERRAL_NOTE_MAX}</p>
       </div>
 
       {error && (

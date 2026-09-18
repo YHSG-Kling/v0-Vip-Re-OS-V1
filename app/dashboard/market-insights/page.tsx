@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { MarketInsightsDashboardClient } from "./market-insights-client"
+import { MarketAlertsPanel } from "./components/market-alerts-panel"
 import {
   getAgentMarketSources,
   getCurrentInsight,
@@ -68,16 +69,25 @@ export default async function MarketInsightsPage() {
   }
 
   return (
-    <MarketInsightsDashboardClient
-      brokerageId={brokerageId ?? ""}
-      agentId={agentId ?? ""}
-      sources={sources}
-      initialMarketArea={initialMarketArea}
-      initialInsight={initialInsight}
-      initialMarketData={initialMarketData}
-      initialTrends={initialTrends}
-      initialCMAReports={initialCMAReports}
-      suggestedZip={suggestedZip}
-    />
+    <>
+      <MarketInsightsDashboardClient
+        brokerageId={brokerageId ?? ""}
+        agentId={agentId ?? ""}
+        sources={sources}
+        initialMarketArea={initialMarketArea}
+        initialInsight={initialInsight}
+        initialMarketData={initialMarketData}
+        initialTrends={initialTrends}
+        initialCMAReports={initialCMAReports}
+        suggestedZip={suggestedZip}
+      />
+      {/* THE ALERT ENGINE, REACHABLE. getMarketAlerts read the agent's
+          specializations against recent market_data and returned prioritised
+          alerts — complete, gated, and called from nowhere. This is its
+          surface. */}
+      <div className="px-4 pb-6 md:px-6">
+        <MarketAlertsPanel agentId={agentId ?? ""} />
+      </div>
+    </>
   )
 }

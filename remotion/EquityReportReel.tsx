@@ -37,16 +37,14 @@
  * simulator can assert the prop contract without a render context.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { horizontalBars } from "../lib/charts/geometry"
+import { ordinal } from "../lib/format/ordinal"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { AvatarPIP } from "./components/AvatarPIP"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface EquityReportReelBrand {
   primaryColor:   string
@@ -65,6 +63,13 @@ export interface EquityReportReelProps {
   agentPhotoUrl?: string | null
   /** D-ID + ElevenLabs narration for the whole reel. Null → photo/monogram PIP. */
   avatarVideoUrl?: string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the WHOLE avatar clip
+   * the three STAT windows cut into (lib/video/avatar-render-orchestrator.ts,
+   * wave 56 realism ruling). Optional + additive — see
+   * remotion/components/AvatarPIP.tsx's freeze/fade guard.
+   */
+  avatarDurationSeconds?: number | null
   brandColors:    EquityReportReelBrand
   /** The past client's home — shown on the cover. Falls back to "your home". */
   address?:       string | null
@@ -84,6 +89,15 @@ export interface EquityReportReelProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR. Defaults to "Scan for your equity update". */
   qrCaption?:     string
+  /**
+   * SOUND-OFF CAPTIONS (additive + default-off, wave 60 — carried from wave 59
+   * where this reel was flagged as the one sibling with no CaptionLayer at
+   * all). Word-accurate cues from real ElevenLabs alignment — preferred over
+   * captionScript. Same contract as MarketUpdateReel.captionsCues.
+   */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
+  captionScript?: string | null
 }
 
 const FPS    = 30
@@ -107,17 +121,18 @@ function fmtPct(n: number): string {
   return `${sign}${n}%`
 }
 
-function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"], v = n % 100
-  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`
-}
+// TOMBSTONE (§6 ordinal consolidation): a private `ordinal(n)` lived here,
+// byte-identical to the copy in lib/kernel/anniversary-equity.ts. Survivor:
+// lib/format/ordinal.ts:32 `ordinal` — a pure leaf (zero imports), so pulling
+// it into the Remotion bundle adds nothing server-side.
 
 /**
  * PURE — which equity treatment the reel renders. Exported so the simulator can
  * assert the null-equity appreciation-only branch without a Remotion context.
  * estimatedEquity null → "appreciation_only" (NEVER a fabricated equity number).
  */
-export function equityDisplayMode(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function equityDisplayMode(
   estimatedEquity: number | null,
 ): "value_minus_balance" | "appreciation_only" {
   return estimatedEquity == null ? "appreciation_only" : "value_minus_balance"
@@ -207,46 +222,8 @@ const AppreciationBars: React.FC<{
   )
 }
 
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  startFrame:     number
-  endFrame:       number
-  accentColor:    string
-  primaryColor:   string
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", top: 32, right: 32,
-    width: 200, height: 200, borderRadius: 100,
-    boxShadow: `0 0 0 4px ${accentColor}, 0 18px 36px rgba(0,0,0,0.25)`,
-    overflow: "hidden", backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video src={avatarVideoUrl} startFrom={startFrame} endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring, backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 80, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// `AvatarPIP` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to remotion/components/AvatarPIP.tsx (imported above).
 
 const SceneChip: React.FC<{ label: string; accentColor: string }> = ({ label, accentColor }) => (
   <div style={{
@@ -262,7 +239,8 @@ const SceneChip: React.FC<{ label: string; accentColor: string }> = ({ label, ac
 export const EquityReportReel: React.FC<EquityReportReelProps> = ({
   agentName, agentPhotoUrl, avatarVideoUrl, brandColors,
   address, estimatedValue, purchasePrice, appreciation, appreciationPct,
-  estimatedEquity, yearsHeld, qrCodeDataUrl, qrCaption,
+  estimatedEquity, yearsHeld, qrCodeDataUrl, qrCaption, avatarDurationSeconds,
+  captionsCues, captionScript,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brandColors.upColor   ?? "#22C55E"
@@ -274,6 +252,26 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
   const mode      = equityDisplayMode(estimatedEquity)
   const chip      = `${ordinal(yearsHeld)} HOME ANNIVERSARY · ESTIMATE`
 
+  // AVATAR LEAD-IN FIX (wave 60 realism audit — see MarketUpdateReel's twin
+  // comment on its own AvatarPIP calls). `start` is this stat window's frame
+  // offset into the D-ID clip's OWN timeline, RELATIVE TO WHEN THE AVATAR
+  // TRACK ITSELF FIRST BECOMES VISIBLE (0 for STAT1's window, STAT for
+  // STAT2's, STAT*2 for STAT3's — passed by the three call sites below).
+  // Before this fix the call sites passed the composition-ABSOLUTE frame
+  // (COVER, COVER+STAT, COVER+STAT*2) instead: the clip is D-ID's ONE
+  // continuous render for the whole reel, AvatarPIP never mounts during the
+  // silent COVER tile, and D-ID is never asked to pad COVER seconds of
+  // lead-in silence at the head (DID_TALK_REALISM_CONFIG.pad_audio is 0.3s
+  // of TRAILING silence only — lib/video/realism-profile.ts), so that
+  // absolute value fed straight to `<Video trimBefore>` silently skipped the
+  // clip's first COVER seconds of REAL narration — for the single short
+  // compliance-gated script this narration actually is, that can be most or
+  // all of what the avatar says. Starting the first window's own trim at 0
+  // (STAT2/STAT3 at STAT/STAT*2 — this function's own `start` param) means
+  // no real narration is discarded, and avatarPipWindowFade's
+  // `localActualSeconds` math now measures against the correct remaining
+  // length instead of over-penalizing every window by COVER seconds it
+  // never actually lost.
   const pipFor = (start: number) => ({
     avatarVideoUrl: avatarVideoUrl ?? null,
     agentPhotoUrl:  agentPhotoUrl ?? null,
@@ -282,6 +280,8 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
     endFrame:   start + STAT,
     accentColor: brandColors.accentColor,
     primaryColor: brandColors.primaryColor,
+    avatarDurationSeconds,
+    fps: FPS,
   })
 
   return (
@@ -296,7 +296,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brandColors.logoUrl && (
-            <Img src={brandColors.logoUrl} style={{
+            <SafeImg src={brandColors.logoUrl} style={{
               height: 64, objectFit: "contain", marginBottom: 36,
               opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
@@ -328,7 +328,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       <Sequence from={COVER} durationInFrames={STAT}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
-          <AvatarPIP {...pipFor(COVER)} />
+          <AvatarPIP {...pipFor(0)} />
           <div style={{
             height: "100%", display: "flex", flexDirection: "column",
             justifyContent: "center", alignItems: "flex-start", padding: "0 88px",
@@ -357,7 +357,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       <Sequence from={COVER + STAT} durationInFrames={STAT}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
-          <AvatarPIP {...pipFor(COVER + STAT)} />
+          <AvatarPIP {...pipFor(STAT)} />
           <StatCard
             label={gained ? "ESTIMATED VALUE GROWTH" : "ESTIMATED VALUE CHANGE"}
             value={fmtUsd(appreciation)}
@@ -373,7 +373,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       <Sequence from={COVER + STAT * 2} durationInFrames={STAT}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
-          <AvatarPIP {...pipFor(COVER + STAT * 2)} />
+          <AvatarPIP {...pipFor(STAT * 2)} />
           {mode === "value_minus_balance" && estimatedEquity != null ? (
             <StatCard
               label="ESTIMATED EQUITY"
@@ -424,6 +424,16 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* SOUND-OFF CAPTIONS (wave 60 — carried from wave 59: this reel was the
+          one sibling with no CaptionLayer at all). Same rules as
+          MarketUpdateReel: NO CAPTION OVER SILENCE — the avatar's narration
+          (when present) does not start until the COVER tile ends, so
+          visibleFromFrame clips/re-anchors the head; NO CAPTION OVER BRANDING
+          — hiddenFromFrame clips the tail before the OUTRO tile's CTA copy,
+          agent name, EHO mark and tracked QR. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brandColors.accentColor}
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + STAT * 3} />
     </AbsoluteFill>
   )
 }

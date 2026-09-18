@@ -86,8 +86,15 @@ export async function triggerSignalRescrape(params: {
       })
       if (r.data) {
         // Flip mailing_address_verified per Lob's deliverability verdict.
-        await svc.from("contacts").update({ mailing_address_verified: r.data.verified }).eq("id", contact.id)
-        out.tasks.push({ name: "lob_address_verify", ok: true, cost: r.cost })
+        // The error is READ. The task below reports ok:true and the Lob call was
+        // PAID FOR — a refused flag means the money was spent and the verdict that
+        // gates direct-mail spend never landed on the row.
+        const { error: addrFlagError } = await svc.from("contacts").update({ mailing_address_verified: r.data.verified }).eq("id", contact.id)
+        if (addrFlagError) {
+          out.tasks.push({ name: "lob_address_verify", ok: false, error: `verified but NOT persisted: ${addrFlagError.message}`, cost: r.cost })
+        } else {
+          out.tasks.push({ name: "lob_address_verify", ok: true, cost: r.cost })
+        }
       } else {
         out.tasks.push({ name: "lob_address_verify", ok: false, error: "Lob not configured" })
       }
@@ -97,14 +104,27 @@ export async function triggerSignalRescrape(params: {
 
   if (wantAvm && addr) {
     try {
-      const apiKey = process.env.RENTCAST_API_KEY
-      if (apiKey) {
-        const { callRentcastGet } = await import("@/lib/external/rentcast-typed")
-        const avm = await callRentcastGet("/avm/value", { address: addr } as any, apiKey)
-        out.tasks.push({ name: "rentcast_avm_refresh", ok: avm.ok, cost: 0.01 })
-        out.totalCost += 0.01
+      // FIX (wave 70, lane 70C): this used to read RENTCAST_API_KEY and call
+      // callRentcastGet directly — a second, unmetered RentCast door that booked no
+      // vendor-ledger row (the flat `cost: 0.01` above was a display-only guess, never
+      // logged to vendor_usage_tracking) and skipped the platform vendor-budget gate
+      // every other RentCast caller in the tree goes through
+      // (lib/property/rentcast.ts::gateRentcast). Routed through the ONE metered
+      // client so every RentCast request is booked at RENTCAST_USD_PER_REQUEST — see
+      // that constant's own header (lib/property/rentcast.ts) for the derivation.
+      if (!contact.brokerage_id) {
+        out.tasks.push({ name: "rentcast_avm_refresh", ok: false, error: "contact has no brokerage_id to meter against" })
       } else {
-        out.tasks.push({ name: "rentcast_avm_refresh", ok: false, error: "RENTCAST_API_KEY not configured" })
+        const { getRentcastAVM, RENTCAST_USD_PER_REQUEST } = await import("@/lib/property/rentcast")
+        const avm = await getRentcastAVM({
+          brokerageId: contact.brokerage_id,
+          address: addr,
+          systemSource: "contact_signal_rescrape",
+          contactId: contact.id,
+        })
+        const ok = avm.value !== null
+        out.tasks.push({ name: "rentcast_avm_refresh", ok, cost: RENTCAST_USD_PER_REQUEST })
+        out.totalCost += RENTCAST_USD_PER_REQUEST
       }
     } catch (e) { out.tasks.push({ name: "rentcast_avm_refresh", ok: false, error: (e as Error).message }) }
   }

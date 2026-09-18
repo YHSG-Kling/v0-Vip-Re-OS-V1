@@ -95,13 +95,21 @@ interface DashboardData {
     nextStep?: string
     nextStepDate?: string
   }>
+  // Contact details are OPTIONAL because they are legitimately absent, not
+  // because the data is sloppy. Two reasons, both deliberate:
+  //   · a party may simply have no company / phone on file;
+  //   · this is a CLIENT portal, and the counterparty's contact details are
+  //     redacted before they ever reach it (rosterForPrincipal) — a buyer must
+  //     not read the seller's email off their own dashboard.
+  // Declaring these `string` made the type claim something the redaction
+  // guarantees is false, so every consumer below must handle the absence.
   team: Array<{
     id: string
     role: string
     name: string
-    company: string
-    email: string
-    phone: string
+    company: string | null
+    email: string | null
+    phone: string | null
   }>
   personaTools: Array<{
     name: string

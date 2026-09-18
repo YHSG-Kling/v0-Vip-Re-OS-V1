@@ -10,6 +10,7 @@ import {
   DollarSign,
   Percent,
 } from "lucide-react"
+import { marginColorClass } from "@/lib/format/style"
 
 interface MarginBreakdownItem {
   label: string
@@ -46,12 +47,10 @@ export function MarginBreakdownPanel({
 
   const formatPercent = (val: number) => `${val.toFixed(1)}%`
 
-  const getMarginColor = (margin: number) => {
-    if (margin >= 40) return "text-green-600"
-    if (margin >= 25) return "text-emerald-600"
-    if (margin >= 15) return "text-amber-600"
-    return "text-red-600"
-  }
+  // `getMarginColor` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to lib/format/style.ts `marginColorClass`
+  // (imported above).
+  const getMarginColor = marginColorClass
 
   const getTrendIcon = (trend?: number) => {
     if (trend === undefined) return null

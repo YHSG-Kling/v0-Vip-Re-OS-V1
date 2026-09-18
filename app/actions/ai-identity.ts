@@ -9,7 +9,10 @@ import { revalidatePath } from "next/cache"
 // and never verified caller auth. Any signed-in user could read or
 // overwrite another brokerage's assistant identity (the system prompt
 // applied to all customer-facing AI calls).
-const SAVE_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin", "team_lead", "team_leader", "agent"]
+// SCOPE LADDER (kept inline — admits agent/team_lead tiers, not an admin gate):
+// 'superadmin'/'super_admin' removed — tested against users.user_type, where 0
+// live rows store either spelling (platform staff carry platform_role).
+const SAVE_ROLES = ["admin", "broker", "broker_owner", "broker_admin", "team_lead", "team_leader", "agent"]
 
 async function requireCaller(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; teamId: string | null }
@@ -225,13 +228,13 @@ export async function saveAIIdentityProfile(
 
     // THE TOGGLE MADE REAL: saving ai_answer_calls=ON now actually wires the
     // AI receptionist — assistant created/updated from this profile + the
-    // scope's numbers imported into Vapi bound to the authoritative webhook.
-    // Best-effort + honest: without VAPI creds the save succeeds and the
+    // scope's numbers bound to the authoritative Twilio voice webhook.
+    // Best-effort + honest: without voice credentials the save succeeds and the
     // binding status says exactly why nothing was wired.
     let bindingNote: string | undefined
     if (input.aiAnswerCalls === true && data?.id) {
       try {
-        const { applyInboundCallBinding } = await import("@/lib/voice/vapi-numbers")
+        const { applyInboundCallBinding } = await import("@/lib/voice/inbound-number-binding")
         const b = await applyInboundCallBinding(svc, data.id)
         bindingNote = b.ok
           ? (b.applied ? `AI receptionist live — ${b.numbersBound ?? 0} number(s) bound to the assistant.` : undefined)
@@ -242,7 +245,9 @@ export async function saveAIIdentityProfile(
     }
 
     // Revalidate relevant pages
-    revalidatePath("/settings/admin/ai-identity")
+    // /settings/admin/ai-identity has no page.tsx — the brokerage-scope editor is
+    // app/dashboard/admin/ai-identity, the third of the three scope pages below.
+    revalidatePath("/dashboard/admin/ai-identity")
     revalidatePath("/dashboard/team/ai-identity")
     revalidatePath("/dashboard/agent/ai-identity")
 

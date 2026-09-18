@@ -45,6 +45,11 @@ import { orchestrateRenderAndSend } from "@/lib/direct-mail/orchestrate-send"
 import { resolveMailingAddressForContact } from "@/lib/contacts/resolve-mailing-address"
 import type { LifecycleEventType } from "@/lib/kernel/lifecycle-promo-policy"
 import type { Persona } from "@/lib/kernel/types"
+// RENDER BOUNDARY (§6) — `statusBadge` is PRINTED on the postcard that lands in
+// a consumer's mailbox, so it speaks the public word. The EVENT_DEFAULTS key
+// `price_reduction` is the live lifecycle_mail_policy.event_type CHECK value
+// and is UNCHANGED.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface DispatchLifecycleMailArgs {
   brokerageId: string
@@ -80,7 +85,7 @@ const EVENT_DEFAULTS: Record<LifecycleEventType, EventDefaults> = {
   just_listed:         { size: "6x9", statusBadge: "JUST LISTED", persona: "upsize",     withPhoto: true  },
   open_house_announce: { size: "6x9", statusBadge: "OPEN HOUSE",  persona: "first_time", withPhoto: true  },
   open_house_reminder: { size: "4x6", statusBadge: "THIS WEEKEND", persona: "first_time", withPhoto: false },
-  price_reduction:     { size: "4x6", statusBadge: "PRICE REDUCED", persona: "first_time", withPhoto: true  },
+  price_reduction:     { size: "4x6", statusBadge: priceImprovementLabel("print"), persona: "first_time", withPhoto: true  },
   under_contract:      { size: "4x6", statusBadge: "UNDER CONTRACT", persona: "upsize",   withPhoto: false },
   just_sold:           { size: "6x9", statusBadge: "JUST SOLD",   persona: "upsize",     withPhoto: true  },
   back_on_market:      { size: "6x9", statusBadge: "AVAILABLE AGAIN", persona: "first_time", withPhoto: true  },
@@ -117,28 +122,37 @@ export async function dispatchLifecycleMail(
     return { ok: false, event: args.eventType, status: "failed", reason: "tenant_mismatch" }
   }
 
-  // Hero photo precedence (Wave 36 m156):
-  //   1. listing_photos.is_hero=true — explicit agent pick
-  //   2. listing_photos.order_index=0 — MLS default
+  // Hero photo precedence (Wave 36 m156, repointed to listing_media by m368):
+  //   1. listing_media.is_primary=true on a photo row — explicit agent pick
+  //   2. lowest listing_media.sort_order photo row — MLS default
   //   3. null → composition falls back to brand-color gradient
-  // Two parallel queries; pick the first non-null.
+  // media_type is pinned on BOTH queries: a primary video or a floorplan
+  // rendered onto a postcard as the property hero is a printed defect.
+  // brokerage_id is pinned too — svc is a service-role client, so it bypasses
+  // RLS and would otherwise happily read another tenant's photo.
   const [heroFlagged, mlsFirst] = await Promise.all([
-    svc.from("listing_photos")
-      .select("photo_url")
+    svc.from("listing_media")
+      .select("file_url")
       .eq("listing_id", args.listingId)
-      .eq("is_hero", true)
+      .eq("brokerage_id", args.brokerageId)
+      .eq("media_type", "photo")
+      .eq("is_primary", true)
       .limit(1)
       .maybeSingle(),
-    svc.from("listing_photos")
-      .select("photo_url")
+    svc.from("listing_media")
+      .select("file_url")
       .eq("listing_id", args.listingId)
-      .order("order_index", { ascending: true })
+      .eq("brokerage_id", args.brokerageId)
+      .eq("media_type", "photo")
+      .order("sort_order", { ascending: true })
       .limit(1)
       .maybeSingle(),
   ])
+  if (heroFlagged.error) console.error("[mail-reactor] hero photo read failed:", heroFlagged.error.message)
+  if (mlsFirst.error) console.error("[mail-reactor] MLS-first photo read failed:", mlsFirst.error.message)
   const propertyPhotoUrl =
-    ((heroFlagged.data?.photo_url as string | undefined) ??
-     (mlsFirst.data?.photo_url as string | undefined) ??
+    ((heroFlagged.data?.file_url as string | undefined) ??
+     (mlsFirst.data?.file_url as string | undefined) ??
      null)
 
   // Agent team_id for brand cascade — listings.team_id first, agent's
@@ -322,9 +336,15 @@ export async function dispatchLifecycleMail(
 
     // Log the campaign with the sentinel that makes the idempotency
     // check work for the NEXT firing.
+    // direct_mail_campaigns.agent_id is agents-class. The USERS id here was
+    // FK-rejected, which took the idempotency sentinel with it — so the next
+    // firing saw no prior campaign and mailed the same lifecycle piece again.
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const mailAgentId = await resolveUserIdToAgentRecord(args.agentUserId, args.brokerageId)
+
     await svc.from("direct_mail_campaigns").insert({
       brokerage_id:        args.brokerageId,
-      agent_id:            args.agentUserId,
+      agent_id:            mailAgentId,
       contact_id:          contactId,
       marketing_campaign_id: args.listingId,
       campaign_name:       `Lifecycle ${args.eventType} - ${propertyAddress.slice(0, 60)}`,

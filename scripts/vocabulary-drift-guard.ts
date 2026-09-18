@@ -18,9 +18,11 @@
  *
  * Run UPDATE_VOCAB_BASELINE=1 to (re)write the baseline after intentionally changing the legacy set.
  */
-import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, writeFileSync, readdirSync } from "node:fs"
+import { walkTs as walkTsDir, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { stripComments as canonicalStripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p: string) => readFileSync(join(root, p), "utf8")
@@ -28,7 +30,7 @@ const read = (p: string) => readFileSync(join(root, p), "utf8")
 /** Strip block + line comments so a code-pattern written INSIDE a comment (e.g. a doc example of a
  *  `.eq("milestone_name","x")` call) is never mistaken for real code. Good enough for this guard. */
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+  return canonicalStripComments(src)
 }
 const BASELINE_PATH = join(root, "scripts", "vocabulary-drift-baseline.json")
 
@@ -144,20 +146,19 @@ for (const c of CHECKS) {
 // silently skip it (exactly the listing-appt-prep risk: the chain only fires if its triggerEvent
 // string matches what callers pass to triggerChainsForEvent). This asserts every chain trigger is a
 // real, emitted event.
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated DIRECTORIES,
+// and a root-level FILE is not a directory, so `proxy.ts` — the Next 16 edge
+// middleware, which gates auth and queries four tables with a SERVICE client on
+// EVERY request — was outside this guard's corpus, and a file that is never opened
+// reports green. `rootRuntimeFiles()` from the same survivor supplies it.
+//
+// The local helper keeps its name and signature — it takes a LIST of directories,
+// which the survivor does not — but its recursion is now the survivor's, aliased
+// on import because this file already owned the name `walkTs`.
 function walkTs(dirs: string[]): string[] {
-  const out: string[] = []
-  const rec = (d: string) => {
-    let entries: string[]
-    try { entries = readdirSync(d) } catch { return }
-    for (const n of entries) {
-      if (n === "node_modules" || n.startsWith(".")) continue
-      const p = join(d, n)
-      if (statSync(p).isDirectory()) rec(p)
-      else if (/\.(ts|tsx)$/.test(n)) out.push(p)
-    }
-  }
-  for (const d of dirs) rec(join(root, d))
-  return out
+  return [...dirs.flatMap((d) => walkTsDir(join(root, d))), ...rootRuntimeFiles(root)]
 }
 
 const CHAINS_DIR_FRAG = "workflow-orchestrator/chains/"
@@ -186,6 +187,21 @@ function emittedEventStrings(): Set<string> {
     const src = readFileSync(f, "utf8")
     const re = /(?:eventType|triggerEvent):\s*"([^"]+)"/g
     while ((m = re.exec(src))) set.add(m[1])
+
+    // …and the SAME emission written through a local const. An emitter that does
+    //     const eventType = "compliance.listing_agreement_passed"
+    //     await startRun({ triggerEvent: eventType, … })
+    // is emitting exactly as much as one that inlines the string, but a literal-only
+    // scan reports the listening chain as DEAD. That false negative is not harmless:
+    // it pushes you to duplicate the string at the call site purely to satisfy the
+    // guard. Resolve the identifier against a const in the same file instead — the
+    // construct is what matters, not the spelling.
+    const viaVar = /(?:eventType|triggerEvent):\s*([A-Za-z_$][\w$]*)/g
+    while ((m = viaVar.exec(src))) {
+      const ident = m[1]
+      const decl = new RegExp(`(?:const|let|var)\\s+${ident}\\s*(?::[^=]+)?=\\s*"([^"]+)"`).exec(src)
+      if (decl) set.add(decl[1])
+    }
   }
   return set
 }

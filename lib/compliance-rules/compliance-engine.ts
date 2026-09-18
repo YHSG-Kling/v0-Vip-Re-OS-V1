@@ -148,8 +148,25 @@ export async function batchEvaluateCompliance(
 // HELPER FUNCTIONS
 // ============================================
 
+/**
+ * `input` WAS ACCEPTED AND READ BY NOTHING until 2026-08-24, and the one thing only
+ * it could say was the one thing this list was missing: WHICH ARMS ACTUALLY RAN.
+ *
+ * `evaluateContentCompliance` runs `evaluateStateProtectedClasses` only when a
+ * state is resolvable — `state_code`, or a `brokerage_id` it can look the state up
+ * from. With neither, that arm is skipped ENTIRELY and the verdict can still come
+ * back "pass" with `required_actions: ["ready_for_use"]`. That is "nobody checked"
+ * rendering as "checked and fine", which CLAUDE.md §4 forbids. The skip is now
+ * stated in the actions, where every consumer of the verdict already looks.
+ */
 function determineRequiredActions(violations: RuleViolation[], input: ComplianceContentInput): string[] {
   const actions: string[] = []
+
+  // FAIL CLOSED, LOUDLY: the state-law arm did not run, so its silence is not a pass.
+  const stateArmRan = Boolean(input.state_code || input.brokerage_id)
+  if (!stateArmRan) {
+    actions.push("state_law_check_not_run")
+  }
 
   // Check for regulatory violations
   const hasRegulatoryViolations = violations.some((v) => v.rule_category === "regulatory")
@@ -169,7 +186,10 @@ function determineRequiredActions(violations: RuleViolation[], input: Compliance
     (v) => v.rule_category === "brand" && v.rule_name === "Missing Required Disclaimer"
   )
   if (hasBrandViolations) {
-    actions.push("add_required_disclaimers")
+    // Name the content type the disclaimer requirement is keyed on
+    // (rule-evaluators.ts DISCLAIMER_REQUIREMENTS matches on exactly this field),
+    // so the reader of this list knows which disclaimer set is owed.
+    actions.push(`add_required_disclaimers:${input.content_type}`)
   }
 
   // Check for AI safety issues
@@ -178,9 +198,12 @@ function determineRequiredActions(violations: RuleViolation[], input: Compliance
     actions.push("rewrite_for_buyer_focus")
   }
 
-  // If no violations, mark as ready
-  if (violations.length === 0) {
+  // If no violations, mark as ready — but only when every arm actually ran. A clean
+  // result from a check that was skipped is not a clean result.
+  if (violations.length === 0 && stateArmRan) {
     actions.push("ready_for_use")
+  } else if (violations.length === 0) {
+    actions.push("review_recommended_state_law_unchecked")
   }
 
   // If only low severity, suggest optional review

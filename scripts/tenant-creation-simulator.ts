@@ -30,6 +30,12 @@ import {
   requiresOnboardingRow,
   ownerNeedsTeamRow,
 } from "../lib/kernel/tenant-provisioning-spec"
+// The tenant rosters, so the invite gate below can be asked BEHAVIOURALLY rather
+// than matched by the name of whichever wrapper the action currently imports.
+import {
+  isAdminOrBroker,
+  isTenantCommerceAdmin,
+} from "../lib/auth/resolve-user-role"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -109,8 +115,46 @@ function sourceLayer() {
     /export async function inviteTenantMember/.test(kernel) &&
     kernel.indexOf("inviteUserByEmail", kernel.indexOf("inviteTenantMember")) < kernel.indexOf('.from("users").upsert', kernel.indexOf("export async function inviteTenantMember")))
   const inv = src("app/actions/admin/invite-user.ts")
+  // The literal this replaced carried a `superadmin` user_type matching zero
+  // live rows and omitted broker_owner. The shared roster carries the ruling's
+  // tenant admin-class roles; the platform half is a SEPARATE question, asked
+  // separately below.
+  //
+  // RETARGETED 2026-09-04 (§2). This read
+  // `/isAdminOrBroker\(\{\s*user_type:\s*callerType/` — the NAME of one
+  // wrapper — and went red when the gate was repointed at a NARROWER one. An
+  // invite consumes a BILLED SEAT (`seatGate` runs three lines later and offers
+  // an upgrade when the invite does not fit), so after the owner's 2026-09-04
+  // ruling seated `compliance_officer` as tenant staff admin, this site
+  // deliberately takes the commerce tier: the same roster minus that one role,
+  // because administering staff is not the same as buying the brokerage a seat.
+  // Pinning the wrapper's name made a correct narrowing look like a regression.
+  //
+  // The RULE is asked in two halves that a rename cannot break: the gate is a
+  // SHARED, IMPORTED roster predicate applied to the caller's own type, and the
+  // roster it resolves to admits the seats that could invite before and refuses
+  // the outside class.
+  const INVITE_PREDICATES: Record<string, (p: { user_type?: string | null }) => boolean> = {
+    isAdminOrBroker,
+    isTenantCommerceAdmin,
+  }
+  const invImport = inv.match(/import\s*\{([^}]*)\}\s*from\s*"@\/lib\/auth\/resolve-user-role"/)
+  const invPredicateName = (invImport?.[1] ?? "").split(",").map((x) => x.trim())
+    .find((n) => n in INVITE_PREDICATES)
+  const invPredicate = INVITE_PREDICATES[invPredicateName ?? ""] ?? (() => false)
   check("tenant admins/broker/team_lead invite THEIR OWN users via the shared core",
-    /inviteTenantMember\(\{/.test(inv) && /\["admin", "broker", "superadmin", "team_lead"\]\.includes\(callerType\)/.test(inv))
+    /inviteTenantMember\(\{/.test(inv) &&
+    !!invPredicateName &&
+    new RegExp(`\\b${invPredicateName}\\(\\{\\s*user_type:\\s*callerType`).test(inv))
+  check("…and the roster it resolves to admits every seat that could invite before",
+    ["admin", "broker", "broker_owner", "broker_admin", "team_lead"].every((r) => invPredicate({ user_type: r })))
+  check("…and refuses the outside class, and an unresolvable role (§4 fail closed)",
+    ["contact", "vendor", "agent", "isa", "tc"].every((r) => !invPredicate({ user_type: r })) &&
+    !invPredicate({ user_type: "" }))
+  // POSITIVE CONTROL — a finder that matched nothing would leave invPredicate as
+  // always-false, which satisfies the refusal line above all by itself.
+  check("POSITIVE CONTROL — the invite predicate was really discovered, and discriminates",
+    !!invPredicateName && invPredicate({ user_type: "broker" }) && !invPredicate({ user_type: "contact" }))
   const tu = src("app/actions/superadmin/tenant-users.ts")
   check("superadmin can CREATE users down into ANY tenant (gated + audited + shared core)",
     /export async function createTenantUserAction/.test(tu) && /requireSuperadmin/.test(tu) && /inviteTenantMember\(\{/.test(tu) && /"user\.created"/.test(tu))
@@ -121,8 +165,13 @@ function sourceLayer() {
   const reg = src("lib/kernel/manager-registry.ts")
   check("tenant_creation burn domain owned by data_steward with proof test:tenant-creation",
     /tenant_creation:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:tenant-creation"/.test(reg))
+  // The RULE is "package.json runs this file", not "with exactly these
+  // characters": the live layer dynamic-imports lib/kernel/users, which is
+  // `server-only` since 2026-09-02 (lane S1), so the script line legitimately
+  // carries NODE_OPTIONS=--conditions=react-server — and a pin on the bare
+  // spelling went red because the work landed (§2).
   check("package.json wires the proof",
-    /"test:tenant-creation":\s*"tsx scripts\/tenant-creation-simulator\.ts"/.test(src("package.json")))
+    /"test:tenant-creation":\s*"(?:NODE_OPTIONS=[^\s"]+\s+)?tsx scripts\/tenant-creation-simulator\.ts"/.test(src("package.json")))
 }
 
 async function liveLayer() {
@@ -153,8 +202,10 @@ async function liveLayer() {
 
       const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", owner.userId!).maybeSingle()
       check(`live[${tier}]: agents row present === spec`, !!agentRow === requiresAgentRow("admin", tier))
-      const { data: roleRow } = await svc.from("user_role_assignments").select("id").eq("user_id", owner.userId!).maybeSingle()
-      check(`live[${tier}]: role assignment written (onConflict fix)`, !!roleRow)
+      // Existence, over ROWS — `.maybeSingle()` here would start erroring the day
+      // provisioning writes an owner a second grant, and report the write missing.
+      const { data: roleRows } = await svc.from("user_role_assignments").select("id").eq("user_id", owner.userId!)
+      check(`live[${tier}]: role assignment written (onConflict fix)`, (roleRows?.length ?? 0) > 0)
       const { data: onbRow } = await svc.from("agent_onboarding").select("id").eq("user_id", owner.userId!).maybeSingle()
       check(`live[${tier}]: onboarding row present === agent-scoped spec`, !!onbRow === requiresAgentRow("admin", tier))
       if (tier === "team") {

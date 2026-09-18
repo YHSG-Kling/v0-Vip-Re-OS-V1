@@ -29,10 +29,34 @@
  *             ENGAGEMENT PROXY: we don't have a per-message reply
  *             threading id in our schema, so any inbound from the
  *             same contact in the window after dispatch is counted.
- *             Over-counts when a contact replies for unrelated reasons;
- *             under-counts when the bundle has no contact_id (lead-only
- *             sends are skipped entirely).
+ *             Over-counts when a contact replies for unrelated reasons.
+ *             `messages` carries NO lead_id (schema-snapshot :425), so a
+ *             lead-only dispatch has no inbound-message proxy at all —
+ *             see the LEAD block below for what it does have.
  *     leads = COUNT contacts CREATED via the reply path
+ *
+ *   LEAD RECIPIENT (campaign_bundle_dispatches.lead_id — wave 26 columns)
+ *     orchestrate-bundle-send.ts writes lead_id OR contact_id (a bundle
+ *     can be mailed / emailed / texted to a LEAD), but this rollup only
+ *     ever selected contact_id, so every bundle sent to a lead counted
+ *     its QR scans and nothing else: no engagement, and — worse — no
+ *     conversion, even though the lead converting IS the outcome a
+ *     lead-targeted bundle exists to drive. Now, for a lead dispatch:
+ *     scans += COUNT mail_response_tracking WHERE lead_id = this.lead_id
+ *              AND created_at >= dispatched_at AND response_type <>
+ *              'qr_scan' (qr_scan rows are the same events already
+ *              counted above via qr_scan_events — counting them here
+ *              too would double them; call / form_submit / appointment
+ *              are the hand-raises only this ledger records, m491)
+ *     leads += 1 WHEN leads.converted_at >= dispatched_at (the lead
+ *              became a contact after the bundle reached them — a
+ *              sharper signal than the brokerage-wide source='qr_scan'
+ *              count, and the only one that names THIS recipient)
+ *     and the lead's contacts row (leads.contact_id), when it has one,
+ *     stands in for contact_id in the SMS / VOICEDROP / PORTAL proxies
+ *     so a converted lead's replies are not dropped on the floor.
+ *     Blind spot: a lead that replied by SMS but has not converted is
+ *     invisible here — messages has no lead_id to find it by.
  *
  *   SOCIAL_POST (social_media_analytics by post_id)
  *     scans = SUM clicks + engagements per platform row (engagements
@@ -76,6 +100,7 @@ interface DispatchRow {
   brokerage_id:      string
   bundle_id:         string
   contact_id:        string | null
+  lead_id:           string | null
   channel_outcomes:  Record<string, { message_id?: string | null; preset_id?: string | null }> | null
   dispatched_at:     string
 }
@@ -94,7 +119,7 @@ export async function GET(req: NextRequest) {
   // Pull every dispatch in the 28d window. Per-cycle cap so one
   // cron tick doesn't try to roll up an enormous backlog.
   const { data: dispatchRows } = await svc.from("campaign_bundle_dispatches")
-    .select("id, brokerage_id, bundle_id, contact_id, channel_outcomes, dispatched_at")
+    .select("id, brokerage_id, bundle_id, contact_id, lead_id, channel_outcomes, dispatched_at")
     .gte("dispatched_at", since28d)
     .order("dispatched_at", { ascending: false })
     .limit(5000)
@@ -104,12 +129,52 @@ export async function GET(req: NextRequest) {
   }
 
   let totalUpdated = 0
+  let leadDispatches = 0
+  let leadConversions = 0
+  let leadLookupRefusals = 0
   const byBundle = new Map<string, { dispatches: number; scans: number; leads: number }>()
 
   for (const d of dispatches) {
     let scans = 0
     let leads = 0
     const outcomes = d.channel_outcomes ?? {}
+
+    // ── LEAD recipient (see the header block) ───────────────────────────────
+    // Resolved FIRST because the lead's contacts row, when it has one, is what
+    // the SMS / VOICEDROP / PORTAL proxies below key on.
+    let recipientContactId = d.contact_id
+    if (d.lead_id) {
+      leadDispatches++
+      const { data: leadRow, error: leadErr } = await svc.from("leads")
+        .select("id, contact_id, converted_at")
+        .eq("id", d.lead_id)
+        .eq("brokerage_id", d.brokerage_id)
+        .maybeSingle()
+      if (leadErr) {
+        // §3: a refused read is not "no lead". Counted and logged, never
+        // rendered as a zero.
+        leadLookupRefusals++
+        console.error("[bundle-attribution-rollup] leads read refused:", leadErr.message, { dispatch: d.id, lead_id: d.lead_id })
+      } else if (leadRow) {
+        const lead = leadRow as { id: string; contact_id: string | null; converted_at: string | null }
+        if (!recipientContactId && lead.contact_id) recipientContactId = lead.contact_id
+        if (lead.converted_at && lead.converted_at >= d.dispatched_at) {
+          leads += 1
+          leadConversions++
+        }
+      }
+      const { count: leadResponses, error: leadRespErr } = await svc.from("mail_response_tracking")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", d.brokerage_id)
+        .eq("lead_id", d.lead_id)
+        .neq("response_type", "qr_scan")
+        .gte("created_at", d.dispatched_at)
+      if (leadRespErr) {
+        console.error("[bundle-attribution-rollup] mail_response_tracking read refused:", leadRespErr.message, { dispatch: d.id })
+      } else {
+        scans += leadResponses ?? 0
+      }
+    }
 
     // ── POSTCARD / LETTER channel ──────────────────────────────────────────
     // Join direct_mail_campaigns by bundle_dispatch_id → qr_code_id →
@@ -164,10 +229,10 @@ export async function GET(req: NextRequest) {
     // contact after dispatch counts as engagement. See top docstring for
     // the over/under-count caveat.
     const smsMsgId = outcomes.sms?.message_id
-    if (smsMsgId && d.contact_id) {
+    if (smsMsgId && recipientContactId) {
       const { count: replyCount } = await svc.from("messages")
         .select("id", { count: "exact", head: true })
-        .eq("contact_id", d.contact_id)
+        .eq("contact_id", recipientContactId)
         .eq("direction", "inbound")
         .eq("type", "sms")
         .gte("created_at", d.dispatched_at)
@@ -180,10 +245,10 @@ export async function GET(req: NextRequest) {
     // in the window after the drop — call-backs and SMS replies both
     // count. Same over/under-count caveat as SMS above.
     const voicedropJobId = outcomes.voicedrop?.message_id
-    if (voicedropJobId && d.contact_id) {
+    if (voicedropJobId && recipientContactId) {
       const { count: vmReplyCount } = await svc.from("messages")
         .select("id", { count: "exact", head: true })
-        .eq("contact_id", d.contact_id)
+        .eq("contact_id", recipientContactId)
         .eq("direction", "inbound")
         .gte("created_at", d.dispatched_at)
       scans += vmReplyCount ?? 0
@@ -248,11 +313,11 @@ export async function GET(req: NextRequest) {
       // existence of any portal_access_logs entry for this contact
       // in the 14d after the push as a proxy. Conservative — under-
       // counts active engagement but never overstates.
-      if (d.contact_id) {
+      if (recipientContactId) {
         const fourteenDaysAfter = new Date(new Date(d.dispatched_at).getTime() + 14 * 86_400_000).toISOString()
         const { count: portalViews } = await svc.from("portal_access_logs")
           .select("id", { count: "exact", head: true })
-          .eq("contact_id", d.contact_id)
+          .eq("contact_id", recipientContactId)
           .gte("accessed_at", d.dispatched_at)
           .lt("accessed_at", fourteenDaysAfter)
         scans += portalViews ?? 0
@@ -278,6 +343,12 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ran_at:               new Date().toISOString(),
     dispatches_rolled_up: totalUpdated,
+    // Lead-recipient attribution, published beside the number (§2): how many
+    // dispatches named a lead, how many of those leads converted after the
+    // bundle reached them, and how many lead reads were REFUSED (not zero).
+    lead_dispatches:      leadDispatches,
+    lead_conversions:     leadConversions,
+    lead_lookup_refusals: leadLookupRefusals,
     bundle_summaries:     [...byBundle.entries()].map(([id, a]) => ({
       bundle_id:    id,
       dispatches:   a.dispatches,

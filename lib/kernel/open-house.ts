@@ -8,11 +8,60 @@
  * - attachOpenHouseSourceAttribution()
  * - notifyAssignedAgentForOpenHouseLead()
  * - generateOpenHouseFollowupNextAction()
+ *
+ * TOMBSTONE (§1.3 + §2, 2026-08-31, lane M4): lib/kernel/OPEN-HOUSE-PATCH-DOCS.ts
+ * deleted. It was a prose status report wearing a .ts extension — 291 lines of
+ * comment plus one waypoint const (IMPLEMENTATION_COMPLETE = true) that nothing
+ * imported and no guard asserted. §2 forbids pinning to a waypoint: "complete"
+ * was a statement about one 2026 patch session, permanently stale the moment the
+ * code moved on. The capability it described survives as THIS module plus
+ * app/actions/open-house-kernel.ts, proven by test:open-house-consolidation and
+ * test:open-house-lead-routing — running guards, not a self-declared checklist.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 import { KernelEvent } from "./events"
+import type { WelcomeOrigin } from "@/lib/contact-promotion/welcome-situation"
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE WELCOME `origin` — shared by every reader that hands an open-house-sourced
+// contact to deliverConversionWelcome (owner ruling 2026-09-10, wave 51: "contact
+// came from open house — same welcome email but mentions the open house").
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Resolve the them-first open-house facts (listing address + date) for
+ * `WelcomeOrigin`, given the open_house_events.id.
+ *
+ * NEVER a guess: `open_house_events` carries `property_address` and `event_date`
+ * directly — no join to `listings` needed. Returns null (no origin) when either
+ * is missing rather than inventing a placeholder date/address — the welcome still
+ * sends, it simply says nothing about the visit.
+ */
+export async function resolveOpenHouseWelcomeOrigin(
+  supabase: ReturnType<typeof createServiceClient>,
+  openHouseId: string | null | undefined,
+): Promise<WelcomeOrigin | null> {
+  if (!openHouseId) return null
+  const { data } = await supabase
+    .from("open_house_events")
+    .select("property_address, event_date")
+    .eq("id", openHouseId)
+    .maybeSingle()
+  const row = data as { property_address?: string | null; event_date?: string | null } | null
+  if (!row?.property_address || !row.event_date) return null
+  return { kind: "open_house", listingAddress: row.property_address, openHouseDate: row.event_date }
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -119,26 +168,51 @@ export async function resolveOrCreateOpenHouseContact(input: {
       }
     }
 
-    // Try to find existing contact by email or phone
-    let existingContact = null
+    // Try to find existing contact by email or phone.
+    //
+    // DESTRUCTURE THE ERROR ON BOTH LOOKUPS. supabase-js RESOLVES a refused
+    // read, so `const { data }` turned a permission failure or a malformed
+    // filter into `null` — indistinguishable from "no such contact". This
+    // function's whole job is dedup, so that silence produced a SECOND contact
+    // row for a person who was already in the book, every time the read failed.
+    // A failed lookup must abort the resolve, not fall through to an insert.
+    let existingContact: { id: string } | null = null
     if (email) {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("contacts")
         .select("id")
+        // TENANT: service-role client bypasses RLS, so the brokerage filter is
+        // the only thing keeping this lookup inside the tenant.
         .eq("brokerage_id", brokerage_id)
         .eq("email", email)
         .maybeSingle()
+      if (error) {
+        return {
+          success: false,
+          contact_id: null,
+          was_created: false,
+          error: `Contact lookup by email failed: ${error.message}`,
+        }
+      }
       existingContact = data
     }
 
     // If not found by email, try phone
     if (!existingContact && phone) {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("contacts")
         .select("id")
         .eq("brokerage_id", brokerage_id)
         .eq("phone", phone)
         .maybeSingle()
+      if (error) {
+        return {
+          success: false,
+          contact_id: null,
+          was_created: false,
+          error: `Contact lookup by phone failed: ${error.message}`,
+        }
+      }
       existingContact = data
     }
 
@@ -184,6 +258,23 @@ export async function resolveOrCreateOpenHouseContact(input: {
     console.log(
       `[Kernel] Created new contact ${newContact.id} from open_house attendee (open_house: ${open_house_id})`
     )
+
+    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This kernel
+    // command creates the contact row directly and emits no CONTACT_CREATED, so
+    // the event-reactor lane never saw open-house attendees. Voided: attendee
+    // resolution must not fail because of enrichment. Live-deal suppression and
+    // de-duplication are inside queueContactEnrichment.
+    void import("@/lib/enrichment/contact-enrichment-core")
+      .then((m) =>
+        m.queueContactEnrichment({
+          contactId: newContact.id,
+          brokerageId: brokerage_id,
+          triggerType: "open_house",
+          supabase,
+        }),
+      )
+      .catch(() => {})
+
     return {
       success: true,
       contact_id: newContact.id,
@@ -230,6 +321,16 @@ export async function resolveOrCreateOpenHouseContact(input: {
 export async function createOpenHouseAttendeeFromContact(input: {
   open_house_id: string
   contact_id: string
+  /**
+   * TENANT STAMP — NOT OPTIONAL.
+   * open_house_attendees RLS reads
+   *   ((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))
+   * on select, update AND delete (verified live in pg_policies). An attendee
+   * row written without a brokerage_id is therefore readable — and editable —
+   * by EVERY brokerage on the platform, not merely untidy. This insert used to
+   * omit the column entirely.
+   */
+  brokerage_id: string
   first_name: string
   last_name?: string
   email?: string
@@ -237,6 +338,21 @@ export async function createOpenHouseAttendeeFromContact(input: {
   check_in_method?: string
   interest_level?: number
   notes?: string
+  /**
+   * TCPA CONSENT — MOVED HERE FROM app/actions/open-house.ts:recordAttendee,
+   * which is being retired. That function gated phone storage on consent
+   * (`phone: tcpaConsent ? phone : null`) and this one did not, so repointing
+   * the walk-in surface at the kernel would have started storing a walk-in's
+   * mobile number with tcpa_consent recorded as FALSE — capturing a number the
+   * OS then knows it has no permission to dial or text. The column is NOT NULL
+   * DEFAULT false, so omitting it does not fail loudly; it just quietly records
+   * the absence of consent next to the number it should have suppressed.
+   *
+   * The rule is the same one the public kiosk route enforces: no consent, no
+   * phone number retained. Name, email and the attendance record are all still
+   * captured — declining consent costs the lead nothing except the phone.
+   */
+  tcpa_consent?: boolean
 }): Promise<CreateAttendeeResult> {
   const supabase = createServiceClient()
 
@@ -244,6 +360,7 @@ export async function createOpenHouseAttendeeFromContact(input: {
     const {
       open_house_id,
       contact_id,
+      brokerage_id,
       first_name,
       last_name,
       email,
@@ -251,6 +368,7 @@ export async function createOpenHouseAttendeeFromContact(input: {
       check_in_method = "manual",
       interest_level = 3,
       notes,
+      tcpa_consent = false,
     } = input
 
     // Validate required fields
@@ -261,6 +379,13 @@ export async function createOpenHouseAttendeeFromContact(input: {
         error: "open_house_id and contact_id are required",
       }
     }
+    if (!brokerage_id) {
+      return {
+        success: false,
+        attendee_id: null,
+        error: "brokerage_id is required — an untenanted attendee row is readable by every brokerage",
+      }
+    }
 
     // Insert attendee record
     const { data: attendee, error: insertErr } = await supabase
@@ -268,9 +393,15 @@ export async function createOpenHouseAttendeeFromContact(input: {
       .insert({
         event_id: open_house_id,
         contact_id,
+        brokerage_id,
         name: `${first_name.trim()} ${(last_name || "").trim()}`.trim(),
         email: email ? email.trim().toLowerCase() : null,
-        phone: phone ? phone.replace(/\D/g, "") : null,
+        // NO CONSENT, NO NUMBER. Storing the digits while recording
+        // tcpa_consent false is the worst of both: the OS holds a number it is
+        // not permitted to dial or text, and every downstream consent check
+        // reads false and suppresses it anyway. Drop it at the write.
+        phone: tcpa_consent && phone ? phone.replace(/\D/g, "") : null,
+        tcpa_consent,
         // interest_level is CHECK-constrained (hot|warm|cold|no_interest); map the numeric 1-5 input.
         interest_level:
           interest_level == null ? "warm"
@@ -343,21 +474,41 @@ export async function attachOpenHouseSourceAttribution(input: {
   try {
     const { contact_id, open_house_id, attendee_id, brokerage_id, agent_id } = input
 
-    // Emit lifecycle event for audit trail
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type: "contact",
-        entity_id: contact_id,
-        event_type: KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED,
-        brokerage_id,
-        metadata: {
-          attendee_id,
-          agent_id,
-          resolved_at: new Date().toISOString(),
-        },
-        created_at: new Date().toISOString(),
-      })
+    if (!brokerage_id) {
+      return { success: false, error: "brokerage_id is required for the attribution event" }
+    }
+
+    // Emit the kernel event — audit row + reactor.
+    // The error was previously not destructured, so a refused insert resolved
+    // quietly and this function reported success with no audit row written —
+    // the attribution "succeeded" and the trail it exists to leave was absent.
+    // emitKernelEvent reports the refusal in `error`; it is read here the same way.
+    const { emitKernelEvent } = await import("./emit")
+    const { error: eventErr } = await emitKernelEvent({
+      entityType: "contact",
+      entityId: contact_id,
+      contactId: contact_id,
+      event: KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED,
+      brokerageId: brokerage_id,
+      // lifecycle_events.agent_id is agents-class (the column exists and is
+      // nullable); actor_user_id is the users-class one and is deliberately
+      // left alone here — an agents.id in it is an FK violation.
+      agentId: agent_id,
+      metadata: {
+        attendee_id,
+        // open_house_id rides in metadata so the reactor can resolve the welcome's
+        // `origin` (listing address + date, owner ruling 2026-09-10 wave 51) without
+        // a second lookup through the attendee row — see resolveOpenHouseWelcomeOrigin.
+        open_house_id,
+        agent_id,
+        resolved_at: new Date().toISOString(),
+      },
+    })
+
+    if (eventErr) {
+      console.error(`[Kernel] attribution lifecycle_events insert failed:`, eventErr)
+      return { success: false, error: `Failed to record open house attribution: ${eventErr}` }
+    }
 
     console.log(`[Kernel] Attached open_house attribution to contact ${contact_id}`)
     return { success: true }
@@ -397,7 +548,14 @@ export async function attachOpenHouseSourceAttribution(input: {
 export async function notifyAssignedAgentForOpenHouseLead(input: {
   contact_id: string
   attendee_id: string
+  /** AGENTS-CLASS. ai_autopilot_actions.agent_id FKs agents(id) — verified live
+   *  in pg_constraint. A users.id here is rejected outright: no agents row's id
+   *  is also a users id in this database (checked: zero overlap). */
   agent_id: string
+  /** ai_autopilot_actions.brokerage_id FKs brokerages(id) and the dashboard read
+   *  path (app/dashboard/agent/page.tsx) and every brokerage-scoped rollup key
+   *  off it. It was omitted, so these rows landed untenanted. */
+  brokerage_id: string
   open_house_id: string
   first_name: string
   email?: string
@@ -406,13 +564,21 @@ export async function notifyAssignedAgentForOpenHouseLead(input: {
   const supabase = createServiceClient()
 
   try {
-    const { contact_id, attendee_id, agent_id, open_house_id, first_name, email, interest_level } = input
+    const { contact_id, attendee_id, agent_id, brokerage_id, open_house_id, first_name, email, interest_level } = input
 
-    // Queue an AI next action for the agent's follow-up dashboard
+    if (!agent_id || !brokerage_id) {
+      return { success: false, error: "agent_id (agents.id) and brokerage_id are both required" }
+    }
+
+    // Queue an AI next action for the agent's follow-up dashboard.
+    // NOTE: this is an INTERNAL queue row, not an egress. Nothing is sent to the
+    // attendee here, so no consent or channel-preference gate applies or is
+    // bypassed — the agent reads it on their own dashboard.
     const { error: actionErr } = await supabase
       .from("ai_autopilot_actions")
       .insert({
         agent_id,
+        brokerage_id,
         entity_type: "contact",
         entity_id: contact_id,
         action_type: "open_house_follow_up",
@@ -429,8 +595,12 @@ export async function notifyAssignedAgentForOpenHouseLead(input: {
       })
 
     if (actionErr) {
-      console.error(`[Kernel] Failed to create next action:`, actionErr?.message)
-      // Don't fail overall if this fails
+      // This used to log and then `return { success: true }` regardless — the
+      // one behaviour the brief calls a silent no-op that reports success. The
+      // notification IS the deliverable of this command; if the row did not
+      // land, the agent was never notified and the caller must be told.
+      console.error(`[Kernel] Failed to create next action:`, actionErr.message)
+      return { success: false, error: `Agent notification could not be queued: ${actionErr.message}` }
     }
 
     console.log(`[Kernel] Notified agent ${agent_id} about open_house lead from contact ${contact_id}`)
@@ -478,12 +648,19 @@ export async function generateOpenHouseFollowupNextAction(input: {
   property_id?: string
   first_name: string
   interest_level: number
+  /** AGENTS-CLASS — see notifyAssignedAgentForOpenHouseLead. */
   agent_id: string
+  /** Tenant stamp for ai_autopilot_actions; see the same note. */
+  brokerage_id: string
 }): Promise<GenerateFollowupResult> {
   const supabase = createServiceClient()
 
   try {
-    const { contact_id, attendee_id, open_house_id, property_id, first_name, interest_level, agent_id } = input
+    const { contact_id, attendee_id, open_house_id, property_id, first_name, interest_level, agent_id, brokerage_id } = input
+
+    if (!agent_id || !brokerage_id) {
+      return { success: false, error: "agent_id (agents.id) and brokerage_id are both required" }
+    }
 
     // Determine urgency and delay based on interest level
     const urgencyMap = {
@@ -501,6 +678,8 @@ export async function generateOpenHouseFollowupNextAction(input: {
     let aiMessage = ""
     try {
       const { text } = await generateTextRouted({
+        brokerageId: brokerage_id,
+        agentId: agent_id,
         model: "openai/gpt-4o-mini",
         prompt: `Generate a brief, personalized follow-up message to ${first_name} after they attended our open house (interest level: ${interest_level}/5). Keep it under 100 words, warm and conversational.`,
       })
@@ -515,6 +694,7 @@ export async function generateOpenHouseFollowupNextAction(input: {
       .from("ai_autopilot_actions")
       .insert({
         agent_id,
+        brokerage_id,
         entity_type: "contact",
         entity_id: contact_id,
         action_type: "open_house_follow_up_message",

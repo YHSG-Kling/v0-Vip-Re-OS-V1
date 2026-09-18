@@ -1,19 +1,30 @@
 /**
  * Cron: poll-did-avatars
- * Runs every 3 minutes to check D-ID avatar creation status for all
- * agent_avatar_assets rows in 'pending' or 'processing' state.
  *
- * D-ID /avatars flow:
- *   1. POST /avatars submits job → status='created'
- *   2. D-ID processes the source video (1–5 min)
- *   3. GET /avatars/{id} returns status: 'created'|'training'|'done'|'error'
- *   4. On done: store avatar_id as ready, update agent_voice_profiles.did_avatar_id
- *      for default avatars so generate-video picks it up immediately
- *   5. On error: mark failed with D-ID error message
+ * THE FALLBACK, NOT THE MECHANISM. Completions now arrive on the D-ID webhook
+ * (/api/webhooks/did) within seconds of the job finishing. This cron stays
+ * because a webhook is not a guarantee — DID_WEBHOOK_SECRET may be unset, the
+ * public origin may not be reachable from D-ID, a delivery can be dropped, and
+ * avatars submitted before the webhook existed carry no callback at all. It
+ * runs every 3 minutes and finds whatever the webhook did not.
+ *
+ * It shares ONE completion implementation with the webhook —
+ * lib/did/avatar-completion.ts — so the two can never drift into disagreeing
+ * about what "done" means. That module also re-reads the row and refuses to act
+ * on one already ready/failed, which is what makes a cron tick racing a webhook
+ * delivery a no-op instead of a duplicate notification.
+ *
+ * What is still THIS route's own job: deciding what a failed *poll* means.
+ *   · 404 → TERMINAL. D-ID has no such job; no tick will ever resolve it.
+ *   · 402 / 451 / 400 → terminal via classifyDidError; retrying burns quota and
+ *     hides the real answer from the agent waiting on their avatar.
+ *   · 429 / 5xx → transient; leave the row alone and try next tick.
  */
 
-import {
-type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
+import { classifyDidError } from "@/lib/did/contract"
+import { applyAvatarOutcome } from "@/lib/did/avatar-completion"
+import { didRequest, didConfigured } from "@/lib/did/gateway"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -22,8 +33,6 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-
-const DID_API_BASE = "https://api.d-id.com"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -45,9 +54,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const supabase = createServiceClient()
-    const didApiKey = process.env.DID_API_KEY
 
-    if (!didApiKey) {
+    // Asked of the gateway rather than re-read from env here — one place decides
+    // whether D-ID is configured.
+    if (!didConfigured()) {
       await recordCronSuccessAction({
         context_id: contextId,
         records_processed: 0,
@@ -59,119 +69,72 @@ export async function GET(request: NextRequest) {
 
     const { data: pending, error: fetchError } = await supabase
       .from("agent_avatar_assets")
-      .select("id, agent_id, brokerage_id, did_avatar_id, is_default, label")
+      .select("id, did_avatar_id")
       .in("status", ["pending", "processing"])
       .not("did_avatar_id", "is", null)
       .limit(20)
 
     if (fetchError) throw fetchError
 
-    const results = { processed: 0, ready: 0, failed: 0, still_processing: 0 }
-    const auth = `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`
-
-    // Resolve agent_id → user_id once per cron tick so notifications go to
-    // the right inbox. notifications.user_id references users.id, but
-    // agent_avatar_assets.agent_id is agents.id — the two are different.
-    const agentIds = Array.from(new Set((pending ?? []).map((a: any) => a.agent_id).filter(Boolean)))
-    const userByAgent = new Map<string, string>()
-    if (agentIds.length) {
-      const { data: agentRows } = await supabase
-        .from("agents")
-        .select("id, user_id")
-        .in("id", agentIds)
-      for (const a of agentRows ?? []) {
-        if (a.user_id) userByAgent.set(a.id as string, a.user_id as string)
-      }
-    }
+    const results = { processed: 0, ready: 0, failed: 0, still_processing: 0, already_settled: 0 }
 
     for (const asset of pending ?? []) {
       results.processed++
 
       try {
-        const statusRes = await fetch(`${DID_API_BASE}/avatars/${asset.did_avatar_id}`, {
-          headers: { Authorization: auth, Accept: "application/json" },
-        })
+        // Through Connection OS — see lib/did/gateway.ts for why a raw fetch
+        // here cost self-healing, credential rotation and vendor metering.
+        const statusRes = await didRequest<Record<string, unknown>>(
+          `/scenes/avatars/${asset.did_avatar_id}`, { withExternalKey: false },
+        )
 
-        if (!statusRes.ok) continue
-
-        const data = await statusRes.json()
-        const didStatus: string = data.status
-        const notifyUserId = asset.agent_id ? userByAgent.get(asset.agent_id) ?? null : null
-
-        if (didStatus === "done" || didStatus === "ready") {
-          const thumbnailUrl: string | null = data.thumbnail_url ?? data.preview_url ?? null
-
-          await supabase
-            .from("agent_avatar_assets")
-            .update({
-              status: "ready",
-              thumbnail_url: thumbnailUrl,
-              error_message: null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", asset.id)
-
-          // Mirror the avatar_id onto agent_voice_profiles for default avatars
-          // so generate-video and chat-widget lookups get it on a single join
-          if (asset.is_default && asset.agent_id) {
-            await supabase
-              .from("agent_voice_profiles")
-              .update({ did_avatar_id: asset.did_avatar_id })
-              .eq("agent_id", asset.agent_id)
-          }
-
-          // In-app notification to the agent (uses users.id, not agents.id)
-          if (notifyUserId) {
-            await supabase.from("notifications").insert({
-              user_id: notifyUserId,
-              brokerage_id: asset.brokerage_id,
-              type: "avatar_ready",
-              title: "Avatar Ready",
-              body: `Your avatar "${asset.label}" is ready. Create a video to see it in action.`,
-              entity_type: "agent_avatar_asset",
-              entity_id: asset.id,
-              priority: "medium",
-              channel: "in_app",
-            })
-          }
-
-          results.ready++
-        } else if (didStatus === "error" || didStatus === "rejected") {
-          const errorMsg: string = data.error?.description ?? data.error ?? "D-ID avatar creation failed"
-
-          await supabase
-            .from("agent_avatar_assets")
-            .update({
-              status: "failed",
-              error_message: errorMsg,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", asset.id)
-
-          if (notifyUserId) {
-            await supabase.from("notifications").insert({
-              user_id: notifyUserId,
-              brokerage_id: asset.brokerage_id,
-              type: "avatar_failed",
-              title: "Avatar Processing Failed",
-              body: `Your avatar "${asset.label}" could not be processed: ${errorMsg}. Try uploading a different video clip.`,
-              entity_type: "agent_avatar_asset",
-              entity_id: asset.id,
-              priority: "high",
-              channel: "in_app",
-            })
-          }
-
+        // A 404 is TERMINAL, not a blip: the job does not exist (submitted to
+        // the wrong path, deleted, or created under another account). Treating
+        // it the same as a transient error is what let broken avatars sit at
+        // 'pending' forever with nothing to show the agent.
+        if (statusRes.status === 404) {
+          await supabase.from("agent_avatar_assets").update({
+            status: "failed",
+            error_message: "D-ID has no record of this avatar job — it was never accepted. Re-record the avatar.",
+            updated_at: new Date().toISOString(),
+          }).eq("id", asset.id)
           results.failed++
-        } else {
-          // status: created | training | processing — still working
-          await supabase
-            .from("agent_avatar_assets")
-            .update({ status: "processing", updated_at: new Date().toISOString() })
-            .eq("id", asset.id)
-            .eq("status", "pending")
-          results.still_processing++
+          continue
         }
+        // Everything else goes through the ONE classifier. Not all non-404
+        // failures are transient: a 402 (out of credits) or a 451 (moderation /
+        // celebrity recognition) will NEVER succeed on a later tick, and
+        // retrying them forever hides the real answer from the agent waiting on
+        // their avatar while burning cron ticks against the provider.
+        if (!statusRes.ok) {
+          const body = statusRes.data ?? { description: statusRes.error }
+          const failure = classifyDidError(statusRes.status, body)
+          if (failure.retryable) continue
+          await supabase.from("agent_avatar_assets").update({
+            status: "failed",
+            error_message: failure.userMessage,
+            updated_at: new Date().toISOString(),
+          }).eq("id", asset.id)
+          console.error(`[poll-did-avatars] terminal for ${asset.id}: ${failure.operatorMessage}`)
+          results.failed++
+          continue
+        }
+
+        const data = statusRes.data ?? {}
+
+        // The shared applier. Everything the old inline block did — high-res
+        // image preference, re-host into our bucket, profile mirror for the
+        // default twin, the agent notification, and the creation_notes check
+        // that catches a silently-failed voice clone — now lives in one module
+        // that the webhook calls too.
+        const outcome = await applyAvatarOutcome(supabase, asset.id as string, data)
+        if (outcome.operatorMessage) {
+          console.error(`[poll-did-avatars] ${asset.id}: ${outcome.operatorMessage}`)
+        }
+        if (!outcome.applied) results.already_settled++
+        else if (outcome.outcome === "ready") results.ready++
+        else if (outcome.outcome === "failed") results.failed++
+        else results.still_processing++
       } catch (err: any) {
         console.error(`[poll-did-avatars] Error processing asset ${asset.id}:`, err)
       }

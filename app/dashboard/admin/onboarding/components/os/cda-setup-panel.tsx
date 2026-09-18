@@ -28,11 +28,22 @@ import {
   uploadCdaTemplateAction,
   listCdaTemplatesAction,
   deactivateCdaTemplateAction,
+  updateCdaTemplateAction,
 } from "@/app/actions/brokerage-cda-setup"
 import { ALL_US_STATES } from "@/lib/state-forms/registry"
-import { upload } from "@vercel/blob/client"
+import { uploadCdaTemplateFile } from "@/app/actions/cda-storage"
 import { toast } from "sonner"
 import { CdaFieldMappingEditor } from "./cda-field-mapping-editor"
+
+// Read a File as base64 (no data: prefix) for the server upload action.
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "")
+    reader.onerror = () => reject(new Error("Could not read file"))
+    reader.readAsDataURL(file)
+  })
+}
 
 type Template = {
   id: string
@@ -66,8 +77,15 @@ export function CdaSetupPanel() {
   const [tplType, setTplType] = useState<string>("")
   const [uploading, setUploading] = useState(false)
   const [mappingTemplate, setMappingTemplate] = useState<Template | null>(null)
+  // Deactivation used to be one-way: the list asked for active rows only, so a
+  // deactivated template disappeared from the only surface that could act on it
+  // and no reactivate path existed. `updateCdaTemplateAction` had always
+  // supported both edits; only the deactivate wrapper was ever wired.
+  const [showInactive, setShowInactive] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState("")
 
-  useEffect(() => { void reload() }, [])
+  useEffect(() => { void reload() }, [showInactive])
 
   async function reload() {
     setLoading(true)
@@ -78,7 +96,7 @@ export function CdaSetupPanel() {
         setPayoutDefault(settings.payoutDefault)
       }
     }
-    const tpls = await listCdaTemplatesAction({ includeInactive: false })
+    const tpls = await listCdaTemplatesAction({ includeInactive: showInactive })
     if (tpls.success) setTemplates(tpls.templates as Template[])
     setLoading(false)
   }
@@ -101,18 +119,20 @@ export function CdaSetupPanel() {
 
   async function handleUpload(file: File) {
     if (!tplName.trim()) { toast.error("Template name required"); return }
+    if (file.type !== "application/pdf") { toast.error("CDA templates must be PDF files."); return }
     setUploading(true)
     try {
-      const blob = await upload(`cda-templates/${file.name}`, file, {
-        access: "public",
-        handleUploadUrl: "/api/blob/upload",
-      })
+      // Supabase Storage (platform buckets), not Vercel Blob. Read the PDF as
+      // base64 and upload through the role-gated server action.
+      const base64 = await fileToBase64(file)
+      const up = await uploadCdaTemplateFile({ base64, mimeType: file.type, fileName: file.name })
+      if (!up.ok) { toast.error(up.error); return }
       const res = await uploadCdaTemplateAction({
         name:            tplName.trim(),
         description:     tplDescription.trim() || undefined,
         state:           tplState || undefined,
         transactionType: (tplType || undefined) as any,
-        pdfUrl:          blob.url,
+        pdfUrl:          up.url,
       })
       if (res.success) {
         toast.success("Template uploaded")
@@ -136,6 +156,30 @@ export function CdaSetupPanel() {
       void reload()
     } else {
       toast.error("error" in res ? res.error : "Deactivate failed")
+    }
+  }
+
+  async function handleReactivate(id: string) {
+    const res = await updateCdaTemplateAction({ id, isActive: true })
+    if (res.success) {
+      toast.success("Template reactivated")
+      void reload()
+    } else {
+      toast.error("error" in res ? res.error : "Reactivate failed")
+    }
+  }
+
+  async function handleRename(id: string) {
+    const name = renameValue.trim()
+    if (!name) { toast.error("Name is required"); return }
+    const res = await updateCdaTemplateAction({ id, name })
+    if (res.success) {
+      toast.success("Template renamed")
+      setRenamingId(null)
+      setRenameValue("")
+      void reload()
+    } else {
+      toast.error("error" in res ? res.error : "Rename failed")
     }
   }
 
@@ -208,7 +252,18 @@ export function CdaSetupPanel() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label className="text-sm font-semibold">CDA template library</Label>
-              <Badge variant="outline">{templates.length} active</Badge>
+              <div className="flex items-center gap-2">
+                {/* The count names what is actually on screen — with inactive rows
+                    shown, "N active" would be a false label. */}
+                <Badge variant="outline">
+                  {showInactive
+                    ? `${templates.filter(t => t.is_active).length} active · ${templates.filter(t => !t.is_active).length} inactive`
+                    : `${templates.length} active`}
+                </Badge>
+                <Button variant="ghost" size="sm" onClick={() => setShowInactive(v => !v)}>
+                  {showInactive ? "Hide inactive" : "Show inactive"}
+                </Button>
+              </div>
             </div>
 
             {templates.length === 0 ? (
@@ -224,9 +279,27 @@ export function CdaSetupPanel() {
                       <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium text-sm">{t.name}</span>
+                          {renamingId === t.id ? (
+                            <>
+                              <Input
+                                className="h-7 max-w-[16rem] text-sm"
+                                value={renameValue}
+                                autoFocus
+                                onChange={e => setRenameValue(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === "Enter") void handleRename(t.id)
+                                  if (e.key === "Escape") { setRenamingId(null); setRenameValue("") }
+                                }}
+                              />
+                              <Button size="sm" onClick={() => void handleRename(t.id)}>Save</Button>
+                              <Button variant="ghost" size="sm" onClick={() => { setRenamingId(null); setRenameValue("") }}>Cancel</Button>
+                            </>
+                          ) : (
+                            <span className="font-medium text-sm">{t.name}</span>
+                          )}
                           {t.state && <Badge variant="outline" className="text-[10px]">{t.state}</Badge>}
                           {t.transaction_type && <Badge variant="outline" className="text-[10px]">{t.transaction_type}</Badge>}
+                          {!t.is_active && <Badge variant="secondary" className="text-[10px]">Inactive</Badge>}
                         </div>
                         {t.description && <p className="text-xs text-muted-foreground truncate">{t.description}</p>}
                       </div>
@@ -235,6 +308,15 @@ export function CdaSetupPanel() {
                           <ExternalLink className="h-4 w-4" />
                         </a>
                       )}
+                      {renamingId !== t.id && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => { setRenamingId(t.id); setRenameValue(t.name) }}
+                        >
+                          Rename
+                        </Button>
+                      )}
                       <Button
                         variant={mappingTemplate?.id === t.id ? "default" : "outline"}
                         size="sm"
@@ -242,7 +324,11 @@ export function CdaSetupPanel() {
                       >
                         Map fields
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => void handleDeactivate(t.id)}>Deactivate</Button>
+                      {t.is_active ? (
+                        <Button variant="ghost" size="sm" onClick={() => void handleDeactivate(t.id)}>Deactivate</Button>
+                      ) : (
+                        <Button variant="outline" size="sm" onClick={() => void handleReactivate(t.id)}>Reactivate</Button>
+                      )}
                     </div>
                     {mappingTemplate?.id === t.id && (
                       <CdaFieldMappingEditor
@@ -262,17 +348,23 @@ export function CdaSetupPanel() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Input placeholder="Template name (required)" value={tplName} onChange={e => setTplName(e.target.value)} />
                 <Input placeholder="Description (optional)" value={tplDescription} onChange={e => setTplDescription(e.target.value)} />
-                <Select value={tplState} onValueChange={setTplState}>
+                <Select
+                  value={tplState || "__universal__"}
+                  onValueChange={(v) => setTplState(v === "__universal__" ? "" : v)}
+                >
                   <SelectTrigger><SelectValue placeholder="State (optional — universal if blank)" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Universal (any state)</SelectItem>
+                    <SelectItem value="__universal__">Universal (any state)</SelectItem>
                     {ALL_US_STATES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <Select value={tplType} onValueChange={setTplType}>
+                <Select
+                  value={tplType || "__any__"}
+                  onValueChange={(v) => setTplType(v === "__any__" ? "" : v)}
+                >
                   <SelectTrigger><SelectValue placeholder="Transaction type (optional)" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Any type</SelectItem>
+                    <SelectItem value="__any__">Any type</SelectItem>
                     {TX_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                   </SelectContent>
                 </Select>

@@ -7,13 +7,25 @@
 // Nothing auto-sends. Best-effort; never throws into a caller.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { loadBuyerCriteria } from "@/lib/buyer-search/buyer-criteria"
+import { loadBuyerCriteria, type BuyerCriteria } from "@/lib/buyer-search/buyer-criteria"
 import {
   rankOffMarketMatches,
   qualifiedOffMarketDeals,
   boxHasGeography,
+  scoreOffMarketFit,
+  deriveLikelihoodBand,
+  OFFMARKET_THRESHOLD,
   type OffMarketProperty,
 } from "@/lib/buyer-search/investor-offmarket-match"
+import { normalizeStreetAddress } from "@/lib/external/permit-signals"
+import {
+  fetchIncrementalPropertySearch,
+  INVESTOR_OFFMARKET_QUICKLISTS,
+  type BatchDataRecord,
+} from "@/lib/external/batchdata-client"
+import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+import { rankCandidatesWithBatchRank } from "@/lib/external/batchdata-batchrank"
+import { toInvestorFacingCandidates, type CandidateAudience } from "@/lib/buyer-search/investor-facing"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -49,7 +61,11 @@ function toProperty(r: any, stage: "lead" | "contact"): OffMarketProperty {
 
 /**
  * Match a qualified investor buyer to our off-market inventory and persist. Idempotent per contact.
- * Only for contact_type='investor' — regular buyers are matched to MLS inventory by the retail matchers.
+ * Only for contact_persona='investor' — regular buyers are matched to MLS inventory by the retail
+ * matchers. REPOINTED from contact_type (2026-08-31, owner ruling verbatim: "investor is a persona
+ * and not a contact type"): the gate always MEANT "a buyer whose situation is an investment
+ * purchase" — the persona m589 made storable. The tolerant contact_type read below keeps any
+ * pre-m593 legacy row (zero live at repoint) matched rather than dropped.
  */
 export async function runInvestorOffMarketMatch(
   svc: Svc,
@@ -57,12 +73,18 @@ export async function runInvestorOffMarketMatch(
 ): Promise<InvestorOffMarketResult> {
   const { data: contact } = await svc
     .from("contacts")
-    .select("id, contact_type, agent_id, brokerage_id")
+    .select("id, contact_type, contact_persona, agent_id, brokerage_id")
     .eq("id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
   if (!contact) return { ok: false, reason: "contact_not_found" }
-  if ((contact as any).contact_type !== "investor") return { ok: false, reason: "not_investor" }
+  // m593 IS APPLIED (2026-08-31, verified: the contact_type CHECK no longer
+  // admits 'investor' and its backfill mapped any typed row to buyer + persona)
+  // — so the transitional contact_type tolerant read that stood here is gone.
+  // The persona IS the fact now, and a spelling the database cannot store must
+  // not keep a live branch (§2: a check no input can trigger reads as coverage).
+  const isInvestor = (contact as any).contact_persona === "investor"
+  if (!isInvestor) return { ok: false, reason: "not_investor" }
 
   const box = await loadBuyerCriteria(svc, params.contactId)
   if (!box) return { ok: false, reason: "no_box" }
@@ -104,32 +126,282 @@ export async function runInvestorOffMarketMatch(
     agentId: (contact as any).agent_id ?? null,
     candidates: ranked,
   })
-  if (!matchId) return { ok: false, reason: "no_inventory" }
+
+  // BATCHDATA OFF-MARKET RAIL — wave 67 (owner verbatim: "with a buyer who we know is an investor
+  // intent, that we are giving them off market listings to assist with their searching"). ADDITIVE
+  // to the scraped-inventory match above (never a replacement): pulls BatchData's OFF-MARKET
+  // quickLists (never on-market) for the box's TERRITORY geography, persists into
+  // investor_offmarket_candidates (distinct table — this rail's own provenance, quicklists, equity%,
+  // owner name), and delivers through the SAME portal-card path used above.
+  const batchData = await pullAndPersistBatchDataOffMarketCandidates(svc, {
+    brokerageId: params.brokerageId,
+    contactId: params.contactId,
+    box,
+  })
+
+  const totalQualified = qualified.length + batchData.qualifiedNew.length
+  if (!matchId && batchData.persisted === 0) return { ok: false, reason: "no_inventory" }
 
   // BUYER PORTAL — the investor sees their matches in their own portal (like reverse-prospecting does
   // for retail buyers). Aggregate only (count + markets), never individual seller PII — the agent shares
   // specifics. Idempotent (24h dedupe in pushPortalValueCard); only when there's something real to show.
-  if (qualified.length > 0) {
+  // ONE push covers BOTH sources (scraped inventory + BatchData) — never two portal cards for one moment.
+  if (totalQualified > 0) {
     try {
       const { pushPortalValueCard } = await import("@/lib/kernel/portal-value")
-      const markets = [...new Set(qualified.map((q) => q.city).filter(Boolean))].slice(0, 3).join(", ")
+      const markets = [...new Set([
+        ...qualified.map((q) => q.city),
+        ...batchData.qualifiedNew.map((q) => q.city),
+      ].filter(Boolean))].slice(0, 3).join(", ")
       await pushPortalValueCard({
         brokerageId: params.brokerageId,
         contactId: params.contactId,
-        title: `${qualified.length} off-market ${qualified.length === 1 ? "opportunity" : "opportunities"} match your criteria`,
-        summary: `We found ${qualified.length} off-market propert${qualified.length === 1 ? "y" : "ies"}${markets ? ` in ${markets}` : ""} that fit your investment box. Your agent will share the details and next steps.`,
+        title: `${totalQualified} off-market ${totalQualified === 1 ? "opportunity" : "opportunities"} match your criteria`,
+        summary: `We found ${totalQualified} off-market propert${totalQualified === 1 ? "y" : "ies"}${markets ? ` in ${markets}` : ""} that fit your investment box. Your agent will share the details and next steps.`,
         updateType: "investor_offmarket_deals",
-        metadata: { audience: "buyer", qualified: qualified.length, markets, source: "investor_offmarket_match" },
+        metadata: { audience: "buyer", qualified: totalQualified, markets, source: "investor_offmarket_match" },
       }, svc)
+      if (batchData.qualifiedNew.length > 0) {
+        await stampDelivered(svc, params.contactId, batchData.qualifiedNew.map((q) => q.addressKey), "portal_card")
+      }
     } catch { /* portal push must never break the match */ }
   }
   return {
     ok: true,
-    reason: ranked.length === 0 ? "no_inventory" : "matched",
-    matchId,
-    matchCount: ranked.length,
-    qualifiedCount: qualified.length,
+    reason: ranked.length === 0 && batchData.persisted === 0 ? "no_inventory" : "matched",
+    matchId: matchId ?? undefined,
+    matchCount: ranked.length + batchData.persisted,
+    qualifiedCount: totalQualified,
   }
+}
+
+// ── BATCHDATA OFF-MARKET RAIL (I/O) ─────────────────────────────────────────────────────
+// Reverse of QUICKLIST_SLUG (module-private in batchdata-client.ts) for the six
+// INVESTOR_OFFMARKET_QUICKLISTS slugs only — the internal motivation label scoreOffMarketFit's
+// distress-strength table already understands (one vocabulary, §6).
+const OFFMARKET_QUICKLIST_TO_MOTIVATION: Record<string, string> = {
+  "absentee-owner": "absentee",
+  "high-equity": "high_equity",
+  "tired-landlord": "tired_landlord",
+  vacant: "vacant",
+  preforeclosure: "pre_foreclosure",
+  inherited: "probate",
+}
+
+interface BatchDataOffMarketOutcome {
+  persisted: number
+  qualifiedNew: Array<{ addressKey: string; city: string | null; matchScore: number }>
+}
+
+/**
+ * Territory-bound: only the BROKERAGE'S OWN active markets (lead_scraping_markets.is_active) whose
+ * geography intersects the investor's box (city or zip) are pulled — never a global/off-territory
+ * search. Bounded to the first 2 matching markets so a box with many saved cities doesn't fan out
+ * into an unbounded API bill.
+ */
+async function resolveTerritoryMarketsForBox(
+  svc: Svc, brokerageId: string, box: BuyerCriteria,
+): Promise<Array<{ id: string; city: string; state: string; zip_codes: string[] | null }>> {
+  const { data } = await svc.from("lead_scraping_markets")
+    .select("id, city, state, zip_codes")
+    .eq("brokerage_id", brokerageId).eq("is_active", true).limit(50)
+  const markets = (data ?? []) as Array<{ id: string; city: string; state: string; zip_codes: string[] | null }>
+  const cities = new Set(box.cities.map((c) => c.toLowerCase().trim()))
+  const zips = new Set(box.zipCodes.map((z) => z.trim()))
+  return markets
+    .filter((m) => cities.has((m.city ?? "").toLowerCase().trim()) || (m.zip_codes ?? []).some((z) => zips.has(z)))
+    .slice(0, 2)
+}
+
+/** PURE-ish mapper: a BatchData record from an off-market pull → the investor_offmarket_candidates row shape. */
+function toOffMarketCandidateRow(
+  r: BatchDataRecord, trigger: string, ctx: { brokerageId: string; contactId: string; marketId: string },
+): { addressKey: string; row: Record<string, unknown>; property: OffMarketProperty } | null {
+  const addressRaw = r.propertyAddress || r.address
+  if (!addressRaw) return null
+  const addressKey = normalizeStreetAddress(addressRaw)
+  if (!addressKey) return null
+  const equityPercent = r.valuation?.equityPercent ?? null
+  const estimatedValue = r.estimatedValue ?? r.valuation?.estimatedValue ?? null
+  const equityEstimate = r.valuation?.estimatedEquity
+    ?? (estimatedValue != null && equityPercent != null ? Math.round(estimatedValue * (equityPercent / 100)) : null)
+  const ownerName = [r.firstName, r.lastName].filter(Boolean).join(" ").trim() || null
+  const property: OffMarketProperty = {
+    recordId: `batchdata:${addressKey}`,
+    stage: "lead",
+    address: addressRaw, city: r.propertyCity ?? r.city ?? null, state: r.propertyState ?? r.state ?? null,
+    zip: r.propertyZip ?? r.zip ?? null,
+    motivationType: OFFMARKET_QUICKLIST_TO_MOTIVATION[trigger] ?? trigger,
+    motivationConfidence: 0.7, equityEstimate,
+    beds: r.beds ?? null, propertyType: r.propertyType ?? null, estimatedValue,
+  }
+  return {
+    addressKey,
+    property,
+    row: {
+      brokerage_id: ctx.brokerageId, contact_id: ctx.contactId, market_id: ctx.marketId,
+      address_key: addressKey, property_address: addressRaw,
+      city: property.city, state: property.state, zip: property.zip,
+      quicklists: r.quickLists ?? [trigger],
+      estimated_value: estimatedValue, equity_percent: equityPercent, owner_name: ownerName,
+      // m644 (wave 69) — the property specs the investor portal card needs (property-only
+      // surface, owner ruling) and that scoreOffMarketFit already reads off `property` above
+      // for its soft nudges; previously computed and never persisted.
+      beds: r.beds ?? null, baths: r.baths ?? null, property_type: r.propertyType ?? null,
+    },
+  }
+}
+
+/**
+ * Pulls BatchData's OFF-MARKET quickLists (INVESTOR_OFFMARKET_QUICKLISTS — never on-market) for the
+ * investor's box geography via fetchIncrementalPropertySearch (cursor/session-scoped, bounded take),
+ * scores each with the SAME pure engine (scoreOffMarketFit — one vocabulary), and upserts into
+ * investor_offmarket_candidates (unique on contact_id,address_key — idempotent re-runs). Best-effort:
+ * a provider failure on one trigger/market never aborts the rest.
+ */
+async function pullAndPersistBatchDataOffMarketCandidates(
+  svc: Svc, params: { brokerageId: string; contactId: string; box: BuyerCriteria },
+): Promise<BatchDataOffMarketOutcome> {
+  const out: BatchDataOffMarketOutcome = { persisted: 0, qualifiedNew: [] }
+  if (!boxHasGeography(params.box)) return out
+  const markets = await resolveTerritoryMarketsForBox(svc, params.brokerageId, params.box)
+  if (markets.length === 0) return out
+
+  const byAddress = new Map<string, { row: Record<string, unknown>; matchScore: number; city: string | null }>()
+  for (const market of markets) {
+    for (const quicklist of INVESTOR_OFFMARKET_QUICKLISTS) {
+      let pull
+      try {
+        // BUY-BOX FILTERS (wave 68 owner ruling): the investor's box maps to Property
+        // Search filters, not a second API — pass price range / equity floor / a
+        // single named property type straight through when the box has them. A box
+        // naming several property types is left to scoreOffMarketFit's own soft
+        // scoring below (server-side .equals only takes one value honestly).
+        pull = await fetchIncrementalPropertySearch({
+          quicklist, city: market.city, state: market.state,
+          searchSession: `investor-offmarket-${market.id}-${quicklist}`, take: 20,
+          minPrice: params.box.minPrice ?? undefined,
+          maxPrice: params.box.maxPrice ?? undefined,
+          propertyTypeDetail: params.box.propertyTypes.length === 1 ? params.box.propertyTypes[0] : undefined,
+        })
+      } catch { continue }
+      if (!pull.ok) continue
+      // Cost: this IS the pull's single metering point (fetchIncrementalPropertySearch computes but
+      // never books its own cost — every caller in the codebase meters once per pull; this is that
+      // one call, so a re-run of this same pull is never metered twice).
+      await meterVendorSpend({
+        vendorName: "batchdata", usageType: "investor_offmarket_search", cost: pull.cost,
+        brokerageId: params.brokerageId, metadata: { market_id: market.id, quicklist, contact_id: params.contactId },
+      })
+      for (const record of pull.records) {
+        const mapped = toOffMarketCandidateRow(record, quicklist, { brokerageId: params.brokerageId, contactId: params.contactId, marketId: market.id })
+        if (!mapped) continue
+        const scored = scoreOffMarketFit(params.box, mapped.property)   // geography/price-gated; null = out of box
+        if (!scored) continue
+        const prior = byAddress.get(mapped.addressKey)
+        if (!prior || scored.matchScore > prior.matchScore) {
+          byAddress.set(mapped.addressKey, { row: mapped.row, matchScore: scored.matchScore, city: mapped.property.city })
+        }
+      }
+    }
+  }
+  if (byAddress.size === 0) return out
+
+  // Which of these are ALREADY delivered (so we never re-stamp delivered_at as "new" on a re-run).
+  const addressKeys = [...byAddress.keys()]
+  const { data: existing } = await svc.from("investor_offmarket_candidates")
+    .select("address_key, delivered_at").eq("contact_id", params.contactId).in("address_key", addressKeys)
+  const alreadyDelivered = new Set(((existing ?? []) as Array<{ address_key: string; delivered_at: string | null }>)
+    .filter((e) => e.delivered_at).map((e) => e.address_key))
+
+  // OPTIONAL BatchRank ranking seam (wave 68) — fail-closed by default (BATCHDATA_
+  // BATCHRANK_ENABLED unset / no token): every candidate comes back unchanged with
+  // batchrank* left null, which is the honest "not ranked" state below.
+  const batchRankResult = await rankCandidatesWithBatchRank(
+    addressKeys.map((k) => ({ addressKey: k, address: byAddress.get(k)!.row.property_address as string | null })),
+  )
+  const batchRankByAddress = new Map(batchRankResult.candidates.map((c) => [c.addressKey, c]))
+
+  // Every column named EXPLICITLY at the write site (not a spread of the mapper's
+  // row) so the opposite-missing census can see this table's writer — a spread
+  // of an identifier hides the key set and every column reads as writerless.
+  const matchedAt = new Date().toISOString()
+  const upserts = addressKeys.map((k) => {
+    const c = byAddress.get(k)!
+    const r = c.row
+    const rank = batchRankByAddress.get(k)
+    return {
+      brokerage_id: r.brokerage_id, contact_id: r.contact_id, market_id: r.market_id,
+      address_key: r.address_key, property_address: r.property_address,
+      city: r.city, state: r.state, zip: r.zip,
+      quicklists: r.quicklists, estimated_value: r.estimated_value,
+      equity_percent: r.equity_percent, owner_name: r.owner_name,
+      fit_score: c.matchScore, matched_at: matchedAt,
+      batchrank_score: rank?.batchrankScore ?? null, batchrank_band: rank?.batchrankBand ?? null,
+      // m644 (wave 69) — explicit, never a spread of `r` (a spread hides the key set from the
+      // opposite-missing census, per the wave-67 integration lesson this file's own header cites).
+      beds: r.beds, baths: r.baths, property_type: r.property_type,
+    }
+  })
+  const { error } = await svc.from("investor_offmarket_candidates")
+    .upsert(upserts, { onConflict: "contact_id,address_key" })
+  if (error) return out
+
+  out.persisted = upserts.length
+  for (const k of addressKeys) {
+    const c = byAddress.get(k)!
+    if (c.matchScore >= OFFMARKET_THRESHOLD && !alreadyDelivered.has(k)) {
+      out.qualifiedNew.push({ addressKey: k, city: c.city, matchScore: c.matchScore })
+    }
+  }
+  return out
+}
+
+async function stampDelivered(svc: Svc, contactId: string, addressKeys: string[], via: string): Promise<void> {
+  if (addressKeys.length === 0) return
+  await svc.from("investor_offmarket_candidates")
+    .update({ delivered_at: new Date().toISOString(), delivered_via: via })
+    .eq("contact_id", contactId).in("address_key", addressKeys).is("delivered_at", null)
+}
+
+/**
+ * Read this investor's persisted BatchData off-market candidates (highest fit first). Every column
+ * written by pullAndPersistBatchDataOffMarketCandidates has a reader here + the portal panel.
+ * Module-private: the ONE external caller is getInvestorDealMatch (below, same file) — that is the
+ * reader surface app/actions/investor-deals.ts and the portal panel actually consume, so this stays
+ * an internal helper rather than a second exported entry point for the same read (§6).
+ */
+async function getInvestorOffMarketCandidates(svc: Svc, params: { contactId: string; brokerageId: string }) {
+  const { data } = await svc.from("investor_offmarket_candidates")
+    .select("id, market_id, address_key, property_address, city, state, zip, quicklists, estimated_value, equity_percent, owner_name, fit_score, batchrank_score, batchrank_band, beds, baths, property_type, matched_at, delivered_at, delivered_via, dismissed_at")
+    .eq("contact_id", params.contactId).eq("brokerage_id", params.brokerageId)
+    .is("dismissed_at", null)
+    .order("fit_score", { ascending: false }).limit(25)
+  const rows = (data ?? []) as Array<{
+    id: string; market_id: string; address_key: string; property_address: string
+    city: string | null; state: string | null; zip: string | null
+    quicklists: string[]; estimated_value: number | null; equity_percent: number | null
+    owner_name: string | null; fit_score: number
+    batchrank_score: number | null; batchrank_band: "high" | "medium" | "low" | null
+    beds: number | null; baths: number | null; property_type: string | null
+    matched_at: string | null; delivered_at: string | null; delivered_via: string | null; dismissed_at: string | null
+  }>
+  // BatchRank sort (wave 68): when a band is present it re-orders WITHIN the existing
+  // fit_score ordering (High first) — an optional refinement, never a replacement for
+  // the geo/distress/equity fit score every candidate always carries.
+  const BAND_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 }
+  const withLikelihood = rows.map((r) => ({
+    ...r,
+    // m644 / wave 69 — the investor portal card's "most likely to sell" signal: the
+    // licensed BatchRank verdict when present, else the quicklist-derived proxy. PURE,
+    // one function, proven by scripts/buyer-matching-rails-simulator.ts.
+    likelihood: deriveLikelihoodBand(r.quicklists, r.batchrank_band),
+  }))
+  return [...withLikelihood].sort((a, b) => {
+    const ra = a.batchrank_band ? BAND_RANK[a.batchrank_band] : 99
+    const rb = b.batchrank_band ? BAND_RANK[b.batchrank_band] : 99
+    return ra !== rb ? ra - rb : b.fit_score - a.fit_score
+  })
 }
 
 async function upsert(
@@ -173,12 +445,16 @@ export async function refreshInvestorOffMarketMatches(
 ): Promise<InvestorRefreshResult> {
   const out: InvestorRefreshResult = { investors: 0, matched: 0, portalCards: 0 }
   // Only investor contacts that actually carry a buy-box (an investor without saved criteria can't be
-  // matched — honest skip, no wasted scan).
+  // matched — honest skip, no wasted scan). The filter is contact_persona — the axis the owner ruled
+  // the investing lives on contact_persona (m589). The transitional OR over the
+  // legacy contact_type spelling is dropped: m593 is applied and backfilled, so
+  // no row can carry it — a filter arm the database cannot satisfy is dead
+  // coverage wearing a live face (§2).
   const { data: investors } = await svc
     .from("contacts")
     .select("id, property_preferences!inner(contact_id)")
     .eq("brokerage_id", params.brokerageId)
-    .eq("contact_type", "investor")
+    .eq("contact_persona", "investor")
     .limit(500)
   for (const inv of (investors ?? []) as any[]) {
     out.investors++
@@ -191,13 +467,31 @@ export async function refreshInvestorOffMarketMatches(
   return out
 }
 
-/** Load an investor's off-market deal match (or null). */
-export async function getInvestorDealMatch(svc: Svc, params: { contactId: string; brokerageId: string }) {
+/**
+ * Load an investor's off-market deal match (or null), WITH the BatchData off-market candidates
+ * riding alongside (offMarketCandidates — same reader every column of investor_offmarket_candidates
+ * needs). Two sources, one read, so a caller (the portal panel) never has to know there are two
+ * off-market rails under the hood.
+ *
+ * `audience` (wave 68 owner ruling: "these investors should not get the owners information") —
+ * defaults to "investor", which strips owner_name/phone/email/mailing fields via
+ * lib/buyer-search/investor-facing.ts::toInvestorFacingCandidates before this ever leaves the
+ * function. A caller that KNOWS it is the brokerage-side agent surface passes audience:"brokerage"
+ * explicitly — the default stays safe so nothing contact-facing can forget to redact.
+ */
+export async function getInvestorDealMatch(
+  svc: Svc,
+  params: { contactId: string; brokerageId: string },
+  audience: CandidateAudience = "investor",
+) {
   const { data } = await svc
     .from("investor_deal_matches")
     .select("*")
     .eq("contact_id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
-  return data ?? null
+  const rawCandidates = await getInvestorOffMarketCandidates(svc, params)
+  const offMarketCandidates = toInvestorFacingCandidates(rawCandidates, audience)
+  if (!data && offMarketCandidates.length === 0) return null
+  return { ...(data ?? {}), offMarketCandidates }
 }

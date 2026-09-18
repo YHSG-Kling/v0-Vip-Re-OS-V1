@@ -23,7 +23,6 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { toast } from "sonner"
 import {
   Check,
-  X,
   AlertCircle,
   Settings,
   Loader2,

@@ -3,7 +3,7 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { determinePortalView } from "@/lib/kernel/portal"
 import { ShowingsManager } from "@/components/portal/ShowingsManager"
-import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
+import { Card, CardContent } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
@@ -12,9 +12,10 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/app/components/ui/collapsible"
-import { ArrowLeft, Calendar, Eye, Clock, CheckCircle, XCircle, MapPin, Home, MessageSquare, Star, ChevronDown, Route, Sparkles } from "lucide-react"
+import { ArrowLeft, Calendar, Eye, Clock, CheckCircle, XCircle, Home, MessageSquare, Star, ChevronDown, Route, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BuyerTourCard } from "./components/buyer-tour-card"
+import { getPortalBuyerTours } from "@/app/actions/portal-tours"
 
 // Status config
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
@@ -61,27 +62,19 @@ export default async function ShowingsPage({
     redirect("/portal?error=contact_not_found")
   }
 
-  // Fetch tours with tour_stops, showings, and showing_requests in parallel
+  // Fetch tours with tour_stops, showings, and showing_requests in parallel.
+  //
+  // Tours go through getPortalBuyerTours (app/actions/portal-tours.ts) — the
+  // requireContactAccess-gated service read scoped to THIS contact's rows.
+  // Reading `tours` with the RLS client here always returned [] for a real
+  // buyer: the live policies on tours are agent-own + broker/admin only, so
+  // the contact seat's read was silently refused and the buyer never saw the
+  // itinerary their agent "sent to the portal". The gated reader intentionally
+  // OMITS listing_agent_* fields and per-stop access codes: the buyer is
+  // represented by their agent and must not see other-brokerage contact info
+  // (tour-confirm-tab is the only surface for those).
   const [toursResult, showingsResult, requestsResult] = await Promise.all([
-    // Tours with stops — buyer-facing fetch. Intentionally OMITS
-    // listing_agent_* fields: the buyer is represented by their agent
-    // and must not see other-brokerage contact info. The agent-side view
-    // (tour-confirm-tab) is the only place that surfaces those fields.
-    supabase
-      .from("tours")
-      .select(`id, tour_date, start_time, start_address, status, all_confirmed,
-               total_duration_minutes, total_drive_time_minutes,
-               agent_approved_at, report_sent_at, report_url,
-               ai_plan_narrative, notes,
-               tour_stops(id, property_address, city, state, zip,
-                          list_price, primary_photo_url,
-                          suggested_time, suggested_duration_minutes,
-                          drive_time_from_prev_minutes,
-                          confirmed_time, is_confirmed,
-                          buyer_interest_level, buyer_note, feedback, rating,
-                          order_index)`)
-      .eq("contact_id", contactId)
-      .order("tour_date", { ascending: false }),
+    getPortalBuyerTours(contactId),
     // Showings - use scheduled_at column
     supabase
       .from("showings")
@@ -96,7 +89,7 @@ export default async function ShowingsPage({
       .order("requested_date", { ascending: false }),
   ])
 
-  const tours = toursResult.data ?? []
+  const tours = toursResult.success ? toursResult.tours : []
   const showings = showingsResult.data ?? []
   const requests = requestsResult.data ?? []
 
@@ -162,6 +155,18 @@ export default async function ShowingsPage({
         )
         return upcoming ? <BuyerTourCard tour={upcoming as any} /> : null
       })()}
+
+      {/* Refusal reported as a refusal — an unreadable tour list must not
+          render as "no tours planned". */}
+      {!toursResult.success && (
+        <Card>
+          <CardContent className="py-4 text-center">
+            <p className="text-sm text-muted-foreground">
+              Your tour itinerary could not be loaded right now. Please refresh, or message your agent.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Planned Tours Section */}
       {tours.length > 0 && (

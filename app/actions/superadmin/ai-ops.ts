@@ -11,7 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { loadAiOps, type AiOps } from "@/lib/platform/ai-ops"
-import { loadManagerOps, type ManagerOps } from "@/lib/platform/manager-ops"
+import { loadManagerOps, type ManagerOps, loadVoiceToolRoundDeadlineStats, type VoiceToolRoundDeadlineStats } from "@/lib/platform/manager-ops"
 import { loadRotationRisks, type RotationRisk } from "@/lib/security/credential-rotation"
 import { runCredentialRefresh } from "@/lib/security/oauth-refresh"
 
@@ -47,6 +47,18 @@ export async function getManagerOpsAction(windowHours = 24): Promise<{ ok: true;
   const auth = await requireStaff()
   if (!auth.ok) return auth
   return { ok: true, data: await loadManagerOps(createServiceClient(), windowHours) }
+}
+
+/** Voice tool-round deadline telemetry (VOICE_TOOL_ROUND_DEADLINE_MS) — how often the
+ *  bounded native-tool-calling round on a live call hits its ceiling, and what a
+ *  candidate ceiling would have hit against the same sample. Cross-tenant (the
+ *  deadline is one platform-wide constant). Blind-spot burn-down, lane 74C 2026-09-18. */
+export async function getVoiceToolRoundDeadlineStatsAction(
+  windowHours = 24 * 7,
+): Promise<{ ok: true; data: VoiceToolRoundDeadlineStats } | { ok: false; error: string }> {
+  const auth = await requireStaff()
+  if (!auth.ok) return auth
+  return { ok: true, data: await loadVoiceToolRoundDeadlineStats(createServiceClient(), windowHours) }
 }
 
 /** Expired / expiring-soon integration credentials that need rotation, cross-tenant. */

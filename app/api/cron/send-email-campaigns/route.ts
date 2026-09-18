@@ -38,12 +38,41 @@ export async function GET(request: NextRequest) {
     const svc = createServiceClient()
     const { runScheduledEmailCampaigns } = await import("@/lib/marketing/email-campaign-sender")
     const summary = await runScheduledEmailCampaigns(svc)
+
+    // ENGAGEMENT ARRIVES AFTER THE SEND, so the rate cannot be computed at send
+    // time — it is refreshed on every tick for campaigns still inside the
+    // window. email_campaigns.open_rate/.click_rate were read by
+    // getEmailCampaignStats, campaign-measurer and the content-topic ranker and
+    // written by NOBODY, so every one of them reported 0% forever while the
+    // per-recipient rows underneath held the real answer.
+    const { rollupEmailCampaignRates } = await import("@/lib/marketing/engagement-rollup")
+    const rates = await rollupEmailCampaignRates(svc)
+    if (rates.refusals.length > 0) {
+      // A refused rollup read is not "no engagement" — name it rather than
+      // letting the campaign keep a stale or zero rate silently.
+      console.error("[send-email-campaigns] rate rollup refusals:", rates.refusals.join(" | "))
+    }
+    // §1.2 (2026-09-04) — email_tracking.user_agent / .metadata now have a
+    // reader. A machine-open share means the open_rate just written is inflated
+    // by mail-proxy prefetches; uncorrelated events mean provider engagement
+    // that matched no send row, which UNDER-counts. Both are said aloud rather
+    // than folded silently into the rate.
+    if (rates.machineOpens > 0) {
+      console.warn(`[send-email-campaigns] ${rates.machineOpens} open(s) came from a mail proxy, not a person — open_rate is inflated by that much`)
+    }
+    if (rates.uncorrelatedEvents > 0) {
+      console.warn(
+        `[send-email-campaigns] ${rates.uncorrelatedEvents} engagement event(s) matched no email_sends row — ` +
+        `provider ids: ${rates.uncorrelatedProviderIds.join(", ") || "none recorded"}`,
+      )
+    }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: summary.campaignsSent,
-      metadata: summary as any,
+      metadata: { ...summary, rates } as any,
     })
-    return NextResponse.json({ message: "Email campaigns processed", summary })
+    return NextResponse.json({ message: "Email campaigns processed", summary, rates })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Email campaign send failed"
     await recordCronFailureAction({ context_id: contextId, error: message })

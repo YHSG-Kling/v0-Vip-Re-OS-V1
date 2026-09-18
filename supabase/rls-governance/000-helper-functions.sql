@@ -49,26 +49,49 @@ RETURNS BOOLEAN AS $$
   WHERE id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
--- Check if user is team_leader
+-- ─── THE SPELLINGS BELOW WERE THE SOURCE OF A SCHEMA-WIDE DEFECT (m440) ──────
+--
+-- None of these auth.* functions has ever been installed on the database — this
+-- file's own header says it needs a dashboard superuser, and it was never run.
+-- What WAS run is scripts/111-fix-agent-id-rls-policies.sql, which inlines these
+-- BODIES into real policies. So the three single-value spellings below travelled
+-- into live RLS on `contacts`, `listings` and `transactions` — and every one of
+-- them names a user_type that users_user_type_check CANNOT store, which made
+-- those policies false for every user who will ever exist.
+--
+-- The live vocabulary is: admin, agent, broker, broker_owner, compliance_officer,
+-- contact, isa, lender, superadmin, support, system, tc, team_lead, vendor.
+-- lib/security/types.ts LEGACY_ROLE_MAP is the repository's mapping from the old
+-- spellings onto it. Each roster below is now POSITIVE and names both, exactly as
+-- the built public.is_team_lead_role() / public.is_compliance_officer_role() /
+-- public.is_tc_role() do — a dead literal beside a live one widens a roster to
+-- nobody, which is harmless; a dead literal alone IS the roster, which is not.
+--
+-- Prefer the public.* helpers in new policies. These exist so this file's own
+-- policy sets are not written against a vocabulary the database rejects.
+
+-- Check if user is a team lead ('team_leader' is the legacy spelling)
 CREATE OR REPLACE FUNCTION auth.is_team_leader()
 RETURNS BOOLEAN AS $$
-  SELECT user_type = 'team_leader'
+  SELECT user_type IN ('team_lead', 'team_leader')
   FROM users
   WHERE id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
--- Check if user is transaction_coordinator
+-- Check if user is a transaction coordinator ('transaction_coordinator' is the
+-- legacy spelling; the stored value is 'tc')
 CREATE OR REPLACE FUNCTION auth.is_tc()
 RETURNS BOOLEAN AS $$
-  SELECT user_type = 'transaction_coordinator'
+  SELECT user_type IN ('tc', 'transaction_coordinator', 'coordinator')
   FROM users
   WHERE id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
--- Check if user is compliance_manager
+-- Check if user is a compliance officer ('compliance_manager' is the legacy
+-- spelling; the stored value is 'compliance_officer')
 CREATE OR REPLACE FUNCTION auth.is_compliance_manager()
 RETURNS BOOLEAN AS $$
-  SELECT user_type = 'compliance_manager'
+  SELECT user_type IN ('compliance_officer', 'compliance_manager')
   FROM users
   WHERE id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
@@ -89,7 +112,13 @@ RETURNS BOOLEAN AS $$
   WHERE id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
--- Check if user is title_agent
+-- Check if user is title_agent.
+-- WARNING: 'title_agent' was REMOVED from users.user_type by m307 and
+-- users_user_type_check will not store it, so this function is FALSE for every
+-- user who will ever exist. A title company is a VENDOR here — vendors.category
+-- includes 'title', and the live title account carries user_type = 'vendor'.
+-- m438 and m440 dropped the five policies that gated on this; do not write a
+-- sixth. Kept only so this file still parses against older policy sets.
 CREATE OR REPLACE FUNCTION auth.is_title_agent()
 RETURNS BOOLEAN AS $$
   SELECT user_type = 'title_agent'

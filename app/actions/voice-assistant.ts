@@ -383,12 +383,19 @@ export async function processVoiceCommand(params: {
       source: "web",
     })
 
-    // Update session command count
+    // Update session command count. §3 — supabase-js RESOLVES a refusal, so a
+    // bare `await supabase.rpc(...)` here reported success whether the counter
+    // moved or not. It was never noticed because nothing supplied a sessionId
+    // until this function was wired to the mobile mic (lane G5 2026-08-28);
+    // now that the counter is live, a refusal is read and logged.
     if (sessionId) {
-      await supabase.rpc("increment_voice_session_commands", {
+      const { error: counterError } = await supabase.rpc("increment_voice_session_commands", {
         p_session_id: sessionId,
         p_success: success,
       })
+      if (counterError) {
+        console.error(`[voice-assistant] session command counter refused: ${counterError.message}`)
+      }
     }
 
     return { success, response, actionTaken, intent: intent.type }
@@ -550,33 +557,13 @@ export async function updateVoiceConfig(_agentId: string | undefined, updates: a
   return { success: true, config: data }
 }
 
-// Get recent voice commands for agent
-export async function getVoiceCommandHistory(_agentId?: string, limit = 50) {
-  // _agentId ignored — derived from session
-  const caller = await resolveCallerAgentId()
-  if (!caller.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
-  }
-  if (!caller.agentId) {
-    return { success: false, error: "No agent profile for current user" }
-  }
-  const supabase = await createClient()
-
-  // voice_commands is owned by user_id (FK→users); there is no contact_id FK to embed.
-  const { data, error } = await supabase
-    .from("voice_commands")
-    .select("*")
-    .eq("user_id", caller.userId)
-    .order("created_at", { ascending: false })
-    .limit(limit)
-
-  if (error) {
-    console.error("[voice-assistant] Error fetching history:", error)
-    return { success: false, error: error.message }
-  }
-
-  return { success: true, commands: data || [] }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getVoiceCommandHistory`
+// deleted. SURVIVORS: the direct, session-scoped voice_commands reads at
+// app/dashboard/voice/page.tsx:53-68/136 (RecentCommandsFeed) and
+// app/mobile/voice/page.tsx (Recent Commands section) — the live command
+// history surfaces. This twin duplicated the same read behind an action
+// nothing called; a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers.
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -712,27 +699,29 @@ async function getTodayAppointments(agentUserId: string) {
 }
 
 async function addContactNote(contactId: string, _noteText: string, _agentId: string) {
-  const supabase = await createClient()
-  // contact_notes uses body (not content), author_user_id (not agent_id), is_private.
-  // The voice-assistant flow doesn't carry the auth user id directly, so derive it.
-  const { data: { user } } = await supabase.auth.getUser()
-  return await supabase.from("contact_notes").insert({
-    contact_id: contactId,
-    author_user_id: user?.id ?? null,
-    body: _noteText,
-    is_private: false,
-  })
+  // Delegates to the canonical writer in app/actions/contacts.ts. The local
+  // insert this replaced never set brokerage_id, and contact_notes_select gates
+  // on has_brokerage_access(brokerage_id) — which is FALSE for NULL. Every
+  // voice-dictated note was therefore invisible to the whole brokerage,
+  // including the agent who dictated it.
+  const { addContactNote: recordNote } = await import("./contacts")
+  return await recordNote(contactId, _noteText)
 }
 
 async function sendPropertyToContact(address: string, contactId: string, agentId: string, brokerageId: string | null) {
   const supabase = await createClient()
-  // Find property by address
+  // Find property by address WITHIN the caller's brokerage. brokerageId was already a
+  // parameter here and simply never used in the query — a spoken address could resolve
+  // to another tenant's listing, and the activities row below then joined THEIR
+  // listing_id to this caller's brokerage and contact.
+  if (!brokerageId) return null
   const { data: property } = await supabase
     .from("listings")
     .select("id")
+    .eq("brokerage_id", brokerageId)
     .ilike("address", `%${address}%`)
     .limit(1)
-    .single()
+    .maybeSingle()
 
   if (property) {
     // pass 14: property_shares was a PHANTOM table — the share rides the

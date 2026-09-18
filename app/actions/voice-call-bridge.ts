@@ -5,10 +5,17 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { placeCall } from "@/lib/providers/messaging"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+// TOMBSTONE (dead-import tranche): `callConnector` was imported here and never
+// called. Every outbound provider request on this lane already goes through the
+// gateway one layer down — `placeCall` (lib/providers/messaging, imported above)
+// and `placeOutboundAiCall` (lib/voice/twilio-outbound.ts:178, dynamically
+// imported at :279) both call `callConnector` themselves. A direct call from
+// here would have been a second Twilio door with none of their vendor
+// selection, budget pre-flight or attribution.
 
 /**
- * Call Whisper Bridge & Vapi Voice Bot System
+ * Call Whisper Bridge & AI Voice Outreach (Twilio-native)
  * - Initiates agent calls with AI-powered context whispers
  * - Triggers autonomous AI voice outreach to hot leads
  *
@@ -94,7 +101,7 @@ export async function initiateWhisperBridge(params: {
     }
 
     // Canonical call record lives on voice_calls; call_whisper_logs only stores the whisper text
-    // (keyed by voice_call_id). The provider call sid is the voice_calls.vapi_call_id pointer.
+    // (keyed by voice_call_id). The provider call sid is the voice_calls.vendor_call_id pointer.
     const { data: voiceCall, error: vcError } = await supabase
       .from("voice_calls")
       .insert({
@@ -106,7 +113,7 @@ export async function initiateWhisperBridge(params: {
         status: "initiated",
         phone_from: agent.phone,
         phone_to: contact.phone,
-        vapi_call_id: callResult.callSid,
+        vendor_call_id: callResult.callSid,
       })
       .select("id")
       .single()
@@ -122,13 +129,18 @@ export async function initiateWhisperBridge(params: {
     }
 
     // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
-    await supabase.from("activities").insert({
+    // The record that a CALL WAS PLACED. Every other write in this block reads
+    // its error; this one is the one a compliance review would ask for.
+    const { error: whisperActivityError } = await supabase.from("activities").insert({
       agent_user_id: agentUserId,
       activity_type: "whisper_bridge_initiated",
       entity_type: "contact",
       entity_id: contactId,
       description: `Whisper bridge call initiated: ${context}`,
     })
+    if (whisperActivityError) {
+      console.error("[Whisper Bridge] whisper_bridge_initiated activity REJECTED — the call was placed but has no activity record:", whisperActivityError.message)
+    }
 
     return {
       success: true,
@@ -141,72 +153,25 @@ export async function initiateWhisperBridge(params: {
   }
 }
 
-// Update whisper bridge call status (webhook handler)
-// NOTE: this is invoked from the Twilio status callback endpoint, which should
-// verify the upstream Twilio signature. We additionally require an authenticated
-// session here so that direct RPC from a client cannot mutate arbitrary call
-// records. Webhook routes that need to call this server-side should use the
-// service client directly against `call_whisper_logs`.
-export async function updateWhisperBridgeStatus(params: {
-  callSid: string
-  status: string
-  duration?: number
-  outcome?: string
-}) {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" }
-  }
+// TOMBSTONE (§1.3, lane L4 2026-08-31) — `updateWhisperBridgeStatus` moved to
+// lib/voice/whisper-bridge-status.ts:updateWhisperBridgeStatus (SURVIVOR),
+// invoked from its ONLY caller, the Twilio status callback
+// (app/api/twiml/whisper-bridge/route.ts POST).
+// WHAT WAS BROKEN: the export lived here gated on getAgentContext(), but a
+// provider webhook carries no user session, so the gate refused EVERY real
+// invocation with { success: false, error: "Unauthorized" } — and the route
+// never read the resolved refusal, so voice_calls.status was never once
+// updated from the whisper bridge. A repo-wide census (stripped source) found
+// no importer besides that route, so there is no session-gated half to keep:
+// the webhook half authenticates as a WEBHOOK (verified Twilio signature →
+// service client → tenant resolved from the voice_calls row that
+// initiateWhisperBridge above keys by vendor_call_id), the same pattern the
+// route's agent_heard stamp already rides. In a "use server" file every
+// export is a public HTTP endpoint, which is why the ungated version could
+// not simply stay here.
 
-  const svc = createServiceClient()
-  try {
-    // Verify the call record belongs to this brokerage (via contact)
-    const { data: callRow } = await svc
-      .from("voice_calls")
-      .select("id, contact_id")
-      .eq("vapi_call_id", params.callSid)
-      .maybeSingle()
-    if (!callRow) {
-      return { success: false, error: "Call not found" }
-    }
-    if (callRow.contact_id) {
-      const { data: contact } = await svc
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", callRow.contact_id)
-        .maybeSingle()
-      if (!contact || contact.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Forbidden" }
-      }
-    }
-
-    // voice_calls.status + outcome are enum-constrained; map provider values to the allowed sets.
-    const VALID_STATUS = ["initiated","ringing","in_progress","completed","failed","no_answer","voicemail","blocked"]
-    const VALID_OUTCOME = ["appointment_set","callback_requested","not_interested","voicemail_left","no_answer","transferred","completed","authority_blocked"]
-    const voiceUpdate: Record<string, unknown> = {
-      status: VALID_STATUS.includes(params.status) ? params.status : "in_progress",
-      duration_seconds: params.duration ?? null,
-    }
-    if (params.outcome && VALID_OUTCOME.includes(params.outcome)) voiceUpdate.outcome = params.outcome
-    const { error } = await svc
-      .from("voice_calls")
-      .update(voiceUpdate)
-      .eq("id", callRow.id)
-
-    if (error) {
-      console.error("[Whisper Bridge] Failed to update status:", error)
-      return { success: false, error: error.message }
-    }
-
-    return { success: true }
-  } catch (error: any) {
-    console.error("[Whisper Bridge] Update error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// Trigger Vapi AI voice bot for hot leads
-export async function triggerVapiVoiceBot(params: {
+// Trigger the AI voice call for hot leads (Twilio-native lane)
+export async function triggerAiVoiceCall(params: {
   contactId: string
   triggerEvent: string // behavioral_spike, hot_lead_score, showing_reminder, price_reduction_alert
   customMessage?: string
@@ -251,16 +216,6 @@ export async function triggerVapiVoiceBot(params: {
       return { success: false, error: "Contact phone number not found" }
     }
 
-    const vapiApiKey = process.env.VAPI_API_KEY
-    const vapiAssistantId = process.env.VAPI_ASSISTANT_ID
-
-    if (!vapiApiKey || !vapiAssistantId) {
-      return {
-        success: false,
-        error: "Vapi not configured. Add VAPI_API_KEY and VAPI_ASSISTANT_ID to environment variables.",
-      }
-    }
-
     // Generate context-aware first message
     let firstMessage = customMessage
     if (!firstMessage) {
@@ -274,267 +229,73 @@ export async function triggerVapiVoiceBot(params: {
         case "showing_reminder":
           firstMessage = `Hi ${contact.first_name}, just calling to confirm your showing tomorrow. Are we still good for the scheduled time?`
           break
+        // RENDER BOUNDARY (§6) — `price_reduction_alert` is the internal trigger
+        // name and stays; the sentence is SPOKEN to the contact, so it takes the
+        // public word.
         case "price_reduction_alert":
-          firstMessage = `Hi ${contact.first_name}, great news! A property you viewed just had a price reduction. Want to schedule another look?`
+          firstMessage = `Hi ${contact.first_name}, great news! A property you viewed just had a ${priceImprovementLabel("sentence")}. Want to schedule another look?`
           break
         default:
           firstMessage = `Hi ${contact.first_name}, I'm the AI assistant for your real estate agent. How can I help you today?`
       }
     }
 
-    // Call Vapi.ai API through the connector-gateway
-    const response = await callConnector<{ id?: string; status?: string }>({
-      connector: "vapi",
-      baseUrl: "https://api.vapi.ai",
-      path: "/call/phone",
-      method: "POST",
-      auth: { style: "bearer", token: vapiApiKey },
-      body: {
-        phoneNumber: contact.phone,
-        assistantId: vapiAssistantId,
-        customer: {
-          name: `${contact.first_name} ${contact.last_name}`,
-        },
-        assistantOverrides: {
-          firstMessage,
-        },
-      },
+    // Place the outbound AI call on the TWILIO-NATIVE lane (owner: "no longer vapi").
+    // TCPA + vendor-budget gates run inside placeOutboundAiCall; the tenant's own
+    // number is the caller ID; the voice_calls row IS the turn session (billed via
+    // the usage_logs rail on the status callback). The former Vapi path is retired.
+    const { placeOutboundAiCall } = await import("@/lib/voice/twilio-outbound")
+    const placed = await placeOutboundAiCall(svc, {
+      toNumber: contact.phone,
+      contactId,
+      brokerageId: ctx.brokerageId,
+      agentUserId: ctx.userId ?? null,
+      initiatedBy: ctx.userId ?? null,
+      objective: `Hot-lead outreach (${triggerEvent}): reconnect, learn where they are, and offer to help or book time.`,
+      contactName: contact.first_name,
+      firstMessage: firstMessage ?? null,
     })
-
-    if (!response.ok) {
-      throw new Error(response.error || "Vapi API error")
+    if (!placed.ok) {
+      return { success: false, error: placed.error, blocked: (placed as any).blocked }
     }
 
-    const callData = response.data ?? {}
-
-    // Log Vapi call. `vapi_voice_calls` carries the billing + provider
-    // pointer; the conversational metadata (trigger_event, initial status)
-    // lives in raw_payload jsonb rather than as dedicated columns.
-    const { error: logError } = await supabase.from("vapi_voice_calls").insert({
-      vapi_call_id: callData.id,
-      contact_id: contactId,
-      brokerage_id: contactBroker.brokerage_id,
-      agent_id: ctx.agentId ?? null,
-      raw_payload: {
-        trigger_event: triggerEvent,
-        status: "initiated",
-        first_message: firstMessage,
-        initiated_at: new Date().toISOString(),
-      },
-    })
-
-    if (logError) {
-      console.error("[Vapi Voice] Failed to log call:", logError)
-    }
-
-    // Activities row — table requires brokerage_id, agent_id, title NOT NULL.
-    // Notes/metadata carry the trigger context.
+    // Activity trail (engine-agnostic).
     if (ctx.agentId) {
-      await supabase.from("activities").insert({
+      // The record that an AI voice call was placed to this contact.
+      const { error: voiceActivityError } = await supabase.from("activities").insert({
         agent_id: ctx.agentId,
         brokerage_id: contactBroker.brokerage_id,
         contact_id: contactId,
         entity_type: "contact",
-        activity_type: "vapi_voice_initiated",
-        title: `AI voice bot initiated: ${triggerEvent}`,
-        description: `Vapi call ${callData.id} initiated from trigger ${triggerEvent}`,
-        metadata: { vapi_call_id: callData.id, trigger_event: triggerEvent },
+        activity_type: "ai_voice_initiated",
+        title: `AI voice call initiated: ${triggerEvent}`,
+        description: `Twilio AI call ${placed.callSid} initiated from trigger ${triggerEvent}`,
+        metadata: { call_sid: placed.callSid, trigger_event: triggerEvent },
         status: "completed",
       })
+      if (voiceActivityError) {
+        console.error("[voiceCallBridge] ai_voice_initiated activity REJECTED — the call is live but unrecorded:", voiceActivityError.message)
+      }
     }
 
-    return {
-      success: true,
-      callId: callData.id,
-      status: callData.status,
-    }
+    return { success: true, callId: placed.callSid, status: "initiated" }
   } catch (error: any) {
-    console.error("[Vapi Voice] Error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// Update Vapi call status (webhook handler)
-// NOTE: invoked from the Vapi webhook route (app/api/webhooks/vapi/route.ts)
-// which verifies the upstream HMAC signature. The webhook is permitted to call
-// this without a user session via the service client path below. Direct RPC
-// from a client must be authenticated.
-export async function updateVapiCallStatus(params: {
-  callId: string
-  status: string
-  transcript?: string
-  outcome?: string
-  sentiment?: string
-  durationSeconds?: number
-  costCents?: number
-}) {
-  const svc = createServiceClient()
-  const ctx = await getAgentContext()
-
-  try {
-    // Webhook (no session): allow unconditionally — the webhook handler has
-    // already verified the Vapi HMAC signature before calling us.
-    // UI (session present): scope to caller's brokerage.
-    if (ctx.isAuthenticated) {
-      if (!ctx.brokerageId) {
-        return { success: false, error: "Unauthorized" }
-      }
-      const { data: callRow } = await svc
-        .from("vapi_voice_calls")
-        .select("contact_id")
-        .eq("vapi_call_id", params.callId)
-        .maybeSingle()
-      if (!callRow) {
-        return { success: false, error: "Call not found" }
-      }
-      if (callRow.contact_id) {
-        const { data: contact } = await svc
-          .from("contacts")
-          .select("brokerage_id")
-          .eq("id", callRow.contact_id)
-          .maybeSingle()
-        if (!contact || contact.brokerage_id !== ctx.brokerageId) {
-          return { success: false, error: "Forbidden" }
-        }
-      }
-    }
-
-    // vapi_voice_calls only carries provider/billing fields. The status,
-    // transcript, outcome and sentiment belong on the parent voice_calls
-    // row; look it up via voice_call_id (FK from vapi_voice_calls).
-    const { data: vapiRow } = await svc
-      .from("vapi_voice_calls")
-      .select("id, voice_call_id, raw_payload")
-      .eq("vapi_call_id", params.callId)
-      .maybeSingle()
-
-    const { error: vapiErr } = await svc
-      .from("vapi_voice_calls")
-      .update({
-        duration_seconds: params.durationSeconds,
-        cost_cents: params.costCents,
-        raw_payload: {
-          ...(vapiRow?.raw_payload ?? {}),
-          status: params.status,
-          last_status_at: new Date().toISOString(),
-        },
-      })
-      .eq("vapi_call_id", params.callId)
-
-    if (vapiErr) {
-      console.error("[Vapi Voice] Failed to update vapi_voice_calls:", vapiErr)
-      return { success: false, error: vapiErr.message }
-    }
-
-    if (vapiRow?.voice_call_id) {
-      const voiceUpdate: Record<string, unknown> = { updated_at: new Date().toISOString() }
-      if (params.status === "completed") voiceUpdate.status = "completed"
-      if (params.transcript) voiceUpdate.transcription = params.transcript
-      if (params.outcome) voiceUpdate.outcome = params.outcome
-      if (params.sentiment) voiceUpdate.sentiment = params.sentiment
-
-      const { error: voiceErr } = await svc
-        .from("voice_calls")
-        .update(voiceUpdate)
-        .eq("id", vapiRow.voice_call_id)
-      if (voiceErr) {
-        console.error("[Vapi Voice] Failed to update voice_calls:", voiceErr)
-      }
-    }
-
-    return { success: true }
-  } catch (error: any) {
-    console.error("[Vapi Voice] Update error:", error)
+    console.error("[AI Voice] Error:", error)
     return { success: false, error: error.message }
   }
 }
 
 // Get whisper bridge call history
-export async function getWhisperBridgeCalls(_agentId?: string) {
-  // _agentId ignored — derived from session
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" }
-  }
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getWhisperBridgeCalls`
+// deleted. SURVIVORS: the voice dashboard's own tenant-scoped voice_calls
+// reads (app/dashboard/voice/page.tsx:75-82 → VoiceCallHistoryTable, plus the
+// mobile voice page's Recent Calls) for the call history, and
+// app/dashboard/voice/review/[callId]/page.tsx:152 for the
+// call_whisper_logs whisper text. This twin duplicated the same ledger read
+// behind an action nothing called; a stripped-source census found zero
+// callers outside the app/actions/index.ts barrel, which itself has zero
+// importers.
 
-  const supabase = await createClient()
-
-  try {
-    // Whisper-bridge calls are voice_calls of type agent_call; the whisper text is the embedded
-    // call_whisper_logs child. Scope by agent (voice_calls.agent_id is agents.id).
-    const { data, error } = await supabase
-      .from("voice_calls")
-      .select("*, contacts(first_name, last_name, phone), call_whisper_logs(whisper_text, delivered_at, agent_heard)")
-      .eq("call_type", "agent_call")
-      .eq("agent_id", ctx.agentId)
-      .order("created_at", { ascending: false })
-      .limit(50)
-
-    if (error) throw error
-
-    return { success: true, calls: data }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
-// Get Vapi voice call history
-export async function getVapiVoiceCalls(contactId?: string) {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" }
-  }
-
-  const supabase = await createClient()
-  const svc = createServiceClient()
-
-  try {
-    // Resolve all contact ids in this brokerage (so we can scope vapi_voice_calls)
-    // If a specific contactId is requested, verify ownership first.
-    if (contactId) {
-      if (!isValidUUID(contactId)) {
-        return { success: false, error: "Invalid contact ID" }
-      }
-      const { data: contactRow } = await svc
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", contactId)
-        .maybeSingle()
-      if (!contactRow || contactRow.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Forbidden" }
-      }
-
-      const { data, error } = await supabase
-        .from("vapi_voice_calls")
-        .select("*, contacts(first_name, last_name, phone)")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
-        .limit(50)
-      if (error) throw error
-      return { success: true, calls: data }
-    }
-
-    // No contactId: list calls for all contacts in this brokerage
-    const { data: brokerageContacts } = await svc
-      .from("contacts")
-      .select("id")
-      .eq("brokerage_id", ctx.brokerageId)
-    const contactIds = (brokerageContacts ?? []).map((c) => c.id)
-    if (contactIds.length === 0) {
-      return { success: true, calls: [] }
-    }
-
-    const { data, error } = await supabase
-      .from("vapi_voice_calls")
-      .select("*, contacts(first_name, last_name, phone)")
-      .in("contact_id", contactIds)
-      .order("created_at", { ascending: false })
-      .limit(50)
-
-    if (error) throw error
-
-    return { success: true, calls: data }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// AI voice-call history is served from voice_calls (the single ledger) via
+// getWhisperBridgeCalls and the voice dashboards — the legacy getVapiVoiceCalls
+// reader retired with the vapi_voice_calls table.

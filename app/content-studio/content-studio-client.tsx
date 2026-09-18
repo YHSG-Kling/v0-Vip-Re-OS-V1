@@ -1,6 +1,7 @@
 "use client"
 
 import { Input } from "@/components/ui/input"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { Textarea } from "@/components/ui/textarea" // Added for Direct Mail
 
 import type React from "react"
@@ -26,24 +27,29 @@ import {
   Plus,
   Send,
   X,
-  MoreVertical,
   Save,
   Mic,
   User,
+  CalendarDays,
   Loader2,
 } from "lucide-react"
 import {
   generateContentIdeas,
+  getContentIdeas,
   researchKeywords,
   getCompetitorContent,
   getContentCalendar,
   getPublishingStats,
   getSavedIdeas,
+  saveContentIdea,
 } from "@/app/actions/content-studio"
 import { checkContentCompliance } from "@/app/dashboard/marketing/studio/components/ad-os/ad-os-actions"
-import { aiWriteNewsletterContent, aiGenerateSubjectLines } from "@/app/actions/ai-newsletter"
+import { toGateContentType, toReadinessContentType } from "@/lib/campaign-readiness/content-type-vocabulary"
+import { aiWriteNewsletterContent, aiGenerateSubjectLines, getNewsletters } from "@/app/actions/ai-newsletter"
+import { getDirectMailCampaigns } from "@/app/actions/ai-direct-mail"
 import { createMailCampaign } from "@/app/actions/direct-mail"
 import { createClient } from "@/lib/supabase/client"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import LinkToVideoGenerator from "@/components/content-studio/LinkToVideoGenerator"
 import { executeWorkflow } from "@/app/actions/workflows"
 import { generateVideoFromScript } from "@/app/actions/video-generation"
@@ -52,6 +58,19 @@ import { cn } from "@/lib/utils" // Added for styling
 import { Checkbox } from "@/components/ui/checkbox"
 import { useRouter } from "next/navigation" // Added for client-side navigation
 import { toast } from "sonner"
+
+// Broker-approved direct-mail template catalog. No `direct_mail_templates`
+// table exists (mail_template_id is stored as a bare string everywhere it's
+// referenced — schema-snapshot.ts / lib/workflow/channel-registry.ts), so
+// this literal IS the catalog rather than a cache of one. It was carried as
+// `useState` with a setter nothing ever called (unread-state-census); a
+// setter for a value that has no live source to refresh it from is dead
+// weight, not a missing fetch — moved out of state entirely.
+const DIRECT_MAIL_TEMPLATES = [
+  { id: "listing", name: "Just Listed", preview: "/templates/listing.jpg" },
+  { id: "sold", name: "Just Sold", preview: "/templates/sold.jpg" },
+  { id: "market", name: "Market Update", preview: "/templates/market.jpg" },
+]
 
 interface ContentStudioClientProps {
   userId?: string
@@ -67,6 +86,13 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   const [isInitializing, setIsInitializing] = useState(true)
   const [contentIdeas, setContentIdeas] = useState<any[]>([])
   const [savedIdeas, setSavedIdeas] = useState<any[]>([])
+  // ── SAVE YOUR OWN IDEA ──────────────────────────────────────────────────────
+  // The Saved Ideas shelf could only ever fill from the AI generator: there was
+  // no way to write down an idea of your own. saveContentIdea is the writer that
+  // was already there — this is its verb.
+  const [newIdeaText, setNewIdeaText] = useState("")
+  const [newIdeaType, setNewIdeaType] = useState("social_post")
+  const [isSavingIdea, setIsSavingIdea] = useState(false)
   const [keywords, setKeywords] = useState<any[]>([])
   const [competitors, setCompetitors] = useState<any[]>([])
   const [calendar, setCalendar] = useState<any[]>([])
@@ -150,11 +176,6 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   const [selectedKeyword, setSelectedKeyword] = useState<any>(null)
   const [selectedCompetitor, setSelectedCompetitor] = useState<any>(null)
   const [selectedOmniChannel, setSelectedOmniChannel] = useState<string[]>([])
-  const [directMailTemplates, setDirectMailTemplates] = useState<any[]>([
-    { id: "listing", name: "Just Listed", preview: "/templates/listing.jpg" },
-    { id: "sold", name: "Just Sold", preview: "/templates/sold.jpg" },
-    { id: "market", name: "Market Update", preview: "/templates/market.jpg" },
-  ])
   const [editingContent, setEditingContent] = useState<any>(null)
 
   useEffect(() => {
@@ -180,22 +201,67 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   async function loadData() {
     try {
       setIsInitializing(true)
-      const [ideasData, savedData, competitorData, calendarData, statsData] = await Promise.all([
-        generateContentIdeas(undefined, userId, userRole),
-        getSavedIdeas(userId, userRole),
-        getCompetitorContent(userId, userRole),
-        getContentCalendar(userId, userRole),
-        getPublishingStats(userId, userRole),
-      ])
+      // Newsletters / direct mail / long videos used to be set to a literal []
+      // right here, so three whole card lists — and the Send Campaign paths
+      // inside them — were unreachable no matter what the account owned. Both
+      // list actions already existed and had no callers; the long-video list is
+      // the same rows the upload on this page writes.
+      //
+      // The ideas strip used to call generateContentIdeas on EVERY mount — an
+      // AI call that also INSERTS 5 fresh rows into content_ideas — so opening
+      // this page burned model cost and wrote duplicate rows on every visit,
+      // and anything a teammate had generated or the user had left unreviewed
+      // was invisible until the next AI round overwrote it in memory.
+      // getContentIdeas (app/actions/content-studio.ts) is the free reader of
+      // that same table and had no caller at all. Mount now loads what is
+      // already there; handleGenerateIdeas (the explicit "Generate Ideas"
+      // button) is the only path that still calls the AI writer.
+      const [ideasData, savedData, competitorData, calendarData, statsData, newsletterRes, mailRes] =
+        await Promise.all([
+          getContentIdeas(userId, userRole),
+          getSavedIdeas(userId, userRole),
+          getCompetitorContent(userId, userRole),
+          getContentCalendar(userId, userRole),
+          getPublishingStats(userId, userRole),
+          getNewsletters(),
+          getDirectMailCampaigns(),
+        ])
 
-      if (ideasData.success && ideasData.ideas) setContentIdeas(ideasData.ideas)
+      setContentIdeas(ideasData ?? [])
       setSavedIdeas(savedData)
       setCompetitors(competitorData)
       setCalendar(calendarData)
       setStats(statsData)
-      setNewsletters([])
-      setDirectMail([])
-      setLongVideos([])
+
+      // A refusal is not an empty library. Say which list could not load rather
+      // than rendering "nothing here yet" over an error.
+      const refusals: string[] = []
+      if (newsletterRes?.success) setNewsletters((newsletterRes as any).newsletters ?? [])
+      else refusals.push(`newsletters (${(newsletterRes as any)?.error ?? "no reason given"})`)
+      if (mailRes?.success) setDirectMail((mailRes as any).campaigns ?? [])
+      else refusals.push(`direct mail (${(mailRes as any)?.error ?? "no reason given"})`)
+
+      const supabase = createClient()
+      const { data: videoRows, error: videoError } = await supabase
+        .from("ai_video_projects")
+        .select("id, title, duration_seconds, video_type, video_provider, video_url, status")
+        .order("created_at", { ascending: false })
+        .limit(50)
+      if (videoError) {
+        refusals.push(`videos (${videoError.message})`)
+      } else {
+        setLongVideos(
+          (videoRows ?? []).map((v: any) => ({
+            id: v.id,
+            title: v.title,
+            durationSeconds: v.duration_seconds ?? 0,
+            sourceType: v.video_type ?? v.video_provider ?? "upload",
+            videoUrl: v.video_url,
+            status: v.status,
+          })),
+        )
+      }
+      if (refusals.length > 0) toast.error(`Could not load ${refusals.join("; ")}`)
     } catch (error) {
       console.error("Failed to load Content Studio data:", error)
       setContentIdeas([])
@@ -212,6 +278,25 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
     const result = await generateContentIdeas("general", userId, userRole)
     if (result.success && result.ideas) {
       setContentIdeas(result.ideas)
+    }
+  }
+
+  async function handleSaveIdea() {
+    const text = newIdeaText.trim()
+    if (!text) return
+    setIsSavingIdea(true)
+    try {
+      const saved = await saveContentIdea(text, newIdeaType)
+      // The action returns the inserted row (or throws). Prepending the row it
+      // actually wrote — rather than the text we typed — means the shelf shows
+      // what is in the database, not what we hoped went in.
+      if (saved) setSavedIdeas((prev) => [saved, ...prev])
+      setNewIdeaText("")
+      toast.success("Idea saved")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save that idea")
+    } finally {
+      setIsSavingIdea(false)
     }
   }
 
@@ -238,22 +323,58 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
     }
   }
 
+  // executeWorkflow RESOLVES with { success: false, error } on failure — it does
+  // not throw. All three of these awaited it and then reported success
+  // unconditionally, so a send that never happened looked identical to one that
+  // did. Every result is read now, and a partial push names the channels that
+  // actually went out separately from the ones that did not.
+  //
+  // COMPLIANCE GATE MOUNTED (wave 57, Task C) — this is the one publish path
+  // in this file that ran with NO check at all: handleCreateNewsletter and
+  // handleCreateMail below both gate before creating their campaign, but this
+  // fans arbitrary content straight out to every selected channel with
+  // nothing in between. Gated ONCE on the shared text before the per-channel
+  // loop (the same content goes to every channel), content type resolved
+  // through toReadinessContentType -> toGateContentType so a caller passing a
+  // real idea.content_type (READINESS_CONTENT_TYPES) maps correctly and an
+  // untyped keyword/competitor push still defaults to social_post — the
+  // channels this button actually targets.
   async function handlePushToOmniChannel(content: any, channels: string[]) {
     setIsProcessing(content.id)
     try {
-      // Push to selected channels
+      const text: string = content.text || content.title || ""
+      if (text.trim() && brokerageId) {
+        const gateType = toGateContentType(toReadinessContentType(content.content_type ?? content.type ?? ""))
+        const compliance = await checkContentCompliance({
+          content: text,
+          brokerageId,
+          contentType: gateType,
+        })
+        if (!compliance.passed) {
+          toast.error(`Push blocked by compliance — ${compliance.blockers.join("; ") || "review content"}`)
+          return
+        }
+        if (compliance.warnings.length > 0) {
+          toast.info(`Compliance warning — ${compliance.warnings.join("; ")}`)
+        }
+      }
+      const pushed: string[] = []
+      const failed: string[] = []
       for (const channel of channels) {
-        await executeWorkflow("publish-content", {
+        const res = await executeWorkflow("publish-content", {
           contentId: content.id,
           channel,
           content: content.text || content.title,
         })
+        if (res?.success) pushed.push(channel)
+        else failed.push(`${channel} (${res?.error ?? "no reason given"})`)
       }
-      toast.success(`Pushed to ${channels.join(", ")}`)
-      setSelectedOmniChannel([])
+      if (pushed.length > 0) toast.success(`Pushed to ${pushed.join(", ")}`)
+      if (failed.length > 0) toast.error(`Not pushed — ${failed.join("; ")}`)
+      if (failed.length === 0) setSelectedOmniChannel([])
       loadData()
-    } catch (error) {
-      toast.error("Push failed")
+    } catch (error: any) {
+      toast.error(`Push failed: ${error?.message ?? "unknown error"}`)
     } finally {
       setIsProcessing(null)
     }
@@ -261,20 +382,20 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
 
   async function handleSendNewsletter(id: string) {
     setIsProcessing(id)
-    await executeWorkflow("send-newsletter", { campaignId: id })
-    setTimeout(() => {
-      loadData()
-      setIsProcessing(null)
-    }, 2000)
+    const res = await executeWorkflow("send-newsletter", { campaignId: id })
+    if (res?.success) toast.success("Newsletter send started")
+    else toast.error(`Newsletter not sent — ${res?.error ?? "no reason given"}`)
+    await loadData()
+    setIsProcessing(null)
   }
 
   async function handleSendMail(id: string) {
     setIsProcessing(id)
-    await executeWorkflow("send-direct-mail", { campaignId: id })
-    setTimeout(() => {
-      loadData()
-      setIsProcessing(null)
-    }, 2000)
+    const res = await executeWorkflow("send-direct-mail", { campaignId: id })
+    if (res?.success) toast.success("Direct mail send started")
+    else toast.error(`Direct mail not sent — ${res?.error ?? "no reason given"}`)
+    await loadData()
+    setIsProcessing(null)
   }
 
   async function handleCreateNewsletter() {
@@ -313,7 +434,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           brokerageId: brokerageId,
           agentId: userId,
           topic,
-          targetAudience: "lifetime_customers",
+          targetAudience: LIFETIME_CUSTOMER_SEGMENT,
           tone: "friendly",
         }),
         aiGenerateSubjectLines({
@@ -442,13 +563,23 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           setUploadProgress(0)
           return
         }
+        // Scoped — brokerageId is the studio's active tenant and a user can hold
+        // an agents row in more than one. No row ⇒ the upload has nobody to
+        // belong to, so it is refused rather than written under the users id.
+        const agentRecordId = await resolveAgentIdInBrokerage(supabase, user.id, brokerageId)
+        if (!agentRecordId) {
+          throw new Error("No agent profile on your account — finish agent setup before uploading a video.")
+        }
+
         const { error: dbError } = await supabase.from("ai_video_projects").insert({
-          agent_id: user.id,
+          agent_id: agentRecordId,
           brokerage_id: brokerageId,
           title: newVideoTitle,
           video_url: publicUrl,
-          status: "uploaded",
-          video_type: "upload",
+          status: "completed",
+          // video_type describes what the video IS (listing_tour, just_sold, …)
+          // and is NULLABLE. For a file the user uploaded we do not know; the
+          // adjacent video_provider already records that it arrived by upload.
           video_provider: "upload",
         })
         if (dbError) throw dbError
@@ -742,6 +873,77 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
 
           {/* Content Ideas Tab */}
           <TabsContent value="ideas">
+            {/* Pipeline stats + in-progress calendar — `stats`/`calendar`/
+                `selectedDate` were loaded on mount but never rendered
+                (unread-state-census). getPublishingStats and getContentCalendar
+                both read content_ideas (no separate scheduled_date column
+                exists there — schema-snapshot.ts), so the "calendar" is really
+                the in-progress ideas, filterable by the real date they were
+                created on. */}
+            {stats && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">Total</p>
+                  <p className="text-2xl font-semibold">{stats.totalPosts}</p>
+                </CardContent></Card>
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">Published</p>
+                  <p className="text-2xl font-semibold text-green-600">{stats.published}</p>
+                </CardContent></Card>
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">In Progress</p>
+                  <p className="text-2xl font-semibold text-blue-600">{stats.scheduled}</p>
+                </CardContent></Card>
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">Drafts</p>
+                  <p className="text-2xl font-semibold text-slate-500">{stats.drafts}</p>
+                </CardContent></Card>
+              </div>
+            )}
+            {calendar.length > 0 && (
+              <Card className="border-2 mb-6">
+                <CardHeader className="bg-slate-100">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <CardTitle className="flex items-center gap-2 text-slate-900">
+                      <CalendarDays className="h-5 w-5 text-blue-600" />
+                      In Progress
+                    </CardTitle>
+                    <input
+                      type="date"
+                      value={selectedDate ? selectedDate.toISOString().slice(0, 10) : ""}
+                      onChange={(e) => setSelectedDate(e.target.value ? new Date(`${e.target.value}T00:00:00`) : undefined)}
+                      className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                    />
+                    {selectedDate && (
+                      <Button size="sm" variant="ghost" onClick={() => setSelectedDate(undefined)}>
+                        Clear filter
+                      </Button>
+                    )}
+                  </div>
+                  <CardDescription>
+                    {selectedDate ? `Started on ${selectedDate.toLocaleDateString()}` : "Every idea currently in progress"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="pt-4 space-y-2">
+                  {calendar
+                    .filter((item: any) => {
+                      if (!selectedDate || !item.created_at) return true
+                      return new Date(item.created_at).toDateString() === selectedDate.toDateString()
+                    })
+                    .map((item: any) => (
+                      <div key={item.id} className="flex items-center justify-between gap-2 rounded-md border p-2.5">
+                        <div>
+                          <p className="text-sm font-medium">{item.title}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {item.content_type} · {new Date(item.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <Badge variant="secondary" className="capitalize">{item.status}</Badge>
+                      </div>
+                    ))}
+                </CardContent>
+              </Card>
+            )}
             <div className="grid lg:grid-cols-2 gap-6">
               <Card className="border-2 shadow-md">
                 <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b">
@@ -844,11 +1046,49 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                   <CardDescription>Your bookmarked content concepts</CardDescription>
                 </CardHeader>
                 <CardContent className="pt-6 space-y-3">
+                  <div className="flex flex-col gap-2 rounded-lg border p-3 bg-slate-50">
+                    <Textarea
+                      value={newIdeaText}
+                      onChange={(e) => setNewIdeaText(e.target.value)}
+                      placeholder="Write down an idea of your own…"
+                      rows={2}
+                      disabled={isSavingIdea}
+                    />
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={newIdeaType}
+                        onChange={(e) => setNewIdeaType(e.target.value)}
+                        disabled={isSavingIdea}
+                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                      >
+                        <option value="social_post">Social post</option>
+                        <option value="video">Video</option>
+                        <option value="blog">Blog</option>
+                        <option value="tool">Tool</option>
+                      </select>
+                      <Button
+                        size="sm"
+                        onClick={handleSaveIdea}
+                        disabled={isSavingIdea || !newIdeaText.trim()}
+                        className="gap-2"
+                      >
+                        {isSavingIdea ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                        Save idea
+                      </Button>
+                    </div>
+                  </div>
                   {savedIdeas.length > 0 ? (
                     savedIdeas.map((idea) => (
                       <Card key={idea.id} className="hover:shadow-md transition-shadow">
                         <CardContent className="pt-6">
-                          <p className="leading-relaxed text-slate-700">{idea.idea_text}</p>
+                          {/* content_ideas carries title + description (live
+                              schema). `idea_text` is not a column on this table
+                              and never was, so this panel rendered blank cards
+                              for every saved idea. */}
+                          <p className="leading-relaxed text-slate-700">{idea.title}</p>
+                          {idea.description && (
+                            <p className="text-xs text-slate-500 mt-1">{idea.description}</p>
+                          )}
                         </CardContent>
                       </Card>
                     ))
@@ -1187,9 +1427,13 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                             >
                               {campaign.status}
                             </Badge>
-                            <Button variant="ghost" size="icon">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
+                            {/* A kebab <Button> used to sit here with no
+                                handler and no menu attached to it — it opened
+                                nothing. There is no per-campaign action behind
+                                it in this client (the only newsletter action
+                                here is Send Campaign, already rendered below),
+                                so the affordance was removed rather than
+                                wired to an empty menu. */}
                           </div>
                           <CardTitle className="text-xl text-slate-900">{campaign.title}</CardTitle>
                         </CardHeader>
@@ -1406,7 +1650,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                   <div className="space-y-6 bg-gradient-to-r from-rose-50 to-pink-50 p-6 rounded-lg border-2 border-rose-200">
                     <h3 className="text-lg font-semibold text-slate-900">Select Broker-Approved Template</h3>
                     <div className="grid md:grid-cols-3 gap-4">
-                      {directMailTemplates.map((template) => (
+                      {DIRECT_MAIL_TEMPLATES.map((template) => (
                         <Card
                           key={template.id}
                           className={cn(

@@ -45,7 +45,19 @@ export async function runOfferReadyCheck(
 
     const { produceOfferStrategyBrief } = await import("@/lib/agents/offer-strategy-producer")
     const r = await produceOfferStrategyBrief(brokerageId, contactId, svc)
-    return { fired: r.proposed > 0, reason: r.proposed > 0 ? "offer accelerator fired (gated)" : "already briefed this journey" }
+    // REPORT WHAT HAPPENED, NOT WHAT USUALLY HAPPENS. This read every
+    // `proposed === 0` as "already briefed this journey" — which is one of eight
+    // possible endings and the only benign one. A refused contact read, a failed
+    // dedupe probe or a rejected gate write all produced that same reassuring
+    // sentence, so the detector reported a healthy no-op on exactly the runs
+    // where something had gone wrong. The producer now names its own outcome;
+    // this passes it through instead of guessing.
+    return {
+      fired:  r.proposed > 0,
+      reason: r.proposed > 0
+        ? "offer accelerator fired (gated)"
+        : `offer accelerator did not fire: ${r.outcome ?? "unknown outcome"}`,
+    }
   } catch (e) {
     return { fired: false, reason: `error: ${e instanceof Error ? e.message : String(e)}` }
   }

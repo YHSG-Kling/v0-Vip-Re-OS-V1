@@ -20,9 +20,12 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { VENDOR_CATEGORY_INSPECTOR } from "@/lib/kernel/vendor-categories"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   whisperTierCapability,
   resolveAssistantVoiceId,
+  realSynthesizer as defaultSynthesizer,
   type WhisperSynthesizer,
 } from "@/lib/intelligence/appointment-whisper"
 
@@ -152,13 +155,11 @@ export interface FireDrillRunResult {
   text: number
 }
 
-const defaultSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
-  try {
-    const { synthesizeSpeechStream } = await import("@/lib/voice/elevenlabs-tts")
-    const res = await synthesizeSpeechStream({ text: script, voiceId })
-    return (res as { audioUrl?: string | null })?.audioUrl ?? null
-  } catch { return null }
-}
+// `defaultSynthesizer` — same-body census, round 4 (2026-09-09, lane FC):
+// survivor is lib/intelligence/appointment-whisper.ts:77 `realSynthesizer`,
+// imported above under this file's existing local name (this file already
+// imported the `WhisperSynthesizer` TYPE from there; now it imports the
+// implementation too instead of pasting its own copy).
 
 /**
  * Run fire drills for a brokerage: scan live deals for uncovered deadlines inside the
@@ -179,7 +180,7 @@ export async function runFireDrills(
     .from("transactions")
     .select("id, deal_name, client_name, status, agent_id, buyer_agent_id, seller_agent_id, contact_id, buyer_contact_id, seller_contact_id, deal_type, inspection_deadline, appraisal_deadline, financing_deadline, inspection_contingency_removed_at, appraisal_contingency_removed_at, financing_contingency_removed_at, appraisal_value, appraisal_completed_date")
     .eq("brokerage_id", brokerageId)
-    .in("status", ["active", "under_contract", "closing"])
+    .in("status", [...TRANSACTION_STATUSES_OPEN])
     .is("deleted_at", null)
     .or("inspection_deadline.not.is.null,appraisal_deadline.not.is.null,financing_deadline.not.is.null")
     .limit(200)
@@ -227,7 +228,7 @@ export async function runFireDrills(
     let inspectorCandidate: string | null = null
     if (threats.some((t) => t.kind === "inspection")) {
       const { data: vend } = await supabase.from("vendors").select("name")
-        .eq("brokerage_id", brokerageId).eq("category", "Inspector")
+        .eq("brokerage_id", brokerageId).eq("category", VENDOR_CATEGORY_INSPECTOR)
         .order("rating", { ascending: false, nullsFirst: false }).limit(1).maybeSingle()
       inspectorCandidate = (vend as { name: string } | null)?.name ?? null
     }

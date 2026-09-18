@@ -6,23 +6,16 @@
 // channels). Marketing-staff-gated (capability map), audited; drafts move
 // draft → approved → posted (permalink recorded when it actually goes out).
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
-import { buildWeeklyProductCalendar, canTransitionDraft, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { canTransitionDraft, isDraftStatus, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
 import { loadProductBrand } from "@/lib/platform/product-brand"
+import { requireMarketing } from "@/lib/auth/platform-guard"
 
-async function requireMarketing(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
-  if (!platformStaffCan(role, "marketing")) return { ok: false, error: "Forbidden — platform marketing access required" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
+// TOMBSTONE: local requireMarketing merged onto lib/auth/platform-guard.ts
+// requireMarketing (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
   try {
@@ -42,27 +35,13 @@ export async function generateProductCalendarAction(startDateIso: string): Promi
   // Brand-driven (the app name lives in platform settings) + topic-infused: odd
   // days pull from the watched-topic pool (competitor buzz / trends), then those
   // topics are marked used so the pool rotates.
-  const brand = await loadProductBrand(svc)
-  const { data: topicRows } = await svc.from("platform_content_topics")
-    .select("id, topic").eq("status", "new").order("created_at", { ascending: false }).limit(3)
-  const topics = ((topicRows ?? []) as any[]).map((t) => t.topic as string)
-  let calendar
-  try { calendar = buildWeeklyProductCalendar(startDateIso, brand, topics) } catch (e: any) { return { ok: false, error: e?.message ?? "bad date" } }
-  let created = 0
-  for (const post of calendar) {
-    const { count } = await svc.from("platform_social_drafts").select("id", { count: "exact", head: true })
-      .eq("channel", post.channel).eq("scheduled_for", post.scheduledFor).neq("status", "discarded")
-    if ((count ?? 0) > 0) continue
-    const { error } = await svc.from("platform_social_drafts").insert({
-      channel: post.channel, angle: post.angle, content: post.content, hashtags: post.hashtags,
-      scheduled_for: post.scheduledFor, status: "draft", created_by: auth.userId,
-    })
-    if (!error) created++
-  }
-  if (created > 0 && (topicRows ?? []).length > 0) {
-    await svc.from("platform_content_topics").update({ status: "used", used_at: new Date().toISOString() })
-      .in("id", ((topicRows ?? []) as any[]).map((t) => t.id))
-  }
+  // The calendar body moved onto lib/platform/product-content-autopilot.ts
+  // (2026-09-07) so the Monday cron and this button write the SAME drafts.
+  const { writeWeeklyProductCalendar } = await import("@/lib/platform/product-content-autopilot")
+  const written = await writeWeeklyProductCalendar(svc, { startDateIso, createdBy: auth.userId })
+  if (written.error) return { ok: false, error: written.error }
+  const created = written.created
+  const topics = new Array(written.topicsUsed).fill("")
   await audit(auth.userId, auth.email, "platform_content.calendar_generated", startDateIso, { created, topicsUsed: topics.length })
   revalidatePath("/dashboard/superadmin/growth")
   return { ok: true, created }
@@ -82,10 +61,18 @@ export async function listProductDraftsAction(): Promise<{ ok: true; drafts: any
 export async function transitionProductDraftAction(input: { id: string; to: string; permalink?: string }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireMarketing()
   if (!auth.ok) return auth
+  // BOUNDARY NARROWING (2026-08-31): canTransitionDraft is typed to DraftStatus now, so the
+  // request's `to` and the DB row's `status` — both untrusted strings — go through isDraftStatus
+  // instead of an `as` cast. A junk `to` was already refused inside the enforcer ("unknown
+  // status" — message preserved); a junk stored status used to sail THROUGH it (anything
+  // non-terminal was transitionable), which fail-open no longer happens.
+  if (!isDraftStatus(input.to)) return { ok: false, error: "unknown status" }
   const svc = createServiceClient()
   const { data: draft } = await svc.from("platform_social_drafts").select("id, status, media_type, video_url").eq("id", input.id).maybeSingle()
   if (!draft) return { ok: false, error: "Draft not found" }
-  const check = canTransitionDraft((draft as any).status, input.to, input.permalink)
+  const fromStatus: unknown = (draft as any).status
+  if (!isDraftStatus(fromStatus)) return { ok: false, error: `Draft has unrecognized status '${String(fromStatus)}'` }
+  const check = canTransitionDraft(fromStatus, input.to, input.permalink)
   if (!check.ok) return { ok: false, error: check.reason }
   // A VIDEO draft can only be posted once the rendered file is attached.
   if (input.to === "posted" && (draft as any).media_type === "video" && !((draft as any).video_url ?? "").trim()) {
@@ -121,7 +108,13 @@ export async function generateProductVideoDraftAction(input: { angle: string; fo
     media_type: "video", format: spec.format, script: spec.script,
   }).select("id").single()
   if (error) return { ok: false, error: error.message }
-  await audit(auth.userId, auth.email, "platform_content.video_draft", (data as any).id, { angle: spec.angle, format: spec.format, compositionId: spec.compositionId })
+  // The render is queued here, through the one registry, instead of waiting
+  // for a CLI render + pasted URL (2026-09-07): the post-render hook attaches
+  // video_url when the file lands. A refusal is reported, not hidden.
+  const { queueProductVideoRender } = await import("@/lib/platform/product-content-autopilot")
+  const queued = await queueProductVideoRender(svc, { draftId: (data as any).id, requestedVia: "manual" })
+  if (!queued.queued && !queued.alreadyQueued) console.error("[platform-content] product video render not queued:", queued.reason)
+  await audit(auth.userId, auth.email, "platform_content.video_draft", (data as any).id, { angle: spec.angle, format: spec.format, compositionId: spec.compositionId, renderQueued: queued.queued, renderReason: queued.reason ?? null })
   revalidatePath("/dashboard/superadmin/growth")
   return { ok: true, id: (data as any).id, script: spec.script }
 }

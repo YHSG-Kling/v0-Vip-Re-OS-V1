@@ -29,11 +29,16 @@ interface Props {
   onSubmitted?: (submissionId: string) => void
 }
 
+// valuation_requests.condition admits exactly: excellent | good | fair | poor.
+// The last option here was "needs_work", which the column rejects — so a
+// homeowner who picked the honest answer about their own house had their
+// valuation request refused and the LEAD LOST, at the very top of the funnel.
+// 'poor' is the column's word for it; the label is what the visitor reads.
 const CONDITION_OPTIONS = [
-  { value: "excellent",  label: "Excellent — Move-in ready" },
-  { value: "good",       label: "Good — Minor updates needed" },
-  { value: "fair",       label: "Fair — Some work required" },
-  { value: "needs_work", label: "Needs Work — Major renovation" },
+  { value: "excellent", label: "Excellent — Move-in ready" },
+  { value: "good",      label: "Good — Minor updates needed" },
+  { value: "fair",      label: "Fair — Some work required" },
+  { value: "poor",      label: "Needs Work — Major renovation" },
 ]
 
 export function HomeValueForm({

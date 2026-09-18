@@ -3,7 +3,8 @@ import { createClient } from "@/lib/supabase/server"
 import { getLessonFeed } from "@/app/actions/portal-education"
 
 export async function GET(
-  request: Request,
+  // Deliberately unread — every input is the route param below plus the session gate.
+  _request: Request,
   { params }: { params: Promise<{ contactId: string }> }
 ) {
   try {

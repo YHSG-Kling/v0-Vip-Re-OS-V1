@@ -1,13 +1,14 @@
 // lib/finance/commission-tracking-reaper.ts
 //
 // COMMISSION TRACKING-DRIFT REAPER (finance_manager) — the safety net for the two commission status
-// trackings. CLOSE now locks both the bridge (agent_commissions) and the ledger
-// (commissions/commission_distributions) in one step, but historical closed deals and the manual
-// mark-paid UI paths can still leave the two out of sync. This reaper finds transactions where the
-// trackings disagree and:
-//   • bridge paid, ledger lagging  → HEALS it (locks the ledger, reusing the canonical payment path).
-//   • ledger paid, bridge lagging  → ESCALATES to finance/broker (an anomaly a human must resolve —
-//                                     never force-finalizes an agent-earnings record the close didn't).
+// trackings. After the KEEP-ONE merge (m283/m284) the summary ledger and the agent-earnings bridge
+// are the SAME row (agent_commissions), so the drift surface that remains is the summary row vs its
+// per-line commission_distributions. Disbursement locks both in one step, but historical closed deals
+// and the manual mark-paid UI paths can still leave the two out of sync. This reaper finds
+// transactions where they disagree and:
+//   • summary paid, distributions lagging → HEALS it (reusing the canonical payment path).
+//   • distributions paid, summary lagging → ESCALATES to finance/broker (an anomaly a human must
+//                                            resolve — never force-finalizes an earnings record.)
 // Deduped, bounded, best-effort — one reaper failure never aborts the net.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -32,16 +33,17 @@ export async function reapCommissionTrackingDrift(
   const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
   const actorUserId = (await resolveOrgRecipients(svc, brokerageId, { limit: 1 }))[0] ?? ""
 
+  // The LEDGER side is now the per-line distributions — the summary row is the bridge.
   const ledgerStatusFor = async (transactionId: string): Promise<string | null> => {
     const { data } = await svc
-      .from("commissions")
+      .from("commission_distributions")
       .select("status")
       .eq("transaction_id", transactionId)
       .eq("brokerage_id", brokerageId)
     return aggregateLedgerStatus((data ?? []) as Array<{ status?: string | null }>)
   }
 
-  // ── Direction 1: bridge PAID, ledger lagging → HEAL ──────────────────────────
+  // ── Direction 1: summary PAID, distributions lagging → HEAL ──────────────────
   const { data: paidBridge } = await svc
     .from("agent_commissions")
     .select("transaction_id")
@@ -58,13 +60,16 @@ export async function reapCommissionTrackingDrift(
     const { direction } = detectCommissionTrackingDrift({ bridgeStatus: "paid", ledgerStatus })
     if (direction === "bridge_ahead") {
       const r = await reconcileCommissionDisbursement(svc, { transactionId: txnId, brokerageId, actorUserId })
-      if (r.ledgerRowsLocked > 0) reaped++
+      // Orphan rows (referral fees and the legacy path — no commission_id) count as a heal.
+      // Counting only ledgerRowsLocked reported 'reaped: 0' on the exact drift this reaper
+      // exists to close, which reads identically to "nothing was wrong".
+      if (r.ledgerRowsLocked > 0 || r.orphanRowsLocked > 0) reaped++
     }
   }
 
-  // ── Direction 2: ledger PAID, bridge lagging → ESCALATE ──────────────────────
+  // ── Direction 2: distributions PAID, summary lagging → ESCALATE ──────────────
   const { data: paidLedger } = await svc
-    .from("commissions")
+    .from("commission_distributions")
     .select("transaction_id")
     .eq("brokerage_id", brokerageId)
     .eq("status", "paid")

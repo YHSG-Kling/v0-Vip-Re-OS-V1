@@ -16,7 +16,7 @@
 // browser's stale list). Double-book protection = calendar busy ∪ already-
 // scheduled showings.
 
-import { computeFreeSlots, type FreeSlot } from "@/lib/providers/calendar/free-slots"
+import { type FreeSlot } from "@/lib/providers/calendar/free-slots"
 
 export const SELF_BOOK_DEFAULTS = {
   durationMinutes: 45,

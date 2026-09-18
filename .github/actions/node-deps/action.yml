@@ -1,0 +1,127 @@
+# Node + npm dependencies for EVERY workflow in this repo — one definition, so the
+# four workflows cannot drift apart the way guards.yml and e2e.yml nearly did on
+# NODE_OPTIONS.
+#
+# WHY THIS EXISTS: `npm ci` was failing outright — three separate runs on this
+# branch (eae6a6b, 5d68fe2) died in the `ffmpeg-static` postinstall with ECONNRESET
+# and then a 503 from
+#   https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz
+# An 80 MB download off the GitHub release CDN sat on the critical path of every
+# job in the repo, so a CDN hiccup turned every check red for a reason that had
+# nothing to do with the commit under test.
+#
+# THE LEVER, read out of the package rather than guessed:
+#   index.js:16-17    `if (process.env.FFMPEG_BIN) module.exports = process.env.FFMPEG_BIN`
+#   install.js:14     `const binaryPath = require('.')`   ← the same value
+#   install.js:38-41  `if (fs.statSync(binaryPath).isFile()) process.exit(0)`
+# So pointing FFMPEG_BIN at a file that already exists makes the postinstall exit
+# 0 before it opens a socket. (`if (process.env.CI) return` at install.js:149 is
+# only the progress bar — it does NOT suppress the download.)
+#
+# The binary is therefore cached OUTSIDE node_modules, keyed on the ffmpeg-static
+# version the lockfile pins, and the cache SEEDS ITSELF from the first successful
+# install. No release tag is hardcoded here, so bumping ffmpeg-static rotates the
+# key on its own — nothing to remember, nothing to drift.
+#
+# `npm ci` is still retried with backoff underneath all of that: the ffmpeg
+# download is the failure we saw, but it is not the only transient a registry can
+# produce, and a retry that costs 15s is cheaper than a red check that costs a
+# re-run and a reader's trust in the signal.
+name: node-deps
+description: Node + npm dependencies, with the ffmpeg-static download taken off npm ci's critical path.
+
+inputs:
+  node-version:
+    description: Node major version. Every workflow in this repo runs 22.
+    required: false
+    default: "22"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        # Caches ~/.npm (the registry tarball cache). It does NOT cache
+        # node_modules, and it has never covered postinstall downloads — which is
+        # precisely why the ffmpeg fetch below needs a cache of its own.
+        cache: npm
+
+    - name: Read the ffmpeg-static version this lockfile pins
+      id: ffmpeg-version
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="$(node -p "require('./package-lock.json').packages['node_modules/ffmpeg-static']?.version ?? ''")"
+        echo "ffmpeg-static pinned at: ${version:-<absent>}"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    # Empty version => the dependency is gone from the lockfile. Then there is no
+    # postinstall to short-circuit and this whole path stays out of the way.
+    - name: Restore the cached ffmpeg binary
+      id: ffmpeg-cache
+      if: steps.ffmpeg-version.outputs.version != ''
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ffmpeg-static
+        key: ffmpeg-static-${{ runner.os }}-${{ runner.arch }}-${{ steps.ffmpeg-version.outputs.version }}
+
+    - name: Point ffmpeg-static at the cached binary
+      if: steps.ffmpeg-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        bin="$HOME/.cache/ffmpeg-static/ffmpeg"
+        if [ -x "$bin" ]; then
+          # Set for every LATER step, which includes `npm ci` below: install.js
+          # stats this path, finds a file, and exits 0 without downloading. The
+          # same variable then resolves the binary at runtime through index.js, so
+          # the install-time and run-time answers cannot disagree.
+          echo "FFMPEG_BIN=$bin" >> "$GITHUB_ENV"
+          echo "ffmpeg restored from cache: $bin"
+        else
+          # A hit whose payload is missing or non-executable is worse than a miss
+          # if we trust it, so state it and let the normal download happen.
+          echo "cache hit but $bin is missing or not executable — falling through to the download"
+        fi
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -uo pipefail
+        # Three attempts, 15s then 30s apart. A genuinely broken lockfile still
+        # fails — it just fails three times first, which on this repo costs about
+        # a minute inside timeouts of 20-40 minutes.
+        for attempt in 1 2 3; do
+          if npm ci; then
+            exit 0
+          fi
+          if [ "$attempt" = 3 ]; then
+            echo "::error::npm ci failed 3 times — this is not a transient."
+            exit 1
+          fi
+          delay=$((attempt * 15))
+          echo "::warning::npm ci failed (attempt $attempt/3) — retrying in ${delay}s"
+          sleep "$delay"
+        done
+
+    # Seeds the cache the FIRST time a given ffmpeg-static version is installed;
+    # actions/cache's post-job step then saves it. Skipped on a hit because
+    # actions/cache does not re-save an exact-key match anyway.
+    - name: Seed the ffmpeg cache from this install
+      if: steps.ffmpeg-version.outputs.version != '' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        src="node_modules/ffmpeg-static/ffmpeg"
+        if [ -f "$src" ]; then
+          mkdir -p "$HOME/.cache/ffmpeg-static"
+          cp "$src" "$HOME/.cache/ffmpeg-static/ffmpeg"
+          chmod +x "$HOME/.cache/ffmpeg-static/ffmpeg"
+          echo "seeded ffmpeg cache from $src"
+        else
+          # lib/video/composite-attribution.ts degrades gracefully on a missing
+          # binary ("ffmpeg-static binary unavailable" passthrough), so an absent
+          # file is reported and not treated as a job failure.
+          echo "$src absent after install — nothing to cache"
+        fi

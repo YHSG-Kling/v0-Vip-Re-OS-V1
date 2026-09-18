@@ -1,21 +1,44 @@
 "use client"
 
+/**
+ * Post-event action centre for a completed open house.
+ *
+ * THREE THINGS WERE WRONG HERE, and all three are the same shape: the control
+ * existed, the capability existed, nothing joined them.
+ *
+ * 1. "Schedule Showing" was a <Link> to /dashboard/showings/new — a route that has
+ *    never existed (app/dashboard/showings holds only `prep`). Every agent who
+ *    tapped it on a hot prospect got a 404. scheduleShowingFromAttendee was
+ *    complete, session-authorised, tenant-scoped, wrote the showing_requests row
+ *    and fired SHOWING_REQUESTED — and was reachable from nowhere. It is now what
+ *    the button calls.
+ *
+ * 2. Hot prospects could never be detected. isHotProspect matched
+ *    interest_level === "very_interested", and open_house_attendees.interest_level
+ *    is the hot|warm|cold enum written by endOpenHouseEvent's scoring pass. The
+ *    section was permanently empty. It now matches the vocabulary that is actually
+ *    stored, plus the ai_lead_score the same pass computes.
+ *
+ * 3. Both fetches ended in `catch { // silently fail }`, so a refused conversion
+ *    looked identical to a successful one. Every call now reads its outcome and
+ *    says so.
+ */
+
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Users, Star, MessageSquare, UserPlus, Calendar, ExternalLink, Loader2 } from "lucide-react"
+import { Users, Star, MessageSquare, UserPlus, Calendar, ExternalLink, Loader2, AlertCircle } from "lucide-react"
+import { scheduleShowingFromAttendee, requestFeedbackFromAttendee } from "@/app/actions/seller-open-house"
 import Link from "next/link"
 
 type Attendee = {
   id: string
-  first_name?: string | null
-  last_name?: string | null
+  /** open_house_attendees stores ONE `name` column — there is no first/last split. */
+  name?: string | null
   email?: string | null
   contact_id?: string | null
   interest_level?: string | null
-  feedback_rating?: number | null
-  feedback_comments?: string | null
   feedback_collected_at?: string | null
   ai_lead_score?: number | null
 }
@@ -31,20 +54,24 @@ type OpenHouseEvent = {
 interface OpenHousePostEventPanelProps {
   event: OpenHouseEvent
   attendees: Attendee[]
+  /** Required by scheduleShowingFromAttendee — the listing this open house was for. */
+  listingId: string
 }
 
+/**
+ * The vocabulary actually written to open_house_attendees by endOpenHouseEvent:
+ * interest_level ∈ hot | warm | cold, ai_lead_score 0-100 with >= 70 = hot.
+ */
 function isHotProspect(attendee: Attendee): boolean {
-  return (
-    (attendee.feedback_rating !== null &&
-      attendee.feedback_rating !== undefined &&
-      attendee.feedback_rating >= 4) ||
-    attendee.interest_level === "very_interested" ||
-    attendee.interest_level === "very interested"
-  )
+  return attendee.interest_level === "hot" || (attendee.ai_lead_score ?? 0) >= 70
 }
 
 function hasFeedback(attendee: Attendee): boolean {
   return !!attendee.feedback_collected_at
+}
+
+function displayName(attendee: Attendee): string {
+  return attendee.name?.trim() || attendee.email || "Anonymous"
 }
 
 function formatEventDate(event: OpenHouseEvent): string {
@@ -61,61 +88,89 @@ function formatEventDate(event: OpenHouseEvent): string {
   }
 }
 
-export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEventPanelProps) {
+export function OpenHousePostEventPanel({ event, attendees, listingId }: OpenHousePostEventPanelProps) {
   const [loadingFeedback, setLoadingFeedback] = useState<string | null>(null)
   const [loadingConvert, setLoadingConvert] = useState<string | null>(null)
+  const [loadingShowing, setLoadingShowing] = useState<string | null>(null)
   const [feedbackSent, setFeedbackSent] = useState<Set<string>>(new Set())
   const [convertedIds, setConvertedIds] = useState<Record<string, string>>({})
+  const [showingBooked, setShowingBooked] = useState<Set<string>>(new Set())
+  const [error, setError] = useState<string | null>(null)
 
   const hotProspects = attendees.filter(isHotProspect)
   const pendingFeedback = attendees.filter((a) => !hasFeedback(a))
   const totalAttended = attendees.length
 
+  /**
+   * Ask this attendee for feedback.
+   *
+   * This used to POST /api/open-house/request-feedback, which authenticates the
+   * caller but never checks that the ATTENDEE belongs to them — and the live RLS
+   * policy on open_house_attendees is `brokerage_id IS NULL OR brokerage_id =
+   * current_user_brokerage_id()`, so an untenanted attendee row is reachable from
+   * any brokerage. requestFeedbackFromAttendee proves ownership against the
+   * stored tenant first and then delegates to the same sender, so the button
+   * gained a boundary and lost nothing.
+   */
   async function handleRequestFeedback(attendeeId: string) {
     setLoadingFeedback(attendeeId)
-    try {
-      const res = await fetch("/api/open-house/request-feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attendeeId }),
-      })
-      if (res.ok) {
-        setFeedbackSent((prev) => new Set([...prev, attendeeId]))
-      }
-    } catch {
-      // silently fail — network error
-    } finally {
-      setLoadingFeedback(null)
+    setError(null)
+    const res = await requestFeedbackFromAttendee({ attendeeId, listingId })
+    setLoadingFeedback(null)
+    if (!res.success) {
+      setError(res.error ?? "The feedback request was not delivered.")
+      return
     }
+    setFeedbackSent((prev) => new Set([...prev, attendeeId]))
   }
 
   async function handleConvertToContact(attendeeId: string) {
     setLoadingConvert(attendeeId)
+    setError(null)
     try {
       const res = await fetch("/api/open-house/convert-attendee", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ attendeeId }),
       })
-      const data = await res.json()
-      if (res.ok && data.contactId) {
-        setConvertedIds((prev) => ({ ...prev, [attendeeId]: data.contactId }))
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.contactId) {
+        setError(data?.error ?? `Attendee was not converted (HTTP ${res.status}).`)
+        return
       }
-    } catch {
-      // silently fail
+      setConvertedIds((prev) => ({ ...prev, [attendeeId]: data.contactId }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Attendee could not be converted.")
     } finally {
       setLoadingConvert(null)
     }
   }
 
+  /**
+   * The showing request needs a CONTACT — an attendee row is not one. The button
+   * is only offered once the attendee has been converted, so this never invents an
+   * id, and it surfaces the action's own refusal rather than assuming success.
+   */
+  async function handleScheduleShowing(attendeeId: string, contactId: string) {
+    setLoadingShowing(attendeeId)
+    setError(null)
+    const res = await scheduleShowingFromAttendee({ attendeeId, contactId, listingId })
+    setLoadingShowing(null)
+    if (!res.success) {
+      setError(res.error ?? "The showing request was not created.")
+      return
+    }
+    setShowingBooked((prev) => new Set([...prev, attendeeId]))
+  }
+
   function interestBadgeVariant(level?: string | null): "default" | "secondary" | "outline" {
-    if (level === "very_interested" || level === "very interested") return "default"
-    if (level === "interested" || level === "somewhat_interested") return "secondary"
+    if (level === "hot") return "default"
+    if (level === "warm") return "secondary"
     return "outline"
   }
 
   function interestLabel(level?: string | null): string {
-    if (!level) return "Unknown"
+    if (!level) return "Not assessed"
     return level.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
   }
 
@@ -149,6 +204,13 @@ export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEvent
       </CardHeader>
 
       <CardContent className="pt-0 space-y-4">
+        {error && (
+          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+            <AlertCircle className="h-3.5 w-3.5 text-destructive mt-0.5 shrink-0" />
+            <p className="text-xs text-destructive">{error}</p>
+          </div>
+        )}
+
         {/* Feedback pending section */}
         {pendingFeedback.length > 0 && (
           <div>
@@ -158,16 +220,12 @@ export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEvent
             <div className="space-y-1.5">
               {pendingFeedback.map((attendee) => {
                 const alreadySent = feedbackSent.has(attendee.id)
-                const name =
-                  [attendee.first_name, attendee.last_name].filter(Boolean).join(" ") ||
-                  attendee.email ||
-                  "Anonymous"
                 return (
                   <div
                     key={attendee.id}
                     className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-3 py-2"
                   >
-                    <span className="text-sm text-foreground truncate">{name}</span>
+                    <span className="text-sm text-foreground truncate">{displayName(attendee)}</span>
                     {alreadySent ? (
                       <span className="text-xs text-muted-foreground shrink-0">Sent</span>
                     ) : (
@@ -200,12 +258,9 @@ export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEvent
             </p>
             <div className="space-y-2">
               {hotProspects.map((attendee) => {
-                const name =
-                  [attendee.first_name, attendee.last_name].filter(Boolean).join(" ") ||
-                  attendee.email ||
-                  "Anonymous"
                 const resolvedContactId = convertedIds[attendee.id] ?? attendee.contact_id
                 const canConvert = !resolvedContactId && !!attendee.email
+                const booked = showingBooked.has(attendee.id)
 
                 return (
                   <div
@@ -214,7 +269,7 @@ export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEvent
                   >
                     {/* Name + interest badge */}
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-foreground">{name}</span>
+                      <span className="text-sm font-medium text-foreground">{displayName(attendee)}</span>
                       <Badge
                         variant={interestBadgeVariant(attendee.interest_level)}
                         className="text-xs shrink-0"
@@ -223,19 +278,13 @@ export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEvent
                       </Badge>
                     </div>
 
-                    {/* Feedback rating */}
-                    {attendee.feedback_rating !== null &&
-                      attendee.feedback_rating !== undefined && (
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Star className="h-3 w-3 text-amber-400 fill-amber-400" />
-                          <span>{attendee.feedback_rating}/5</span>
-                          {attendee.feedback_comments && (
-                            <span className="truncate ml-1 text-foreground/70">
-                              &mdash; {attendee.feedback_comments}
-                            </span>
-                          )}
-                        </div>
-                      )}
+                    {/* Lead score — computed by the event-end scoring pass */}
+                    {typeof attendee.ai_lead_score === "number" && (
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Star className="h-3 w-3 text-amber-400 fill-amber-400" />
+                        <span>Lead score {attendee.ai_lead_score}/100</span>
+                      </div>
+                    )}
 
                     {/* Actions row */}
                     <div className="flex items-center gap-2 flex-wrap">
@@ -267,19 +316,34 @@ export function OpenHousePostEventPanel({ event, attendees }: OpenHousePostEvent
                         </Button>
                       )}
 
-                      {/* Schedule Showing */}
-                      <Button size="sm" variant="default" className="h-7 text-xs" asChild>
-                        <Link
-                          href={
-                            resolvedContactId
-                              ? `/dashboard/showings/new?contactId=${resolvedContactId}`
-                              : "/dashboard/showings/new"
-                          }
-                        >
-                          <Calendar className="h-3 w-3 mr-1" />
-                          Schedule Showing
-                        </Link>
-                      </Button>
+                      {/* Request a follow-up showing — needs a contact to attach to */}
+                      {resolvedContactId ? (
+                        booked ? (
+                          <span className="text-xs text-emerald-700 flex items-center gap-1">
+                            <Calendar className="h-3 w-3" />
+                            Showing requested — confirm the time in Showings
+                          </span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            className="h-7 text-xs"
+                            disabled={loadingShowing === attendee.id}
+                            onClick={() => handleScheduleShowing(attendee.id, resolvedContactId)}
+                          >
+                            {loadingShowing === attendee.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                            ) : (
+                              <Calendar className="h-3 w-3 mr-1" />
+                            )}
+                            Request Showing
+                          </Button>
+                        )
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          Convert to a contact first to request a showing
+                        </span>
+                      )}
                     </div>
                   </div>
                 )

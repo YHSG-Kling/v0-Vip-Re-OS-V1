@@ -6,7 +6,18 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+// IMPORTED FROM THE KERNEL DIRECTLY, NOT ADDED TO app/actions/cron-kernel.ts.
+// That file is `"use server"`, so every export in it is a PUBLIC HTTP endpoint
+// (CLAUDE.md §4) — publishing the recompute there would let any caller fire
+// ~128 exact-count queries against cron_execution_logs on demand, for a
+// function no browser surface ever needs. This route already cleared
+// verifyCronAuth before reaching here, and a route handler is server code.
+import { recomputeCronSevenDayCounts } from "@/lib/kernel/cron-logging"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+// The one Stripe client — see the stripe checkFn below for why this probe no
+// longer hand-rolls the key lookup and the /v1/balance request.
+import { getStripeBalance } from "@/lib/providers/payment"
+import { DECOMMISSIONED_PROVIDERS } from "@/lib/platform/provider-posture"
 
 // Service check configuration
 const SERVICE_CHECKS: Record<
@@ -99,22 +110,26 @@ const SERVICE_CHECKS: Record<
   },
   stripe: {
     type: "api",
+    // ONE Stripe client. This probe used to re-implement the key lookup and the
+    // /v1/balance request inline, as did lib/platform/go-live-readiness.ts —
+    // three copies of the same call, and the one in lib/providers/payment was
+    // the only one with no caller. It does both jobs better and returns
+    // { success, error, httpStatus }, which is exactly the bit this probe wants
+    // plus a reason. NOTHING here reads `available` or `pending`: the balance
+    // FIGURE stays off every surface, deliberately — see the note in
+    // lib/providers/payment/index.ts.
     checkFn: async () => {
       const start = Date.now()
-      const stripeKey = process.env.STRIPE_SECRET_KEY
-      if (!stripeKey) {
+      const res = await getStripeBalance()
+      const responseTimeMs = Date.now() - start
+      if (res.notConfigured) {
         return { status: "unknown" as const, responseTimeMs: 0, errorMessage: "No API key configured" }
       }
-      const response = await callConnector({
-        connector: "stripe", baseUrl: "https://api.stripe.com", path: "/v1/balance",
-        method: "GET", auth: { style: "bearer", token: stripeKey }, timeoutMs: 5000,
-      })
-      const responseTimeMs = Date.now() - start
       return {
-        status: response.ok ? "healthy" : (response.status ? "degraded" : "down"),
+        status: res.success ? "healthy" : (res.httpStatus ? "degraded" : "down"),
         responseTimeMs,
-        httpStatusCode: response.status ?? 0,
-        ...(response.ok ? {} : { errorMessage: response.error ?? undefined }),
+        httpStatusCode: res.httpStatus ?? 0,
+        ...(res.success ? {} : { errorMessage: res.error ?? undefined }),
       }
     },
   },
@@ -128,9 +143,38 @@ const SERVICE_CHECKS: Record<
 // recover before staff publish (a PUBLISHED notice is never auto-cleared).
 const CONSECUTIVE_DOWN_THRESHOLD = 2
 
+// RAW CHECK OUTCOME → SERVICE_STATUS ROLLUP.
+//
+// These are two CHECK-constrained vocabularies over the same concept and they
+// are NOT the same set. The ledger (system_health_checks.status) records the raw
+// outcome and admits 'timeout' and 'error'; the rollup
+// (service_status.current_status) is the summary and does not. Writing the raw
+// value into both — which is what this cron used to do — means any raw status
+// the rollup does not admit is refused by the database, and because the write
+// was undestructured the refusal was invisible.
+//
+// The mapping is explicit so a new raw outcome cannot silently fail to roll up:
+// anything that is not a recognised rollup state degrades to 'down', which is
+// the safe direction for a monitoring surface. Never map an unproven state to
+// 'healthy'.
+type RawCheckStatus = "healthy" | "degraded" | "down" | "unknown" | "timeout" | "error"
+type RollupStatus = "healthy" | "degraded" | "down" | "unknown"
+
+function rollupStatus(raw: RawCheckStatus): RollupStatus {
+  switch (raw) {
+    case "healthy":
+    case "degraded":
+    case "down":
+    case "unknown":
+      return raw
+    case "timeout":
+    case "error":
+      return "down"
+  }
+}
+
 // Integration services that check brokerage_integrations table
 const INTEGRATION_SERVICES = [
-  "vapi",
   "dotloop",
   "docusign",
   "quickbooks",
@@ -153,6 +197,47 @@ export async function POST(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
+
+  // ── THIS RUN JOINS THE CRON LEDGER THROUGH THE KERNEL ──────────────────────
+  //
+  // MERGED ONTO THE SURVIVOR. All four cron-kernel actions were imported by this
+  // file and called by NONE of them; the route hand-rolled its own
+  // `cron_execution_logs` inserts instead — one on each exit path. Those inserts
+  // wrote the same table with the same vocabulary, so they were a DUPLICATE of
+  // lib/kernel/cron-logging.ts, and the duplicate was the poorer half. It could
+  // not do the two things only the kernel does:
+  //
+  //   · upsert `cron_health_snapshot` (cron-logging.ts:289 / :385), the row the
+  //     health dashboard reads for "when did this cron last run and how did it
+  //     go" — so THE MONITORING JOB ITSELF has never appeared on the monitoring
+  //     surface, and
+  //   · fire KernelEvent.CRON_COMPLETED_SUCCESS / CRON_FAILED through
+  //     processKernelEvent (cron-logging.ts:304 / :400) — so when the job that
+  //     watches every provider died, the failure reached nobody.
+  //
+  // Nothing is lost: createCronRunContext defaults `brokerage_id` to null, which
+  // is the same deliberate untenanted stamp this route defended (the sweep polls
+  // `service_status` for EVERY brokerage; the per-tenant findings are the
+  // `system_health_checks` rows, each stamped with its own service row's
+  // brokerage). cron_name / cron_path / started_at / completed_at / duration_ms /
+  // records_processed / error_message / metadata are all carried by the kernel.
+  const runContext = await createCronRunContextAction({
+    cron_name: "System Health Check",
+    cron_path: "/api/cron/health-check",
+  })
+  const contextId = runContext.success ? runContext.data?.context_id ?? null : null
+  if (!contextId) {
+    // FAIL LOUD, NOT CLOSED. The health check still has to run — refusing to
+    // poll every provider because a log row could not be opened would turn a
+    // logging blip into a monitoring outage — but a run with no ledger row must
+    // never pass silently for one that has one.
+    console.error("[health-check] cron run context could not be opened:", runContext.error)
+  } else {
+    const started = await recordCronStartAction({ context_id: contextId })
+    if (!started.success) {
+      console.error("[health-check] cron start record refused:", started.error)
+    }
+  }
 
   try {
     // Get body for manual trigger with brokerageId
@@ -184,6 +269,16 @@ export async function POST(request: NextRequest) {
       responseTimeMs: number
     }> = []
 
+    // Every write in this cron used to be undestructured. A monitoring job that
+    // cannot report its own failed writes is the worst possible place for a
+    // swallowed error: it goes on returning 200 while recording nothing, and the
+    // surface built on top reports a clean bill of health over an empty table.
+    const writeFailures: string[] = []
+
+    // Retired vendors found sitting in the ledger. Reported in the response so
+    // a resurrected row is visible rather than silently ignored.
+    const skippedDecommissioned: string[] = []
+
     // Per-provider aggregate across all checked rows (service_status is
     // per-brokerage; the notice proposal is platform-wide, so a provider only
     // counts as platform-down when NO row of it came back healthy this run).
@@ -195,8 +290,23 @@ export async function POST(request: NextRequest) {
     // Process each service
     for (const service of services || []) {
       const serviceKey = service.service_key
+
+      // A RETIRED VENDOR IS NOT A SERVICE TO MONITOR. m372 deleted the heygen
+      // and vapi rows on the owner's ruling, but a re-seed, a restored backup or
+      // a hand-inserted row could put a retired vendor back on this board — and
+      // it would poll forever as 'unknown', because a decommissioned vendor by
+      // definition has no check function. Permanently-unknown rows sitting next
+      // to real ones is what trains an operator to stop reading a health page.
+      //
+      // The set NAMES the vendor in order to EXCLUDE it, which is the same
+      // allowlist-not-ban discipline the vendor-retirement guard enforces
+      // everywhere else. Skipped rows are reported, never silently dropped.
+      if (DECOMMISSIONED_PROVIDERS.has(serviceKey)) {
+        skippedDecommissioned.push(serviceKey)
+        continue
+      }
       let checkResult: {
-        status: "healthy" | "degraded" | "down" | "unknown"
+        status: RawCheckStatus
         responseTimeMs: number
         errorMessage?: string
         httpStatusCode?: number
@@ -255,8 +365,11 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Insert health check record
-      await supabase.from("system_health_checks").insert({
+      // Insert health check record. Destructured: this insert used to swallow
+      // its error, and the value it most often carries ('unknown') was refused
+      // by the ledger's CHECK constraint until m371 — so every unconfigured
+      // service wrote nothing and reported nothing.
+      const { error: ledgerError } = await supabase.from("system_health_checks").insert({
         brokerage_id: service.brokerage_id,
         service_key: serviceKey,
         service_name: service.service_name,
@@ -267,10 +380,14 @@ export async function POST(request: NextRequest) {
         error_message: checkResult.errorMessage || null,
         checked_at: new Date().toISOString(),
       })
+      if (ledgerError) {
+        writeFailures.push(`system_health_checks[${serviceKey}]: ${ledgerError.message}`)
+      }
 
-      // Update service_status
+      // Update service_status — the ROLLUP, whose vocabulary is narrower than
+      // the ledger's, so the raw outcome is mapped rather than passed through.
       const updateData: Record<string, unknown> = {
-        current_status: checkResult.status,
+        current_status: rollupStatus(checkResult.status),
         response_time_ms: checkResult.responseTimeMs,
         last_checked_at: new Date().toISOString(),
         error_message: checkResult.errorMessage || null,
@@ -304,10 +421,13 @@ export async function POST(request: NextRequest) {
         criticalProviderRuns.set(serviceKey, agg)
       }
 
-      await supabase
+      const { error: rollupError } = await supabase
         .from("service_status")
         .update(updateData)
         .eq("id", service.id)
+      if (rollupError) {
+        writeFailures.push(`service_status[${serviceKey}]: ${rollupError.message}`)
+      }
 
       results.push({
         serviceKey,
@@ -325,20 +445,44 @@ export async function POST(request: NextRequest) {
         (s) => s.brokerage_id === brokerageId
       )
       for (const service of brokerageServices) {
-        // Get today's checks for this service
-        const { data: todayChecks } = await supabase
+        // Get today's checks for this service.
+        //
+        // .eq("brokerage_id", null) is NOT a null match — PostgREST renders it
+        // as `brokerage_id=eq.null`, which is SQL `= NULL` and matches nothing.
+        // service_status is seeded entirely with brokerage_id IS NULL (all 15
+        // rows today are platform-level), so this read returned an empty set for
+        // every service and the rollup below was computed over nothing.
+        let todayQuery = supabase
           .from("system_health_checks")
           .select("status, response_time_ms")
-          .eq("brokerage_id", brokerageId)
           .eq("service_key", service.service_key)
           .gte("checked_at", `${today}T00:00:00Z`)
+        todayQuery = brokerageId === null
+          ? todayQuery.is("brokerage_id", null)
+          : todayQuery.eq("brokerage_id", brokerageId)
+        const { data: todayChecks, error: todayError } = await todayQuery
+        if (todayError) {
+          writeFailures.push(`system_health_checks read[${service.service_key}]: ${todayError.message}`)
+          continue
+        }
 
         const totalChecks = todayChecks?.length || 0
+
+        // NO CHECKS MEANS NO CLAIM. This used to default uptime_pct to 100 when
+        // totalChecks was 0 — a service nobody has ever checked reported a
+        // perfect day, which is the same "green over an absence" failure the
+        // /dashboard/system surface had. Write nothing instead; the reader
+        // already renders a missing snapshot as unknown.
+        if (totalChecks === 0) continue
+
         const successfulChecks =
           todayChecks?.filter((c) => c.status === "healthy").length || 0
+        // Anything that is not affirmatively healthy or degraded counts as a
+        // failure — down, timeout, error and unknown alike. Counting only
+        // "down" left four of six raw outcomes in neither column.
         const failedChecks =
-          todayChecks?.filter((c) => c.status === "down").length || 0
-        const uptimePct = totalChecks > 0 ? (successfulChecks / totalChecks) * 100 : 100
+          todayChecks?.filter((c) => c.status !== "healthy" && c.status !== "degraded").length || 0
+        const uptimePct = (successfulChecks / totalChecks) * 100
         const avgResponseMs =
           totalChecks > 0
             ? Math.round(
@@ -347,17 +491,25 @@ export async function POST(request: NextRequest) {
               )
             : 0
 
-        // Upsert health_check_history
-        const { data: existing } = await supabase
+        // Upsert health_check_history — same null-match correction as above,
+        // and maybeSingle() because "no snapshot yet today" is the normal case
+        // and .single() turns it into an error row.
+        let existingQuery = supabase
           .from("health_check_history")
           .select("id")
-          .eq("brokerage_id", brokerageId)
           .eq("service_key", service.service_key)
           .eq("snapshot_date", today)
-          .single()
+        existingQuery = brokerageId === null
+          ? existingQuery.is("brokerage_id", null)
+          : existingQuery.eq("brokerage_id", brokerageId)
+        const { data: existing, error: existingError } = await existingQuery.maybeSingle()
+        if (existingError) {
+          writeFailures.push(`health_check_history read[${service.service_key}]: ${existingError.message}`)
+          continue
+        }
 
         if (existing) {
-          await supabase
+          const { error: histUpdateError } = await supabase
             .from("health_check_history")
             .update({
               uptime_pct: uptimePct,
@@ -366,8 +518,11 @@ export async function POST(request: NextRequest) {
               avg_response_ms: avgResponseMs,
             })
             .eq("id", existing.id)
+          if (histUpdateError) {
+            writeFailures.push(`health_check_history[${service.service_key}]: ${histUpdateError.message}`)
+          }
         } else {
-          await supabase.from("health_check_history").insert({
+          const { error: histInsertError } = await supabase.from("health_check_history").insert({
             brokerage_id: brokerageId,
             service_key: service.service_key,
             snapshot_date: today,
@@ -377,6 +532,9 @@ export async function POST(request: NextRequest) {
             avg_response_ms: avgResponseMs,
             incidents: 0,
           })
+          if (histInsertError) {
+            writeFailures.push(`health_check_history[${service.service_key}]: ${histInsertError.message}`)
+          }
         }
       }
     }
@@ -412,40 +570,106 @@ export async function POST(request: NextRequest) {
       console.error("[health-check] status-notice proposal hook failed (health check unaffected):", err)
     }
 
+    // ── THE ROLLING 7-DAY RECOMPUTE RIDES THIS SWEEP ─────────────────────────
+    //
+    // cron_health_snapshot.run_count_7d / failure_count_7d are seeded 0 by
+    // scripts/1053-pl-truth-engine-cron-health.sql:110 and were incremented by
+    // NOTHING, so two platform-staff surfaces read a permanent zero
+    // (app/actions/superadmin/platform-overview.ts:232 and
+    // lib/platform/ai-ops.ts:113). A 7-day window has to DECAY as well as
+    // climb, so this is a recompute from cron_execution_logs, not a counter —
+    // see lib/kernel/cron-logging.ts:recomputeCronSevenDayCounts.
+    //
+    // THIS ROUTE IS THE RIGHT HOME AND NOT AN ARBITRARY ONE: it is already the
+    // platform's own watchdog, it is registered in lib/kernel/cron-dispatch.ts
+    // at "13,28,43,58 * * * *" (four ticks an hour, so the board is never more
+    // than 15 minutes behind), and it holds a service client for exactly this
+    // class of platform-wide bookkeeping.
+    //
+    // NOT counted into `writeFailures`. A refused recompute leaves last
+    // known-good counts on the board; it does not mean the provider sweep — the
+    // thing this route exists to do — failed. Conflating the two would flip the
+    // whole job to `success: false` over a stale ops tile.
+    const sevenDay = await recomputeCronSevenDayCounts()
+    if (!sevenDay.success) {
+      console.error("[health-check] 7d cron-count recompute refused:", sevenDay.error)
+    }
+
     const durationMs = Date.now() - startTime
 
-    // Log cron execution
-    await supabase.from("cron_execution_logs").insert({
-      cron_path: "/api/cron/health-check",
-      cron_name: "System Health Check",
-      status: "completed",
-      duration_ms: durationMs,
-      records_processed: results.length,
-      started_at: new Date(startTime).toISOString(),
-      completed_at: new Date().toISOString(),
-      metadata: { results },
-    })
+    // A HEALTH CHECK THAT COULD NOT RECORD ITS FINDINGS DID NOT SUCCEED.
+    // This used to log status "completed" and return 200 regardless, so a run
+    // whose every write was refused was indistinguishable from a clean one —
+    // and cron_health_snapshot, which reads this ledger, would have called the
+    // job healthy while the tables it feeds stayed empty.
+    const wroteNothing = writeFailures.length > 0
+    // TOMBSTONE: the hand-rolled `cron_execution_logs` insert that stood here is
+    // deleted. Survivor: lib/kernel/cron-logging.ts:244 (recordCronSuccess) and
+    // :336 (recordCronFailure), reached through app/actions/cron-kernel.ts:93 /
+    // :103 — see the note at the top of POST. Same table, same status
+    // vocabulary, same untenanted row, plus cron_health_snapshot and the kernel
+    // event this route never had.
+    if (contextId) {
+      // A HEALTH CHECK THAT COULD NOT RECORD ITS FINDINGS DID NOT SUCCEED — the
+      // same rule the deleted insert encoded, expressed through the kernel's two
+      // terminal commands instead of a status string.
+      const recorded = wroteNothing
+        ? await recordCronFailureAction({
+            context_id: contextId,
+            error: `${writeFailures.length} write(s) refused: ${writeFailures.slice(0, 5).join("; ")}`,
+            stage: "persist findings",
+            context_snapshot: { results, writeFailures, skippedDecommissioned },
+          })
+        : await recordCronSuccessAction({
+            context_id: contextId,
+            records_processed: results.length,
+            output_count: results.length,
+            metadata: { results, writeFailures, skippedDecommissioned },
+          })
+      // A monitoring job whose OWN run record was refused reported a clean tick
+      // over a write that never landed — the same "green over an absence" this
+      // route already fixed for `service_status` and `health_check_history`.
+      if (!recorded.success) {
+        console.error("[health-check] cron run record refused:", recorded.error)
+      }
+    }
 
     return NextResponse.json({
-      success: true,
+      success: !wroteNothing,
       servicesChecked: results.length,
       durationMs,
       results,
+      ...(wroteNothing ? { writeFailures } : {}),
+      ...(skippedDecommissioned.length ? { skippedDecommissioned } : {}),
     })
   } catch (error) {
-    const durationMs = Date.now() - startTime
     console.error("Health check cron failed:", error)
 
-    // Log failure
-    await supabase.from("cron_execution_logs").insert({
-      cron_path: "/api/cron/health-check",
-      cron_name: "System Health Check",
-      status: "failed",
-      duration_ms: durationMs,
-      error_message: error instanceof Error ? error.message : "Unknown error",
-      started_at: new Date(startTime).toISOString(),
-      completed_at: new Date().toISOString(),
-    })
+    // Log failure.
+    //
+    // THE OUTER CATCH OF A PLATFORM-WIDE SWEEP. Nothing here can attribute the
+    // failure to a tenant: it fires before any service row is known (a refused
+    // `service_status` read reaches this path), so there is no record to resolve
+    // a brokerage through and inventing one would report a platform outage as one
+    // brokerage's problem — which is exactly what the kernel's untenanted row is.
+    //
+    // TOMBSTONE: the hand-rolled failure insert that stood here is deleted.
+    // Survivor: lib/kernel/cron-logging.ts:336 (recordCronFailure), which also
+    // stamps cron_health_snapshot with last_status='failure' and fires
+    // KernelEvent.CRON_FAILED. Neither happened before, so the platform's own
+    // watchdog could die without anything anywhere noticing.
+    if (contextId) {
+      const recorded = await recordCronFailureAction({
+        context_id: contextId,
+        error: error instanceof Error ? error : String(error),
+        stage: "health check sweep",
+      })
+      if (!recorded.success) {
+        console.error("[health-check] cron failure record refused:", recorded.error)
+      }
+    } else {
+      console.error("[health-check] failed with no cron ledger row to close (context could not be opened)")
+    }
 
     return NextResponse.json(
       { error: "Health check failed", message: error instanceof Error ? error.message : "Unknown" },

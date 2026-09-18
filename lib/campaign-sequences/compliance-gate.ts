@@ -6,7 +6,6 @@
  * This file must NEVER be modified to bypass or skip the gate.
  */
 
-import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 interface AuthorityCheckResult {

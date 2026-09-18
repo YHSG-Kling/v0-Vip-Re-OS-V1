@@ -1,8 +1,16 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { readRoleGrants, allRoles, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
 import { createServiceClient } from "@/lib/supabase/service"
-import { streamText, convertToModelMessages, tool, stepCountIs } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { convertToModelMessages, tool } from "ai"
+import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
+import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
+import { batchDataMcpTools } from "@/lib/external/batchdata-ai-tools"
+import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
+import { resolveEffectiveBatchDataToolTier, filterToolsByTier } from "@/lib/ai-isa/persona-tool-policy"
+import { writeFollowUpActivity } from "@/lib/ai-isa/customer-context-tools"
+import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -13,7 +21,7 @@ const PERMITTED_ROLES = new Set([
   "agent", "broker", "admin", "tc", "transaction_coordinator",
   "lender", "vendor", "title", "title_agent",
   "compliance_officer", "compliance_manager",
-  "superadmin", "platform_admin", "super_admin",
+  "superadmin", "super_admin",
   "isa", "team_lead",
 ])
 
@@ -55,8 +63,14 @@ async function loadAgentContext(service: ReturnType<typeof createServiceClient>,
 
 async function loadBrokerContext(service: ReturnType<typeof createServiceClient>, brokerageId: string) {
   const [{ data: agents }, { data: transactions }, { data: activeLeads }] = await Promise.all([
+    // `cap_progress` is NOT read here any more. It was `ytd_gci / cap_amount`
+    // — the agent's own earnings against a brokerage-side ceiling, i.e. the
+    // wrong side of the split — and nothing writes it now that the cap lives in
+    // `agent_cap_tracking`. Feeding a stale, mis-scaled number into the broker's
+    // AI context would have it assert cap facts that no cheque agrees with, so
+    // it is dropped rather than approximated; the cap surfaces read the ledger.
     service.from("agents")
-      .select("id, user_id, ytd_gci, ytd_transactions, cap_progress, is_active")
+      .select("id, user_id, ytd_gci, ytd_transactions, is_active")
       .eq("brokerage_id", brokerageId).eq("is_active", true).limit(30),
     service.from("transactions")
       .select("id, deal_name, status, stage, close_date, purchase_price, health_score, agent_id")
@@ -73,7 +87,18 @@ async function loadLenderContext(service: ReturnType<typeof createServiceClient>
   const { lenderVendorForUser, lenderVendorTransactionIds, lenderFilterIds } =
     await import("@/lib/kernel/lender-linkage")
   const lenderVendor = await lenderVendorForUser(service, userId)
-  const txnIds = lenderFilterIds(lenderVendor ? await lenderVendorTransactionIds(service, lenderVendor.vendorId) : [])
+  // TENANT-PIN THE SERVICE-CLIENT READ. This is the one caller of
+  // lenderVendorTransactionIds that ran on a SERVICE client with no brokerage id,
+  // and the owner ruling on shared vendors is what turned it from theoretical into
+  // live: a lender vendor may now be on more than one brokerage's bench, so the
+  // unpinned read folds two tenants' transaction ids into one AI context and the
+  // model answers brokerage A's questions with brokerage B's deals. The brokerage
+  // comes from the VENDOR'S OWN ROW (lenderVendorForUser already resolved it) —
+  // never from the request — which is the same value the sibling callers
+  // app/lender/documents/page.tsx and the TC/lender brief already pass.
+  const txnIds = lenderFilterIds(
+    lenderVendor ? await lenderVendorTransactionIds(service, lenderVendor.vendorId, lenderVendor.brokerageId) : [],
+  )
   const { data: lenderTxns } = await service
     .from("transaction_lenders")
     .select(`
@@ -96,14 +121,24 @@ async function loadVendorContext(service: ReturnType<typeof createServiceClient>
     .limit(1)
     .maybeSingle()
 
-  // Fallback: check user_role_assignments for vendor_id
-  const { data: roleRow } = await service
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", userId)
-    .maybeSingle()
+  // Fallback: check user_role_assignments for vendor_id.
+  //
+  // This one did not even narrow to the vendor-bearing grants, so `.maybeSingle()`
+  // errored for ANY user holding more than one grant, and the discarded error read
+  // as "no vendor" — the vendor assistant then answered with an empty job list
+  // rather than saying anything was wrong.
+  const grantsResult = await readRoleGrants(service, userId)
+  if (!grantsResult.ok) {
+    console.error("[ai-chat] vendor role grant read failed:", grantsResult.error)
+  }
+  const { vendorId: grantVendorId, ambiguous } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null, ambiguous: false }
+  if (ambiguous) {
+    console.error("[ai-chat] user", userId, "is linked to more than one vendor")
+  }
 
-  const vendorId = vendor?.id ?? roleRow?.vendor_id
+  const vendorId = vendor?.id ?? grantVendorId
   if (!vendorId) return { jobs: [], bookings: [] }
 
   const [{ data: jobs }, { data: bookings }] = await Promise.all([
@@ -245,7 +280,7 @@ interface AIIdentity {
   formality_level: string
 }
 
-function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?: AIIdentity): string {
+function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?: AIIdentity, brand?: BrandPlaybookContext | null): string {
   const name = identity?.assistant_name ?? "AI-ISA"
   const persona = identity?.persona_label ?? "internal assistant"
   const tone = identity?.tone ?? "professional"
@@ -301,6 +336,8 @@ RESTRICTIONS — never do any of these:
 - Never reference other users' private data not in context
 - Never save notes silently — always surface as a draft for human approval
 
+${buildQualificationPrompt({ surface: "staff_copilot", brand })}
+
 NOTE_AUTO_DRAFT:
 After responding to a genuinely high-signal exchange — such as a call outcome being discussed, a decision or agreement reached, an important fact shared (timeline, budget, motivation), or a follow-up promised — you MAY append the following marker ONCE at the very end of your response (after your main answer text).
 Only emit this for genuinely noteworthy exchanges. Do NOT emit for routine questions or data lookups.
@@ -323,21 +360,22 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  // Resolve role
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("role, brokerage_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .maybeSingle()
+  // Resolve role.
+  //
+  // WAS `.limit(1).maybeSingle()` with no ORDER BY — fail-ARBITRARY. It decides
+  // both a 403 gate and which context loader runs, off a row PostgREST chose for
+  // no reason, so the same seat could be admitted on one request and refused on
+  // the next. Under the seat model (one user carrying transactions AND compliance
+  // AND admin) that is not an edge case, it is the ordinary account.
+  const [grantsResult, { data: userData }] = await Promise.all([
+    readRoleGrants(supabase, user.id),
+    supabase.from("users").select("role, brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
+  if (!grantsResult.ok) {
+    console.error("[ai-chat] role grant read failed:", grantsResult.error)
+  }
+  const grants = grantsResult.ok ? grantsResult.grants : []
 
-  const { data: userData } = await supabase
-    .from("users")
-    .select("role, brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  const rawRole = (roleRow?.role ?? userData?.role ?? "agent").toLowerCase()
   // Normalise legacy role strings to canonical values
   const ROLE_ALIASES: Record<string, string> = {
     transaction_coordinator: "tc",
@@ -346,12 +384,28 @@ export async function POST(req: NextRequest) {
     super_admin: "superadmin",
     platform_admin: "superadmin",
   }
-  const role = ROLE_ALIASES[rawRole] ?? rawRole
-  const brokerageId = (roleRow?.brokerage_id ?? userData?.brokerage_id) as string
+  const canonical = (r: string) => ROLE_ALIASES[r.toLowerCase()] ?? r.toLowerCase()
 
-  if (!PERMITTED_ROLES.has(role)) {
+  // The GATE is a question about the SET: this assistant is open to a user who
+  // holds ANY permitted role. Testing one picked role name would lock out a seat
+  // whose permitted grant simply was not the one that got picked.
+  const heldRoles = allRoles(grants).map(canonical)
+  const profileRole = userData?.role ? canonical(String(userData.role)) : null
+  const admissible = [...heldRoles, ...(profileRole ? [profileRole] : [])]
+  if (!admissible.some((r) => PERMITTED_ROLES.has(r))) {
     return NextResponse.json({ error: "Role not permitted" }, { status: 403 })
   }
+
+  // The CONTEXT LOADER can only run one branch, so one role is genuinely needed.
+  // The seat's own declared identity wins when it is actually granted; otherwise
+  // authority order decides — deterministically, never by row order.
+  const role = canonical(selectPrimaryRole(grants, userData?.role as string | null) ?? String(userData?.role ?? "agent"))
+  if (heldRoles.length > 1) {
+    console.warn("[ai-chat] user", user.id, "holds roles", heldRoles.join("+"), "— loading context for", role)
+  }
+  // Tenant: grant-then-profile as before, but chosen by precedence, and an
+  // untenanted grant (contact/lender) can no longer win and blank it.
+  const brokerageId = (selectTenantBrokerageId(grants) ?? userData?.brokerage_id) as string
 
   const { messages } = await req.json()
   if (!messages || !Array.isArray(messages)) {
@@ -364,7 +418,7 @@ export async function POST(req: NextRequest) {
   let identity: AIIdentity | undefined
 
   // Load identity: agent-scope first, brokerage-scope fallback
-  const [contextResult, agentIdentityResult] = await Promise.allSettled([
+  const [contextResult, agentIdentityResult, brandPlaybookResult] = await Promise.allSettled([
     (async () => {
       if (role === "agent" || role === "isa" || role === "team_lead") return loadAgentContext(service, user.id, brokerageId)
       else if (role === "broker" || role === "admin") return loadBrokerContext(service, brokerageId)
@@ -376,35 +430,81 @@ export async function POST(req: NextRequest) {
       else if (role === "superadmin") return loadSuperadminContext(service)
       return {}
     })(),
-    service
-      .from("ai_identity_profiles")
-      .select("assistant_name, persona_label, tone, formality_level")
-      .eq("scope_type", "agent")
-      .eq("scope_id", user.id)
-      .eq("active", true)
-      .maybeSingle(),
+    // ONE brand-voice cascade (CLAUDE.md §1/§6) — survivor
+    // lib/ai-isa/brand-voice-prompt.ts loadBrandVoicePrompt. This used to be a
+    // hand-rolled agent-scope → brokerage-scope read straight off
+    // ai_identity_profiles, duplicating the cascade's first two tiers while
+    // never reaching its team tier or its brand_voice_profile blend. scope_id
+    // at scope_type 'agent' is an agents.id (the editor writes it, and the
+    // widget / voice / video / ISA readers all resolve it that way) — filtering
+    // by the raw auth user id, as the old read did, could never match a saved
+    // persona; loadBrandVoicePrompt takes the resolved agentId directly.
+    (async () => {
+      const scopeAgentId = await resolveAgentId(service as any, user.id)
+      const brand = await loadBrandVoicePrompt({
+        brokerageId,
+        agentId: scopeAgentId ?? null,
+      })
+      return {
+        assistant_name: brand.assistantName,
+        persona_label: brand.personaLabel ?? "internal assistant",
+        tone: brand.tone ?? "professional",
+        formality_level: brand.formalityLevel ?? "formal",
+      } satisfies AIIdentity
+    })(),
+    // Wave 75 — business processes/SOPs, brand KB, office hours, service
+    // areas. `omitVoiceBlock: true` — this file ALREADY renders tone/
+    // formality into the "Role: X | Tone: Y | Formality: Z" line above, so
+    // the brand-voice cascade's own systemBlock sentence is left out of
+    // `brand.block` to avoid stating the same thing twice.
+    (async () => {
+      const scopeAgentId = await resolveAgentId(service as any, user.id)
+      return loadBrandPlaybookContext({ brokerageId, agentId: scopeAgentId ?? null, omitVoiceBlock: true })
+    })(),
   ])
 
   if (contextResult.status === "fulfilled") ctx = contextResult.value ?? {}
+  if (agentIdentityResult.status === "fulfilled") identity = agentIdentityResult.value
+  const brandPlaybook = brandPlaybookResult.status === "fulfilled" ? brandPlaybookResult.value : null
 
-  if (agentIdentityResult.status === "fulfilled" && agentIdentityResult.value.data) {
-    identity = agentIdentityResult.value.data as AIIdentity
-  } else if (brokerageId) {
-    // Fall back to brokerage-scope identity
-    const { data: brokerageProfile } = await service
-      .from("ai_identity_profiles")
-      .select("assistant_name, persona_label, tone, formality_level")
-      .eq("scope_type", "brokerage")
-      .eq("scope_id", brokerageId)
-      .eq("active", true)
+  const systemPrompt = buildSystemPrompt(role, ctx, identity, brandPlaybook)
+
+  // ── The claimed session must be YOURS before anything is written into it ──
+  //
+  // `x-internal-session-id` arrives on a REQUEST HEADER and everything below
+  // runs on the SERVICE client — the §4 shape exactly: an identity-bearing value
+  // from the request, honored unverified. Any signed-in internal user who
+  // learned another user's session uuid could append messages into that thread.
+  //
+  // THE VERIFICATION KEY IS metadata->user_id, AND THIS IS THE READER THAT
+  // COLUMN NEVER HAD (§1.2). It is the ONLY per-user key an internal session
+  // holds: agent_id is resolved through resolveAgentId and is legitimately NULL
+  // for internal users with no agents row — agents.id and users.id are DISJOINT
+  // (CLAUDE.md §3), so a TC or admin's sessions carry no agent_id at all. The
+  // write at the insert below stored exactly this datum since the route was
+  // built; nothing ever read it back, which the opposite-missing census
+  // reported the moment a dead module's phantom embed stopped hiding it.
+  //
+  // FAIL CLOSED, DEGRADE OPEN: an unverified claim never reaches the claimed
+  // session — it is treated as NO session, so the caller gets a fresh thread of
+  // their own rather than a 403 (the persist here is best-effort UX plumbing,
+  // not the authz boundary for reading anything back).
+  const claimedSessionId = req.headers.get("x-internal-session-id")
+  let sessionId: string | null = null
+  if (claimedSessionId) {
+    const { data: claimed, error: claimErr } = await service
+      .from("chat_sessions")
+      .select("id, brokerage_id, metadata")
+      .eq("id", claimedSessionId)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
-    if (brokerageProfile) identity = brokerageProfile as AIIdentity
+    if (claimErr) {
+      console.error("[internal-ai-chat] session ownership read refused:", claimErr.message)
+    } else if (claimed && (claimed.metadata as { user_id?: string } | null)?.user_id === user.id) {
+      sessionId = claimed.id
+    }
   }
 
-  const systemPrompt = buildSystemPrompt(role, ctx, identity)
-
-  // Persist session for this role if not yet created
-  const sessionId = req.headers.get("x-internal-session-id")
   let newSessionId: string | null = null
   if (!sessionId) {
     const { data: newSession } = await service
@@ -423,17 +523,20 @@ export async function POST(req: NextRequest) {
     newSessionId = newSession?.id ?? null
   }
 
-  // Persist the last user message
-  if (sessionId) {
+  // Persist the last user message — into the VERIFIED session, or the fresh one
+  // just created. (The old shape only persisted when a session id arrived on
+  // the header, so the FIRST message of every thread was never stored.)
+  {
+    const persistTo = sessionId ?? newSessionId
     const lastMsg = messages[messages.length - 1]
-    if (lastMsg?.role === "user") {
+    if (persistTo && lastMsg?.role === "user") {
       const textContent =
         Array.isArray(lastMsg.parts)
           ? lastMsg.parts.filter((p: { type: string }) => p.type === "text").map((p: { text: string }) => p.text).join("")
           : (lastMsg.content as string ?? "")
 
       service.from("chat_messages").insert({
-        session_id: sessionId,
+        session_id: persistTo,
         role: "user",
         content: textContent,
         metadata: { source: "internal", role },
@@ -489,23 +592,21 @@ export async function POST(req: NextRequest) {
         title: z.string().describe("Short title, e.g. 'Follow-up call with John'"),
       }),
       execute: async ({ contact_id, activity_type, scheduled_at, notes, title }) => {
-        const { data, error } = await service
-          .from("activities")
-          .insert({
-            brokerage_id: brokerageId,
-            agent_id: await resolveAgentId(service as any, user.id),
-            contact_id,
-            activity_type,
-            scheduled_at,
-            notes: notes ?? undefined,
-            title,
-            status: "scheduled",
-          })
-          .select("id, title, scheduled_at")
-          .maybeSingle()
-
-        if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-        return { success: true, activity_id: data.id, title: data.title, scheduled_at: data.scheduled_at }
+        // Reused via lib/ai-isa/customer-context-tools.ts::writeFollowUpActivity — the
+        // SAME insert shape this tool always wrote (§6: one implementation, two call
+        // sites: this arbitrary-contact_id STAFF tool, and that file's contact-LOCKED
+        // request_showing for customer-facing surfaces).
+        const result = await writeFollowUpActivity({
+          brokerageId,
+          agentId: await resolveAgentId(service as any, user.id),
+          contactId: contact_id,
+          activityType: activity_type,
+          scheduledAt: scheduled_at,
+          notes,
+          title,
+        })
+        if (!result.success) return { success: false, error: result.error }
+        return { success: true, activity_id: result.activityId, title, scheduled_at: result.scheduledAt }
       },
     }),
 
@@ -530,7 +631,9 @@ export async function POST(req: NextRequest) {
           .from("client_portal_messages")
           .insert({
             contact_id,
-            agent_id: contact.agent_id ?? user.id,
+            // contact.agent_id IS an agents.id; the old `?? user.id` fallback was the
+            // wrong class on a NOT NULL agents(id) FK. Resolve instead.
+            agent_id: contact.agent_id ?? (await resolveAgentId(service as any, user.id)),
             brokerage_id: brokerageId,
             direction: "agent_to_client",
             channel: "portal",
@@ -652,7 +755,13 @@ export async function POST(req: NextRequest) {
 
         // pass 11: showings/activities.agent_id FK agents(id) — resolve first.
         const { resolveAgentId: _resolveAgentId } = await import("@/lib/kernel/agent-identity")
-        const toolAgentId = (await _resolveAgentId(service as any, user.id)) ?? user.id
+        // NOT `?? user.id` (m353) — the line above says these tables FK
+        // agents(id). An unresolved agent means the tool has nothing to read,
+        // and saying so beats an empty schedule delivered as fact.
+        const toolAgentId = await _resolveAgentId(service as any, user.id)
+        if (!toolAgentId) {
+          return { success: false, error: "No agent profile for this user yet — finish account setup to use schedule tools." }
+        }
         const [showings, activities] = await Promise.all([
           service
             .from("showings")
@@ -788,10 +897,17 @@ export async function POST(req: NextRequest) {
 
         try {
           const { advanceListingStage } = await import("@/app/actions/listing-lifecycle")
+          // NOT `?? user.id` (m353). listings.agent_id IS the agents id, which
+          // is what advanceListingStage expects; user.id is a different class
+          // entirely, so the fallback fed a stage advance — a real business
+          // event — an id that could never match an agents row.
+          if (!listing.agent_id) {
+            return { success: false, error: "That listing has no agent assigned, so its stage cannot be advanced." }
+          }
           const result = await advanceListingStage(
             listing_id,
             target_stage,
-            listing.agent_id ?? user.id,
+            listing.agent_id,
             notes ?? undefined,
           )
           return {
@@ -1121,23 +1237,62 @@ export async function POST(req: NextRequest) {
     }),
   }
 
-  const result = streamText({
-      model: resolveModel("openai/gpt-4o-mini"),
-    system: systemPrompt,
-    messages: await convertToModelMessages(messages),
-    maxOutputTokens: 1024,
-    tools: agentTools,
-    stopWhen: stepCountIs(5),
-    onFinish: async ({ text }) => {
-      if (!sessionId) return
-      await service.from("chat_messages").insert({
-        session_id: sessionId,
-        role: "assistant",
-        content: text,
-        metadata: { source: "internal", role },
-      }).then(() => {}, () => {})
-    },
-  })
+  // BatchData property-intelligence tools (wave 67) — gated: only added when
+  // BatchData's MCP is configured for this deployment (batchDataMcpTools resolves
+  // {} otherwise), so an agent surface with no BatchData token behaves exactly as
+  // before. Tenant scoped from the SESSION-resolved brokerageId/user.id above, never
+  // a request body (CLAUDE.md §4); each tool call meters its own spend.
+  //
+  // LANE 73B — the FULL, ungoverned catalogue above is still staff-only (no
+  // persona split, per wave 72B's own docs), but it is NOT exempt from the
+  // platform's BATCHDATA_TOOL_TIER constriction: "off" = zero BatchData tools,
+  // even for staff (RentCast + agentTools untouched); "lean" (the documented
+  // default) narrows the discovered catalogue to preview/count/lookup_property/
+  // verify-prefixed/check_dnc_status/check_tcpa_status tool names, cutting any
+  // `_page` or skip-trace-shaped tool the account's MCP happens to expose.
+  const batchDataToolsFull = await batchDataMcpTools({ brokerageId, userId: user.id })
+  const batchDataToolsTier = await resolveEffectiveBatchDataToolTier()
+  const batchDataTools = filterToolsByTier(batchDataToolsFull, batchDataToolsTier)
+
+  // RentCast property-lookup MCP tools (wave 69) — gated: only added when RENTCAST_API_KEY is
+  // configured (rentCastMcpTools resolves {} otherwise). Agent-copilot lookups ONLY — every
+  // scheduled/bulk RentCast pull stays on the typed REST client (lib/property/rentcast.ts);
+  // see lib/external/rentcast-mcp.ts's header for why MCP is copilot-only (billed the same
+  // per-request rate as REST, plus LLM token overhead).
+  const rentCastTools = await rentCastMcpTools({ brokerageId, userId: user.id })
+
+  // Routed streaming entry — routing table model, tenant fair-use cap checked
+  // BEFORE streaming, cost ledger written on finish (totalUsage, so every
+  // tool-calling step is billed). Identity is the session-resolved user +
+  // grant-derived tenant above, never the request body.
+  let result: Awaited<ReturnType<typeof streamTextRouted>>
+  try {
+    result = await streamTextRouted({
+      feature: "internal_assistant_chat",
+      system: systemPrompt,
+      messages: await convertToModelMessages(messages),
+      maxTokens: 1024,
+      tools: { ...agentTools, ...batchDataTools, ...rentCastTools },
+      maxSteps: 5,
+      userId: user.id,
+      brokerageId,
+      onFinish: async ({ text }) => {
+        if (!sessionId) return
+        await service.from("chat_messages").insert({
+          session_id: sessionId,
+          role: "assistant",
+          content: text,
+          metadata: { source: "internal", role },
+        }).then(() => {}, () => {})
+      },
+    })
+  } catch (err) {
+    // The cap refusal fires before any bytes stream — surface it as a 429.
+    if (err instanceof AIFairUseError) {
+      return NextResponse.json({ error: err.message }, { status: 429 })
+    }
+    throw err
+  }
 
   const streamResponse = result.toUIMessageStreamResponse()
   const resolvedSessionId = sessionId ?? newSessionId

@@ -4,8 +4,9 @@ import {
   createCronRunContextAction, recordCronStartAction, recordCronSuccessAction, recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { runIntentCampaign } from "@/lib/kernel/intent-campaign"
+import { runIntentCampaign, runTerritoryIntelligencePhase } from "@/lib/kernel/intent-campaign"
 import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
+import { collectError } from "@/lib/errors/collect-error"
 
 export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)
@@ -37,8 +38,26 @@ export async function GET(req: NextRequest) {
         for (const [k, v] of Object.entries(r)) if (typeof v === "number") agg[k] = (agg[k] ?? 0) + v
       } catch (e: any) { errors.push(`${b.id}: ${e?.message ?? String(e)}`) }
     }
-    await recordCronSuccessAction({ context_id: contextId, records_processed: agg["markets"] ?? 0, metadata: { ...agg, errors: errors.slice(0, 10) } }).catch(() => {})
-    return NextResponse.json({ ok: true, ...agg })
+
+    // TERRITORY-CENTRIC INTELLIGENCE PHASE (wave 65A, owner data_steward) —
+    // folded into this EXISTING daily tick per the wave-65 instruction ("no new
+    // cron"). Owner ruling 2026-09-15: no compliance gating on this class of
+    // intelligence gathering; the territory boundary (active tenant territories
+    // ONLY) still applies and is enforced inside runTerritoryIntelligencePhase
+    // (and a second time inside each app/actions/lead-intelligence.ts scraper it
+    // calls — defense in depth). Failures are reported via collectError, never
+    // swallowed, and never fail the whole cron run over one territory.
+    let territoryPhase: Awaited<ReturnType<typeof runTerritoryIntelligencePhase>> | null = null
+    try {
+      territoryPhase = await runTerritoryIntelligencePhase(supabase)
+      for (const [k, v] of Object.entries(territoryPhase)) if (typeof v === "number") agg[`territory_${k}`] = (agg[`territory_${k}`] ?? 0) + v
+    } catch (e: any) {
+      errors.push(`territory-intelligence-phase: ${e?.message ?? String(e)}`)
+      await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e?.message ?? String(e), stack: e?.stack, severity: "medium", context: { stage: "cron-route" } })
+    }
+
+    await recordCronSuccessAction({ context_id: contextId, records_processed: agg["markets"] ?? 0, metadata: { ...agg, territory_no_op_reason: territoryPhase?.noOpReason ?? null, errors: errors.slice(0, 10) } }).catch(() => {})
+    return NextResponse.json({ ok: true, ...agg, territoryPhase })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

@@ -216,7 +216,7 @@ export async function findTransactionsNeedingAttribution(
   const { data: txns } = await svc
     .from("transactions")
     .select("id")
-    .in("status", ["closed", "completed", "under_contract"])
+    .in("status", ["closed", "under_contract"])
     .gte("updated_at", since)
     .limit(200)
   const candidateIds = ((txns ?? []) as Array<{ id: string }>).map(t => t.id)

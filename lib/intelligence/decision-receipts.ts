@@ -42,6 +42,10 @@ export interface TouchRow {
   channel: string | null
   metadata: { manager?: string | null; ai_intent?: string | null } | null
   sent_at: string | null
+  /** TYPED provenance (preferred over metadata — see lib/intelligence/manager-touch-provenance.ts):
+   *  which pipeline produced the touch, and the canonical sequence that drove it. */
+  source?: string | null
+  sequence_id?: string | null
 }
 export interface VideoProjectRow {
   title: string | null
@@ -94,7 +98,11 @@ export function assembleReceipts(input: AssembleReceiptsInput): ReceiptEntry[] {
   for (const t of input.touchpoints ?? []) {
     const mgr = t.metadata?.manager ?? null
     const intent = t.metadata?.ai_intent
-    out.push({ at: t.sent_at ?? "", channel: t.channel, action: "sent", manager: mgr, summary: `${mgr ?? "a manager"} sent a ${t.channel ?? "touch"}${intent ? ` — intent: "${intent}"` : ""}` })
+    // Typed provenance columns, preferred over the metadata blob: a touch driven
+    // by the canonical sequence engine says so, and any other pipeline source
+    // (trigger / retarget / manual) is named rather than left implicit.
+    const via = t.sequence_id ? "sequence step" : (t.source && t.source !== "launch" ? t.source : null)
+    out.push({ at: t.sent_at ?? "", channel: t.channel, action: "sent", manager: mgr, summary: `${mgr ?? "a manager"} sent a ${t.channel ?? "touch"}${via ? ` (${via})` : ""}${intent ? ` — intent: "${intent}"` : ""}` })
   }
 
   // Commissioned videos (a personal win-back, an anniversary reel) — the AI team's highest-emotion

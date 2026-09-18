@@ -1,13 +1,16 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
+import { useParams } from "next/navigation"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { Download, Loader2 } from "lucide-react"
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { generateNetSheetPdf } from "@/app/actions/kernel-bridges"
 
 interface NetSheetProps {
   offerPrice: number
@@ -74,6 +77,81 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
       hoaFees +
       prorations
     )
+  }
+
+  // ── DOWNLOAD NET SHEET PDF ─────────────────────────────────────────────────
+  // This button had NO handler. netSheetPdfSpec and produceClientDocument's
+  // "net_sheet" branch were both complete and had never been invoked from
+  // anywhere, so a seller could model their proceeds all afternoon and leave
+  // with nothing on paper. generateNetSheetPdf (app/actions/kernel-bridges)
+  // is the server seam: the spec + producer are server-only modules a client
+  // component cannot import.
+  //
+  // The contact comes from the route (/portal/[contactId]/offers) — the parent
+  // page does not pass it, and the action re-authorizes it server-side anyway.
+  const routeParams = useParams<{ contactId: string | string[] }>()
+  const contactId = Array.isArray(routeParams?.contactId) ? routeParams.contactId[0] : routeParams?.contactId
+  const [pdfPending, setPdfPending] = useState(false)
+  const [pdfError, setPdfError] = useState<string | null>(null)
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null)
+
+  /** One PDF scenario built from EXACTLY the figures on screen — the document
+   *  and the calculator can never disagree because nothing is recomputed here. */
+  const scenarioForPdf = (label: string, scenarioPrice: number) => {
+    const scenarioCommission = scenarioPrice * (commissionRate / 100)
+    // Liens/HOA are charges; prorations may be a CREDIT to the seller, so the
+    // net can go either way.
+    const otherNet = liens + hoaFees - prorations
+    return {
+      label,
+      salePrice: scenarioPrice,
+      commission: scenarioCommission,
+      // The spec renders "other" as a deduction line ("-$x") and has no row for
+      // a credit. When prorations net out in the seller's favour the credit is
+      // applied to the closing-cost line instead, so the breakdown still
+      // reconciles to the same net proceeds shown above.
+      closingCosts: otherNet < 0 ? closingCosts + otherNet : closingCosts,
+      mortgagePayoff: currentMortgageBalance || null,
+      other: otherNet > 0 ? otherNet : null,
+      netProceeds: calculateScenarioNet(scenarioPrice),
+    }
+  }
+
+  const handleDownloadPdf = async () => {
+    if (!contactId) {
+      // Names what was tested. The old wording blamed "your portal account",
+      // which is a different thing and sends the reader to check their login —
+      // the contactId simply is not in the route params.
+      setPdfError("No contact id in this page's address — reload from your portal home.")
+      return
+    }
+    setPdfPending(true)
+    setPdfError(null)
+    setPdfUrl(null)
+    try {
+      const result = await generateNetSheetPdf({
+        contactId,
+        propertyAddress,
+        scenarios: [
+          scenarioForPdf("Selected price", price),
+          scenarioForPdf("5% below ask", listPrice * 0.95),
+          scenarioForPdf("Full ask", listPrice),
+          scenarioForPdf("5% over ask", listPrice * 1.05),
+        ],
+      })
+      // The action returns { success, error } and never throws — a refusal has
+      // to read as a refusal, not as a button that blinked.
+      if (!result.success || !result.pdfUrl) {
+        setPdfError(result.error ?? "The net sheet PDF could not be generated.")
+        return
+      }
+      setPdfUrl(result.pdfUrl)
+      window.open(result.pdfUrl, "_blank", "noopener,noreferrer")
+    } catch {
+      setPdfError("The net sheet PDF could not be generated. Please try again.")
+    } finally {
+      setPdfPending(false)
+    }
   }
 
   return (
@@ -180,7 +258,7 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
           {/* Liens */}
           <div className="space-y-1">
             <div className="flex justify-between items-center">
-              <Label htmlFor="liens">Liens / HOA Dues</Label>
+              <Label htmlFor="liens">Liens / Judgments</Label>
               <Input
                 id="liens"
                 type="number"
@@ -191,6 +269,27 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
               />
             </div>
             {liens > 0 && <span className="text-red-600 text-right block text-sm">-{formatCurrency(liens)}</span>}
+          </div>
+
+          {/* HOA — `hoaFees` fed every net figure on this card (the live total,
+              the three quick scenarios and the PDF's "other" line) and had NO
+              input, so a seller's proceeds always assumed zero HOA. The lien
+              field above was labelled "Liens / HOA Dues" as a stand-in; it is
+              now liens only and HOA has its own line, same shape as its
+              siblings. Portal surface: these are the seller's own figures. */}
+          <div className="space-y-1">
+            <div className="flex justify-between items-center">
+              <Label htmlFor="hoaFees">HOA Dues / Transfer Fees (owed at closing)</Label>
+              <Input
+                id="hoaFees"
+                type="number"
+                value={hoaFees}
+                onChange={(e) => setHoaFees(Number(e.target.value))}
+                className="w-32 text-right"
+                placeholder="0"
+              />
+            </div>
+            {hoaFees > 0 && <span className="text-red-600 text-right block text-sm">-{formatCurrency(hoaFees)}</span>}
           </div>
 
           {/* Prorations */}
@@ -271,10 +370,32 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
           </div>
         </div>
 
-        {/* Download PDF */}
-        <Button className="w-full" variant="default">
-          Download Net Sheet PDF
-        </Button>
+        {/* Download PDF — renders the four priced scenarios above as a branded PDF */}
+        <div className="space-y-2">
+          <Button className="w-full" variant="default" onClick={handleDownloadPdf} disabled={pdfPending}>
+            {pdfPending ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Preparing your net sheet…
+              </>
+            ) : (
+              <>
+                <Download className="h-4 w-4 mr-2" />
+                Download Net Sheet PDF
+              </>
+            )}
+          </Button>
+          {pdfError && <p className="text-sm text-red-600 text-center">{pdfError}</p>}
+          {pdfUrl && !pdfError && (
+            <p className="text-sm text-green-700 text-center">
+              Net sheet ready —{" "}
+              <a href={pdfUrl} target="_blank" rel="noopener noreferrer" className="underline font-medium">
+                open the PDF
+              </a>{" "}
+              if it did not open automatically. A copy is saved to your file.
+            </p>
+          )}
+        </div>
 
         {/* Disclaimer */}
         <p className="text-xs text-muted-foreground text-center">

@@ -29,8 +29,26 @@ const MOMENTUM_CLASS: Record<string, string> = {
   building: "bg-amber-100 text-amber-700 border-amber-200",
 }
 
-export function SellerWeeklyReportCard({ report }: { report: WeeklyReport | null }) {
+/**
+ * generatedAt — seller_weekly_reports.generated_at, the moment the runner compiled
+ * this digest (lib/listings/seller-weekly-report-runner.ts:84). The week label lives
+ * in report_week_start; this is the freshness stamp, without which the seller cannot
+ * tell a digest cut this morning from one cut six days ago. Absent → no line, never
+ * a fabricated "today".
+ */
+export function SellerWeeklyReportCard({
+  report,
+  generatedAt = null,
+}: {
+  report: WeeklyReport | null
+  generatedAt?: string | null
+}) {
   if (!report || !report.headline) return null
+  const compiled = generatedAt ? new Date(generatedAt) : null
+  const compiledLabel =
+    compiled && !Number.isNaN(compiled.getTime())
+      ? compiled.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+      : null
   const a = report.activity ?? {}
   const stats: Array<{ icon: React.ReactNode; label: string; value: number | null | undefined }> = [
     { icon: <Users className="h-4 w-4 text-blue-600" />, label: "Showings this week", value: a.showings_this_week },
@@ -85,6 +103,10 @@ export function SellerWeeklyReportCard({ report }: { report: WeeklyReport | null
 
         {report.feedback_note && (
           <p className="text-xs text-muted-foreground border-t pt-3">{report.feedback_note}</p>
+        )}
+
+        {compiledLabel && (
+          <p className="text-[11px] text-muted-foreground">Compiled {compiledLabel}</p>
         )}
       </CardContent>
     </Card>

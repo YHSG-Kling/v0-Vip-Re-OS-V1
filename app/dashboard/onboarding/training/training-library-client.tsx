@@ -11,7 +11,6 @@ import { useRouter } from "next/navigation"
 import {
   Play,
   CheckCircle2,
-  Clock,
   Filter,
   ChevronRight,
   GraduationCap,

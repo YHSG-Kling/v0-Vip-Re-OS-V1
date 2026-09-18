@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -16,7 +16,6 @@ import {
   AlertCircle,
   CheckCircle,
   Clock,
-  FileText,
   Loader2,
   MoreVertical,
   Eye,
@@ -26,6 +25,7 @@ import {
   Shield,
   ExternalLink,
   Download,
+  Wand2,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -37,8 +37,16 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import {
+  VIDEO_FINISHED_STATUSES,
+  normalizeVideoStatus,
+  VIDEO_IN_PROGRESS_STATUSES,
+  VIDEO_TERMINAL_STATUSES,
+} from "@/lib/video/video-status"
 import { toast } from "sonner"
 import { distributeVideo } from "@/app/actions/video/distribute-video"
+import { VideoStudioDialog } from "./video-studio-dialog"
+import { VideoRecommendationsCard } from "./video-recommendations-card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -89,11 +97,29 @@ const COLUMNS = [
   { id: "failed", title: "Failed", icon: AlertCircle, color: "bg-red-500" },
 ]
 
-function mapStatusToColumn(status: string, heygenStatus?: string): string {
-  if (status === "failed" || heygenStatus === "failed") return "failed"
+function mapStatusToColumn(rawStatus: string, providerStatus?: string): string {
+  // Column ids are DISPLAY BUCKETS, not statuses. `status` is the canonical
+  // vocabulary (lib/video/video-status) and every one of its nine values is
+  // named here, because the catch-all below is a trap: it used to swallow
+  // `completed`, `distributed`, `ready`, `uploaded` and `error`, so a finished
+  // video and a failed render both sat in the Queued column and the red failure
+  // UI further down never rendered.
+  //
+  // Normalised first so the catch-all cannot reopen that trap from the other
+  // side: a row still carrying a RETIRED spelling — `ready`, `uploaded`,
+  // `distributed`, `error`, `rendering` — is not in the nine, so every one of
+  // them would fall through to "pending" and a finished or failed video would
+  // reappear in the Queued column. The m374 CHECK stops NEW ones being written;
+  // it does not rewrite an export, a mirror, or a row that predates it.
+  const status = normalizeVideoStatus(rawStatus)
+  if (status === "failed" || providerStatus === "failed") return "failed"
   if (status === "published") return "published"
-  if (status === "preview_ready" || heygenStatus === "completed") return "preview_ready"
-  if (status === "generating" || heygenStatus === "generating" || heygenStatus === "processing") return "generating"
+  // A finished asset is previewable: this column is where the Play button lives.
+  if (status === "completed" || providerStatus === "completed") return "preview_ready"
+  if (status === "queued" || status === "generating" ||
+      providerStatus === "generating" || providerStatus === "processing") return "generating"
+  // draft / scripting / script_ready / awaiting_presenter_setup — nothing has
+  // been handed to a render worker yet, which is what this column means.
   return "pending"
 }
 
@@ -116,7 +142,17 @@ export default function VideoKanbanBoard() {
     open: false,
     video: null,
   })
-  const [publishing, setPublishing] = useState(false)
+
+  // Video Studio — the surface for the kernel video commands (script, settings,
+  // render submission, state, preview, repurpose). Opens on a project row.
+  const [studioDialog, setStudioDialog] = useState<{ open: boolean; video: VideoProject | null }>({
+    open: false,
+    video: null,
+  })
+  // TOMBSTONE (§1, wave 56 dead-code sweep): `publishing` state stood here —
+  // its only reader/writer was `handlePublish`, deleted above at the same
+  // tombstone. Survivor: `distributing` below, which the real publish path
+  // (handleDistribute) already uses.
 
   // Distribution state
   const [distributing, setDistributing] = useState(false)
@@ -167,7 +203,7 @@ export default function VideoKanbanBoard() {
         data.forEach((v: any) => {
           statusMap[v.id] = {
             video_project_id: v.id,
-            stream_status: v.provider_status || v.status || "pending",
+            stream_status: v.provider_status || v.status || "draft",
             preview_url: v.thumbnail_url ?? undefined,
             stream_url: v.video_url ?? undefined,
             error_message: v.error_message ?? undefined,
@@ -177,7 +213,7 @@ export default function VideoKanbanBoard() {
 
         // Identify videos that need polling
         const needsPolling = data
-          .filter((v: any) => ["generating", "pending"].includes(v.status) || ["generating", "processing", "pending"].includes(v.provider_status || ""))
+          .filter((v: any) => (VIDEO_IN_PROGRESS_STATUSES as readonly string[]).includes(v.status) || ["generating", "processing", "pending"].includes(v.provider_status || ""))
           .map((v: any) => v.id)
         setPollingVideoIds(new Set(needsPolling))
       }
@@ -221,7 +257,7 @@ export default function VideoKanbanBoard() {
             ...prev,
             [v.id]: {
               video_project_id: v.id,
-              stream_status: v.provider_status || v.status || "pending",
+              stream_status: v.provider_status || v.status || "draft",
               preview_url: v.thumbnail_url ?? undefined,
               stream_url: v.video_url ?? undefined,
               error_message: v.error_message ?? undefined,
@@ -253,7 +289,7 @@ export default function VideoKanbanBoard() {
             .eq("id", videoId)
             .maybeSingle()
 
-          if (data?.status === "ready" || data?.status === "failed" || data?.status === "completed") {
+          if ((VIDEO_TERMINAL_STATUSES as readonly string[]).includes(data?.status ?? "")) {
             setPollingVideoIds(prev => {
               const next = new Set(prev)
               next.delete(videoId)
@@ -281,12 +317,22 @@ export default function VideoKanbanBoard() {
     const video = videos.find(v => v.id === videoId)
     if (!video) return
 
+    // THE RETRY CEILING — ported from the deleted
+    // app/actions/video/create-video-project.ts retryVideoGeneration (orphan
+    // doctrine §1.1: the survivor gets what the duplicate had FIRST). The card
+    // already prints "Retries: n/3"; without this the count was decorative and a
+    // failed render could be resubmitted to D-ID indefinitely.
+    if ((video.retry_count ?? 0) >= 3) {
+      toast.error("Maximum retry attempts reached for this video. Please contact support.")
+      return
+    }
+
     try {
       // Reset status
       await supabase
         .from("ai_video_projects")
         .update({
-          status: "pending",
+          status: "draft",
           provider_status: "pending",
           error_message: null,
           retry_count: (video.retry_count || 0) + 1,
@@ -343,33 +389,19 @@ export default function VideoKanbanBoard() {
     }
   }
 
-  async function handlePublish(video: VideoProject) {
-    setPublishing(true)
-
-    try {
-      const { error } = await supabase
-        .from("ai_video_projects")
-        .update({
-          status: "published",
-          video_metadata: {
-            published_by: user?.id,
-            published_at: new Date().toISOString(),
-          },
-        })
-        .eq("id", video.id)
-
-      if (error) throw error
-
-      setPreviewDialog({ open: false, video: null })
-      toast.success("Video published")
-      await loadVideos()
-    } catch (error: any) {
-      console.error("Error publishing video:", error)
-      toast.error(error.message || "Failed to publish video")
-    } finally {
-      setPublishing(false)
-    }
-  }
+  // TOMBSTONE (§1, wave 56 dead-code sweep): `handlePublish` stood here,
+  // never called — a direct CLIENT-SIDE write flipping ai_video_projects.status
+  // to 'published', bypassing the tenant gate the video kernel functions were
+  // hardened behind (lib/kernel/manager-registry.ts:video_generation_lane_tenant_gate
+  // — wiring this as written would have reopened the exact cross-tenant hole
+  // that entry describes closing). It is also a functional duplicate: the
+  // SAME dialog's already-wired handleDistribute("post_now"/"schedule")
+  // below already reaches lib/kernel/video.ts:distributeVideoProject, which
+  // sets `status: "published"` itself on success (lib/kernel/video.ts:634-646,
+  // "'published' is POST-terminal and still counts as a FINISHED video") —
+  // gated, server-side, through app/actions/video/distribute-video.ts. That
+  // is the survivor — see the disabled= props on the distribute buttons
+  // below, which read `distributing`, not the now-deleted `publishing`.
 
   async function handleDistribute(
     video: VideoProject,
@@ -471,6 +503,10 @@ export default function VideoKanbanBoard() {
         </Alert>
       )}
 
+      {/* What to film next — the door onto GET /api/ai/video-recommendations,
+          which had five working branches and no caller until this was wired. */}
+      <VideoRecommendationsCard userId={user?.id} />
+
       {/* Kanban Board */}
       <div className="flex gap-4 overflow-x-auto pb-4">
         {COLUMNS.map((column) => {
@@ -509,7 +545,12 @@ export default function VideoKanbanBoard() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              {(video.status === "preview_ready" || video.provider_status === "completed") && (
+                              <DropdownMenuItem onClick={() => setStudioDialog({ open: true, video })}>
+                                <Wand2 className="mr-2 h-4 w-4" />
+                                Open Video Studio
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              {(video.status === "completed" || video.provider_status === "completed") && (
                                 <>
                                   <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
                                     <Eye className="mr-2 h-4 w-4" />
@@ -526,7 +567,7 @@ export default function VideoKanbanBoard() {
                                   <DropdownMenuSeparator />
                                 </>
                               )}
-                              {(video.status === "published" || video.status === "preview_ready" || video.status === "ready" || video.status === "completed") && video.video_url && (
+                              {(VIDEO_FINISHED_STATUSES as readonly string[]).includes(video.status) && video.video_url && (
                                 <>
                                   <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
                                     <Share2 className="mr-2 h-4 w-4" />
@@ -572,6 +613,24 @@ export default function VideoKanbanBoard() {
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
+
+                        {/* A queued project is one nobody has scripted or
+                            submitted yet — the Studio is the surface that does
+                            both, so put it on the card rather than behind a
+                            menu. */}
+                        {column.id === "pending" && (
+                          <div className="mt-3">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full"
+                              onClick={() => setStudioDialog({ open: true, video })}
+                            >
+                              <Wand2 className="mr-2 h-4 w-4" />
+                              Open Video Studio
+                            </Button>
+                          </div>
+                        )}
 
                         {/* Status-specific content */}
                         {column.id === "generating" && (
@@ -650,6 +709,14 @@ export default function VideoKanbanBoard() {
           )
         })}
       </div>
+
+      {/* Video Studio — script / settings / render / state / preview / repurpose */}
+      <VideoStudioDialog
+        open={studioDialog.open}
+        onOpenChange={(open) => setStudioDialog({ open, video: open ? studioDialog.video : null })}
+        project={studioDialog.video}
+        onProjectChanged={loadVideos}
+      />
 
       {/* Preview & Publish Dialog */}
       <Dialog open={previewDialog.open} onOpenChange={(open) => setPreviewDialog({ open, video: previewDialog.video })}>

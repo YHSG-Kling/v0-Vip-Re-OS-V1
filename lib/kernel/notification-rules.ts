@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -16,53 +17,29 @@ export type NotificationRuleRow = {
 
 // ─── INTERNAL HELPER ─────────────────────────────────────────────────────────
 
-// UUID validation regex
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+// The UUID validation that lived here MOVED FORWARD into
+// lib/auth/require-brokerage-admin.ts, which is now the only caller that needed
+// it. Deleted rather than left behind: a const nothing reads is the orphan this
+// workstream keeps having to re-triage.
 
+/**
+ * DELETED — this was the SECOND of three copies of the brokerage-admin gate, and
+ * it carried both defects the survivor fixes: it omitted `broker_owner` (which
+ * public.is_brokerage_admin() admits) and its `superadmin` branch tested
+ * user_type alone, which ZERO live rows satisfy.
+ *
+ * Survivor: lib/auth/require-brokerage-admin.ts:requireBrokerageAdmin.
+ * MERGED FORWARD from this copy: the UUID validation on userId, and the
+ * user_role_assignments fallback — the survivor's original had neither.
+ *
+ * The service client is still created here and injected, so this module's
+ * RLS-bypassing posture is unchanged.
+ */
 async function requireBrokerAdmin(
   userId: string
 ): Promise<{ brokerageId: string; userType: string }> {
-  // Validate userId is a proper UUID before querying
-  if (!userId || typeof userId !== 'string' || !UUID_REGEX.test(userId)) {
-    console.error("[v0] requireBrokerAdmin: Invalid userId:", userId)
-    throw new Error("Invalid user ID")
-  }
-  
-  const supabase = createServiceClient()
-
-  // Try to get user from public.users first
-  const { data: user, error: userError } = await supabase
-    .from("users")
-    .select("brokerage_id, user_type")
-    .eq("id", userId)
-    .maybeSingle()
-
-  // If user found in public.users with brokerage_id, check permissions
-  if (user?.brokerage_id) {
-    const userType = user.user_type || "admin" // Default to admin if user_type is null
-    if (!["admin", "broker", "superadmin"].includes(userType)) {
-      throw new Error("Forbidden: insufficient permissions")
-    }
-    return { brokerageId: user.brokerage_id, userType }
-  }
-
-  // Fallback: check user_role_assignments table
-  const { data: roleAssignment, error: roleError } = await supabase
-    .from("user_role_assignments")
-    .select("brokerage_id, role")
-    .eq("user_id", userId)
-    .maybeSingle()
-
-  if (roleAssignment?.brokerage_id) {
-    const role = roleAssignment.role || "admin" // Default to admin if role is null
-    if (!["admin", "broker", "superadmin"].includes(role)) {
-      throw new Error("Forbidden: insufficient permissions")
-    }
-    return { brokerageId: roleAssignment.brokerage_id, userType: role }
-  }
-
-  // If still no user found, throw error
-  throw new Error("User not found or not associated with a brokerage")
+  const { brokerageId, userType } = await requireBrokerageAdmin(createServiceClient(), userId)
+  return { brokerageId, userType }
 }
 
 // ─── EXPORTED FUNCTIONS ───────────────────────────────────────────────────────

@@ -25,6 +25,8 @@ export interface EnrichmentProfileLike {
   education?: Array<{ school?: string | null; degree?: string | null; major?: string | null }> | null
   home_owner_status?: string | null
   home_value?: number | null
+  net_worth?: string | null
+  credit_score_range?: string | null
   linkedin_url?: string | null
   facebook_url?: string | null
   twitter_url?: string | null
@@ -89,6 +91,10 @@ export function peopleDataProfileToContactColumns(
   set('education_level', deriveEducationLevel(profile.education))
   set('home_owner_status', profile.home_owner_status)
   set('home_value_estimate', typeof profile.home_value === 'number' ? profile.home_value : undefined)
+  // m640: PeopleData's own market-intelligence estimates — distinct from the
+  // agent-tracked contacts.credit_score_band (see the migration header).
+  set('net_worth_range', profile.net_worth)
+  set('credit_score_range', profile.credit_score_range)
   set('linkedin_url', profile.linkedin_url)
   set('facebook_url', profile.facebook_url)
   set('twitter_url', profile.twitter_url)
@@ -128,6 +134,92 @@ export function peopleDataProfileToLeadColumns(
   }
   if (Array.isArray(profile.life_events) && profile.life_events.length > 0) {
     out.life_events = profile.life_events
+  }
+  return out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCHDATA PROPERTY-ENRICHMENT DATASETS (valuation, mortgage-liens, foreclosure,
+// deed, owner — lib/external/batchdata-client.ts::enrichPropertyDatasetsBatchData)
+// → the SAME first-class columns PeopleData writes above, PLUS the property-fact
+// JSONB columns those two tables ALREADY carry. Every key below is verified live
+// against scripts/schema-snapshot.ts — PGRST204 refuses an insert/update naming
+// an absent column ENTIRELY (CLAUDE.md §3), so nothing here invents one.
+//
+// leads has NO property_records/court_records jsonb — the nested facts land in
+// enrichment_profile.batchdata_property instead (the same pattern
+// freeLaneProfileBlock already uses for osint_free, enrichment-orchestrator.ts).
+// contacts DOES carry a general-purpose property_records jsonb; that is its
+// landing spot, so the two tables get parallel-shaped but table-appropriate patches.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The shape enrichPropertyDatasetsBatchData returns (duplicated here, not imported,
+ *  so this file stays free of the gateway-bearing lib/external import graph — see the
+ *  header note above about unit-testability under plain tsx). */
+export interface BatchDataPropertyEnrichmentLike {
+  ok: boolean
+  equityPercent: number | null
+  estimatedValue: number | null
+  mortgageBalance: number | null
+  foreclosureStatus: string | null
+  lastDeedType: string | null
+  ownerOccupied: boolean | null
+}
+
+/** Pure: BatchData property-enrichment → the first-class columns BOTH leads and
+ *  contacts carry (equity_estimate, lender_status). Shared because both tables use
+ *  identical names and semantics for these two — verified against schema-snapshot.ts. */
+function sharedBatchDataPropertyColumns(e: BatchDataPropertyEnrichmentLike): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (typeof e.equityPercent === 'number') out.equity_estimate = e.equityPercent
+  if (typeof e.foreclosureStatus === 'string' && e.foreclosureStatus.trim() !== '') out.lender_status = e.foreclosureStatus
+  return out
+}
+
+/** Pure: BatchData property-enrichment → leads columns + the enrichment_profile.batchdata_property
+ *  nested block (leads has no dedicated property jsonb column). */
+export function batchDataPropertyEnrichmentToLeadColumns(
+  e: BatchDataPropertyEnrichmentLike | null | undefined,
+  priorProfile: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!e || !e.ok) return {}
+  const out = sharedBatchDataPropertyColumns(e)
+  if (typeof e.estimatedValue === 'number') out.estimated_value = e.estimatedValue
+  out.enrichment_profile = {
+    ...(priorProfile ?? {}),
+    batchdata_property: {
+      captured_at: new Date().toISOString(),
+      equity_percent: e.equityPercent,
+      estimated_value: e.estimatedValue,
+      mortgage_balance: e.mortgageBalance,
+      foreclosure_status: e.foreclosureStatus,
+      last_deed_type: e.lastDeedType,
+      owner_occupied: e.ownerOccupied,
+    },
+  }
+  return out
+}
+
+/** Pure: BatchData property-enrichment → contacts columns + the property_records jsonb
+ *  column contacts already carry (verified against schema-snapshot.ts). */
+export function batchDataPropertyEnrichmentToContactColumns(
+  e: BatchDataPropertyEnrichmentLike | null | undefined,
+  priorPropertyRecords: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!e || !e.ok) return {}
+  const out = sharedBatchDataPropertyColumns(e)
+  if (typeof e.estimatedValue === 'number') out.home_value_estimate = e.estimatedValue
+  out.property_records = {
+    ...(priorPropertyRecords ?? {}),
+    batchdata: {
+      captured_at: new Date().toISOString(),
+      equity_percent: e.equityPercent,
+      estimated_value: e.estimatedValue,
+      mortgage_balance: e.mortgageBalance,
+      foreclosure_status: e.foreclosureStatus,
+      last_deed_type: e.lastDeedType,
+      owner_occupied: e.ownerOccupied,
+    },
   }
   return out
 }

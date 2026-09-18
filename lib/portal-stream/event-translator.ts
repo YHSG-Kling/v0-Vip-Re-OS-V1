@@ -20,27 +20,38 @@
  * automatically — the translator only declares whether an action is owed.
  */
 
-/** Mirrors lib/buyer-search/persona-inference.BuyerPersona plus the seller
- *  persona values used in lib/kernel/brand-voice.ts. We widen to plain
- *  string because contact_persona is `text` in the live schema and can
- *  hold either family of values (or a custom one). */
+/** The LIVE contacts.contact_persona vocabulary — the fourteen values the
+ *  contacts_contact_persona_check admits (scripts/check-vocabularies.ts, after
+ *  m589), because that is the only place the projector cron reads a persona
+ *  from. This union USED to mirror a retired 16-value spelling set
+ *  (first_time_buyer, move_up_buyer, downsizer, luxury_buyer, bargain_hunter,
+ *  relocation, investor, …) and every byPersona() table below keyed its copy
+ *  on those spellings — values the CHECK refuses, so the persona-tuned copy
+ *  this module exists for could never fire: every contact fell through to the
+ *  neutral fallback. Five keys mapped forward (first_time_buyer→first_time,
+ *  luxury_buyer→luxury, downsizer→downsize, relocation→relocated,
+ *  move_up_buyer→upsize). `investor` was dropped in that rekey because it then
+ *  had no live equivalent — the OWNER OVERRULED that ("investor is a persona
+ *  and not a contact type"), m589 made it the fourteenth CHECK member, and the
+ *  investor-keyed copy deleted in that wave is RESTORED below verbatim (from
+ *  49ea12f5^), keyed on the now-canonical spelling. `bargain_hunter` stays
+ *  removed (still no live equivalent). Still widened by `| string` so a
+ *  null/legacy row degrades to the fallback instead of a type error. */
 export type ContactPersona =
-  // Buyer personas
-  | "first_time_buyer"
-  | "move_up_buyer"
-  | "investor"
-  | "relocation"
-  | "downsizer"
-  | "luxury_buyer"
-  | "bargain_hunter"
-  // Seller personas
-  | "expired"
-  | "fsbo"
+  | "first_time"
+  | "luxury"
+  | "relocated"
+  | "upsize"
+  | "downsize"
+  | "military"
+  | "foreclosure"
   | "divorce"
   | "probate"
-  | "foreclosure"
-  | "military"
-  // Catch-all
+  | "senior"
+  | "expired"
+  | "fsbo"
+  | "investor"
+  | "other"
   | "undetermined"
   | string
 
@@ -89,10 +100,10 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr  = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📤 Your first-home offer${priceStr} was submitted${addrStr}. Take a breath — we'll hear back soon and walk you through every step.`,
+        first_time: `📤 Your first-home offer${priceStr} was submitted${addrStr}. Take a breath — we'll hear back soon and walk you through every step.`,
         investor:         `📤 Offer${priceStr} submitted${addrStr}. Listing agent acknowledgment pending; due-diligence window queued.`,
-        downsizer:        `📤 Your offer${priceStr} on ${propertyAddress ?? "the property"} is in. We'll keep you posted as the response comes back.`,
-        luxury_buyer:     `📤 Offer${priceStr} delivered${addrStr}. Listing agent will respond shortly.`,
+        downsize:        `📤 Your offer${priceStr} on ${propertyAddress ?? "the property"} is in. We'll keep you posted as the response comes back.`,
+        luxury:     `📤 Offer${priceStr} delivered${addrStr}. Listing agent will respond shortly.`,
       }, `📤 Your offer${priceStr} was submitted${addrStr}. Listing agent will respond.`),
       customerIcon:        "📤",
       agentCopy:           `Offer submitted${priceStr} — listing agent will respond`,
@@ -107,9 +118,8 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📩 The seller sent back a counter${counter}${addrStr}. Don't worry — this is normal. Your agent is preparing your response and will explain the options before you decide.`,
+        first_time: `📩 The seller sent back a counter${counter}${addrStr}. Don't worry — this is normal. Your agent is preparing your response and will explain the options before you decide.`,
         investor:         `📩 Counter received${counter}${addrStr}. Negotiation Co-Pilot will model the trade-off before reply.`,
-        bargain_hunter:   `📩 Seller countered${counter}${addrStr}. Your agent will look for room to push back.`,
       }, `📩 Seller countered your offer${addrStr}${counter}. Your agent is preparing a response.`),
       customerIcon:        "📩",
       agentCopy:           `Counter received — Negotiation Co-Pilot will draft a response`,
@@ -123,11 +133,11 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🎉 They said yes! Your offer was accepted${addrStr}. Welcome to the under-contract phase — we'll guide you through inspection, appraisal, and closing day, step by step.`,
+        first_time: `🎉 They said yes! Your offer was accepted${addrStr}. Welcome to the under-contract phase — we'll guide you through inspection, appraisal, and closing day, step by step.`,
         investor:         `🎉 Acquisition secured${addrStr}. Under contract — due-diligence period now active.`,
-        downsizer:        `🎉 Offer accepted${addrStr}! Time to plan the transition from your current home.`,
-        luxury_buyer:     `🎉 Offer accepted${addrStr}. Moving to contract.`,
-        relocation:       `🎉 Offer accepted${addrStr} — perfect timing for your move. Closing schedule will lock in soon.`,
+        downsize:        `🎉 Offer accepted${addrStr}! Time to plan the transition from your current home.`,
+        luxury:     `🎉 Offer accepted${addrStr}. Moving to contract.`,
+        relocated:       `🎉 Offer accepted${addrStr} — perfect timing for your move. Closing schedule will lock in soon.`,
         military:         `🎉 Offer accepted${addrStr}. We'll align the closing timeline with your orders.`,
       }, `🎉 Your offer was accepted${addrStr}! Going under contract.`),
       customerIcon:        "🎉",
@@ -142,9 +152,8 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `Heads up — this offer didn't land${addrStr}. That happens, and it's not a setback. Your agent is already lining up the next options that fit you better.`,
+        first_time: `Heads up — this offer didn't land${addrStr}. That happens, and it's not a setback. Your agent is already lining up the next options that fit you better.`,
         investor:         `Offer didn't clear${addrStr}. Pipeline review queued — your agent will surface the next deal.`,
-        bargain_hunter:   `Offer rejected${addrStr}. Your agent is hunting the next undervalued opportunity.`,
       }, `Heads up — your offer wasn't accepted${addrStr}. Your agent is looking at next steps.`),
       customerIcon:        "💬",
       agentCopy:           `Offer rejected — review alternative properties with the buyer`,
@@ -159,9 +168,9 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📋 You're officially under contract${addrStr}! Big step. Inspection and appraisal are next — your agent will set up everything and explain what each one means.`,
+        first_time: `📋 You're officially under contract${addrStr}! Big step. Inspection and appraisal are next — your agent will set up everything and explain what each one means.`,
         investor:         `📋 Under contract${addrStr}. Inspection + appraisal windows opened.`,
-        downsizer:        `📋 Under contract${addrStr}! Now we coordinate your current-home timing with this purchase.`,
+        downsize:        `📋 Under contract${addrStr}! Now we coordinate your current-home timing with this purchase.`,
       }, `📋 You're under contract${addrStr}! Inspection + appraisal coming up.`),
       customerIcon:        "📋",
       agentCopy:           `Under contract — start closing prep workflow`,
@@ -175,7 +184,7 @@ const TRANSLATIONS: Record<string, Builder> = {
     const date = metadata?.scheduled_date ? ` for ${new Date(String(metadata.scheduled_date)).toLocaleDateString()}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🔍 Inspection scheduled${date}. The inspector will check everything top-to-bottom; your agent will translate the report into what actually matters.`,
+        first_time: `🔍 Inspection scheduled${date}. The inspector will check everything top-to-bottom; your agent will translate the report into what actually matters.`,
         investor:         `🔍 Inspection scheduled${date}. Findings review ~2 business days post-inspection.`,
       }, `🔍 Inspection scheduled${date}. Typical findings review takes 2–3 days.`),
       customerIcon:        "🔍",
@@ -188,7 +197,7 @@ const TRANSLATIONS: Record<string, Builder> = {
 
   "inspection.completed": ({ persona }) => ({
     customerCopy: byPersona(persona, {
-      first_time_buyer: `✅ Inspection done — your agent has the report and will walk you through everything that came back. Anything that needs a conversation, we'll have it together.`,
+      first_time: `✅ Inspection done — your agent has the report and will walk you through everything that came back. Anything that needs a conversation, we'll have it together.`,
       investor:         `✅ Inspection complete. Repair Co-Pilot ready for line-item negotiation.`,
     }, `✅ Inspection complete — your agent is reviewing the report and will discuss findings.`),
     customerIcon:        "✅",
@@ -212,7 +221,7 @@ const TRANSLATIONS: Record<string, Builder> = {
     const valStr = val ? `$${Math.round(val).toLocaleString()}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: val
+        first_time: val
           ? `✅ Appraisal came back at ${valStr}. Your agent will explain what this means — most of the time it's good news.`
           : `✅ Appraisal came back. Your agent will explain what this means.`,
         investor: val
@@ -231,7 +240,7 @@ const TRANSLATIONS: Record<string, Builder> = {
 
   "financing.cleared": ({ persona }) => ({
     customerCopy: byPersona(persona, {
-      first_time_buyer: `✅ Your loan is officially cleared to close. The biggest hurdle is now behind you — you're moving toward signing day!`,
+      first_time: `✅ Your loan is officially cleared to close. The biggest hurdle is now behind you — you're moving toward signing day!`,
       investor:         `✅ Clear to close. Final walkthrough + settlement next.`,
     }, `✅ Financing cleared! One major hurdle behind you.`),
     customerIcon:        "✅",
@@ -245,9 +254,9 @@ const TRANSLATIONS: Record<string, Builder> = {
     const date = metadata?.closing_date ? ` for ${new Date(String(metadata.closing_date)).toLocaleDateString()}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🗓 Closing scheduled${date}! Your agent will set up the final walkthrough and let you know exactly what to bring on signing day.`,
+        first_time: `🗓 Closing scheduled${date}! Your agent will set up the final walkthrough and let you know exactly what to bring on signing day.`,
         investor:         `🗓 Settlement scheduled${date}. Final walkthrough + wire instructions inbound.`,
-        downsizer:        `🗓 Closing scheduled${date}. Let's also lock the move-out timing for your current home.`,
+        downsize:        `🗓 Closing scheduled${date}. Let's also lock the move-out timing for your current home.`,
       }, `🗓 Closing scheduled${date}. Final walkthrough + paperwork prep coming.`),
       customerIcon:        "🗓",
       agentCopy:           `Closing scheduled — confirm with title + walkthrough`,
@@ -261,11 +270,11 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🎉 You're a homeowner! Congratulations${addrStr}. This portal stays open for you — it'll track your equity, alert you to refinance moments, and keep you connected to your agent for the long haul.`,
+        first_time: `🎉 You're a homeowner! Congratulations${addrStr}. This portal stays open for you — it'll track your equity, alert you to refinance moments, and keep you connected to your agent for the long haul.`,
         investor:         `🎉 Acquisition closed${addrStr}. Asset live in your portal — equity + cash-flow tracking on.`,
-        downsizer:        `🎉 Closed${addrStr}. New chapter begins. Your portal will help with the transition and stay with you long-term.`,
-        luxury_buyer:     `🎉 Closing complete${addrStr}. Welcome to your new property — your concierge portal is now active.`,
-        relocation:       `🎉 Closed${addrStr} — welcome to your new city. The portal will keep you connected to your agent here.`,
+        downsize:        `🎉 Closed${addrStr}. New chapter begins. Your portal will help with the transition and stay with you long-term.`,
+        luxury:     `🎉 Closing complete${addrStr}. Welcome to your new property — your concierge portal is now active.`,
+        relocated:       `🎉 Closed${addrStr} — welcome to your new city. The portal will keep you connected to your agent here.`,
         military:         `🎉 Closed${addrStr}. Stationed in your new home — your portal moves with you wherever orders take you next.`,
       }, `🎉 Congratulations — you're closed${addrStr}! Welcome to your new home. Your portal stays open forever.`),
       customerIcon:        "🎉",
@@ -284,7 +293,7 @@ const TRANSLATIONS: Record<string, Builder> = {
         expired:   `🏠 Your home${addrStr} is live again — this time with the marketing plan we built together.`,
         fsbo:      `🏠 Your home${addrStr} is live on MLS with full agent representation. Showings start now.`,
         divorce:   `🏠 Your listing${addrStr} is live. Discreet showings only — your privacy preferences are locked in.`,
-        downsizer: `🏠 Your listing${addrStr} is live! Showings begin now — we'll keep the schedule manageable.`,
+        downsize: `🏠 Your listing${addrStr} is live! Showings begin now — we'll keep the schedule manageable.`,
       }, `🏠 Your listing${addrStr} is live on MLS! Showings start now.`),
       customerIcon:        "🏠",
       agentCopy:           `Listing went live — open house + marketing campaigns trigger`,
@@ -325,13 +334,13 @@ const TRANSLATIONS: Record<string, Builder> = {
     const savingsStr = savings ? `~$${Math.round(savings).toLocaleString()}/mo` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: savings
+        first_time: savings
           ? `💡 Mortgage rates moved — you might save ${savingsStr} every month by refinancing. No pressure; want me to walk you through it?`
           : `💡 Mortgage rates moved — there may be a refinance worth talking about. No pressure.`,
         investor:         savings
           ? `💡 Refinance opportunity: ${savingsStr} on this asset. Cash-out scenarios available.`
           : `💡 Refinance opportunity on this asset. Cash-out scenarios available.`,
-        downsizer:        savings
+        downsize:        savings
           ? `💡 Rates dropped — there may be a refinance worth exploring (~${savingsStr}). Happy to model it if helpful.`
           : `💡 Rates dropped — refinance worth a look. Happy to model it.`,
       }, savings
@@ -350,9 +359,9 @@ const TRANSLATIONS: Record<string, Builder> = {
     const equityStr = equity ? `past $${Math.round(equity).toLocaleString()}` : "to a new milestone"
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📈 Big moment — your home equity grew ${equityStr}. That's real wealth you've built. Want to talk through what's possible?`,
+        first_time: `📈 Big moment — your home equity grew ${equityStr}. That's real wealth you've built. Want to talk through what's possible?`,
         investor:         `📈 Equity milestone ${equityStr}. Cash-out + 1031 + portfolio-balance scenarios available.`,
-        downsizer:        `📈 Your equity ${equityStr}. Good moment to chat options — sell, downsize, or hold.`,
+        downsize:        `📈 Your equity ${equityStr}. Good moment to chat options — sell, downsize, or hold.`,
       }, `📈 Your home equity grew ${equityStr}!`),
       customerIcon:        "📈",
       agentCopy:           `Equity milestone for contact — perfect referral-ask moment`,
@@ -363,20 +372,23 @@ const TRANSLATIONS: Record<string, Builder> = {
   },
 
   "lifetime.anniversary": ({ metadata, persona }) => {
-    const years = metadata?.years_owned as number | undefined
+    // The ONLY emitter of ANNIVERSARY_TRIGGERED (app/api/cron/lifetime-customer-touchpoints/route.ts)
+    // writes `years_ago`, never `years_owned` — this read the wrong spelling and always fell
+    // through to the yearless copy below (§6: one vocabulary, moved onto the writer's key).
+    const years = metadata?.years_ago as number | undefined
     const yearStr = years ? `${years}-year` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: years
+        first_time: years
           ? `🎉 Happy ${yearStr} anniversary in your first home! Thinking of you — your agent reached out personally.`
           : `🎉 Happy anniversary in your first home! Thinking of you.`,
         investor:         years
           ? `🎉 ${yearStr} anniversary on this property. Performance snapshot enclosed.`
           : `🎉 Anniversary on this property. Performance snapshot enclosed.`,
-        downsizer:        years
+        downsize:        years
           ? `🎉 Happy ${yearStr} in your new place! Hope it's still feeling like home.`
           : `🎉 Happy anniversary in your new place!`,
-        luxury_buyer:     years
+        luxury:     years
           ? `🎉 ${yearStr} anniversary at your residence. A personal note from your agent.`
           : `🎉 Anniversary at your residence. A personal note from your agent.`,
       }, years
@@ -427,12 +439,11 @@ const TRANSLATIONS: Record<string, Builder> = {
     :                                          "with a thoughtful next step"
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🧠 Your agent prepared a plain-language analysis of where this stands and recommends ${actionWord}${winPct != null ? ` — ${winPct}% likelihood` : ""}. Read it on your portal.`,
+        first_time: `🧠 Your agent prepared a plain-language analysis of where this stands and recommends ${actionWord}${winPct != null ? ` — ${winPct}% likelihood` : ""}. Read it on your portal.`,
         investor:         `🧠 Negotiation analysis ready — agent recommends ${actionWord}${winPct != null ? `; ${winPct}% confidence` : ""}.`,
-        downsizer:        `🧠 Your agent has prepared a clear summary of the negotiation and a recommendation${winPct != null ? ` (${winPct}% likelihood)` : ""} for you to review.`,
-        luxury_buyer:     `🧠 Strategy analysis ready${winPct != null ? ` (${winPct}% probability)` : ""} — your agent recommends ${actionWord}.`,
-        bargain_hunter:   `🧠 We modeled the trade — agent recommends ${actionWord}${winPct != null ? `; ${winPct}% to close at this position` : ""}.`,
-        relocation:       `🧠 Negotiation plan ready — your agent recommends ${actionWord}, aligned with your timeline.`,
+        downsize:        `🧠 Your agent has prepared a clear summary of the negotiation and a recommendation${winPct != null ? ` (${winPct}% likelihood)` : ""} for you to review.`,
+        luxury:     `🧠 Strategy analysis ready${winPct != null ? ` (${winPct}% probability)` : ""} — your agent recommends ${actionWord}.`,
+        relocated:       `🧠 Negotiation plan ready — your agent recommends ${actionWord}, aligned with your timeline.`,
       }, `🧠 Your agent has prepared a negotiation analysis — read the recommendation on your portal.`),
       customerIcon:        "🧠",
       agentCopy:           `Co-Pilot strategy ready: ${action ?? "review"}${winPct != null ? ` (${winPct}% win)` : ""}`,
@@ -445,10 +456,125 @@ const TRANSLATIONS: Record<string, Builder> = {
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
+/**
+ * KERNEL SPELLING → PORTAL SPELLING (2026-09-07). lifecycle_events.event_type is
+ * written by lib/kernel/emit.ts in the KernelEvent vocabulary (`offer_submitted`,
+ * `listing_price_reduced`, …). This translator was keyed on a DOTTED portal
+ * vocabulary (`offer.submitted`) that only seven direct inserts ever wrote, so
+ * the projector's `.in("event_type", PROJECTABLE_EVENT_TYPES)` never selected a
+ * kernel-emitted row for FOURTEEN of the twenty-one kinds — the client portal
+ * stayed silent on offers, inspections, appraisals, price drops and showings.
+ * Two spellings of one idea are a defect (§6); the kernel enum is the writers'
+ * vocabulary, so the kernel spelling is accepted here and canonicalised to the
+ * portal kind the stream stores. Only kinds with NO dotted writer are aliased —
+ * aliasing one that already has a dotted writer would card the moment twice.
+ * Kinds with no kernel moment are listed in PORTAL_KINDS_WITHOUT_KERNEL_MOMENT
+ * below — unresolved, not guessed.
+ *
+ * 2026-09-08 — the above was itself incomplete: five more kinds (offer.accepted,
+ * transaction.closing_scheduled, transaction.closed, listing.went_live,
+ * lifetime.anniversary) had live kernel emitters but no alias AND weren't listed
+ * as unresolved, so they were exactly as dead as the fourteen this comment
+ * describes fixing — just not counted. Aliased below, plus the two that turned
+ * out to be genuinely unresolved (transaction.under_contract, financing.cleared —
+ * see PORTAL_KINDS_WITHOUT_KERNEL_MOMENT) are now DOCUMENTED as such instead of
+ * silently missing from both lists. All 21 TRANSLATIONS kinds are now accounted
+ * for: 15 aliased, 6 documented as having no kernel moment.
+ *
+ * 2026-09-08 (hidden-wire hunt, round 2) — the two "genuinely unresolved" kinds above
+ * were re-examined and BUILT rather than left dead (CLAUDE.md §1.2): BUYER_UNDER_CONTRACT
+ * is now emitted at the buyer-side transaction-creation moment (lib/transactions/
+ * offer-bridge.ts createTransactionFromOffer, gated on representsBuyer so a pure
+ * seller-side deal — which has no buyer contact of ours — never fires it), and
+ * FINANCING_CLEAR_TO_CLOSE is now emitted where clear-to-close is actually issued
+ * (app/actions/lender-portal-actions.ts issueClearToClose). Both aliased below. Three
+ * more of the six PORTAL_KINDS_WITHOUT_KERNEL_MOMENT entries were also built: a new
+ * KernelEvent.INSPECTION_COMPLETED (inspection report-received, distinct from
+ * INSPECTION_ORDERED) emitted from app/actions/transaction-inspections.ts
+ * markInspectionCompleteAction; KernelEvent.EQUITY_MILESTONE / REFINANCE_OPPORTUNITY
+ * emitted from lib/kernel/equity-trigger.ts runEquityTrigger at the same decision point
+ * that already pushes the transparency_updates value card (a different table this
+ * projector never read — the kernel event is the missing half, not a duplicate: the
+ * card and the event now both flow from one crossing). The sixth,
+ * portal.message_sent_by_agent, turned out not to be moment-less either: CLIENT_PORTAL_
+ * MESSAGE_SENT was ALREADY emitted (app/actions/portal-messages.ts sendPortalMessage)
+ * but through processKernelEvent directly, which fans out notifications + the reactor
+ * WITHOUT ever inserting a lifecycle_events row — this projector's only input — so the
+ * event was invisible to it regardless of aliasing. Switched to emitKernelEvent (which
+ * does the insert, then calls processKernelEvent itself) and given metadata.direction so
+ * translateEvent below can resolve it to this kind ONLY for the agent→client direction.
+ * All SEVEN of that round's kinds are now accounted for as built, not just documented.
+ */
+export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
+  offer_submitted:            "offer.submitted",
+  offer_counter_sent:         "offer.countered",
+  offer_os_countered:         "offer.countered",
+  offer_rejected:             "offer.rejected",
+  inspection_ordered:         "inspection.scheduled",
+  inspection_completed:       "inspection.completed",       // app/actions/transaction-inspections.ts markInspectionCompleteAction
+  appraisal_ordered:          "appraisal.ordered",
+  appraisal_completed:        "appraisal.completed",
+  listing_price_reduced:      "listing.price_reduced",
+  listing_showing_completed:  "listing.showing_completed",
+  showing_completed:          "listing.showing_completed",
+  negotiation_strategy_ready: "negotiation.strategy_ready",
+  offer_strategy_recommended: "negotiation.strategy_ready",
+  contract_signed:            "portal.document_signed",
+  // 2026-09-08 (lane W hidden-wire hunt) — SEVEN of the TRANSLATIONS entries below had
+  // neither a kernel alias here NOR a PORTAL_KINDS_WITHOUT_KERNEL_MOMENT entry: the header's
+  // "unresolved, not guessed" bookkeeping had gone stale since this map was introduced, so
+  // these dotted kinds were as unreachable as the fourteen the 2026-09-07 fix addressed —
+  // just uncounted. Five have a real, verified live emitter (checked its metadata against
+  // the builder's reads before aliasing):
+  offer_accepted:             "offer.accepted",             // lib/transactions/offer-bridge.ts — builder reads no metadata
+  closing_scheduled:          "transaction.closing_scheduled", // lib/application/transactions.ts emitClosingScheduled — writes closing_date, matches the read
+  transaction_closed:         "transaction.closed",          // lib/kernel/transactions.ts closeTransactionCommand — builder reads no metadata
+  listing_published:          "listing.went_live",           // app/actions/listing-lifecycle-core.ts executeListingTransition — builder reads no metadata
+  anniversary_triggered:      "lifetime.anniversary",        // app/api/cron/lifetime-customer-touchpoints — key fixed above (years_ago)
+  // 2026-09-08 (hidden-wire hunt, round 2) — built, not merely aliased (see header comment):
+  buyer_under_contract:       "transaction.under_contract",  // lib/transactions/offer-bridge.ts — writes property_address + closing_date, matches the read
+  financing_clear_to_close:   "financing.cleared",           // app/actions/lender-portal-actions.ts issueClearToClose — builder reads no metadata
+  equity_milestone:           "wealth.equity_milestone",     // lib/kernel/equity-trigger.ts runEquityTrigger — writes estimated_equity, matches the read
+  refinance_opportunity:      "wealth.refinance_opportunity", // lib/kernel/equity-trigger.ts runEquityTrigger — writes monthly_savings_estimate, matches the read
+  // client_portal_message_sent DOES get a canonical-storage alias (so a projected row's
+  // event_type reads "portal.message_sent_by_agent" like every other portal kind), but
+  // translateEvent below gates it on metadata.direction BEFORE this map is ever
+  // consulted for it — a client_to_agent row returns null translation and the
+  // projector skips it without reaching canonicalPortalEventType. This map cannot see
+  // metadata itself, which is why the gate has to live in translateEvent, not here.
+  client_portal_message_sent: "portal.message_sent_by_agent",
+}
+
+/**
+ * Portal kinds no KernelEvent carries (§1: "unresolved", not guessed). Reachable only
+ * by a dotted direct insert, which nothing writes today.
+ */
+export const PORTAL_KINDS_WITHOUT_KERNEL_MOMENT: readonly string[] = [
+  // portal.message_sent_by_agent is NOT here: CLIENT_PORTAL_MESSAGE_SENT now carries
+  // metadata.direction (app/actions/portal-messages.ts sendPortalMessage) and
+  // translateEvent below projects it onto this kind ONLY for the agent→client
+  // direction — a real kernel moment, gated by metadata rather than aliased outright.
+]
+
+/** The portal kind a lifecycle_events.event_type projects as (identity for portal spellings). */
+export function canonicalPortalEventType(eventType: string): string {
+  return KERNEL_EVENT_TO_PORTAL[eventType] ?? eventType
+}
+
 export function translateEvent(input: TranslatorInput): TranslatedEvent | null {
-  const builder = TRANSLATIONS[input.eventType]
+  // client_portal_message_sent is direction-agnostic at the kernel layer — the SAME
+  // event fires for both agent_to_client and client_to_agent sends (one chokepoint,
+  // app/actions/portal-messages.ts sendPortalMessage). Only the agent→client direction
+  // is "your agent sent you a message"; a client→agent send has no customer-facing card.
+  // Checked here (not in KERNEL_EVENT_TO_PORTAL) because the decision needs
+  // input.metadata, which that string→string alias map cannot see.
+  if (input.eventType === "client_portal_message_sent") {
+    if (input.metadata?.direction !== "agent_to_client") return null
+    return TRANSLATIONS["portal.message_sent_by_agent"]?.(input) ?? null
+  }
+  const builder = TRANSLATIONS[canonicalPortalEventType(input.eventType)]
   if (!builder) return null
   return builder(input)
 }
 
-export const PROJECTABLE_EVENT_TYPES: string[] = Object.keys(TRANSLATIONS)
+export const PROJECTABLE_EVENT_TYPES: string[] = [...Object.keys(TRANSLATIONS), ...Object.keys(KERNEL_EVENT_TO_PORTAL)]

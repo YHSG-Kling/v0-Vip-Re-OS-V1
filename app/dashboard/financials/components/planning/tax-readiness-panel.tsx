@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { AlertTriangle, Sparkles, Loader2, Calendar, Copy, Check } from "lucide-react"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"

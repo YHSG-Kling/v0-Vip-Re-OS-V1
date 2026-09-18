@@ -4,7 +4,11 @@ import { useState, useTransition } from "react"
 import Link                         from "next/link"
 import { dismissFatigueAlert }      from "@/app/actions/buyer-fatigue"
 
-type RiskLevel = "fresh" | "watch" | "warning" | "critical"
+// VOCABULARY: the four values the live CHECK on buyer_fatigue_scores.risk_level
+// admits — fresh | moderate | high | critical. This file used to filter on
+// watch/warning, written by a second scorer whose rows the database rejected
+// outright, so these columns and filter tabs were permanently empty.
+type RiskLevel = "fresh" | "moderate" | "high" | "critical"
 
 interface BuyerRow {
   contact_id:           string
@@ -49,8 +53,8 @@ interface Props {
 }
 
 const RISK_META: Record<string, { label: string; bar: string; badge: string }> = {
-  watch:    { label: "Watch",    bar: "bg-amber-400",  badge: "bg-amber-100 text-amber-800" },
-  warning:  { label: "Warning",  bar: "bg-orange-500", badge: "bg-orange-100 text-orange-800" },
+  moderate: { label: "Watch",    bar: "bg-amber-400",  badge: "bg-amber-100 text-amber-800" },
+  high:     { label: "Warning",  bar: "bg-orange-500", badge: "bg-orange-100 text-orange-800" },
   critical: { label: "Critical", bar: "bg-red-600",    badge: "bg-red-100 text-red-800" },
   fresh:    { label: "Fresh",    bar: "bg-emerald-500",badge: "bg-emerald-100 text-emerald-800" },
 }
@@ -113,8 +117,8 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
       <div className="grid grid-cols-4 gap-4">
         {[
           { label: "Total Monitored", value: buyers.length, color: "text-foreground" },
-          { label: "Watch",    value: buyers.filter(b => b.risk_level === "watch").length,    color: "text-amber-700" },
-          { label: "Warning",  value: buyers.filter(b => b.risk_level === "warning").length,  color: "text-orange-700" },
+          { label: "Watch",    value: buyers.filter(b => b.risk_level === "moderate").length, color: "text-amber-700" },
+          { label: "Warning",  value: buyers.filter(b => b.risk_level === "high").length,     color: "text-orange-700" },
           { label: "Critical", value: buyers.filter(b => b.risk_level === "critical").length, color: "text-red-700" },
         ].map(stat => (
           <div key={stat.label} className="rounded-lg border border-border bg-card px-4 py-3">
@@ -136,7 +140,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
                 ? `${alert.contacts.first_name} ${alert.contacts.last_name}`
                 : "Unknown buyer"
               const contactId = alert.contacts?.id ?? alert.contact_id
-              const meta = RISK_META[alert.risk_level ?? "watch"] ?? RISK_META.watch
+              const meta = RISK_META[alert.risk_level ?? "moderate"] ?? RISK_META.moderate
               return (
                 <div
                   key={alert.id}
@@ -183,7 +187,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-foreground">All At-Risk Buyers</h2>
           <div className="flex items-center gap-2">
-            {["all", "watch", "warning", "critical"].map(f => (
+            {["all", "moderate", "high", "critical"].map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -220,7 +224,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
                   const c    = buyer.contacts
                   const name = c ? `${c.first_name} ${c.last_name}` : "—"
                   const id   = c?.id ?? buyer.contact_id
-                  const meta = RISK_META[buyer.risk_level] ?? RISK_META.watch
+                  const meta = RISK_META[buyer.risk_level] ?? RISK_META.moderate
                   return (
                     <tr key={buyer.contact_id} className="hover:bg-muted/20 transition-colors">
                       <td className="px-4 py-3">

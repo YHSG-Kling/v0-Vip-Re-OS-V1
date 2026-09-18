@@ -23,8 +23,64 @@ import {
   CheckCircle2,
 } from "lucide-react"
 import { CreateTeamDialog } from "./create-team-dialog"
+import { getTeamDashboard } from "@/app/actions/multi-persona"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { resolveUserTeam, resolveTeamAgentIds } from "@/lib/kernel/resolve-user-team"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WHO MAY LOAD THIS PAGE, AND WHOSE MONEY THEY SEE ON IT
+//
+// This is a MANAGEMENT console top to bottom: every panel on it — the active
+// contact count, the brokerage's open deals, the stale-contact queue, the
+// overdue-task queue, the handoff queue, the member roster — is somebody else's
+// work aggregated across the whole brokerage. None of it is an individual's own
+// book. It had no role gate at all, so a `contact`, a `lender` and a `vendor`
+// account could load the brokerage's operating console; m431 takes their
+// commission rows away, but a portal account has no business on this surface at
+// all, and zero-rowing them is not the same as keeping them off it.
+//
+// PORTAL_ROLES are therefore redirected rather than merely emptied — the owner's
+// ruling is "contacts, lenders and vendors do not see commission or any
+// financials but only their own", and their own records live on their own
+// portals. `system` is the AI-ISA service identity, which has never signed in
+// and acts through the service client; it has no dashboard.
+const PORTAL_ROLES = new Set(["contact", "lender", "vendor", "system"])
+
+/** Whose GCI board this viewer is entitled to, mirroring the four tiers m431
+ *  puts in RLS on `agent_commissions`. The page must never show a board WIDER
+ *  than the policy allows, and — the half that is easy to get wrong — must never
+ *  render a board the policy has emptied as though the brokerage simply had no
+ *  commissions. A refused or filtered read is not "no data". */
+type BoardScope = "brokerage" | "team" | "self" | "none"
+
+function boardScopeFor(userType: string, platformRole: string | null): BoardScope {
+  // Platform tier — can_read_tenant_financials() is superadmin/admin/support and
+  // marketing is deliberately NOT in it (m427). Read off `users.platform_role`,
+  // because platform staff are marked there and not by user_type: a support
+  // operator whose user_type is 'agent' would otherwise be scoped to themselves
+  // on a page whose whole purpose for them is looking at a tenant.
+  if (platformRole && ["superadmin", "admin", "support"].includes(platformRole)) return "brokerage"
+  // Brokerage tier — is_brokerage_admin() plus the legacy superadmin user_type
+  // marker. These are the roles app/dashboard/brokerage/page.tsx already gates
+  // itself to, and the whole-brokerage board is unchanged for them.
+  if (isAdminOrBroker({ user_type: userType })) {
+    return "brokerage"
+  }
+  // Team tier — the owner's ruling: "teams should only see their own board."
+  if (["team_lead", "team_leader"].includes(userType)) return "team"
+  // Agent tier — m431 leaves an agent exactly their own rows, so a "leaderboard"
+  // is by construction a board of one. Rendering it as a ranked list of a single
+  // person is a lie about what it is; rendering it as their own number is not.
+  if (["agent", "isa"].includes(userType)) return "self"
+  // tc and compliance_officer: no commission ledger read at all after m431. They
+  // keep this page for the operating queues and simply do not get a money panel —
+  // showing them an empty leaderboard would report "the brokerage earned nothing"
+  // when the truth is "you may not see it".
+  return "none"
+}
 
 export const metadata = {
   title: "Team Dashboard | Operations",
@@ -43,18 +99,40 @@ export default async function TeamDashboard() {
 
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  const identity = await ensureAgentContextInPlace()
   const { data: userData } = await supabase
     .from("users")
-    .select("brokerage_id, user_type, first_name, last_name")
+    .select("brokerage_id, user_type, platform_role, first_name, last_name")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!userData?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = userData.brokerage_id
-  const isTeamLead = ["team_lead", "team_manager", "broker", "admin", "superadmin"].includes(
-    userData.user_type ?? ""
-  )
+  const userType = userData.user_type ?? ""
+
+  // The role gate this page never had. See PORTAL_ROLES above.
+  if (PORTAL_ROLES.has(userType)) redirect("/dashboard")
+
+  const boardScope = boardScopeFor(userType, userData.platform_role ?? null)
+  // Unchanged semantics: this flag has always gated the MANAGEMENT affordances
+  // (create a team, open Members & Splits), not the leaderboard. It is now
+  // derived from the same tier model so the two cannot drift apart.
+  const isTeamLead = boardScope === "brokerage" || boardScope === "team"
+
+  // THE TEAM, resolved ONCE through lib/kernel/resolve-user-team.ts — the same
+  // four-source precedence public.resolve_team_id() enforces in RLS, so the rows
+  // this page asks for and the rows the policy returns are chosen by identical
+  // logic. Only a team-tier viewer needs it.
+  const viewerTeam = boardScope === "team" ? await resolveUserTeam(supabase, user.id) : null
+  const viewerTeamAgentIds =
+    viewerTeam?.teamId ? (await resolveTeamAgentIds(supabase, viewerTeam.teamId)).agentIds : []
 
   // Fetch all dashboard data in parallel — Promise.allSettled so no single failure blocks render
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -62,6 +140,32 @@ export default async function TeamDashboard() {
   const fourteenDaysAgoStr = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
   const todayStr = new Date().toISOString().split("T")[0]
   const weekEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+
+  // THE GCI BOARD, scoped in the QUERY and not left to RLS alone.
+  //
+  // m431 already narrows this table per tier, so a team lead would get their own
+  // team's rows from an unscoped brokerage query. Asking for exactly what the
+  // viewer is entitled to anyway is what makes the page SAY what it means: the
+  // filter and the policy are built from the same resolver, the surface stops
+  // depending on a policy staying narrow to stay correct, and — the part that
+  // matters most — the page can tell "you are entitled to nothing here" apart
+  // from "there were no commissions", which an unscoped query never can.
+  //
+  // `.in("agent_id", [])` for a team lead with no resolvable team is deliberate
+  // and returns zero rows: NULL means NOT ON A TEAM and is fail-closed, so an
+  // unresolved team must never silently fall back to the brokerage's book. The
+  // card says so in words instead.
+  const buildGciQuery = () => {
+    const base = supabase
+      .from("agent_commissions")
+      .select("agent_id, gross_commission, status")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", thirtyDaysAgo)
+      .eq("status", "paid")
+    if (boardScope === "team") return base.in("agent_id", viewerTeamAgentIds)
+    if (boardScope === "self") return base.eq("agent_id", identity.agentId ?? "00000000-0000-0000-0000-000000000000")
+    return base
+  }
 
   const [
     membersResult,
@@ -76,13 +180,14 @@ export default async function TeamDashboard() {
     upcomingShowingsResult,
     agentUsersResult,
     activityTrendResult,
+    agentRowsResult,
   ] = await Promise.allSettled([
     // 1. Team members
     supabase
       .from("users")
       .select("id, first_name, last_name, email, user_type, created_at")
       .eq("brokerage_id", brokerageId)
-      .in("user_type", ["agent", "broker", "admin", "team_lead", "team_manager", "tc", "isa"])
+      .in("user_type", ["agent", "broker", "admin", "team_lead", "tc", "isa"])
       .order("first_name"),
 
     // 2. Teams in this brokerage
@@ -148,13 +253,17 @@ export default async function TeamDashboard() {
       .gte("close_date", todayStr)
       .lte("close_date", weekEnd),
 
-    // 9. Leaderboard — agent_commissions 30d
-    supabase
-      .from("agent_commissions")
-      .select("agent_id, gross_commission, status")
-      .eq("brokerage_id", brokerageId)
-      .gte("created_at", thirtyDaysAgo)
-      .eq("status", "paid"),
+    // 9. GCI board — agent_commissions 30d, scoped to what this viewer may see.
+    //    Skipped entirely for the `none` tier (tc / compliance_officer): they
+    //    read no commission row after m431, and a query that returns zero rows
+    //    because of RLS is indistinguishable from a brokerage that earned
+    //    nothing. Not asking is the honest version.
+    boardScope === "none"
+      ? Promise.resolve({
+          data: [] as Array<{ agent_id: string | null; gross_commission: number | null; status: string | null }>,
+          error: null as { message: string } | null,
+        })
+      : buildGciQuery(),
 
     // 10. Upcoming showings (next 7 days)
     supabase
@@ -183,11 +292,42 @@ export default async function TeamDashboard() {
       .eq("brokerage_id", brokerageId)
       .gte("snapshot_date", fourteenDaysAgoStr)
       .order("snapshot_date", { ascending: true }),
+
+    // 13. agents.id -> users.id, for the board. `agent_commissions.agent_id` is
+    //     an AGENTS id (FK → agents.id, verified against the live schema), and
+    //     the board looked it up in the `users` rows loaded by query 1. Those id
+    //     spaces never overlap, so EVERY entry rendered "Unknown" — a board of
+    //     anonymous numbers. This is the missing join.
+    supabase
+      .from("agents")
+      .select("id, user_id")
+      .eq("brokerage_id", brokerageId),
   ])
 
   // Safely unpack
   const members = membersResult.status === "fulfilled" ? (membersResult.value.data ?? []) : []
   const teams = teamsResult.status === "fulfilled" ? (teamsResult.value.data ?? []) : []
+
+  // TEAM ROLL-UPS — the Teams card listed nothing but a name and a link that
+  // loops back to this page. getTeamDashboard is the roll-up that was built for
+  // exactly this row (members via team_members, that team's open deals, and the
+  // volume behind them) and had no caller anywhere. It is brokerage-scoped by
+  // requireCaller() and throws on a team outside the caller's brokerage, so each
+  // lookup is caught individually and a failed one simply renders as before.
+  const teamMetrics = new Map<
+    string,
+    { totalMembers: number; activeTransactions: number; totalVolume: number }
+  >()
+  const teamRollups = await Promise.all(
+    teams.map((t: { id: string }) =>
+      getTeamDashboard(t.id)
+        .then((d) => ({ id: t.id, metrics: d.metrics }))
+        .catch(() => null)
+    )
+  )
+  for (const r of teamRollups) {
+    if (r) teamMetrics.set(r.id, r.metrics)
+  }
   const activeContactsCount =
     activeContactsResult.status === "fulfilled" ? (activeContactsResult.value.count ?? 0) : 0
   const activeTransactions =
@@ -200,20 +340,39 @@ export default async function TeamDashboard() {
     handoffRequiredResult.status === "fulfilled" ? (handoffRequiredResult.value.data ?? []) : []
   const closingsThisWeek =
     closingsThisWeekResult.status === "fulfilled" ? (closingsThisWeekResult.value.count ?? 0) : 0
+  // A REFUSED READ IS NOT AN EMPTY LEDGER. supabase-js RESOLVES a query the
+  // database refused, so `?? []` alone reports "permission denied" as "$0
+  // earned" — on the one panel where that is least acceptable. The error is
+  // destructured and carried to the render, which says the board could not be
+  // loaded instead of asserting the brokerage made nothing.
   const commissions =
     leaderboardResult.status === "fulfilled" ? (leaderboardResult.value.data ?? []) : []
+  const commissionsError =
+    leaderboardResult.status === "rejected"
+      ? String((leaderboardResult.reason as Error)?.message ?? leaderboardResult.reason)
+      : (leaderboardResult.value.error?.message ?? null)
+  if (commissionsError) {
+    console.error(`[team-dashboard] agent_commissions read REFUSED for ${user.id}: ${commissionsError}`)
+  }
   const upcomingShowings =
     upcomingShowingsResult.status === "fulfilled" ? (upcomingShowingsResult.value.data ?? []) : []
   const agentUsers =
     agentUsersResult.status === "fulfilled" ? (agentUsersResult.value.data ?? []) : []
   const activityTrend =
     activityTrendResult.status === "fulfilled" ? (activityTrendResult.value.data ?? []) : []
+  const agentRows =
+    agentRowsResult.status === "fulfilled" ? (agentRowsResult.value.data ?? []) : []
   const maxTrendActivities = Math.max(
     1,
     ...activityTrend.map((d: any) => d.total_activities ?? 0)
   )
 
-  // Build leaderboard from commissions
+  // Build the board from commissions. `agent_commissions.agent_id` is agents.id;
+  // `members` are users rows. The two are joined through query 13 instead of
+  // being compared directly, which is what made every entry "Unknown".
+  const userIdByAgentId = new Map<string, string>(
+    (agentRows as Array<{ id: string; user_id: string }>).map((a) => [a.id, a.user_id]),
+  )
   const gciByAgent: Record<string, number> = {}
   for (const c of commissions) {
     if (!c.agent_id) continue
@@ -223,13 +382,23 @@ export default async function TeamDashboard() {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .map(([agentId, gci]) => {
-      const m = members.find((x) => x.id === agentId)
+      const m = members.find((x) => x.id === userIdByAgentId.get(agentId))
       return {
         agentId,
         name: m ? `${m.first_name} ${m.last_name}` : "Unknown",
         gci,
       }
     })
+  const selfGci = leaderboard.reduce((sum, e) => sum + e.gci, 0)
+
+  // What the money panel is actually called, and what it is a board OF. The
+  // title is part of the correctness here: the same card labelled "30-Day GCI
+  // Leaderboard" is a true statement for a broker, a narrower true statement for
+  // a team lead, and a false one for an agent who can only ever see themselves.
+  const boardTeamName =
+    boardScope === "team" && viewerTeam?.teamId
+      ? (teams.find((t: { id: string; name?: string }) => t.id === viewerTeam.teamId)?.name ?? "your team")
+      : null
 
   const agentCount = members.filter((m) => m.user_type === "agent").length
   const totalMembers = members.length
@@ -276,7 +445,7 @@ export default async function TeamDashboard() {
               </Button>
             </Link>
           )}
-          <Link href="/dashboard/leaderboard">
+          <Link href="/dashboard/motivation">
             <Button size="sm" variant="outline" className="text-xs gap-1.5">
               <Award className="h-3 w-3" />
               Leaderboard
@@ -357,7 +526,7 @@ export default async function TeamDashboard() {
               icon: Users,
               color: "text-blue-500",
               bg: "bg-blue-500/10",
-              href: "/crm/contacts",
+              href: "/crm",
             },
             {
               label: "Active Transactions",
@@ -381,7 +550,7 @@ export default async function TeamDashboard() {
               icon: Clock,
               color: "text-amber-500",
               bg: "bg-amber-500/10",
-              href: "/crm/contacts",
+              href: "/crm",
             },
             {
               label: "Handoff Required",
@@ -418,24 +587,77 @@ export default async function TeamDashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left col — Members + Leaderboard */}
           <div className="lg:col-span-2 space-y-6">
-            {/* GCI Leaderboard (30-day) */}
+            {/* 30-day GCI. Four different panels, because there are four
+                different true statements to make — see boardScopeFor(). The
+                `none` tier gets NO card at all rather than an empty one. */}
+            {boardScope === "self" ? (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Award className="h-4 w-4" />
+                    Your 30-Day GCI
+                  </CardTitle>
+                  <CardDescription>
+                    Your own gross commission income. Your earnings are yours alone — a
+                    brokerage or team board is not part of an agent&apos;s account.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {commissionsError ? (
+                    <p className="text-sm text-muted-foreground py-4 text-center">
+                      Your commissions could not be loaded. This is a read failure, not a zero.
+                    </p>
+                  ) : (
+                    <div className="flex items-baseline gap-3">
+                      <span className="text-3xl font-bold text-emerald-600">
+                        ${selfGci.toLocaleString()}
+                      </span>
+                      <Link href="/dashboard/financials" className="text-xs underline text-primary">
+                        Your financials
+                      </Link>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ) : boardScope === "none" ? null : (
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Award className="h-4 w-4" />
                     30-Day GCI Leaderboard
+                    {boardTeamName && (
+                      <Badge variant="secondary" className="text-xs">{boardTeamName}</Badge>
+                    )}
                   </CardTitle>
-                  <Link href="/dashboard/leaderboard">
+                  <Link href="/dashboard/motivation">
                     <Button variant="ghost" size="sm" className="text-xs gap-1 h-7">
                       Full Board <ArrowRight className="h-3 w-3" />
                     </Button>
                   </Link>
                 </div>
-                <CardDescription>Gross commission income — current period</CardDescription>
+                <CardDescription>
+                  {boardScope === "team"
+                    ? "Gross commission income for your team — current period"
+                    : "Gross commission income — brokerage-wide, current period"}
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                {leaderboard.length === 0 ? (
+                {commissionsError ? (
+                  <p className="text-sm text-muted-foreground py-4 text-center">
+                    The commission board could not be loaded. This is a read failure, not a zero —
+                    nothing here should be read as &ldquo;no one earned anything&rdquo;.
+                  </p>
+                ) : boardScope === "team" && !viewerTeam?.teamId ? (
+                  <p className="text-sm text-muted-foreground py-4 text-center">
+                    You are not assigned to a team yet, so there is no team board to show. A broker
+                    or admin can add you on{" "}
+                    <Link href="/dashboard/team/members" className="underline text-primary">
+                      Members &amp; Splits
+                    </Link>
+                    .
+                  </p>
+                ) : leaderboard.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-4 text-center">
                     No commission data for the last 30 days.{" "}
                     <Link href="/dashboard/financials/commissions" className="underline text-primary">
@@ -467,6 +689,7 @@ export default async function TeamDashboard() {
                 )}
               </CardContent>
             </Card>
+            )}
 
             {/* Active Transactions */}
             <Card>
@@ -666,7 +889,7 @@ export default async function TeamDashboard() {
                         </div>
                       </Link>
                     ))}
-                    <Link href="/crm/contacts">
+                    <Link href="/crm">
                       <Button variant="outline" size="sm" className="w-full text-xs mt-1">
                         Work Stale Queue
                       </Button>
@@ -791,14 +1014,27 @@ export default async function TeamDashboard() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2">
-                    {teams.map((team) => (
-                      <Link key={team.id} href="/dashboard/teams">
-                        <div className="flex items-center justify-between p-2.5 rounded-md border border-border hover:bg-muted/50 cursor-pointer">
-                          <p className="text-sm font-medium truncate">{team.name}</p>
-                          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                        </div>
-                      </Link>
-                    ))}
+                    {teams.map((team) => {
+                      const m = teamMetrics.get(team.id)
+                      return (
+                        <Link key={team.id} href="/dashboard/teams">
+                          <div className="flex items-center justify-between gap-2 p-2.5 rounded-md border border-border hover:bg-muted/50 cursor-pointer">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{team.name}</p>
+                              {m && (
+                                <p className="text-[11px] text-muted-foreground">
+                                  {m.totalMembers} member{m.totalMembers === 1 ? "" : "s"}
+                                  {" · "}
+                                  {m.activeTransactions} active deal{m.activeTransactions === 1 ? "" : "s"}
+                                  {m.totalVolume > 0 && ` · $${Math.round(m.totalVolume).toLocaleString()}`}
+                                </p>
+                              )}
+                            </div>
+                            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          </div>
+                        </Link>
+                      )
+                    })}
                   </div>
                 </CardContent>
               </Card>

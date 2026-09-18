@@ -16,6 +16,7 @@
 
 import type { EnrichmentProfileLike } from "@/lib/lead-pipeline/enrichment-column-map"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -211,7 +212,12 @@ export async function personalizeOutreach(
 ): Promise<OutreachCopy> {
   const { facts, channel, brandVoice, intent, firstName } = params
   const gw = deps.gatewayFn ?? gatewayChat
-  const model = deps.model ?? process.env.AI_GATEWAY_DEFAULT_MODEL ?? "anthropic/claude-haiku-4-20250514"
+  // Blind-spot burn-down (lane 75D, 2026-09-18) — this was a dated literal
+  // (claude-haiku-4-20250514, a retired snapshot slug — wave 59's own §6
+  // ruling: "NEVER write a dated -20250514 literal"). resolveModel("claude-haiku")
+  // derives the current alias from the ONE catalog (lib/ai/resolve-model.ts
+  // ALIASES), so this call site tracks a model swap automatically.
+  const model = deps.model ?? process.env.AI_GATEWAY_DEFAULT_MODEL ?? (resolveModel("claude-haiku") as string)
 
   const messages = buildOutreachPrompt(facts, { channel, brandVoice, intent, firstName })
 

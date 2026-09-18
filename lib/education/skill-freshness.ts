@@ -2,7 +2,7 @@
 //
 // CONTINUING-COMPETENCY / SKILL-FRESHNESS — closes the education loop. The app already tracks when an
 // agent last DEMONSTRATED a skill (an objection-handling drill in objection_training_sessions, a passed
-// quiz in agent_quiz_attempts, a finished course in agent_courses) — but competency was treated as a
+// quiz in agent_quiz_attempts, a completed module in learning_assignments) — but competency was treated as a
 // one-time achievement. Real skill DECAYS: an agent who hasn't run an objection drill in two months is
 // rusty even if they once aced it. This scores each skill's freshness from the real last-practice signal
 // so the Recruiting/Education Manager can nudge a short refresher BEFORE the skill goes stale — keeping

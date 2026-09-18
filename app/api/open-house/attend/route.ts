@@ -3,6 +3,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { persistContactConsent } from "@/lib/kernel/compliance/require-contact-consent"
+import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core"
+// THE ONE resolver (§6) — same one app/api/forms/submit/route.ts uses, now
+// shared rather than a second Accept-Language parser at this door.
+import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
 
 export async function POST(req: NextRequest) {
   try {
@@ -42,6 +46,13 @@ export async function POST(req: NextRequest) {
     const ip        = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null
     const userAgent = req.headers.get("user-agent") ?? null
 
+    // TIER 3 OF resolveContactLanguage (lib/video/multilingual-reel.ts) — the
+    // intake-time locale, captured at first touch before any preferred_language
+    // setting or transcribed call can exist. This sign-in form has no locale
+    // field of its own, so Accept-Language is the only signal — same contract
+    // as every other captureContact()-routed door (CaptureContactParams.language).
+    const capturedLanguage = resolveCapturedLanguage(null, req.headers.get("accept-language"))
+
     const supabase = createServiceClient()
 
     // Load event to get listing + brokerage + agent context. Address pulled
@@ -60,7 +71,7 @@ export async function POST(req: NextRequest) {
     // 1. Upsert contact by email (Layer 2 dedup pattern)
     const { data: existingContact } = await supabase
       .from("contacts")
-      .select("id")
+      .select("id, metadata")
       .eq("email", email)
       .eq("brokerage_id", event.brokerage_id)
       .maybeSingle()
@@ -70,15 +81,29 @@ export async function POST(req: NextRequest) {
     if (existingContact) {
       contactId = existingContact.id
       // Update with any new info
-      await supabase
+      // The error is READ. This is the RETURNING-attendee branch: it refreshes
+      // identity only and deliberately writes NO consent column (the CREATE
+      // branch below is where tcpa_consent is stamped), so a refusal does not
+      // move a consent flag — but it did return 200 while nothing changed.
+      const existingMetadata = (existingContact as { metadata?: Record<string, unknown> | null }).metadata ?? null
+      const { error: attendeeUpdateError } = await supabase
         .from("contacts")
         .update({
           first_name: firstName,
           last_name: lastName,
           phone: phone ?? undefined,
           updated_at: new Date().toISOString(),
+          // FILL-IF-EMPTY (same contract as CaptureContactParams.language / m620's
+          // tier 3): a returning attendee's earlier-captured language is never
+          // overwritten by this visit's possibly-different browser locale.
+          ...(capturedLanguage && !(existingMetadata as any)?.captured_language
+            ? { metadata: { ...(existingMetadata ?? {}), captured_language: capturedLanguage } }
+            : {}),
         })
         .eq("id", contactId)
+      if (attendeeUpdateError) {
+        console.error(`[open-house/attend] returning-attendee update REFUSED for ${contactId}:`, attendeeUpdateError.message)
+      }
     } else {
       const now = new Date().toISOString()
       const { data: newContact, error: contactErr } = await supabase
@@ -91,6 +116,15 @@ export async function POST(req: NextRequest) {
           email,
           phone: phone ?? null,
           source: "open_house",
+          // OWNER PRECEDENT (app/actions/seller-open-house.ts convertAttendeeToContact,
+          // lib/kernel/open-house.ts resolveOrCreateOpenHouseContact both already do
+          // this): an open-house attendee is touring a specific FOR-SALE listing, so
+          // they are a buyer-side lead by the nature of the visit — not a guess, the
+          // same classification every other open-house contact-creation path in this
+          // codebase already makes. This is what lets resolveWelcomeManagers route the
+          // welcome (owner ruling 2026-09-10, wave 51) to shopping_agent instead of
+          // silently matching no manager, the way an unclassified web-form contact does.
+          contact_type: "buyer",
           status: "new",
           tcpa_consent: true,
           tcpa_consent_at: now,
@@ -99,6 +133,9 @@ export async function POST(req: NextRequest) {
           tcpa_consent_source: tcpaConsentSource ?? "/open-house/sign-in",
           tcpa_consent_ip: ip,
           isa_reengage_allowed: false,
+          // TIER 3 OF resolveContactLanguage — see the ONE resolver's own doc
+          // (CaptureContactParams.language, lib/contact-pipeline/contact-capture.ts).
+          ...(capturedLanguage ? { metadata: { captured_language: capturedLanguage } } : {}),
         })
         .select("id")
         .single()
@@ -118,6 +155,17 @@ export async function POST(req: NextRequest) {
         consented: true,
         ipAddress: ip,
         userAgent: userAgent,
+      }).catch(() => {})
+
+      // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). Only on the
+      // CREATE branch — a returning attendee already went through this. This
+      // public route emits no kernel event, so nothing else would have queued
+      // it. Voided: a sign-in must never fail because of enrichment.
+      void queueContactEnrichment({
+        contactId,
+        brokerageId: event.brokerage_id,
+        triggerType: "open_house",
+        supabase,
       }).catch(() => {})
     }
 
@@ -145,18 +193,40 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. UPSERT open_house_rsvp_tracking
-    await supabase
+    //
+    // brokerage_id from the EVENT record — the same source the contact insert
+    // and the attendee insert above already use, and the record-resolved tenant
+    // the worked example at app/actions/open-house.ts:481-498 argues for. There
+    // is no caller identity to fall back on here anyway: this is a public,
+    // unauthenticated sign-in route on the service client, so the event row is
+    // the ONLY thing that knows which brokerage the walk-in belongs to.
+    //
+    // Omitting it wrote a NULL-tenant row under a
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`
+    // policy — world-readable and world-writable — and made the attendee, whose
+    // sibling insert 20 lines up IS stamped, invisible to any tracking reader
+    // that narrows by brokerage.
+    const { error: rsvpErr } = await supabase
       .from("open_house_rsvp_tracking")
       .upsert(
         {
           event_id: eventId,
           contact_id: contactId,
+          brokerage_id: event.brokerage_id,
           rsvp_status: "attended",
           source: "qr_code",
           rsvp_updated_at: new Date().toISOString(),
         },
         { onConflict: "event_id,contact_id" }
       )
+
+    // Non-fatal: the attendee row above is the load-bearing record of the
+    // check-in and it landed. Logged rather than swallowed — supabase-js
+    // RESOLVES a refused write, so the previous bare `await` could not tell a
+    // "permission denied" from a success.
+    if (rsvpErr) {
+      console.error("[open-house/attend] rsvp tracking upsert failed:", rsvpErr.message)
+    }
 
     // 4. UPDATE qr_codes scan_count + lead_count
     if (event.qr_code_id) {
@@ -199,11 +269,18 @@ export async function POST(req: NextRequest) {
     })
 
     // 6. processKernelEvent
+    // contactId + metadata.eventId are carried so lib/kernel/event-reactor.ts's
+    // OPEN_HOUSE_ATTENDEE_CAPTURED handler can hand this contact to
+    // deliverConversionWelcome (owner ruling 2026-09-10, wave 51) — previously
+    // omitted, so that reader had no way to reach the contact this same request
+    // just created or resolved.
     await processKernelEvent({
       event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
       brokerageId: event.brokerage_id,
       entityType: "listing_stage_machine",
       entityId: event.listing_id,
+      contactId,
+      metadata: { contactId, eventId, attendeeId: attendee.id },
     }).catch(() => {})
 
     // 7. Open House Concierge Mobile — fire personalized 90-second auto-text

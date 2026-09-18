@@ -37,7 +37,6 @@ import {
   generateSourceAISummaryForSource,
   getSourceDrilldown,
   type SourceFamily,
-  type SourceMetrics,
   type SourceDrilldownResult,
 } from "@/app/actions/source-analytics"
 
@@ -381,7 +380,12 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
                             {new Date(l.created_at).toLocaleDateString()}
                           </TableCell>
                           <TableCell>
-                            <Link href={`/dashboard/leads/${l.id}`}>
+                            {/* The lead detail route is app/leads/[leadId] — this
+                                linked to /dashboard/leads/, which has never existed,
+                                so every View button here 404'd. Invisible to the
+                                dangling-link sweep because the href is a template
+                                literal (recorded as a sweep blind spot, 2026-09-02). */}
+                            <Link href={`/leads/${l.id}`}>
                               <Button size="sm" variant="ghost" className="h-7 px-2 text-xs">View</Button>
                             </Link>
                           </TableCell>

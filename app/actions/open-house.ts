@@ -12,7 +12,6 @@
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { createServiceClient } from "@/lib/supabase/service"
-import { createClient } from "@/lib/supabase/server"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -432,13 +431,22 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 
     const service = createServiceClient()
 
-    // Fetch the event to get listing_id
-    const { data: event } = await service
+    // Fetch the event to get listing_id.
+    //
+    // DESTRUCTURED: supabase-js RESOLVES a refused read, so `const { data:
+    // event }` alone reports "permission denied" as `event === null`, which the
+    // next line renders as "Event not found" — an authorization failure wearing
+    // a missing-record message, sending the operator to look for a row that is
+    // sitting right there.
+    const { data: event, error: eventError } = await service
       .from("open_house_events")
       .select("id, listing_id, brokerage_id, event_date")
       .eq("id", openHouseId)
       .maybeSingle()
 
+    if (eventError) {
+      return { success: false, error: `Could not read the open house: ${eventError.message}` }
+    }
     if (!event) return { success: false, error: "Event not found" }
 
     if (event.brokerage_id !== ctx.brokerageId) {
@@ -468,10 +476,29 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
     if (!contacts || contacts.length === 0) return { success: true, sent: 0 }
 
     // Insert invitations (skip duplicates via on-conflict)
+    //
+    // THE TENANT IS THE EVENT'S, RESOLVED THROUGH THE RECORD — not the caller's.
+    // An invitation is filed against `event_id`, so the row belongs to whichever
+    // brokerage owns that open house. The two values are provably equal HERE,
+    // because the guard 25 lines above returns "Unauthorized" unless
+    // `event.brokerage_id === ctx.brokerageId` — so this is not a live
+    // cross-tenant write today. It is stamped from the record anyway for the
+    // reason settled in wave 26: of the 28 brokerage-equality readers in this
+    // class, 26 compare the CALLER's `users.brokerage_id` and 2 compare the
+    // RECORD's own, they coincide only under the tenancy invariant, and the
+    // record-based answer is also what the DB-side triggers compute. Resolving
+    // through the record satisfies both families, and it keeps this insert
+    // correct if the guard above is ever loosened (e.g. to let a platform admin
+    // send invites for a brokerage that is not their own) — at which point
+    // `ctx.brokerageId` would start filing rows across the boundary silently.
+    //
+    // `agent_id` stays the CALLER's: it records who sent the invitation, which
+    // is a different question from which tenant owns it, and `agents.id` and
+    // `brokerages.id` are disjoint id spaces that must never be bridged.
     const invitations = contacts.map((c) => ({
       event_id: openHouseId,
       contact_id: c.id,
-      brokerage_id: ctx.brokerageId,
+      brokerage_id: event.brokerage_id,
       agent_id: ctx.agentId,
       channel: "email",
       status: "pending",
@@ -505,77 +532,30 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RECORD ATTENDEE (check-in)
+// RECORD ATTENDEE — REMOVED. Both of its branches have named, working homes.
+//
+// It could never insert an attendee at all: its payload omits contact_id, and
+// open_house_attendees.contact_id is NOT NULL — probed live with the exact
+// insert shape and refused with SQLSTATE 23502. The table holds zero rows.
+//
+//   authenticated agent walk-in  ->  lib/kernel/open-house.ts
+//                                    resolveOrCreateOpenHouseContact +
+//                                    createOpenHouseAttendeeFromContact,
+//                                    wired to /dashboard/open-houses. Supplies
+//                                    contact_id and the tenant stamp this one
+//                                    omitted.
+//   public QR / kiosk check-in   ->  app/api/open-house/attend/route.ts, which
+//                                    resolves the contact, upserts on
+//                                    (event_id, contact_id) and writes the
+//                                    lifecycle event. It REQUIRES tcpaConsent
+//                                    and answers 400 without it.
+//
+// The one thing this function did that the kernel did not was gate phone
+// storage on TCPA consent. That was MOVED onto createOpenHouseAttendeeFromContact
+// (and surfaced as a consent checkbox on the walk-in form) BEFORE this was
+// removed — otherwise retiring it would have started storing walk-in mobile
+// numbers with consent recorded as false.
 // ─────────────────────────────────────────────────────────────────────────────
-
-export async function recordAttendee(
-  openHouseId: string,
-  attendeeData: {
-    name: string
-    email?: string
-    phone?: string
-    workingWithAgent?: boolean
-    interestLevel?: string
-    notes?: string
-    tcpaConsent?: boolean
-  }
-): Promise<{ success: boolean; attendeeId?: string; error?: string }> {
-  try {
-    const ctx = await getAgentContext()
-    const service = createServiceClient()
-
-    // Validate event exists
-    const { data: event } = await service
-      .from("open_house_events")
-      .select("id, brokerage_id, agent_id, status")
-      .eq("id", openHouseId)
-      .maybeSingle()
-
-    if (!event) return { success: false, error: "Event not found" }
-
-    if (ctx.isAuthenticated) {
-      // Authenticated callers must belong to the same brokerage as the event
-      if (!ctx.brokerageId || ctx.brokerageId !== event.brokerage_id) {
-        return { success: false, error: "Unauthorized" }
-      }
-      // Agents can only record attendees for their own events
-      if (ctx.userType === "agent" && ctx.agentId && ctx.agentId !== event.agent_id) {
-        return { success: false, error: "Unauthorized" }
-      }
-    } else {
-      // Unauthenticated (public QR check-in): only allow for active events
-      const activeStatuses = ["active", "live", "scheduled", "open"]
-      if (!activeStatuses.includes(event.status ?? "")) {
-        return { success: false, error: "Event is not accepting check-ins" }
-      }
-    }
-
-    const { data, error } = await service
-      .from("open_house_attendees")
-      .insert({
-        event_id: openHouseId,
-        brokerage_id: event.brokerage_id,
-        name: attendeeData.name,
-        email: attendeeData.email ?? null,
-        phone: attendeeData.tcpaConsent ? (attendeeData.phone ?? null) : null,
-        working_with_agent: attendeeData.workingWithAgent ?? false,
-        interest_level: attendeeData.interestLevel ?? null,
-        notes: attendeeData.notes ?? null,
-        check_in_time: new Date().toISOString(),
-        tcpa_consent: attendeeData.tcpaConsent ?? false,
-      })
-      .select("id")
-      .maybeSingle()
-
-    if (error) return { success: false, error: error.message }
-
-    revalidatePath("/dashboard/open-houses")
-    return { success: true, attendeeId: data?.id }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error"
-    return { success: false, error: msg }
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET AGENT LISTINGS (for the schedule dialog dropdown)

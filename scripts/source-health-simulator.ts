@@ -48,6 +48,31 @@ function main() {
   check("counts healthy vs decayed", referral?.healthy === 12 && ads?.decayed === 15)
   check("empty → empty", aggregateSourceHealth([]).length === 0)
 
+  // ── WAVE 66 — a source whose items carry a BatchData CONFIG-fault error grades
+  // 'connector_fault', never 'cheap_but_fading' (a broken connector is not a bad source) ──
+  const withFault = aggregateSourceHealth([
+    ...band("broken_connector", "at_risk", 4), ...band("broken_connector", "dormant", 4),
+  ].map((it) => ({ ...it, vendorFaultMessage: "BatchData: token ability missing" })))
+  const broken = withFault.find((s) => s.source === "broken_connector")
+  check("majority CONFIG-fault items → 'connector_fault' (not 'cheap_but_fading')", broken?.verdict === "connector_fault")
+  check("configFaultCount reflects every faulted item", broken?.configFaultCount === 8)
+
+  // POSITIVE CONTROL — the SAME decayed shape with NO vendor fault message still reads as
+  // the ordinary lead-quality verdict, proving connector_fault is not a default.
+  const withoutFault = aggregateSourceHealth(band("broken_connector", "at_risk", 4).concat(band("broken_connector", "dormant", 4)))
+  const notBroken = withoutFault.find((s) => s.source === "broken_connector")
+  check("POSITIVE CONTROL: identical decay with NO vendor fault message → ordinary verdict, configFaultCount 0",
+    notBroken?.verdict !== "connector_fault" && notBroken?.configFaultCount === 0)
+
+  // A minority of transient (non-config) vendor errors must not misclassify a genuinely
+  // lasting source as broken.
+  const mostlyHealthyWithOneTransientError = aggregateSourceHealth([
+    ...band("referral", "thriving", 8).map((it) => ({ ...it, vendorFaultMessage: "ETIMEDOUT" })),
+    ...band("referral", "warm", 4),
+  ])
+  check("a transient (non-config) vendor error never flips a lasting source to connector_fault",
+    mostlyHealthyWithOneTransientError.find((s) => s.source === "referral")?.verdict === "lasting")
+
   report()
 }
 

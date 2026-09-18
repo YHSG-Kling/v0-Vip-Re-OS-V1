@@ -9,6 +9,7 @@
 // The detector is pure/unit-tested; the celebration does the I/O.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { usd } from "@/lib/format/money"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -30,7 +31,7 @@ export function detectCapCrush(input: {
   return { crushed, justCrossed }
 }
 
-const usd = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * Celebrate an agent crushing their cap: an agent-facing notification ("you keep 100% now") + the

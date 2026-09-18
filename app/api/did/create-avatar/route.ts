@@ -20,6 +20,10 @@ import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
+import { buildExpressAvatarRequest, classifyDidError } from "@/lib/did/contract"
+import { didWebhookUrl } from "@/lib/did/webhook"
+import { didRequest } from "@/lib/did/gateway"
+import { randomUUID } from "node:crypto"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -71,6 +75,45 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Agent profile not found" }, { status: 404 })
     }
 
+    // ─── CONSENT GATE ───────────────────────────────────────────────────────
+    // A video source is a V3 Instant Avatar, and D-ID REQUIRES a verified
+    // consent statement for those: a random passcode read aloud on camera,
+    // checked by transcription, face recognition against this very footage, and
+    // voice verification. We had none of it — this route posted a source_url
+    // with no consent_id, so every video twin was submitted without the one
+    // thing the endpoint exists to require.
+    //
+    // Refused here rather than submitted-and-rejected: the agent gets a clear
+    // next step instead of a job that fails minutes later inside a cron, and no
+    // provider quota is spent on a submission that cannot succeed.
+    const { resolveConsentIdForAvatar, consentRequiredFor } = await import("@/lib/did/consent")
+    let consentId: string | null = null
+    if (consentRequiredFor(source_type)) {
+      consentId = await resolveConsentIdForAvatar(supabase, agentRow.id, source_type)
+      if (!consentId) {
+        return NextResponse.json({
+          error:
+            "Before we can build a video twin, you need to record a short consent statement — " +
+            "you'll read three words on camera so D-ID can verify it's really you.",
+          kind: "ConsentRequired",
+          needs_consent: true,
+          needs_human_action: true,
+          retryable: false,
+        }, { status: 428 })
+      }
+    }
+
+    // The avatar's NAME in the D-ID account. Operational rather than technical:
+    // without it a brokerage's avatars are all untitled and indistinguishable
+    // when something needs provider-side support.
+    let agentDisplayName: string | null = null
+    {
+      const { data: u } = await supabase
+        .from("users").select("first_name, last_name").eq("id", auth.userId).maybeSingle()
+      const full = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim()
+      agentDisplayName = full || null
+    }
+
     // ─── Usage cap on twin creations (skip when updating an existing twin) ──
     if (!twin_id) {
       const cap = await checkUsageCap({
@@ -99,36 +142,84 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ─── Submit to D-ID /avatars ──────────────────────────────────────────────
-    // D-ID creates a reusable avatar from the source video.
-    // The response is immediate but the avatar is not ready until status === "done".
-    const didRes = await fetch(`${DID_API_BASE}/avatars`, {
+    // ─── The correlation id, decided BEFORE the submit ──────────────────────
+    // user_data is how a webhook finds our row, and it can only carry an id
+    // that exists at submit time. The non-twin path used to insert the asset
+    // AFTER the D-ID call, so `assetId: twin_id ?? null` sent NOTHING for a
+    // first-time avatar — the one case where correlation matters most. The id
+    // is minted here and the insert below uses it explicitly, so every job
+    // carries `asset:<uuid>` back to a row that is guaranteed to exist.
+    const assetId: string = twin_id ?? randomUUID()
+
+    // ─── Submit to D-ID /scenes/avatars ───────────────────────────────────────
+    // D-ID creates a reusable avatar from the source video. The response is
+    // immediate; the avatar is not usable until status === "done".
+    //
+    // THE PATH. This posted to `/avatars`, which is not an endpoint D-ID
+    // documents — the Express / Instant avatar family lives under
+    // `/scenes/avatars` and returns `{id:"avt_…", object:"scene_avatar",
+    // status:"validating"}`. So every avatar an agent recorded at onboarding
+    // was submitted to a URL that answers 404, and the poll cron's
+    // `if (!statusRes.ok) continue` then swallowed the 404 on every tick — the
+    // row sat at 'pending' forever with no error anyone could see. Two silent
+    // failures stacked: a wrong path, and a poll that cannot tell "not ready"
+    // from "not there".
+    // THROUGH CONNECTION OS, not a bespoke fetch. The gateway is where auth is
+    // resolved, the response is shape-adapted (so a D-ID field rename self-heals
+    // and reports drift), and vendor spend is metered — a raw fetch here skipped
+    // all three. See lib/did/gateway.ts.
+    const didRes = await didRequest<{ id?: string }>("/scenes/avatars", {
       method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        source_url,
-        // presenter_config is optional — D-ID uses defaults when omitted
+      // THE COMPLETE CONTRACT. This used to send source_url alone. The
+      // published POST /scenes/avatars body also takes name, consent_id,
+      // webhook, user_data and is_greenscreen — so every avatar was untitled
+      // in the D-ID account (a brokerage with fifty agents got fifty untitled
+      // avatars with no way to tell whose was whose during support), and
+      // nothing correlated the job back to our row except an id we happened to
+      // store on a separate write. user_data is the field D-ID designed for
+      // exactly that: it is echoed on the job AND on the webhook.
+      body: buildExpressAvatarRequest({
+        sourceUrl: source_url,
+        assetId,
+        agentName: agentDisplayName,
+        label,
+        consentId,
+        // Completions come back on /api/webhooks/did within seconds instead of
+        // waiting up to three minutes for the poll cron. Null when there is no
+        // https origin or no DID_WEBHOOK_SECRET — buildExpressAvatarRequest
+        // drops it rather than registering a callback into the void, and the
+        // cron still finishes the job.
+        webhookUrl: didWebhookUrl(),
+        isGreenscreen: body?.is_greenscreen === true,
       }),
     })
 
-    const didData = await didRes.json()
+    const didData = didRes.data ?? { description: didRes.error }
 
     if (!didRes.ok) {
-      console.error("[create-avatar] D-ID error:", didData)
+      // Structured, per the published error contract: {kind, description}
+      // across 400 (BadRequestError | InvalidFileSizeError | InvalidFaceError),
+      // 401, 402, 403 and 451 (moderation / celebrity recognition). We used to
+      // read only `description` and drop `kind`, so "no face in that video",
+      // "out of credits" and "flagged as a public figure" all reached the agent
+      // as the same shrug — three different problems, only one of which the
+      // agent can act on, and none of which is worth retrying.
+      const failure = classifyDidError(didRes.status, didData)
+      console.error("[create-avatar] D-ID refused:", failure.operatorMessage)
       return NextResponse.json(
-        { error: didData.description ?? didData.message ?? "D-ID avatar creation failed" },
-        { status: 502 }
+        {
+          error: failure.userMessage,
+          kind: failure.kind,
+          needs_human_action: failure.needsHumanAction,
+          retryable: failure.retryable,
+        },
+        { status: failure.retryable ? 503 : 422 },
       )
     }
 
-    const did_avatar_id: string = didData.id
+    const did_avatar_id: string = (didData as { id?: string }).id ?? ""
 
     // ─── Persist on existing twin row OR create new asset ────────────────────
-    let assetId: string
     if (twin_id) {
       // Update path — wizard already created the row via createTwinDraft.
       // Verify the row belongs to this agent before mutating.
@@ -150,11 +241,12 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", twin_id)
-      assetId = twin_id
     } else {
       const { data: asset, error: insertError } = await supabase
         .from("agent_avatar_assets")
         .insert({
+          // Explicit, because this id already travelled to D-ID as user_data.
+          id: assetId,
           agent_id: agentRow.id,
           brokerage_id: agentRow.brokerage_id ?? auth.brokerageId,
           label,
@@ -172,15 +264,13 @@ export async function POST(request: NextRequest) {
         console.error("[create-avatar] DB insert error:", insertError)
         return NextResponse.json({ error: insertError?.message ?? "Insert failed" }, { status: 500 })
       }
-      assetId = asset.id
-
       // If other avatars exist, clear their is_default flag when this one is set as default
       if (set_as_default) {
         await supabase
           .from("agent_avatar_assets")
           .update({ is_default: false })
           .eq("agent_id", agentRow.id)
-          .neq("id", asset.id)
+          .neq("id", assetId)
       }
     }
 

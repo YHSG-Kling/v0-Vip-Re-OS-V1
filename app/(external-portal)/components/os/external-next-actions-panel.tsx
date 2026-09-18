@@ -10,7 +10,8 @@ import {
   FileUp,
   MessageSquare,
   Calendar,
-  ChevronRight,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
@@ -40,6 +41,11 @@ export function ExternalNextActionsPanel({
   onCompleteAction,
 }: ExternalNextActionsPanelProps) {
   const [completingId, setCompletingId] = useState<string | null>(null)
+  // "View All N Actions" had no handler and there is no all-actions route in
+  // any partner portal (vendor/lender/title have no such page), so it pointed
+  // nowhere. The full list is already in props — the control now reveals it
+  // instead of promising a screen that does not exist.
+  const [showAll, setShowAll] = useState(false)
 
   const getActionIcon = (type: NextAction["type"]) => {
     switch (type) {
@@ -156,7 +162,7 @@ export function ExternalNextActionsPanel({
           </div>
         ) : (
           <div className="space-y-2">
-            {sortedActions.slice(0, 5).map((action) => (
+            {(showAll ? sortedActions : sortedActions.slice(0, 5)).map((action) => (
               <div
                 key={action.id}
                 className="p-3 bg-muted/50 rounded-lg border-l-4"
@@ -204,9 +210,16 @@ export function ExternalNextActionsPanel({
               </div>
             ))}
             {sortedActions.length > 5 && (
-              <Button variant="ghost" size="sm" className="w-full mt-2">
-                View All {sortedActions.length} Actions
-                <ChevronRight className="h-4 w-4 ml-1" />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full mt-2"
+                onClick={() => setShowAll((v) => !v)}
+              >
+                {showAll ? "Show Top 5 Only" : `View All ${sortedActions.length} Actions`}
+                {showAll
+                  ? <ChevronUp className="h-4 w-4 ml-1" />
+                  : <ChevronDown className="h-4 w-4 ml-1" />}
               </Button>
             )}
           </div>

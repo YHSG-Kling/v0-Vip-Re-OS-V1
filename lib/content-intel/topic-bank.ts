@@ -35,6 +35,13 @@ export interface TopicCandidate {
   geo_match:        boolean
 }
 
+/**
+ * How long an office's claim on a topic holds. Long enough that two agents
+ * working the same week cannot both take it; short enough that a genuinely
+ * evergreen topic returns to the pool rather than being burned forever.
+ */
+export const OFFICE_CLAIM_WINDOW_DAYS = 30
+
 export interface RecipientLocation {
   city?:     string | null
   state?:    string | null
@@ -69,12 +76,15 @@ export async function pickTopics(args: {
    *  differently for podcast/listing-promo). Defaults to
    *  'newsletter_campaign' so existing callers keep prior behavior. */
   assetType?: string
+  /** agents.id of whoever is generating. Recorded on the claim so the office
+   *  can see WHICH agent took a topic, not merely that someone did. */
+  agentId?: string | null
 }): Promise<TopicCandidate[]> {
   const svc   = createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
 
   let q = svc.from("content_topic_bank")
-    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, performance_score, topic_posted_at, geo_relevance")
+    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, performance_score, topic_posted_at, scraped_at, geo_relevance")
     .eq("status", "fresh")
     .gt("expires_at", new Date().toISOString())
     .or(`brokerage_id.is.null,brokerage_id.eq.${args.brokerageId}`)
@@ -86,7 +96,7 @@ export async function pickTopics(args: {
   }
 
   const { data } = await q
-  const rows = (data ?? []) as Array<{
+  let rows = (data ?? []) as Array<{
     id:               string
     brokerage_id:     string | null
     topic_title:      string
@@ -96,8 +106,60 @@ export async function pickTopics(args: {
     engagement_score: number
     performance_score: number
     topic_posted_at:  string | null
+    /** Last time an ingest cron SAW this topic (every content-intel-* route
+     *  re-stamps it on re-observation; promote-to-topic-bank stamps it at
+     *  promotion). Distinct from topic_posted_at, which is when the SOURCE
+     *  published it and never moves. */
+    scraped_at:       string | null
     geo_relevance:    { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
   }>
+
+  // ── THE OFFICE CLAIM (m357) ────────────────────────────────────────────
+  // Owner's rule: an agent in the same office cannot write an article from a
+  // topic another agent there already took. The claim ledger for that already
+  // existed — content_topic_uses records (topic, brokerage, asset) — and the
+  // picker NEVER READ IT. The only de-duplication was
+  // content_topic_bank.status='used', a flag on the topic ROW, which is wrong
+  // in both directions: it does not know which office claimed the topic, and
+  // for a PLATFORM-WIDE row (brokerage_id IS NULL, shared by every brokerage)
+  // one office's use removed it from everyone else's pool permanently.
+  //
+  // Excluding on the ledger fixes both: the claim is per office, it expires,
+  // and one brokerage can never drain another's bank.
+  if (rows.length > 0) {
+    const since = new Date(Date.now() - OFFICE_CLAIM_WINDOW_DAYS * 86_400_000).toISOString()
+    const { data: claimed, error: claimErr } = await svc
+      .from("content_topic_uses")
+      .select("topic_id, agent_id, asset_type")
+      .eq("brokerage_id", args.brokerageId)
+      .gte("used_at", since)
+      .in("topic_id", rows.map((r) => r.id))
+    if (claimErr) {
+      // Do NOT silently fall through to "nothing is claimed" — that is the
+      // failure mode where two agents in one office publish the same article
+      // and nobody can tell why. Say so, and keep the safer behaviour.
+      console.error("[topic-bank] office claim lookup failed, topics may repeat:", claimErr.message)
+    } else {
+      // THE CLAIM SAYS WHO (m357), and this is where WHO is read. The owner's
+      // rule is that ANOTHER agent in the office cannot take a topic this one
+      // took. The asking agent's OWN claim on a DIFFERENT asset type is not
+      // that conflict — it is the omnipresence fan-out (one topic → blog →
+      // podcast → postcard by the same author) that lib/agents/marketing-agent.ts
+      // explicitly asks for. Blocking it made an agent's own article poison
+      // their own podcast for 30 days. Everything else still blocks: a claim
+      // by another agent, a claim with no recorded agent (fail closed — an
+      // anonymous claim is treated as someone else's), the same agent
+      // repeating the same asset type, or an asker with no agents.id.
+      const askerAgent    = args.agentId ?? null
+      const askedAssetType = args.assetType ?? "newsletter_campaign"
+      const taken = new Set<string>()
+      for (const c of (claimed ?? []) as Array<{ topic_id: string; agent_id: string | null; asset_type: string | null }>) {
+        const ownCrossFormat = askerAgent !== null && c.agent_id === askerAgent && c.asset_type !== askedAssetType
+        if (!ownCrossFormat) taken.add(c.topic_id)
+      }
+      if (taken.size > 0) rows = rows.filter((r) => !taken.has(r.id))
+    }
+  }
 
   // Wave 23 — per-persona performance score lookup. ONE query over the
   // candidate set instead of per-topic round-trips inside the scoring map.
@@ -131,9 +193,23 @@ export async function pickTopics(args: {
   const now = Date.now()
   const scored = rows.map((r) => {
     const isLocal = r.brokerage_id !== null
-    const ageDays = r.topic_posted_at ? Math.max(0, (now - Date.parse(r.topic_posted_at)) / 86_400_000) : 14
+    // FRESHNESS DECAY, on the column that actually moves. topic_posted_at is
+    // the source's publish date and never changes; scraped_at is the last time
+    // an ingest cron re-confirmed the topic was still surfacing. A topic the
+    // crons stopped seeing a week ago is a conversation that ended, however
+    // recent its original post — so the scrape age decays the score (2 pts per
+    // day past 7, capped at −10, mirroring the +10 fresh boost). scraped_at is
+    // also the fallback age when the source gave no publish date: the old
+    // hardcoded 14 assumed every undated topic was stale.
+    const scrapeAgeDays = r.scraped_at ? Math.max(0, (now - Date.parse(r.scraped_at)) / 86_400_000) : null
+    const ageDays = r.topic_posted_at
+      ? Math.max(0, (now - Date.parse(r.topic_posted_at)) / 86_400_000)
+      : (scrapeAgeDays ?? 14)
     const localBoost = isLocal ? 15 : 0
     const freshBoost = ageDays <= 7 ? 10 : 0
+    const staleDecay = scrapeAgeDays !== null && scrapeAgeDays > 7
+      ? -Math.min(10, Math.round((scrapeAgeDays - 7) * 2))
+      : 0
     const geoMatch   = matchesGeo(r.geo_relevance, args.recipientLocation)
     const geoBoost   = geoMatch ? 20 : 0
     // Wave 19 — performance feedback loop. content_topic_uses → engagement
@@ -149,7 +225,7 @@ export async function pickTopics(args: {
       : (r.performance_score ?? 0)
     return {
       ...r,
-      adjusted_score: r.engagement_score + localBoost + freshBoost + geoBoost + perfBoost,
+      adjusted_score: r.engagement_score + localBoost + freshBoost + staleDecay + geoBoost + perfBoost,
       is_brokerage_local: isLocal,
       geo_match: geoMatch,
     }
@@ -158,9 +234,26 @@ export async function pickTopics(args: {
   .slice(0, limit)
 
   if (args.markUsed && scored.length > 0) {
-    await svc.from("content_topic_bank")
-      .update({ status: "used" })
-      .in("id", scored.map((s) => s.id))
+    // CLAIM, DON'T CONSUME. Flipping status='used' on a PLATFORM-WIDE row
+    // (brokerage_id IS NULL) took the topic away from every other brokerage
+    // forever — a shared bank drained by whoever asked first. Only a row this
+    // brokerage OWNS may be retired outright; a shared one is claimed in the
+    // office-scoped ledger, which is what the exclusion above reads.
+    const ownRows = scored.filter((t) => t.brokerage_id === args.brokerageId).map((t) => t.id)
+    if (ownRows.length > 0) {
+      const { error } = await svc.from("content_topic_bank")
+        .update({ status: "used" })
+        .in("id", ownRows)
+        .eq("brokerage_id", args.brokerageId)
+      if (error) console.error("[topic-bank] markUsed failed:", error.message)
+    }
+    const { logTopicUses } = await import("./performance-aggregator")
+    await logTopicUses({
+      topicIds:    scored.map((t) => t.id),
+      brokerageId: args.brokerageId,
+      assetType:   (args.assetType ?? "newsletter_campaign") as never,
+      agentId:     args.agentId ?? null,
+    })
   }
 
   return scored.map((s) => ({

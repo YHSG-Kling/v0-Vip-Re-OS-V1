@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { CONTRACT_ESIGN_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
 import { redirect } from "next/navigation"
 import { DocumentsClient } from "./DocumentsClient"
 import { syncAllForContact } from "@/lib/transactions/sync-from-provider"
@@ -68,7 +69,16 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
         .select(`id, transaction_doc_id, extraction_method, extracted_fields,
                  confidence_score, processing_status, processed_at, error_message`)
         .in("transaction_doc_id", txDocIds)
-        .eq("processing_status", "completed")
+        // FAILED extractions belong on this list too. This filter was
+        // `.eq("processing_status", "completed")` while the select asks for
+        // `error_message` — a completed extraction has no error by definition,
+        // so the column could not have been non-null on a single row this query
+        // returns. (It was doubly dead until now: neither writer of this table
+        // logged a failure at all — see the catch block at
+        // app/actions/ai-transaction-documents.ts, which now does.) A client
+        // whose document could not be read was shown nothing, which reads as
+        // "still processing" forever.
+        .in("processing_status", ["completed", "failed"])
         .order("processed_at", { ascending: false })
     : { data: [] }
 
@@ -93,7 +103,10 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
     .from("contract_signatures")
     .select("id, contract_type, provider_name, document_url, sent_at, esign_status")
     .eq("brokerage_id", contact.brokerage_id)
-    .in("esign_status", ["sent", "pending", "out_for_signature"])
+    // 'out_for_signature' is not a value this ladder has, and the set omitted
+    // 'viewed' and 'agent_signed' — so an envelope the contact OPENED, or one
+    // their agent had already signed, dropped off their own to-sign list.
+    .in("esign_status", [...CONTRACT_ESIGN_AWAITING_STATUSES])
     .order("sent_at", { ascending: false })
     .limit(20)
 

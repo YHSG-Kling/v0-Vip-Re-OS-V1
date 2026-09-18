@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { createCallbackTask } from "@/lib/ai-isa/callback-task"
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
@@ -33,6 +34,32 @@ export async function POST(request: NextRequest) {
   if (!agentUserId) return NextResponse.json({ ok: true, note: "No agent assigned" })
 
   const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "A portal user"
+
+  // THE DURABLE HALF — owner ruling (wave 55): "the ai assistant or
+  // receptionist needs to be able to make a task to call a person back and
+  // then do the call back when it is time." This button used to ONLY fire a
+  // notification: if the assigned agent missed it (asleep, off-shift, phone
+  // silenced), the portal contact who asked for a callback simply never got
+  // one — nothing else was watching. createCallbackTask writes the SAME
+  // durable `tasks` row the reception voice lane writes, so
+  // /api/cron/ai-callback-dispatch places the call autonomously even if the
+  // human notification goes unread. Best-effort: a missing phone number just
+  // means there is nothing to dial — the human notification above still fires.
+  if (contact.phone) {
+    const callback = await createCallbackTask(serviceClient, {
+      brokerageId: contact.brokerage_id,
+      contactId,
+      phone: contact.phone,
+      whenPhrase: "as soon as possible",
+      reason: "Requested a callback from their client portal",
+      voiceCallId: null,
+      assigneeType: "ai_isa",
+      assignedToAgentId: contact.agent_id ?? null,
+    })
+    if (!callback.ok) {
+      console.error("[portal/escalate] callback task write refused:", callback.error)
+    }
+  }
 
   await serviceClient.from("notifications").insert({
     user_id: agentUserId,

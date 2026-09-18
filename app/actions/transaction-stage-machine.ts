@@ -8,6 +8,7 @@ import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { closeNegotiationStrategyForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { revalidatePath } from "next/cache"
+import { isTransactionStatus } from "@/lib/transactions/transaction-status"
 
 // Helper: resolve session user + caller brokerage; verifies the
 // caller-supplied brokerageId matches the session brokerage. The
@@ -105,6 +106,16 @@ export async function advanceTransactionStage(params: {
       .maybeSingle()
     if (!current) return { success: false, error: "Transaction not found in your brokerage" }
 
+    // FAIL CLOSED (§4) — STAGE_TO_STATUS_MAP lives in transaction-stages.ts, a SEPARATE
+    // vocabulary file from transaction-status.ts's TRANSACTION_STATUSES (§6: two files
+    // naming one column). Nothing previously cross-checked that every mapped value is
+    // still a value the CHECK constraint admits; a drift here would have reached the
+    // database as an opaque constraint violation instead of a named, actionable refusal.
+    const mappedStatus = STAGE_TO_STATUS_MAP[params.targetStage]
+    if (!isTransactionStatus(mappedStatus)) {
+      return { success: false, error: `Stage "${params.targetStage}" maps to an unrecognized transaction status "${mappedStatus}" — refusing the override rather than writing an invalid status` }
+    }
+
     // Force the transition. Keep status (lowercase coarse state) in lockstep with stage — the
     // override previously wrote only stage, leaving status stale (e.g. stage CLOSING_PREP while
     // status still under_contract), which is what the dashboards + status filters read.
@@ -112,7 +123,7 @@ export async function advanceTransactionStage(params: {
       .from("transactions")
       .update({
         stage: params.targetStage,
-        status: STAGE_TO_STATUS_MAP[params.targetStage],
+        status: mappedStatus,
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.transactionId)
@@ -178,6 +189,29 @@ export async function advanceTransactionStage(params: {
     }).catch((error) => {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
+
+    // LIFECYCLE RE-SCRAPE SIGNAL — a deal going under contract is one of the
+    // named moments contact-signal-rescrape exists for (refresh the property's
+    // AVM now that a price is real, instead of waiting for the daily sweep).
+    // Best-effort + fire-and-forget: enrichment cost/failure never touches the
+    // stage transition. Contact resolved from the transaction row, never params.
+    if (params.targetStage === TRANSACTION_STAGES.UNDER_CONTRACT) {
+      void (async () => {
+        try {
+          const svcClient = createServiceClient()
+          const { data: txn } = await svcClient.from("transactions")
+            .select("contact_id, buyer_contact_id, seller_contact_id")
+            .eq("id", params.transactionId).eq("brokerage_id", auth.brokerageId).maybeSingle()
+          const contactId = (txn as any)?.seller_contact_id ?? (txn as any)?.contact_id ?? (txn as any)?.buyer_contact_id ?? null
+          if (contactId) {
+            const { triggerSignalRescrape } = await import("@/lib/lead-pipeline/contact-signal-rescrape")
+            await triggerSignalRescrape({ contactId, signal: "deal_under_contract" })
+          }
+        } catch (err) {
+          console.error("[transaction-stage-machine] under-contract rescrape failed (non-fatal):", err)
+        }
+      })()
+    }
 
     // SPHERE MANAGER referral closing loop — when the deal CLOSES, close any matching
     // open referral, credit the partner, and propose a partner thank-you into the gate.
@@ -342,34 +376,10 @@ export async function markTransactionLost(params: {
 /**
  * Get the current stage and allowed next stages for a transaction.
  */
-export async function getTransactionStageInfo(params: {
-  transactionId: string
-  brokerageId: string
-}): Promise<{
-  currentStage: TransactionStage | null
-  allowedNextStages: TransactionStage[]
-  status: string | null
-} | null> {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
-  if (!auth.ok) return null
-
-  const orchestrator = new TransactionOrchestrator({
-    transactionId: params.transactionId,
-    brokerageId:   auth.brokerageId,
-    userId:        auth.userId,
-    userRole:      auth.userRole,
-  })
-
-  const current = await orchestrator.getCurrentStage()
-  if (!current) return null
-
-  // Import allowed transitions
-  const { STAGE_TRANSITIONS } = await import("@/lib/transactions/transaction-stages")
-  const allowedNextStages = STAGE_TRANSITIONS[current.stage] || []
-
-  return {
-    currentStage:      current.stage,
-    allowedNextStages: allowedNextStages as TransactionStage[],
-    status:            current.status,
-  }
-}
+// TOMBSTONE (orphan tranche 3): getTransactionStageInfo deleted — a read
+// combination no surface called. The live survivor is the transaction detail
+// surface itself: app/dashboard/transactions/[id]/transaction-detail-client.tsx
+// derives allowedNextStages from lib/transactions/transaction-stages.ts:
+// STAGE_TRANSITIONS over the stage it already renders, and asks the server the
+// stronger question through checkStageAdvancement above (which validates
+// blockers, not just the transition table) before advanceTransactionStage.

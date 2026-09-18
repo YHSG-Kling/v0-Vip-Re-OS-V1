@@ -46,7 +46,8 @@ export function decideIngressAction(input: { matched: boolean; attempts: number 
  * dispatch chain stamps: signature packets (both), offers, listing agreements,
  * voice-cockpit documents, and BBAs. One true = the webhook had somewhere to land.
  */
-export async function envelopeHasAnyArtifact(svc: Svc, envelopeId: string): Promise<boolean> {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+async function envelopeHasAnyArtifact(svc: Svc, envelopeId: string): Promise<boolean> {
   if (!envelopeId) return false
   const probes = await Promise.all([
     svc.from("signature_requests").select("id", { count: "exact", head: true }).eq("provider_envelope_id", envelopeId),

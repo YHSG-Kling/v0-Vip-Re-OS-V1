@@ -27,6 +27,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { narrowReportAgentIds, type EgressScopeKind } from "./reporting-scope"
 import type { ReportingActorContext, KernelReportingResult } from "./reporting"
+import { DEADLINE_OPEN_STATUSES, deadlineAtRisk } from "@/lib/transactions/coordination-status"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
+import { median } from "@/lib/format/stats"
+export { median } // re-exported: scripts/autonomy-report-simulator.ts imports it from here
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -136,7 +140,7 @@ export async function generateAutonomyImpactReport(input: {
     const [videos, renders, docs, posts] = await Promise.all([
       scopedByUser(
         svc.from("ai_video_projects").select("id", { count: "exact", head: true })
-          .eq("brokerage_id", ctx.brokerageId).eq("status", "completed")
+          .eq("brokerage_id", ctx.brokerageId).in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
           .gte("created_at", from).lte("created_at", to) as any, "agent_id",
       ),
       scopedByUser(
@@ -297,13 +301,10 @@ export interface CoachingSignalsReport {
   deadlines: { atRisk: number; missed: number }
 }
 
-/** PURE: median of a number list (exported for the sim). */
-export function median(values: number[]): number | null {
-  if (values.length === 0) return null
-  const sorted = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `median` lived here (same computation as
+// lib/kernel/deal-play-outcomes.ts and lib/managers/teamwork-metrics.ts, with renamed
+// locals — same duplicate in substance, outside the census's stated no-identifier-rename
+// scope); survivor lib/format/stats.ts:median, imported+re-exported above.
 
 export async function generateCoachingSignalsReport(input: {
   ctx: ReportingActorContext
@@ -369,13 +370,24 @@ export async function generateCoachingSignalsReport(input: {
       followUpGaps = activeIds.filter((id) => !touched.has(id)).length
     }
 
-    // Deadlines at risk / missed
+    // Deadlines at risk / missed.
+    //
+    // This filtered `.in("status", ["at_risk", "missed"])` and then counted
+    // rows whose status equalled 'at_risk'. That is a RISK BAND, not a value
+    // transaction_deadlines.status admits, and nothing has ever written it — so
+    // this report told every brokerage it had ZERO deadlines at risk, every
+    // time, forever. A permanent zero on a governance surface is worse than no
+    // number: it reads as an all-clear.
+    //
+    // 'missed' IS a stored status and is counted as stored. At-risk is derived
+    // the way every other band in this product is derived — an open deadline
+    // falling due inside the window (see lib/transactions/coordination-status).
     const { data: deadlines } = await svc.from("transaction_deadlines")
-      .select("status")
+      .select("status, deadline_date")
       .eq("brokerage_id", ctx.brokerageId)
-      .in("status", ["at_risk", "missed"])
+      .in("status", ["missed", ...DEADLINE_OPEN_STATUSES])
       .limit(1000)
-    const dlRows = (deadlines ?? []) as Array<{ status: string }>
+    const dlRows = (deadlines ?? []) as Array<{ status: string; deadline_date: string | null }>
 
     return {
       success: true,
@@ -386,7 +398,7 @@ export async function generateCoachingSignalsReport(input: {
         contactsMeasured: responseMinutes.length,
         followUpGaps,
         deadlines: {
-          atRisk: dlRows.filter((d) => d.status === "at_risk").length,
+          atRisk: dlRows.filter((d) => deadlineAtRisk(d)).length,
           missed: dlRows.filter((d) => d.status === "missed").length,
         },
       },

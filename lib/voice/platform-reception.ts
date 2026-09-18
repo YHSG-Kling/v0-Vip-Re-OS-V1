@@ -15,6 +15,9 @@
 // (voice_calls is tenant-shaped: NOT NULL brokerage/contact/agent).
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
+import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
+import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import type { BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 
 // ── Number routing ────────────────────────────────────────────────────────────
 
@@ -37,6 +40,10 @@ export interface PlatformReceptionContext {
   tierLines: string[]
   forwardNumber: string | null
   authToken: string
+  /** Wave 75 — the PLATFORM's own brand + tenant-free KB (never a tenant's),
+   *  resolved once by resolvePlatformReceptionContext via
+   *  loadBrandPlaybookContext({brokerageId: null, ...}). */
+  brand: BrandPlaybookContext | null
 }
 
 /** PURE: subscription_tiers rows → spoken pricing lines. Cents → dollars; only
@@ -59,12 +66,14 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
   const authToken = process.env.TWILIO_AUTH_TOKEN
   if (!authToken) return null
   const { loadProductBrand } = await import("@/lib/platform/product-brand")
-  const [brand, tiers] = await Promise.all([
+  const { loadBrandPlaybookContext } = await import("@/lib/ai-isa/brand-playbook-context")
+  const [brand, tiers, playbookBrand] = await Promise.all([
     loadProductBrand(svc),
     svc.from("subscription_tiers")
       .select("display_name, monthly_price_cents, max_agents, is_active")
       .eq("is_active", true).order("monthly_price_cents", { ascending: true })
       .then((r: any) => r.data ?? [], () => []),
+    loadBrandPlaybookContext({ brokerageId: null }).catch(() => null),
   ])
   return {
     brandName: brand.name,
@@ -74,6 +83,7 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
     tierLines: composeTierLines(tiers),
     forwardNumber: (process.env.PLATFORM_RECEPTION_FORWARD_NUMBER ?? "").trim() || null,
     authToken,
+    brand: playbookBrand,
   }
 }
 
@@ -82,6 +92,7 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
 export function buildPlatformReceptionPrompt(id: {
   brandName: string; tagline: string; tierLines: string[]; hasTransfer: boolean
   voicePitch?: string; receptionGreeting?: string
+  brand?: BrandPlaybookContext | null
 }): { firstMessage: string; systemPrompt: string } {
   // NO HARDCODED COPY (owner rule): the greeting question + product pitch are
   // SETTINGS (product_brand.receptionGreeting / .voicePitch — resolved with
@@ -95,6 +106,11 @@ export function buildPlatformReceptionPrompt(id: {
     "Tone: warm, professional, concise. Keep answers short — this is a phone call, not an essay.",
     `WHAT THE PRODUCT IS: ${(id.voicePitch ?? "").trim() || `${id.brandName} — ${id.tagline}`}.`,
     `CURRENT PLANS (the ONLY pricing you may state — read from the live plan catalog):\n${id.tierLines.map((l) => `- ${l}`).join("\n")}`,
+    // "this goes for the platform ai agents" (wave 74) — the shared
+    // conversational discipline (never salesy, one question at a time,
+    // value before ask), NOT the real-estate buyer/seller goal list: a
+    // platform prospect is asking about the SOFTWARE, not a property.
+    buildQualificationPrompt({ surface: "platform_reception", brand: id.brand }),
     "FOR PROSPECTS: (1) learn their name and what they run — solo agent, team, brokerage, or multi-location; (2) answer honestly from what you know above; (3) ask for the best email so the team can send details and set up a walkthrough. Once they've shared contact details, use the 'prospect' action to save them.",
     id.hasTransfer
       ? "FOR EXISTING CUSTOMERS NEEDING SUPPORT: offer to connect them to the team right away (action 'transfer')."
@@ -107,93 +123,64 @@ export function buildPlatformReceptionPrompt(id: {
   return { firstMessage, systemPrompt }
 }
 
-// ── Turn planning (platform contract: continue | prospect | transfer | hangup) ─
-
-export const PROSPECT_ROLE_INTERESTS = ["solo_agent", "team", "brokerage", "multi_location", "unknown"] as const
-
-export type PlatformTurnAction =
-  | { kind: "say" }
-  | { kind: "prospect"; name: string | null; email: string | null; company: string | null; roleInterest: string; note: string | null }
-  | { kind: "transfer" }
-  | { kind: "hangup" }
-
-export interface PlatformTurnPlan {
-  say: string
-  action: PlatformTurnAction
-}
-
-export const PLATFORM_TURN_INSTRUCTIONS = [
-  "Respond with JSON ONLY, no prose around it:",
-  '{ "say": "<what you speak next — one to three short sentences>",',
-  '  "action": "continue" | "prospect" | "transfer" | "hangup",',
-  '  "name": "<caller name, ONLY with action prospect>",',
-  '  "email": "<caller email if they gave one, ONLY with action prospect>",',
-  '  "company": "<their company/team if given, ONLY with action prospect>",',
-  '  "role_interest": "solo_agent" | "team" | "brokerage" | "multi_location" | "unknown",',
-  '  "note": "<one line on what they want, ONLY with action prospect>" }',
-  "Rules: action 'prospect' once the caller has shared contact details and wants follow-up — their phone number is already captured from caller ID, so a name alone is enough.",
-  "action 'transfer' ONLY for existing-customer support when a transfer is offered in your instructions.",
-  "action 'hangup' when the caller says goodbye or the call is complete — say a warm close first.",
-  "Otherwise action 'continue'.",
-].join("\n")
-
-/** PURE: parse the platform turn — malformed output degrades to a safe
- *  clarifier, never a crash mid-call; role_interest is normalized to the
- *  funnel's CHECK list; a garbage email is dropped rather than stored. */
-export function parsePlatformTurnPlan(raw: string): PlatformTurnPlan {
-  try {
-    const match = raw.match(/\{[\s\S]*\}/)
-    if (!match) throw new Error("no json")
-    const p = JSON.parse(match[0]) as Record<string, string | undefined>
-    const say = (p.say ?? "").trim().slice(0, 600)
-    if (!say) throw new Error("empty say")
-    const a = (p.action ?? "continue").toLowerCase()
-    if (a === "transfer") return { say, action: { kind: "transfer" } }
-    if (a === "hangup") return { say, action: { kind: "hangup" } }
-    if (a === "prospect") {
-      const email = (p.email ?? "").trim().toLowerCase()
-      const role = (p.role_interest ?? "unknown").trim().toLowerCase()
-      return {
-        say,
-        action: {
-          kind: "prospect",
-          name: (p.name ?? "").trim().slice(0, 120) || null,
-          email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email.slice(0, 200) : null,
-          company: (p.company ?? "").trim().slice(0, 160) || null,
-          roleInterest: (PROSPECT_ROLE_INTERESTS as readonly string[]).includes(role) ? role : "unknown",
-          note: (p.note ?? "").trim().slice(0, 400) || null,
-        },
-      }
-    }
-    return { say, action: { kind: "say" } }
-  } catch {
-    return { say: "Sorry — could you say that once more?", action: { kind: "say" } }
+// ── Tenant-free platform FAQ tool (lane 73E) ──────────────────────────────────
+//
+// Item 5 of the voice-turn-engine restructuring: this line has NO
+// brokerage/property context by design (it is the PLATFORM's own prospect/
+// support line, never a tenant's), so none of lib/ai-isa/batchdata-isa-
+// tools.ts's persona-scoped property tools belong here — that stays true.
+// But it DOES have a SAFE, tenant-free capability the onboarding assistant
+// already exercises: lib/intelligence/kb-search.ts's help_topics_kb search,
+// scoped to `brokerage_id IS NULL` (platform-wide FAQ/help rows) by passing
+// `brokerageId: null` — the RPC's own WHERE clause (`h.brokerage_id IS NULL
+// OR h.brokerage_id = p_brokerage_id`) already degrades to exactly that set
+// when `p_brokerage_id` is NULL, so this can never surface a brokerage's
+// private help content. Wired as a REAL AI-SDK tool (native multi-step
+// calling), same shape as the voice ISA's property tools below.
+export async function platformFaqTools(): Promise<Record<string, unknown>> {
+  const { tool } = await import("ai")
+  const { z } = await import("zod")
+  const { searchKB } = await import("@/lib/intelligence/kb-search")
+  return {
+    platform_faq_lookup: tool({
+      description: "Search the platform's own public FAQ / help-topic knowledge base for facts about the product, how it works, or pricing plans. Tenant-free — only platform-wide entries are ever returned, never a brokerage's private content. Use this before saying \"I don't know\" to a product question.",
+      inputSchema: z.object({ query: z.string().min(2).max(200) }),
+      execute: async ({ query }: { query: string }) => {
+        try {
+          const results = await searchKB(query, null, 3)
+          if (results.length === 0) return { success: true, found: false }
+          return { success: true, found: true, topics: results.map((r) => ({ title: r.title, content: r.content.slice(0, 600) })) }
+        } catch (e: any) {
+          return { success: false, error: e?.message ?? "FAQ lookup failed" }
+        }
+      },
+    }),
   }
 }
 
-/** One platform reception turn: transcript + utterance → the brain → plan. */
-export async function planPlatformReceptionTurn(
-  ctx: PlatformReceptionContext,
-  transcript: string | null,
-  callerUtterance: string,
-  extraRules?: string,
-): Promise<PlatformTurnPlan> {
-  let { systemPrompt } = buildPlatformReceptionPrompt({
-    brandName: ctx.brandName, tagline: ctx.tagline, tierLines: ctx.tierLines, hasTransfer: !!ctx.forwardNumber,
-    voicePitch: ctx.voicePitch, receptionGreeting: ctx.receptionGreeting,
-  })
-  if (extraRules) systemPrompt = `${systemPrompt}\n\n${extraRules}`
-  const { transcriptToMessages } = await import("@/lib/voice/reception-brain")
-  const convo = transcriptToMessages(transcript).map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
-  const { generateTextRouted } = await import("@/lib/ai/models")
-  const { text } = await generateTextRouted({
-    feature: "voice_reception_turn",
-    prompt: `${systemPrompt}\n\n${PLATFORM_TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
-    temperature: 0.4,
-    maxTokens: 300,
-  })
-  return parsePlatformTurnPlan(text)
-}
+// TOMBSTONE (2026-08-27, §6 one-vocabulary): PROSPECT_ROLE_INTERESTS was a
+// second spelling of the SAME five-value role vocabulary the growth funnel
+// owns. Survivor: lib/platform/growth-funnel.ts:13 PROSPECT_ROLES — the list
+// the DB CHECK (role_interest), validateProspectInput and the proposal tier
+// mapping already key on. One list, so a new tier value cannot land in one
+// speller and not the other (imported at the top of this file).
+
+// TOMBSTONE (lane 75D, wave 75 — ONE voice receptionist engine): this file's
+// former PlatformTurnAction / PlatformTurnPlan / PLATFORM_TURN_INSTRUCTIONS /
+// PLATFORM_TOOL_TURN_GUIDANCE / parsePlatformTurnPlan / planPlatformReceptionTurn
+// are RETIRED. Survivors:
+//   - the turn CONTRACT merged onto lib/voice/reception-brain.ts's
+//     VoiceTurnAction (its "prospect" variant) / VoiceTurnPlan / parseTurnPlan
+//     (which now accepts the union of both deployments' actions) and that
+//     file's PLATFORM_TURN_INSTRUCTIONS / PLATFORM_TOOL_TURN_GUIDANCE exports
+//     (moved there verbatim, unchanged text).
+//   - the TURN-PLANNING FUNCTION merged onto lib/voice/twilio-voice.ts's
+//     planReceptionTurn({ deployment: "platform", ... }) — same tool-round
+//     engine (runVoiceTurnRound) the tenant deployment always used, offered
+//     `platformFaqTools()` (now exported below, unchanged) instead of the
+//     tenant's persona-scoped property/capture bundle.
+// PROSPECT_ROLES (above) still lives here — capturePhoneProspect below still
+// reads it, and it is re-exported nowhere else, so no import broke.
 
 // ── Prospect capture (into the EXISTING growth funnel) ───────────────────────
 
@@ -213,7 +200,7 @@ export async function capturePhoneProspect(svc: any, input: {
 }): Promise<{ id: string } | null> {
   const phone = input.phone.trim()
   if (!phone) return null
-  const role = (PROSPECT_ROLE_INTERESTS as readonly string[]).includes(input.roleInterest ?? "") ? input.roleInterest : "unknown"
+  const role = (PROSPECT_ROLES as readonly string[]).includes(input.roleInterest ?? "") ? input.roleInterest : "unknown"
   const fields = {
     name: input.name?.trim() || null,
     company: input.company?.trim() || null,

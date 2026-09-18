@@ -8,14 +8,18 @@
 //     (lib/platform/status-notice.ts; fails soft to "no notice");
 //   · the platform halt (emergency mode / AI engine off) — if every tenant's
 //     autonomous managers are frozen, tenants deserve to see that stated;
-//   · the tenant's OWN service_status rows (written by the health-check cron)
-//     — per-service detail for admin/broker principals, overall rollup only
-//     for everyone else (service internals are an operator concern).
+//   · the service_status rows in this tenant's read scope (written by the
+//     health-check cron) — per-service detail for admin/broker principals,
+//     overall rollup only for everyone else (service internals are an operator
+//     concern). That scope is the PLATFORM catalogue plus any row the tenant
+//     owns; see lib/platform/service-catalogue-scope.ts.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { loadStatusNotice, type StatusNotice } from "@/lib/platform/status-notice"
 import { getPlatformControls, resolvePlatformHalt } from "@/lib/platform/platform-controls"
+import { serviceCatalogueScope } from "@/lib/platform/service-catalogue-scope"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export interface TenantServiceRow {
   serviceName: string
@@ -45,16 +49,20 @@ export async function getTenantPlatformStatusAction(): Promise<
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  const canSeeServices = ["superadmin", "super_admin", "admin", "broker", "broker_owner"].includes((u as any).user_type ?? "")
+  const canSeeServices = isAdminOrBroker({ user_type: (u as any).user_type ?? "" })
 
   const svc = createServiceClient()
   const [notice, controls, servicesRes] = await Promise.all([
     loadStatusNotice(svc),
     getPlatformControls(svc).catch(() => null),
+    // PLATFORM CATALOGUE SCOPE, not `.eq`. All 13 live service_status rows carry
+    // brokerage_id IS NULL, so `.eq("brokerage_id", <uuid>)` matched none of them
+    // and this card reported "unknown" over a full table. See
+    // lib/platform/service-catalogue-scope.ts for the measurement and the ruling.
     svc
       .from("service_status")
       .select("service_name, service_category, current_status, is_critical, last_checked_at")
-      .eq("brokerage_id", u.brokerage_id)
+      .or(serviceCatalogueScope(u.brokerage_id))
       .order("is_critical", { ascending: false })
       .order("service_name"),
   ])

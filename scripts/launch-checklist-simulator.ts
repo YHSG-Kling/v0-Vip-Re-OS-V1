@@ -19,7 +19,8 @@
  *      honesty note, and the worst public POST surfaces (signup, get-started
  *      coupon check, widget session + message) are wired to it.
  */
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
 
@@ -36,20 +37,27 @@ const read = (rel: string) => readFileSync(join(root, rel), "utf8")
 // ── Collect every process.env.<VAR> reference in the shipped code ───────────
 const SCAN_DIRS = ["lib", "app", "services"]
 const envRefs = new Set<string>()
-function walk(dir: string) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name.startsWith(".")) continue
-    const abs = join(dir, name)
-    const st = statSync(abs)
-    if (st.isDirectory()) { walk(abs); continue }
-    if (!/\.(ts|tsx|js|mjs)$/.test(name)) continue
-    const rel = relative(root, abs).replace(/\\/g, "/")
-    if (rel === "lib/platform/launch-checklist.ts") continue // rows can't self-verify
-    const src = readFileSync(abs, "utf8")
-    for (const m of src.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) envRefs.add(m[1]!)
-  }
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+// A file that is never opened reports green, which is the failure shape §2 of
+// CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+//
+// This guard collects every `process.env.X` the shipped tree reads. `proxy.ts`
+// derives the platform's own hostnames from env to decide whether a request is on
+// a tenant vanity domain — so the file that reads env to make a TENANCY decision
+// was the one file the env census could not see.
+for (const abs of [...SCAN_DIRS.flatMap((d) => walkTs(join(root, d))), ...rootRuntimeFiles(root)]) {
+  if (!/\.(ts|tsx|js|mjs)$/.test(abs)) continue
+  const rel = relative(root, abs).replace(/\\/g, "/")
+  if (rel === "lib/platform/launch-checklist.ts") continue // rows can't self-verify
+  const src = readFileSync(abs, "utf8")
+  for (const m of src.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) envRefs.add(m[1]!)
 }
-for (const d of SCAN_DIRS) walk(join(root, d))
 
 async function main() {
   console.log("\nLAUNCH CHECKLIST SIMULATOR — presence-map honesty locks\n")

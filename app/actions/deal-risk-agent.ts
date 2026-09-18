@@ -38,7 +38,12 @@ export async function getAgentAtRiskTransactions(params: {
     .from("deal_health_scores")
     .select(
       "transaction_id, overall_score, previous_score, score_delta, risk_level, score_components, scored_at, " +
-        "transactions!inner(property_address, agent_id, buyer_agent_id, seller_agent_id, contact_id, contacts(first_name, last_name))"
+        // `!inner` is a JOIN TYPE, not a disambiguation hint. transactions↔contacts
+        // is joined by THREE foreign keys (contact_id, buyer_contact_id,
+        // seller_contact_id), so the nested `contacts(…)` was PGRST201 and this
+        // whole risk feed was dead. contact_id is the party the brokerage
+        // represents — the name a risk alert should carry.
+        "transactions!inner(property_address, agent_id, buyer_agent_id, seller_agent_id, contact_id, contacts!transactions_contact_id_fkey(first_name, last_name))"
     )
     .in("risk_level", ["watch", "at_risk", "critical"])
     .order("scored_at", { ascending: false })

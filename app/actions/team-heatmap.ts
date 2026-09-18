@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ============================================================================
 // Types
@@ -102,7 +103,7 @@ export async function getHeatmapSnapshots(
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
-  const isPrivileged = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(user?.user_type || "")
+  const isPrivileged = isAdminOrBroker({ user_type: user?.user_type || "" })
 
   let query = supabase
     .from("team_heatmap_snapshots")
@@ -456,7 +457,7 @@ export async function getAgentsForFilter(): Promise<{
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
-  const isPrivileged = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(user?.user_type || "")
+  const isPrivileged = isAdminOrBroker({ user_type: user?.user_type || "" })
 
   if (!isPrivileged) {
     return { agents: [], error: null }
@@ -503,7 +504,7 @@ export async function getTeamsForFilter(): Promise<{
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
-  if (!["broker", "broker_owner", "admin", "superadmin"].includes(user?.user_type || "")) {
+  if (!isAdminOrBroker({ user_type: user?.user_type || "" })) {
     return { teams: [], error: null }
   }
 

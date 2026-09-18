@@ -48,6 +48,11 @@ function testBuildRow() {
 
   const noVo = buildAvatarRenderRow({ brokerageId: "b", agentId: "a", compositionId: "X", avatarVideoUrl: "u" })
   check("no voiceover → used_voiceover false + null in props", noVo.used_voiceover === false && (noVo.input_props as any).voiceoverUrl === null)
+
+  // Negative arm of the voiceover gate: a composition with no voiceoverUrl prop
+  // (BuyerConsultationSlide) must not be flagged as narrated by a URL it cannot play.
+  const inert = buildAvatarRenderRow({ brokerageId: "b", agentId: "a", compositionId: "BuyerConsultationSlide", avatarVideoUrl: "u", voiceoverUrl: "https://cdn/vo.mp3" })
+  check("voiceover to a NON-consuming composition → used_voiceover false + null in props", inert.used_voiceover === false && (inert.input_props as any).voiceoverUrl === null)
 }
 
 async function testLiveHandoff() {

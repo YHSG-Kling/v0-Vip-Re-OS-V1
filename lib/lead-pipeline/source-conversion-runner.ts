@@ -20,10 +20,29 @@ export async function loadSourceConversions(
   const svc = client ?? createServiceClient()
   const since = new Date(Date.now() - (opts.sinceDays ?? 180) * 86_400_000).toISOString()
 
-  const { data: leads } = await svc.from("leads")
-    .select("source, contact_id, cost_per_record")
-    .eq("brokerage_id", brokerageId).gte("created_at", since).limit(5000)
-  const leadRows = (leads ?? []) as { source: string | null; contact_id: string | null; cost_per_record: number | null }[]
+  // acquisition_cost (m634, applied live 2026-09-15) is the FULLER lead-cost figure
+  // (cost_per_record + enrichment spend + campaign cost share — see
+  // lib/contact-promotion/acquisition-cost.ts). Selected alongside
+  // cost_per_record, never in place of it: until the integrator applies m632
+  // the column does not exist, and PostgREST refuses a SELECT naming an absent
+  // column just as it refuses a write to one — so this read is wrapped and
+  // falls back to the narrower column alone on that exact refusal, rather than
+  // losing the whole source-conversion report to a migration that has not
+  // landed yet.
+  let leadRows: { source: string | null; contact_id: string | null; cost_per_record: number | null; acquisition_cost?: number | null }[] = []
+  {
+    const { data: withAcqCost, error: acqCostError } = await svc.from("leads")
+      .select("source, contact_id, cost_per_record, acquisition_cost")
+      .eq("brokerage_id", brokerageId).gte("created_at", since).limit(5000)
+    if (!acqCostError) {
+      leadRows = (withAcqCost ?? []) as typeof leadRows
+    } else {
+      const { data: fallback } = await svc.from("leads")
+        .select("source, contact_id, cost_per_record")
+        .eq("brokerage_id", brokerageId).gte("created_at", since).limit(5000)
+      leadRows = (fallback ?? []) as typeof leadRows
+    }
+  }
   if (leadRows.length === 0) return { sources: {}, ranked: [] }
 
   // Which converted contacts reached a closed transaction (+ the revenue).
@@ -32,7 +51,7 @@ export async function loadSourceConversions(
   if (contactIds.length > 0) {
     const { data: txns } = await svc.from("transactions")
       .select("contact_id, status, purchase_price")
-      .eq("brokerage_id", brokerageId).in("status", ["closed", "completed"]).in("contact_id", contactIds)
+      .eq("brokerage_id", brokerageId).in("status", ["closed"]).in("contact_id", contactIds)
     for (const t of (txns ?? []) as { contact_id: string | null; purchase_price: number | null }[]) {
       if (t.contact_id) closedByContact.set(t.contact_id, (closedByContact.get(t.contact_id) ?? 0) + (t.purchase_price ?? 0))
     }
@@ -44,7 +63,10 @@ export async function loadSourceConversions(
     const source = l.source ?? "unknown"
     const row = agg.get(source) ?? { source, leadCount: 0, contactCount: 0, closedCount: 0, revenue: 0, spend: 0 }
     row.leadCount++
-    row.spend += l.cost_per_record ?? 0
+    // Prefer the fuller acquisition_cost; fall back to the narrower
+    // cost_per_record for pre-migration / pre-conversion rows that never got
+    // the richer figure computed.
+    row.spend += l.acquisition_cost ?? l.cost_per_record ?? 0
     if (l.contact_id) {
       row.contactCount++
       const rev = closedByContact.get(l.contact_id)

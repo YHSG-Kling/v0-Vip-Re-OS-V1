@@ -30,6 +30,14 @@ export interface CalendarEvent {
   location?: string
   attendees?: { email: string; name?: string }[]
   conferenceUrl?: string
+  /** Google Calendar's own event status (confirmed | tentative | cancelled) —
+   *  lib/ai-isa/listing-appointment.ts creates a listing appointment TENTATIVE
+   *  on the agent's calendar until they confirm, then PATCHes it to confirmed.
+   *  Only the Google branch of personal-calendar.ts honors this — Microsoft
+   *  Graph events created by an organizer have no equivalent tentative state,
+   *  so an Outlook-connected agent's event is created normally and this field
+   *  is a documented no-op there (no fabricated status). */
+  status?: "confirmed" | "tentative"
 }
 
 export interface CreateEventResult {

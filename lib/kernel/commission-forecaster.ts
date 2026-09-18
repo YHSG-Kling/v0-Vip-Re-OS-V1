@@ -23,9 +23,11 @@ import { createServiceClient } from "@/lib/supabase/service"
 import {
   resolveAssistantVoiceId,
   whisperTierCapability,
+  realSynthesizer,
   type WhisperSynthesizer,
 } from "@/lib/intelligence/appointment-whisper"
 import { mapUserTypeToTier } from "@/lib/kernel/0.1-feature-access"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -48,7 +50,8 @@ export interface PipelineDeal {
   expectedCloseDate: string | null
 }
 
-export interface GciForecast {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface GciForecast {
   /** GCI already booked from deals CLOSED year-to-date. */
   closedYtd: number
   /** Probability-weighted GCI still in the pipeline (Σ commission × winProbability). */
@@ -65,7 +68,14 @@ export interface GciForecast {
   yearElapsed: number
 }
 
-export interface CapStatus {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+// RENAMED from `CapStatus` (§6, lane BD, 2026-09-08): this is a computed numeric-progress
+// object, a DIFFERENT concept from the DB-CHECK-backed status ENUM at
+// lib/finance/cap-progress.ts:CapStatus ("below_cap"|"at_cap"|"post_cap") — a name collision
+// between the two, not a body duplicate. Zero importers outside this file made the rename
+// cheap; the DB-tied spelling in lib/finance/cap-progress.ts stays canonical for the word
+// "CapStatus".
+interface CapProgressDetail {
   /** The configured cap when present, else null (cap unconfigured). */
   cap: number | null
   /** GCI booked YTD applied against the cap. */
@@ -165,7 +175,7 @@ export function forecastGci(
  * PURE. Distance to the commission cap. When `cap` is null/≤0 the cap is UNCONFIGURED —
  * distanceToCap/progress are null and isCapped is false (we never invent a cap).
  */
-export function capDistance(gciYtd: number, cap: number | null): CapStatus {
+export function capDistance(gciYtd: number, cap: number | null): CapProgressDetail {
   const gci = Math.max(0, Number(gciYtd) || 0)
   if (cap == null || !Number.isFinite(cap) || cap <= 0) {
     return { cap: null, gciYtd: gci, distanceToCap: null, isCapped: false, progress: null }
@@ -210,12 +220,13 @@ export function dealsToPush(pipeline: PipelineDeal[], gap: number): PipelineDeal
 
 // ── Summary composition (pure) ────────────────────────────────────────────────
 
-export interface ForecastSummary {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ForecastSummary {
   subject: string
   body: string
 }
 
-const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * PURE. The agent-facing brief tying it together — every line earned from real numbers.
@@ -226,12 +237,19 @@ const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
 export function composeForecastSummary(
   agentName: string,
   forecast: GciForecast,
-  cap: CapStatus,
+  cap: CapProgressDetail,
   push: PipelineDeal[],
 ): ForecastSummary {
+  // `agentName` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — so the one
+  // brief in this module that is addressed to a PERSON, and that a broker may be
+  // reading about one of several agents, opened with an unattributed "You've booked
+  // …". The first name is the whole reason the caller resolves and passes it.
+  const first = agentName.trim().split(/\s+/)[0] ?? ""
+  const greeting = first ? `${first}, you've` : "You've"
+
   const lines: string[] = []
   lines.push(
-    `You've booked ${usd(forecast.closedYtd)} GCI year-to-date, with ${usd(forecast.weightedPipeline)} more weighted in your pipeline — projecting ${usd(forecast.projectedAnnualGci)} GCI for the year (run-rate pace: ${usd(forecast.paceAnnualizedGci)}).`,
+    `${greeting} booked ${usd(forecast.closedYtd)} GCI year-to-date, with ${usd(forecast.weightedPipeline)} more weighted in your pipeline — projecting ${usd(forecast.projectedAnnualGci)} GCI for the year (run-rate pace: ${usd(forecast.paceAnnualizedGci)}).`,
   )
 
   if (forecast.goal != null) {
@@ -258,9 +276,13 @@ export function composeForecastSummary(
     lines.push(`Highest-leverage move: push ${names} — ${push.length === 1 ? "it's" : "they're"} nearest to closing and would ${target} this quarter.`)
   }
 
+  // The name is ADDED to the subject, never substituted into it: "from your cap" and
+  // "On pace for" are the two phrases the forecaster proof matches on, and a rewrite
+  // that only reads better is not worth blinding a guard for.
+  const whose = first ? `${first}'s forecast` : "your forecast"
   const subject = cap.cap != null && !cap.isCapped
-    ? `💰 ${usd(cap.distanceToCap ?? 0)} from your cap — your forecast`
-    : `💰 On pace for ${usd(forecast.projectedAnnualGci)} GCI — your forecast`
+    ? `💰 ${usd(cap.distanceToCap ?? 0)} from your cap — ${whose}`
+    : `💰 On pace for ${usd(forecast.projectedAnnualGci)} GCI — ${whose}`
 
   return { subject, body: lines.join(" ") }
 }
@@ -296,7 +318,7 @@ export const STALL_CAP_PROGRESS = 0.25
 export const STALL_THIN_PIPELINE = 5_000
 
 export function classifyAgentForRecruiting(
-  capStatus: CapStatus,
+  capStatus: CapProgressDetail,
   forecast: GciForecast,
   closedYtd: number,
 ): "crushed" | "stalling" | null {
@@ -387,7 +409,8 @@ export function toPipeline(rows: RawTxn[]): PipelineDeal[] {
 
 const IN_PROGRESS_STATUSES = ["active", "under_contract", "closing"] as const
 
-export interface CommissionForecasterResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionForecasterResult {
   agentsConsidered: number
   forecastsProposed: number
   audioBriefs: number
@@ -402,27 +425,39 @@ export interface CommissionForecasterResult {
   errors: string[]
 }
 
-/** The real synthesizer seam — reuses the whisper TTS rail; null → text fallback. */
-const realSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
-  try {
-    const { synthesizeSpeechStream } = await import("@/lib/voice/elevenlabs-tts")
-    const res = await synthesizeSpeechStream({ text: script, voiceId })
-    return (res as { audioUrl?: string | null })?.audioUrl ?? null
-  } catch { return null }
-}
+// `realSynthesizer` — same-body census, round 4 (2026-09-09, lane FC):
+// survivor is lib/intelligence/appointment-whisper.ts:77, imported above
+// (this file already imported the `WhisperSynthesizer` TYPE from there; now
+// it imports the implementation too instead of pasting its own copy).
 
-/** Resolve the agent's configured commission cap (OPTIONAL): agents.cap_amount first,
- *  then the current agent_cap_tracking window's cap_amount. Null when unconfigured. */
+/**
+ * Resolve the agent's commission cap (OPTIONAL). Null when unconfigured.
+ *
+ * THE PRECEDENCE WAS INVERTED. This read `agents.cap_amount` FIRST and only fell
+ * back to `agent_cap_tracking` — i.e. it preferred the copy the commission engine
+ * never applies over the ledger that decides the actual cheque
+ * (lib/commission/waterfall/07-apply-cap.ts reads agent_cap_tracking and nothing
+ * else). So a forecast could tell an agent they were $20k from cap while the
+ * payout engine, reading a different number, capped them somewhere else entirely
+ * — or, for the three of four capped agents measured with no ledger row at all,
+ * never capped them.
+ *
+ * `agents.cap_amount` is dropped in m463, and it is not consulted here any more.
+ * The ledger is the only answer, filtered by stage 07's own window predicate so
+ * a forecast and a disbursement cannot disagree about which year is in force.
+ *
+ * `error` is destructured because supabase-js RESOLVES a refused read: without
+ * it a permission denial would read as "no cap" and the forecast would quietly
+ * promise the agent an uncapped year.
+ */
 async function resolveCap(supabase: Svc, agentId: string, now: Date): Promise<number | null> {
-  const { data: a } = await supabase.from("agents").select("cap_amount").eq("id", agentId).maybeSingle()
-  const direct = (a as { cap_amount: number | null } | null)?.cap_amount ?? null
-  if (direct != null && Number(direct) > 0) return Number(direct)
   const today = now.toISOString().slice(0, 10)
-  const { data: track } = await supabase
+  const { data: track, error } = await supabase
     .from("agent_cap_tracking").select("cap_amount, anniversary_start, anniversary_end")
     .eq("agent_id", agentId).lte("anniversary_start", today).gte("anniversary_end", today)
-    .order("anniversary_start", { ascending: false }).limit(1).maybeSingle()
-  const tracked = (track as { cap_amount: number | null } | null)?.cap_amount ?? null
+    .order("anniversary_start", { ascending: false }).limit(1)
+  if (error) return null
+  const tracked = ((track ?? [])[0] as { cap_amount: number | null } | undefined)?.cap_amount ?? null
   return tracked != null && Number(tracked) > 0 ? Number(tracked) : null
 }
 

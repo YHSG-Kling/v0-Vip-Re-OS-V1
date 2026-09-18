@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { DollarSign, TrendingUp, CheckCircle2, Clock, FileCheck, AlertCircle } from 'lucide-react'
+import { DollarSign, TrendingUp, Clock, FileCheck } from 'lucide-react'
 import Link from 'next/link'
 import { LenderCommandStrip, LenderPipelinePanel } from '../components/os'
 import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
@@ -14,6 +14,7 @@ import {
   ExternalDocStatusPanel,
   ExternalCommunicationPanel,
 } from '../../(external-portal)/components/os'
+import { getLenderTransactionDetail, sendLenderMessageToAgent } from '@/app/actions/lender-portal-actions'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,6 +47,43 @@ export default async function LenderDashboardPage() {
   const active = (transactions || []).filter((t: any) => !['closed', 'cancelled'].includes(t.status))
   const closing = (transactions || []).filter((t: any) => t.status === 'pending')
 
+  // ExternalDocStatusPanel below was mounted on a hardcoded [] while
+  // getLenderTransactionDetail already returned the lender-visible documents
+  // (loan commitment / appraisal / CD / loan conditions) for every deal this
+  // lender is assigned to. Capped at the first 5 active files because the loader
+  // runs several queries per transaction.
+  const lenderTxWindow = active.slice(0, 5)
+  const lenderDetails = await Promise.all(
+    lenderTxWindow.map(async (t: any) => {
+      try {
+        return await getLenderTransactionDetail(t.id)
+      } catch {
+        // Throws unless the caller is the lender vendor assigned to this transaction —
+        // one unassigned deal drops out instead of failing the dashboard.
+        return null
+      }
+    })
+  )
+
+  // Loader already aliases the columns (file_name ← doc_label, file_url ← storage_url).
+  // Its select does not include transaction_documents.status, and requiredness is not
+  // modelled, so status is the honest 'uploaded' and `required` stays false.
+  const lenderDocuments = lenderDetails.flatMap((d, i) =>
+    ((d?.documents || []) as any[]).map((doc) => ({
+      id: doc.id,
+      name: doc.file_name || doc.document_type,
+      type: doc.document_type,
+      status: 'uploaded' as const,
+      required: false,
+      uploadedAt: doc.created_at,
+      fileUrl: doc.file_url || undefined,
+      // Per-doc transaction, correlated by index (lenderDetails preserves
+      // lenderTxWindow's order) — lets ExternalDocStatusPanel's upload
+      // default send the lender to the RIGHT deal's upload page.
+      transactionId: lenderTxWindow[i]?.id as string | undefined,
+    }))
+  )
+
   // Today's AI brief for this lender
   const lenderBrief = await generateUserTypeBrief({
     userType: 'lender',
@@ -68,7 +106,12 @@ export default async function LenderDashboardPage() {
 
       {/* OS Command Strip */}
       <LenderCommandStrip lenderId={lenderId} />
-      <ExternalPartnerCommandStrip partnerType="lender" partnerId={lenderId} />
+      <ExternalPartnerCommandStrip
+        partnerType="lender"
+        partnerId={lenderId}
+        partnerName={lenderPortal?.lender_company ?? undefined}
+        pendingActions={closing.length}
+      />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -148,10 +191,23 @@ export default async function LenderDashboardPage() {
           urgency: 'medium',
           actionRequired: false,
         }))} />
-        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} documents={[]} />
+        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} documents={lenderDocuments} />
       </div>
 
-      <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} messages={[]} />
+      {/* Reading a lender's own thread back still has no reader anywhere in the
+          codebase (every client_portal_messages reader is contact- or
+          agent-scoped) — messages stays [] until that's built. Sending is now
+          real: transactionId is the most recent active deal (an aggregate
+          dashboard has no single "current" transaction otherwise), and
+          onSendMessage posts through sendLenderMessageToAgent — the same
+          client_portal_messages lane flagLenderIssue already uses. */}
+      <ExternalCommunicationPanel
+        partnerType="lender"
+        partnerId={lenderId}
+        transactionId={lenderTxWindow[0]?.id as string | undefined}
+        messages={[]}
+        onSendMessage={sendLenderMessageToAgent}
+      />
     </div>
   )
 }

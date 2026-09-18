@@ -1,0 +1,91 @@
+/**
+ * LISTING ATTRIBUTION — the one sentence every RentCast-fed (or IDX-fed) listing
+ * display must carry.
+ *
+ * Owner ruling (wave 70, verbatim): "the settings page needs to not say
+ * otherwise platforms rentcast feed just platform feed but rentcast i know
+ * legally when we display a listing it must say provided from rentcast, etc."
+ *
+ * Two separate obligations in one sentence, and this file is the SECOND half:
+ *   1. The tenant SETTINGS surface never names RentCast to the tenant — it is
+ *      the platform's own credential, so the tenant-facing copy says "platform
+ *      feed" (see app/dashboard/settings/integrations/lead-sources/).
+ *   2. EVERY surface that actually DISPLAYS a RentCast-fed listing to a person
+ *      — a buyer, a seller, a lead — carries the words "Listing data provided
+ *      by RentCast", because that is a legal attribution requirement on the
+ *      data itself, independent of who paid for the API call.
+ *
+ * RentCast's own attribution/Terms-of-Use page could not be fetched at the
+ * time of writing (CRAWL_NOT_FOUND against developers.rentcast.io's ToU/
+ * attribution path) — the wording above is the owner's own stated requirement,
+ * used verbatim rather than guessed at from a page that would not resolve.
+ * UNRESOLVED: the exact RentCast Terms-of-Use attribution-clause URL — record
+ * and confirm it before this wording is treated as legally final.
+ *
+ * IDX BOARD WORDING: this codebase stores no per-board MLS name anywhere —
+ * checked first (scripts/schema-snapshot.ts): brokerage_settings carries only
+ * `idx_api_key`, no board_name/mls_board column, and lib/idxbroker-client.ts
+ * exposes no board-name field either. There is therefore no specific credential
+ * to read a board name FROM, so the IDX line below is the generic, defensible
+ * "courtesy of" wording every MLS's own IDX rules require at minimum, rather
+ * than a fabricated board name.
+ *
+ * `ListingAttributionSource` intentionally matches the vocabularies already in
+ * force elsewhere rather than inventing a fourth: lib/buyer-search/search-
+ * engine.ts's `BuyerSearchResult.source` ('platform' | 'rentcast' | 'idx') and
+ * lib/cma/comp-types.ts's `CompProviderId` ('idxbroker' | 'rentcast' |
+ * 'batchdata' | 'perplexity' | 'none') both collapse onto it below.
+ */
+
+export type ListingAttributionSource =
+  | "platform"
+  | "rentcast"
+  | "idx"
+  | "idxbroker"
+  | "batchdata"
+  | "perplexity"
+  | "own"
+  | "none"
+  | null
+  | undefined
+
+const RENTCAST_ATTRIBUTION = "Listing data provided by RentCast"
+/** No per-board name is stored anywhere in this codebase — see file header. */
+const IDX_ATTRIBUTION = "Listing courtesy of the local MLS via IDX"
+/**
+ * BatchData comps feed the CMA's adjustment grid, not a listing display —
+ * carried here so a caller that DOES surface a BatchData-sourced comp row
+ * (e.g. the CMA report's comp table) has a defensible line rather than none.
+ */
+const BATCHDATA_ATTRIBUTION = "Comparable data provided by BatchData"
+/** Perplexity gap-fill rows are already labelled UNVERIFIED elsewhere
+ *  (lib/cma/comp-provider.ts AI_GAP_FILL_SLOTS); this line is the short form
+ *  for a surface with room for one sentence, not a replacement for that label. */
+const PERPLEXITY_ATTRIBUTION = "Sourced by AI web search (Perplexity) — unverified"
+
+/**
+ * THE ONE FUNCTION. Returns "" for the platform's own listings/comps (an
+ * empty attribution line renders as nothing, deliberately — an own listing
+ * needs no third-party credit) and the exact required sentence for anything
+ * RentCast-, IDX-, BatchData- or Perplexity-fed.
+ */
+export function listingAttributionLine(source: ListingAttributionSource): string {
+  switch (source) {
+    case "rentcast":
+      return RENTCAST_ATTRIBUTION
+    case "idx":
+    case "idxbroker":
+      return IDX_ATTRIBUTION
+    case "batchdata":
+      return BATCHDATA_ATTRIBUTION
+    case "perplexity":
+      return PERPLEXITY_ATTRIBUTION
+    case "platform":
+    case "own":
+    case "none":
+    case null:
+    case undefined:
+    default:
+      return ""
+  }
+}

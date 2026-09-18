@@ -57,7 +57,9 @@ export function estimateSellerNetProceeds(input: SellerEquityInput): SellerEquit
   const netProceeds = mortgageKnown
     ? Math.round(computeNetProceeds(
         { offerPrice: value, buyerClosingCredit: 0 },
-        { commissionRate, mortgagePayoff: payoff as number, countyCityTaxes: taxes, hoaDuesProration: hoa, otherProratedFees: other },
+        // transactionFee 0: a pre-listing equity estimate has no brokerage
+        // transaction fee yet — no listing agreement exists to set one.
+        { commissionRate, mortgagePayoff: payoff as number, countyCityTaxes: taxes, hoaDuesProration: hoa, otherProratedFees: other, transactionFee: 0 },
       ))
     : null
 

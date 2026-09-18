@@ -185,7 +185,7 @@ export type DialExecutor = (target: DialTarget, ctx: { brokerageId: string; agen
 const realDialExecutor: DialExecutor = async (target, ctx) => {
   const { initiateVoiceCall } = await import("@/lib/voice-engine/call-executor")
   const res = await initiateVoiceCall(
-    { contactId: target.contact_id, initiatorRole: "ai", callType: "outbound", vendor: "vapi_isa", agentId: ctx.agentId ?? undefined },
+    { contactId: target.contact_id, initiatorRole: "ai", callType: "outbound", vendor: "twilio", agentId: ctx.agentId ?? undefined },
     target.phone,
   )
   // ai_isa_calls.voice_call_id FKs to voice_calls(id) — use callId (the row id), not the
@@ -298,7 +298,7 @@ export async function enqueueDialBatchNotifications(
   if (rows.length === 0) return { agentAlerts: 0, managerEscalations: 0 }
 
   const { data: mgrs } = await supabase.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(20)
   const managerIds = ((mgrs ?? []) as Array<{ id: string }>).map((m) => m.id)
 
   const already = async (userId: string, batchId: string, type: string) => {

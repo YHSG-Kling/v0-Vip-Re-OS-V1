@@ -7,8 +7,9 @@ import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Gauge, Loader2 } from 'lucide-react'
-import { getManagerOpsAction } from '@/app/actions/superadmin/ai-ops'
+import { getManagerOpsAction, getVoiceToolRoundDeadlineStatsAction } from '@/app/actions/superadmin/ai-ops'
 import type { ManagerOps, SloStatus } from '@/lib/platform/manager-ops'
+import type { VoiceToolRoundDeadlineStats } from '@/lib/platform/manager-ops'
 
 const sloBadge: Record<SloStatus, string> = {
   ok: 'bg-emerald-100 text-emerald-800',
@@ -20,9 +21,11 @@ export function ManagerOpsPanel() {
   const [data, setData] = useState<ManagerOps | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  const [voiceDeadline, setVoiceDeadline] = useState<VoiceToolRoundDeadlineStats | null>(null)
 
   useEffect(() => {
     getManagerOpsAction(24).then((r) => { if (r.ok) setData(r.data); else setErr(r.error); setLoading(false) })
+    getVoiceToolRoundDeadlineStatsAction(24 * 7).then((r) => { if (r.ok) setVoiceDeadline(r.data) })
   }, [])
 
   const money = (cents: number) => `$${(cents / 100).toFixed(2)}`
@@ -65,6 +68,16 @@ export function ManagerOpsPanel() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {voiceDeadline && voiceDeadline.attempts > 0 && (
+          <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Voice tool-round deadline (7d):</span>{' '}
+            {voiceDeadline.attempts.toLocaleString()} attempt{voiceDeadline.attempts === 1 ? '' : 's'} ·
+            {' '}avg {voiceDeadline.avgMs}ms · p95 {voiceDeadline.p95Ms}ms ·{' '}
+            {(voiceDeadline.deadlineHitRate * 100).toFixed(0)}% hit the ceiling
+            ({voiceDeadline.deadlineHits} of {voiceDeadline.attempts}) — retune
+            VOICE_TOOL_ROUND_DEADLINE_MS from this, not from the derived policy ceiling alone.
           </div>
         )}
       </CardContent>

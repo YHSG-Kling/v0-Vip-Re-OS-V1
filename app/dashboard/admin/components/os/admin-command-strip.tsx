@@ -8,7 +8,7 @@ import {
   AlertTriangle, 
   UserPlus, 
   ClipboardCheck, 
-  Settings,
+  
   ChevronRight,
   Activity,
   Loader2
@@ -56,7 +56,7 @@ export function AdminCommandStrip({ brokerageId }: AdminCommandStripProps) {
           .from("agent_onboarding")
           .select("id", { count: "exact", head: true })
           .eq("brokerage_id", brokerageId)
-          .in("status", ["pending", "in_progress"]),
+          .in("status", ["in_progress"]),
         supabase
           .from("approval_items")
           .select("id", { count: "exact", head: true })

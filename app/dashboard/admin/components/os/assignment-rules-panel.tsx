@@ -9,8 +9,7 @@ import {
   ChevronRight,
   AlertCircle,
   CheckCircle2,
-  Loader2,
-  Activity
+  Loader2
 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"

@@ -7,6 +7,25 @@
 
 export interface AIISASettings {
   enabled: boolean
+  /**
+   * THE AUTO-SEND GATE. `true` (the default, and the live column default) means
+   * the ISA may DRAFT a touch but a human must release it; `false` means the
+   * brokerage has explicitly authorised the ISA to send on its behalf.
+   *
+   * BUILT, not invented (CLAUDE.md §1 case 2). `ai_isa_settings.require_broker_approval`
+   * has existed since migration 061 (`BOOLEAN NOT NULL DEFAULT TRUE`), is named in
+   * the resolver's SELECT list, and had NO reader that acted on it and NO writer
+   * that set it — the one thing a broker would look for before letting an AI mail
+   * their leads was a column nothing consulted. `rowToSettings` in
+   * lib/ai-isa/resolve-isa-settings.ts now folds it in the same way it folds
+   * `is_active` → `enabled`: the COLUMN is authoritative over anything stale in
+   * the `settings` blob (§6 — one spelling per idea).
+   *
+   * The DEFAULT is `true` because the failure that matters on this path is sending
+   * on someone's behalf without their configured consent (CLAUDE.md §4). A
+   * brokerage with no settings row at any tier gets staged drafts, not sends.
+   */
+  require_broker_approval: boolean
   lead_allowed_channels: ('email' | 'direct_mail')[]
   contact_allowed_channels: ('email' | 'sms' | 'phone' | 'direct_mail')[]
   stale_threshold_days: number
@@ -29,6 +48,10 @@ export interface AIISASettings {
 
 export const DEFAULT_AISA_SETTINGS: AIISASettings = {
   enabled: true,
+  // FAIL CLOSED (§4). Matches the live column default (`NOT NULL DEFAULT TRUE`,
+  // migration 061): "nobody configured this" renders as "a human releases it",
+  // never as "the AI may send".
+  require_broker_approval: true,
   lead_allowed_channels: ['email', 'direct_mail'],
   contact_allowed_channels: ['email', 'sms', 'phone', 'direct_mail'],
   stale_threshold_days: 14,

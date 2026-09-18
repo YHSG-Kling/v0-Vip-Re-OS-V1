@@ -8,9 +8,10 @@
  * Docs: https://docs.lob.com/#tag/US-Verifications
  *   POST https://api.lob.com/v1/us_verifications  (Basic auth, key + ":" username form)
  *
- * Routes through the canonical connector-gateway (never-throws, healer-observable).
+ * Wave 71A: routes through the official `lob` SDK adapter
+ * (lib/providers/lob/client.ts) instead of the connector-gateway — see that
+ * file's header for the official-SDK reasoning.
  */
-const LOB_API_URL = "https://api.lob.com/v1"
 
 export interface LobAddressInput {
   primary_line:    string
@@ -51,17 +52,12 @@ export async function verifyAddressViaLob(address: LobAddressInput): Promise<{ d
   const isTest = key.startsWith("test_")
   const cost = isTest ? 0 : 0.0025
 
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<any>({
-    connector: "lob",
-    baseUrl:   LOB_API_URL,
-    path:      "us_verifications",
-    method:    "POST",
-    bodyType:  "form",  // Lob accepts form-encoded; gateway sets the right Content-Type
-    body:      address as unknown as Record<string, string>,
-    // Lob uses HTTP Basic auth with the key as username and empty password.
-    auth:      { style: "basic", username: key, password: "" },
-  })
+  // Official SDK adapter (wave 71A) — see lib/providers/lob/client.ts. The
+  // already-installed `lob@^6.6.3` SDK (used by lib/providers/dispatch.ts for
+  // postcard/letter sends) now covers verification too; Basic auth (key as
+  // username, empty password) is handled inside the SDK itself.
+  const { verifyUsAddress } = await import("@/lib/providers/lob/client")
+  const res = await verifyUsAddress(key, address)
 
   // Transient failure (timeout, 5xx, network) — return data:null so callers DON'T overwrite a
   // previously-verified address with a synthetic `verified:false`. A real Lob 'undeliverable'
@@ -81,9 +77,9 @@ export async function verifyAddressViaLob(address: LobAddressInput): Promise<{ d
         primary_line:   d.primary_line,
         secondary_line: d.secondary_line,
         last_line:      d.last_line,
-        city:           d.components?.city,
-        state:          d.components?.state,
-        zip_code:       d.components?.zip_code,
+        city:           (d.components as { city?: string } | undefined)?.city,
+        state:          (d.components as { state?: string } | undefined)?.state,
+        zip_code:       (d.components as { zip_code?: string } | undefined)?.zip_code,
       },
       components: d.components,
       raw: d,

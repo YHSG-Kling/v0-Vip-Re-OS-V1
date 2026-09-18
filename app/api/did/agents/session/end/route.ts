@@ -17,6 +17,7 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
+import { endLiveAgentSession } from "@/lib/did/live-session-metering"
 
 export const runtime = "nodejs"
 
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json().catch(() => null) as
-    | { contactId?: string; didAgentId?: string; seconds?: number }
+    | { contactId?: string; didAgentId?: string; seconds?: number; liveSessionId?: string | null }
     | null
   const contactId = body?.contactId
   const seconds = Number(body?.seconds)
@@ -65,7 +66,9 @@ export async function POST(request: NextRequest) {
       .select("user_type, brokerage_id")
       .eq("id", user.id)
       .maybeSingle()
-    const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
+    // SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
+    // (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
+    const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "broker_owner"]
     if (ur?.brokerage_id === contact.brokerage_id && STAFF_TYPES.includes(ur?.user_type ?? "")) {
       hasAccess = true
     }
@@ -86,6 +89,17 @@ export async function POST(request: NextRequest) {
     feature: "portal_widget",
     metadata: { reported_seconds: seconds, clamped_seconds: clamped, source: "widget_beacon" },
   })
+
+  // THE VENDOR LEDGER (wave 60, m624) — closes the live_agent_sessions row
+  // opened at session-start and books the platform's D-ID cost. Tenant is
+  // read OFF THE ROW by endLiveAgentSession, never off this body — a missing/
+  // stale liveSessionId (older client, or the insert at start failed) just
+  // means no vendor row exists to close; the tenant ledger above still landed.
+  if (body?.liveSessionId) {
+    await endLiveAgentSession(body.liveSessionId, clamped).catch((e) =>
+      console.warn("[did/agents/session/end] live_agent_sessions close failed", e),
+    )
+  }
 
   return NextResponse.json({ ok: true, minutesLogged: Number(minutes.toFixed(2)) })
 }

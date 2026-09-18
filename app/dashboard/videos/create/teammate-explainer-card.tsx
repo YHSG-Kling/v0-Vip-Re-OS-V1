@@ -126,8 +126,12 @@ export function TeammateExplainerCard() {
             <Badge variant={readiness.didConfigured ? "default" : "destructive"}>
               {readiness.didConfigured ? "D-ID avatar engine: ready" : "D-ID avatar engine: not configured"}
             </Badge>
-            <Badge variant={readiness.presenterReady ? "default" : "secondary"}>
-              {readiness.presenterReady ? "Your avatar: ready" : "Your avatar: not set up"}
+            <Badge variant={readiness.hasAvatar ? "default" : "secondary"}>
+              {readiness.hasAvatar
+                ? "Talking-head avatar: ready"
+                : readiness.presenterReady
+                  ? "Photo only (animated)"
+                  : "Your avatar: not set up"}
             </Badge>
             <Badge variant={readiness.voiceSource === "agent_clone" ? "default" : "secondary"}>
               <Mic className="h-3 w-3 mr-1" />
@@ -158,6 +162,20 @@ export function TeammateExplainerCard() {
             <AlertDescription>
               You have no avatar configured yet — finish Settings → Voice &amp; Avatar. If you queue
               a video now it will park and you will be notified to complete setup.
+            </AlertDescription>
+          </Alert>
+        )}
+        {/* Photo on file but no real talking-head avatar → the video will animate
+            the still photo. Nudge the agent to set up the D-ID avatar. */}
+        {readiness && readiness.didConfigured && readiness.presenterReady && !readiness.hasAvatar && (
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Using your photo, not a talking-head avatar</AlertTitle>
+            <AlertDescription>
+              Only a still photo is on file, so this explainer will animate the photo. For a true
+              talking-head avatar, set it up in{" "}
+              <a href="/dashboard/settings/twin-studio" className="underline font-medium">Twin Studio</a>{" "}
+              (upload a short video or photo → D-ID builds your avatar).
             </AlertDescription>
           </Alert>
         )}

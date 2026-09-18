@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/app/components/ui/select"
 import { Code2, Copy, ExternalLink, Globe } from "lucide-react"
-import { toast } from "sonner"
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 
 interface Episode {
   id: string
@@ -79,14 +79,10 @@ export function EmbedWidgetTab({ episodes, agentId }: Props) {
 </audio>`
       : ""
 
-  async function copy(text: string, label = "Copied") {
-    try {
-      await navigator.clipboard.writeText(text)
-      toast.success(label)
-    } catch {
-      toast.error("Could not copy")
-    }
-  }
+  // `copy` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to hooks/use-copy-to-clipboard.ts `useCopyToClipboard`
+  // (used below).
+  const copy = useCopyToClipboard()
 
   return (
     <div className="space-y-6 max-w-3xl">

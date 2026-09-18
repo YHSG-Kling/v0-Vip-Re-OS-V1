@@ -15,13 +15,21 @@
  * Database: Supabase — uses maybeSingle(), never single().
  */
 
-import { generateObject } from "@/lib/ai/generate"
+import { generateObject, type GeneratedUsage } from "@/lib/ai/generate"
+import { friendlyAiError } from "@/lib/ai/ai-error"
 import { z } from "zod"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import type { KernelContact } from "@/lib/kernel/types"
+import {
+  isPriceImprovementEvent,
+  priceImprovementLabel,
+  publicPriceEventLabel,
+} from "@/lib/listings/price-improvement-label"
+import { SOCIAL_POST_CHAR_LIMITS, SOCIAL_POST_CHAR_LIMIT_DEFAULT } from "@/lib/constants"
+import { analyzeContentQuality, type QualityScore } from "@/lib/quality-checker"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -132,14 +140,14 @@ async function resolveBrandVoice(
 }
 
 // ─── PLATFORM CHARACTER LIMITS ────────────────────────────────────────────────
-
-const CHAR_LIMITS: Record<string, number> = {
-  facebook:  63000,
-  instagram: 2200,
-  linkedin:  3000,
-  twitter:   280,
-  tiktok:    2200,
-}
+//
+// TOMBSTONE (§1.1 / §6, 2026-08-29): the private `CHAR_LIMITS` literal that stood
+// here is DELETED. SURVIVOR: lib/constants/index.ts `SOCIAL_POST_CHAR_LIMITS` +
+// `SOCIAL_POST_CHAR_LIMIT_DEFAULT`, which this map was merged ONTO first — it is
+// where the tiktok arm and this map's shape came from, and it is where the four
+// orphaned `CONTENT_LIMITS.SOCIAL_POST_*` constants went. Two numbers for one
+// platform is the §6 defect exactly: facebook read 63000 here and 63206 there,
+// and only one of them is Facebook's actual ceiling.
 
 // ─── GENERATE SOCIAL POST ─────────────────────────────────────────────────────
 
@@ -158,6 +166,17 @@ export async function generateSocialPostContent(params: {
   complianceBlocked?: boolean
   complianceViolations?: string[]
   error?: string
+  /** REAL provider token counts for this call. ADDITIVE — see GeneratedUsage.
+   *  This lane books nothing (the generateObject shim never calls logAIUsage),
+   *  so a caller that ledgers a run of this generator MUST take the figure from
+   *  here rather than inventing one. Absent when no model call was made. */
+  usage?: GeneratedUsage
+  /** Merged (§1.1, lane N3a 2026-09-01) from the deleted /api/generate/social
+   *  route: the them-first quality verdict for the generated post. */
+  quality?: QualityScore
+  /** The ai_generated_content artifact row id — null when the session carried
+   *  no tenant to stamp or the ledger insert was refused (both logged). */
+  contentId?: string | null
 }> {
   try {
     const supabase = await createClient()
@@ -179,7 +198,7 @@ export async function generateSocialPostContent(params: {
       }
     }
 
-    const charLimit = CHAR_LIMITS[params.platform] ?? 2200
+    const charLimit = SOCIAL_POST_CHAR_LIMITS[params.platform] ?? SOCIAL_POST_CHAR_LIMIT_DEFAULT
 
     // ── 3. Build prompts from resolved brand voice ───────────────────────────
     const systemPrompt = [
@@ -188,6 +207,15 @@ export async function generateSocialPostContent(params: {
       `NEVER use fair housing violations or protected-class language.`,
       `NEVER make guarantees about home values or investment returns.`,
       `NEVER use deceptive urgency tactics.`,
+      // RENDER BOUNDARY (§6). `contentType` is the RAW social_posts.post_type
+      // CHECK value, so a price post used to hand the writer the literal string
+      // "price_reduction" (see the userPrompt below) and the model wrote it
+      // straight into a PUBLIC caption. Owner ruling: the public word is a price
+      // improvement. The stored value itself is untouched — only what the writer
+      // is told to SAY.
+      isPriceImprovementEvent(params.contentType)
+        ? `This post announces a lowered list price. NEVER write "price reduction", "price reduced", "price drop" or "price cut" — call it a ${priceImprovementLabel("sentence")}.`
+        : "",
       brandVoice.prohibited_words?.length
         ? `NEVER use these words: ${brandVoice.prohibited_words.join(", ")}.`
         : "",
@@ -203,7 +231,7 @@ export async function generateSocialPostContent(params: {
     const userPrompt = [
       `Create a ${params.platform} social media post.`,
       `Brief: ${params.brief}`,
-      `Content type: ${params.contentType ?? "general"}`,
+      `Content type: ${publicPriceEventLabel(params.contentType, "noun") ?? params.contentType ?? "general"}`,
       `Tone: ${params.tone ?? brandVoice.tone ?? "professional and warm"}`,
       `Formality: ${brandVoice.formality_level ?? "conversational"}`,
       `Character limit: ${charLimit}`,
@@ -220,7 +248,7 @@ export async function generateSocialPostContent(params: {
     ].filter(Boolean).join("\n")
 
     // ── 4. Generate with AI ──────────────────────────────────────────────────
-    const { object } = await generateObject({
+    const { object, usage } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: GeneratedPostSchema,
       system: systemPrompt,
@@ -228,26 +256,23 @@ export async function generateSocialPostContent(params: {
     })
 
     // ── 5. Compliance gate — evaluateOutbound ───────────────────────────────
-    // Social posts are broadcast content (no individual contact).
-    // Use a stub KernelContact so TCPA/Authority gates pass automatically
-    // while Fair Housing (Gate 4) and Them-First (Gate 5) still run.
-    const broadcastContactStub: KernelContact = {
-      id:                   "broadcast",
-      first_name:           "Broadcast",
-      last_name:            "Audience",
-      contact_type:         "buyer",
-      tcpa_consent:         true,  // TCPA gate skipped for broadcast social
-      isa_reengage_allowed: false,
-      dnc_status:           false,
-    }
-
+    // Social posts are broadcast content (no individual contact), so `contact`
+    // is omitted: TCPA/Authority (Gates 2-3) are skipped and Fair Housing
+    // (Gate 4) and Them-First (Gate 5) still run — the intent the stub
+    // KernelContact used to express.
+    //
+    // The stub carried `id: "broadcast"`, but contacts.id and
+    // compliance_events.entity_id are both uuid, so it made the contact
+    // re-fetch AND the audit-row INSERT fail with 22P02. Neither destructures
+    // `error`, so the gate kept blocking correctly while silently never
+    // writing a compliance_events row — and COMPLIANCE_VIOLATION never fired,
+    // because that notification is guarded on the insert having succeeded.
     const complianceResult = await evaluateOutbound({
       actorContext:  { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
       journeyType: "buyer",
       persona: "first_time",
       messageType: "social",
       content:       object.content,
-      contact:       broadcastContactStub,
     })
 
     if (!complianceResult.allowed) {
@@ -256,13 +281,67 @@ export async function generateSocialPostContent(params: {
         complianceBlocked:    true,
         complianceViolations: complianceResult.violations,
         error:                `Content blocked by compliance: ${complianceResult.violations?.[0] ?? "compliance violation"}`,
+        // The model DID run and DID cost tokens even though the gate refused
+        // the output. A blocked generation is spend, not a free call, so the
+        // figure is carried out here too — a caller that only ledgers the happy
+        // path is under-reporting real usage.
+        usage,
       }
     }
 
-    return { success: true, data: object }
+    // ── MERGED (§1.1, lane N3a 2026-09-01) from the deleted
+    // app/api/generate/social/route.ts: its two unique capabilities land on
+    // this survivor.
+    //
+    // 1. Them-first quality scoring (lib/quality-checker.ts) over the approved
+    //    post text.
+    const quality = analyzeContentQuality(object.content)
+
+    // 2. The ai_generated_content artifact row with the quality metrics. The
+    //    identity stamped on the ledger row is SESSION-derived (§4) — the
+    //    params.agentId/brokerageId shape generation inputs, but the row records
+    //    who actually ran it. content_type is the CANONICAL "social_post" (§6);
+    //    the route wrote the retired "social" spelling. Non-fatal on refusal —
+    //    the generated post is returned either way — but the error is READ and
+    //    logged (§3), never swallowed.
+    let contentId: string | null = null
+    const ctx = await getAgentContext()
+    if (ctx.isAuthenticated && ctx.brokerageId) {
+      const { data: savedContent, error: saveError } = await supabase
+        .from("ai_generated_content")
+        .insert({
+          content_type: "social_post",
+          content: object.content,
+          generated_content: object.content,
+          user_id: ctx.userId,               // users-class
+          agent_id: ctx.agentId,             // agents-class (identity census)
+          brokerage_id: ctx.brokerageId,
+          platform: params.platform || null,
+          hashtags: object.hashtags ?? [],
+          title: `Social post — ${params.platform}`,
+          quality_score: quality.score / 100,
+          metadata: {
+            source: "generateSocialPostContent",
+            brief: params.brief?.slice(0, 500),
+            them_percentage: quality.themPercentage,
+            agent_percentage: quality.agentPercentage,
+            warnings: quality.warnings,
+          },
+        })
+        .select("id")
+        .maybeSingle()
+      if (saveError) {
+        console.error("[generate-social-post] ai_generated_content artifact insert refused:", saveError.message)
+      }
+      contentId = savedContent?.id ?? null
+    } else {
+      console.warn("[generate-social-post] no authenticated tenant on session — artifact row not written")
+    }
+
+    return { success: true, data: object, usage, quality, contentId }
   } catch (error: any) {
     console.error("[generate-social-post] Error:", error)
-    return { success: false, error: error?.message ?? "Failed to generate post content" }
+    return { success: false, error: friendlyAiError(error, "Failed to generate post content") }
   }
 }
 
@@ -272,15 +351,48 @@ export async function generateSocialPostContent(params: {
  * Call this AFTER saving the social_post row to stamp brand_compliance_passed.
  * Uses checkBrandCompliance from lib/kernel/brand-compliance.ts which also
  * verifies approved hashtags, prohibited language, and logo compliance.
+ *
+ * GATED + SESSION-SCOPED (was neither). This is a **compliance stamp**, not a
+ * read: `checkBrandCompliance` writes `brand_compliance_passed` on the post, and
+ * that flag is exactly what `app/actions/social-share.ts:canAgentSharePost` and
+ * `shareListingPost` consult before letting a post go out under the brokerage's
+ * name. As a `"use server"` export with no session and a caller-supplied
+ * `brokerageId`, it let anyone run another tenant's brand rules against another
+ * tenant's post — including evaluating a post against a *different* brokerage's
+ * ruleset, which is how a post gets stamped compliant under rules that were never
+ * meant to apply to it.
+ *
+ * `brokerageId` is now ignored and derived from the session, and the post must
+ * belong to that brokerage before it is evaluated. On a refused lookup this fails
+ * CLOSED — `passed: false` — because the alternative in a compliance gate is
+ * stamping something nobody checked.
  */
 export async function stampPostBrandCompliance(params: {
   postId: string
-  brokerageId: string
+  /** Ignored — derived from the session. */
+  brokerageId?: string
 }): Promise<{ passed: boolean; violations: string[] }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { passed: false, violations: ["Not authenticated"] }
+  }
+
+  const supabase = await createClient()
+  const { data: post, error } = await supabase
+    .from("social_posts")
+    .select("id")
+    .eq("id", params.postId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+
+  if (error) return { passed: false, violations: ["Could not verify this post"] }
+  if (!post)  return { passed: false, violations: ["Post not found in your brokerage"] }
+
   return checkBrandCompliance({
     contentType: "social_post",
     contentId:   params.postId,
-    brokerageId: params.brokerageId,
+    brokerageId: ctx.brokerageId,
   })
 }
 
@@ -388,7 +500,9 @@ export async function generateWeeklyContentPlan(params: {
 
     return { success: true, data: object.plan }
   } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to generate weekly plan" }
+    // Never leak the raw AI-gateway billing/credit error ("-1 … free plan") to
+    // the user — map known infra failures to an honest, actionable message.
+    return { success: false, error: friendlyAiError(error, "Failed to generate weekly plan") }
   }
 }
 
@@ -396,6 +510,14 @@ export async function generateWeeklyContentPlan(params: {
  * Generic contextual draft generator.
  * Wires brand voice + compliance kernel for all outbound content types.
  * Used by ContextualAiAssistBar and any ad-hoc draft generation.
+ *
+ * MERGED IN (from the AI Toolkit's Email Composer, which used to be a stub that
+ * returned the literal string "AI-generated email"): `brief` and `variant`.
+ * This generator could previously write a draft FROM NOTHING or IMPROVE an
+ * existing one, but it had no slot for "here is what this message has to
+ * accomplish" — so the Toolkit's Context box and its Email-type picker had
+ * nowhere to land. Both are optional and additive; every existing caller is
+ * unchanged.
  */
 export async function generateContextualDraft(params: {
   agentId: string
@@ -405,7 +527,20 @@ export async function generateContextualDraft(params: {
   contactName?: string
   propertyAddress?: string
   currentContent?: string
-}): Promise<{ success: boolean; draft?: string; complianceViolations?: string[]; error?: string }> {
+  /** Free-text description of what this message must accomplish. */
+  brief?: string
+  /** A narrower label than contentType — "follow-up", "negotiation", "thank-you". */
+  variant?: string
+}): Promise<{
+  success: boolean
+  draft?: string
+  complianceViolations?: string[]
+  error?: string
+  /** REAL provider token counts. ADDITIVE, and for the same reason as on
+   *  generateSocialPostContent: this lane books nothing, so a caller that
+   *  ledgers the run must take the figure from here. */
+  usage?: GeneratedUsage
+}> {
   try {
     const brandVoice = await resolveBrandVoice(
       params.brokerageId ?? "",
@@ -415,13 +550,21 @@ export async function generateContextualDraft(params: {
 
     const DraftSchema = z.object({ draft: z.string() })
 
-    const instruction = params.currentContent
-      ? `Improve the following ${params.contentType}: "${params.currentContent.slice(0, 800)}"`
-      : `Write a ${params.contentType} for ${params.contactName ?? "a client"}.${
-          params.propertyAddress ? ` Property: ${params.propertyAddress}.` : ""
-        }`
+    // `variant` narrows the noun ("a follow-up email", not "an email"); `brief`
+    // is appended to BOTH branches because the caller's intent applies just as
+    // much when improving existing copy as when writing from scratch.
+    const label = params.variant ? `${params.variant} ${params.contentType}` : params.contentType
+    const briefLine = params.brief?.trim()
+      ? `\n\nWhat this ${label} has to accomplish: ${params.brief.trim().slice(0, 1200)}`
+      : ""
 
-    const { object } = await generateObject({
+    const instruction = (params.currentContent
+      ? `Improve the following ${label}: "${params.currentContent.slice(0, 800)}"`
+      : `Write a ${label} for ${params.contactName ?? "a client"}.${
+          params.propertyAddress ? ` Property: ${params.propertyAddress}.` : ""
+        }`) + briefLine
+
+    const { object, usage } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
       schema: DraftSchema,
       system: [
@@ -437,29 +580,27 @@ export async function generateContextualDraft(params: {
     })
 
     // Run compliance gate for outbound content types (not internal notes).
-    // Uses a stub KernelContact so TCPA/Authority gates pass; Fair Housing
-    // and Them-First gates evaluate the generated draft text.
+    // Fair Housing and Them-First evaluate the generated draft text.
+    //
+    // `contact` is omitted: this is a draft, and all we have is a display name
+    // (params.contactName), never a resolved contacts.id — so there is no
+    // recipient whose DNC/opt-out state could be checked. The stub that used
+    // to stand in here carried `id: "contextual_draft_target"`, which is not a
+    // uuid, so it made both the contact re-fetch and the compliance_events
+    // audit INSERT fail with 22P02 without ever surfacing an error.
     const OUTBOUND_TYPES = new Set(["email", "seller_update", "referral_ask", "review_request", "message"])
 
     if (OUTBOUND_TYPES.has(params.contentType) && params.brokerageId) {
-      const stubContact: KernelContact = {
-        id:                   "contextual_draft_target",
-        first_name:           params.contactName?.split(" ")[0] ?? "Contact",
-        last_name:            params.contactName?.split(" ").slice(1).join(" ") ?? "",
-        contact_type:         "buyer",
-        tcpa_consent:         true,
-        isa_reengage_allowed: false,
-        dnc_status:           false,
-      }
+      // This was computed and then ignored — the call hardcoded "social", so
+      // an email draft was graded against the social rule set.
       const messageType = params.contentType === "email" ? "email" : "social"
 
       const compliance = await evaluateOutbound({
         actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
         journeyType: "buyer",
         persona: "first_time",
-        messageType: "social",
+        messageType,
         content:      object.draft,
-        contact:      stubContact,
       })
 
       if (!compliance.allowed) {
@@ -467,13 +608,16 @@ export async function generateContextualDraft(params: {
           success:              false,
           complianceViolations: compliance.violations,
           error:                `Draft blocked by compliance: ${compliance.violations?.[0] ?? "compliance violation"}`,
+          // A refused draft still cost tokens — carried out so the caller's
+          // ledger records the spend rather than treating a block as free.
+          usage,
         }
       }
     }
 
-    return { success: true, draft: object.draft }
+    return { success: true, draft: object.draft, usage }
   } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to generate draft" }
+    return { success: false, error: friendlyAiError(error, "Failed to generate draft") }
   }
 }
 

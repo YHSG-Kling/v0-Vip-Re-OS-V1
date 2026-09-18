@@ -12,8 +12,6 @@ import {
   Target,
   ArrowRight,
   Award,
-  TrendingUp,
-  Gift,
 } from "lucide-react"
 
 interface BadgeProgress {
@@ -29,8 +27,11 @@ interface BadgeProgress {
 interface MotivationRailProps {
   currentPoints: number
   currentTier: string
-  nextTier: string
+  /** Null at the top of the threshold ladder — Diamond is conferred, not earned. */
+  nextTier: string | null
   pointsToNextTier: number
+  /** 0-100, from lib/gamification/tiers.ts — the ONE ladder. */
+  tierProgress: number
   recentBadges: Array<{
     id: string
     name: string
@@ -50,6 +51,7 @@ export function MotivationRail({
   currentTier,
   nextTier,
   pointsToNextTier,
+  tierProgress,
   recentBadges,
   nextBadgeProgress,
   pointDrivers,
@@ -64,9 +66,10 @@ export function MotivationRail({
     }
   }
 
-  const tierProgress = pointsToNextTier > 0 
-    ? Math.min(100, ((currentPoints % 2500) / (pointsToNextTier + (currentPoints % 2500))) * 100)
-    : 100
+  // The progress bar used to be `(currentPoints % 2500) / (pointsToNextTier + currentPoints % 2500)`
+  // — a modulo against a hard-coded 2,500 that belonged to no rung of any ladder, so the bar
+  // moved to a rhythm unrelated to the tier it claimed to measure. It is computed once, in
+  // lib/gamification/tiers.ts, and handed in.
 
   return (
     <Card className="border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-transparent">
@@ -92,7 +95,7 @@ export function MotivationRail({
         </div>
 
         {/* Tier Progress */}
-        {pointsToNextTier > 0 && (
+        {nextTier && pointsToNextTier > 0 && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Progress to {nextTier}</span>
@@ -155,7 +158,7 @@ export function MotivationRail({
           </div>
         </div>
 
-        <Link href="/dashboard/leaderboard">
+        <Link href="/dashboard/motivation">
           <Button variant="outline" size="sm" className="w-full gap-2">
             View Leaderboard
             <ArrowRight className="h-4 w-4" />

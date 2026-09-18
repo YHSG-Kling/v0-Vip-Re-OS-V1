@@ -55,8 +55,14 @@ function testPure() {
   console.log("\n[Layer 1 · pure — seller intent → contact_type]")
   check("a 'seller' motivation maps to contact_type='seller'",
     motivationToContactType("seller_motivated") === "seller", String(motivationToContactType("seller_motivated")))
-  check("an 'investor' motivation maps to 'investor' (not mis-bucketed as seller)",
-    motivationToContactType("investor") === "investor")
+  // Re-pinned 2026-08-31: the old expectation ('investor' stays a contact_type)
+  // was a §2 waypoint — m593 executed the owner ruling "investor is a persona
+  // and not a contact type", so the side is BUYER and the investing rides
+  // contact_persona='investor' (m589, set by the creator via
+  // resolveContactPersona). Still asserts the original defect can't return:
+  // never mis-bucketed as seller.
+  check("an 'investor' motivation maps to 'buyer' (persona carries the investing; never mis-bucketed as seller)",
+    motivationToContactType("investor") === "buyer", String(motivationToContactType("investor")))
   check("a 'both' motivation maps to 'buyer' (dual buyer/seller preserved; persona='both' set by creator)",
     motivationToContactType("both") === "buyer", String(motivationToContactType("both")))
   check("a null motivation maps to null (caller falls back to lead_type)",

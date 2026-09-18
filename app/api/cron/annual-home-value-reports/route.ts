@@ -11,7 +11,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
-import { generateAnnualHomeValueReportsCronTick } from "@/app/actions/annual-home-value-report"
+import { generateAnnualHomeValueReportsCronTick } from "@/lib/marketing/annual-home-value-report"
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"

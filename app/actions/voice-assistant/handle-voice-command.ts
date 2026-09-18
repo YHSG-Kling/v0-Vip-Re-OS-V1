@@ -239,16 +239,22 @@ export async function handleVoiceCommand(
     }
 
     // STEP 4: Dispatch command
+    //
+    // Identity travels in its OWN argument, not folded into `parameters`. Folding it in
+    // is what made it overwritable: the dispatcher merged `{...parameters, ...entities}`
+    // with entities LAST, and `entities` is what the LLM pulled out of the spoken
+    // sentence — so a voice-extracted `user_id` displaced the session's. dispatchCommand
+    // now strips every identity key out of both bags and applies this one afterwards.
     const dispatchResult = await dispatchCommand({
       target_system: intent.target_system,
       target_action: intent.target_action,
-      parameters: {
-        ...intent.parameters,
-        user_id,
-        brokerage_id,
-        role: user_role
+      parameters: intent.parameters,
+      entities: intent.entities,
+      identity: {
+        userId: user_id,
+        brokerageId: brokerage_id,
+        role: user_role,
       },
-      entities: intent.entities
     })
 
     if (!dispatchResult.success) {

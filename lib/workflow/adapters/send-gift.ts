@@ -200,9 +200,26 @@ export const sendGiftAdapter: ChannelAdapter = {
 }
 
 /**
- * Fallback path — creates a task for the agent to handle the gift manually
- * and returns a "sent" status (the workflow continues; the gift just
- * requires human action).
+ * NO GIFTING VENDOR? THE TASK STILL CARRIES A REAL RECOMMENDATION.
+ *
+ * OWNER RULING: "when the gift send has no gifting vendor row, ai makes a
+ * suggestion of the gift and a selection of etsy vendors within the task."
+ *
+ * This path used to hand the agent one generic keyword search —
+ * composeShoppableLinks("closing gift real estate client") — which is the same
+ * link for every client the brokerage has ever closed. Meanwhile the Gift Studio
+ * (lib/gifting/gift-studio.ts) already composes exactly what the ruling asks for
+ * and had been doing it since it shipped: memory-grounded picks mined from the
+ * contact's own file (tags, notes, occupation, ai_insights, life_events),
+ * address-personalized from THEIR closed transaction, deduped against gifts they
+ * have already received, budget-respecting — each with a pre-scoped Etsy vendor
+ * search and a copy-paste engraving line. Two gifting paths existed and the
+ * workflow was on the weaker one.
+ *
+ * So the fallback now runs the STUDIO's composer. Same facts, same catalog, same
+ * links the in-app Gift Studio shows — the agent gets a real recommendation with
+ * Etsy vendors to choose from, whether they arrived through the workflow or the
+ * studio window.
  */
 async function createPickProviderTask(
   ctx: StepContext,
@@ -210,16 +227,92 @@ async function createPickProviderTask(
   reason: string
 ): Promise<StepResult> {
   const { contact, brokerageId, agentId, supabase } = ctx
-  // Even the manual path gets a one-click starting point (B2C — the agent
-  // buys personally; searches keyed to the occasion, no provider).
-  const { composeShoppableLinks } = await import("@/lib/gifting/shoppable-links")
-  const shop = composeShoppableLinks(`${occasion.replace(/_/g, " ")} gift real estate client`)
+
+  // ── The contact's own file is what makes the pick individual ──────────────
+  let selections: import("@/lib/gifting/gift-studio").GiftSelection[] = []
+  try {
+    const { composeGiftSelections, mineGiftInterests, mineLifeEvents } =
+      await import("@/lib/gifting/gift-studio")
+
+    let facts: any = { occasion: normalizeGiftOccasion(occasion) }
+    if (contact?.id) {
+      const { data: c } = await supabase
+        .from("contacts")
+        .select("first_name, last_name, tags, contact_type, notes, occupation, ai_insights, life_events")
+        .eq("id", contact.id)
+        .maybeSingle()
+      const row = c as any
+      // Their closed deal supplies the address the engraving line uses.
+      const { data: tx } = await supabase
+        .from("transactions")
+        .select("property_address, close_date")
+        .eq("brokerage_id", brokerageId)
+        .or(`contact_id.eq.${contact.id},buyer_contact_id.eq.${contact.id}`)
+        .eq("status", "closed")
+        .order("close_date", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      // Never gift the same thing twice.
+      const { data: past } = await supabase
+        .from("client_gifts")
+        .select("gift_type")
+        .eq("contact_id", contact.id)
+        .limit(20)
+
+      facts = {
+        occasion: normalizeGiftOccasion(occasion),
+        familyName: row?.last_name ?? null,
+        firstNames: row?.first_name ?? null,
+        homeAddress: (tx as any)?.property_address ?? null,
+        closeYear: (tx as any)?.close_date ? new Date((tx as any).close_date).getFullYear() : null,
+        persona: Array.isArray(row?.tags) ? row.tags.join(",") : (row?.contact_type ?? null),
+        budgetMax: null,
+        pastGiftKeys: ((past ?? []) as any[]).map((g) => String(g.gift_type ?? "")),
+        interests: mineGiftInterests({
+          tags: Array.isArray(row?.tags) ? row.tags : null,
+          notes: row?.notes ?? null,
+          occupation: row?.occupation ?? null,
+          aiInsights: row?.ai_insights != null
+            ? (typeof row.ai_insights === "string" ? row.ai_insights : JSON.stringify(row.ai_insights))
+            : null,
+          contactType: row?.contact_type ?? null,
+        }),
+        lifeEvents: mineLifeEvents(row?.life_events),
+      }
+    }
+    selections = composeGiftSelections(facts, 3)
+  } catch {
+    // Composition is best-effort: a task with no picks still beats no task.
+  }
+
+  const description = [
+    reason,
+    selections.length > 0
+      ? `AI picks for ${contact?.first_name ?? "this client"} — choose one:`
+      : null,
+    ...selections.map((s, i) => [
+      `${i + 1}. ${s.title} ($${s.priceBand[0]}–$${s.priceBand[1]})`,
+      `   Why: ${s.whyThisFits}`,
+      s.memoryHook ? `   From their file: ${s.memoryHook}` : null,
+      s.personalization ? `   Personalization (copy-paste): ${s.personalization}` : null,
+      `   Etsy vendors: ${s.etsyUrl}`,
+      `   Amazon: ${s.amazonUrl}`,
+    ].filter(Boolean).join("\n")),
+    // Only when composition produced nothing — an honest floor, not the default.
+    selections.length === 0
+      ? (await import("@/lib/gifting/shoppable-links"))
+          .composeShoppableLinks(`${occasion.replace(/_/g, " ")} gift real estate client`).taskLine
+      : null,
+  ].filter(Boolean).join("\n")
+
   const { data: task } = await supabase.from("tasks").insert({
     brokerage_id: brokerageId,
     contact_id:   contact?.id ?? null,
     assigned_to_agent_id: agentId,
-    title: `Pick + send ${occasion} gift to ${contact?.first_name ?? "contact"}`,
-    description: `${reason} ${shop.taskLine}`,
+    title: selections.length > 0
+      ? `Send ${contact?.first_name ?? "your client"} the ${selections[0].title.toLowerCase()} (or pick another)`
+      : `Pick + send ${occasion} gift to ${contact?.first_name ?? "contact"}`,
+    description,
     due_date: new Date(Date.now() + 2 * 86_400_000).toISOString(),
     assignee_type: "agent",
     source: "workflow_sequence",
@@ -236,7 +329,43 @@ async function createPickProviderTask(
       gift_order_id: null,
       task_id: task?.id,
       occasion,
-      note: `Manual handling required — task created: ${reason}`,
+      // The picks travel in the step output too, so a later step (or the
+      // Team Room feed) can show WHAT the AI recommended, not just that it did.
+      recommendations: selections.map((s) => ({
+        key: s.key, title: s.title, etsyUrl: s.etsyUrl, priceBand: s.priceBand,
+      })),
+      note: selections.length > 0
+        ? `${selections.length} AI gift picks with Etsy vendors on the task: ${reason}`
+        : `Manual handling required — task created: ${reason}`,
     },
+  }
+}
+
+/**
+ * The STEP's occasion vocabulary → the Gift Studio's. They are not the same list
+ * and the mismatch matters: the step offers `just_because`, which GiftFacts does
+ * not admit, and every catalog entry is filtered by occasion — so passing it
+ * straight through would return ZERO selections and quietly reduce this back to
+ * the generic-link fallback it replaces.
+ *
+ *   step               studio        why
+ *   closing            closing       same
+ *   birthday           birthday      same
+ *   anniversary        anniversary   same
+ *   referral_thank_you referral_thank_you  same (the studio has it too)
+ *   just_because       holiday       'holiday' is the studio's broad
+ *                                    no-specific-milestone bucket and the
+ *                                    widest-covered occasion in the catalog
+ */
+function normalizeGiftOccasion(occasion: string): import("@/lib/gifting/gift-studio").GiftFacts["occasion"] {
+  switch ((occasion ?? "").toLowerCase()) {
+    case "closing":            return "closing"
+    case "birthday":           return "birthday"
+    case "anniversary":        return "anniversary"
+    case "referral_thank_you": return "referral_thank_you"
+    case "congratulations":    return "congratulations"
+    case "holiday":            return "holiday"
+    case "just_because":       return "holiday"
+    default:                   return "holiday"
   }
 }

@@ -96,6 +96,9 @@ export function TopMatchesPanel({ contactId, matches }: TopMatchesPanelProps) {
                     {m.match_reasons[0]}
                   </p>
                 )}
+                {m.attribution && (
+                  <p className="text-[11px] text-muted-foreground mt-1">{m.attribution}</p>
+                )}
                 <div className="flex gap-2 mt-3">
                   <Button size="sm" className="flex-1 text-xs" asChild>
                     <Link href={`/portal/${contactId}/properties/${m.property_id}`}>View</Link>

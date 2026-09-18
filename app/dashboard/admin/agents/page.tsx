@@ -5,7 +5,10 @@ import { AgentOffboardingClient } from "./agent-offboarding-client"
 
 export const dynamic = "force-dynamic"
 
-const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+// TENANT ADMIN GATE (kept inline — mirrors the deactivation/reassignment
+// actions, which deliberately exclude team_lead): 'superadmin' removed — dead
+// as users.user_type (0 live rows store it).
+const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 /**
  * Agent off-boarding — the admin user-management surface for deactivating an agent without

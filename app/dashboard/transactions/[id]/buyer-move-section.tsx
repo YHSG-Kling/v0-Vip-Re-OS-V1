@@ -12,13 +12,14 @@
 // Auto-created when a buyer-side deal enters CLOSING_PREP; for deals already in/near closing a one-click
 // "Set up move-in concierge" bootstraps the case.
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useToast } from "@/hooks/use-toast"
 import { Truck, Loader2, Sparkles } from "lucide-react"
 import {
   ensureBuyerMoveCaseAction,
+  getBuyerMoveCaseAction,
   updateMoveTaskAction,
   setServiceModeAction,
 } from "@/app/actions/buyer-move"
@@ -55,6 +56,36 @@ export function BuyerMoveSection({
   const [moveCase, setMoveCase] = useState<BuyerMoveCase | null>(initialCase)
   const [pending, startTransition] = useTransition()
   const [busyTask, setBusyTask] = useState<MoveTaskType | null>(null)
+  /**
+   * The LIVE service-mode recommendation from
+   * `app/actions/buyer-move.ts:getBuyerMoveCaseAction`, which had no caller.
+   *
+   * The banner below used the STORED `moveCase.recommended_mode`, which is only
+   * recomputed when someone toggles a task. `decideBuyerMode` also weighs
+   * `daysToClose`, and that changes every day with no user action — so a deal
+   * drifting into "essential utilities still unset with closing approaching" never
+   * raised the banner unless the agent happened to tick something off. The action
+   * recomputes it server-side on load; the stored value remains the fallback.
+   */
+  const [liveRecommendedMode, setLiveRecommendedMode] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!moveCase) return
+    let cancelled = false
+    void getBuyerMoveCaseAction({ transactionId, brokerageId }).then((r) => {
+      if (cancelled) return
+      if (r.success && r.case) {
+        setMoveCase(r.case)
+        setLiveRecommendedMode(r.recommendation?.recommended_mode ?? null)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+    // Deliberately keyed on the identifiers only — this is a load-time refresh, not
+    // a loop that re-fires on every local case update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactionId, brokerageId])
 
   if (!moveCase && !canBootstrap) return null
 
@@ -109,7 +140,8 @@ export function BuyerMoveSection({
 
   const badge = frictionBadge(moveCase.friction_score)
   const openEssentials = moveCase.tasks.filter((t) => t.group === "essential" && t.status !== "done" && t.status !== "skipped").length
-  const recommendHandoff = moveCase.recommended_mode === "handoff"
+  // Live recommendation wins when we have one; the stored column is the fallback.
+  const recommendHandoff = (liveRecommendedMode ?? moveCase.recommended_mode) === "handoff"
 
   return (
     <section className="border-b bg-background px-4 py-3 sm:px-6" data-testid="buyer-move">

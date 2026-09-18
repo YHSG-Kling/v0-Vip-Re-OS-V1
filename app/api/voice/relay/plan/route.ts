@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveInboundContext, planReceptionTurn, planTurnWithPrompt, bookShowingFromCall, rsvpOpenHouseFromCall, proposeSellerLeadFromCall } from "@/lib/voice/twilio-voice"
+import { resolveInboundContext, planReceptionTurn, planTurnWithPrompt, bookShowingFromCall, rsvpOpenHouseFromCall, proposeSellerLeadFromCall, createCallbackTaskFromCall } from "@/lib/voice/twilio-voice"
 import { appendTranscript, buildOutboundPrompt } from "@/lib/voice/reception-brain"
 import { parseRelayPlanRequest, composePacingRule, type RelayPlanResponse } from "@/lib/voice/conversation-relay"
-import { isPlatformNumber, resolvePlatformReceptionContext, planPlatformReceptionTurn, capturePhoneProspect } from "@/lib/voice/platform-reception"
+import { isPlatformNumber, resolvePlatformReceptionContext, capturePhoneProspect } from "@/lib/voice/platform-reception"
 import { decodeOutboundBrief } from "@/lib/voice/twilio-outbound"
 
 export const dynamic = "force-dynamic"
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     const { data: call } = await svc.from("platform_reception_calls")
       .select("id, transcript").eq("call_sid", req.callSid).maybeSingle()
     const transcript = (call as any)?.transcript ?? null
-    const plan = await planPlatformReceptionTurn(pctx, transcript, req.utterance, composePacingRule(req.interrupts))
+    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: req.utterance, extraRules: composePacingRule(req.interrupts) })
     const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
     if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
@@ -70,8 +70,8 @@ export async function POST(request: NextRequest) {
   if (!ctx) ctx = await resolveInboundContext(svc, req.from)
   if (!ctx) return json({ say: "Sorry, something went wrong. Goodbye.", endSession: true })
 
-  const { data: call } = await svc.from("voice_calls").select("id, contact_id, agent_id, transcription, ai_notes, direction")
-    .eq("vapi_call_id", req.callSid).maybeSingle()
+  const { data: call } = await svc.from("voice_calls").select("id, contact_id, lead_id, agent_id, transcription, ai_notes, direction")
+    .eq("vendor_call_id", req.callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
   const brief = (call as any)?.direction === "outbound" ? decodeOutboundBrief((call as any)?.ai_notes) : null
 
@@ -99,7 +99,10 @@ export async function POST(request: NextRequest) {
     ? await planTurnWithPrompt(
         `${buildOutboundPrompt(ctx.identity, { objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt }).systemPrompt}${pacing ? `\n\n${pacing}` : ""}`,
         transcript, req.utterance)
-    : await planReceptionTurn(ctx, transcript, req.utterance, svc, pacing)
+    : await planReceptionTurn({
+        deployment: "tenant", ctx, transcript, utterance: req.utterance, svc, extraRules: pacing,
+        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null } : undefined,
+      })
   const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
   if (call) await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
@@ -138,6 +141,9 @@ export async function POST(request: NextRequest) {
   }
   if (plan.action.kind === "seller_lead" && call) {
     await proposeSellerLeadFromCall(svc, ctx, call as any, plan.action.address)
+  }
+  if (plan.action.kind === "callback" && call) {
+    await createCallbackTaskFromCall(svc, ctx, call as any, plan.action.phone, plan.action.whenPhrase, plan.action.reason)
   }
   if (plan.action.kind === "hangup" && call) {
     await svc.from("voice_calls").update({ status: "completed", outcome: "completed", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})

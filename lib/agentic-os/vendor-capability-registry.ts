@@ -11,7 +11,7 @@
 //
 // Pure — no I/O — so the registry + provider selection are unit-tested deterministically.
 
-import { resolveVendorAction, type VendorAction } from "@/lib/vendor-governance/vendor-policy"
+import { resolveVendorAction, freeAlternativeFor, type VendorAction } from "@/lib/vendor-governance/vendor-policy"
 
 export type VendorCapability =
   | "property_valuation"     // AVM — what is this home worth now?
@@ -191,7 +191,9 @@ export const CAPABILITY_AGIS: Record<VendorCapability, CapabilityAgis> = {
   tts:                   { verb: "RENDER",  scope: "comms:tts",       intentWeight: 0.4 },
 }
 
-/** The scope an agent must hold to invoke a capability. */
+/** The scope an agent must hold to invoke a capability. THE accessor: the invoke-time
+ *  gate (invoke-planner.ts planInvocation) and the DISCOVER manifest (buildActionManifest
+ *  below) both read the scope through it. */
 export function requiredScope(capability: VendorCapability): string {
   return CAPABILITY_AGIS[capability].scope
 }
@@ -222,7 +224,7 @@ export function buildActionManifest(): AgenticAction[] {
       verb: agis.verb,
       capability: cap,
       category: def.domain,
-      scope: agis.scope,
+      scope: requiredScope(cap),
       purpose: def.purpose,
       inputs: def.inputs,
       intentWeight: agis.intentWeight,
@@ -258,7 +260,27 @@ export function selectProvider(capability: VendorCapability, opts: { overBudget:
   if (free) {
     return { provider: free.vendor, tier: "free", action: "degrade", usingFreeFallback: true, reason: "over budget — degraded to free tier" }
   }
-  // No free path for this capability — defer to vendor policy (block).
+  // No free path IN THIS REGISTRY — defer to vendor policy, which keeps its own
+  // per-vendor downgrade ladder (lib/vendor-governance/vendor-policy.ts).
+  //
+  // THE CONTRADICTION THIS FIXES (wave 26). resolveVendorAction returns
+  // "degrade" precisely when VENDOR_POLICY names a freeAlternative for the
+  // vendor (vendor-policy.ts:40-43). This branch took that verdict and returned
+  // it alongside `usingFreeFallback: false`, `provider: <the paid vendor>` and
+  // the reason "no free alternative" — telling the caller to degrade while
+  // naming no path to degrade TO, and asserting in the same object that none
+  // exists. `freeAlternativeFor` is the declared lookup for that name and had no
+  // caller anywhere; asking it is what makes a "degrade" verdict actionable.
   const action = resolveVendorAction(primary.vendor, true)
+  const alt = action === "degrade" ? freeAlternativeFor(primary.vendor) : null
+  if (alt) {
+    return {
+      provider: alt,
+      tier: "free",
+      action,
+      usingFreeFallback: true,
+      reason: `over budget — no free provider registered for this capability; vendor policy degrades ${primary.vendor} to ${alt}`,
+    }
+  }
   return { provider: primary.vendor, tier: primary.tier, action, usingFreeFallback: false, reason: "over budget — no free alternative" }
 }

@@ -54,7 +54,14 @@ export interface WorkloadIndex {
 }
 
 export const HIGH_LOAD = 0.85
-export const MED_LOAD = 0.7
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: MED_LOAD.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const MED_LOAD = 0.7
 /** Follow-up debt that means balls are already being dropped, regardless of headcount. */
 export const DEBT_ALARM = 8
 

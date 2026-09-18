@@ -10,8 +10,16 @@
 // status); an unscrubbed/unknown number still ranks ABOVE a known-bad one in the election.
 
 import "server-only"
-import { callBatchDataMcp } from "@/lib/external/batchdata-mcp"
-import { electScrubbedPhones, electionToColumnPatch, toTenDigits, type ScrubCandidate, type PhoneElection } from "./phone-scrub"
+// SURVIVOR (wave 68): checkDncStatus / checkTcpaStatus are now typed mirrors on
+// lib/external/batchdata-mcp.ts, next to verifyPhone — the SAME two tools this file
+// used to call as raw callBatchDataMcp("check_dnc_status"/"check_tcpa_status") strings.
+// One vocabulary (§6): the tool name and the tolerant-flag reader live in ONE place,
+// shared with the SEND-TIME scrub in lib/communication/tcpa-gate.ts.
+import { checkDncStatus, checkTcpaStatus } from "@/lib/external/batchdata-mcp"
+import {
+  electScrubbedPhones, electionToColumnPatch, toTenDigits, dispositionOf,
+  type ScrubCandidate, type PhoneElection, type PhoneDisposition,
+} from "./phone-scrub"
 
 export { toTenDigits }
 
@@ -21,22 +29,10 @@ export interface PhoneScrubResult {
   election: PhoneElection | null
   /** how many numbers were actually checked against BatchData */
   scrubbed: number
-}
-
-/** Tolerant boolean read across the field names BatchData variants use. null when unparseable. */
-function readFlag(data: unknown, keys: string[]): boolean | null {
-  if (!data || typeof data !== "object") return null
-  const obj = data as Record<string, unknown>
-  for (const k of keys) {
-    const v = obj[k]
-    if (typeof v === "boolean") return v
-    if (typeof v === "string") {
-      const s = v.trim().toLowerCase()
-      if (["true", "yes", "listed", "dnc", "litigator"].includes(s)) return true
-      if (["false", "no", "clean", "none", "not_listed"].includes(s)) return false
-    }
-  }
-  return null
+  /** Per-number verdict in the caller's input order — WHY each line ranked where it did
+   *  (clean / unknown / unreachable / dnc / tcpa_litigator). The election above says what
+   *  was promoted; this says what was found. Empty when nothing was scrubbed. */
+  dispositions: Array<{ number: string; disposition: PhoneDisposition }>
 }
 
 /**
@@ -46,28 +42,48 @@ function readFlag(data: unknown, keys: string[]): boolean | null {
  */
 export async function scrubAndElectPhones(numbers: Array<string | null | undefined>): Promise<PhoneScrubResult> {
   const tens = numbers.map((n) => ({ raw: n, ten: toTenDigits(n) })).filter((x) => !!x.raw && !!x.ten) as Array<{ raw: string; ten: string }>
-  if (tens.length === 0) return { deferred: false, election: null, scrubbed: 0 }
+  if (tens.length === 0) return { deferred: false, election: null, scrubbed: 0, dispositions: [] }
 
   const candidates: ScrubCandidate[] = []
   let scrubbed = 0
   for (const { raw, ten } of tens) {
-    const dncRes = await callBatchDataMcp<unknown>("check_dnc_status", { phone_number: ten })
-    if (dncRes.unconfigured) return { deferred: true, election: null, scrubbed } // provider off — bail before more calls
-    const tcpaRes = await callBatchDataMcp<unknown>("check_tcpa_status", { phone_number: ten })
-
-    const dnc = dncRes.ok ? readFlag(dncRes.data, ["dnc", "is_dnc", "isDnc", "dnc_status", "onDnc", "listed", "result"]) : null
-    const tcpaLitigator = tcpaRes.ok ? readFlag(tcpaRes.data, ["tcpa", "litigator", "is_litigator", "isLitigator", "tcpaLitigator", "tcpa_litigator", "listed", "result"]) : null
+    const dncRes = await checkDncStatus(ten)
+    if (dncRes.unconfigured) return { deferred: true, election: null, scrubbed, dispositions: [] } // provider off — bail before more calls
+    const tcpaRes = await checkTcpaStatus(ten)
     if (dncRes.ok || tcpaRes.ok) scrubbed++
 
-    candidates.push({ number: raw, dnc, tcpaLitigator, reachable: null })
+    candidates.push({ number: raw, dnc: dncRes.dnc, tcpaLitigator: tcpaRes.tcpaLitigator, reachable: null })
   }
 
-  return { deferred: false, election: electScrubbedPhones(candidates), scrubbed }
+  // The same pure classifier the election ranks by — reported per number so a
+  // caller (or a log line) can say WHY a line was demoted, not just that it was.
+  const dispositions = candidates.map((c) => ({ number: c.number, disposition: dispositionOf(c) }))
+  return { deferred: false, election: electScrubbedPhones(candidates), scrubbed, dispositions }
 }
 
 /** Convenience: the column patch to merge into a contacts/leads update, or {} when deferred/empty. */
-export async function scrubPhonesForPatch(numbers: Array<string | null | undefined>): Promise<{ patch: Record<string, unknown>; deferred: boolean; reordered: boolean }> {
+export async function scrubPhonesForPatch(numbers: Array<string | null | undefined>): Promise<{
+  patch: Record<string, unknown>
+  deferred: boolean
+  reordered: boolean
+  dispositions: PhoneScrubResult["dispositions"]
+}> {
   const r = await scrubAndElectPhones(numbers)
-  if (r.deferred || !r.election) return { patch: {}, deferred: r.deferred, reordered: false }
-  return { patch: electionToColumnPatch(r.election), deferred: false, reordered: r.election.reordered }
+  if (r.deferred || !r.election) return { patch: {}, deferred: r.deferred, reordered: false, dispositions: r.dispositions }
+  const patch = electionToColumnPatch(r.election)
+  // FRESH-SCRUB STAMP (m641, applied live 2026-09-16; wave 69C carry b). A live DNC/TCPA
+  // verdict was just CONFIRMED for the primary line, so contacts.dnc_verified_at is
+  // stamped EXPLICITLY here (never a spread) — the same column
+  // lib/communication/tcpa-gate.ts::enforceTCPACompliance stamps on a send-time re-check
+  // (tcpa-gate.ts, the sentinelWrite under "tcpa_gate_dnc_verdict_stamp"). One vocabulary
+  // (§6): this is the INTAKE half of that same freshness clock — without it, a contact
+  // scrubbed here at enrichment still reads dnc_verified_at=null and the very first
+  // outbound send re-queries BatchData for a number this file already confirmed today.
+  // `leads` has no dnc_verified_at column — the caller (enrichment-orchestrator.ts)
+  // already whitelists which keys of this patch it writes to `leads` (phone /
+  // phone_secondary only), so this key is dropped there by construction, never sent.
+  if (patch.dnc_status !== undefined) {
+    patch.dnc_verified_at = new Date().toISOString()
+  }
+  return { patch, deferred: false, reordered: r.election.reordered, dispositions: r.dispositions }
 }

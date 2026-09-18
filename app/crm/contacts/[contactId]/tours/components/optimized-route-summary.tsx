@@ -50,7 +50,7 @@ export async function OptimizedRouteSummary({
   const tourIds = optimizedTours.map((t) => t.id)
   const { data: routes } = await supabase
     .from("showing_routes")
-    .select("id, showings, optimization_score, estimated_miles, total_duration, route_notes, created_at")
+    .select("id, showings, optimization_score, estimated_miles, total_duration, route_notes, created_at, route_date, optimized_order")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(50)
@@ -70,6 +70,16 @@ export async function OptimizedRouteSummary({
         const score = route?.optimization_score != null ? Number(route.optimization_score) : null
         const miles = route?.estimated_miles != null ? Number(route.estimated_miles) : null
         const tourDate = tour.tour_date ? new Date(tour.tour_date) : null
+        // The route was computed FOR route_date — if the tour's own date has
+        // since moved (rescheduled after optimizing), the drive-time estimates
+        // above are stale (a different day can mean different traffic/stops).
+        const routeStale = !!(
+          route?.route_date && tour.tour_date &&
+          String(route.route_date).slice(0, 10) !== String(tour.tour_date).slice(0, 10)
+        )
+        const geocodedCount = Array.isArray(route?.optimized_order)
+          ? (route.optimized_order as Array<{ placedByGeocoder?: boolean }>).filter((o) => o.placedByGeocoder).length
+          : null
 
         return (
           <Card key={tour.id} className="border-blue-200 bg-blue-50/40">
@@ -98,6 +108,16 @@ export async function OptimizedRouteSummary({
                   {score != null && (
                     <Badge variant="outline" className="text-xs">
                       score {score.toFixed(2)}
+                    </Badge>
+                  )}
+                  {geocodedCount != null && (
+                    <Badge variant="outline" className="text-xs">
+                      {geocodedCount}/{stops.length} geocoded
+                    </Badge>
+                  )}
+                  {routeStale && (
+                    <Badge variant="outline" className="text-xs border-amber-300 text-amber-800 bg-amber-50">
+                      Tour date changed — re-run to update
                     </Badge>
                   )}
                 </div>

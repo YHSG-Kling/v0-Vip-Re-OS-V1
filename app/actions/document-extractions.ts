@@ -17,6 +17,14 @@
  * verified field as high confidence, so an amber "propose" from a
  * medium-confidence scan upgrades to a green autonomous insert the
  * moment a human confirms the fact — the assisted→autonomous ladder.
+ *
+ * WHO VERIFIED. `verified_by_user_id` is written below from the session's
+ * auth user id — a USERS-class id (it has no FK in scripts/schema-fk-map.ts;
+ * the class is the writer's). It was stamped on every verification and read
+ * by nothing: the list reported WHEN and dropped WHO. It is now resolved in
+ * one batched read anchored on the actor's brokerage, in four states that are
+ * never collapsed and never "the system": resolved / unresolved (an id that
+ * no user of this brokerage carries) / not_recorded (NULL) / lookup_refused.
  */
 
 import { createClient } from "@/lib/supabase/server"
@@ -42,6 +50,12 @@ export interface ExtractionRow {
   value: unknown
   confidence: string
   verified: boolean
+  verifiedAt: string | null
+  /** users.id of the person who verified — null when unverified. */
+  verifiedByUserId: string | null
+  /** Display name resolved inside the actor's brokerage; null unless `resolved`. */
+  verifiedByName: string | null
+  verifiedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
   classification: string | null
   documentSummary: string | null
   transactionId: string | null
@@ -56,24 +70,57 @@ export async function listRecentExtractionsAction(input?: {
   if (!actor.ok) return { ok: false, error: actor.error }
   const svc = createServiceClient()
 
-  const { data } = await svc
+  // `error` is read: a refused ledger read used to resolve as "no facts yet".
+  const { data, error: listErr } = await svc
     .from("document_field_extractions")
-    .select("id, document_id, field_key, field_value_json, confidence, verified_at, created_at")
+    .select("id, document_id, field_key, field_value_json, confidence, verified_at, verified_by_user_id, created_at")
     .eq("brokerage_id", actor.brokerageId)
     .order("created_at", { ascending: false })
     .limit(input?.limit ?? 30)
+  if (listErr) return { ok: false, error: listErr.message }
   const rows = (data ?? []) as any[]
   if (rows.length === 0) return { ok: true, rows: [] }
 
   const docIds = Array.from(new Set(rows.map((r) => r.document_id)))
-  const { data: docs } = await svc
+  const { data: docs, error: docsErr } = await svc
     .from("documents")
     .select("id, classification, summary, transaction_id")
     .in("id", docIds)
+    .eq("brokerage_id", actor.brokerageId)
+  if (docsErr) console.error("[document-extractions] documents lookup refused — facts render without document context:", docsErr.message)
   const docById = new Map(((docs ?? []) as any[]).map((d) => [d.id, d]))
+
+  // Batched, tenant-anchored verifier names. The brokerage predicate is the
+  // point: a users.id from another tenant must resolve to "unresolved", not to
+  // a name this brokerage has no business seeing.
+  const verifierIds = Array.from(new Set(rows.map((r) => r.verified_by_user_id).filter((id): id is string => !!id)))
+  const verifierNameById = new Map<string, string>()
+  let verifierLookupRefused = false
+  if (verifierIds.length > 0) {
+    const { data: verifiers, error: verifiersErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", verifierIds)
+      .eq("brokerage_id", actor.brokerageId)
+    if (verifiersErr) {
+      verifierLookupRefused = true
+      console.error("[document-extractions] verifier name lookup refused:", verifiersErr.message)
+    }
+    for (const u of (verifiers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) verifierNameById.set(u.id as string, label as string)
+    }
+  }
 
   const out: ExtractionRow[] = rows.map((r) => {
     const d = docById.get(r.document_id)
+    const verifiedByUserId = (r.verified_by_user_id as string | null) ?? null
+    const verifiedByName = verifiedByUserId ? verifierNameById.get(verifiedByUserId) ?? null : null
+    const verifiedByState: ExtractionRow["verifiedByState"] =
+      !verifiedByUserId ? "not_recorded"
+      : verifiedByName ? "resolved"
+      : verifierLookupRefused ? "lookup_refused"
+      : "unresolved"
     return {
       id: r.id,
       documentId: r.document_id,
@@ -81,6 +128,10 @@ export async function listRecentExtractionsAction(input?: {
       value: r.field_value_json,
       confidence: r.confidence,
       verified: !!r.verified_at,
+      verifiedAt: (r.verified_at as string | null) ?? null,
+      verifiedByUserId,
+      verifiedByName,
+      verifiedByState,
       classification: (d?.classification as string | null) ?? null,
       documentSummary: (d?.summary as string | null) ?? null,
       transactionId: (d?.transaction_id as string | null) ?? null,
@@ -131,11 +182,14 @@ export async function verifyExtractionAction(input: {
     if (doc?.classification) {
       // Effective fields = the raw scan overlaid with every verified ledger
       // value (human corrections included) — the scan blob itself stays as-is.
-      const { data: ledger } = await svc
+      // The ledger's error is read: a refused overlay read must not re-derive
+      // from the raw scan as though no human had ever corrected anything.
+      const { data: ledger, error: ledgerErr } = await svc
         .from("document_field_extractions")
         .select("field_key, field_value_json")
         .eq("document_id", (doc as any).id)
         .not("verified_at", "is", null)
+      if (ledgerErr) throw new Error(`verified-ledger read refused: ${ledgerErr.message}`)
       const fields: Record<string, unknown> = { ...(((doc as any).extracted_fields ?? {}) as Record<string, unknown>) }
       for (const l of ((ledger ?? []) as any[])) fields[l.field_key] = l.field_value_json
 
@@ -150,7 +204,10 @@ export async function verifyExtractionAction(input: {
       })
       rederived = run.inserted > 0 || run.confirmed > 0
     }
-  } catch { /* verification stands even if re-derivation hiccups */ }
+  } catch (e) {
+    // Verification stands even if re-derivation hiccups — but say so.
+    console.error("[document-extractions] re-derivation skipped after verify:", e instanceof Error ? e.message : e)
+  }
 
   return { ok: true, rederived }
 }

@@ -41,16 +41,14 @@
  * trusts what it's handed and DOES NOT redraft on its own.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { BrollLayer } from "./_BrollLayer"
+import { CaptionLayer } from "./components/CaptionLayer"
+import { avatarFadeOutFrame } from "../lib/video/script-structure"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentTalkingHeadReelProps {
   /** Top hook label — short eyebrow (e.g. "MARKET UPDATE", "JUST LISTED",
@@ -85,6 +83,25 @@ export interface AgentTalkingHeadReelProps {
    *  for caption legibility) and the avatar shrinks to a floating card —
    *  the scroll-stopping pattern. Absent → the original solid-brand layout. */
   brollClips?: Array<{ url: string; caption?: string }>
+  /**
+   * D-ID's OWN measured render duration in seconds (lib/video/
+   * avatar-render-orchestrator.ts, wave 55 realism ruling). When the avatar
+   * clip is SHORTER than the BODY window — the common case, since
+   * NARRATION_HEADROOM deliberately under-claims the window — the avatar
+   * fades out at its real end instead of Remotion holding a frozen last
+   * frame for the remainder. Optional + additive: absent renders EXACTLY as
+   * before (the raw hold), so an older render row with no measurement is
+   * unaffected.
+   */
+  avatarDurationSeconds?: number | null
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. Distinct from the
+   *  static `caption` strip above (a single hand-picked line); these sync to the
+   *  FULL spoken narration across the BODY window. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw narration script text; CaptionLayer
+   *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -104,11 +121,23 @@ const OUTRO  = 2  * FPS
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
-  qrCodeDataUrl, qrCaption, brand, brollClips,
+  voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips, avatarDurationSeconds,
+  captionsCues, captionScript,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
   const hasBroll = (brollClips?.length ?? 0) > 0
+  // REALISM (wave 55) — null when no measurement or the clip fills the
+  // window; a real frame otherwise. `frame` is GLOBAL (called at the
+  // composition root, not inside the BODY <Sequence>), and BODY starts at
+  // COVER, so the local frame within BODY is `frame - COVER`.
+  const avatarFadeStart = avatarFadeOutFrame(avatarDurationSeconds, BODY, FPS)
+  const avatarOpacity = avatarFadeStart != null
+    ? interpolate(frame - COVER, [avatarFadeStart, avatarFadeStart + 12], [1, 0], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      })
+    : 1
   // With B-roll behind, the avatar floats as a card (bottom-left) so the
   // footage reads; without it, the original near-full-bleed layout stands.
   const avatarBox: React.CSSProperties = hasBroll
@@ -117,6 +146,20 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {/* THE SEPARATE NARRATION TRACK the `voiceoverUrl` prop has always
+          promised. It was DECLARED and documented above and read by nothing:
+          buildAvatarRenderRow (lib/video/avatar-render-orchestrator.ts) writes
+          input_props.voiceoverUrl on every avatar render and stamps
+          used_voiceover, and the coordinator only muxes the DIFFERENT key
+          input_props.voiceover_url (lib/remotion/render-coordinator.ts) — so a
+          brokerage on the separate-TTS path (multi-language) got a ledger row
+          saying "narrated" over a video with no narration. §1: the capability
+          is wanted and documented, so the missing half is BUILT rather than the
+          prop deleted. Guarded, and null on the normal D-ID path, so the
+          avatar's own lip-synced audio is never doubled — exactly as the prop
+          doc says. Same shape as the 13 sibling compositions that already do
+          this (TestimonialReel, ComingSoonReel, NeighborhoodSpotlightReel, …). */}
+      {voiceoverUrl && <Audio src={voiceoverUrl} />}
       {/* COVER — 0-2s. Brand badge + hook + agent name. */}
       <Sequence from={0} durationInFrames={COVER}>
         <AbsoluteFill style={{
@@ -124,7 +167,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl ? (
-            <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1]) }} />
+            <SafeImg src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
           ) : (
             <div style={{
               fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7, marginBottom: 32,
@@ -133,13 +176,13 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 700,
-            opacity: interpolate(frame, [5, 20], [0, 1]),
+            opacity: interpolate(frame, [5, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 72, fontWeight: 800, color: "#fff", lineHeight: 1.05, marginTop: 24,
-            opacity: interpolate(frame, [15, 35], [0, 1]),
+            opacity: interpolate(frame, [15, 35], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {agentName}
           </div>
@@ -157,22 +200,27 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
               clips={brollClips!}
               totalFrames={BODY}
               overlayColor={`${brand.primaryColor}59`}
+              filmGrain
+              handheldDrift
             />
           )}
           {avatarVideoUrl ? (
             <Video
+              objectFit="cover"
               src={avatarVideoUrl}
-              startFrom={0}
-              endAt={BODY}
+              trimBefore={0}
+              trimAfter={BODY}
               style={{
                 ...avatarBox,
-                objectFit: "cover",
                 borderRadius: 12,
                 boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
+                // Wave 55 — fades to the branded/broll background at the
+                // avatar's REAL end instead of holding a frozen last frame.
+                opacity: avatarOpacity,
               }}
             />
           ) : agentPhotoUrl ? (
-            <Img
+            <SafeImg
               src={agentPhotoUrl}
               style={{
                 ...avatarBox,
@@ -260,6 +308,19 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
       <Sequence from={TOTAL - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER SILENCE/BRANDING (wave 61, mirrors MarketUpdateReel.tsx):
+          the COVER tile is silent (no avatar/voiceover audio plays until BODY),
+          and the OUTRO CTA/QR tile must stay clean. Distinct from the static
+          `caption` strip above, which shows one hand-picked line for the whole
+          BODY — this syncs the FULL spoken narration when a script/cues are supplied. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        visibleFromFrame={COVER}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

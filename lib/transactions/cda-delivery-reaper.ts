@@ -58,9 +58,19 @@ export async function reapUndeliveredCdas(
       entity_type: "transaction",
       entity_id: row.transaction_id,
     })
-    // Fall back to the CDA's own agent_id (treated as a user id) if no responsible agent resolves.
-    const userId = agentUserId ?? row.agent_id
-    if (!userId) continue
+    // closing_disclosure_agreement.agent_id is agents-class since m366 and
+    // notifications.user_id FKs users, so the CDA's own agent is a RESOLVE, not a
+    // fallback value. No users row behind it ⇒ the escalation is skipped with a
+    // line naming the CDA, because a swallowed FK rejection here is invisible.
+    let userId = agentUserId
+    if (!userId && row.agent_id) {
+      const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+      userId = await resolveUserIdForAgentRecord(svc, row.agent_id)
+    }
+    if (!userId) {
+      console.warn(`[cda-delivery-reaper] no user to notify for CDA ${row.id} (agents.id=${row.agent_id ?? "null"}) — escalation skipped`)
+      continue
+    }
 
     await svc.from("notifications").insert({
       user_id: userId,

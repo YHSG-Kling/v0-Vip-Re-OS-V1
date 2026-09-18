@@ -19,82 +19,141 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity"
+import { bestEffort } from "@/lib/db/best-effort"
+import type { AiIsaHandoffContextPackage } from "@/lib/kernel/ai-isa"
+import {
+  resolveLeadVisibility,
+  applyLeadRowScope,
+  type LeadRowScope,
+} from "@/lib/auth/lead-visibility"
 
 // ─── RBAC helpers ────────────────────────────────────────────────────────────
 
-const ISA_ALLOWED_ROLES = new Set(["admin", "broker", "broker_admin", "superadmin", "isa"])
+// TOMBSTONE (lead-visibility consolidation): `ISA_ALLOWED_ROLES` and the sync
+// `assertISARole(userType)` are DELETED. The survivor is
+// lib/auth/lead-visibility.ts:resolveLeadVisibility.
+//
+// THE MERGE WENT ONTO THE SURVIVOR FIRST (CLAUDE.md §1). This roster's one real
+// extra — the **'isa' seat**, which no other of the fifteen rosters carried — is
+// now part of LEAD_DESK_USER_TYPES in lib/auth/lead-visibility.ts, derived the
+// same way it was derived here (TENANT_ADMIN_USER_TYPES + 'isa'). Nothing this
+// file admitted has been narrowed.
+//
+// WHY THE ROSTER COULD NOT SURVIVE AS A ROSTER. It already admitted `team_lead`
+// (it takes the tenant roster whole), and a bare membership test admits them
+// BROKERAGE-WIDE. Under the standing ruling "teams see only their own board"
+// that is wrong on any tenant with more than one team, and this file's exports
+// are the widest lead surface in the tree — read, qualify, assign, pause,
+// hand-off, stats. The replacement answers admission AND row scope together, so
+// a team lead reaches only leads worked by their own team's agents; the scope
+// collapses to the whole tenant exactly when their team IS the whole tenant,
+// which is the owner's team-tier case.
+//
+// Platform staff: the survivor admits them (isPlatformStaffIdentity, reading
+// users.platform_role). This file previously did not, because its roster could
+// only test user_type and `superadmin` is dead there (0 live rows). That is a
+// merge of two halves onto the one answer, not a new policy: the platform has
+// always seen all tenants (CLAUDE.md §4).
 
-function assertISARole(userType: string): void {
-  if (!ISA_ALLOWED_ROLES.has(userType)) {
-    throw new Error(`Access denied: role "${userType}" cannot access lead management`)
+type LeadDeskGate = { scope: LeadRowScope }
+
+/**
+ * THE gate for every export in this file. Async, because the row scope it
+ * returns is resolved from `teams.team_lead_id` against the SESSION identity.
+ *
+ * Throws, matching this file's established error idiom — every caller already
+ * wraps in try/catch and reports `err.message`. A refusal that could not be
+ * decided ("unresolved") throws too: a gate that cannot run must refuse.
+ */
+async function assertLeadDesk(ctx: {
+  userId: string
+  userType: string
+  brokerageId: string | null
+}): Promise<LeadDeskGate> {
+  const supabase = await createClient()
+  // platformRole is deliberately left UNDEFINED rather than null — getAgentContext
+  // does not surface it, and "unknown" must not be read as "absent" (that is the
+  // mistake that refused the platform's only superadmin at four other gates).
+  const vis = await resolveLeadVisibility(supabase, {
+    userId: ctx.userId,
+    userType: ctx.userType,
+    brokerageId: ctx.brokerageId,
+  })
+  if (!vis.allowed) {
+    throw new Error(
+      vis.status === "forbidden"
+        ? `Access denied: role "${ctx.userType}" cannot access lead management`
+        : vis.reason,
+    )
   }
+  return { scope: vis.scope }
 }
 
 // ─── READ ─────────────────────────────────────────────────────────────────────
 
-export async function getLeads(filters?: {
-  lifecycle_state?: string
-  lead_type?: string
-  source?: string
-  urgency_level?: string
-  assigned_agent_id?: string
-  ai_isa_owner?: boolean
-  minimum_viable_for_isa?: boolean
-  limit?: number
-}) {
-  try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
-
-    if (!brokerageId) return { success: true, leads: [] }
-
-    const supabase = await createClient()
-    let query = supabase
-      .from("leads")
-      .select(
-        `id, brokerage_id, agent_id, first_name, last_name, email, phone,
-         lead_score, lifecycle_state, lead_type, lead_stage, source,
-         ai_isa_owner, ai_outreach_paused, tcpa_consent, preferred_channel,
-         minimum_viable_for_isa, call_stop_flag, motivation_type, urgency_level,
-         last_activity_at, last_contacted_at, stage_entered_at, days_in_stage,
-         contact_id, is_active, created_at, updated_at, tags, notes, status`
-      )
-      .eq("brokerage_id", brokerageId)
-      .eq("is_active", true)
-      .order("lead_score", { ascending: false, nullsFirst: false })
-
-    if (filters?.lifecycle_state) query = query.eq("lifecycle_state", filters.lifecycle_state)
-    if (filters?.lead_type) query = query.eq("lead_type", filters.lead_type)
-    if (filters?.source) query = query.eq("source", filters.source)
-    if (filters?.urgency_level) query = query.eq("urgency_level", filters.urgency_level)
-    if (filters?.assigned_agent_id) query = query.eq("agent_id", filters.assigned_agent_id)
-    if (filters?.ai_isa_owner !== undefined) query = query.eq("ai_isa_owner", filters.ai_isa_owner)
-    if (filters?.minimum_viable_for_isa !== undefined) query = query.eq("minimum_viable_for_isa", filters.minimum_viable_for_isa)
-    if (filters?.limit) query = query.limit(filters.limit)
-
-    const { data, error } = await query
-    if (error) return { success: false, error: error.message, leads: [] }
-    return { success: true, leads: data || [] }
-  } catch (err: any) {
-    console.error("[leads] getLeads:", err.message)
-    return { success: false, error: err.message, leads: [] }
-  }
-}
+// ── DELETED (wave 14): getLeads(filters) ────────────────────────────────────
+//
+// DUPLICATE. The survivor is app/actions/lead-management.ts:63 `getLeadsAdmin`,
+// which is LIVE — app/leads/page.tsx:57 imports it and the lead table's
+// fetchLeads() calls it on every filter change.
+//
+// Both read `leads`, both pin brokerage_id from the SESSION, both take a filter
+// bag. Two spellings of one function is the §6 defect, not a style choice.
+//
+// WHY THIS ONE WAS THE DUPLICATE AND NOT THE SURVIVOR:
+//   · CALLERS. getLeadsAdmin has a surface. This had none — and it is important
+//     that it never did. Its apparent caller was PROSE: the retired
+//     app/api/leads/list/route.ts carried the comment "supabaseService.getLeads
+//     delegates to contacts", and the orphan scan counted that string as a
+//     reference (the finding-#119 class the wired-surface guard was hardened
+//     against by stripping comments). Deleting that route did not orphan this
+//     function; it made an existing orphan VISIBLE.
+//   · COMPLETENESS. getLeadsAdmin also does search, pagination and sorting, and
+//     returns total/page/totalPages. This returned an unbounded array with no
+//     count, so the pagination the screen needs could not be built on it.
+//
+// MERGED FIRST, then deleted — CLAUDE.md §1, in that order. Every filter that
+// lived ONLY here now lives on the survivor's service layer at
+// lib/application/lead-application-service.ts:127 `serviceGetLeads` and is
+// passed through by getLeadsAdmin: lifecycle_state → lifecycleState,
+// urgency_level → urgencyLevel, assigned_agent_id → assignedAgentId,
+// ai_isa_owner → aiIsaOwner, minimum_viable_for_isa → minimumViableForIsa, and
+// the unconditional is_active filter → the opt-in `activeOnly`. lead_type and
+// source were already there as `intent` and `source`.
+//
+// NOT MERGED, and named rather than dropped silently: this function's role
+// ladder (ISA_ALLOWED_ROLES = TENANT_ADMIN_USER_TYPES + 'isa') admits team_lead
+// and the ISA seat and excludes platform staff; getLeadsAdmin's admits platform
+// staff and excludes 'isa'. Changing either roster is an owner ruling, not a
+// merge — the same call the getLead tombstone in lead-management.ts records.
+// The ISA seat keeps its own lead reads through getISAQueueLeads / getLeadById
+// below, which are wired to app/dashboard/isa.
+//
+// THE SAME TANGLE, RESOLVED IN THE SAME PASS: services/supabaseService.ts also
+// carried a method named getLeads whose whole body was
+// `return this.getContacts(agentId, brokerageId)` — a reader named for leads
+// that served CONTACTS, against the standing ruling that leads belong to the
+// brokerage and agents see contacts only (CLAUDE.md §5). It was NOT a survivor
+// for this function and could not have been one: it never touched the `leads`
+// table. Its last caller was the retired app/api/leads/list/route.ts, so it went
+// too, onto its own delegate `getContacts` — tombstone at
+// services/supabaseService.ts:281.
 
 export async function getLeadById(leadId: string) {
   try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { userId, brokerageId, userType } = await getAgentContext()
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
 
     if (!brokerageId) return { success: false, error: "No brokerage context", lead: null }
 
     const supabase = await createClient()
-    const { data, error } = await supabase
-      .from("leads")
-      .select("*")
-      .eq("id", leadId)
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
+    // The brokerage pin comes from the SCOPE, not from a second hand-written
+    // `.eq("brokerage_id", …)` — under team scope it also pins agent_id, so a
+    // team lead reading a lead outside their board gets "not found", not a row.
+    const { data, error } = await applyLeadRowScope(
+      supabase.from("leads").select("*").eq("id", leadId),
+      scope,
+    ).maybeSingle()
 
     if (error) return { success: false, error: error.message, lead: null }
     if (!data) return { success: false, error: "Lead not found", lead: null }
@@ -107,31 +166,41 @@ export async function getLeadById(leadId: string) {
 
 export async function getISAQueueLeads() {
   try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { userId, brokerageId, userType } = await getAgentContext()
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
 
     if (!brokerageId) return { success: true, leads: [] }
 
     const supabase = await createClient()
 
-    // ISA urgency queue: AI-owned, unassigned, viable, sorted by urgency + score
-    const { data, error } = await supabase
-      .from("leads")
-      .select(
+    // ISA urgency queue: AI-owned, UNASSIGNED, viable, sorted by urgency + score.
+    //
+    // NOTE ON TEAM SCOPE, stated rather than left to be discovered: this queue is
+    // `agent_id IS NULL` by definition, and a true team scope excludes the
+    // unassigned pool (an unworked lead belongs to the BROKERAGE, not to any one
+    // team). So a team lead in a MULTI-TEAM tenant sees this queue empty — which
+    // is the correct answer, not a bug. In the tenant the owner's ruling is
+    // about, the team IS the tenant, the scope collapses to brokerage, and the
+    // queue is fully visible.
+    const { data, error } = await applyLeadRowScope(
+      supabase
+        .from("leads")
+        .select(
         `id, brokerage_id, agent_id, first_name, last_name, email, phone,
          lead_score, lifecycle_state, lead_type, source,
          ai_isa_owner, ai_outreach_paused, tcpa_consent, preferred_channel,
          minimum_viable_for_isa, call_stop_flag, motivation_type, urgency_level,
          last_activity_at, last_contacted_at, stage_entered_at, days_in_stage,
          contact_id, is_active, created_at, updated_at, tags, notes, status`
-      )
-      .eq("brokerage_id", brokerageId)
-      .eq("is_active", true)
-      .eq("ai_isa_owner", true)
-      .is("agent_id", null)
-      .order("urgency_level", { ascending: true, nullsFirst: false })
-      .order("lead_score", { ascending: false, nullsFirst: false })
-      .limit(100)
+        )
+        .eq("is_active", true)
+        .eq("ai_isa_owner", true)
+        .is("agent_id", null)
+        .order("urgency_level", { ascending: true, nullsFirst: false })
+        .order("lead_score", { ascending: false, nullsFirst: false })
+        .limit(100),
+      scope,
+    )
 
     if (error) return { success: false, error: error.message, leads: [] }
     return { success: true, leads: data || [] }
@@ -146,45 +215,51 @@ export async function getISAQueueLeads() {
 export async function qualifyLead(leadId: string) {
   try {
     const { userId, brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
 
     const supabase = await createClient()
 
-    const { data: lead, error: fetchError } = await supabase
-      .from("leads")
-      .select("id, lifecycle_state, brokerage_id")
-      .eq("id", leadId)
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
+    const { data: lead, error: fetchError } = await applyLeadRowScope(
+      supabase.from("leads").select("id, lifecycle_state, brokerage_id").eq("id", leadId),
+      scope,
+    ).maybeSingle()
 
     if (fetchError || !lead) return { success: false, error: "Lead not found" }
 
-    const { error } = await supabase
-      .from("leads")
-      .update({
-        lifecycle_state: "isa_qualifying",
-        stage_entered_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", leadId)
-      .eq("brokerage_id", brokerageId)
+    // The WRITE carries the scope too, not just the read. A gate that scopes the
+    // read and then writes on `id` alone is a TOCTOU door: the row that was
+    // proved in scope is not the row the update filters for.
+    const { error } = await applyLeadRowScope(
+      supabase
+        .from("leads")
+        .update({
+          lifecycle_state: "isa_qualifying",
+          stage_entered_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", leadId),
+      scope,
+    )
 
     if (error) return { success: false, error: error.message }
 
     // Log activity
-    await supabase.from("activities").insert({
-      activity_type: "lead_qualified",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: lead.id,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "Lead qualified",
-      description: `Lifecycle moved to isa_qualifying`,
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "lead_qualified",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: lead.id,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "Lead qualified",
+        description: `Lifecycle moved to isa_qualifying`,
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "the leads row above has already moved to isa_qualifying and that write's error IS checked and returned; this timeline row narrates the move and must not fail a lead whose lifecycle already changed",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -193,59 +268,110 @@ export async function qualifyLead(leadId: string) {
   }
 }
 
+/**
+ * ISA/ADMIN MANUAL HANDOFF — a named person hands a specific lead to a specific
+ * agent. Allowed by the owner's ruling ("brokerage admins can auto assign to
+ * team leads and/or agents manually"); what is NOT allowed is the shape this
+ * used to have.
+ *
+ * ── THE THIRD IMPLEMENTATION, AND WHY IT LEFT THE AGENT WITH NOTHING ────────
+ *
+ * This was a hand-rolled assignment: it updated `leads` directly, inserted its
+ * own partial `assignment_log` row, and stopped. It never called
+ * handleLeadAssigned, so it never ran the LEAD→CONTACT conversion — and under
+ * the same ruling, "agents can only see contacts". The lead got an agent_id and
+ * an 'assigned' lifecycle_state, the ledger got a row, the ISA's screen said it
+ * worked … and the receiving agent's CRM showed nothing at all, forever. It also
+ * skipped the SLA close, the LEAD_ASSIGNED kernel event and the agent
+ * notification, all of which live in the canonical handler.
+ *
+ * It now rides the SAME handler as every other assignment path. That brings the
+ * consent gate with it — handleLeadAssigned opens with
+ * assertValidTransition('consented','assigned'), which THROWS on a lead that has
+ * not consented, where this path previously assigned it silently.
+ */
 export async function assignLeadToAgent(leadId: string, agentId: string) {
   try {
     const { userId, brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
 
     const supabase = await createClient()
 
-    // Verify agent belongs to brokerage
-    const { data: agentRow } = await supabase
+    // The recipient must be an ACTIVE agent of THIS brokerage. `agentId` arrives
+    // from the browser, and agents.id / users.id are disjoint spaces.
+    //
+    // UNDER TEAM SCOPE the recipient must additionally be on the actor's own
+    // team: a team lead may not hand their team's lead to another team's agent.
+    // (In practice this verb is already unreachable for a true team scope — see
+    // the note below — but the narrowing is stated rather than assumed.)
+    let agentQuery = supabase
       .from("agents")
       .select("id")
       .eq("id", agentId)
       .eq("brokerage_id", brokerageId)
-      .maybeSingle()
+      .eq("is_active", true)
+    if (scope.kind === "team") agentQuery = agentQuery.in("id", scope.agentIds.length ? scope.agentIds : ["00000000-0000-0000-0000-000000000000"])
+    const { data: agentRow, error: agentLookupError } = await agentQuery.maybeSingle()
 
+    // supabase-js RESOLVES a refused query: a swallowed error is
+    // indistinguishable from "no such agent", and both must refuse.
+    if (agentLookupError) return { success: false, error: "Could not verify that agent" }
     if (!agentRow) return { success: false, error: "Agent not found in brokerage" }
 
-    const { error } = await supabase
-      .from("leads")
-      .update({
-        agent_id: agentId,
-        lifecycle_state: "assigned",
-        ai_isa_owner: false,
-        handed_to_agent_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", leadId)
+    // The lead must be in THIS CALLER'S SCOPE — proved before anything is
+    // written, through the cookie client so RLS applies to the check itself.
+    //
+    // NOTE ON TEAM SCOPE: a true team scope contains only leads that already
+    // have an agent_id on this team, and the very next check refuses a lead that
+    // already has one. So this verb resolves to "nothing to hand off" for a team
+    // lead in a multi-team tenant, which is correct — an unassigned lead is the
+    // brokerage's, and handing it out is a brokerage-admin act. Where the team IS
+    // the tenant the scope is brokerage scope and the verb works normally.
+    const { data: leadRow, error: leadLookupError } = await applyLeadRowScope(
+      supabase.from("leads").select("id, agent_id, lead_score").eq("id", leadId),
+      scope,
+    ).maybeSingle()
+    if (leadLookupError) return { success: false, error: "Could not read that lead" }
+    if (!leadRow) return { success: false, error: "Lead not found in brokerage" }
+    if (leadRow.agent_id) return { success: false, error: "Lead already has an assigned agent" }
+
+    // THE canonical handoff: leads.agent_id + handed_to_agent_at, lifecycle
+    // advance, assignment_log row, SLA close, LEAD_ASSIGNED, and the lossless
+    // lead→contact conversion that is the only reason the agent can see it.
+    const { handleLeadAssigned } = await import("@/lib/kernel/lead-acquisition-handlers")
+    await handleLeadAssigned({
+      leadId,
+      brokerageId,
+      agentId,
+      method: "manual",
+      scoreAtAssignment: leadRow.lead_score ?? 0,
+    })
+
+    // m489 keeps assignment_method to the METHOD alone; WHO decided goes here.
+    await supabase
+      .from("assignment_log")
+      .update({ routing_reason: `[admin_manual] handed off by user ${userId} (${userType})` })
+      .eq("lead_id", leadId)
       .eq("brokerage_id", brokerageId)
+      .is("routing_reason", null)
+      .then(() => {}, () => {})
 
-    if (error) return { success: false, error: error.message }
-
-    await supabase.from("assignment_log").insert({
-      lead_id: leadId,
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      assignment_method: "manual",
-      claimed: false,
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
-
-    await supabase.from("activities").insert({
-      activity_type: "lead_assigned",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "Lead assigned to agent",
-      description: `Agent ID: ${agentId}`,
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "lead_assigned",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "Lead assigned to agent",
+        description: `Agent ID: ${agentId}`,
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "the leads row and the assignment_log above are the assignment itself and their errors are checked; this timeline row narrates it and must not fail an assignment that already took effect",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -259,29 +385,34 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
 export async function pauseAIISA(leadId: string) {
   try {
     const { userId, brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
 
     const supabase = await createClient()
-    const { error } = await supabase
-      .from("leads")
-      .update({ ai_outreach_paused: true, updated_at: new Date().toISOString() })
-      .eq("id", leadId)
-      .eq("brokerage_id", brokerageId)
+    const { error } = await applyLeadRowScope(
+      supabase
+        .from("leads")
+        .update({ ai_outreach_paused: true, updated_at: new Date().toISOString() })
+        .eq("id", leadId),
+      scope,
+    )
 
     if (error) return { success: false, error: error.message }
 
-    await supabase.from("activities").insert({
-      activity_type: "ai_isa_paused",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "AI-ISA outreach paused",
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "ai_isa_paused",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "AI-ISA outreach paused",
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "ai_outreach_paused is already set on the leads row above with its error checked and returned; this timeline row narrates the pause and must not fail a pause that is already in force",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -293,29 +424,34 @@ export async function pauseAIISA(leadId: string) {
 export async function resumeAIISA(leadId: string) {
   try {
     const { userId, brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
 
     const supabase = await createClient()
-    const { error } = await supabase
-      .from("leads")
-      .update({ ai_outreach_paused: false, updated_at: new Date().toISOString() })
-      .eq("id", leadId)
-      .eq("brokerage_id", brokerageId)
+    const { error } = await applyLeadRowScope(
+      supabase
+        .from("leads")
+        .update({ ai_outreach_paused: false, updated_at: new Date().toISOString() })
+        .eq("id", leadId),
+      scope,
+    )
 
     if (error) return { success: false, error: error.message }
 
-    await supabase.from("activities").insert({
-      activity_type: "ai_isa_resumed",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "AI-ISA outreach resumed",
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "ai_isa_resumed",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "AI-ISA outreach resumed",
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "ai_outreach_paused is already cleared on the leads row above with its error checked and returned; this timeline row narrates the resume and must not fail a resume that is already in force",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -327,40 +463,67 @@ export async function resumeAIISA(leadId: string) {
 export async function handOffToHumanAgent(leadId: string, targetAgentId?: string) {
   try {
     const { userId, brokerageId, userType, agentId } = await getAgentContext()
-    assertISARole(userType)
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
 
     const supabase = await createClient()
 
-    // If a specific agent is given, verify they belong to the brokerage
+    // If a specific agent is given, verify they belong to the brokerage — and,
+    // under team scope, to the actor's own team. Handing a lead OUT of the team
+    // would be a brokerage act performed with a team lead's authority.
     let resolvedAgentId = targetAgentId ?? null
     if (targetAgentId) {
-      const { data: agentRow } = await supabase
+      let agentQuery = supabase
         .from("agents")
         .select("id")
         .eq("id", targetAgentId)
         .eq("brokerage_id", brokerageId)
-        .maybeSingle()
+      if (scope.kind === "team") {
+        agentQuery = agentQuery.in("id", scope.agentIds.length ? scope.agentIds : ["00000000-0000-0000-0000-000000000000"])
+      }
+      const { data: agentRow } = await agentQuery.maybeSingle()
       if (!agentRow) return { success: false, error: "Target agent not found in brokerage" }
     }
 
-    const { error } = await supabase
-      .from("leads")
-      .update({
-        ai_isa_owner: false,
-        ai_outreach_paused: true,
-        agent_id: resolvedAgentId,
-        lifecycle_state: resolvedAgentId ? "assigned" : "isa_qualifying",
-        handed_to_agent_at: resolvedAgentId ? new Date().toISOString() : null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", leadId)
-      .eq("brokerage_id", brokerageId)
+    const { error } = await applyLeadRowScope(
+      supabase
+        .from("leads")
+        .update({
+          ai_isa_owner: false,
+          ai_outreach_paused: true,
+          agent_id: resolvedAgentId,
+          lifecycle_state: resolvedAgentId ? "assigned" : "isa_qualifying",
+          handed_to_agent_at: resolvedAgentId ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", leadId),
+      scope,
+    )
 
     if (error) return { success: false, error: error.message }
 
-    // Log the handoff
-    await supabase.from("agent_handoffs").insert({
+    // Log the handoff. This is the LEDGER the ISA console reads
+    // (app/dashboard/isa/page.tsx renders `context_package.from_user_id` as the
+    // person who handed the lead over). It was a fire-and-forget
+    // `.then(() => {}, () => {})` that discarded both the resolved `{ error }`
+    // and any rejection — a refused insert reported success — and it wrote no
+    // context_package, so every handoff from this door rendered as handed over
+    // by nobody. The package is typed against the kernel's contract
+    // (lib/kernel/ai-isa.ts AiIsaHandoffContextPackage) so the two writers
+    // cannot drift apart in shape.
+    //
+    // PRODUCT DIVERGENCE — recorded, not resolved here: this door writes
+    // handoff_status "completed" + completed_at (the human agent is assigned
+    // on the leads row in the same action), while the kernel writer
+    // lib/kernel/ai-isa.ts handoffToHumanAgent writes "pending" and leaves the
+    // receiving human to complete it. Which one the ISA console's Handoff tab
+    // should treat as the lifecycle is a product ruling; until it lands, a
+    // manual handoff never appears in the console's PENDING list.
+    const contextPackage: AiIsaHandoffContextPackage = {
+      from_user_id: userId,   // users.id of the actor (NOT agents.id) — per the contract
+      contact_id: null,       // leads are NOT contacts; nothing here has converted yet
+    }
+    const { error: handoffError } = await supabase.from("agent_handoffs").insert({
       brokerage_id: brokerageId,
       entity_type: "lead",
       entity_id: leadId,
@@ -370,22 +533,38 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       human_agent_id: resolvedAgentId,
       handoff_reason: "manual_handoff",
       handoff_status: "completed",
+      context_package: contextPackage,
       completed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    })
+    if (handoffError) {
+      // The leads row above has ALREADY moved; say both halves out loud rather
+      // than reporting a clean handoff whose ledger entry does not exist.
+      console.error(
+        `[leads] handOffToHumanAgent: agent_handoffs insert refused for lead ${leadId} (brokerage ${brokerageId}, agent ${resolvedAgentId ?? "unassigned"}, by user ${userId}):`,
+        handoffError.message,
+      )
+      return {
+        success: false,
+        error: `Lead was reassigned, but the handoff ledger entry was refused: ${handoffError.message}`,
+      }
+    }
 
-    await supabase.from("activities").insert({
-      activity_type: "ai_isa_handoff",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "AI-ISA handed off to human agent",
-      description: resolvedAgentId ? `Assigned to agent: ${resolvedAgentId}` : "Queued for manual assignment",
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "ai_isa_handoff",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "AI-ISA handed off to human agent",
+        description: resolvedAgentId ? `Assigned to agent: ${resolvedAgentId}` : "Queued for manual assignment",
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "the leads row and the agent_handoffs ledger above carry the handoff; this timeline row narrates it and must not fail a handoff the human agent has already been given",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -398,9 +577,20 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
 
 export async function initiateAIOutreach(leadId: string) {
   try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { userId, brokerageId, userType } = await getAgentContext()
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
+
+    // The lead must be in SCOPE before the engagement is triggered. The gate
+    // above says the caller is on the lead desk; it does not say this lead is on
+    // their board, and the delegate does not re-check it.
+    const supabase = await createClient()
+    const { data: inScope, error: scopeError } = await applyLeadRowScope(
+      supabase.from("leads").select("id").eq("id", leadId),
+      scope,
+    ).maybeSingle()
+    if (scopeError) return { success: false, error: "Could not verify that lead" }
+    if (!inScope) return { success: false, error: "Lead not found" }
 
     // Delegate to the full AI-ISA engagement action
     const { initiateAIISAEngagement } = await import("@/app/actions/ai-isa/initiate-engagement")
@@ -416,17 +606,25 @@ export async function initiateAIOutreach(leadId: string) {
 
 export async function getBrokerageAgents() {
   try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { userId, brokerageId, userType } = await getAgentContext()
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: true, agents: [] }
 
     const supabase = await createClient()
-    const { data, error } = await supabase
+    // This list feeds the ASSIGNMENT dropdown, so it must not offer a recipient
+    // the caller is not allowed to assign to — an offered-then-refused option is
+    // the "control that can only refuse" shape. Under team scope it is the
+    // actor's own team roster.
+    let agentsQuery = supabase
       .from("agents")
       .select("id, brokerage_id, user_id, is_active")
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("created_at", { ascending: false })
+    if (scope.kind === "team") {
+      agentsQuery = agentsQuery.in("id", scope.agentIds.length ? scope.agentIds : ["00000000-0000-0000-0000-000000000000"])
+    }
+    const { data, error } = await agentsQuery
 
     if (error) return { success: false, error: error.message, agents: [] }
 
@@ -462,11 +660,21 @@ export async function getBrokerageAgents() {
 
 export async function getLeadOutreachHistory(leadId: string) {
   try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { userId, brokerageId, userType } = await getAgentContext()
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: true, history: [] }
 
     const supabase = await createClient()
+    // `isa_outreach_log` carries lead_id but no agent_id, so the scope cannot be
+    // expressed on it directly — the LEAD is proved in scope first, and the log
+    // read then keys off a lead the caller is entitled to.
+    const { data: inScope, error: scopeError } = await applyLeadRowScope(
+      supabase.from("leads").select("id").eq("id", leadId),
+      scope,
+    ).maybeSingle()
+    if (scopeError) return { success: false, error: "Could not verify that lead", history: [] }
+    if (!inScope) return { success: false, error: "Lead not found", history: [] }
+
     const { data, error } = await supabase
       .from("isa_outreach_log")
       .select("id, lead_id, channel, subject, body_snippet, status, sent_at, opened_at, replied_at, compliance_passed, created_at")
@@ -487,12 +695,20 @@ export async function getLeadOutreachHistory(leadId: string) {
 
 export async function getLeadStats() {
   try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
+    const { userId, brokerageId, userType } = await getAgentContext()
+    const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: true, stats: null }
 
     const supabase = await createClient()
 
+    // Every count carries the SCOPE. A stats bar that counts brokerage-wide while
+    // the table below it shows one team's rows is the "wrong number" half of the
+    // same defect — the reader believes they are looking at their own board.
+    const scoped = () =>
+      applyLeadRowScope(
+        supabase.from("leads").select("*", { count: "exact", head: true }).eq("is_active", true),
+        scope,
+      )
     const [
       { count: total },
       { count: active_isa },
@@ -500,11 +716,11 @@ export async function getLeadStats() {
       { count: assigned },
       { count: hot },
     ] = await Promise.all([
-      supabase.from("leads").select("*", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("is_active", true),
-      supabase.from("leads").select("*", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("is_active", true).eq("ai_isa_owner", true).is("agent_id", null),
-      supabase.from("leads").select("*", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("is_active", true).eq("ai_outreach_paused", true),
-      supabase.from("leads").select("*", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("is_active", true).not("agent_id", "is", null),
-      supabase.from("leads").select("*", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("is_active", true).eq("urgency_level", "hot"),
+      scoped(),
+      scoped().eq("ai_isa_owner", true).is("agent_id", null),
+      scoped().eq("ai_outreach_paused", true),
+      scoped().not("agent_id", "is", null),
+      scoped().eq("urgency_level", "hot"),
     ])
 
     return {

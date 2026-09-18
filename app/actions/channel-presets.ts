@@ -24,7 +24,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolvePolicyScopeAccess, type PolicyScopeAccess } from "@/lib/identity/policy-scope"
+import { resolvePolicyScopeAccess, buildScopeFilters, type PolicyScopeAccess } from "@/lib/identity/policy-scope"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { MessageType } from "@/lib/kernel/types"
 import { revalidatePath } from "next/cache"
@@ -85,19 +85,9 @@ export interface ChannelPresetRow {
   payload:            Record<string, unknown>
 }
 
-function buildScopeFilters(access: PolicyScopeAccess): string[] {
-  const filters: string[] = []
-  if (access.canEditAgent && access.agentScopeId) {
-    filters.push(`and(scope_type.eq.agent,scope_id.eq.${access.agentScopeId})`)
-  }
-  for (const teamId of access.teamScopeIds) {
-    filters.push(`and(scope_type.eq.team,scope_id.eq.${teamId})`)
-  }
-  if (access.canEditBrokerage && access.brokerageScopeId) {
-    filters.push(`and(scope_type.eq.brokerage,scope_id.eq.${access.brokerageScopeId})`)
-  }
-  return filters
-}
+// TOMBSTONE: local buildScopeFilters merged onto lib/identity/policy-scope.ts
+// buildScopeFilters (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 function resolveTargetScope(
   access: PolicyScopeAccess,

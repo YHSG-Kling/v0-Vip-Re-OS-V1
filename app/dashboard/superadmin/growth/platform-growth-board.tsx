@@ -17,7 +17,9 @@ const STATUS_BADGE: Record<string, string> = {
 }
 
 interface Prospect {
-  id: string; name: string | null; email: string; company: string | null; role_interest: string; source: string; status: string
+  // email is null for a phone-only capture (AI reception caller who gave no
+  // email — l32-s01 made the column nullable); phone is the reachable channel then.
+  id: string; name: string | null; email: string | null; phone?: string | null; company: string | null; role_interest: string; source: string; status: string
   details?: { proposal?: ProspectProposal } | null
 }
 interface Funnel { total: number; byStatus: Record<string, number>; conversionRate: number; activationRate: number }
@@ -124,13 +126,13 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
         <CardContent className="p-0 overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b bg-muted/10 text-left text-xs text-muted-foreground">
-              <th className="px-4 py-2">Name / Company</th><th className="px-4 py-2">Email</th><th className="px-4 py-2">Interest</th><th className="px-4 py-2">Source</th><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Actions</th>
+              <th className="px-4 py-2">Name / Company</th><th className="px-4 py-2">Reach</th><th className="px-4 py-2">Interest</th><th className="px-4 py-2">Source</th><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Actions</th>
             </tr></thead>
             <tbody>
               {prospects.map((p) => (
                 <tr key={p.id} className="border-b last:border-0">
                   <td className="px-4 py-2 font-medium">{p.name || '—'}<span className="block text-[11px] text-muted-foreground">{p.company}</span></td>
-                  <td className="px-4 py-2 text-xs text-muted-foreground">{p.email}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{p.email ?? p.phone ?? '—'}{p.email && p.phone ? <span className="block">{p.phone}</span> : null}</td>
                   <td className="px-4 py-2 text-xs">{p.role_interest}</td>
                   <td className="px-4 py-2 text-xs">{p.source}</td>
                   <td className="px-4 py-2"><Badge className={'text-[10px] ' + (STATUS_BADGE[p.status] ?? '')}>{p.status}</Badge></td>

@@ -3,8 +3,17 @@ NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ZenrowsClient, BatchDataClient, batchDataTriggersFor } from "@/lib/external"
+import {
+  createSmartSearchSubscription,
+  deleteSmartSearchSubscription,
+  listSmartSearchSubscriptions,
+  buildSmartSearchSubscriptionPlan,
+  BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP,
+  quickListSlugsFor,
+} from "@/lib/external/batchdata-client"
+import { runIncrementalPropertySearchForMarket, runActiveListingDiscoveryForMarket, runBuyBoxMatchingForMarket } from "@/lib/kernel/listings-batchdata-feed"
 import { processRawRecord } from "@/lib/lead-pipeline"
-import { escalateScraperFailureIfNeeded } from "@/lib/lead-pipeline/scraper-health"
+import { escalateScraperFailureIfNeeded, setScraperHealer } from "@/lib/lead-pipeline/scraper-health"
 import { MAX_PROMOTION_ATTEMPTS, STRANDED_STATUSES, reportStuckRawLeads } from "@/lib/lead-pipeline/promotion-gate-health"
 import {
   buildPropertySearchUrl,
@@ -21,9 +30,19 @@ import {
   sourceGoogle,
   sourceRentalListings,
   sourceLinkedInRelocation,
+  sourceRedditRelocation,
+  sourceFacebookRecommendRealtor,
+  sourceAgentSeekingPhraseIntent,
+  sourceRealtySiteChatter,
+  sourceNewConstructionIntent,
 } from "@/lib/lead-pipeline/social-sourcer"
+import { sourcePermitPrelistingIntent, routePermitPrelistingHits } from "@/lib/lead-pipeline/permit-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
+import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
+import { sourceEmailEngagementIntent } from "@/lib/lead-pipeline/email-engagement-sourcer"
+import { sourceRentalToBuyerGraduation } from "@/lib/lead-pipeline/rental-graduation-sourcer"
+import { sourceReviewAcquisitionIntent, routeReviewAcquisitionHits } from "@/lib/lead-pipeline/review-acquisition-sourcer"
 import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
 import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
@@ -32,10 +51,9 @@ import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scrapin
 import {
   type NormalizedScrapedRecord,
   isViableRecord,
-  buildLeadIdentityKey,
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { buildTerritoryPhrases, expandEnabledSources, recordMatchesTerritory } from "@/lib/lead-pipeline/source-intent-map"
+import { buildTerritoryPhrases, expandEnabledSources } from "@/lib/lead-pipeline/source-intent-map"
 import { meterVendorSpend, scraperTypeToVendor } from "@/lib/vendor-governance/meter-vendor"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -48,6 +66,34 @@ import {
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
+
+// SCRAPER SELF-HEALER REGISTRATION (module scope — runs once per cold start, not
+// per-request). scraper-health.ts's escalateScraperFailureIfNeeded already falls
+// back to the real proposeConnectorHealing when no healer is registered, but that
+// default path never records onto the self-healing ledger (lib/kernel/self-heal-
+// ledger.ts) — only the AUTO-APPLIER's own "healed" writes did, so a scraper outage
+// that got escalated into a proposal was invisible on the "the OS repairs itself"
+// panel until someone applied it. This registration closes that gap: every
+// escalation this cron triggers now also ledgers onto the SAME domain: "connector"
+// spine connector-auto-applier.ts writes onto — outcome "escalated" (a proposal was
+// raised for review/auto-apply, not yet applied) or "failed" (the healer itself
+// could not even raise one, e.g. connector missing from the registry).
+setScraperHealer(async ({ connector, failures }) => {
+  const { proposeConnectorHealing } = await import("@/lib/agentic-os/connector-healer")
+  const res = await proposeConnectorHealing({ connector, failures })
+  try {
+    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+    await recordSelfHeal(createServiceClient(), {
+      brokerageId: null,
+      domain:      "connector",
+      subject:     connector,
+      action:      "propose_connector_healing",
+      outcome:     res.proposal ? "escalated" : "failed",
+      detail:      { proposalId: res.proposal?.id ?? null, failureCount: failures.length, triggeredBy: "lead-scraping-cron" },
+    })
+  } catch { /* ledger is additive — never blocks the heal */ }
+  return { proposalId: res.proposal?.id ?? null }
+})
 
 // Runs every 6 hours to scrape leads from all configured sources.
 // Kernel OS: cron_execution_logs are opened at entry and closed at every exit path.
@@ -127,6 +173,54 @@ export async function GET(request: Request) {
 
     // Get active keywords
     const { data: keywords } = await supabase.from("lead_scraping_keywords").select("*").eq("is_active", true)
+
+    // ── SMART SEARCH ACCOUNT-WIDE CAP (wave 66 fix) ───────────────────────────
+    // BatchData caps Property Subscription at 5 PER ACCOUNT, not per market — the
+    // wave-65B reconcile checked only the current market's own rows, so two
+    // priority-1 markets could each "successfully" create a subscription and the
+    // 6th call across the account would simply refuse. `markets` above is already
+    // ordered by `priority DESC` (lib/lead-pipeline/scrape-territories.ts), so
+    // walking it in order and decrementing one shared counter is what turns that
+    // ordering into an actual admission PLAN: the highest-priority territories'
+    // wants are tried first, everything the cap has no room for is recorded
+    // `deferred`. `smartSearchAccountLiveCount` starts from BatchData's own live
+    // count (never our local table alone — a subscription cancelled by a human on
+    // BatchData's dashboard would otherwise silently look like a free slot) and is
+    // reconciled up by one for every `create` this run actually admits.
+    let smartSearchAccountLiveCount = 0
+    let smartSearchAccountCountKnown = false
+    try {
+      const liveList = await listSmartSearchSubscriptions()
+      if (liveList.ok) {
+        smartSearchAccountLiveCount = liveList.subscriptionIds.length
+        smartSearchAccountCountKnown = true
+      } else {
+        results.errors.push(`Smart Search account list read failed (proceeding conservatively, cap treated as already full): ${liveList.error}`)
+        smartSearchAccountLiveCount = BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP
+      }
+    } catch (e) {
+      results.errors.push(`Smart Search account list read threw (proceeding conservatively): ${e}`)
+      smartSearchAccountLiveCount = BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP
+    }
+
+    // Wave 70 — site-visitor-intent lane runs ONCE per BROKERAGE, not once per market row.
+    // Website traffic is a brokerage-wide signal (one site, one set of website_visitors rows);
+    // a brokerage with several territories would otherwise re-source the exact same unidentified
+    // sessions once per territory, producing duplicate raw records the identity-key dedup would
+    // then have to absorb for no reason. `markets` is priority-ordered
+    // (lib/lead-pipeline/scrape-territories.ts), so the first market row this loop sees for a
+    // brokerage is its highest-priority territory — the natural "run it once, on the best row" spot.
+    const siteVisitorBrokeragesRun = new Set<string>()
+
+    // Lane 71C — email-engagement-intent lane runs ONCE per BROKERAGE, same reasoning as
+    // siteVisitorBrokeragesRun immediately above: email_tracking is a brokerage-wide signal
+    // (one set of outbound sends, one engagement stream), not a per-territory one.
+    const emailEngagementBrokeragesRun = new Set<string>()
+
+    // Lane 74D — rental-to-buyer-graduation lane runs ONCE per BROKERAGE, same reasoning as
+    // emailEngagementBrokeragesRun immediately above: `contacts` is a brokerage-wide table, not a
+    // per-territory one — a renter contact does not belong to any one market row.
+    const rentalGraduationBrokeragesRun = new Set<string>()
 
     for (const market of markets) {
       results.markets_processed++
@@ -234,18 +328,24 @@ export async function GET(request: Request) {
                   ;(r.rawPayload as any).zenrowsNormalized = zen
                 }
 
-                for (const record of siteRecords) {
-                  // Write raw record only — enrichment and promotion happen in pipeline-processor
-                  const { inserted } = await insertRawRecord({
-                    supabase,
-                    record,
-                    brokerageId: market.brokerage_id,
-                    marketId:    market.id,
-                    marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
-                    executionId: execRecord?.id ?? null,
-                  })
-                  if (inserted) { sourceLeadsCreated++; results.total_leads_created++ }
-                }
+                // Write raw records only — enrichment and promotion happen in pipeline-processor.
+                // Routed through the kernel's canonical batch writer (lib/kernel/scraping.ts
+                // ingestRawSourceBatch) — see insertRawBatch below.
+                const { inserted: siteInserted } = await insertRawBatch({
+                  records:     siteRecords,
+                  marketId:    market.id,
+                  marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+                  executionId: execRecord?.id ?? null,
+                  source:       "zillow_behavior",
+                  sourceFamily: "property_search",
+                  sourceChannel: site,
+                  // ZenRows returns a per-scrape cost (scraped.cost, metered above into
+                  // sourceCostUsd); the kernel spreads it across this site's records as
+                  // raw_scraped_leads.cost_per_record, same as the nextdoor/social call sites.
+                  batchCostUsd: scraped.cost ?? null,
+                })
+                sourceLeadsCreated += siteInserted
+                results.total_leads_created += siteInserted
                 results.total_leads_found += siteRecords.length
               }
             }
@@ -349,28 +449,34 @@ export async function GET(request: Request) {
               .filter(isViableRecord)
             sourceItemsFound = rawSellers.length
 
-            for (const seller of sellers) {
-              // All BatchData records were pulled by an EXPLICIT configured trigger (expired or a
-              // mapped motivated-seller type), so they're all wanted — the signal_types filter is
-              // obsolete for them (and alias-safe, since we pulled canonical triggers).
+            // All BatchData records were pulled by an EXPLICIT configured trigger (expired or a
+            // mapped motivated-seller type), so they're all wanted — the signal_types filter is
+            // obsolete for them (and alias-safe, since we pulled canonical triggers).
+            const sellersToInsert = sellers.filter((seller) => {
               const isBatchData = seller.source === "expired_listing" || seller.source === "batchdata_motivated"
               const matchesType = isBatchData || motivatedParams.signal_types?.some((type: string) =>
                 seller.intentSignals?.includes(type),
               )
+              return matchesType || !motivatedParams.signal_types?.length
+            })
 
-              if (matchesType || !motivatedParams.signal_types?.length) {
-                // Write raw record only — enrichment and promotion run in pipeline-processor
-                const { inserted } = await insertRawRecord({
-                  supabase,
-                  record:      seller,
-                  brokerageId: market.brokerage_id,
-                  marketId:    market.id,
-                  marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
-                  executionId: execRecord?.id ?? null,
-                })
-                if (inserted) leadsCreated++
-              }
-            }
+            // Write raw records only — enrichment and promotion run in pipeline-processor.
+            // Routed through the kernel's canonical batch writer (insertRawBatch).
+            const { inserted: batchInserted } = await insertRawBatch({
+              records:     sellersToInsert,
+              marketId:    market.id,
+              marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+              executionId: execRecord?.id ?? null,
+              source:       "batchdata_motivated",
+              sourceFamily: "motivated_seller",
+              sourceChannel: "batchdata",
+              // No per-batch figure exists at this call site: getMotivatedSellerData
+              // returns records only and BatchData's spend is reconciled from the
+              // provider's own wallet consumption report at the end of this tick
+              // (reconcileBatchDataWalletSpend), never estimated here. null = unknown.
+              batchCostUsd: null,
+              })
+            leadsCreated = batchInserted
 
             results.total_leads_found += sourceItemsFound
             results.total_leads_created += leadsCreated
@@ -405,6 +511,63 @@ export async function GET(request: Request) {
           if (sourceErr) {
             await escalateScraperFailureIfNeeded(supabase, { scraperType: "batchdata_motivated", errorMessage: sourceErr.message })
           }
+
+          // 2b. SMART SEARCH RECONCILE moved OUT of the per-market loop (wave 67 —
+          // see the POOLED reconcile step right after this `for` loop closes). Pooling
+          // by quicklist needs every active territory's want gathered FIRST so the
+          // union query and the cap plan are computed once, not market-by-market.
+
+          // ============================================
+          // 2c. INCREMENTAL PROPERTY SEARCH (wave 66, task 2) — OPT-IN per market
+          // ============================================
+          // DISTINCT from the flat V1 pull above: cursor + Search Session so this
+          // lane delivers ONLY NEW matches per (market, quicklist) lane and resumes
+          // after a failed run instead of re-walking the whole result set. A market
+          // must explicitly name `batchdata_incremental` in enabled_sources — this
+          // never silently doubles the existing polled pull above for a market that
+          // has not opted in.
+          if (enabledSources.has("batchdata_incremental")) {
+            try {
+              const lanes = quickListSlugsFor(batchDataTriggersFor(motivatedParams.signal_types))
+              for (const quicklist of lanes) {
+                const r = await runIncrementalPropertySearchForMarket(supabase, market, { quicklist, lane: quicklist })
+                results.total_leads_created += r.inserted
+                results.errors.push(...r.errors)
+              }
+            } catch (e) {
+              results.errors.push(`Incremental property search error for ${market.name}: ${e}`)
+            }
+          }
+        }
+      }
+
+      // ============================================
+      // 2d. ACTIVE-LISTING DISCOVERY (wave 66, task 3) — a market-wide listings feed
+      // ============================================
+      // Independent of the motivated-seller gate above — a territory may want
+      // on-market inventory awareness without running seller-signal triggers.
+      if (enabledSources.has("batchdata_active_listings")) {
+        try {
+          const r = await runActiveListingDiscoveryForMarket(supabase, market)
+          results.errors.push(...r.errors)
+          if (r.transitions > 0 || r.signalsWritten > 0) {
+            console.log(`[Lead Scraping Cron] Active-listing feed ${market.name}: observed=${r.observed} transitions=${r.transitions} signals=${r.signalsWritten}`)
+          }
+        } catch (e) {
+          results.errors.push(`Active-listing discovery error for ${market.name}: ${e}`)
+        }
+      }
+
+      // ============================================
+      // 2e. BUY BOX MATCHING (wave 66, task 4) — investor demand per active listing
+      // ============================================
+      if (enabledSources.has("batchdata_buybox")) {
+        try {
+          const r = await runBuyBoxMatchingForMarket(supabase, market)
+          results.total_leads_created += r.investorLeadsCreated
+          results.errors.push(...r.errors)
+        } catch (e) {
+          results.errors.push(`Buy Box matching error for ${market.name}: ${e}`)
         }
       }
 
@@ -421,7 +584,14 @@ export async function GET(request: Request) {
         enabledSources.has("rental") ||
         enabledSources.has("linkedin") ||
         enabledSources.has("exa") ||
-        enabledSources.has("tavily")
+        enabledSources.has("tavily") ||
+        enabledSources.has("reddit_relocation") ||
+        enabledSources.has("facebook_recommend_realtor") ||
+        enabledSources.has("agent_seeking_phrase_intent") ||
+        enabledSources.has("realty_chatter") ||
+        enabledSources.has("new_construction_intent") ||
+        enabledSources.has("permit_prelisting_intent") ||
+        enabledSources.has("review_acquisition_intent")
 
       if (socialSourcesEnabled && keywords && keywords.length > 0) {
         // STEP 5 — open scraper_executions record
@@ -444,6 +614,14 @@ export async function GET(request: Request) {
 
         let socialLeadsCreated = 0
         let sourceCostUsd = 0
+        // Realty-chatter (ZenRows/Zyte) spend is metered per-provider inline below, so it is
+        // tracked SEPARATELY from sourceCostUsd (which feeds the single composite "apify_social"
+        // ledger entry after this block) — see the realty_chatter block for why.
+        let realtyChatterCostUsd = 0
+        // Review-acquisition (ZenRows/Zyte) spend, same reason realtyChatterCostUsd is tracked
+        // separately: metered per-provider inline in that block, not folded into sourceCostUsd's
+        // composite "apify_social" ledger entry.
+        let reviewAcquisitionCostUsd = 0
         let sourceErr: Error | null = null
 
         try {
@@ -473,6 +651,7 @@ export async function GET(request: Request) {
             const scraped = await zenrows.scrapeNextdoor(nextdoorUrl)
             sourceCostUsd += scraped.cost ?? 0
             if (scraped.success && scraped.posts) {
+              const ndRecords: NormalizedScrapedRecord[] = []
               for (const post of scraped.posts) {
                 const matchedKeyword = keywords.find(
                   (kw) =>
@@ -480,7 +659,7 @@ export async function GET(request: Request) {
                 )
                 if (matchedKeyword && matchedKeyword.weight >= 3) {
                   const nameParts = ((post as any).author_name ?? "").split(" ")
-                  const ndRecord: NormalizedScrapedRecord = {
+                  ndRecords.push({
                     sourceRecordId:  `nextdoor-${(post as any).post_id ?? `${Date.now()}-${Math.random()}`}`,
                     source:          "nextdoor",
                     behaviorType:    "social_intent",
@@ -493,29 +672,34 @@ export async function GET(request: Request) {
                     motivationScore: matchedKeyword.weight * 20,
                     sourceUrl:       nextdoorUrl,
                     rawPayload:      { post, matched_keyword: matchedKeyword.keyword },
-                  }
-                  const { inserted } = await insertRawRecord({
-                    supabase,
-                    record:      ndRecord,
-                    brokerageId: market.brokerage_id,
-                    marketId:    market.id,
-                    marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
-                    executionId: execRecord?.id ?? null,
                   })
-                  if (inserted) socialLeadsCreated++
                 }
               }
+              const { inserted: ndInserted } = await insertRawBatch({
+                records: ndRecords, marketId: market.id,
+                marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+                executionId: execRecord?.id ?? null,
+                source: "nextdoor", sourceFamily: "social_intent", sourceChannel: "nextdoor",
+                batchCostUsd: scraped.cost ?? null,
+              })
+              socialLeadsCreated += ndInserted
             }
           }
 
           const socialMarket = { city: market.city, state: market.state }
-          const insertSocial = async (records: NormalizedScrapedRecord[]) => {
-            for (const record of records) {
-              const { inserted } = await insertRawRecord({
-                supabase, record, brokerageId: market.brokerage_id, marketId: market.id, marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes }, executionId: execRecord?.id ?? null,
+          // ONE batch call per sub-source — routes through the kernel's canonical writer
+          // (ingestRawSourceBatch) instead of one insert per record.
+          const insertSocial = async (records: NormalizedScrapedRecord[], channel: string, sourceFamily = "social_intent", batchCostUsd: number | null = null) => {
+            const { inserted } = await insertRawBatch({
+              records, marketId: market.id,
+              marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+              executionId: execRecord?.id ?? null,
+              source: channel, sourceFamily, sourceChannel: channel,
+              // Wave 66C seam: the sub-source's metered cost, spread by the kernel
+              // across the records as raw_scraped_leads.cost_per_record.
+              batchCostUsd,
               })
-              if (inserted) socialLeadsCreated++
-            }
+            socialLeadsCreated += inserted
           }
 
           // ── Facebook groups (Apify) ──────────────────────────────────────────
@@ -526,7 +710,7 @@ export async function GET(request: Request) {
             for (const groupUrl of groupUrls) {
               const { records, cost } = await sourceFacebook(groupUrl, keywordsBySource["facebook"], socialMarket)
               sourceCostUsd += cost
-              await insertSocial(records)
+              await insertSocial(records, "facebook", "social_intent", cost)
             }
           }
 
@@ -534,7 +718,7 @@ export async function GET(request: Request) {
           if (enabledSources.has("instagram") && keywordsBySource["instagram"]) {
             const { records, cost } = await sourceInstagram(keywordsBySource["instagram"], socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records)
+            await insertSocial(records, "instagram", "social_intent", cost)
           }
 
           // ── Reddit communities (Apify) ───────────────────────────────────────
@@ -544,20 +728,22 @@ export async function GET(request: Request) {
               : [`${market.city.toLowerCase().replace(/\s+/g, "")}realestate`, "FirstTimeHomeBuyer", "moving"]
             const { records, cost } = await sourceReddit(subreddits, keywordsBySource["reddit"], socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records)
+            await insertSocial(records, "reddit", "social_intent", cost)
           }
 
           // ── Craigslist (Apify) — for-sale (seller FSBO) + housing-wanted (buyer) ─
+          // Two DISTINCT capabilities (owner ruling: never fold two sources into one) —
+          // separate channels so each keeps its own attribution downstream.
           if (enabledSources.has("craigslist") && keywordsBySource["craigslist"] && market.city) {
             const forSale = await sourceCraigslist(
               market.city, keywordsBySource["craigslist"].slice(0, 3).join(" "), socialMarket,
             )
             sourceCostUsd += forSale.cost
-            await insertSocial(forSale.records)
+            await insertSocial(forSale.records, "craigslist", "social_intent", forSale.cost)
             // Buyer intent: "housing wanted" / ISO posts.
             const wanted = await sourceCraigslistWanted(market.city, socialMarket)
             sourceCostUsd += wanted.cost
-            await insertSocial(wanted.records)
+            await insertSocial(wanted.records, "craigslist_wanted", "social_intent", wanted.cost)
           }
 
           // ── Google phrase intent (Apify) — buyer + seller searches ───────────
@@ -569,7 +755,7 @@ export async function GET(request: Request) {
             const queries = [...sellerPhrases.slice(0, 3), ...buyerPhrases.slice(0, 2)]
             const { records, cost } = await sourceGoogle(queries, socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records)
+            await insertSocial(records, "google_phrase_intent", "search_signal", cost)
           }
 
           // ── Rental listings (Apify Craigslist 'apa') — landlord/investor sellers ─
@@ -580,7 +766,7 @@ export async function GET(request: Request) {
           if (enabledSources.has("rental") && market.city) {
             const { records, cost } = await sourceRentalListings(market.city, socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records)
+            await insertSocial(records, "rental", "social_intent", cost)
           }
 
           // Expired / off-market sellers: addresses are scraped via
@@ -591,21 +777,136 @@ export async function GET(request: Request) {
           if (enabledSources.has("linkedin")) {
             const { records, cost } = await sourceLinkedInRelocation(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records)
+            await insertSocial(records, "linkedin", "social_intent", cost)
           }
 
           // ── Exa neural search (AI-native) — buyer-intent content across the web ─
           if (enabledSources.has("exa")) {
             const { records, cost } = await sourceExaBuyerIntent(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records)
+            await insertSocial(records, "exa", "social_intent", cost)
           }
 
           // ── Tavily agentic search (AI-native) — buyer / seller / investor intent ─
           if (enabledSources.has("tavily")) {
             const { records, cost } = await sourceTavilyIntent(socialMarket)
             sourceCostUsd += cost
-            await insertSocial(records)
+            await insertSocial(records, "tavily", "social_intent", cost)
+          }
+
+          // ── WAVE 65 LANES (owner ruling 2026-09-15) — each a DISTINCT capability with its
+          // own sourceChannel; never merged with the look-alike lanes above. ────────────────
+
+          // ── Reddit relocation lane — "moving to <city>" / "looking for a realtor in <city>" ─
+          if (enabledSources.has("reddit_relocation")) {
+            const { records, cost } = await sourceRedditRelocation(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "reddit_relocation", "social_intent", cost)
+          }
+
+          // ── Facebook "recommend a realtor" lane ──────────────────────────────────
+          if (enabledSources.has("facebook_recommend_realtor")) {
+            const groupUrls: string[] = motivatedParams?.facebook_group_urls?.length
+              ? motivatedParams.facebook_group_urls
+              : market.city ? [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, "")}buysell`] : []
+            const { records, cost } = await sourceFacebookRecommendRealtor(groupUrls, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "facebook_recommend_realtor", "social_intent", cost)
+          }
+
+          // ── Agent-seeking phrase intent — cross-source (Google/Apify today) ──────
+          if (enabledSources.has("agent_seeking_phrase_intent")) {
+            const { records, cost } = await sourceAgentSeekingPhraseIntent(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "agent_seeking_phrase_intent", "social_intent", cost)
+          }
+
+          // ── New-construction / builder intent — cross-source (Google/Apify today) — lane 72C ──
+          // docs/lead-acquisition-coverage-2026-09.md item #23, the next coverage lane after
+          // site_visitor_intent (wave 70) / email_engagement_intent (lane 71C).
+          if (enabledSources.has("new_construction_intent")) {
+            const { records, cost } = await sourceNewConstructionIntent(socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "new_construction_intent", "social_intent", cost)
+          }
+
+          // ── Permit / pre-listing intent (Exa) — lane 73D, owner ruling wave 73 ──────
+          // "exa is good at looking for leads like permit." Territory-centric Exa search
+          // for recent permits, probate/estate notices, "coming soon" chatter and
+          // contractor-bid posts (lib/lead-pipeline/permit-sourcer.ts). A hit whose
+          // address matches a lead/contact THIS BROKERAGE already owns is routed to the
+          // existing permit-signals ATTACH path (motivated_seller_signals) instead of
+          // minting a duplicate raw lead — routePermitPrelistingHits does that split
+          // BEFORE insertSocial ever sees the matched records.
+          if (enabledSources.has("permit_prelisting_intent")) {
+            const { records, cost } = await sourcePermitPrelistingIntent(socialMarket)
+            sourceCostUsd += cost
+            const routed = await routePermitPrelistingHits({
+              supabase, brokerageId: market.brokerage_id, records,
+            })
+            if (routed.errors.length > 0) {
+              results.errors.push(...routed.errors.map((e) => `Permit attach routing error for ${market.name}: ${e}`))
+            }
+            if (routed.attached > 0 || routed.alreadyRecorded > 0) {
+              console.log(`[Lead Scraping Cron] Permit/pre-listing ${market.name}: attached=${routed.attached} (lead=${routed.attachedByEntity.lead} contact=${routed.attachedByEntity.contact}) alreadyRecorded=${routed.alreadyRecorded} minting=${routed.toMint.length}`)
+            }
+            await insertSocial(routed.toMint, "permit_prelisting_intent", "search_signal", cost)
+          }
+
+          // ── Review-as-acquisition (ZenRows→Zyte + schema extraction) — lane 74D ──────
+          // docs/lead-acquisition-coverage-2026-09.md item #31, the second-to-last "Missing" row.
+          // Territory-honest: no configured `review_source_urls` (m652) ⇒
+          // sourceReviewAcquisitionIntent returns zero records before any network call — see that
+          // file's header for why this lane never guesses a profile URL the way facebook_group
+          // guesses a group URL. A reviewer whose name matches a contact this brokerage already
+          // owns is routed to a manager signal (contact_review_intent_reengage) BEFORE
+          // insertSocial ever sees it — an owned name never mints a duplicate person.
+          if (enabledSources.has("review_acquisition_intent")) {
+            const reviewUrls: string[] = motivatedParams?.review_source_urls?.length
+              ? motivatedParams.review_source_urls
+              : []
+            const { records, cost, provider } = await sourceReviewAcquisitionIntent(socialMarket, reviewUrls)
+            reviewAcquisitionCostUsd += cost
+            const routed = await routeReviewAcquisitionHits({ supabase, brokerageId: market.brokerage_id }, records)
+            if (routed.errors.length > 0) {
+              results.errors.push(...routed.errors.map((e) => `Review acquisition routing error for ${market.name}: ${e}`))
+            }
+            if (routed.signaled > 0 || routed.toMint.length > 0) {
+              console.log(`[Lead Scraping Cron] Review acquisition ${market.name}: signaled=${routed.signaled} minting=${routed.toMint.length}`)
+            }
+            if (cost > 0 && provider) {
+              await meterVendorSpend({
+                vendorName: provider,
+                usageType: "review_acquisition_intent",
+                cost,
+                brokerageId: market.brokerage_id,
+                metadata: { market_id: market.id, scraper_type: "review_acquisition_intent" },
+              })
+            }
+            await insertSocial(routed.toMint, "review_acquisition_intent", "social_intent", cost)
+          }
+
+          // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────
+          // (ZenRows primary, Zyte fallback — lib/external/zenrows-client.ts::
+          // scrapeSiteWithBestProvider). Homes.com is NEW coverage this wave. Each site keeps
+          // its OWN sourceChannel (owner ruling: never merge look-alike lanes). Metered
+          // SEPARATELY per real provider below (not folded into sourceCostUsd) so the "apify_social"
+          // composite ledger entry after this block never double-counts ZenRows/Zyte spend.
+          if (enabledSources.has("realty_chatter") && market.city && market.state) {
+            for (const site of ["zillow", "realtor", "homes"] as const) {
+              const chatter = await sourceRealtySiteChatter(site, { city: market.city, state: market.state })
+              realtyChatterCostUsd += chatter.cost
+              await insertSocial(chatter.records, `${site}_chatter`, "social_intent", chatter.cost)
+              if (chatter.cost > 0) {
+                await meterVendorSpend({
+                  vendorName: chatter.provider ?? "zenrows",
+                  usageType: "realty_site_chatter",
+                  cost: chatter.cost,
+                  brokerageId: market.brokerage_id,
+                  metadata: { market_id: market.id, site, scraper_type: "realty_chatter" },
+                })
+              }
+            }
           }
 
           results.total_leads_created += socialLeadsCreated
@@ -631,7 +932,7 @@ export async function GET(request: Request) {
           completed_at: new Date().toISOString(),
           total_items_found: socialLeadsCreated,
           leads_created: socialLeadsCreated,
-          api_cost: sourceCostUsd,
+          api_cost: sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd,
           error_message: sourceErr?.message ?? null,
         }).eq("id", execRecord?.id).then(() => {}, () => {})
 
@@ -649,7 +950,10 @@ export async function GET(request: Request) {
           metadata: { market_id: market.id, scraper_type: "social_intent" },
         })
 
-        territorySpendUsd += sourceCostUsd
+        // realtyChatterCostUsd / reviewAcquisitionCostUsd were already metered per-provider above
+        // (ZenRows/Zyte, not Apify) — add them to the territory total here so budget tracking
+        // still sees the full spend.
+        territorySpendUsd += sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd
       }
 
       // ── OSINT public-records source — distressed-seller filings ─────────────
@@ -670,14 +974,104 @@ export async function GET(request: Request) {
             brokerageId: market.brokerage_id,
             metadata: { market_id: market.id, scraper_type: "osint_signal" },
           })
-          for (const record of records) {
-            const { inserted } = await insertRawRecord({
-              supabase, record, brokerageId: market.brokerage_id, marketId: market.id, marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes }, executionId: null,
-            })
-            if (inserted) results.total_leads_created++
-          }
+          const { inserted: osintInserted } = await insertRawBatch({
+            records, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "osint_signal", sourceFamily: "distressed_signal", sourceChannel: "osint_signal",
+          })
+          results.total_leads_created += osintInserted
         } catch (err) {
           results.errors.push(`OSINT source error for ${market.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── SITE VISITOR INTENT — wave 70 behavioral lane, $0 marginal cost ─────
+      // Own first-party website/portal traffic (website_visitors, already written by the
+      // pixel/dwell beacons) — an unidentified, high-dwell visitor is buyer-intent this repo
+      // already collected and never read for acquisition. Runs ONCE per brokerage (see the
+      // siteVisitorBrokeragesRun set above this loop) — brokerage_id passed EXPLICITLY
+      // (never platform pool: this is the tenant's own site, not a scraped third-party page),
+      // so it lands as source_origin='brokerage' immediately, the same shape a
+      // brokerage-triggered scrape would.
+      if (enabledSources.has("site_visitor_intent") && market.brokerage_id && !siteVisitorBrokeragesRun.has(market.brokerage_id)) {
+        siteVisitorBrokeragesRun.add(market.brokerage_id)
+        try {
+          const { records, rowsExamined } = await sourceSiteVisitorIntent(supabase, market.brokerage_id)
+          const { inserted: siteVisitorInserted } = await insertRawBatch({
+            records, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "site_visitor_intent", sourceFamily: "site_behavior", sourceChannel: "site_visitor_intent",
+            brokerageId: market.brokerage_id,
+            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
+            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
+            // rather than silently inheriting a stale estimate.
+            batchCostUsd: 0,
+          })
+          results.total_leads_created += siteVisitorInserted
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Site visitor intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${siteVisitorInserted}`)
+          }
+        } catch (err) {
+          results.errors.push(`Site visitor intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── EMAIL ENGAGEMENT INTENT — lane 71C behavioral lane, $0 marginal cost ─
+      // Own first-party outbound-email engagement (email_tracking, already written by the
+      // SendGrid events webhook) — a contact who repeatedly opens/clicks the brokerage's own
+      // mail is a renewed-intent signal this repo already collected and never read for
+      // acquisition. Runs ONCE per brokerage (see emailEngagementBrokeragesRun above this
+      // loop), same shape as site_visitor_intent immediately above: brokerage_id passed
+      // EXPLICITLY (never platform pool — this is the tenant's own send history), so it lands
+      // as source_origin='brokerage' immediately.
+      if (enabledSources.has("email_engagement_intent") && market.brokerage_id && !emailEngagementBrokeragesRun.has(market.brokerage_id)) {
+        emailEngagementBrokeragesRun.add(market.brokerage_id)
+        try {
+          // WAVE 72A (owner: "contacts coming in from the tenants website or email
+          // come in as contacts not raw leads."): `records` is now ALWAYS empty —
+          // every email_tracking row is already a CONTACT (see the sourcer's header)
+          // — so this never mints a raw lead. `contactsNotified` counts the manager
+          // signals (campaign_orchestrator → ai_isa) sent directly onto those
+          // contacts instead. `insertRawBatch` still no-ops safely on the empty array.
+          const { records, rowsExamined, contactsNotified } = await sourceEmailEngagementIntent(supabase, market.brokerage_id)
+          const { inserted: emailEngagementInserted } = await insertRawBatch({
+            records, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "email_engagement_intent", sourceFamily: "email_behavior", sourceChannel: "email_engagement_intent",
+            brokerageId: market.brokerage_id,
+            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
+            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
+            // rather than silently inheriting a stale estimate.
+            batchCostUsd: 0,
+          })
+          results.total_leads_created += emailEngagementInserted
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Email engagement intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${emailEngagementInserted} contactsNotified=${contactsNotified}`)
+          }
+        } catch (err) {
+          results.errors.push(`Email engagement intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── RENTAL-TO-BUYER GRADUATION (tenant side) — lane 74D, $0 marginal cost ─
+      // A renter already in this brokerage's own `contacts` whose tenure crosses the
+      // graduation bar (lib/lead-pipeline/rental-graduation-sourcer.ts). NEVER a raw lead —
+      // the person is already a contact — a manager signal (shopping_agent, who owns the buyer
+      // journey → ai_isa) carries the buy-vs-renew moment instead. Runs ONCE per brokerage (see
+      // rentalGraduationBrokeragesRun above this loop), same shape as email_engagement_intent
+      // immediately above.
+      if (enabledSources.has("rental_to_buyer_graduation") && market.brokerage_id && !rentalGraduationBrokeragesRun.has(market.brokerage_id)) {
+        rentalGraduationBrokeragesRun.add(market.brokerage_id)
+        try {
+          const { rowsExamined, contactsNotified } = await sourceRentalToBuyerGraduation(supabase, market.brokerage_id)
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Rental-to-buyer graduation ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} notified=${contactsNotified}`)
+          }
+        } catch (err) {
+          results.errors.push(`Rental-to-buyer graduation error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
 
@@ -710,6 +1104,153 @@ export async function GET(request: Request) {
         })
         .eq("id", market.id)
         .then(() => {}, () => {})
+    }
+
+    // ============================================
+    // 2b. SMART SEARCH RECONCILE (V2 Property Subscription) — POOLED BY QUICKLIST
+    // ============================================
+    // WAVE 67 REBUILD of wave 66's per-market reconcile (moved out of the market
+    // loop above — pooling needs every active territory's want gathered FIRST).
+    // Owner ruling ("how can we get around the caps"): BatchData caps Property
+    // Subscription at 5 PER ACCOUNT — pooling by market×quicklist wastes the cap on
+    // territory count; pooling by QUICKLIST spends it on the number of DISTINCT
+    // quicklists instead; 5 slots then cover 5 quicklists PLATFORM-WIDE no matter how
+    // many territories want each one. searchCriteria.query becomes the UNION of every
+    // contributing territory's geography (buildPooledSmartSearchQuery — syntax
+    // unresolved, see that function's own comment). The per-market row in
+    // batchdata_smart_search_subscriptions survives as a MEMBERSHIP row: every
+    // territory that contributed to a pooled subscription gets its own row sharing
+    // that subscription's id, with pool_key/pooled/geography_count (m637) recording
+    // which pool it belongs to and how many territories are in it.
+    //
+    // Best-effort: a subscription failure never blocks or fails the poll-based scrape
+    // above, which is the capability that actually produces leads today.
+    //
+    // SUBSCRIPTIONS ARE IMMUTABLE (documented) — an `active` pooled row is left alone
+    // indefinitely UNLESS its membership changed (a territory joined or left the pool
+    // since the last reconcile, detected by comparing `geography_count`) or NO
+    // territory wants it anymore, either of which forces a delete-then-recreate
+    // (burning no extra slot — the old id frees its slot before the new one claims it).
+    try {
+      const geosByQuicklist = new Map<string, Array<{ marketId: string; priority: number; city: string | null; state: string; zip: string | null }>>()
+      for (const m of markets) {
+        if ((m.spend_this_month ?? 0) >= (m.monthly_budget_usd ?? 100)) continue
+        const mSources = expandEnabledSources(m.enabled_sources ?? ["batchdata_motivated"])
+        if (!mSources.has("batchdata_motivated")) continue
+        const mMotivated = m.lead_scraping_motivated_params?.[0]
+        if (!mMotivated?.is_active) continue
+        const quicklists = quickListSlugsFor(batchDataTriggersFor(mMotivated.signal_types))
+        for (const quicklist of quicklists) {
+          const list = geosByQuicklist.get(quicklist) ?? []
+          list.push({ marketId: m.id, priority: m.priority ?? 0, city: m.city ?? null, state: m.state, zip: null })
+          geosByQuicklist.set(quicklist, list)
+        }
+      }
+      const wants = Array.from(geosByQuicklist.entries()).map(([quicklist, geographies]) => ({ quicklist, geographies }))
+
+      const { data: existingSubs, error: existingSubsErr } = await supabase
+        .from("batchdata_smart_search_subscriptions")
+        .select("market_id, quicklist, status, subscription_id, geography_count")
+      if (existingSubsErr) {
+        // Table not yet applied (m633/m635/m637) or another read refusal — never treat
+        // "couldn't read" as "nothing subscribed"; skip the whole pooled reconcile pass
+        // this run rather than risk a duplicate registration.
+        throw new Error(`smart-search subscription read refused: ${existingSubsErr.message}`)
+      }
+      const rows = (existingSubs ?? []) as Array<{ market_id: string; quicklist: string; status: string; subscription_id: string | null; geography_count: number | null }>
+
+      // One representative row per quicklist tells us the pooled subscription's id
+      // and how many territories it currently claims to cover.
+      const activeByQuicklist = new Map<string, { subscriptionId: string; geographyCount: number }>()
+      for (const r of rows) {
+        if (r.status === "active" && r.subscription_id) {
+          activeByQuicklist.set(r.quicklist, { subscriptionId: r.subscription_id, geographyCount: r.geography_count ?? 1 })
+        }
+      }
+
+      // Membership drift (geography count changed) → delete first, subscriptions are
+      // immutable. Freed slot is picked up by the plan below under the SAME quicklist.
+      for (const w of wants) {
+        const active = activeByQuicklist.get(w.quicklist)
+        if (active && active.geographyCount !== w.geographies.length) {
+          const del = await deleteSmartSearchSubscription(active.subscriptionId)
+          if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
+          await supabase.from("batchdata_smart_search_subscriptions")
+            .update({ status: "cancelled", last_error: del.ok ? "superseded by pooled membership change" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
+            .eq("quicklist", w.quicklist).eq("status", "active")
+          activeByQuicklist.delete(w.quicklist)
+        }
+      }
+      // No territory wants this quicklist anymore → delete + cancel every membership row.
+      for (const [quicklist, active] of activeByQuicklist) {
+        if (!wants.some((w) => w.quicklist === quicklist)) {
+          const del = await deleteSmartSearchSubscription(active.subscriptionId)
+          if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
+          await supabase.from("batchdata_smart_search_subscriptions")
+            .update({ status: "cancelled", last_error: del.ok ? "no active territory wants this quicklist anymore" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
+            .eq("quicklist", quicklist).eq("status", "active")
+        }
+      }
+
+      const alreadyActive = new Set(
+        wants.filter((w) => {
+          const active = activeByQuicklist.get(w.quicklist)
+          return !!active && active.geographyCount === w.geographies.length
+        }).map((w) => w.quicklist),
+      )
+
+      const plan = buildSmartSearchSubscriptionPlan({ wants, alreadyActive, accountLiveCount: smartSearchAccountLiveCount })
+
+      for (const entry of plan) {
+        if (entry.action === "keep") continue
+        if (entry.action === "defer") {
+          for (const g of entry.geographies) {
+            await supabase.from("batchdata_smart_search_subscriptions").upsert(
+              {
+                market_id: g.marketId, quicklist: entry.quicklist, status: "deferred",
+                webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
+                last_error: entry.reason, priority: g.priority,
+                pool_key: entry.quicklist, pooled: true, geography_count: entry.geographies.length,
+                last_reconciled_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+              },
+              { onConflict: "market_id,quicklist" },
+            )
+          }
+          continue
+        }
+        // action === "create" — only reached when the plan already confirmed a slot is
+        // free. ONE provider call for the whole pool; every contributing territory
+        // then gets its own membership row against the same subscription id.
+        const result = await createSmartSearchSubscription({
+          quicklist: entry.quicklist,
+          geographies: entry.geographies.map((g) => ({ city: g.city, state: g.state, zip: g.zip })),
+        })
+        if (result.ok) smartSearchAccountLiveCount++
+        const status = result.ok ? "active" : result.provisioningRequired ? "provisioning_required" : "error"
+        for (const g of entry.geographies) {
+          const { error: upsertErr } = await supabase
+            .from("batchdata_smart_search_subscriptions")
+            .upsert(
+              {
+                market_id: g.marketId, quicklist: entry.quicklist,
+                subscription_id: result.subscriptionId, status,
+                webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
+                last_error: result.error, priority: g.priority,
+                pool_key: entry.quicklist, pooled: true, geography_count: entry.geographies.length,
+                last_reconciled_at: new Date().toISOString(),
+                ...(result.ok ? { renewed_at: new Date().toISOString() } : {}),
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "market_id,quicklist" },
+            )
+          if (upsertErr) {
+            results.errors.push(`Smart Search pooled subscription write failed for ${entry.quicklist}/${g.marketId}: ${upsertErr.message}`)
+          }
+        }
+      }
+    } catch (smartSearchErr) {
+      // Best-effort side-channel — logged, never fails the cron run.
+      results.errors.push(`Smart Search pooled reconcile error: ${smartSearchErr}`)
     }
 
     // ── PROMOTION PASS — run scraped raw records through the pipeline ──────────
@@ -807,6 +1348,29 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── WALLET RECONCILE (wave 66, task 6) — spend MEASURED, not estimated ──
+    // Once per run (not per market/brokerage — BatchData's wallet is ONE
+    // account-wide balance): sums this month's own vendor_usage_tracking
+    // estimate for vendor 'batchdata' and compares it to BatchData's own
+    // wallet consumption report, filing a low-severity ops row when the two
+    // drift past a noise threshold. Best-effort — never fails the cron.
+    try {
+      const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
+      const { data: spendRows } = await supabase
+        .from("vendor_usage_tracking")
+        .select("total_cost")
+        .eq("vendor_name", "batchdata")
+        .gte("created_at", startOfMonth)
+      const estimatedSpendThisMonthUsd = (spendRows ?? []).reduce((s: number, r: any) => s + (Number(r.total_cost) || 0), 0)
+      const { reconcileBatchDataWalletSpend } = await import("@/lib/external/batchdata-client")
+      const reconcile = await reconcileBatchDataWalletSpend({ brokerageId: null, estimatedSpendThisMonthUsd })
+      if (reconcile.flagged) {
+        results.errors.push(`BatchData wallet drift flagged: wallet=$${reconcile.walletTotalUsd} estimate=$${reconcile.estimatedTotalUsd.toFixed(2)}`)
+      }
+    } catch (e) {
+      results.errors.push(`BatchData wallet reconcile skipped: ${e}`)
+    }
+
     const durationMs = Date.now() - cronStartedAt
     console.log("[Lead Scraping Cron] Completed:", results)
 
@@ -827,6 +1391,21 @@ export async function GET(request: Request) {
       created_at:   new Date().toISOString(),
     }).then(() => {}, () => {})
 
+    // RELIST DETECTION — a property de-listed (expired/withdrawn) and back on the
+    // market is a textbook motivated-seller signal. The detector joins this run's
+    // fresh active-listing raw records against the expired rows we already hold
+    // and emits LISTING_RELISTED kernel events for the standard reactor fan-out.
+    // Read-only over raw_scraped_leads; best-effort.
+    let relistMatches = 0
+    try {
+      const { detectRelistedListings } = await import("@/lib/lead-pipeline/relisting-detector")
+      const relist = await detectRelistedListings()
+      relistMatches = relist.matches.length
+      if (relist.error) results.errors.push(`relist-detector: ${relist.error}`)
+    } catch (e) {
+      console.error("[lead-scraping] relist detection failed (non-fatal):", e)
+    }
+
     // THE PLATFORM HUNTS ITS OWN CUSTOMERS — same scraping heartbeat, pointed
     // at OS-BUYING intent (agents/teams/brokerages shopping for tech). Weekly
     // ISO-gated inside the sourcer; provider-gated; staff digest only, never
@@ -841,7 +1420,7 @@ export async function GET(request: Request) {
       console.error("[lead-scraping] platform prospect hunt failed (non-fatal):", e)
     }
 
-    return NextResponse.json({ message: "Lead scraping completed", platformProspects, results })
+    return NextResponse.json({ message: "Lead scraping completed", platformProspects, relistMatches, results })
   } catch (error) {
     const durationMs = Date.now() - cronStartedAt
     console.error("[Lead Scraping Cron] Fatal error:", error)
@@ -863,80 +1442,67 @@ export async function GET(request: Request) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// insertRawRecord — Kernel OS canonical raw-record writer
-// ALL scraping paths funnel through this. Zero createLead() calls in this file.
-// ─────────────────────────────────────────────────────────────────────────────
-interface InsertRawRecordParams {
-  supabase: Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>
-  record: NormalizedScrapedRecord
-  brokerageId: string
+// insertRawBatch — Kernel OS canonical raw-record writer
+// ALL scraping paths funnel through this, which is a thin cron-side wrapper over
+// lib/kernel/scraping.ts::ingestRawSourceBatch (THE canonical writer — its own
+// header declares "raw records enter via ingestRawSourceBatch() ONLY"). Zero
+// createLead() calls in this file, and zero direct raw_scraped_leads inserts —
+// this used to hand-roll its own insert (a duplicate of ingestRawSourceBatch's
+// viability + territory gate + dedup + attribution), which left the kernel
+// function imported and never called (dead-import / hidden-wire). Every scrape
+// phase below batches its records and calls this once per sub-source, so the
+// kernel writer's per-record lifecycle events (RAW_RECORD_CREATED) and
+// scraper_executions bookkeeping stay batch-shaped, not per-record chatter.
+//
+// Raw records here are always PLATFORM-owned (brokerage_id NULL) — this cron
+// is the scheduled, territory-driven sweep; ingestRawSourceBatch derives
+// raw_scraped_leads.source_origin = 'platform' from brokerageId: null. An
+// explicit brokerage-triggered scrape (none exists yet — see report) would
+// pass a real brokerageId and get source_origin = 'brokerage' instead.
+interface InsertRawBatchParams {
+  records: NormalizedScrapedRecord[]
   marketId: string
-  /** The scraped market's geography — the INGEST territory gate drops records that
-   *  clearly belong to a different area (a lead must belong to an active territory). */
+  /** The scraped market's geography — passed straight through to the kernel
+   *  writer so it skips its own per-call DB lookup (this cron already loaded
+   *  it once per territory). */
   marketGeo?: { city?: string | null; state?: string | null; zip_codes?: string[] | null }
+  /** A scraper_executions row already opened for this phase; reused instead of
+   *  opening (and closing) a second row per sub-source batch. */
   executionId?: string | null
+  /** Metered vendor cost of THIS batch (wave 66C seam) — the kernel spreads it
+   *  across the records as raw_scraped_leads.cost_per_record. Never a body value. */
+  batchCostUsd?: number | null
+  /** Batch label for scraper_executions.scraper_type + lifecycle metadata,
+   *  e.g. "facebook", "batchdata_motivated", "osint_signal" — kept DISTINCT
+   *  per source (owner ruling: never fold two scraping capabilities into one). */
+  source: string
+  sourceFamily: string
+  sourceChannel: string
+  sourceSubtype?: string
+  /** Wave 70 seam: every source here is PLATFORM-owned (brokerage_id null) by default — see the
+   *  header above. A source whose signal is INHERENTLY brokerage-specific (site_visitor_intent —
+   *  the tenant's own website traffic; nobody else's site produced it) passes its market's
+   *  brokerage_id explicitly instead, which ingestRawSourceBatch resolves to
+   *  raw_scraped_leads.source_origin = 'brokerage'. Omit (undefined) to keep the platform-pool
+   *  default every other call site here already relies on. */
+  brokerageId?: string | null
 }
 
-async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserted: boolean; rawId?: string; skipped?: string }> {
-  if (!isViableRecord(params.record)) return { inserted: false, skipped: "not_viable" }
+async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted: number; rawIds: string[] }> {
+  if (params.records.length === 0) return { inserted: 0, rawIds: [] }
 
-  // TERRITORY GATE AT INGEST — never write a lead that doesn't belong to the active
-  // territory it was scraped for. recordMatchesTerritory passes through records with no
-  // / partial geo (those resolve geo via enrichment and are re-checked by the promotion
-  // gate); it drops only CLEAR mismatches (wrong zip, or wrong city+state).
-  if (
-    params.marketGeo &&
-    !recordMatchesTerritory(
-      { city: params.record.city, state: params.record.state, zip: params.record.zip },
-      params.marketGeo,
-    )
-  ) {
-    return { inserted: false, skipped: "territory" }
-  }
+  const res = await ingestRawSourceBatch({
+    brokerageId:   params.brokerageId ?? null,
+    marketId:      params.marketId,
+    source:        params.source,
+    sourceFamily:  params.sourceFamily,
+    sourceChannel: params.sourceChannel,
+    sourceSubtype: params.sourceSubtype,
+    records:       params.records,
+    executionId:   params.executionId ?? null,
+    batchCostUsd:  params.batchCostUsd ?? null,
+    marketGeo:     params.marketGeo ?? null,
+  })
 
-  const identityKey = buildLeadIdentityKey(params.record)
-
-  const { data, error } = await params.supabase
-    .from('raw_scraped_leads')
-    .insert({
-      // Platform-owned until promotion: leave brokerage_id NULL. The owning
-      // brokerage is resolved from market_id (the active-subscriber territory
-      // this record was scraped for) when it passes the promotion gate.
-      brokerage_id:         null,
-      market_id:            params.marketId,
-      source:               params.record.source,
-      source_record_id:     params.record.sourceRecordId,
-      raw_data:             params.record.rawPayload ?? null,
-      normalized_preview: {
-        firstName:       params.record.firstName    ?? null,
-        lastName:        params.record.lastName     ?? null,
-        email:           params.record.email        ?? null,
-        phone:           params.record.phone        ?? null,
-        city:            params.record.city         ?? null,
-        state:           params.record.state        ?? null,
-        intentType:      params.record.intentType,
-        behaviorType:    params.record.behaviorType,
-        motivationScore: params.record.motivationScore ?? null,
-        intentSignals:   params.record.intentSignals   ?? [],
-        propertyAddress: params.record.propertyAddress ?? null,
-        sourceUrl:       params.record.sourceUrl       ?? null,
-        leadIdentityKey: identityKey,
-        // Rich intent block from the new ZenRows + Exa normalizers — buyer / seller / investor /
-        // agent + persona + property-alert profile + matched phrases + extracted addresses/prices.
-        // Read by the canonical lead-creation gate and the AI-ISA script selector downstream.
-        intent:          params.record.intent           ?? null,
-      },
-      processing_status:    'pending',
-      scraper_execution_id: params.executionId ?? null,
-    })
-    .select('id')
-    .single()
-
-  // 23505 = unique_violation — duplicate from same source, skip silently
-  if (error?.code === '23505') return { inserted: false }
-  if (error) {
-    console.error('[Scraping] raw_scraped_leads insert failed:', error.message)
-    return { inserted: false }
-  }
-  return { inserted: true, rawId: data?.id }
+  return { inserted: res.inserted, rawIds: res.rawIds }
 }

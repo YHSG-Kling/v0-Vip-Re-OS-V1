@@ -5,10 +5,17 @@
 // No auth required — rate-limited by session token.
 
 import { NextRequest } from 'next/server'
-import { streamText, convertToModelMessages, UIMessage } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+import { convertToModelMessages, UIMessage } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
+import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
+import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
+import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
+import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
+import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
 
@@ -43,11 +50,27 @@ export async function POST(req: NextRequest) {
     const supabase = createServiceClient()
 
     // ── Validate session ──────────────────────────────────────────────────
-    const { data: session } = await supabase
+    // The token is the ONLY identity this route accepts: opaque, server-issued
+    // by /api/widget/session, and unique (chat_sessions_widget_token_idx). The
+    // tenant and the agent are read OFF THE ROW, never off the body — a body
+    // that named a brokerage next to this token would reopen the hole the
+    // session mint just closed.
+    const { data: session, error: sessionError } = await supabase
       .from('chat_sessions')
-      .select('id, brokerage_id, agent_id, status, capture_state')
+      .select('id, brokerage_id, agent_id, status, capture_state, contact_id')
       .eq('widget_session_token', session_token)
       .maybeSingle()
+
+    // supabase-js resolves a failed query, so a bare `!session` reported a
+    // read failure as "invalid session" and told the visitor their chat was
+    // closed when the database was simply unreachable.
+    if (sessionError) {
+      console.error('[Widget/message] session lookup failed:', sessionError.message)
+      return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
 
     if (!session || session.status === 'closed') {
       return new Response(JSON.stringify({ error: 'Invalid or closed session' }), {
@@ -57,52 +80,72 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Load identity ─────────────────────────────────────────────────────
-    let profile: any = null
-    if (session.agent_id) {
-      const { data } = await supabase
-        .from('ai_identity_profiles')
-        .select('assistant_name, persona_label, tone, faq_knowledge, objection_library, followup_style')
-        .eq('scope_type', 'agent')
-        .eq('scope_id', session.agent_id)
-        .eq('active', true)
-        .maybeSingle()
-      if (data) profile = data
-    }
-    if (!profile) {
-      const { data } = await supabase
-        .from('ai_identity_profiles')
-        .select('assistant_name, persona_label, tone, faq_knowledge, objection_library, followup_style')
-        .eq('scope_type', 'brokerage')
-        .eq('scope_id', session.brokerage_id)
-        .eq('active', true)
-        .maybeSingle()
-      if (data) profile = data
-    }
+    // ONE brand-voice cascade (CLAUDE.md §1/§6) — was a hand-rolled two-tier
+    // (agent → brokerage) read straight off ai_identity_profiles, duplicating
+    // lib/ai-isa/brand-voice-prompt.ts's loadBrandVoicePrompt cascade
+    // (brand_voice_profile → brokerage/team/agent ai_identity_profiles →
+    // chartered AI teammates) while missing its tone/formality/prohibited-word
+    // rules and team tier entirely. Survivor: loadBrandVoicePrompt. This is
+    // the anonymous-widget lane the doc's §3 cascade note calls out — no
+    // contactId exists pre-capture, so it runs the brokerage/agent cascade
+    // without contact coverage.
+    const brand = await loadBrandVoicePrompt({
+      brokerageId: session.brokerage_id,
+      agentId: session.agent_id ?? null,
+    })
 
-    const assistantName = profile?.assistant_name ?? 'Your Real Estate Assistant'
-    const personaLabel = profile?.persona_label ?? 'AI Real Estate Specialist'
-    const tone = profile?.tone ?? 'conversational'
-    const faqKnowledge: Array<{ question: string; answer: string }> = profile?.faq_knowledge ?? []
-    const objectionLibrary: Array<{ objection: string; response: string }> = profile?.objection_library ?? []
+    // Persona is DERIVED (resolveToolPersona) from the session's OWN linked
+    // contact when capture already happened this session — resolved HERE,
+    // before the system prompt, so buildQualificationPrompt can flavor its
+    // goal list (lane 74B). A still-anonymous visitor has no contact_type/
+    // contact_persona/home_owner_status to read and resolves to the 'buyer'
+    // default (the SAME default posture lib/campaigns/contact-sources.ts
+    // already documents).
+    let widgetContactType: string | null = null
+    let widgetContactPersona: string | null = null
+    let widgetHomeOwnerStatus: string | null = null
+    if (session.contact_id) {
+      const { data: widgetContact } = await supabase
+        .from('contacts')
+        .select('contact_type, contact_persona, home_owner_status')
+        .eq('id', session.contact_id)
+        .maybeSingle()
+      widgetContactType = widgetContact?.contact_type ?? null
+      widgetContactPersona = widgetContact?.contact_persona ?? null
+      widgetHomeOwnerStatus = widgetContact?.home_owner_status ?? null
+    }
+    const widgetPersona = resolveToolPersona({
+      contactType: widgetContactType,
+      contactPersona: widgetContactPersona,
+      homeOwnerStatus: widgetHomeOwnerStatus,
+    })
 
     // ── Build system prompt ───────────────────────────────────────────────
-    const faqBlock = faqKnowledge.length
-      ? `\n\nFREQUENTLY ASKED QUESTIONS (answer these from memory):\n` +
-        faqKnowledge.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n')
-      : ''
+    // TOMBSTONE (lane 74B) — the inline "qualify their intent (buying or
+    // selling), and naturally collect their name, email, and phone number…"
+    // paragraph stood here. SURVIVOR: lib/ai-isa/qualification-playbook.ts
+    // ::buildQualificationPrompt (CLAUDE.md §6).
+    // Wave 75 — business processes/SOPs, brand KB, office hours, service
+    // areas. `preloadedVoice: brand` + `omitVoiceBlock: true` because
+    // `brand.systemBlock` is already rendered on the line above — the
+    // brand-voice cascade is not re-queried and not restated twice.
+    const lastMsgForKb = messages[messages.length - 1]
+    const brandPlaybook = await loadBrandPlaybookContext({
+      brokerageId: session.brokerage_id,
+      agentId: session.agent_id ?? null,
+      contactId: session.contact_id ?? null,
+      preloadedVoice: brand,
+      omitVoiceBlock: true,
+      knowledgeQuery: lastMsgForKb?.parts?.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('') ?? null,
+    })
 
-    const objectionBlock = objectionLibrary.length
-      ? `\n\nOBJECTION HANDLING:\n` +
-        objectionLibrary.map((o) => `Objection: ${o.objection}\nResponse: ${o.response}`).join('\n\n')
-      : ''
+    const system = `${brand.systemBlock}
 
-    const system = `You are ${assistantName}, a ${personaLabel} for a real estate brokerage.
-Tone: ${tone}. Be helpful, concise, and focused on real estate.
-Your job is to help prospects with their questions, qualify their intent (buying or selling),
-and naturally collect their name, email, and phone number when appropriate — never pushy.
+${buildQualificationPrompt({ surface: 'widget', persona: widgetPersona, brand: brandPlaybook })}
+
 If you have collected enough to identify them (name + email OR phone), say:
 "I have your info and someone from the team will follow up shortly!"
-Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBlock}${objectionBlock}`
+Do NOT make up property listings. Do NOT discuss competitor brokerages.`
 
     // ── Persist user message ──────────────────────────────────────────────
     const lastMsg = messages[messages.length - 1]
@@ -121,31 +164,102 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBloc
     // ── Stream response ───────────────────────────────────────────────────
     const recentMessages = messages.slice(-MAX_HISTORY)
 
-    const result = streamText({
-      model: resolveModel('openai/gpt-4o-mini'),
-      system,
-      messages: await convertToModelMessages(recentMessages),
-      temperature: 0.7,
-      maxOutputTokens: 512,
-      onFinish: async ({ text }) => {
-        // Persist assistant turn
-        await supabase.from('chat_messages').insert({
-          session_id: session.id,
-          role: 'assistant',
-          content: text,
-          metadata: { widget: true, assistant_name: assistantName },
-        })
+    // Ledger identity for this anonymous lane: the cost lands on the TENANT
+    // (the session row's brokerage — the only identity this route accepts,
+    // never the body), attributed to the ASSIGNED AGENT's user when one
+    // exists. No assigned agent → the row still lands, with a null user =
+    // anonymous tenant traffic (#187). Metered and capped either way.
+    let ledgerUserId: string | null = null
+    if (session.agent_id) {
+      const { data: agentRow, error: agentErr } = await supabase
+        .from('agents')
+        .select('user_id')
+        .eq('id', session.agent_id)
+        .maybeSingle()
+      if (agentErr) {
+        // A refused read only costs us the ledger row — never the visitor's chat.
+        console.error('[Widget/message] agent user lookup failed:', agentErr.message)
+      }
+      ledgerUserId = agentRow?.user_id ?? null
+    }
 
-        // Detect lead capture keywords in assistant reply
-        const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
-        if (captureHit && session.capture_state !== 'captured') {
-          await supabase
-            .from('chat_sessions')
-            .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
-            .eq('id', session.id)
-        }
-      },
+    // ── BatchData/RentCast property-intelligence tools (lane 72B, widened 73B) ──
+    // The anonymous pre-lead lane. conversationKey = the session row's id
+    // (stable across this visitor's whole chat, survives capture) — never
+    // the request body. contactId is the session's own linked contact when
+    // capture already happened this session, else null (the tool still
+    // runs, it just has nothing tenant-scoped to persist a verify/DNC
+    // verdict to yet). Gated: {} when BatchData's MCP is unconfigured, so a
+    // deployment with no BatchData token streams exactly as before this
+    // change. widgetPersona is resolved above (before the system prompt).
+    const batchDataTools = await batchDataIsaTools({
+      brokerageId: session.brokerage_id,
+      userId: ledgerUserId,
+      agentId: session.agent_id,
+      persona: widgetPersona,
+      conversationKey: session.id,
+      contactId: session.contact_id ?? null,
     })
+    const rentCastTools = filterRentCastToolsForPersona(
+      await rentCastMcpTools({ brokerageId: session.brokerage_id, userId: ledgerUserId }),
+      widgetPersona,
+    )
+    const freeTools = await buildCustomerFreeTools({
+      brokerageId: session.brokerage_id,
+      contactId: session.contact_id ?? null,
+      agentId: session.agent_id,
+      persona: widgetPersona,
+    })
+
+    // Routed streaming entry: routing table model, tenant fair-use cap checked
+    // BEFORE the first byte, cost ledger written on finish.
+    let result: Awaited<ReturnType<typeof streamTextRouted>>
+    try {
+      result = await streamTextRouted({
+        feature: 'widget_visitor_chat',
+        system,
+        messages: await convertToModelMessages(recentMessages),
+        temperature: 0.7,
+        maxTokens: 512,
+        // Lane 74B — cost-ranked order + need-dedup (persona-tool-policy.ts
+        // ::selectToolsForPersona): free tools first, RentCast next,
+        // BatchData last, and a BatchData tool a cheaper same-registry tool
+        // already covers is dropped.
+        tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),
+        maxSteps: 5,
+        userId: ledgerUserId,
+        brokerageId: session.brokerage_id,
+        agentId: session.agent_id,
+        manager: 'ai_isa',
+        onFinish: async ({ text }) => {
+          // Persist assistant turn
+          await supabase.from('chat_messages').insert({
+            session_id: session.id,
+            role: 'assistant',
+            content: text,
+            metadata: { widget: true, assistant_name: brand.assistantName },
+          })
+
+          // Detect lead capture keywords in assistant reply
+          const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
+          if (captureHit && session.capture_state !== 'captured') {
+            await supabase
+              .from('chat_sessions')
+              .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
+              .eq('id', session.id)
+          }
+        },
+      })
+    } catch (err) {
+      // Tenant hit its monthly AI cap — refuse cleanly instead of streaming.
+      if (err instanceof AIFairUseError) {
+        return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw err
+    }
 
     return result.toUIMessageStreamResponse()
   } catch (err: any) {

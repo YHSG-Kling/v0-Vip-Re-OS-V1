@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { updateGlobalSettings } from '@/app/actions/settings/update-global-settings';
 import { SettingsCard } from './SettingsCard';
+import { useFormChange } from '@/hooks/use-form-change';
 
 interface BrandingFormProps {
   initialData: any;
@@ -19,13 +20,10 @@ export function BrandingForm({ initialData }: BrandingFormProps) {
     logo_url: initialData?.logo_url || '',
   });
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
+  // `handleChange` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to hooks/use-form-change.ts `useFormChange`
+  // (used below).
+  const handleChange = useFormChange(setFormData);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

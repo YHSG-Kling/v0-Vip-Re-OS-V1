@@ -70,6 +70,36 @@ export function scrubSuggestedPriceKeys<T>(obj: T): T {
   return obj
 }
 
+// ── FREE TEXT ───────────────────────────────────────────────────────────────
+// findSuggestedPriceLeaks / scrubSuggestedPriceKeys are KEY-based: they protect
+// structured payloads. They cannot see a number that arrives inside a STRING —
+// and a section/chapter TITLE is exactly that: free text, sometimes AI-written,
+// that lands in an email subject line the seller reads before the appointment.
+// A title like "Pricing Your Home at $675,000" passes every key-based check.
+//
+// Deliberately narrow so it never mangles legitimate copy: a $-amount, or a
+// bare number carrying an explicit magnitude word (500k, 1.2 million). It does
+// NOT touch "3 bed", "1800 sqft" or "45 seconds".
+const PRICE_TEXT_RE =
+  /\$\s*\d[\d,]*(?:\.\d+)?\s*(?:k|m|mm|b|million|thousand|billion)?|\b\d[\d,]*(?:\.\d+)?\s*(?:k|m|mm|million|thousand|billion)\b/gi
+
+/** True when free text carries a currency amount a seller must not see pre-appointment. */
+export function containsPriceAmount(text: string | null | undefined): boolean {
+  if (!text) return false
+  PRICE_TEXT_RE.lastIndex = 0
+  return PRICE_TEXT_RE.test(text)
+}
+
+/**
+ * Replace every currency amount in free text with a withheld marker. Used on
+ * anything customer-facing that was authored outside the structured payload
+ * (titles, notes) before it reaches a seller-facing email.
+ */
+export function redactPriceAmounts(text: string): string {
+  if (!text) return text
+  return text.replace(PRICE_TEXT_RE, "[withheld]")
+}
+
 /** Drop slides that present the subject valuation from a slide_deck. */
 export function filterPricingSlides(slideDeck: unknown): unknown {
   if (!slideDeck || typeof slideDeck !== "object") return slideDeck

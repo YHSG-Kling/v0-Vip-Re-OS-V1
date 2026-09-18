@@ -26,17 +26,35 @@ export async function getTodaysBriefing(): Promise<{
   try {
     const context = await getAgentContext()
     if (!context?.agentId || !isValidUUID(context.agentId)) {
-      return { briefing: null, error: "Agent context not available" }
+      // Incomplete account (no agent record yet) — this is the READ path feeding the
+      // briefing card, which renders null as a clean "No briefing for today" empty
+      // state. Surfacing a raw "Agent context not available" error made the card read
+      // "failed to load" instead. Degrade gracefully.
+      return { briefing: null }
     }
-    
-    const { agentId, brokerageId } = context
+
     const supabase = await createClient()
     const today = new Date().toISOString().split("T")[0]
 
+    // THE BRIEFING IS KEYED ON users.id, NOT agents.id.
+    //
+    // This read filtered `agent_id`, and the generator — the ONLY writer of a
+    // briefing row — has never written that column. It says so at
+    // lib/intelligence/daily-briefing-generator.ts:802-806: "user_id (FK→users.id)
+    // is the briefing key. The legacy agent_id column has FK→agents.id — writing
+    // users.id there violated the FK, the upsert THREW, and briefings never
+    // cached". `markBriefingOpened` (same file, :922-936) and the quarterly
+    // review loader (lib/intelligence/quarterly-review-loader.ts:155) both key on
+    // user_id too. So this card asked for a row under a key nothing writes and
+    // rendered its clean "No briefing for today" empty state seconds after a
+    // briefing had been generated and cached.
+    //
+    // The two id spaces are DISJOINT (§3), so this is not a cosmetic rename:
+    // agentId would never match a briefing and userId always will.
     const { data: existing, error } = await supabase
       .from("ai_daily_briefings")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("user_id", context.userId)
       .eq("briefing_date", today)
       .maybeSingle()
 
@@ -86,7 +104,14 @@ export async function generateBriefing(
 // are server components and call generateUserTypeBrief inline.
 
 export async function getUserTypeBrief(input?: {
-  userType?: "agent" | "broker" | "TC" | "compliance" | "lender" | "vendor" | "superadmin"
+  // Union normalized 2026-09-01 onto the LIVE users.user_type spellings
+  // (scripts/check-vocabularies.ts users.user_type): "TC" → "tc" (m036 retired
+  // the Title-Case spelling) and "compliance" → "compliance_officer". "TC"
+  // happened to work only because generateUserTypeBrief's switch tolerates it;
+  // "compliance" matched NO case at all and fell to the default empty brief —
+  // a compliance officer calling this action would silently get nothing.
+  // Sole current caller passes "agent" (app/dashboard/agent/page.tsx:378/569).
+  userType?: "agent" | "broker" | "tc" | "compliance_officer" | "lender" | "vendor" | "superadmin"
 }): Promise<{ brief: UserTypeBrief | null; error?: string }> {
   try {
     const context = await getAgentContext()
@@ -401,14 +426,24 @@ export async function getBuyerMatchCount(): Promise<{
 
     // Count buyer contacts who have an active search criteria and an active listing to match
     // We approximate this by counting contacts tagged as buyer with active/hot status
-    // who have a min_price / max_price set (search criteria)
+    // who have a budget range set (search criteria)
+    //
+    // `contacts` stores the buyer's search range as budget_min / budget_max — it has no
+    // min_price / max_price column (those names live on property_preferences-style tables,
+    // not here). PostgREST rejects the ENTIRE request when an .or() string names a column the
+    // table lacks, so this count never returned a number: it always came back as an error and
+    // the morning briefing reported "0 buyer matches" for every agent, every day.
     const { count, error } = await supabase
       .from("contacts")
       .select("id", { count: "exact", head: true })
       .eq("agent_id", agentId)
-      .in("contact_type", ["buyer", "Buyer"])
-      .in("status", ["active", "hot", "nurture"])
-      .or("min_price.not.is.null,max_price.not.is.null")
+      .in("contact_type", ["buyer"])
+      // 'hot' removed 2026-08-31: it is a TEMPERATURE (contacts.lead_temperature,
+      // live CHECK cold/hot/warm), never a contacts.status value — the member
+      // matched nothing, so removing it changes no count. Vocabulary:
+      // lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+      .in("status", ["active", "nurture"])
+      .or("budget_min.not.is.null,budget_max.not.is.null")
 
     if (error) {
       return { matchCount: 0, error: error.message }

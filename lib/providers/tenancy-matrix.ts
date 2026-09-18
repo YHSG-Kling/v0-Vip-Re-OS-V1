@@ -12,8 +12,9 @@
 //   user_oauth          — the USER's own connected account (their Gmail sends
 //                         their email); the platform never proxies their identity.
 //   tenant_optional_key — platform fallback works; a tenant MAY add their own
-//                         key when the license/limits make it theirs (stock
-//                         photos: per-user license; Tavily: search quota).
+//                         key when the account/license makes the data or the
+//                         usage theirs, and theirs then WINS (IDX Broker: their
+//                         own MLS board's feed; stock photos: per-user license).
 //   byo_top_tier        — bring-your-own credentials, multi_location tier only
 //                         (enterprises with existing vendor contracts).
 //
@@ -36,14 +37,14 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "twilio",
     models: ["platform_subaccount", "byo_top_tier"],
-    why: "Numbers + SMS are the product ('AI answers your phone'), and A2P 10DLC registration is a platform job — subaccounts isolate each tenant's numbers/usage under one parent. BYO only for enterprises with carrier contracts. STRATEGIC CONVERGENCE (owner decision): Twilio is the long-term home for the whole comms brain — ConversationRelay for conversational voice AI (retiring the separate Vapi dependency), Conversations for the UNIFIED INBOX including social messaging surfaces (WhatsApp/FB Messenger), Voice Intelligence for call semantics, and Verify/Lookup/SHAKEN-STIR for fraud protection. Migration is staged — Vapi stays operational until the Twilio lanes are proven.",
+    why: "Numbers + SMS are the product ('AI answers your phone'), and A2P 10DLC registration is a platform job — subaccounts isolate each tenant's numbers/usage under one parent. BYO only for enterprises with carrier contracts. STRATEGIC CONVERGENCE (owner decision, now DONE for voice): Twilio is the home for the whole comms brain — turn-based conversational voice AI + ConversationRelay (the separate Vapi dependency is RETIRED), Conversations for the UNIFIED INBOX including social messaging surfaces (WhatsApp/FB Messenger), Voice Intelligence for call semantics, and Verify/Lookup/SHAKEN-STIR for fraud protection.",
     envVars: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
   },
   {
     provider: "vapi",
     models: ["platform_metered"],
-    why: "LEGACY voice lane (owner decision — retired in favor of Twilio-native). The default engine is now TWILIO: inbound reception runs turn-based on pure Twilio (VoiceUrl → our webhook, <Gather input=speech> → the AI gateway → TwiML), no third-party voice-AI vendor, fully serverless. Vapi stays reachable ONLY behind VOICE_ENGINE=vapi for the migration window — new tenants bind to Twilio; nothing new is built on Vapi.",
-    envVars: ["VAPI_API_KEY", "VAPI_WEBHOOK_SECRET", "VAPI_PHONE_NUMBER_ID", "VAPI_ISA_ASSISTANT_ID"],
+    why: "RETIRED voice lane (owner decision — fully replaced by Twilio-native). The Vapi client, both webhook routes, the inbound-assistant/number-import wiring, and the vapi_voice_calls billing table were REMOVED; every inbound reception and outbound AI call now runs turn-based on pure Twilio (VoiceUrl → our webhook, <Gather input=speech> → the AI gateway → TwiML), no third-party voice-AI vendor, fully serverless. Retained here only as vendor-ownership history — nothing in the app calls Vapi.",
+    envVars: [],
   },
   {
     provider: "elevenlabs",
@@ -83,9 +84,15 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   },
   {
     provider: "rentcast",
-    models: ["platform_metered", "tenant_optional_key"],
-    why: "The DEFAULT for-sale property feed + AVM/valuation chain — the platform key serves every tenant UNTIL they connect their own IDX feed (IDX Broker connect flow exists; the tenant's board data then takes precedence). VERIFIED LIVE: the AVM cascade (Perplexity free tier → OSINT → paid RentCast/BatchData/ZenRows-Zillow behind usePaidProviders + the vendor budget gate) runs on real connector-gateway calls with per-call metering — an earlier stale header claimed stubs; corrected after verification.",
+    models: ["platform_metered"],
+    why: "PLATFORM-GATED (owner ruling): ONE platform RentCast account serves every tenant, per-tenant metered + budget-gated. A tenant does NOT bring their own RentCast key and is never offered the option — lib/connections/scope.ts is the arbiter and deliberately keeps RentCast out of the user-connectable providers. That gate IS the spend governance: a key resolved per tenant would be spend the platform cannot see, meter, or cap on a provider the product owns, so lib/property/rentcast.ts getApiKey reads the platform env key ONLY and carries brokerageId purely for metering/attribution. This is the DEFAULT for-sale property feed + AVM/valuation chain; a tenant's own IDX Broker feed (its own row below) changes which SOURCE answers a listing search, never whose RentCast credential pays for the AVM. VERIFIED LIVE: the AVM cascade (Perplexity free tier → OSINT → paid RentCast/BatchData/ZenRows-Zillow behind usePaidProviders + the vendor budget gate) runs on real connector-gateway calls with per-call metering — an earlier stale header claimed stubs; corrected after verification.",
     envVars: ["RENTCAST_API_KEY"],
+  },
+  {
+    provider: "idxbroker",
+    models: ["tenant_optional_key"],
+    why: "TENANT-SETTABLE (owner ruling), and the exact MIRROR of RentCast above — stated as a pair so the two can never drift into each other again. A tenant who sets up their own IDX Broker account uses THEIRS: their MLS board's data is the whole point of connecting it. lib/idxbroker-client.ts forBrokerage resolves the full ownership cascade via resolveScopedConnection (agent → team → brokerage → platform) and only then falls back to the platform IDXBROKER_API_KEY, so the most specific connected account WINS and the platform key is the floor, never the ceiling. Offered per-tier as the only selectable `listing` provider in lib/connections/scope.ts. Deliberately NOT platform_metered: IDX Broker is a USER_CONNECTED_VENDOR (lib/agentic-os/vendor-ownership.ts) — the tenant pays their own IDX/MLS bill, so the gate is whether the account is CONNECTED, not the platform vendor budget, and no per-call cost is metered against the platform.",
+    envVars: ["IDXBROKER_API_KEY"],
   },
   {
     provider: "exa",
@@ -101,9 +108,18 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   },
   {
     provider: "stripe",
-    models: ["platform_metered"],
-    why: "TWO money flows on one platform account: (1) the platform's own rail — tenant subscriptions, setup fees, Stripe Tax flag, vendor marketplace subscriptions; (2) TENANTS charging THEIR counterparties (vendors, clients) via Stripe CONNECT accounts (stripe_account_id) — the tenant's money never mixes with ours. Never tenant-owned keys.",
-    envVars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"],
+    // CORRECTED BY OWNER RULING, verbatim: "the stripe account will be per tenant
+    // and platform so no configuration should be hardcoded."
+    //
+    // This row previously read `models: ["platform_metered"]` and ended "Never
+    // tenant-owned keys." That is the architecture the ruling replaces, and it
+    // was not an isolated sentence — ENV_CONFIGURATION.md, PRODUCTION-READINESS.md,
+    // lib/platform/launch-checklist.ts and lib/platform/go-live-readiness.ts all
+    // derived a four-env-var go-live story from it, so a launch board could go
+    // GREEN on one global key while every tenant's money settled into it.
+    models: ["tenant_optional_key", "platform_metered"],
+    why: "PER TENANT **AND** PLATFORM (owner ruling) — the account is whoever COLLECTS, never whoever triggered the call, and the rule is stated once as data in lib/billing/stripe-account-scope.ts. (1) PLATFORM account: money the platform is the payee on — tenant subscriptions, setup fees, Stripe Tax, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints acct_… ids. Its credential resolves from a platform-owned platform_credentials row first and falls back to STRIPE_SECRET_KEY, which is the platform's own credential and is NOT a tenant default. (2) TENANT account: money a brokerage/team/agent is the payee or payer on — vendor package fees, vendor job bills, client payments, agent payouts — resolved through the SAME ownership cascade every other connector uses (lib/connections/resolve-scoped.ts: agent → team → brokerage), in either shape (their own Stripe secret key, or an acct_… Connect account addressed with a Stripe-Account header). A tenant with no Stripe credential REFUSES; it never descends to the platform's account, because a charge on the wrong account is a receipt naming the wrong merchant, a refund from the wrong balance and a 1099 from the wrong entity — and it looks exactly like success. Per-tenant accounts mean per-tenant WEBHOOK SECRETS too: both endpoints identify the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) instead of verifying against one env secret.",
+    envVars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_VENDOR_WEBHOOK_SECRET"],
   },
   {
     provider: "quickbooks",
@@ -132,8 +148,8 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "ai_gateway",
     models: ["platform_metered"],
-    why: "All LLM/image inference rides the platform AI gateway with per-tenant cost tracking + the god-switch; tenants never hold model keys.",
-    envVars: ["AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+    why: "All LLM/image/transcription inference rides the platform AI gateway with per-tenant cost tracking + the god-switch; tenants never hold model keys. ONE platform key: the provider SDKs are gone, so a bare ANTHROPIC/OPENAI key no longer reaches a model.",
+    envVars: ["AI_GATEWAY_API_KEY"],
   },
 ]
 

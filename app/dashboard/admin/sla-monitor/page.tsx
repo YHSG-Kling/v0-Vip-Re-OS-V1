@@ -169,6 +169,53 @@ export default function SLAMonitorPage() {
 
   const slaTypes = Array.from(new Set(rows.map((r) => r.sla_type)))
 
+  // ── The AI team's read ─────────────────────────────────────────────────────
+  // Deterministic briefing over the SAME breach rows the table shows — the
+  // dashboard reads itself instead of making the admin scan for the story.
+  // Signal ownership: SLA breaches ride the platform-sentinel / lead-response
+  // manager domain (lib/kernel/manager-registry.ts) — this read composes that
+  // manager's existing signal; it mints nothing new.
+  const briefing: Array<{ severity: "urgent" | "warn" | "good"; text: string }> = []
+  if (!loading && rows.length > 0) {
+    const unnotified = rows.filter((r) => !r.breach_notified).length
+    if (unnotified > 0) {
+      briefing.push({
+        severity: "urgent",
+        text: `${unnotified} breach${unnotified === 1 ? "" : "es"} never notified anyone — the escalation loop isn't reaching a human. These are silent misses.`,
+      })
+    }
+    const byAgent = new Map<string, number>()
+    for (const r of rows) {
+      const name = `${r.agent_first_name ?? ""} ${r.agent_last_name ?? ""}`.trim() || "Unassigned"
+      byAgent.set(name, (byAgent.get(name) ?? 0) + 1)
+    }
+    const [topAgent, topCount] = [...byAgent.entries()].sort((a, b) => b[1] - a[1])[0] ?? ["", 0]
+    if (topCount >= 3 && byAgent.size > 1) {
+      briefing.push({
+        severity: "warn",
+        text: `${topAgent} accounts for ${topCount} of ${rows.length} breaches — a coaching conversation beats ${topCount} more escalations.`,
+      })
+    }
+    const openBreaches = rows.filter((r) => !r.completed_at)
+    if (openBreaches.length > 0) {
+      const oldest = openBreaches.reduce((a, b) => (daysOverdue(a.target_at) >= daysOverdue(b.target_at) ? a : b))
+      briefing.push({
+        severity: "warn",
+        text: `Oldest open breach is ${daysOverdue(oldest.target_at)} days past target (${oldest.sla_type.replace(/_/g, " ")}${oldest.lead_first_name ? ` — ${oldest.lead_first_name} ${oldest.lead_last_name ?? ""}` : ""}). Leads this cold rarely come back on their own.`,
+      })
+    }
+    if (totalCompleted > 0) {
+      briefing.push({
+        severity: "good",
+        text: `${totalCompleted} of ${totalBreached} breached items were still completed after the miss (${compliancePct}% recovery) — breaches are being worked, just late.`,
+      })
+    }
+  }
+  const SEV_STYLE: Record<string, string> = {
+    urgent: "border-red-200 bg-red-50/60", warn: "border-amber-200 bg-amber-50/60", good: "border-emerald-200 bg-emerald-50/60",
+  }
+  const SEV_DOT: Record<string, string> = { urgent: "bg-red-500", warn: "bg-amber-500", good: "bg-emerald-500" }
+
   return (
     <main className="p-6 space-y-6 max-w-7xl mx-auto">
       <div>
@@ -177,6 +224,28 @@ export default function SLAMonitorPage() {
           Track lead SLA breaches, response times, and compliance rates.
         </p>
       </div>
+
+      {!loading && (
+        <Card className="border-indigo-200">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Your AI team&apos;s read</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {rows.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No SLA breaches on file — response times are inside target. Nothing to escalate.
+              </p>
+            ) : (
+              briefing.map((b, i) => (
+                <div key={i} className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 ${SEV_STYLE[b.severity]}`}>
+                  <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${SEV_DOT[b.severity]}`} />
+                  <p className="text-sm leading-relaxed">{b.text}</p>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Summary stats ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

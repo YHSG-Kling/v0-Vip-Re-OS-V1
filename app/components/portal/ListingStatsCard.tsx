@@ -22,14 +22,18 @@ import {
   LISTING_STATUS_CONFIG,
   type ListingData,
   type ListingMetrics,
-  formatPrice,
   calculateDOM,
-} from "@/lib/portal/resolve-seller-context"
+} from "@/lib/portal/seller-context-presentation"
+import { usdOrNAOnNullish as formatPrice } from "@/lib/format/money"
 
 interface ListingStatsCardProps {
   listing: ListingData | null
   metrics: ListingMetrics | null
   contactId: string
+  /** optional by design: the skeleton branch below is for a future
+   *  client-driven refresh — the only caller, seller-home.tsx, is a Server
+   *  Component that awaits its data before rendering, so it is never mid-load
+   *  when this card renders. */
   isLoading?: boolean
 }
 

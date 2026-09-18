@@ -10,7 +10,7 @@
  * text too, so the UI shows the brief even when TTS is unavailable.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { synthesizeSpeech, audioBufferToDataUrl } from "@/lib/voice/elevenlabs-tts"
 import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
 import { generateManagerStandup } from "@/lib/intelligence/manager-standup"
@@ -26,8 +26,8 @@ export interface StandupAudioResult {
 }
 
 export async function generateStandupAudio(): Promise<StandupAudioResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 

@@ -69,9 +69,12 @@ export function BuyerOfferToolsCard({
   function refreshPreApproval() {
     startRefresh(async () => {
       const r = await requestPreApprovalRefresh({ contactId, propertyId, propertyAddress })
+      // "Your agent will help you refresh" used to show even when nothing was delivered — this
+      // is the one where believing it is most expensive (a buyer stops chasing the lender and
+      // walks into an offer on an expired approval). The server's own sentence names the way out.
       toast(r.success
         ? { title: "Your agent will help you refresh", description: "They'll connect you with a lender to get back to offer-ready." }
-        : { title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+        : { title: "Your agent wasn't reached", description: r.error ?? "Try again", variant: "destructive" })
     })
   }
 
@@ -91,18 +94,35 @@ export function BuyerOfferToolsCard({
       const r = await signalAffordabilityChecked({
         contactId, propertyId, propertyAddress, price: price!, monthlyEstimate: breakdown.total, verdict: read.verdict,
       })
+      // The title used to assert the notification unconditionally; the server discarded
+      // notifyAgent's verdict, so "Your agent has been notified" was printed over a dropped alert.
+      // r.success now MEANS the alert landed, and the refusal carries the route that still works.
       toast(r.success
         ? { title: "Your agent has been notified", description: "They'll follow up on this home." }
-        : { title: "Couldn't notify your agent", description: r.error ?? "Try again", variant: "destructive" })
+        : { title: "Your agent wasn't notified", description: r.error ?? "Try again", variant: "destructive" })
     })
   }
 
+  // The toast now SAYS WHAT HAPPENED. It used to promise "your agent is preparing your offer
+  // plan" on every click, including the ones that produced nothing — and a toast is all the buyer
+  // got, so a refresh erased even that. The server returns the same sentence it wrote to the
+  // buyer's portal message thread, so the transient and the durable record cannot disagree, and
+  // neither carries a recommended price (the agent approves the plan and delivers the number).
   function helpMakeOffer() {
     startOffer(async () => {
       const r = await requestOfferHelp({ contactId, propertyId, propertyAddress })
-      toast(r.success
-        ? { title: "Your agent is preparing your offer plan", description: "They'll reach out with a recommended price and terms." }
-        : { title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+      if (!r.success) {
+        toast({ title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+        return
+      }
+      toast({
+        title: r.duplicate
+          ? "Your agent already has this request"
+          : r.accelerated
+          ? "Your agent is preparing your offer plan"
+          : "Your agent has been notified",
+        description: r.message ?? "They'll be in touch about this home. It's saved to your messages.",
+      })
     })
   }
 

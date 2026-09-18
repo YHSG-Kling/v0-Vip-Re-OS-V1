@@ -14,7 +14,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
  * brokerage admin's user_id rather than writing a literal string —
  * those columns are UUID-typed.
  */
-export async function getIsaSystemUserId(
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+async function getIsaSystemUserId(
   client: SupabaseClient,
   brokerageId: string | null | undefined
 ): Promise<string | null> {

@@ -34,6 +34,19 @@ interface Props {
   role:     string
 }
 
+/**
+ * The URL a printed QR must encode: /api/qr/scan, never the code's target_url.
+ * The scan route is what increments scan_count, writes qr_scan_events and
+ * attributes the scan to its campaign before redirecting on to target_url —
+ * rendering target_url directly prints a code whose scans are invisible.
+ */
+function trackedScanUrl(slug: string): string {
+  const origin =
+    process.env.NEXT_PUBLIC_APP_URL ??
+    (typeof window !== "undefined" ? window.location.origin : "")
+  return `${origin}/api/qr/scan?slug=${slug}`
+}
+
 const TRIGGER_LABEL: Record<string, string> = {
   "video.generated": "from a video render",
   "image.generated": "from an image render",
@@ -308,7 +321,8 @@ export function MarketingReviewClient({ snapshot, role }: Props) {
             QR codes minted recently ({data.recentQrCodes.length})
           </h2>
           <p className="text-xs text-muted-foreground mb-3">
-            Print these for yard signs, flyers, postcards, and brochures.
+            Print these for yard signs, flyers, postcards, and brochures. Each image
+            encodes the tracked scan link, so every scan is counted and attributed.
           </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {data.recentQrCodes.map(q => (
@@ -318,7 +332,7 @@ export function MarketingReviewClient({ snapshot, role }: Props) {
                     <div className="bg-muted rounded p-2 flex-shrink-0">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(q.target_url)}`}
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(trackedScanUrl(q.slug))}`}
                         alt={`QR for ${q.label}`}
                         className="w-20 h-20"
                       />

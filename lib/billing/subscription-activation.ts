@@ -76,7 +76,11 @@ export interface NormalizedStripeSub {
   stripeSubscriptionId: string
   stripeCustomerId: string | null
   tierId: string | null
-  status: string
+  /** Already mapped to a value subscriptions.status can hold
+   *  (lib/billing/stripe-status.ts toStoredSubscriptionStatus). null = a status
+   *  we do not recognise; the patch then OMITS status so an unrecognised Stripe
+   *  state cannot overwrite — or silently fail to overwrite — a real one. */
+  status: string | null
   currentPeriodStart: number | null
   currentPeriodEnd: number | null
   trialEnd: number | null
@@ -92,7 +96,10 @@ export function buildSubscriptionPatch(s: NormalizedStripeSub): Record<string, u
     stripe_subscription_id: s.stripeSubscriptionId,
     stripe_customer_id: s.stripeCustomerId,
     tier_id: s.tierId,
-    status: s.status,
+    // Omitted entirely when null — see NormalizedStripeSub.status. Writing a
+    // status the CHECK rejects is worse than writing none: the update is
+    // discarded and the row keeps a stale 'active'.
+    ...(s.status ? { status: s.status } : {}),
     current_period_start: iso(s.currentPeriodStart),
     current_period_end: iso(s.currentPeriodEnd),
     trial_end: iso(s.trialEnd),
@@ -135,15 +142,30 @@ export async function upsertBrokerageSubscription(
     list[0] ??
     null
 
+  // THIS IS THE MONEY PATH — a discarded error here is a tenant who keeps paid
+  // access for free. supabase-js RESOLVES on a rejected write ({ error }) rather
+  // than throwing, so `await svc.from(...).update(...)` with the result thrown
+  // away cannot tell "saved" from "the CHECK refused it". That is exactly how a
+  // cancelled subscription kept a stale 'active' status: Stripe's 'canceled'
+  // spelling was rejected and nobody heard. Surfaced now — loudly, and to the
+  // caller, so a Stripe retry can actually re-deliver the event.
   if (target) {
-    await svc.from("subscriptions").update(patch).eq("id", target.id)
+    const { error } = await svc.from("subscriptions").update(patch).eq("id", target.id)
+    if (error) {
+      console.error("[billing] subscription UPDATE rejected — access state is now stale:", error.message, patch)
+      throw new Error(`subscription update rejected: ${error.message}`)
+    }
     return { action: "updated", id: target.id }
   }
 
-  const { data: inserted } = await svc
+  const { data: inserted, error: insertError } = await svc
     .from("subscriptions")
     .insert({ brokerage_id: brokerageId, created_at: new Date().toISOString(), ...patch })
     .select("id")
     .maybeSingle()
+  if (insertError) {
+    console.error("[billing] subscription INSERT rejected:", insertError.message, patch)
+    throw new Error(`subscription insert rejected: ${insertError.message}`)
+  }
   return { action: "inserted", id: (inserted as any)?.id ?? null }
 }

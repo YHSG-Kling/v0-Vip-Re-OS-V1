@@ -1,15 +1,12 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { CompetitiveMonitorClient } from "./competitive-monitor-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import {
   getCompetitorAds,
   getCompetitorPosts,
   getAdInsights,
   getTrendAlerts,
-  type CompetitorAd,
-  type CompetitorPost,
-  type AdInsight,
-  type TrendAlert,
 } from "@/lib/ads/ad-monitor"
 
 export const dynamic = "force-dynamic"
@@ -30,6 +27,13 @@ export default async function CompetitiveMonitorPage() {
     redirect("/login")
   }
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user's brokerage_id
   const { data: userData } = await supabase
     .from("users")

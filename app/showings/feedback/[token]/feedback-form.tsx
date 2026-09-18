@@ -92,11 +92,15 @@ const OFFER_OPTIONS: LargeOption[] = [
   { value: "no",          label: "No" },
 ]
 
+// The ONE showing-verdict vocabulary (§6, m568): love_it | like_it | maybe | no —
+// the same CHECK showings.buyer_interest_level and tour_stops.buyer_interest_level
+// carry. The old private dialect (loved_it | liked_it | neutral | not_interested)
+// is retired; the API route still normalises it for tabs opened pre-deploy.
 const IMPRESSION_OPTIONS: LargeOption[] = [
-  { value: "loved_it",        label: "Loved It" },
-  { value: "liked_it",        label: "Liked It" },
-  { value: "neutral",         label: "Neutral" },
-  { value: "not_interested",  label: "Not Interested" },
+  { value: "love_it",  label: "Loved It" },
+  { value: "like_it",  label: "Liked It" },
+  { value: "maybe",    label: "Neutral" },
+  { value: "no",       label: "Not Interested" },
 ]
 
 const INTEREST_OPTIONS: LargeOption[] = [
@@ -129,6 +133,15 @@ export default function FeedbackForm({
   const [overallImpression, setOverallImpression] = useState("")
   const [buyerInterestLevel, setBuyerInterestLevel] = useState("")
   const [additionalNotes, setAdditionalNotes] = useState("")
+  // WHO SUBMITTED. showing_feedback.submitted_by_agent_name / _email are read
+  // back by the listing agent's feedback panel
+  // (app/components/dashboard/listings/showings/feedback-summary-panel.tsx:217)
+  // and by getShowingFeedbackCards (app/actions/seller-showings.ts:731) — and
+  // nothing on this form ever collected them, so every card fell through to the
+  // showing's buyer-agent name or, failing that, to "Anonymous". Optional: a
+  // showing agent who would rather not be named still gets to submit.
+  const [submittedByAgentName, setSubmittedByAgentName] = useState("")
+  const [submittedByAgentEmail, setSubmittedByAgentEmail] = useState("")
 
   if (submitted) {
     return (
@@ -171,6 +184,8 @@ export default function FeedbackForm({
           overallImpression,
           buyerInterestLevel,
           additionalNotes,
+          submittedByAgentName,
+          submittedByAgentEmail,
         }),
       })
       const body = await res.json()
@@ -283,6 +298,35 @@ export default function FeedbackForm({
             placeholder="Any other notes for the listing agent..."
             rows={3}
           />
+        </div>
+
+        {/* Who submitted — optional, and the only place this is ever collected */}
+        <div className="rounded-xl border border-border bg-background p-5">
+          <p className="mb-3 font-medium text-foreground">
+            11. Who should the listing agent thank?{" "}
+            <span className="text-xs text-muted-foreground font-normal">(optional)</span>
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <input
+              type="text"
+              value={submittedByAgentName}
+              onChange={(e) => setSubmittedByAgentName(e.target.value)}
+              placeholder="Your name"
+              aria-label="Your name"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <input
+              type="email"
+              value={submittedByAgentEmail}
+              onChange={(e) => setSubmittedByAgentEmail(e.target.value)}
+              placeholder="Your email"
+              aria-label="Your email"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Leave blank to stay anonymous.
+          </p>
         </div>
 
         {/* Error */}

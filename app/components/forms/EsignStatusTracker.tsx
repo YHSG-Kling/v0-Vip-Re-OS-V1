@@ -30,10 +30,18 @@ import { cn } from "@/lib/utils"
 interface EsignStatusTrackerProps {
   /** The external transaction ID from the forms provider (e.g. Dotloop loop ID). */
   transactionId: string | null | undefined
-  /** Deprecated alias — use transactionId */
+  /** optional by design: a deprecated back-compat alias for transactionId
+   *  (still read as a fallback below) kept for any caller from before the
+   *  rename; the one live caller (app/portal/[contactId]/offers/page.tsx,
+   *  out of scope this wave) already passes transactionId directly. */
   externalTransactionId?: string | null | undefined
+  /** optional by design: falls back to the generic "Signature Status" title;
+   *  the one live caller (app/portal/[contactId]/offers/page.tsx, out of
+   *  scope this wave) doesn't need a per-form label. */
   formName?: string
   compact?: boolean
+  /** optional by design: style-override passthrough onto the root Card; no
+   *  current caller needs a non-default look. */
   className?: string
 }
 

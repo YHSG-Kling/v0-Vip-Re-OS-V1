@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getPageConfig } from "@/app/actions/home-value"
+import { ensureAgentBrokerage } from "@/app/actions/onboarding/ensure-agent-brokerage"
 import { HomeValuePageBuilderClient } from "./HomeValuePageBuilderClient"
 
 export const dynamic = "force-dynamic"
@@ -19,6 +20,10 @@ export default async function HomeValuePageBuilderPage() {
   } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+  // Heal an incomplete account IN PLACE before resolving the agent record — don't
+  // bounce the user off the Home Value builder they're working on.
+  await ensureAgentBrokerage()
+
   // Resolve agent record
   const { data: agentRow } = await supabase
     .from("agents")
@@ -26,12 +31,12 @@ export default async function HomeValuePageBuilderPage() {
     .eq("user_id", user.id)
     .maybeSingle()
 
+  // Heal genuinely couldn't complete (pending invite / non-agent) — honest in-place
+  // notice instead of a dead end or a bounce.
   if (!agentRow?.id) {
     return (
-      <div className="p-8">
-        <p className="text-muted-foreground text-sm">
-          No agent record found for your account. Contact your broker to get set up.
-        </p>
+      <div className="p-8 text-sm text-muted-foreground">
+        Finishing your account setup — refresh in a moment to build your home-value page.
       </div>
     )
   }

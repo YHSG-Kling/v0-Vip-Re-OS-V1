@@ -87,13 +87,14 @@ export async function GET(req: NextRequest) {
           plan_quality_score:         score,
         }).eq("id", row.id)
       // MANAGERS TALKING — a strong organic week (real engagement, not vanity): the
-      // Marketing Manager tells the Ads Manager to propose paid promotion while it's hot.
+      // Campaign Orchestrator (m618: survivor of the retired marketing_agent seat) tells
+      // the Ads Manager to propose paid promotion while it's hot.
       if (measured.campaigns_sent >= 1 && (measured.open_rate >= 40 || measured.click_rate >= 10)) {
         try {
           const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
           await publishManagerSignal({
             brokerageId: row.brokerage_id,
-            fromManager: "marketing_agent",
+            fromManager: "campaign_orchestrator",
             toManager: "ads_manager",
             signalType: "content_winner",
             message: `Week of ${row.week_start}: ${measured.open_rate.toFixed(0)}% open / ${measured.click_rate.toFixed(0)}% click across ${measured.campaigns_sent} campaign(s) — organic winner.`,
@@ -113,7 +114,7 @@ export async function GET(req: NextRequest) {
           const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
           await raiseReferralDeduped({
             brokerageId: row.brokerage_id,
-            fromManager: "marketing_agent",
+            fromManager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
             toManager: "ads_manager",
             collabDomain: "organic_paid_content",
             ask: `Week of ${row.week_start} was an organic winner — ${measured.open_rate.toFixed(0)}% open / ${measured.click_rate.toFixed(0)}% click across ${measured.campaigns_sent} campaign(s). ` +

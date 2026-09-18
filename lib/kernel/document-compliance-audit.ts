@@ -150,7 +150,7 @@ export type TextExtractor = (input: TextExtractorInput) => Promise<ExtractedText
  * truth the universal scanner uses: pdf-parse text layer first). NO vision: when the text
  * layer is empty the extractor honestly returns ok:false → the audit records 'not_audited'.
  */
-export const defaultTextExtractor: TextExtractor = async (input) => {
+const defaultTextExtractor: TextExtractor = async (input) => {
   if (!input.documentUrl || input.documentUrl.startsWith("data:")) {
     // A truncated DB-fallback URL is not a fetchable file — can't extract text honestly.
     return { ok: false, reason: "document has no fetchable file URL" }
@@ -287,7 +287,7 @@ const VISION_FALLBACK_MODEL = process.env.DOCUMENT_AUDIT_VISION_FALLBACK_MODEL ?
  * Honestly returns {ok:false} when the gateway key is missing, the image can't be fetched, or the
  * JSON can't be parsed — the audit then degrades to text-only (never a fabricated signature).
  */
-export const defaultVisionFetcher: VisionFetcher = async (input) => {
+const defaultVisionFetcher: VisionFetcher = async (input) => {
   if (!process.env.AI_GATEWAY_API_KEY) return { ok: false, reason: "AI_GATEWAY_API_KEY not configured" }
   if (!input.documentUrl || input.documentUrl.startsWith("data:")) {
     return { ok: false, reason: "document has no fetchable image URL" }

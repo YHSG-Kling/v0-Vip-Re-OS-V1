@@ -185,16 +185,33 @@ export async function loadA2pState(svc: any, brokerageId: string): Promise<{ row
   return { rowId: (data as any)?.id ?? null, state: ((data as any)?.config ?? {}) as A2pState }
 }
 
-async function saveA2pState(svc: any, brokerageId: string, rowId: string | null, state: A2pState): Promise<void> {
+/**
+ * Persist the A2P state. NOT best-effort: this row IS the OS's memory of the
+ * brand/campaign registration with the carrier. Both writes dropped their result,
+ * and supabase-js resolves a rejected write, so a failed save left the tenant's
+ * registration progress silently un-recorded — the next read would re-derive an
+ * earlier state and the operator would be told to redo a step that had already
+ * been submitted. Returns whether it landed so callers can stop pretending.
+ */
+async function saveA2pState(svc: any, brokerageId: string, rowId: string | null, state: A2pState): Promise<boolean> {
   const config = { ...state, updated_at: new Date().toISOString() }
   if (rowId) {
-    await svc.from("platform_credentials").update({ config }).eq("id", rowId)
+    const { error } = await svc.from("platform_credentials").update({ config }).eq("id", rowId)
+    if (error) {
+      console.error(`[a2p] state NOT saved for brokerage ${brokerageId}:`, error.message)
+      return false
+    }
   } else {
-    await svc.from("platform_credentials").insert({
+    const { error } = await svc.from("platform_credentials").insert({
       brokerage_id: brokerageId, platform: "twilio_a2p",
       owner_type: "brokerage", owner_id: brokerageId, is_active: true, config,
     })
+    if (error) {
+      console.error(`[a2p] state NOT created for brokerage ${brokerageId}:`, error.message)
+      return false
+    }
   }
+  return true
 }
 
 export interface A2pRunResult {
@@ -354,10 +371,10 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
     }
 
     if (step === "number_attached") {
-      const { data: numbers } = await svc.from("vapi_phone_numbers")
-        .select("byoc_credential_id").eq("brokerage_id", brokerageId).eq("is_active", true)
-        .not("byoc_credential_id", "is", null).limit(10)
-      const sids = ((numbers ?? []) as any[]).map((n) => n.byoc_credential_id).filter(Boolean)
+      const { data: numbers } = await svc.from("tenant_phone_numbers")
+        .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+        .not("twilio_number_sid", "is", null).limit(10)
+      const sids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean)
       if (sids.length === 0) return fail("No active tenant numbers to attach — provision a number first")
       for (const phoneSid of sids) {
         const attach = await twilio({ accountSid: sub.accountSid, authToken: sub.authToken }, MESSAGING, `/v1/Services/${state.messaging_service_sid}/PhoneNumbers`, "POST", { PhoneNumberSid: phoneSid })
@@ -525,10 +542,10 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
   if (!masterSid || !masterToken) return fail("Twilio master account not configured (TWILIO_ACCOUNT_SID/AUTH_TOKEN) — nothing was filed")
   const master: Creds = { accountSid: masterSid, authToken: masterToken }
 
-  const { data: numbers } = await svc.from("vapi_phone_numbers")
-    .select("byoc_credential_id").eq("brokerage_id", brokerageId).eq("is_active", true)
-    .not("byoc_credential_id", "is", null).limit(10)
-  const phoneSids = ((numbers ?? []) as any[]).map((n) => n.byoc_credential_id).filter(Boolean) as string[]
+  const { data: numbers } = await svc.from("tenant_phone_numbers")
+    .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+    .not("twilio_number_sid", "is", null).limit(10)
+  const phoneSids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean) as string[]
   if (phoneSids.length === 0) return fail("No active tenant numbers to register — provision a number first")
 
   // Prerequisite: numbers must belong to the CUSTOMER PROFILE before either

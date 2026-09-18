@@ -8,7 +8,11 @@ import { exportCommissionsCSV, exportExpensesCSV } from "@/app/actions/financial
 interface ExportCSVButtonProps {
   agentId: string
   type: "commissions" | "expenses"
+  /** optional by design: a pure visual override on the shadcn Button — every
+   *  current caller is happy with the "outline" default. */
   variant?: "default" | "outline" | "ghost"
+  /** optional by design: a pure visual override on the shadcn Button — every
+   *  current caller is happy with the "sm" default. */
   size?: "default" | "sm" | "lg"
 }
 

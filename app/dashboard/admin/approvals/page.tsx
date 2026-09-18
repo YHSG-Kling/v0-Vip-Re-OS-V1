@@ -4,10 +4,12 @@ import { useState, useEffect } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Loader2, CheckCircle, XCircle, Clock, ArrowLeft, FileCheck, Users, Building2 } from "lucide-react"
 import { toast } from "sonner"
 import Link from "next/link"
+import { groupByPriority } from "@/lib/format/collections"
+import { agoMinutesFloor } from "@/lib/format/dates"
 
 interface ApprovalItem {
   id: string
@@ -55,7 +57,7 @@ export default function AdminApprovalsPage() {
       if (response.ok) {
         setItems(data.items || [])
       } else {
-        toast.error("Failed to load approvals")
+        toast.error(data.error ?? "Failed to load approvals")
       }
     } catch {
       toast.error("Error loading approvals")
@@ -78,11 +80,13 @@ export default function AdminApprovalsPage() {
         }),
       })
 
-      if (response.ok) {
+      const data = await response.json().catch(() => ({}))
+      if (response.ok && data.success) {
         setItems((prev) => prev.filter((i) => i.id !== item.id))
+        console.log(`[approvals] approved ${data.type ?? item.type}:${data.target_id ?? item.id}`)
         toast.success("Item approved successfully")
       } else {
-        toast.error("Failed to approve item")
+        toast.error(data.error ?? "Failed to approve item")
       }
     } catch {
       toast.error("Error approving item")
@@ -109,11 +113,13 @@ export default function AdminApprovalsPage() {
         }),
       })
 
-      if (response.ok) {
+      const data = await response.json().catch(() => ({}))
+      if (response.ok && data.success) {
         setItems((prev) => prev.filter((i) => i.id !== item.id))
+        console.log(`[approvals] rejected ${data.type ?? item.type}:${data.target_id ?? item.id}`)
         toast.success("Item rejected")
       } else {
-        toast.error("Failed to reject item")
+        toast.error(data.error ?? "Failed to reject item")
       }
     } catch {
       toast.error("Error rejecting item")
@@ -126,29 +132,11 @@ export default function AdminApprovalsPage() {
     }
   }
 
-  function groupByPriority(items: ApprovalItem[]): GroupedItems {
-    return items.reduce(
-      (acc, item) => {
-        acc[item.priority].push(item)
-        return acc
-      },
-      { high: [], medium: [], standard: [] } as GroupedItems
-    )
-  }
-
-  function formatTimeAgo(dateString: string): string {
-    const date = new Date(dateString)
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-
-    if (diffMins < 1) return "just now"
-    if (diffMins < 60) return `${diffMins}m ago`
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}h ago`
-    const diffDays = Math.floor(diffHours / 24)
-    return `${diffDays}d ago`
-  }
+  // `groupByPriority`/`formatTimeAgo` — same-body census, round 4
+  // (2026-09-09, lane FC): DELETED, byte-identical to
+  // lib/format/collections.ts `groupByPriority` and lib/format/dates.ts
+  // `agoMinutesFloor` (both imported above).
+  const formatTimeAgo = agoMinutesFloor
 
   const filteredItems = activeTab === "all" 
     ? items 

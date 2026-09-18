@@ -14,14 +14,15 @@ import {
   offerPremiumPlacement,
   markPlacementPaid,
 } from "@/lib/vendors/premium-placement"
-
-const PLACEMENT_ADMIN_ROLES = new Set([
-  "admin",
-  "broker",
-  "broker_admin",
-  "superadmin",
-  "team_lead",
-])
+// NOT isAdminOrBroker (lane ROSTER, 2026-09-04). This lane SELLS: the two
+// actions below offer paid placement to a vendor (issuing an invoice) and mark
+// that invoice PAID. The owner's ruling added `compliance_officer` to
+// TENANT_ADMIN_USER_TYPES as tenant staff admin; it did not put the brokerage's
+// invoicing in their hands. isTenantCommerceAdmin is the tenant roster minus
+// exactly that role, so team_lead — whom this lane has always admitted and whom
+// m472 deliberately keeps out of the brokerage's BOOKS but not out of selling —
+// is unchanged, and no existing seat is revoked.
+import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 
 async function requirePlacementAdmin(): Promise<
   | { ok: true; brokerageId: string }
@@ -31,14 +32,20 @@ async function requirePlacementAdmin(): Promise<
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { ok: false, error: "Unauthorized" }
   }
-  if (!PLACEMENT_ADMIN_ROLES.has(ctx.role)) {
+  if (!isTenantCommerceAdmin({ user_type: ctx.role })) {
     return { ok: false, error: "Forbidden: broker, admin, or team lead only" }
   }
   return { ok: true, brokerageId: ctx.brokerageId }
 }
 
 export async function offerPremiumPlacementAction(params: {
-  vendorDirectoryId: string
+  /**
+   * A vendors.id — the row the Vendors page actually renders, and now the only
+   * id in play. This used to take an optional vendorDirectoryId as well, and
+   * resolve-or-create a second row when it was absent. That second row was the
+   * drift (m355); there is one vendor row and one id.
+   */
+  vendorId: string
   months: number
   priceCents: number
   notes?: string
@@ -46,9 +53,13 @@ export async function offerPremiumPlacementAction(params: {
   const gate = await requirePlacementAdmin()
   if (!gate.ok) return { success: false, error: gate.error }
 
+  if (!params.vendorId) {
+    return { success: false, error: "Pick the vendor this placement is for" }
+  }
+
   const result = await offerPremiumPlacement({
     brokerageId: gate.brokerageId,
-    vendorDirectoryId: params.vendorDirectoryId,
+    vendorId: params.vendorId,
     months: params.months,
     priceCents: params.priceCents,
     notes: params.notes,

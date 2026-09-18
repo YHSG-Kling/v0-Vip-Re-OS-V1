@@ -4,6 +4,7 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { validateA2pProfile, nextA2pStep, a2pCampaignApproved, type A2pState } from "@/lib/voice/a2p-registration"
 import { assessA2pStall } from "@/lib/platform/provider-posture"
+import { agoOrNever } from "@/lib/format/dates"
 import { VoiceIntegrityCell } from "./voice-integrity-cell"
 
 export const dynamic = "force-dynamic"
@@ -13,18 +14,12 @@ export const dynamic = "force-dynamic"
 // A2P step machine persists per-tenant state on platform_credentials
 // ('twilio_a2p', config jsonb — see lib/voice/a2p-registration), the business
 // profile lives in brokerage_settings.settings.a2p_business_profile, numbers in
-// vapi_phone_numbers, and every runner invocation logs to phone_number_events
+// tenant_phone_numbers, and every runner invocation logs to phone_number_events
 // (source 'a2p_registration'). Nothing here is fabricated: statuses are exactly
 // what the step machine last persisted from Twilio.
 
-function fmtAgo(iso: string | null) {
-  if (!iso) return "never"
-  const ms = Date.now() - new Date(iso).getTime()
-  if (ms < 60_000) return "just now"
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`
-  return `${Math.round(ms / 86_400_000)}d ago`
-}
+// `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoOrNever` (imported above).
 
 type StageBadge = { label: string; cls: string }
 
@@ -75,7 +70,7 @@ export default async function SuperadminA2pPage() {
     svc.from("brokerages").select("id, name, plan_tier").is("deleted_at", null).order("name"),
     svc.from("platform_credentials").select("brokerage_id, config, updated_at").eq("platform", "twilio_a2p").eq("is_active", true),
     svc.from("brokerage_settings").select("brokerage_id, settings"),
-    svc.from("vapi_phone_numbers").select("brokerage_id").eq("is_active", true),
+    svc.from("tenant_phone_numbers").select("brokerage_id").eq("is_active", true),
     svc.from("phone_number_events").select("brokerage_id, created_at").eq("source", "a2p_registration").order("created_at", { ascending: false }).limit(2000),
   ])
   const failed = [brk, creds, settings, numbers, events].find((r) => r.error)
@@ -237,7 +232,7 @@ export default async function SuperadminA2pPage() {
                       {r.ready ? "—" : r.nextStep.replace(/_/g, " ")}
                       {r.lastError && <div className="text-red-600 max-w-[280px] truncate" title={r.lastError}>{r.lastError}</div>}
                     </td>
-                    <td className="p-2 text-xs text-muted-foreground" title={r.lastEvent ?? undefined}>{fmtAgo(r.lastEvent)}</td>
+                    <td className="p-2 text-xs text-muted-foreground" title={r.lastEvent ?? undefined}>{agoOrNever(r.lastEvent)}</td>
                     <td className="p-2 text-right"><Link href={`/dashboard/superadmin/brokerages/${r.id}`} className="text-xs font-medium text-indigo-600">Manage →</Link></td>
                   </tr>
                 ))}

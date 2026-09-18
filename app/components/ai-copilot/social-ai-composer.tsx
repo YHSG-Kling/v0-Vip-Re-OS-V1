@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select"
 import { Sparkles, Loader2, Copy, Check, Calendar, Send, Wand2, RefreshCw } from "lucide-react"
 import { scheduleSocialPost } from "@/app/actions/social-media-automation"
-import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
+import { generateSocialPostContent, stampPostBrandCompliance } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
@@ -130,7 +130,7 @@ export function SocialAiComposer({
         return
       }
 
-      await scheduleSocialPost({
+      const scheduled = await scheduleSocialPost({
         agentId,
         brokerageId,
         userId: agentId,
@@ -141,6 +141,28 @@ export function SocialAiComposer({
         scheduledFor: scheduledTime || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         socialAccountId: account.id,
       })
+      // THE SERVER'S VERDICT, not an optimistic one: scheduleSocialPost RESOLVES
+      // with success:false on a compliance block or a refused insert.
+      if (!scheduled.success) {
+        toast.error(scheduled.error ?? "Failed to schedule post")
+        return
+      }
+
+      // COMPLIANCE-FIRST STAMP (wired 2026-09-03). brand_compliance_passed is the
+      // flag app/actions/social-share.ts refuses to share without, and the
+      // publisher cron only stamps it at publish time — AFTER a human approved
+      // the post. Stamping here, the moment the row exists, puts hashtag /
+      // prohibited-word / logo findings in front of the AGENT first, so the
+      // approver and the publisher see a post that was already checked.
+      const postId = (scheduled as { data?: { id?: string } | null }).data?.id
+      if (postId) {
+        const stamp = await stampPostBrandCompliance({ postId })
+        if (!stamp.passed) {
+          toast.warning(
+            `Scheduled, but brand compliance flagged it: ${stamp.violations.slice(0, 2).join("; ")}${stamp.violations.length > 2 ? "…" : ""}. Fix it before it publishes.`,
+          )
+        }
+      }
 
       toast.success("Post scheduled successfully!")
       awardPointsForAction(agentId, "social_posted").catch(() => {})

@@ -145,7 +145,7 @@ export const REAPER_NET: ReaperEntry[] = [
   },
   {
     domain: "stuck_social_posts",
-    manager: "marketing_agent",
+    manager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
     lane: "proactive",
     protects: "scheduled posts that hung publishing or missed their slot",
     run: async (b, svc) => {
@@ -266,7 +266,9 @@ export async function runReaperNet(
 }
 
 // ── COVERAGE MAP — honest "how much of the team is reaped" ────────────────────
-/** Managers that have at least one registered reaper in the net. */
+// Product reader: app/dashboard/admin/manager-trust/page.tsx (reaperCoverage → the
+// "Nothing falls through — reaper coverage" card). Proof: scripts/reaper-net-simulator.ts.
+/** Managers that have at least one registered reaper in the net (internal-live: reaperCoverage). */
 export function managersUnderReaperCoverage(): ManagerKey[] {
   return Array.from(new Set(REAPER_NET.map((e) => e.manager)))
 }

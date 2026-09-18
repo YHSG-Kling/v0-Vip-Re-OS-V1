@@ -165,7 +165,15 @@ export function GhostRecoveryQueue({ brokerageId }: GhostRecoveryQueueProps) {
                         className="h-7 text-xs gap-1"
                         asChild
                       >
-                        <a href={`/dashboard/isa/leads/${lead.id}`} target="_blank" rel="noopener noreferrer">
+                        {/* REPOINTED (dangling-link sweep, 2026-09-02): was
+                            `/dashboard/isa/leads/${id}` — app/dashboard/isa has no leads
+                            child. `lead.id` is a leads.id (this component updates
+                            `leads` by it), and app/leads/[leadId]/page.tsx is the lead
+                            detail that renders the lead_conversation_history transcript
+                            — the conversation this button promises. Gate there:
+                            resolveLeadVisibility + leadRowInScope (brokerage/platform,
+                            never agent-claimed — §5). */}
+                        <a href={`/leads/${lead.id}`} target="_blank" rel="noopener noreferrer">
                           <ExternalLink className="h-3 w-3" />
                           View Conversation
                         </a>

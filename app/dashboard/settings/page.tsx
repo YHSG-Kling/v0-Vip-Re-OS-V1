@@ -1,7 +1,14 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  effectiveSeatLimit, parseSeatOverride, seatDecision, seatDecisionMessage, agentRoleAdvisory,
+} from "@/lib/kernel/tier-role-matrix"
+import { resolveSeatUsage, resolveCatalogSeatLimits } from "@/lib/kernel/seat-usage"
 import { redirect } from "next/navigation"
 import { SettingsControlOSClient } from "./settings-control-os-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { normalizeCapAnniversaryBasis } from "@/lib/commission/cap-resolver"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = { title: "Settings | Control Center" }
 
@@ -10,6 +17,13 @@ export default async function SettingsControlOSPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const service = createServiceClient()
   const { data: profile } = await service
     .from("users")
@@ -21,7 +35,7 @@ export default async function SettingsControlOSPage() {
 
   // Role gate: broker + admin only for full settings — user_type is canonical; role is legacy fallback
   const resolvedType = profile.user_type ?? profile.role ?? ""
-  if (!["broker", "admin"].includes(resolvedType)) {
+  if (!isAdminOrBroker({ user_type: resolvedType })) {
     redirect("/dashboard")
   }
 
@@ -35,6 +49,7 @@ export default async function SettingsControlOSPage() {
     notificationRulesRes,
     globalSettingsRes,
     commissionStructuresRes,
+    brokerageRowRes,
     accountingSyncRes,
   ] = await Promise.all([
     // Integrations/Providers
@@ -53,7 +68,7 @@ export default async function SettingsControlOSPage() {
     // Users
     service
       .from("users")
-      .select("id, role, user_type")
+      .select("id, role, user_type, status")
       .eq("brokerage_id", brokerageId),
     
     // Notification Rules
@@ -76,6 +91,15 @@ export default async function SettingsControlOSPage() {
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true),
     
+    // Brokerage tier + seat override — the seat meter's inputs — and the
+    // BROKERAGE'S DEFAULT COMMISSION CAP (m461), which the Accounting &
+    // Commission panel below has always claimed to show. See the note there.
+    service
+      .from("brokerages")
+      .select("plan_tier, billing_metadata, default_cap_amount, default_cap_anniversary_basis")
+      .eq("id", brokerageId)
+      .maybeSingle(),
+
     // Accounting Sync Log (latest)
     service
       .from("accounting_sync_log")
@@ -88,6 +112,12 @@ export default async function SettingsControlOSPage() {
   const integrations = integrationRes.data || []
   const branding = brandingRes.data
   const users = usersRes.data || []
+  const brokerageRow = (brokerageRowRes.data ?? null) as {
+    plan_tier: string | null
+    billing_metadata: unknown
+    default_cap_amount: unknown
+    default_cap_anniversary_basis: unknown
+  } | null
   const notificationRules = notificationRulesRes.data || []
   const globalSettings = globalSettingsRes.data
   const commissionStructures = commissionStructuresRes.data || []
@@ -99,13 +129,63 @@ export default async function SettingsControlOSPage() {
   const pendingCount = integrations.filter((i) => i.status === "pending" || i.status === "inactive").length
 
   // Calculate user stats
+  // SEATS — the same math the user-management page shows and the invite gate
+  // enforces, from the one source (tier-role-matrix). This panel used to report
+  // `users.length` as both total and active, which counted PARTNERS (vendor,
+  // lender), the `system` AI-ISA actor and SUSPENDED users as if they were seats,
+  // and showed no limit at all. So an admin here saw a different number from the
+  // one the users page showed for the same tenant, and neither told them what
+  // their plan allows.
+  // A seat is a PERSON. resolveSeatUsage counts distinct non-suspended users
+  // holding a seat role by user_type OR by user_role_assignments — reading only
+  // user_type under-counts, because a user may be ASSIGNED a seat role without
+  // their primary type being one.
+  const seatUsage = await resolveSeatUsage(service, brokerageId)
+  const holderIds = new Set(seatUsage.seatHolderIds)
+  const seatHolders = users.filter((u) => holderIds.has(u.id))
+  // The LIMIT comes from the plan catalogue (subscription_tiers.max_agents), the
+  // same read the invite gate enforces on — so what this panel shows and what the
+  // gate refuses can never be two different numbers. A refused catalogue read
+  // degrades to the tier literals HERE (a display telling the truth it can reach);
+  // the GATE refuses instead, because a display that guesses low costs nothing and
+  // a gate that guesses high sells seats nobody paid for.
+  const catalogSeats = await resolveCatalogSeatLimits(service)
+  const { limit: seatLimit, overridden: seatOverridden } =
+    effectiveSeatLimit(brokerageRow?.plan_tier ?? null, parseSeatOverride(brokerageRow?.billing_metadata), catalogSeats.limits)
+
+  // Over the limit NAMES THE UPGRADE (owner's ruling: solo → team, team →
+  // brokerage). The per-seat price appears only where there is no tier to climb.
+  // And the agent-role advisory — a workspace with seats but no Agent looks
+  // staffed and is inert, because contacts, deals, listings and campaigns all
+  // attach to an agent.
+  const seatDecisionForTenant = seatDecision(
+    brokerageRow?.plan_tier ?? null,
+    seatUsage.seatCount,
+    parseSeatOverride(brokerageRow?.billing_metadata),
+    0, // asking about the CURRENT state, not a new invite
+    catalogSeats.limits,
+  )
+  const agentAdvisory = agentRoleAdvisory(seatUsage.rolesInUse)
+
   const userStats = {
-    totalUsers: users.length,
-    activeUsers: users.length, // All fetched users are active (no deleted_at filter)
-    adminCount: users.filter((u) => u.user_type === "admin").length,
-    brokerCount: users.filter((u) => u.user_type === "broker").length,
-    agentCount: users.filter((u) => u.user_type === "agent").length,
-    coordinatorCount: users.filter((u) => u.user_type === "coordinator" || u.user_type === "tc").length,
+    totalUsers: seatUsage.peopleCount,
+    seatMessage: seatDecisionMessage(seatDecisionForTenant),
+    upgradeTo: seatDecisionForTenant.upgradeTo,
+    upgradeSeats: seatDecisionForTenant.upgradeSeats,
+    additionalSeatMonthlyUsd: seatDecisionForTenant.additionalSeatMonthlyUsd,
+    agentRoleAdvisory: agentAdvisory.advisory,
+    // Seats, not headcount — partners and the system actor never consume one.
+    seatCount: seatUsage.seatCount,
+    seatLimit,
+    seatOverridden,
+    planTier: brokerageRow?.plan_tier ?? null,
+    activeUsers: users.filter((u) => u.status !== "suspended").length,
+    // Badges describe the seat holders' PRIMARY type; a user with several roles
+    // still holds one seat, so these can sum to less than seatCount.
+    adminCount: seatHolders.filter((u) => u.user_type === "admin").length,
+    brokerCount: seatHolders.filter((u) => u.user_type === "broker" || u.user_type === "broker_owner").length,
+    agentCount: seatHolders.filter((u) => u.user_type === "agent").length,
+    coordinatorCount: seatHolders.filter((u) => u.user_type === "tc").length,
   }
 
   // Calculate setup completeness
@@ -147,10 +227,31 @@ export default async function SettingsControlOSPage() {
     syncErrors: 0, // Would need to query sync_errors table for actual count
   }
 
-  // Commission settings
+  // ── Commission settings ────────────────────────────────────────────────────
+  // `capAmount` WAS A HARDCODED `null` with the comment "Would come from
+  // agent_cap_tracking or commission_structures". The panel has declared
+  // `capAmount?: number | null` and rendered a "Cap Amount" tile since it was
+  // written, and because the value was literally null the tile was never once
+  // drawn — a control that looked configurable and was a constant.
+  //
+  // The honest source is `brokerages.default_cap_amount` (m461): this panel is a
+  // BROKERAGE-level surface, so the brokerage-level setting is the one it can
+  // truthfully show. `agent_cap_tracking` is per-agent-per-window and has no
+  // single number to put here; `commission_structures` has no cap column at all.
+  //
+  // numeric(12,2) arrives from PostgREST as a STRING, and Number("") is 0 —
+  // which would render "$0" (the brokerage collects nothing) for a brokerage
+  // that has simply not set a cap. The two are opposite facts, so the empty case
+  // is mapped to null explicitly rather than through a truthiness check.
+  const rawDefaultCap = brokerageRow?.default_cap_amount
+  const parsedDefaultCap =
+    rawDefaultCap === null || rawDefaultCap === undefined || rawDefaultCap === ""
+      ? null
+      : Number(rawDefaultCap)
   const commissionSettings = {
     defaultSplitPct: commissionStructures[0]?.base_percentage ?? 70,
-    capAmount: null, // Would come from agent_cap_tracking or commission_structures
+    capAmount: parsedDefaultCap !== null && Number.isFinite(parsedDefaultCap) ? parsedDefaultCap : null,
+    capAnniversaryBasis: normalizeCapAnniversaryBasis(brokerageRow?.default_cap_anniversary_basis),
     hasStructures: commissionStructures.length > 0,
     structureCount: commissionStructures.length,
   }

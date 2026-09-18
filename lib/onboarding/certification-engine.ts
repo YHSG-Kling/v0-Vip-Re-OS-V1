@@ -42,10 +42,13 @@ export async function checkCertificationEligibility(
   const supabase = createServiceClient()
   const missingRequirements: string[] = []
 
-  // Check if already awarded
+  // Check if already awarded. Tenant-scoped like the INSERT that creates these
+  // rows (line 336) — without it, another brokerage's award for the same agent
+  // id would read as "already awarded" and refuse this one.
   const { data: existingCert } = await supabase
     .from('agent_certifications')
     .select('id')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('certification_name', certName)
     .maybeSingle()
@@ -75,12 +78,17 @@ async function checkPlatformFundamentalsEligibility(
   supabase: ReturnType<typeof createServiceClient>,
   missingRequirements: string[]
 ): Promise<CertificationEligibilityResult> {
-  // Requirement 1: All onboarding steps in 'platform_tour' category completed
+  // Requirement 1: all REQUIRED system-setup onboarding steps completed.
+  // This asked for category 'platform_tour', which onboarding_steps.category
+  // does not admit (system_setup|training|practice|compliance|certification).
+  // It matched zero steps, and "all zero of them are done" is vacuously true —
+  // so this requirement never gated anything. 'system_setup' is the bucket the
+  // real setup steps live in.
   const { data: platformTourSteps } = await supabase
     .from('onboarding_steps')
     .select('id, step_key, step_name')
     .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
-    .eq('category', 'platform_tour')
+    .eq('category', 'system_setup')
     .eq('required', true)
 
   if (platformTourSteps && platformTourSteps.length > 0) {
@@ -228,26 +236,17 @@ async function checkLeadManagementEligibility(
     }
   }
 
-  // Requirement 2: Lead Management Essentials course passed
-  const { data: leadCourse } = await supabase
-    .from('training_courses')
-    .select('id')
-    .eq('course_name', 'Lead Management Essentials')
-    .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
-    .maybeSingle()
-
-  if (leadCourse) {
-    const { data: courseProgress } = await supabase
-      .from('agent_courses')
-      .select('status, score')
-      .eq('agent_id', agentId)
-      .eq('training_course_id', leadCourse.id)
-      .maybeSingle()
-
-    if (!courseProgress || courseProgress.status !== 'passed') {
-      missingRequirements.push('Pass the Lead Management Essentials course')
-    }
-  }
+  // NOTE — the former "pass the Lead Management Essentials course" requirement
+  // read training_courses + agent_courses. Those tables are seed-only: nothing
+  // in the app ever WRITES agent_courses (the course-taking runtime was never
+  // built — superseded by the learning_modules / learning_assignments rail), so
+  // agent_courses.status could never become 'passed'. That made this the ONE
+  // permanently-unsatisfiable gate on a REQUIRED onboarding cert, which in turn
+  // made completeOnboarding() unreachable for every agent (all three required
+  // certs must be awarded). The live, writeable gate for lead-management
+  // competency is the required training_videos above (same pattern as the
+  // Platform Fundamentals and Compliance Basics certs); that is now the sole
+  // requirement, so the certification — and onboarding completion — is earnable.
 
   return {
     eligible: missingRequirements.length === 0,
@@ -283,10 +282,17 @@ export async function awardCertification(
   const issuedAt = new Date()
   let certificateUrl: string | null = null
   try {
-    const [{ data: agentUser }, { data: brokerage }] = await Promise.all([
-      supabase.from('users').select('first_name, last_name').eq('id', agentId).maybeSingle(),
+    // IDENTITY CLASS (m357). agentId is an AGENTS id — every other query in this
+    // file filters agents-class tables with it, and its caller resolves to one
+    // in all branches. This looked the NAME up in `users` BY that id, matched
+    // nothing, and fell through to the literal string 'Agent'. The certificate
+    // PDF — the artifact the agent frames and shows a client — was issued to
+    // "Agent". Read the users row THROUGH the agents row.
+    const [{ data: agentUserRow }, { data: brokerage }] = await Promise.all([
+      supabase.from('agents').select('users(first_name, last_name)').eq('id', agentId).maybeSingle(),
       supabase.from('brokerages').select('name').eq('id', brokerageId).maybeSingle(),
     ])
+    const agentUser = (agentUserRow as { users?: { first_name?: string; last_name?: string } | null } | null)?.users ?? null
     const agentName = agentUser
       ? `${agentUser.first_name ?? ''} ${agentUser.last_name ?? ''}`.trim() || 'Agent'
       : 'Agent'
@@ -307,8 +313,19 @@ export async function awardCertification(
     if (uploadError) {
       console.error('[CertificationEngine] Certificate PDF upload failed (certificate_url will be null):', uploadError)
     } else {
-      const { data: pub } = supabase.storage.from('documents').getPublicUrl(path)
-      certificateUrl = pub?.publicUrl ?? null
+      // `documents` is a document-class bucket (it also holds board packets,
+      // offer attachments and signed listing agreements), so a getPublicUrl here
+      // both leaks by class and STOPS RESOLVING the moment the bucket is flipped
+      // private. Signed via the ONE issuer; honest null when it cannot be signed
+      // (certificate_url is already nullable and the callers handle null).
+      const { issueBucketObjectUrl } = await import('@/lib/storage/document-buckets')
+      const issued = await issueBucketObjectUrl(supabase as never, { bucket: 'documents', objectPath: path })
+      if (issued.ok) {
+        certificateUrl = issued.url
+      } else {
+        console.error('[CertificationEngine] certificate URL not issued (certificate_url will be null):', issued.reason)
+        certificateUrl = null
+      }
     }
   } catch (err) {
     console.error('[CertificationEngine] Certificate PDF generation failed (certificate_url will be null):', err)
@@ -365,6 +382,7 @@ export async function awardCertification(
   const { data: allCerts } = await supabase
     .from('agent_certifications')
     .select('certification_name')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('cert_type', 'onboarding')
 
@@ -421,13 +439,18 @@ export async function completeOnboarding(
     .eq('id', onboarding.id)
 
   // 3. Update agents.onboarding_status
+  // IDENTITY CLASS. agentId is an AGENTS id everywhere else in this file —
+  // agent_certifications, agent_step_completions and video_completion_tracking
+  // all key on it, and line ~289 reads `agents WHERE id = agentId`. This one
+  // matched on user_id, so it updated no row: certification completed and the
+  // agent's onboarding_status silently stayed where it was.
   await supabase
     .from('agents')
     .update({
       onboarding_status: 'completed',
       updated_at: new Date().toISOString(),
     })
-    .eq('user_id', agentId)
+    .eq('id', agentId)
 
   // 4. Transition lifecycle (only once, check prevents duplicate)
   await transitionLifecycle({
@@ -456,14 +479,18 @@ export async function completeOnboarding(
     console.error('[CertificationEngine] Onboarding completed notification failed:', err)
   })
 
-  // 6. Get agent details for admin notification
-  const { data: agent } = await supabase
-    .from('users')
-    .select('first_name, last_name')
+  // 6. Get agent details for admin notification. Same class rule as the
+  // certificate above (m357): agentId is an AGENTS id, so the users row is read
+  // THROUGH agents. Keyed directly it matched nothing, and the brokerage admins
+  // were told that "Agent" had completed onboarding.
+  const { data: agentRowForNotify } = await supabase
+    .from('agents')
+    .select('users(first_name, last_name)')
     .eq('id', agentId)
-    .single()
+    .maybeSingle()
 
-  const agentName = agent ? `${agent.first_name} ${agent.last_name}`.trim() : 'Agent'
+  const agent = (agentRowForNotify as { users?: { first_name?: string; last_name?: string } | null } | null)?.users ?? null
+  const agentName = agent ? `${agent.first_name ?? ''} ${agent.last_name ?? ''}`.trim() || 'Agent' : 'Agent'
 
   // 7. Create notification for brokerage admins
   const { data: admins } = await supabase
@@ -505,9 +532,17 @@ export async function getCertificationStatus(
 }> {
   const supabase = createServiceClient()
 
+  // `brokerageId` was accepted and never read. The caller
+  // (app/actions/onboarding/progress.ts:255) resolves `targetBrokerageId` from
+  // the SESSION and hands it here, and the client below is
+  // `createServiceClient()` — RLS off — so the tenant it resolved was the one
+  // thing NOT applied to the read. agent_certifications.brokerage_id is live
+  // (scripts/schema-snapshot.ts) and the awarding path in this same file stamps
+  // it, so the predicate matches the rows this engine writes.
   const { data: certs } = await supabase
     .from('agent_certifications')
     .select('id, certification_name, issued_at, certificate_url')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('cert_type', 'onboarding')
 

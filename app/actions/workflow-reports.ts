@@ -3,7 +3,7 @@
 /**
  * Workflow OS reporting actions.
  *
- * Reads workflow_step_runs + sequence_enrollments + campaign_sequences and
+ * Reads sequence_step_executions + sequence_enrollments + campaign_sequences and
  * surfaces aggregate metrics scoped to:
  *   - brokerage  (broker / admin role view)
  *   - team       (team-lead view, filtered by team_id)
@@ -45,7 +45,6 @@ export interface WorkflowReportSummary {
   blockedSteps:         number
   successRate:          number      // 0..1
   totalConversions:     number
-  totalConversionValueCents: number
   averageCompletionDays:    number | null
   byChannel:            Record<string, { runs: number; successes: number; failures: number }>
   topSequences:         Array<{ sequenceId: string; name: string; enrollments: number; completionRate: number }>
@@ -106,9 +105,17 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
       : null
 
     // ── 3. Pull step runs ───────────────────────────────────────────────────
+    // ONE LEDGER (m302). This read workflow_step_runs, a duplicate of
+    // sequence_step_executions written from the adjacent line of
+    // step-executor.ts — best-effort, and inserted only AFTER the compliance
+    // gate, so authority-blocked and channel-restricted steps never appeared in
+    // it. "Blocked steps" therefore counted over-touch deferrals and nothing
+    // else: the compliance gate could be stopping every send and this report
+    // would show zero blocks. Reading the canonical ledger fixes that count as
+    // a side effect of removing the duplicate.
     let stepQuery = supabase
-      .from("workflow_step_runs")
-      .select("channel, status, conversion_value_cents, converted_at")
+      .from("sequence_step_executions")
+      .select("channel, status")
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
 
@@ -125,14 +132,31 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
 
     const { data: stepRuns } = await stepQuery
 
+    // Status sets are the ones sequence_step_executions actually admits
+    // (authority_blocked | clicked | delivered | failed | opened | pending |
+    // replied | sent | skipped). The old sets were written against
+    // workflow_step_runs' vocabulary and carried three words this column cannot
+    // hold — 'completed', 'error' and 'blocked' — which would each have counted
+    // exactly nothing here. Blocked now includes authority_blocked, which is the
+    // compliance gate finally appearing in the report at all.
     const totalStepsRun   = stepRuns?.length ?? 0
-    const successfulSteps = stepRuns?.filter(r => r.status === "sent" || r.status === "completed").length ?? 0
-    const failedSteps     = stepRuns?.filter(r => r.status === "failed" || r.status === "error").length ?? 0
-    const blockedSteps    = stepRuns?.filter(r => r.status === "blocked" || r.status === "skipped").length ?? 0
+    const DELIVERED = new Set(["sent", "delivered", "opened", "clicked", "replied"])
+    const successfulSteps = stepRuns?.filter(r => DELIVERED.has(r.status as string)).length ?? 0
+    const failedSteps     = stepRuns?.filter(r => r.status === "failed").length ?? 0
+    const blockedSteps    = stepRuns?.filter(r => r.status === "skipped" || r.status === "authority_blocked").length ?? 0
 
-    const totalConversions  = stepRuns?.filter(r => r.converted_at).length ?? 0
-    const totalConversionValueCents = (stepRuns ?? [])
-      .reduce((sum, r) => sum + ((r.conversion_value_cents as number) ?? 0), 0)
+    // CONVERSIONS COME FROM THE ENROLLMENT, NOT THE STEP. They used to be read
+    // from workflow_step_runs.converted_at / conversion_value_cents — columns
+    // that never had a writer, so both tiles rendered a permanent zero for every
+    // brokerage. The enrollment is where a conversion is actually recorded
+    // (lib/campaign-sequences/sequence-conversion.ts stamps it when the enrolled
+    // contact's transaction closes, off the same cron as marketing attribution).
+    //
+    // Conversion VALUE is deliberately not reported here. Splitting deal dollars
+    // across the things that touched a contact is what lib/marketing/
+    // attribution.ts does, across four models, and inventing a second answer on
+    // this page is how the dead columns got there in the first place.
+    const totalConversions = enrollments?.filter(e => e.converted_at).length ?? 0
 
     // ── 4. By-channel breakdown ─────────────────────────────────────────────
     const byChannel: Record<string, { runs: number; successes: number; failures: number }> = {}
@@ -175,7 +199,6 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
         blockedSteps,
         successRate: totalStepsRun > 0 ? successfulSteps / totalStepsRun : 0,
         totalConversions,
-        totalConversionValueCents,
         averageCompletionDays,
         byChannel,
         topSequences,
@@ -198,7 +221,6 @@ function emptyReport(scope: ReportScope): WorkflowReportSummary {
     blockedSteps: 0,
     successRate: 0,
     totalConversions: 0,
-    totalConversionValueCents: 0,
     averageCompletionDays: null,
     byChannel: {},
     topSequences: [],

@@ -1,10 +1,12 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   FileText,
   FolderOpen,
@@ -14,8 +16,14 @@ import {
   Search,
   ExternalLink,
   Clock,
+  GitCompare,
+  Loader2,
 } from "lucide-react"
 import type { DocumentCenterFolder, DocumentCenterRow } from "@/app/actions/document-center"
+import { ShareDocumentDialog } from "./share-document-dialog"
+import { DocumentWorkspacePanel } from "./document-workspace-panel"
+import { DocumentActionsDialog } from "./document-actions-dialog"
+import { aiCompareDocuments } from "@/app/actions/ai-document-intelligence"
 
 interface Props {
   folders: DocumentCenterFolder[]
@@ -70,6 +78,17 @@ export function DocumentCenterClient({
             Every document across your contacts, transactions, and listings — organized and scanned for compliance.
           </p>
         </div>
+        <div className="flex items-center gap-3 text-sm">
+          {/* Sibling rails: the produced-PDF library (generated_documents) and
+              the external-download audit (document_downloads — its page
+              re-enforces the elevated ladder server-side). */}
+          <Link href="/dashboard/documents/library" className="text-primary hover:underline">
+            Generated library
+          </Link>
+          <Link href="/dashboard/documents/downloads" className="text-primary hover:underline">
+            Download audit
+          </Link>
+        </div>
       </div>
 
       {/* Top stats */}
@@ -79,6 +98,17 @@ export function DocumentCenterClient({
         <StatCard label="Blocking Issues" value={blockingIssuesCount} variant="danger" />
         <StatCard label="Categories" value={folders.length} />
       </div>
+
+      {/* Folders, template generation and AI drafting — the surface for
+          createDocumentFolder / getDocumentFolders / getDocumentTemplates /
+          generateDocumentFromTemplate / aiGenerateDocument, none of which had a
+          caller anywhere in the app. */}
+      <DocumentWorkspacePanel />
+
+      {/* Version comparison — the surface for aiCompareDocuments. */}
+      <CompareDocumentsCard
+        documents={folders.flatMap((f) => f.documents)}
+      />
 
       {/* Search + Status filter */}
       <Card>
@@ -172,6 +202,111 @@ export function DocumentCenterClient({
 
 // ---------------------------------------------------------------------------
 
+/**
+ * VERSION COMPARISON — the surface for
+ * app/actions/ai-document-intelligence.ts : aiCompareDocuments, which was
+ * exported, complete, and had zero callers.
+ *
+ * The action is a pure read + model pass: it writes NOTHING, and this card says
+ * so instead of implying the comparison was filed somewhere.
+ */
+function CompareDocumentsCard({ documents }: { documents: DocumentCenterRow[] }) {
+  const [pending, startTransition] = useTransition()
+  const [left, setLeft] = useState<string>("")
+  const [right, setRight] = useState<string>("")
+  const [error, setError] = useState<string | null>(null)
+  const [comparison, setComparison] = useState<any>(null)
+
+  if (documents.length < 2) return null
+
+  const run = () => {
+    setError(null)
+    setComparison(null)
+    startTransition(async () => {
+      const res = await aiCompareDocuments({ documentId1: left, documentId2: right })
+      if (!res.success) {
+        setError(res.error ?? "Comparison failed.")
+        return
+      }
+      setComparison(res.comparison)
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <GitCompare className="h-4 w-4 text-purple-600" />
+          Compare two versions
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Select value={left} onValueChange={setLeft}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Original" />
+            </SelectTrigger>
+            <SelectContent>
+              {documents.map((d) => (
+                <SelectItem key={d.id} value={d.id} className="text-xs">
+                  {d.documentName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={right} onValueChange={setRight}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Modified" />
+            </SelectTrigger>
+            <SelectContent>
+              {documents.map((d) => (
+                <SelectItem key={d.id} value={d.id} className="text-xs">
+                  {d.documentName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending || !left || !right}
+          onClick={run}
+        >
+          {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+          Compare
+        </Button>
+        {/* The SERVER's refusal, verbatim — including "Pick two different
+            documents to compare." when both selects hold the same row. */}
+        {error ? (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {comparison ? (
+          <div className="text-xs space-y-1.5 border rounded p-2">
+            <p className="font-medium">{comparison.summary}</p>
+            <p className="text-muted-foreground">{comparison.riskAssessment}</p>
+            {comparison.changes?.length ? (
+              <ul className="list-disc pl-4 space-y-0.5">
+                {comparison.changes.slice(0, 10).map((c: any, i: number) => (
+                  <li key={i}>
+                    <b className="capitalize">{c.significance}</b> — {c.section}: {c.original} &rarr;{" "}
+                    {c.modified}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <p className="text-[11px] text-muted-foreground">
+              Advisory only — this comparison is not stored on either document.
+            </p>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 function StatCard({
   label,
   value,
@@ -225,8 +360,14 @@ function DocRow({ doc }: { doc: DocumentCenterRow }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-3 shrink-0">
         <ScanBadge doc={doc} />
+        {/* Per-document capabilities: classify, signature check, access log, and
+            Dotloop send/status — all previously unreachable. */}
+        <DocumentActionsDialog documentId={doc.id} documentName={doc.documentName} />
+        {/* Share with the brokerage team — mints a token for /documents/shared/[token],
+            which requires a session and refuses anyone outside this brokerage. */}
+        <ShareDocumentDialog documentId={doc.id} documentName={doc.documentName} />
         <a
           href={doc.documentUrl}
           target="_blank"

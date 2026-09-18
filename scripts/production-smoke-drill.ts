@@ -113,8 +113,11 @@ function registerNextHeadersShim(): boolean {
     //     a React Server environment; the drill IS server-side, so it no-ops.
     //   - "next/headers": same empty cookie store as the ESM shim.
     const nodeModule: any = createRequire(import.meta.url)("node:module")
-    // Some production modules (e.g. lib/providers/dispatch.ts) use bare require();
+    // Some production modules (lib/remotion/music-mixer.ts and
+    // voiceover-mixer.ts, lazily requiring ffmpeg-static) use bare require();
     // under an ESM execution context that identifier must exist globally.
+    // lib/providers/dispatch.ts moved to createRequire in wave 75 and no
+    // longer needs this shim.
     if (typeof (globalThis as any).require === "undefined") {
       ;(globalThis as any).require = createRequire(import.meta.url)
     }
@@ -176,7 +179,10 @@ async function preflightPure(): Promise<void> {
     plan.adminEmail.includes(stamp) && plan.leadEmail.includes(stamp) && plan.brokerageName.includes(stamp)
   ;(tagged ? stepPass : stepFail)("drill plan is stamp-tagged for exact cleanup", ms)
 
-  // Round-39 eligibility shape: first+last name + email → eligible; name-only → not.
+  // Wave-14 eligibility shape (owner): first+last name AND (email and/or phone and/or a
+  // VERIFIED mailing address). Phone became an anchor in the same ruling that made the
+  // address arm require the VERIFIED flag — so the refusal to smoke-test is the one that
+  // moved: an address string with no verification.
   const t0 = Date.now()
   try {
     const { evaluateCanonicalLeadEligibility } = await import("../lib/lead-pipeline/canonical-lead-eligibility")
@@ -184,12 +190,17 @@ async function preflightPure(): Promise<void> {
       first_name: "Smoke", last_name: "Lead", email: plan.leadEmail,
       phone: null, mailing_address: null, mailing_address_verified: false,
     }).eligible
-    const rejects = !evaluateCanonicalLeadEligibility({
+    const phoneOk = evaluateCanonicalLeadEligibility({
       first_name: "Smoke", last_name: "Lead", email: null,
       phone: "+18135550100", mailing_address: null, mailing_address_verified: false,
     }).eligible
-    ;(ok && rejects ? stepPass : stepFail)(
-      "canonical eligibility: name+email passes, name+phone-only refuses (round-39 shape)", Date.now() - t0)
+    const rejects = !evaluateCanonicalLeadEligibility({
+      first_name: "Smoke", last_name: "Lead", email: null,
+      phone: null, mailing_address: "1 Smoke Test Way", mailing_address_verified: false,
+    }).eligible
+    ;(ok && phoneOk && rejects ? stepPass : stepFail)(
+      "canonical eligibility: name+email passes, name+phone passes, unverified-address-only refuses (wave-14 shape)",
+      Date.now() - t0)
   } catch (e: any) {
     stepFail("canonical eligibility module loads", Date.now() - t0, e?.message)
   }

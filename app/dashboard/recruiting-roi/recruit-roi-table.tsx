@@ -45,7 +45,10 @@ export function RecruitROITable({ data }: Props) {
               {data.map((row: any) => (
                 <div key={row.id} className="border-b">
                   <div className="flex items-center p-3 hover:bg-muted/50">
-                    <td className="flex-1">{`${row.agents?.first_name} ${row.agents?.last_name}`}</td>
+                    {/* Names live on users, not agents — agents has no first_name/last_name. */}
+                    <td className="flex-1">
+                      {`${row.agents?.users?.first_name ?? ""} ${row.agents?.users?.last_name ?? ""}`.trim() || "Unknown"}
+                    </td>
                     <td className="text-right">${((row.total_recruiting_cost || 0) / 100).toLocaleString()}</td>
                     <td className="text-right font-semibold">${((row.lifetime_brokerage_net || 0) / 100).toLocaleString()}</td>
                     <td className={`text-right font-bold ${(row.roi_pct || 0) > 100 ? 'text-green-600' : (row.roi_pct || 0) > 0 ? 'text-blue-600' : 'text-red-600'}`}>
@@ -57,8 +60,9 @@ export function RecruitROITable({ data }: Props) {
                       </Badge>
                     </td>
                     <td className="text-center">
-                      <Badge variant={row.agents?.status === 'active' ? 'default' : 'secondary'}>
-                        {row.agents?.status || 'Unknown'}
+                      {/* agents has no `status` column either — is_active is the real signal. */}
+                      <Badge variant={row.agents?.is_active ? 'default' : 'secondary'}>
+                        {row.agents == null ? 'Unknown' : row.agents.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                     </td>
                     <td>

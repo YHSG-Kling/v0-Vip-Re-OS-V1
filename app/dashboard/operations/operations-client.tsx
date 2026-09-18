@@ -13,7 +13,6 @@ import {
   FileText,
   MessageSquare,
   AlertTriangle,
-  Clock,
   Home,
   ArrowRight,
   RefreshCw,
@@ -23,7 +22,7 @@ import {
   CheckCircle2,
   TrendingUp,
 } from "lucide-react"
-import { formatDistanceToNow, format, isToday } from "date-fns"
+import { formatDistanceToNow, format } from "date-fns"
 
 interface OperationsData {
   agentId: string | null

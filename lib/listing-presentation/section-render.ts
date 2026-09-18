@@ -13,14 +13,24 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { enqueueCmaReelRender } from "@/lib/video/cma-reel-orchestrator"
-import { generateSectionNarration } from "@/lib/listing-presentation/section-narration"
+import {
+  generateSectionNarration,
+  sectionNarrationBudget,
+  SECTION_NARRATION_COMPOSITION,
+} from "@/lib/listing-presentation/section-narration"
+import { resolveMarketingSystem } from "@/lib/listing-presentation/marketing-system-resolver"
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
+import { listingAttributionLine, type ListingAttributionSource } from "@/lib/listings/attribution"
 
-export type SectionRenderResult =
+type SectionRenderResult =
   | { ok: true; renderId: string }
   | { ok: false; skipped: string }
 
-export async function renderCmaSectionForPresentation(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function renderCmaSectionForPresentation(
   presentationId: string,
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<SectionRenderResult> {
@@ -46,7 +56,7 @@ export async function renderCmaSectionForPresentation(
 
   const { data: rows } = await supabase
     .from("cma_comparables")
-    .select("address, sale_price, list_price, adjusted_price, days_on_market")
+    .select("address, sale_price, list_price, adjusted_price, days_on_market, source_provider")
     .eq("cma_id", cma.id)
     .limit(8)
   const comparables: CmaComp[] = (rows ?? []).map((r: any) => ({
@@ -57,6 +67,21 @@ export async function renderCmaSectionForPresentation(
     days_on_market: r.days_on_market,
   }))
   if (comparables.length === 0) return { ok: false, skipped: "no comparables to render" }
+
+  // LANE 74D — the reel displays these exact comps (CompsBar), so it carries
+  // the same legal attribution obligation as every other listing/comp display
+  // surface (lib/listings/attribution.ts's own header). One line per DISTINCT
+  // provider actually represented among the comps rendered — reuses
+  // listingAttributionLine per row rather than inventing a second sentence
+  // (CLAUDE.md §6); 'idxbroker'/'perplexity'/platform rows contribute no line
+  // or their own established one, same as every other attribution call site.
+  const attribution = Array.from(
+    new Set(
+      (rows ?? [])
+        .map((r: any) => listingAttributionLine(r.source_provider as ListingAttributionSource))
+        .filter((line: string) => line.length > 0),
+    ),
+  ).join(" · ")
 
   // Market median from comparable SALE prices (public market fact — never the
   // subject's valuation). Drives the seller-safe affordability donut.
@@ -77,6 +102,7 @@ export async function renderCmaSectionForPresentation(
       subject:           { address: pres.property_address ?? "Your Home", areaName: "", estimatedPrice: marketMedian },
       comparables,
       marketMedianPrice: marketMedian,
+      attribution,
       entityType:        "listing_presentation",
       entityId:          presentationId,
       requestedVia:      "cron",
@@ -95,7 +121,15 @@ export async function renderCmaSectionForPresentation(
   return { ok: true, renderId: enq.renderId }
 }
 
-export interface RenderSectionsResult { rendered: number; skipped: number }
+export interface RenderSectionsResult {
+  rendered: number
+  /** Sections that did not get a render: CMA-section skips, insert refusals, AND the contract refusals below. */
+  skipped: number
+  /** The subset of `skipped` refused by the content contract BEFORE any row was staged. */
+  refused: number
+  /** One line per refusal — `<section_key>: <describeMissingContent>` — so the count is never silent. */
+  refusals: string[]
+}
 
 /**
  * Render EVERY section of a presentation: the CMA section as a CMAReel data
@@ -114,13 +148,22 @@ export async function renderSectionsForPresentation(
   const cmaRes = await renderCmaSectionForPresentation(presentationId, supabase)
   let rendered = cmaRes.ok ? 1 : 0
   let skipped = cmaRes.ok ? 0 : 1
+  let refused = 0
+  const refusals: string[] = []
+  // enqueueCmaReelRender now refuses by contract (comps / daysOnMarket) and
+  // reports the sentence as `error`; carry it here so the CMA section's
+  // refusal is as visible as any other section's.
+  if (!cmaRes.ok && /was not given .* content prop/.test(cmaRes.skipped)) {
+    refused += 1
+    refusals.push(`cma: ${cmaRes.skipped}`)
+  }
 
   const { data: pres } = await supabase
     .from("listing_presentations")
     .select("brokerage_id, agent_user_id, property_address")
     .eq("id", presentationId)
     .maybeSingle()
-  if (!pres?.brokerage_id) return { rendered, skipped }
+  if (!pres?.brokerage_id) return { rendered, skipped, refused, refusals }
 
   // Resolve the agent's display name + their own "take" (for the narration).
   let agentName = "Your Agent"
@@ -147,6 +190,29 @@ export async function renderSectionsForPresentation(
     showEhoMark:   true,
   }
 
+  // WHAT THIS BROKERAGE CAN ACTUALLY CLAIM, resolved ONCE for the whole
+  // presentation (it is a property of the tenant + agent, not of the section).
+  //
+  // This is the writer that never existed. `AINarrationInput.marketingSystem`
+  // has been an input nothing set since it was declared, so its hardcoded
+  // fallback — six capability claims — was spoken to every seller of every
+  // tenant regardless of plan or account state. The owner ruled the marketing
+  // system is part of the listing presentation and part of ADVERTISEMENT and so
+  // must be an active function; this call is that function reaching the prompt.
+  // See lib/listing-presentation/marketing-system.ts for the claim catalogue and
+  // the tombstone in section-narration.ts for what was retired.
+  //
+  // The budget is derived from the composition these sections actually render on
+  // (ListingSectionReel), so the claim list is packed to what the video can
+  // speak — a claim that would be trimmed mid-sentence is withheld from the
+  // prompt instead.
+  const narrationBudgetForSections = sectionNarrationBudget(SECTION_NARRATION_COMPOSITION)
+  const marketing = await resolveMarketingSystem(supabase, {
+    brokerageId: pres.brokerage_id,
+    agentUserId: pres.agent_user_id ?? null,
+    budget:      narrationBudgetForSections,
+  })
+
   const { data: sections } = await supabase
     .from("presentation_sections")
     .select("section_key, title, render_id")
@@ -168,17 +234,106 @@ export async function renderSectionsForPresentation(
       agentName,
       areaName,
       agentTake,
+      marketingSystem: marketing.text,
+      // ── WHO IS ON THE HOOK, AND WHAT THE ESCALATION FILES UNDER ───────────
+      // §5's other half. A HARD fair-housing hit in a script destined for the
+      // agent's CLONED VOICE withholds the model's text (correct) and must put
+      // a person on it. It could not: this call supplied no actor, so every
+      // hard hit took section-narration.ts's "NO HUMAN WAS SUMMONED" branch,
+      // and even with an actor the escalation opened the SESSION client while
+      // this whole lane runs cron → section-drip → section-render under the
+      // SERVICE client, where video_scripts_library's
+      // `brokerage_id = current_user_brokerage_id()` policy refuses the insert.
+      //
+      // BOTH HALVES COME OFF THE ROW THE CRON ALREADY LOADED, so neither is a
+      // free parameter (§4): `listing_presentations.brokerage_id` (FK
+      // brokerages(id)) is the tenant, and `listing_presentations.agent_user_id`
+      // is the actor — USERS-class by its FK `agent_user_id → users(id)`, which
+      // is the class ScriptComplianceActor.userId wants. `agents.id` is a
+      // DISJOINT space (§3) and is never substituted here; the escalation does
+      // the users→agents cross itself, inside the tenancy proof.
+      //
+      // Null when the presentation names no agent — reported LOUDLY by the
+      // narration's own branch rather than silently treated as "nothing to
+      // file". `escalationClient` turns on proveActorTenancy in the escalation,
+      // because a service client bypasses the RLS that was the tenancy check.
+      escalationActor: pres.agent_user_id
+        ? { userId: pres.agent_user_id as string, brokerageId: pres.brokerage_id as string }
+        : null,
+      escalationClient: supabase,
     })
     const inputProps: Record<string, unknown> = {
       sectionKey:      s.section_key,
       title:           s.title ?? "Your Listing Plan",
       bullets:         narration.bullets,
       narrationScript: narration.script,
+      // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
+      // script the avatar/voice-clone narrates (never a second text, §6), gated
+      // the same way seoHint below is: a held-for-review script is withheld from
+      // the caption too, not just the on-screen bullets a human hasn't cleared.
+      captionScript:   narration.heldForReview ? null : narration.script,
       agentName,
       avatarVideoUrl: null,
       voiceoverUrl:   null,
       totalSlides: total,
       brand,
+      // ── THE HOLD TRAVELS WITH THE RENDER, NOT ONLY INTO A LOG ─────────────
+      // §1: `SectionNarration.notes / heldForReview / reviewId` had a producer
+      // and no reader — the disposition died in a local variable while the row
+      // went to the queue looking like any other section. Staged here so the
+      // narration orchestrator, the drip and anyone reading
+      // remotion_composition_renders.input_props can all see that this
+      // section's model script was WITHHELD and which video_scripts_library row
+      // a human now owns. Only written when there is something to say, so an
+      // ordinary section's props are byte-identical to before.
+      ...(narration.notes?.length ? { narrationNotes: narration.notes } : {}),
+      ...(narration.heldForReview ? { narrationHeldForReview: true } : {}),
+      ...(narration.reviewId ? { narrationReviewId: narration.reviewId } : {}),
+    }
+    // ── THE COMPANION SHARE CARD (§1.2) ──────────────────────────────────────
+    // ListingSectionReel declares thumbnail_composition_id='VideoCoverThumb'
+    // (m181), so a still is rendered beside every section and becomes the
+    // render's thumbnail_url — the og:image and the player poster on /v/[slug].
+    // This producer staged none, so that still was completed from
+    // VideoCoverThumb's Studio fixture and a pre-listing section shipped a
+    // fabricated address and price as its share image.
+    //
+    // A HELD SCRIPT IS NOT A SUMMARY (§5). When the fair-housing screen withheld
+    // the model's text, `narration.heldForReview` is set and a human owns the
+    // copy until they release it — publishing that same text as the card's
+    // seoHint (rendered under the subtitle AND as the hero image's alt) would
+    // route around the hold. No hint ⇒ companionCard refuses ⇒ the section keeps
+    // its video and ships with no share image, which is the honest outcome.
+    //
+    // `agentName` refuses the literal "Your Agent" (this function's own default
+    // when the presentation names no agent, and also VideoCoverThumb's sample
+    // value) — staging it would satisfy isSupplied while being byte-identical to
+    // the default the contract keeps off a client's card. Same rule as
+    // consultation-render and the render-just-listed producer (§6).
+    const sectionCard = companionCard(VIDEO_COVER_THUMB, {
+      kind: "presentation",
+      title:    s.title ?? "Your Listing Plan",
+      subtitle: pres.property_address ?? brand.brokerageName,
+      eyebrow:  "LISTING PLAN",
+      agentName: agentName === "Your Agent" ? brand.brokerageName : agentName,
+      brand,
+      seoHint: narration.heldForReview ? null : seoHintFromNarration(narration.script),
+    })
+    if (sectionCard.card) inputProps.thumbnail_props = sectionCard.card
+    else console.warn(`[section-render] ${presentationId} section ${s.section_key} ships without a share card — ${describeMissingContent(VIDEO_COVER_THUMB, sectionCard.missing)}`)
+    // THE CONTENT GATE, before the insert. `bullets` is the pitch and the
+    // contract requires it; a narration whose bullets came back empty (a held
+    // script, a thin fallback) used to be staged anyway, the backstop cancelled
+    // the row, and this function counted it as `rendered` and attached the
+    // cancelled render_id to the section — so the drip delivered nothing and
+    // the section looked handled. Refused by NAME and counted instead; the
+    // section keeps render_id null and drips as a card, which is honest.
+    const missing = missingContentProps("ListingSectionReel", inputProps)
+    if (missing.length > 0) {
+      const reason = describeMissingContent("ListingSectionReel", missing)
+      console.warn(`[section-render] ${presentationId} section ${s.section_key} skipped — ${reason}`)
+      skipped++; refused++; refusals.push(`${s.section_key}: ${reason}`)
+      continue
     }
     const { data: render, error } = await supabase
       .from("remotion_composition_renders")
@@ -206,5 +361,5 @@ export async function renderSectionsForPresentation(
     rendered++
   }
 
-  return { rendered, skipped }
+  return { rendered, skipped, refused, refusals }
 }

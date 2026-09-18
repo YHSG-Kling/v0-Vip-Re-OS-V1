@@ -28,7 +28,10 @@ import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import type { Persona } from "@/lib/kernel/types"
 
-export type DirectMailCopyShape = "postcard" | "letter"
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `DirectMailCopyShape` deleted — the
+// postcard/letter distinction lives as two named functions (draftPostcardCopy
+// / draftLetterCopy below), each with its own prompt and copy shape; no caller
+// ever carried the union as a value.
 
 /** Map any incoming persona string to the canonical Persona union.
  *  Anything unrecognized falls to "other" so we never narrow off a
@@ -37,7 +40,7 @@ function normalizePersona(p: string): Persona {
   const KNOWN: Persona[] = [
     "first_time", "relocated", "luxury", "fsbo", "probate",
     "upsize", "downsize", "military", "divorce", "senior",
-    "expired", "foreclosure", "other",
+    "expired", "foreclosure", "investor", "other",
   ]
   return (KNOWN as string[]).includes(p) ? (p as Persona) : "other"
 }

@@ -14,6 +14,7 @@
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { rawRoleVariantsFor } from "@/lib/security/types"
 
 export const assignTaskAdapter: ChannelAdapter = {
   channel: "assign_task",
@@ -63,7 +64,7 @@ export const assignTaskAdapter: ChannelAdapter = {
             .from("users")
             .select("id")
             .eq("brokerage_id", brokerageId)
-            .eq("role", "compliance_officer")
+            .in("user_type", rawRoleVariantsFor(["compliance_officer"]))
             .limit(1)
             .maybeSingle()
           assigneeUserId = u?.id ?? null
@@ -103,7 +104,7 @@ export const assignTaskAdapter: ChannelAdapter = {
             .from("users")
             .select("id")
             .eq("brokerage_id", brokerageId)
-            .in("role", ["broker", "team_lead", "tc", "compliance_officer", "admin"])
+            .in("user_type", rawRoleVariantsFor(["broker", "team_lead", "tc", "compliance_officer", "admin"]))
             .limit(1)
             .maybeSingle()
           assigneeUserId = u?.id ?? ctx.agentUserId

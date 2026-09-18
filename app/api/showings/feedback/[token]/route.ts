@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel"
+// TOMBSTONE (dead-import tranche): `processKernelEvent` was imported here and
+// never called. Survivor: `emitKernelEvent` (lib/kernel/emit.ts:112) — the
+// CANONICAL emit this route uses below (its predecessor `fanOutKernelEvent` was
+// folded onto it on 2026-09-03; see lib/kernel/event-fanout.ts). Going direct
+// would have skipped the audit row, the seller-portal resolution and the
+// sequence auto-enrolment that the emit adds on top of processKernelEvent.
 import { KernelEvent } from "@/lib/kernel/events"
 import { aiAnalyzeShowingFeedback } from "@/app/actions/ai-showing-management"
 import { generateAIResponse } from "@/lib/ai"
@@ -10,6 +15,31 @@ const OFFER_INTEREST_SCORE: Record<string, number> = {
   possible:    55,
   unlikely:    20,
   no:           5,
+}
+
+/**
+ * BOUNDARY NORMALIZER for the showing verdict (§6, m568). The one vocabulary for
+ * "what did the buyer think of the house" is love_it | like_it | maybe | no —
+ * the same CHECK showings.buyer_interest_level and tour_stops.buyer_interest_level
+ * carry. overall_impression historically spoke a private dialect
+ * (loved_it | liked_it | neutral | not_interested); m568 retires it. The form now
+ * submits the canonical tokens, but a tab opened BEFORE this deploy can still
+ * submit the old spelling — map it here rather than refuse a real buyer verdict.
+ * Unknown tokens become null (the CHECK would refuse them anyway; a null
+ * impression is "not answered", not a 500).
+ *
+ * SEQUENCE: this code assumes m568 is APPLIED (the live CHECK admits only the
+ * new tokens). Deploying it against the pre-m568 CHECK would have every
+ * submission refused with 23514 — apply m568 first, then deploy.
+ */
+function normalizeImpression(v: unknown): "love_it" | "like_it" | "maybe" | "no" | null {
+  switch (v) {
+    case "love_it":  case "loved_it":       return "love_it"
+    case "like_it":  case "liked_it":       return "like_it"
+    case "maybe":    case "neutral":        return "maybe"
+    case "no":       case "not_interested": return "no"
+    default:                                return null
+  }
 }
 
 export async function POST(
@@ -33,7 +63,11 @@ export async function POST(
       overallImpression,
       buyerInterestLevel,
       additionalNotes,
+      submittedByAgentName,
+      submittedByAgentEmail,
     } = body
+
+    const impression = normalizeImpression(overallImpression)
 
     const supabase = createServiceClient()
 
@@ -60,7 +94,7 @@ Cleanliness: ${cleanlinessRating}/5
 Price opinion: ${priceOpinion}
 Meets buyer needs: ${meetsBuyerNeeds}
 Offer interest: ${offerInterest}
-Overall impression: ${overallImpression}
+Overall impression: ${impression ?? "not provided"}
 Buyer interest level: ${buyerInterestLevel}
 Liked most: ${favoriteFeatures || "not provided"}
 Concerns: ${specificConcerns || "none"}
@@ -87,10 +121,24 @@ Additional notes: ${additionalNotes || "none"}`,
         offer_interest:         offerInterest,
         buyer_favorite_features: favoriteFeatures || null,
         specific_concerns:      specificConcerns || null,
-        overall_impression:     overallImpression,
+        overall_impression:     impression,
         buyer_interest_level:   buyerInterestLevel,
         additional_notes:       additionalNotes || null,
         ai_summary:             aiSummary,
+        // WHO SUBMITTED — the two columns the listing agent's feedback panel
+        // renders (feedback-summary-panel.tsx:217) and getShowingFeedbackCards
+        // selects (app/actions/seller-showings.ts:731). Nothing in the tree
+        // wrote either of them, so every feedback card on every listing fell
+        // through to the showing's buyer-agent name or to "Anonymous" — this is
+        // a THIRD-PARTY showing agent's form, and the person who took the time
+        // could never be named. Blank stays NULL: the form says anonymity is
+        // allowed, so an empty box must not become an empty string.
+        submitted_by_agent_name:  typeof submittedByAgentName === "string" && submittedByAgentName.trim()
+          ? submittedByAgentName.trim().slice(0, 200)
+          : null,
+        submitted_by_agent_email: typeof submittedByAgentEmail === "string" && submittedByAgentEmail.trim()
+          ? submittedByAgentEmail.trim().slice(0, 320)
+          : null,
         // sentiment_score: simple mapping 0-1
         sentiment_score: offerInterest === "very_likely" || buyerInterestLevel === "hot"
           ? 0.85
@@ -114,7 +162,7 @@ Additional notes: ${additionalNotes || "none"}`,
           offerInterest,
           buyerInterestLevel,
           priceOpinion,
-          overallImpression,
+          overallImpression: impression,
           summary: aiSummary,
         },
       })
@@ -291,14 +339,17 @@ Additional notes: ${additionalNotes || "none"}`,
           .select("seller_contact_id")
           .eq("id", listing.listing_id)
           .maybeSingle()
-        const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-        await fanOutKernelEvent({
+        // emitKernelEvent also writes the showing_feedback_received audit row this
+        // route never had.
+        const { emitKernelEvent } = await import("@/lib/kernel/emit")
+        await emitKernelEvent({
           event:           KernelEvent.SHOWING_FEEDBACK_RECEIVED,
           brokerageId:     fbReq.brokerage_id,
           entityType:      "listing_stage_machine",
           entityId:        listing.listing_id,
           sellerContactId: fbListing?.seller_contact_id ?? undefined,
           listingId:       listing.listing_id,
+          source:          "webhook",
         }).catch(() => {})
       }
     }

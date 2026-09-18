@@ -44,8 +44,15 @@ export const TEAMMATE_ROLE_TITLE_MIN = 2
 export const TEAMMATE_ROLE_TITLE_MAX = 80
 export const TEAMMATE_CHARTER_MIN = 12
 export const TEAMMATE_CHARTER_MAX = 2000
-export const TEAMMATE_MAX_FOCUS_TAGS = 8
-export const TEAMMATE_FOCUS_TAG_MAX = 40
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: NormalizedTeammate, TEAMMATE_FOCUS_TAG_MAX, TEAMMATE_MAX_FOCUS_TAGS.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const TEAMMATE_MAX_FOCUS_TAGS = 8
+const TEAMMATE_FOCUS_TAG_MAX = 40
 
 /**
  * Custom-teammate cap per subscription tier — same shape as the seat matrix
@@ -75,7 +82,7 @@ export interface TeammateInput {
   autonomy?: string | null
 }
 
-export interface NormalizedTeammate {
+interface NormalizedTeammate {
   name: string
   roleTitle: string
   baseManagerKey: ManagerKey
@@ -162,7 +169,9 @@ export function grantLedgerForManager(
   if (baseManagerKey === "deal_coordinator") {
     return { agentKind: "deal_coordinator", configKey: "doc_kernel_grants" }
   }
-  if (baseManagerKey === "campaign_orchestrator" || baseManagerKey === "marketing_agent") {
+  // m618: was also true for "marketing_agent" — that ManagerKey is retired
+  // (survivor campaign_orchestrator, already the sole branch below).
+  if (baseManagerKey === "campaign_orchestrator") {
     return { agentKind: "campaign_orchestrator", configKey: "marketing_grants" }
   }
   return null
@@ -241,7 +250,7 @@ export function composeTeammateContext(t: TeammateForContext): string {
 export const TEAM_COMMAND_MANAGER: Record<string, ManagerKey> = {
   voice_followup:   "sphere_of_influence",
   start_marketing:  "campaign_orchestrator",
-  cut_promo:        "marketing_agent",
+  cut_promo:        "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
   find_properties:  "shopping_agent",
   kernel_proposals: "deal_coordinator",
   kernel_resolve:   "deal_coordinator",

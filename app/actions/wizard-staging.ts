@@ -19,7 +19,7 @@
  * gates + brand voice + compliance + kernel events all fire.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { voiceDraftListing } from "./voice-assistant/draft-listing-from-voice"
 import { voiceDraftOffer } from "./voice-assistant/draft-offer-from-voice"
 
@@ -57,8 +57,8 @@ export interface StageWizardPacketResult {
 export async function stageListingFromVoice(
   params: ListingFromVoiceParams,
 ): Promise<StageWizardPacketResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { success: false, error: "Unauthorized" }
 
   const result = await voiceDraftListing({
     voiceInput: params.voiceInput,
@@ -99,8 +99,8 @@ export async function stageListingFromVoice(
 export async function stageOfferFromVoice(
   params: OfferFromVoiceParams,
 ): Promise<StageWizardPacketResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { success: false, error: "Unauthorized" }
 
   const result = await voiceDraftOffer({
     voiceInput: params.voiceInput,
@@ -125,6 +125,17 @@ export async function stageOfferFromVoice(
       needsMoreInfo: true,
       sessionId: result.sessionId,
       spokenResponse: result.spokenResponse,
+    }
+  }
+  // PROACTIVE CHECKS REFUSED. Deliberately NOT needsMoreInfo: the intake is complete,
+  // a pre-flight blocker is. Surfaced with its own text so the Copilot relays what to
+  // fix rather than asking for the same fields again.
+  if (result.kind === "blocked") {
+    return {
+      success: false,
+      sessionId: result.sessionId,
+      spokenResponse: result.spokenResponse,
+      error: result.blockers.map((b) => b.title).join("; ") || "Pre-flight checks refused the offer",
     }
   }
   return {

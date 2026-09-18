@@ -50,9 +50,19 @@ export async function POST(
       featureKey: body.featureKey,
       overrideType: body.overrideType,
       trialEndsAt: body.trialEndsAt,
+      // BOTH IDENTITY COLUMNS, VERBATIM — never a hand-written label. This read
+      // `userType: "superadmin"`, which was not the caller's user_type but an
+      // assertion typed in to satisfy the old literal-union field. It happened to
+      // be harmless only because requireSuperadminAuth above had already checked
+      // both columns; the kernel's own gate was reduced to a rubber stamp, and
+      // the platform's only superadmin (user_type='admin',
+      // platform_role='superadmin') was being described to it as something they
+      // are not. The session's real values are passed now, and the kernel gate
+      // (validateSuperadminOnly) reaches the same verdict on its own.
       actorContext: {
         userId: auth.userId,   // always from session, never from body/headers
-        userType: "superadmin",
+        userType: auth.userType,
+        platformRole: auth.platformRole,
       },
     })
 

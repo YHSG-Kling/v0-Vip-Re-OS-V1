@@ -44,7 +44,9 @@ import "server-only"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `video-assets`.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { createServiceClient } from "@/lib/supabase/service"
 import { burnPersonaOverlay } from "@/lib/video/persona-overlay"
@@ -181,12 +183,12 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
           })
           const thumbBytes = await fs.readFile(thumbPath)
           await fs.unlink(thumbPath).catch(() => {})
-          const thumbBlob = await put(
+          thumbUrl = await hostRenderedMedia(
+            svc,
             `asset-persona/${args.assetType}/thumbs/${args.assetId}-${persona}.png`,
             thumbBytes,
-            { access: "public", contentType: "image/png" },
+            "image/png",
           )
-          thumbUrl = thumbBlob.url
         }
 
         // ffmpeg drawtext overlay on the first 3s of the main video.
@@ -216,17 +218,18 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
           continue
         }
 
-        const compositeBlob = await put(
+        const compositeUrl = await hostRenderedMedia(
+          svc,
           `asset-persona/${args.assetType}/composite/${args.assetId}-${persona}.mp4`,
           overlay.outputBuffer,
-          { access: "public", contentType: "video/mp4" },
+          "video/mp4",
         )
 
         await svc.from("asset_persona_renders")
           .update({
             status:              "completed",
             thumbnail_url:       thumbUrl,
-            composite_video_url: compositeBlob.url,
+            composite_video_url: compositeUrl,
             completed_at:        new Date().toISOString(),
           })
           .eq("asset_type", args.assetType)
@@ -327,6 +330,8 @@ Subject context for this asset: "${args.subject}"${contextLine}
 Return ONLY the hook line text — no quotes, no labels.`
   try {
     const result = await generateTextRouted({
+      brokerageId: args.brokerageId,
+      userId: args.agentUserId,
       feature:     "persona_variant_hook",
       prompt,
       maxTokens:   60,
@@ -340,15 +345,8 @@ Return ONLY the hook line text — no quotes, no labels.`
       persona:      "other",
       messageType:  "email",
       content:      hook,
-      contact: {
-        id: "broadcast_persona_hook",
-        first_name: "Subscriber",
-        last_name: "Audience",
-        contact_type: "buyer",
-        tcpa_consent: true,
-        isa_reengage_allowed: false,
-        dnc_status: false,
-      },
+      // Broadcast payload — see lib/video/script-compliance.ts for why the
+      // stub contact is omitted rather than faked.
     }).catch(() => ({ allowed: true, violations: [] as string[] }))
     if (!gate.allowed) return null
     return hook

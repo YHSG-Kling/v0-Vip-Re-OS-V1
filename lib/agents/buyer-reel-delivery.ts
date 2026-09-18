@@ -33,18 +33,42 @@ export function buildReelDeliveryFallback(agentName: string): { subject: string;
  */
 export async function proposeBuyerReelDelivery(
   svc: Svc, brokerageId: string,
-  render: { id: string; entity_id: string | null; agent_user_id: string | null; output_url: string | null; thumbnail_url?: string | null },
+  render: {
+    id: string; entity_id: string | null; agent_user_id: string | null
+    output_url: string | null; thumbnail_url?: string | null
+    /** Set when this cut replaced a stale one — exempt from the weekly cooldown. */
+    refreshed_from_render_id?: string | null
+  },
 ): Promise<ReelDeliveryResult> {
   const contactId = render.entity_id
   if (!brokerageId || !contactId || !render.output_url) return { proposed: 0, reason: "missing contact or video" }
 
-  // Idempotent — one reel delivery per buyer per cooldown window.
-  const sinceIso = new Date(Date.now() - DELIVERY_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString()
-  const { data: existing } = await svc.from("agent_client_messages")
+  // ── IDEMPOTENCY, PER VIDEO (m314) ─────────────────────────────────────────
+  // This was a per-WEEK guard, which would have swallowed the living refresh
+  // exactly the way the seller-update path did: a reel re-rendered because one
+  // of its homes went under contract on Tuesday would be skipped until the
+  // cooldown lapsed, so the sweep would burn a real render and the buyer would
+  // keep the wrong video. The body carries the video URL, so "has this exact
+  // cut already been offered?" is answerable and is the right question.
+  const { data: sameVideo } = await svc.from("agent_client_messages")
     .select("id").eq("brokerage_id", brokerageId).eq("entity_type", "buyer_match_reel")
-    .eq("recipient_contact_id", contactId).gte("proposed_at", sinceIso)
-    .in("status", ["proposed", "approved", "sent"]).maybeSingle()
-  if (existing) return { proposed: 0, reason: "already delivered this week" }
+    .eq("recipient_contact_id", contactId)
+    .ilike("body", `%${render.output_url}%`)
+    .limit(1).maybeSingle()
+  if (sameVideo) return { proposed: 0, reason: "this exact reel was already proposed" }
+
+  // The cooldown still applies to an ORDINARY reel, so the cadence cannot
+  // propose twice in a week. A REFRESH is exempt — it exists because a home the
+  // buyer was shown is no longer available, and making them wait for the
+  // calendar is the defect this closes.
+  if (!render.refreshed_from_render_id) {
+    const sinceIso = new Date(Date.now() - DELIVERY_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString()
+    const { data: existing } = await svc.from("agent_client_messages")
+      .select("id").eq("brokerage_id", brokerageId).eq("entity_type", "buyer_match_reel")
+      .eq("recipient_contact_id", contactId).gte("proposed_at", sinceIso)
+      .in("status", ["proposed", "approved", "sent"]).maybeSingle()
+    if (existing) return { proposed: 0, reason: "already delivered this week" }
+  }
 
   const { data: c } = await svc.from("contacts").select("first_name, agent_id, brokerage_id").eq("id", contactId).maybeSingle()
   const contact = c as { first_name: string | null; agent_id: string | null; brokerage_id: string | null } | null
@@ -73,7 +97,10 @@ export async function proposeBuyerReelDelivery(
   const r = await proposeClientMessage({
     brokerageId, agentKind: "shopping_agent", entityType: "buyer_match_reel", entityId: contactId,
     recipientContactId: contactId, audience: "buyer", subject: msg.subject, body,
-    rationale: "Personalized property-match reel finished — review + send the video to the buyer.", channel: "portal",
+    rationale: render.refreshed_from_render_id
+      ? "REFRESHED property-match reel — a home in the previous cut is no longer available, so this one is the current truth. Review + send."
+      : "Personalized property-match reel finished — review + send the video to the buyer.",
+    channel: "portal",
   }, svc)
   return { proposed: r.ok ? 1 : 0 }
 }
@@ -85,11 +112,14 @@ export async function proposeBuyerReelDelivery(
 export async function deliverFinishedBuyerReels(svc: Svc, limit = 50): Promise<{ delivered: number; scanned: number }> {
   const sinceIso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
   const { data: renders } = await svc.from("remotion_composition_renders")
-    .select("id, brokerage_id, entity_id, agent_user_id, output_url, thumbnail_url")
+    .select("id, brokerage_id, entity_id, agent_user_id, output_url, thumbnail_url, refreshed_from_render_id")
     .eq("composition_id", "AffordabilitySnapshotReel").eq("entity_type", "contact")
     .eq("render_status", "succeeded").not("output_url", "is", null)
     .gte("created_at", sinceIso).order("created_at", { ascending: false }).limit(limit)
-  const rows = (renders ?? []) as Array<{ id: string; brokerage_id: string; entity_id: string | null; agent_user_id: string | null; output_url: string | null; thumbnail_url: string | null }>
+  const rows = (renders ?? []) as Array<{
+    id: string; brokerage_id: string; entity_id: string | null; agent_user_id: string | null
+    output_url: string | null; thumbnail_url: string | null; refreshed_from_render_id: string | null
+  }>
   let delivered = 0
   for (const r of rows) {
     try {

@@ -1,5 +1,14 @@
 "use client"
 
+// TOMBSTONE (orphan doctrine §1.3, 2026-09-01): the sibling InsightsTab.tsx
+// (same directory) was deleted — never imported by IntelligenceClient, and
+// written against columns conversation_insights does not have (top_topics,
+// key_questions, next_best_action do not exist; the live table carries
+// key_topics / unresolved_questions). Its live functionality already lives
+// elsewhere: the per-conversation sentiment/health/escalation list is THIS
+// tab's insights table, and topic display is CoachingTab's topicFrequency
+// chart (fed from key_topics in page.tsx). Nothing renderable was lost.
+
 import { useMemo, useState } from "react"
 import {
   LineChart,
@@ -16,8 +25,13 @@ import Link from "next/link"
 
 interface DayPoint {
   date: string        // "MM/DD"
-  text_score: number  // 0-100
-  voice_score: number // 0-100
+  // null = nothing was measured on that series that day; the line gaps rather
+  // than drawing a zero. (The voice series was a permanent fabricated 0 while
+  // it was fed from conversation_insights.is_voice_conversation — a filter the
+  // text analyser's constant-false stamp guaranteed could never match. It now
+  // reads the dialled-call ledger: avg call_analyses.coaching_score per day.)
+  text_score: number | null  // 0-100 — conversation_insights.health_score × 100
+  voice_score: number | null // 0-100 — call_analyses.coaching_score
 }
 
 interface InsightRow {
@@ -116,10 +130,13 @@ export default function HealthTab({ chartData, insights }: HealthTabProps) {
                 dot={false}
                 strokeWidth={2}
               />
+              {/* A different instrument than the text line, and labeled as such:
+                  this is the call ledger's coaching score, not a health_score
+                  sibling — conversation_insights carries no voice rows by ruling. */}
               <Line
                 type="monotone"
                 dataKey="voice_score"
-                name="Voice"
+                name="Voice (call coaching)"
                 stroke="hsl(var(--chart-2))"
                 dot={false}
                 strokeWidth={2}

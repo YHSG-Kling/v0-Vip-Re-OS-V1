@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { scheduleRetry } from "@/lib/errors/auto-retry"
 
 /**
@@ -22,8 +23,10 @@ export async function POST(request: NextRequest) {
       .eq("id", user.id)
       .single()
 
-    const allowedRoles = ["superadmin", "admin", "broker"]
-    if (!userData || (!allowedRoles.includes(userData.user_type || "") && userData.platform_role !== "superadmin")) {
+    // TRUE ADMIN GATE (operational: error ops) — repointed to the ONE tenant
+    // roster; the separate platform_role clause is kept as the platform lane.
+    // 'superadmin' was dead in the array: 0 live rows store that users.user_type.
+    if (!userData || (!isAdminOrBroker({ user_type: userData.user_type }) && userData.platform_role !== "superadmin")) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 

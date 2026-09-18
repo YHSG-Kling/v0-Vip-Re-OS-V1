@@ -3,8 +3,9 @@
 // lib/kernel/agent-coaching.ts (composeCoachingBrief → strengths/leaks/focus from REAL
 // stats, delivered as a gated manager-facing brief). This module now owns ONLY the distinct
 // BUYER-FACING per-stage coaching playbook feature (getBuyerCoaching).
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:buyer_stage_coaching, pinned to
+// claude-sonnet, the model this call site already passed. Only the ledger changes.
+import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type BuyerPersona =
@@ -67,24 +68,50 @@ export async function getBuyerCoaching(
     const sevenDays = 7 * 24 * 60 * 60 * 1000
     const isFresh = Date.now() - updatedAt < sevenDays
     if (isFresh) return cached as BuyerCoachingContent
-    // Fall through to regenerate stale content
+    // STALE — regenerate INTO THE SCOPE THE STALE ROW CAME FROM.
+    //
+    // Until 2026-08-24 the regeneration always wrote a system-default row
+    // (brokerage_id = null) while the lookup above RANKS a brokerage-scoped row
+    // first. A stale BROKERAGE row therefore never got replaced: the refresh
+    // landed on a different row, the stale one kept winning the next lookup, and
+    // every call re-paid the model. `ai_tool_usage` is the cost ledger (CLAUDE.md
+    // §5), so that loop is a wrong invoice, not just a slow page.
+    return generateBuyerCoachingWithAI(buyerStage, persona, cached.brokerage_id ?? "")
   }
 
-  // 2. No cache or stale — generate with AI
-  return generateBuyerCoachingWithAI(buyerStage, persona, brokerageId)
+  // 2. No cache at all — generate ONE shared system default. Deliberately not
+  //    scoped to `brokerageId`: a per-brokerage row on every first view would
+  //    multiply model spend across tenants for identical generic coaching. The
+  //    brokerage half of this feature is the LOOKUP predicate on line 58, which
+  //    prefers a brokerage row wherever one has been authored.
+  return generateBuyerCoachingWithAI(buyerStage, persona, "")
 }
 
+/**
+ * `brokerageId` IS THE ROW SCOPE, not decoration — it was accepted here and read by
+ * NOTHING until 2026-08-24, while both the content object and the upsert hardcoded
+ * `brokerage_id: null`. Pass "" for the shared system default; pass a brokerage id to
+ * refresh that brokerage's own row in place. The upsert's conflict target already
+ * names `brokerage_id`, so writing the wrong scope silently created a SECOND row
+ * instead of replacing the stale one.
+ */
 async function generateBuyerCoachingWithAI(
   buyerStage: string,
   persona: BuyerPersona,
   brokerageId: string
 ): Promise<BuyerCoachingContent> {
   const supabase = createServiceClient()
+  const rowScope: string | null = brokerageId || null
   const personaLabel = persona ?? "standard"
   const stageLabel = buyerStage.replace(/_/g, " ").toLowerCase()
 
-  const { text } = await generateText({
-    model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+  const { text } = await generateTextRouted({
+    feature: "buyer_stage_coaching",
+    // The SAME scope the row is written under. "" is the shared system default —
+    // a PLATFORM-level generation with no tenant to bill, which lands as
+    // brokerageId null rather than being attributed to someone who did not ask
+    // for it. See the report at the end of lib/ai/cost-tracking.ts:122.
+    brokerageId: rowScope,
     system:
       "You are a real estate coaching AI. Generate coaching for a buyer's agent at a specific " +
       "stage of the buyer journey. Return JSON only with keys: " +
@@ -123,7 +150,7 @@ async function generateBuyerCoachingWithAI(
   const content: Omit<BuyerCoachingContent, "id" | "updated_at"> = {
     buyer_stage: buyerStage,
     persona: persona ?? null,
-    brokerage_id: null, // system default
+    brokerage_id: rowScope, // null = shared system default; else this brokerage's own row
     coaching_headline: `AI Coaching — ${stageLabel.replace(/\b\w/g, (c) => c.toUpperCase())}`,
     coaching_body: `Focus on the ${personaLabel} buyer's priorities at this stage.`,
     suggested_talking_points: ai.talking_points,
@@ -139,11 +166,11 @@ async function generateBuyerCoachingWithAI(
   }
 
   // UPSERT
-  const { data: upserted } = await supabase
+  const { data: upserted, error: upsertError } = await supabase
     .from("buyer_stage_coaching")
     .upsert(
       {
-        brokerage_id: null,
+        brokerage_id: rowScope,
         buyer_stage: buyerStage,
         persona: persona ?? null,
         coaching_headline: content.coaching_headline,
@@ -164,6 +191,18 @@ async function generateBuyerCoachingWithAI(
     )
     .select("*")
     .single()
+
+  // supabase-js RESOLVES refusals (CLAUDE.md §3): an unread `error` here turns a
+  // failed cache write into a page that looks cached and silently re-pays the model
+  // on the next request.
+  if (upsertError) {
+    console.error("[buyer-coaching] cache upsert refused", {
+      buyerStage,
+      persona,
+      brokerageId: rowScope,
+      error: upsertError.message,
+    })
+  }
 
   return (upserted ?? content) as BuyerCoachingContent
 }

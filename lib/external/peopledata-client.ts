@@ -1,4 +1,12 @@
 // ─── CLASS ALIAS (backward compat for callers using `new PeopleDataClient()`) ─
+// ONE VOCABULARY for PeopleData's per-record charge (wave 72 integration):
+// the enrichment orchestrator pre-flights the vendor budget with the MATCHED
+// price (the worst case a call can cost) and the ledger records what the call
+// actually reported. Values carried from the wave-64 client; PeopleData bills
+// per successful match on Person Enrichment, a no-match returns cheaper.
+export const PEOPLEDATA_MATCH_COST_USD = 0.25
+export const PEOPLEDATA_NO_MATCH_COST_USD = 0.10
+
 export class PeopleDataClient {
   async enrich(data: { email?: string; phone?: string; firstName?: string; lastName?: string }) {
     return skipTraceWithPeopleData({
@@ -92,31 +100,33 @@ export async function skipTraceWithPeopleData(params: {
   phone?: string
   email?: string
   address?: string
+  /** lane 72B — a social profile URL (built from a raw lead's scraped handle by
+   *  lib/lead-pipeline/social-identity-resolve.ts::deriveSocialProfileUrl). Lets
+   *  a record that arrived with ONLY a post author / social handle (no name,
+   *  email or phone) still be identified via PDL's `profile` match param,
+   *  instead of the "at least one of name/phone/email" guard below refusing it
+   *  outright. Same endpoint, same per-match price — PDL bills the match
+   *  regardless of which identifying param resolved it. */
+  profileUrl?: string
 }): Promise<{
   data: PeopleDataEnrichment | null
   cost: number
 }> {
-  if (!params.name && !params.phone && !params.email) {
-    throw new Error('At least one of name, phone, or email required for skip trace')
+  if (!params.name && !params.phone && !params.email && !params.profileUrl) {
+    throw new Error('At least one of name, phone, email, or profileUrl required for skip trace')
   }
 
-  // Single egress: route through the connector-gateway (one way in/out). Preserves the
-  // throw-on-error contract this enrichment caller expects.
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<any>({
-    connector: "peopledata",
-    baseUrl: PEOPLEDATA_API_URL,
-    path: "person/enrich",
-    method: "POST",
-    auth: { style: "header", name: "X-Api-Key", value: PEOPLEDATA_API_KEY },
-    body: {
-      name: params.name,
-      phone: params.phone,
-      email: params.email,
-      location: params.address,
-      min_likelihood: 6,
-      required: 'emails OR phones',
-    },
+  // Official SDK adapter (wave 71A) — see lib/providers/peopledata/client.ts.
+  // Preserves the throw-on-error contract this enrichment caller expects.
+  const { enrichPerson } = await import("@/lib/providers/peopledata/client")
+  const res = await enrichPerson(PEOPLEDATA_API_KEY, {
+    name: params.name,
+    phone: params.phone,
+    email: params.email,
+    location: params.address,
+    profile: params.profileUrl,
+    minLikelihood: 6,
+    required: 'emails OR phones',
   })
 
   if (!res.ok) {
@@ -128,7 +138,7 @@ export async function skipTraceWithPeopleData(params: {
   if (data.status !== 200 || !data.data) {
     return {
       data: null,
-      cost: 0.10,
+      cost: PEOPLEDATA_NO_MATCH_COST_USD,
     }
   }
 
@@ -212,7 +222,7 @@ export async function skipTraceWithPeopleData(params: {
 
   return {
     data: enrichment,
-    cost: 0.25,
+    cost: PEOPLEDATA_MATCH_COST_USD,
   }
 }
 
@@ -248,6 +258,11 @@ export async function validateEmailViaPeopleData(email: string): Promise<{
   if (!email || !email.includes("@")) {
     return { data: null, cost: 0 }
   }
+  // KEPT ON REST (wave 71A): `peopledatalabs@14.6.0` exposes no `email`
+  // namespace at all (person/company/school/location/autocomplete/jobTitle/
+  // jobPosting/ip only — confirmed by reading the SDK's bundled dist/index.cjs,
+  // no "email" token anywhere in it) — the official SDK has no equivalent for
+  // PDL's separate Email Validation API. Stays on the connector gateway.
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   const res = await callConnector<any>({
     connector: "peopledata",

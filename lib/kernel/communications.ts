@@ -160,10 +160,16 @@ export interface InboxMessageRow {
   body: string
   created_at: string
   read: boolean
+  /** WHEN it was read, where the source table records it (vendor_messages.read_at). Undefined = lane does not track it. */
+  read_at?: string | null
   source_table: "messages" | "client_portal_messages" | "voice_calls" | "chat_messages" | "vendor_messages" | "isa_outreach_log" | "ai_isa_activities"
   sentiment?: string | null
   summary?: string | null
   vendor_id?: string | null
+  /** vendor_messages.contact_vendor_id — the contact↔vendor relationship the thread rides on. */
+  contact_vendor_id?: string | null
+  /** contact_vendors.role for that relationship (lender, inspector, …), resolved tenant-scoped; null when the link row is gone. */
+  vendor_role?: string | null
   /** "lead" for AI-ISA lead-lane rows (isa_outreach_log sends + lead voice calls). */
   party?: "contact" | "lead"
   /** leads.id when party === "lead". Leads are NOT contacts — separate id class. */
@@ -308,9 +314,26 @@ export async function loadUniversalInbox(
     // ── 5. messages (sms, email, ai, chat) ────────────────────────────────────
     const fetchMessages = !skipContactLanes && (channel === "all" || ["sms", "email", "ai", "chat"].includes(channel))
     if (fetchMessages) {
+      // TOMBSTONE — `messages.sentiment` removed from this select.
+      //
+      // It was READ BY CODE AND WRITTEN BY NOBODY (census 1b): no writer in the
+      // tree ever names that column, so `sentiment` on every messages-lane row
+      // of this feed was permanently null while the VOICE lane below (step 6)
+      // filled the same field from `voice_calls.sentiment`, which IS written.
+      // A reader comparing the two lanes would have concluded that text threads
+      // are never analysed for sentiment — the opposite of the truth.
+      //
+      // SURVIVOR: sentiment on a text thread is measured at the THREAD level, not
+      // per message — `conversation_insights.overall_sentiment`, written for
+      // every analysed conversation at lib/intelligence/conversation-insights.ts:429
+      // (insert) and :459 (update), and rendered on the inbox slideout and the
+      // communications-intelligence board. Stamping a thread-level reading onto
+      // each individual message would be a second, wrong spelling of it (§6),
+      // so this lane leaves the field unset rather than filling it with a value
+      // that is not about this message.
       let q = supabase
         .from("messages")
-        .select("id, contact_id, type, direction, body, created_at, status, sentiment, agent_id")
+        .select("id, contact_id, type, direction, body, created_at, status, agent_id")
         .order("created_at", { ascending: false })
         .limit(limit)
       if (contactIds) q = q.in("contact_id", contactIds)
@@ -329,7 +352,8 @@ export async function loadUniversalInbox(
           created_at: m.created_at,
           read: m.status !== "unread",
           source_table: "messages",
-          sentiment: m.sentiment,
+          // `sentiment` deliberately unset — see the tombstone on this lane's
+          // select. Thread sentiment lives on conversation_insights.overall_sentiment.
         })
       }
     }
@@ -372,28 +396,65 @@ export async function loadUniversalInbox(
     if (fetchVendor) {
       let q = supabase
         .from("vendor_messages")
-        .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, created_at, read")
+        // channel / contact_vendor_id / read_at were written by
+        // app/actions/vendor-messages.ts and read by nobody: this lane
+        // hard-coded `channel: "vendor"` from its own PARAMETER and threw the
+        // row's column away, `read` survived without its timestamp, and the
+        // relationship id was never resolved.
+        .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, created_at, read, read_at, channel, contact_vendor_id")
         .eq("brokerage_id", actorContext.brokerageId)
         .eq("counterparty_type", "contact")
         .order("created_at", { ascending: false })
         .limit(limit)
       if (contactIds) q = q.in("counterparty_id", contactIds)
       if (unreadOnly) q = q.eq("read", false)
-      const { data: vendorMsgs } = await q
+      // PARAMETER AND COLUMN MUST AGREE. The parameter decides whether this
+      // LANE runs; the column says what each ROW is. Under the "vendor" filter
+      // the two are pinned together here so a row can never be fetched by the
+      // vendor filter and labelled something else. Under "all" the row's own
+      // channel passes through. vendor_messages.channel carries NO CHECK
+      // (scripts/check-vocabularies.ts lists only counterparty_type and
+      // sender_type), and its one writer (sendVendorMessage) writes "vendor";
+      // a row with any other value is therefore reachable under "all" only —
+      // it would be labelled by its own channel and no per-channel filter
+      // would fetch it. Today no such row can be written.
+      if (channel === "vendor") q = q.eq("channel", "vendor")
+      const { data: vendorMsgs, error: vendorErr } = await q
+      if (vendorErr) console.error("[communications] inbox vendor_messages lane refused:", vendorErr.message)
+
+      // Resolve contact_vendor_id → the relationship's role (lender, inspector, …),
+      // ONE batched read, tenant-anchored. A message whose link row was revoked
+      // and deleted resolves to null and still renders — the thread outlives
+      // the relationship.
+      const linkIds = [...new Set((vendorMsgs ?? []).map((m) => m.contact_vendor_id).filter((v): v is string => !!v))]
+      const roleByLink = new Map<string, string | null>()
+      if (linkIds.length > 0) {
+        const { data: links, error: linkErr } = await supabase
+          .from("contact_vendors")
+          .select("id, role")
+          .eq("brokerage_id", actorContext.brokerageId)
+          .in("id", linkIds)
+        if (linkErr) console.error("[communications] inbox contact_vendors resolve refused:", linkErr.message)
+        for (const l of links ?? []) roleByLink.set(l.id, l.role ?? null)
+      }
+
       for (const m of vendorMsgs ?? []) {
         const contact = contactMap.get(m.counterparty_id)
         results.push({
           id: m.id,
           contact_id: m.counterparty_id,
           contact_name: contact?.name ?? "Unknown",
-          channel: "vendor",
+          channel: m.channel ?? "vendor",
           // A vendor-sent message is inbound to the brokerage side.
           direction: m.sender_type === "vendor" ? "inbound" : "outbound",
           body: m.body ?? "",
           created_at: m.created_at,
           read: m.read ?? false,
+          read_at: m.read_at ?? null,
           source_table: "vendor_messages",
           vendor_id: m.vendor_id,
+          contact_vendor_id: m.contact_vendor_id ?? null,
+          vendor_role: m.contact_vendor_id ? (roleByLink.get(m.contact_vendor_id) ?? null) : null,
         })
       }
     }
@@ -566,10 +627,30 @@ export interface SendInboxReplyInput {
  * sendInboxReply
  *
  * Kernel command to send an outbound reply from the inbox.
- * Runs full outbound eligibility gate before persisting via communication-spine.
+ * Runs full outbound eligibility gate, then ACTUALLY DISPATCHES, then records.
+ *
+ * ─── THE REPLY THAT WAS NEVER SENT ──────────────────────────────────────────
+ * This function used to run the compliance gate and then INSERT a messages row
+ * with `status: "sent"` — and stop. For channel 'portal'/'chat' that is correct:
+ * an in-app message IS delivered by being stored, and the client portal reads
+ * that row. For 'email' and 'sms' it was not: no dispatcher was ever called, no
+ * provider ever saw the text, and the row said sent. An agent replying to a
+ * client from the universal inbox got a success toast and a message in the
+ * thread, and the client got nothing — with no error anywhere to notice.
+ *
+ * The canonical pattern already existed one directory over: the sequence email
+ * adapter tries the agent's own connected mailbox (sendPersonalEmail), falls
+ * back to dispatchEmail, and reports 'sent' ONLY on a successful dispatch. This
+ * now does the same, in that order, so a reply leaves from the agent's real
+ * mailbox when they have connected one — and a refusal is recorded as a FAILED
+ * message with the provider's reason rather than a convincing lie.
+ *
+ * Every gate downstream still applies: dispatchEmail/dispatchSms re-run
+ * suppression, compliance, de-conflict and budget. Double-gating is deliberate
+ * (both fail closed) and matches the defence-in-depth the rest of the app uses.
  *
  * Tables written:
- *   messages OR client_portal_messages (via communication-spine persister)
+ *   messages OR client_portal_messages
  */
 export async function sendInboxReply(
   input: SendInboxReplyInput
@@ -648,6 +729,81 @@ export async function sendInboxReply(
         contactId, brokerageId: actorContext.brokerageId, agentId,
       })
       if (!conversationId) return { success: false, error: "Could not resolve the conversation thread" }
+
+      // ── DISPATCH FIRST, then record what actually happened ────────────────
+      let dispatched = false
+      let dispatchError: string | null = null
+      let providerKey: string | null = null
+      // The provider's id for this send. Stored on the message so the delivery
+      // webhook can correlate EXACTLY — without it the truth arrives and has
+      // nothing to attach to, and the thread keeps showing an unproven "sent".
+      let providerMessageId: string | null = null
+
+      if (channel === "email") {
+        if (!contact.email) return { success: false, error: "Contact has no email address" }
+        const subject = "Re: your message"
+        // 1. The agent's OWN connected mailbox, when they have one — a reply to a
+        //    client should come from the agent, not a platform relay.
+        if (actorContext.userId) {
+          try {
+            const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
+            const personal = await sendPersonalEmail({
+              agentUserId: actorContext.userId,
+              to: contact.email,
+              subject,
+              htmlBody: body.replace(/\n/g, "<br>"),
+              textBody: body,
+            })
+            if (personal.success) { dispatched = true; providerKey = personal.provider ?? "personal" }
+          } catch { /* fall through to the platform lane */ }
+        }
+        // 2. Platform email lane.
+        if (!dispatched) {
+          const { dispatchEmail } = await import("@/lib/providers/dispatch")
+          const result = await dispatchEmail({
+            brokerageId: actorContext.brokerageId,
+            userId: actorContext.userId,
+            agentId: agentId ?? undefined,
+            // No invented sender. sendEmail now validates and refuses, so an
+            // unresolvable from-address returns a reason instead of failing at
+            // the provider with an opaque unverified-sender 403.
+            from: (await import("@/lib/providers/outbound-sender"))
+              .formatSenderOrUndefined(await (await import("@/lib/providers/outbound-sender"))
+                .resolveOutboundSender(supabase as any, actorContext.brokerageId)),
+            to: contact.email,
+            subject,
+            html: body.replace(/\n/g, "<br>"),
+            text: body,
+            contactId,
+            channelPurpose: "conversation",
+            systemSource: "inbox_reply",
+          })
+          dispatched = result.success
+          providerKey = result.providerKey
+          dispatchError = result.error ?? null
+          providerMessageId = result.messageId ?? null
+        }
+      } else {
+        // sms
+        if (!contact.phone) return { success: false, error: "Contact has no phone number" }
+        const { dispatchSms } = await import("@/lib/providers/dispatch")
+        const result = await dispatchSms({
+          brokerageId: actorContext.brokerageId,
+          userId: actorContext.userId,
+          agentId: agentId ?? undefined,
+          to: contact.phone,
+          message: body,
+          contactId,
+          systemSource: "inbox_reply",
+        })
+        dispatched = result.success
+        providerKey = result.providerKey
+        dispatchError = result.error ?? null
+        providerMessageId = result.messageId ?? null
+      }
+
+      // Record the attempt either way — an agent must be able to see that the
+      // reply they typed did not leave, and why. status carries the truth.
       const { data: msg, error } = await supabase
         .from("messages")
         .insert({
@@ -658,12 +814,28 @@ export async function sendInboxReply(
           type: channel,
           direction: "outbound",
           body,
-          status: "sent",
+          status: dispatched ? "sent" : "failed",
+          // The correlation key for outcome reconciliation. twilio_sid for sms,
+          // sg_message_id for email — each named for the provider that issued it,
+          // matching what the corresponding webhook looks for.
+          metadata: providerMessageId
+            ? (channel === "sms"
+                ? { twilio_sid: providerMessageId }
+                : { sg_message_id: providerMessageId })
+            : {},
           created_at: new Date().toISOString(),
         })
         .select("id")
         .single()
       if (error) throw error
+
+      if (!dispatched) {
+        return {
+          success: false,
+          messageId: msg.id,
+          error: dispatchError ?? `Reply could not be sent (${providerKey ?? channel} refused it)`,
+        }
+      }
       await touchConversation(supabase, conversationId, { inbound: false })
       return { success: true, messageId: msg.id }
     }

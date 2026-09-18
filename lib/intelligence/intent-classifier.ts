@@ -1,5 +1,22 @@
-import { generateObject } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+// ROUTED, was raw. This file used to pull generateObject straight from the "ai"
+// SDK and pass resolveModel('anthropic/claude-sonnet-4-20250514') — the raw
+// lane, which books NO ai_tool_usage row.
+//
+// THE PREVIOUS LINE IS DELIBERATELY NOT SPELLED AS AN IMPORT STATEMENT, and that
+// is not fussiness. scripts/data-guard-guard.ts:51 tests its raw-SDK regex
+// against UNSTRIPPED source, so a tombstone containing the literal import syntax
+// reads to it as a live import — the exact "A TOMBSTONE IS NOT A CALL SITE"
+// failure CLAUDE.md §2 records five guards hitting in one wave. Written the
+// obvious way, this comment pinned the file in that guard's baseline as an
+// unmigrated raw-SDK importer forever, while the migration it describes had
+// already happened. (scripts/ai-spend-booked-guard.ts strips comments and was
+// never fooled; that difference is the whole argument for stripping.)
+//
+// The routing key below is pinned to that same
+// model (MODEL_CONFIG["claude-sonnet"] IS anthropic/claude-sonnet-4-20250514),
+// so the model, the prompt and the output are unchanged; what is added is the
+// cost ledger, the fair-use pre-flight and the Data Guard redaction.
+import { generateObjectRouted } from '@/lib/ai/models'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -58,10 +75,11 @@ export async function classifyIntent(
   const supabase = createServiceClient()
 
   // Step 1: Call Claude to classify intent
-  const { object: result } = await generateObject({
-    model: resolveModel('anthropic/claude-sonnet-4-20250514'),
+  const { object: result } = await generateObjectRouted({
+    feature: 'inbound_intent_classification',
+    brokerageId,
     schema: classificationSchema,
-    maxOutputTokens: 200,
+    maxTokens: 200,
     system: `You are a real estate message intent classifier. Classify the incoming message into exactly one primary intent and optionally one secondary intent.
 
 Valid intents:
@@ -177,13 +195,16 @@ Return the classification with a confidence score (0-100) and a brief suggested_
     })
     .eq('id', conversationId)
 
-  // Step 4: Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.INTENT_CLASSIFIED,
-    brokerage_id: brokerageId,
-    entity_type: 'conversation',
-    entity_id: conversationId,
-    payload: {
+  // Step 4: Kernel event — audit row + reactor (`payload` → `metadata`, the column
+  // every reader uses).
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.INTENT_CLASSIFIED,
+    brokerageId,
+    entityType: 'conversation',
+    entityId: conversationId,
+    contactId: contactId ?? undefined,
+    metadata: {
       intent: finalResult.intent_primary,
       intent_secondary: finalResult.intent_secondary,
       confidence: finalResult.confidence,

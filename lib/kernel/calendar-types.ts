@@ -9,6 +9,12 @@ export enum CalendarEventType {
   WALKTHROUGH         = 'walkthrough',
   CLOSING             = 'closing',
   TASK_DUE            = 'task_due',
+  // CLAUDE.md §1 (BUILD the missing half, lane Z1 2026-09-08 hunt 2): notification_rules has
+  // live rows on trigger_event='cd_due' (Closing Disclosure due — TRID's 3-business-day rule)
+  // but there was no calendar event type to carry it, so KernelEvent.CD_DUE could never fire.
+  // See lib/kernel/calendar-deadline-watcher.ts CALENDAR_EVENT_TYPE_TO_KERNEL_EVENT and
+  // lib/kernel/milestone-calendar-bridge.ts (creates the calendar_events row, closingDate - 3 days).
+  CLOSING_DISCLOSURE  = 'closing_disclosure',
 
   // ── ISA & Outreach ────────────────────────────────────────────────────────
   ISA_OUTREACH_EMAIL  = 'isa_outreach_email',

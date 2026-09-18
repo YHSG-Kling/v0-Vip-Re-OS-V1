@@ -12,27 +12,25 @@
  * (HANDLERS map) and isn't in the baseline (the known set, which may be chain-handled or
  * intentionally audit-only). New flow drift can't accumulate.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const BASELINE_PATH = join(root, "scripts", "event-flow-baseline.json")
 
-function walk(dir: string, out: string[]) {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(n)) out.push(relative(root, p).replace(/\\/g, "/"))
-  }
-}
-
-const all: string[] = []
-walk(join(root, "app"), all)
-walk(join(root, "lib"), all)
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, so the root-level runtime files (`proxy.ts`, the Next 16 edge
+// middleware) could never be reached — an `event_type:` emitted from the edge
+// would have read as "emitted by nobody". `rootRuntimeFiles()` supplies them.
+const all = [
+  ...walkTs(join(root, "app")),
+  ...walkTs(join(root, "lib")),
+  ...rootRuntimeFiles(root),
+].map((p) => relative(root, p).replace(/\\/g, "/"))
 
 // Emitted events: `event_type: "x.y"` (the canonical emit shape used by logEvent* helpers).
 const emitRe = /event_type\s*:\s*["']([a-z_]+\.[a-z_]+)["']/g

@@ -15,6 +15,7 @@
 // The planner + friction + mode decision are PURE (unit-tested); the ensure/update/get do the I/O.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -155,13 +156,19 @@ export function decideBuyerMode(input: {
   return { recommended_mode: "contact_assisted_guided_diy", confidence: 0.8, friction_score: friction, reasons, next_best_action: "CONTINUE_GUIDED_SUPPORT" }
 }
 
+// TOMBSTONE (§1.1, duplicates round 6, wave 60): the day-diff arithmetic
+// lived here; survivor lib/format/dates.ts:39 daysBetween. The nearest-day
+// rounding (vs. lib/kernel/closing-war-room.ts:200's floor-rounded sibling
+// of the same name) is this caller's own policy — a move-in friction score
+// that wants "how many days until close, rounded", not a floor — so it stays
+// a thin wrapper, same formula, delegated arithmetic.
 /** Days between now and the closing date (null when unknown). `now` is injectable for pure testing. */
 export function daysToClose(closingDate: string | null | undefined, now?: Date): number | null {
   if (!closingDate) return null
   const close = Date.parse(`${closingDate.slice(0, 10)}T00:00:00Z`)
   if (Number.isNaN(close)) return null
   const ref = now ? now.getTime() : Date.parse(new Date().toISOString().slice(0, 10) + "T00:00:00Z")
-  return Math.round((close - ref) / 86_400_000)
+  return dateDaysBetween(ref, close, { round: "round" })
 }
 
 // ── Service layer (I/O) ──────────────────────────────────────────────────────────────────────────

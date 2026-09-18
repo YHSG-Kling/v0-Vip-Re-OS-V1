@@ -144,6 +144,44 @@ export async function processZoomRecordingEvent(
       insights = null // transcript still attaches; enrichment is best-effort
     }
 
+    // ── ADJUDICATION (2026-09-01) — why these columns read as one-sided ────────
+    // The wave that deleted a phantom `communications(*)` embed (it joined on
+    // contact_id, which this writer sets NULL by design, so it could only ever
+    // return []) made this table's columns surface as writer-with-no-reader.
+    // They are NOT unread. Their reader is the TENANT DATA EXPORT —
+    // lib/platform/tenant-export.ts:54 does `.from(table).select("*")` over
+    // TENANT_EXPORT_TABLES, which names "communications" at :18. That is a
+    // whole-row read through a LOOP VARIABLE table name, so it is invisible to a
+    // column-level census twice over: it names no columns, and the table name is
+    // not a literal at the call site. Hence "GDPR-exported" in the header above.
+    // §1 is satisfied — the write has a reader, and the departing or auditing
+    // tenant is who reads it.
+    // NOT a defect, and NOT to be "fixed" by deleting columns: what does not
+    // exist is an in-product surface that shows a meeting transcript back to the
+    // agent. That is a feature decision, not a broken wire.
+    // The pre-check above is the FAST path only (the voice_calls lane's idiom,
+    // below): a check-then-insert is a race, and two concurrent redeliveries of
+    // the same meeting both read null. m599 (partial UNIQUE on
+    // metadata->>'zoom_uuid') is what decides; 23505 from it is the SAME
+    // "already attached" answer the pre-check returns, never a failed attach.
+    // Until m599 is applied a duplicate is still possible — the arm is inert
+    // rather than wrong, and becomes live the moment the index exists.
+    // RE-ADJUDICATED 2026-09-03, same finding, named at the COLUMN so a
+    // column-level census stops re-raising it: `communications.contact_id` and
+    // `communications.direction` are read by lib/platform/tenant-export.ts:54
+    // (`.select("*")` over TENANT_EXPORT_TABLES, which names "communications" at
+    // :22). The two in-product readers select neither — tenant-calls/page.tsx:117
+    // and app/dashboard/meetings/[eventId]/transcript-panel.tsx:164 both take
+    // subject/content_preview/metadata only — so a column-level scan sees no
+    // reader and the export's whole-row, loop-variable read is invisible to it.
+    // AND THE PROPOSED FIX WOULD BE WRONG: lib/kernel/communications.ts merges a
+    // CONTACT inbox keyed on contact_id (:291, :336, :366), and these rows carry
+    // contact_id NULL by design — a platform-hosted meeting has no contact — so
+    // wiring this table into that reader adds rows it can never key on. Nor is
+    // `direction` here a second spelling of client_portal_messages.direction
+    // (§6): that column is a portal message's sender side ('client_to_agent' /
+    // 'agent_to_client', normalised at communications.ts:305) and this one is a
+    // recording's provenance on a different table. Two ideas, two columns.
     const { error } = await svc.from("communications").insert({
       brokerage_id: target.brokerageId,
       contact_id: null,
@@ -162,7 +200,12 @@ export async function processZoomRecordingEvent(
       },
       sent_at: startedAt,
     })
-    if (error) return { handled: false, reason: `communications insert failed: ${error.message}` }
+    if (error) {
+      if ((error as any)?.code === "23505") {
+        return { handled: true, attached: "tenant", analyzed: false, reason: "already attached (idempotent)" }
+      }
+      return { handled: false, reason: `communications insert failed: ${error.message}` }
+    }
 
     await stampTranscriptAttached(svc, (event as any).id, meta, meetingUuid, "tenant")
     return { handled: true, attached: "tenant", analyzed: !!insights }
@@ -170,11 +213,22 @@ export async function processZoomRecordingEvent(
 
   // ── TENANT-hosted: attach to the CONTACT via the ONE voice-transcript ledger ─
   const vendorCallId = `zoom:${meetingUuid}`
-  const { data: dupCall } = await svc
+  // The FAST path only. This read answers "has this meeting already been
+  // attached?" for the common re-delivery, but it is a check-then-insert and
+  // therefore a race — two concurrent deliveries can both read null. m464's
+  // uq_voice_calls_vendor_call_id is what actually decides; the insert below
+  // reads 23505 as the same "already attached" answer this branch returns, so
+  // losing the race costs a round trip and never a duplicate ledger row.
+  //
+  // The error is checked because supabase-js RESOLVES a rejected read: an
+  // unchecked read here would report a refused query as "no such row" and send
+  // a duplicate straight at the insert.
+  const { data: dupCall, error: dupError } = await svc
     .from("voice_calls")
     .select("id")
-    .eq("vapi_call_id", vendorCallId)
+    .eq("vendor_call_id", vendorCallId)
     .maybeSingle()
+  if (dupError) return { handled: false, reason: `voice_calls duplicate check failed: ${dupError.message}` }
   if (dupCall) return { handled: true, attached: "contact", analyzed: false, reason: "already attached (idempotent)" }
 
   // voice_calls.agent_id + call_analyses.agent_id carry agents.id — resolve it
@@ -197,11 +251,18 @@ export async function processZoomRecordingEvent(
       started_at: startedAt,
       ...(durationSeconds != null ? { duration_seconds: durationSeconds } : {}),
       transcription: transcript.slice(0, 60_000),
-      vapi_call_id: vendorCallId, // the ledger's vendor-call-id column (Twilio CallSid / Vapi id / zoom:<uuid>)
+      vendor_call_id: vendorCallId, // the ledger's vendor-call-id column (Twilio CallSid or zoom:<uuid>)
     })
     .select("id")
     .single()
   if (callErr || !callRow) {
+    // Losing the race above is the SAME answer as winning the fast-path check,
+    // not a failure: 23505 on the vendor-call-id unique means another delivery
+    // already attached this meeting. Reporting it as a failed attach would make
+    // a correctly-idempotent lane look broken.
+    if ((callErr as any)?.code === "23505") {
+      return { handled: true, attached: "contact", analyzed: false, reason: "already attached (idempotent)" }
+    }
     return { handled: false, reason: `voice_calls insert failed: ${callErr?.message ?? "no row"}` }
   }
 
@@ -214,7 +275,12 @@ export async function processZoomRecordingEvent(
       brokerage_id: (event as any).brokerage_id,
       contact_id: target.contactId,
       agent_id: agentId,
-      direction: "zoom_meeting",
+      // The SAME two values the ledger row above carries — never a smear
+      // (§6). direction used to carry "zoom_meeting", which the analyzer
+      // mapped to call_analyses.call_type "inbound"; the kind now travels in
+      // call_type and the analyzer records it verbatim (analysisCallType).
+      direction: "outbound",
+      call_type: "zoom_meeting",
       duration_seconds: durationSeconds,
       transcription: transcript,
     },

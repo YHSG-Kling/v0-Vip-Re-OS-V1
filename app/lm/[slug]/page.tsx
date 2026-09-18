@@ -53,6 +53,33 @@ function detectMagnetType(
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
+
+/**
+ * The newest COMPLETED LeadMagnetCard render for this form — read at render
+ * time (no schema change): the producer (lib/kernel/lead-magnets.ts
+ * enqueueLeadMagnetCard, fired from publishLeadMagnet) queues the 1200×630
+ * still keyed on the magnet's identity; this reader picks up whichever finished
+ * last. {error} is READ — a refused read returns null and the openGraph block
+ * is simply omitted (never a placeholder image).
+ */
+async function getLeadMagnetCardUrl(formId: string, brokerageId: string): Promise<string | null> {
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("remotion_composition_renders")
+    .select("output_url")
+    .eq("brokerage_id", brokerageId)
+    .eq("entity_type", "lead_capture_form")
+    .eq("entity_id", formId)
+    .eq("composition_id", "LeadMagnetCard")
+    .eq("render_status", "succeeded")
+    .not("output_url", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) return null
+  return (data as { output_url?: string | null } | null)?.output_url ?? null
+}
+
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params
   const form = await getFormBySlug(slug)
@@ -60,11 +87,21 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const landing = landingOf(form)
   // A page with AI-built copy + a GEO FAQ is meant to be FOUND and cited by AI search — index it.
   // A bare capture form stays noindex (nothing to surface, avoids thin-content pages).
+  //
+  // ONE PREDICATE, TWO ENFORCEMENT POINTS: `landing` (real landing_content) is
+  // the same condition that gates the card producer's headline/subhead contract
+  // (enqueueLeadMagnetCard refuses without them) — so the no-landing branch
+  // below skips the card lookup entirely: nothing can have rendered, and the
+  // page is noindex anyway.
   if (landing) {
+    const cardUrl = await getLeadMagnetCardUrl(form.id, form.brokerage_id)
     return {
       title: landing.headline || form.name,
       description: (landing.subhead || `Get started — ${form.name}`).slice(0, 300),
       robots: { index: true, follow: true },
+      // When no completed card exists, the openGraph block is omitted entirely —
+      // no placeholder image is ever claimed.
+      ...(cardUrl ? { openGraph: { images: [cardUrl] } } : {}),
     }
   }
   return {

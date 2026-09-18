@@ -73,8 +73,9 @@ function EmptyState({ onStart }: { onStart: () => void }) {
     <div className="rounded-lg border border-dashed py-16 px-6 text-center bg-muted/20">
       <p className="text-sm font-medium mb-1">No twins yet</p>
       <p className="text-xs text-muted-foreground max-w-md mx-auto mb-4">
-        Create your first twin in three steps: upload a photo or short video, record a 60-second
-        voice sample, and pick a personality. It's used everywhere your clients meet you online.
+        Create your first twin in three steps: upload a photo or a short video, give it a voice —
+        clone your own or pick one from the stock library — and choose a personality. It&apos;s used
+        everywhere your clients meet you online.
       </p>
       <Button onClick={onStart}>
         <Plus className="h-4 w-4 mr-1.5" />

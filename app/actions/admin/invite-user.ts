@@ -7,7 +7,20 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
+import { seatGate } from "@/lib/kernel/seat-usage"
+// NOT isAdminOrBroker (lane ROSTER, 2026-09-04). The owner's ruling added
+// `compliance_officer` to TENANT_ADMIN_USER_TYPES, and this gate is the one
+// place in the admin surface that SPENDS: `seatGate` below decides whether the
+// invite fits inside the tenant's paid seats, and an invite past the limit
+// returns a `seatDecision` offering an upgrade or a paid seat. Inviting is
+// therefore seat management — the brokerage's subscription bill — and the
+// ruling seats a compliance officer as tenant STAFF ADMIN, not as the seat
+// buyer. isTenantCommerceAdmin is the tenant roster minus exactly that role, so
+// team_lead, broker_admin, broker, broker_owner and admin keep the surface
+// byte-for-byte and nobody who could invite yesterday is refused today.
+import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 
 export interface InviteUserParams {
   email: string
@@ -22,11 +35,21 @@ export interface InviteUserParams {
 export interface InviteUserResult {
   success: boolean
   error?: string
+  /**
+   * Present only when the invite was held because it would cross the seat limit.
+   * Carries the upgrade-vs-paid-seat choice so the UI can offer both instead of
+   * rendering a dead end (see seatDecision in lib/kernel/tier-role-matrix).
+   */
+  seatDecision?: import("@/lib/kernel/tier-role-matrix").SeatDecision
 }
 
-// Roles a team lead is allowed to assign (never admin/broker)
+// Roles a team lead is allowed to assign (never admin/broker).
+// 'lender' removed (owner ruling: lender is a vendor CATEGORY, not a user type).
+// tierAllowsRole below already refused it — see roleRefusalReason in
+// lib/kernel/tier-role-matrix.ts — so this entry was a second spelling of a value
+// that could not be invited, and the kind of leftover that gets copied forward.
 const BROKERAGE_ASSIGNABLE_ROLES = new Set([
-  "agent", "tc", "isa", "team_lead", "compliance_officer", "lender", "vendor",
+  "agent", "tc", "isa", "team_lead", "compliance_officer", "vendor",
 ])
 
 // Roles only platform staff can assign. Tenant admins/brokers CAN invite
@@ -49,8 +72,10 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
 
   const callerType = caller?.user_type ?? "agent"
 
-  // Only admin, broker, superadmin, and team_lead can invite
-  if (!["admin", "broker", "superadmin", "team_lead"].includes(callerType)) {
+  // Only admin, broker, broker_owner, broker_admin and team_lead can invite —
+  // the tenant roster MINUS compliance_officer, because an invite consumes a
+  // billed seat (see the import comment above).
+  if (!isTenantCommerceAdmin({ user_type: callerType })) {
     return { success: false, error: "Forbidden: insufficient privileges to invite users" }
   }
 
@@ -105,12 +130,23 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
 
   const tenantTier = tenant?.plan_tier ?? null
   if (!tierAllowsRole(tenantTier, requestedRole)) {
-    const minTier = minimumTierForRole(requestedRole)
+    // The refusal is no longer ABOUT THE PLAN. Under the owner's ruling every
+    // tier seats every staff user type and the tier decides only HOW MANY, so
+    // the only values still refused here are the ones that are not workspace
+    // seats on any plan. `roleRefusalReason` says which, and never offers an
+    // upgrade that would buy nothing.
+    return { success: false, error: roleRefusalReason(requestedRole) ?? `'${requestedRole}' cannot be invited.` }
+  }
+
+  // The database is the last word on which user types exist: users_user_type_check
+  // is VALIDATED, and an INSERT naming a value outside it is refused ENTIRELY
+  // (CLAUDE.md §3). Catching it HERE turns a raw constraint violation into a
+  // sentence, and keeps this server action in agreement with the menu the client
+  // rendered from `seatableUserTypes`.
+  if (!seatableUserTypes(tenantTier, CHECK_VOCABULARIES.users?.user_type).includes(requestedRole)) {
     return {
       success: false,
-      error:
-        `The ${tierLabel(tenantTier)} plan does not include the '${requestedRole}' role.` +
-        (minTier ? ` Upgrade to ${TIER_LABELS[minTier]} to invite this role.` : ""),
+      error: `'${requestedRole}' is not a user type this database can store yet. No invite was sent.`,
     }
   }
 
@@ -118,25 +154,26 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // constraint: Solo 2 · Team 5 · Brokerage/Multi unlimited). A seat is a
   // working staff user; partners (vendor) never consume one. Suspended users
   // don't hold a seat — deactivate one to free it.
-  if (roleConsumesSeat(requestedRole)) {
-    const { count: seatCount, error: seatErr } = await service
-      .from("users")
-      .select("id", { count: "exact", head: true })
-      .eq("brokerage_id", resolvedBrokerageId)
-      .in("user_type", SEAT_ROLES as unknown as string[])
-      .neq("status", "suspended")
-    if (seatErr) return { success: false, error: seatErr.message }
-    // ONE resolution (effectiveSeatLimit inside seatCheck): staff-set per-tenant override
-    // (brokerages.billing_metadata.seat_override) wins when set, else the tier default.
-    const seats = seatCheck(tenantTier, seatCount ?? 0, parseSeatOverride((tenant as any)?.billing_metadata))
-    if (!seats.allowed) {
+  //
+  // ONE GATE — lib/kernel/seat-usage.ts `seatGate`, shared with the god console,
+  // the role-change path, the reactivation path and the recruiting provisioner,
+  // because a cap enforced on one path is not a cap. It reads the count from the
+  // one seat resolver (BOTH role sources), the limit from the PLAN CATALOGUE
+  // (subscription_tiers.max_agents, with the staff override on top), and it FAILS
+  // CLOSED: an unreadable tenant, count or catalogue REFUSES and says which.
+  //
+  // PAST THE LIMIT IS AN UPGRADE. The owner's ruling — "agent tier subscription
+  // only has 2 seats and if they need more than they need to upgrade to a team
+  // subscription", team → brokerage — makes this a refusal that names the next
+  // tier, not a dead end and not a per-seat upsell. The full decision rides back
+  // so the UI can render that tier as a button.
+  {
+    const verdict = await seatGate(service, resolvedBrokerageId, requestedRole)
+    if (!verdict.allowed) {
       return {
         success: false,
-        error: seats.overridden
-          ? `This account has a custom limit of ${seats.limit} seat${seats.limit === 1 ? "" : "s"} (set by VIP support) and all are in use. ` +
-            `Deactivate a user to free a seat, or contact support to raise the limit.`
-          : `The ${tierLabel(tenantTier)} plan includes ${seats.limit} seat${seats.limit === 1 ? "" : "s"} and all are in use. ` +
-            `Deactivate a user to free a seat, or upgrade the plan.`,
+        seatDecision: verdict.decision ?? undefined,
+        error: verdict.message ?? undefined,
       }
     }
   }
@@ -175,7 +212,10 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
 
   // ── 9. Audit log to activities ────────────────────────────────────────────
   try {
-    await service
+    // The catch below can never see a REJECTED row — supabase-js resolves those
+    // as { error } — so the audit entry could stop landing without a sound.
+    // Read it: the invite itself is already committed, so this only reports.
+    const { error: auditError } = await service
       .from("activities")
       .insert({
         activity_type: "admin.user.invited",
@@ -190,6 +230,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
+    if (auditError) console.error("[inviteUser] audit activity REJECTED:", auditError.message)
   } catch (err: unknown) {
     console.error("[v0] Audit log error:", err)
   }

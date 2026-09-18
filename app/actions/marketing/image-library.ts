@@ -49,13 +49,15 @@ export async function searchStockImagesAction(query: string): Promise<
 }
 
 // ─── Tenant stock-provider key (Settings → Stock Library) ────────────────────
-const TENANT_ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TRUE ADMIN GATE (operational: marketing) — repointed to the ONE tenant roster
+// (isAdminOrBroker). 'superadmin' was dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function setStockProviderKeyAction(input: { apiKey: string }): Promise<{ ok: boolean; error?: string }> {
   const p = await callerProfile()
   const ctx = await getAgentContext().catch(() => null)
   if (!p || !ctx?.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!TENANT_ADMIN_TYPES.has(p.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
+  if (!isAdminOrBroker({ user_type: p.userType })) return { ok: false, error: "Forbidden — brokerage admin only" }
   const apiKey = input.apiKey?.trim()
   if (!apiKey || apiKey.length < 10) return { ok: false, error: "That doesn't look like a valid API key" }
   const svc = createServiceClient()

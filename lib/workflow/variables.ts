@@ -227,17 +227,28 @@ export function buildVariableContext(input: EnrollmentVariableInput): VariableCo
   }
 }
 
-/**
- * Resolve all string-valued fields in a step config object at once.
- * Returns a new object with variables resolved.
- */
-export function resolveStepConfig<T extends Record<string, unknown>>(
-  config: T,
-  ctx: VariableContext
-): T {
-  const result: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(config)) {
-    result[k] = typeof v === "string" ? resolveVariables(v, ctx) : v
-  }
-  return result as T
-}
+// TOMBSTONE (orphan burn-down, lane E): `resolveStepConfig(config, ctx)` DELETED.
+//
+// It resolved {{variables}} across EVERY string field of a step object. Zero
+// callers, and the workflow engine deliberately does not want that shape.
+//
+// SURVIVOR: lib/campaign-sequences/step-executor.ts:326-334 — the ONE place a
+// workflow step is executed (the engine was consolidated to one; see
+// `npm run test:workflow-engine-consolidation`). It resolves an EXPLICIT,
+// enumerated allow-list of template fields — subject, body, image_prompt,
+// social_caption_prompt, qr_target_url_pattern, listing_page_slug,
+// voice_drop_script, video_script, task_title, task_notes_prompt,
+// ad_audience_prompt, showing_notes, tour_start_address — into
+// `StepContext.resolvedVars`, which the channel handlers then read BY NAME.
+//
+// The allow-list is the point, not an omission. Blanket-resolving every string
+// on a `sequence_steps` row would also run the resolver over columns that are
+// identifiers, not copy — channel, status, id, output_variable_name — and over
+// operator-authored fields nobody declared as templates, which is how a literal
+// brace sequence in a subject line silently becomes an empty string. It would
+// also hand the handlers a resolvedVars map whose keys they never agreed on.
+//
+// Nothing merged: the survivor already calls `resolveVariables` (:120 in this
+// file), which stays exported and is the shared primitive both would have used.
+// A future field becomes templatable by being NAMED in that list — one line, and
+// visible in review — rather than by being a string.

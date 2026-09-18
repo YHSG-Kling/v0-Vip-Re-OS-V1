@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { savePageConfig, convertValuationRequestToContact, type HomeValuePageConfig, type WorkingHourSlot } from "@/app/actions/home-value"
+import { queueAIISACall } from "@/app/actions/ai-isa"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -193,17 +194,46 @@ export function HomeValuePageBuilderClient({
   async function handleConvert(requestId: string) {
     setConvertingId(requestId)
     try {
-      const res = await convertValuationRequestToContact({
-        requestId,
-        brokerageId,
-        agentId,
-        userId,
-      })
+      // Tenant comes from the SESSION inside the action (§4) — the brokerage /
+      // agent / user ids this component holds are for rendering, not authority.
+      const res = await convertValuationRequestToContact({ requestId })
       if (res.success) {
         toast({ title: "Contact created — portal invite sent" })
         router.refresh()
       } else {
         toast({ title: "Convert failed", description: res.error, variant: "destructive" })
+      }
+    } finally {
+      setConvertingId(null)
+    }
+  }
+
+  // "Send to AI-ISA" — was `router.push("/dashboard/ai-isa?source=home_value&
+  // request=<id>")`, the last dangling path in the dangling-link sweep
+  // (2026-09-02): app/dashboard/ai-isa has only /settings, the console is
+  // /dashboard/isa, and NEITHER reads a ?request= query, so the button opened a
+  // 404 and handed nothing to anyone. The handoff is now real: the request is
+  // converted to a contact (AI-ISA works contacts, not raw requests) and the
+  // contact is queued into the brokerage's active campaign via queueAIISACall.
+  async function handleSendToIsa(requestId: string) {
+    setConvertingId(requestId)
+    try {
+      const converted = await convertValuationRequestToContact({ requestId })
+      if (!converted.success || !converted.contactId) {
+        toast({ title: "Send to AI-ISA failed", description: converted.error, variant: "destructive" })
+        return
+      }
+      const queued = await queueAIISACall({ contactId: converted.contactId })
+      if (queued.success) {
+        toast({ title: "Sent to AI-ISA", description: "Contact created and queued for an AI-ISA call." })
+        router.refresh()
+      } else {
+        toast({
+          title: "Contact created, AI-ISA call not queued",
+          description: queued.error ?? "No active AI-ISA campaign to queue into.",
+          variant: "destructive",
+        })
+        router.refresh()
       }
     } finally {
       setConvertingId(null)
@@ -760,13 +790,10 @@ export function HomeValuePageBuilderClient({
                                 size="sm"
                                 variant="ghost"
                                 className="text-indigo-700 hover:text-indigo-800"
-                                onClick={() =>
-                                  router.push(
-                                    `/dashboard/ai-isa?source=home_value&request=${req.id}`,
-                                  )
-                                }
+                                disabled={convertingId === req.id}
+                                onClick={() => handleSendToIsa(req.id)}
                               >
-                                Send to AI-ISA
+                                {convertingId === req.id ? "Sending..." : "Send to AI-ISA"}
                               </Button>
                             </div>
                           </CardContent>

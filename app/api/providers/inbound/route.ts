@@ -2,6 +2,40 @@
 // Single ingress for all inbound provider events (email / SMS).
 // No CRON_SECRET — uses provider signature validation via inbound-router.ts.
 // The Kernel remains the authority on what happens next.
+//
+// ── RULING (wave 74, owner verbatim, 2026-09-18, correcting wave 73A): "you got the inbound
+// email unknown process incorrect. if this email is coming into a tenant or user account, that
+// email needs to be processed to their crm so if it is a brokerage account, comes in as a lead
+// not a raw lead and if it is an agent or team lead, then a new contact but only if they have
+// real estate intent or could be a transactional email like an offer for an in-house listing,
+// etc." ─────────────────────────────────────────────────────────────────────────────────────
+// An EMAIL sender who matches no CONTACT (Step 3) and no active LEAD (Step 4) used to silently
+// no-op (`{ linked: false }`, no row, no count — wave 72A recorded this); wave 73A fixed the
+// silent no-op but routed EVERY intent-carrying sender through the RAW SCRAPED pipeline
+// regardless of which mailbox received the mail — wrong per this wave's correction. Step 5d
+// below now runs that sender through lib/lead-pipeline/unknown-sender-identification.ts: a
+// cheap deterministic pre-filter (bounce/no-reply/mailer-daemon/vendor-domain/our-own-domain,
+// zero model spend) drops automated mail; a small AI real-estate-intent + transactional read
+// (fail-closed — a classifier outage HOLDS, never guesses) decides spam/no-intent (dropped,
+// counted) vs qualifying (real-estate intent OR a transactional email — an offer/showing/
+// inspection/escrow/contract on an in-house listing, even with no intent language). This email
+// door is a SHARED BROKERAGE WEBHOOK (the webhook URL is configured one per brokerage). BLIND-SPOT
+// FIX (lane 75D, 2026-09-18): inbound-router.ts's normalizers now carry the raw "To"/envelope-
+// recipient address (InboundMessage.toEmail) for every email provider, so resolveInboundMailboxOwner
+// tries the SAME per-user mailbox binding (platform_credentials.account_id) the other inbound door
+// already resolves through BEFORE falling back to the brokerage-wide mailbox — several distinct
+// recipient addresses (an agent's own configured inbound alias, a team's, the brokerage's) can all
+// deliver to this ONE webhook URL, and only the message's own recipient tells them apart. A match
+// resolves ownerKind='agent'/'team_lead' exactly as the per-user-aware door would (→ CONTACT, not a
+// lead); no match still resolves 'brokerage' honestly (→ LEAD DIRECTLY, never raw_scraped_leads). On
+// a fresh lead, this sets entityType/entityId exactly as an already-matched lead would, so every step
+// below — including Step 8b's processInboundEmail — runs unchanged and the AI ISA starts qualifying
+// on the ORIGINAL email. An SMS/WhatsApp sender is NOT routed through this
+// door: texting the tenant's OWN registered line is an existing, distinct owner ruling (wave
+// 49/50 — "texting in IS consent for the thread", the same provenance the inbound-call lane
+// uses) that already requires a stronger signal (knowing and dialing this specific business
+// number) than an unsolicited email ever carries; see lib/voice/sms-inbound.ts::
+// captureTextingContact, reviewed against this ruling and left unchanged (§ report).
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -10,6 +44,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 
@@ -48,6 +83,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return NextResponse.json({ error: "This number isn't registered to a tenant" }, { status: 404 })
       }
       inbound.brokerageId = numberCtx.brokerageId
+    }
+  }
+
+  // ── Step 1c: TEXT AN ACTION — a STAFF phone texting the tenant's own number is
+  // commanding the AI team, not raising a hand as a lead (owner, 2026-09-06:
+  // "text some sort of action with 30+ agents on standby"). The door resolves a
+  // staff seat by phone inside this tenant, hands the text to the ONE
+  // voice-command brain, and texts the answer back. A non-staff phone falls
+  // through to the contact path below, unchanged.
+  if (inbound.providerType === "twilio" && numberCtx && inbound.fromPhone && (inbound.text ?? "").trim()) {
+    try {
+      const { runStaffTextCommand } = await import("@/lib/voice/text-command")
+      const cmd = await runStaffTextCommand(supabase as any, {
+        brokerageId: inbound.brokerageId,
+        fromPhone:   inbound.fromPhone,
+        toPhone:     inbound.toPhone ?? null,
+        text:        inbound.text ?? "",
+        messageSid:  inbound.messageId ?? null,
+      })
+      if (cmd.handled) return NextResponse.json({ linked: false, command: true, intent: cmd.intent ?? null })
+    } catch (err) {
+      console.error("[providers/inbound] text command door failed (non-fatal, contact path continues):", (err as Error).message)
     }
   }
 
@@ -117,7 +174,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (inbound.providerType === "twilio" && numberCtx && inbound.fromPhone && (inbound.text ?? "").trim()) {
       const { captureTextingContact } = await import("@/lib/voice/sms-inbound")
       const captured = await captureTextingContact(
-        supabase, numberCtx, inbound.fromPhone,
+        numberCtx, inbound.fromPhone,
         inbound.channel === "whatsapp" ? "whatsapp" : "sms",
       )
       if (captured) {
@@ -125,6 +182,57 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         entityId = captured
       }
     }
+
+    // ── Step 5d: UNKNOWN EMAIL SENDER — identify before adding a lead/contact (wave 74) ────
+    // Only the email path reaches here un-captured; Twilio's own hand-raise branch above
+    // already handles the SMS/WhatsApp case (and is deliberately NOT routed through this
+    // door — see the header ruling). A sender already matched at Steps 3/4 never reaches
+    // this block at all, so a portal-forwarded lead (already a lead/contact by the time it
+    // replies) or an existing contact never re-enters here either.
+    if ((!entityType || !entityId) && inbound.providerType !== "twilio" && inbound.fromEmail) {
+      try {
+        const { identifyAndRouteUnknownSender, resolveInboundMailboxOwner } =
+          await import("@/lib/lead-pipeline/unknown-sender-identification")
+        // This webhook URL is still configured ONE PER BROKERAGE (see header), but
+        // lane 75D closed the per-agent-recipient blind spot: when the provider's raw
+        // "To"/envelope-recipient (inbound.toEmail) matches a per-agent/team mailbox
+        // binding (platform_credentials.account_id — the SAME lookup the OTHER inbound
+        // door already runs), this now resolves to THAT agent/team lead instead of
+        // always the brokerage-wide mailbox. No match (or a different provider's
+        // recipient the tenant never bound) still falls back to 'brokerage', honestly.
+        const emailPlatform = inbound.providerType === "sendgrid" || inbound.providerType === "postmark" || inbound.providerType === "mailgun"
+          ? inbound.providerType
+          : null
+        const mailboxOwner = await resolveInboundMailboxOwner(supabase, {
+          doorKind: "shared_brokerage_webhook",
+          brokerageId: inbound.brokerageId,
+          toEmail: inbound.toEmail,
+          emailPlatform,
+        })
+        const identified = await identifyAndRouteUnknownSender({
+          mailboxOwner,
+          fromEmail:   inbound.fromEmail,
+          subject:     inbound.subject,
+          body:        inbound.text ?? inbound.subject ?? "",
+          messageId:   inbound.messageId,
+          raw:         inbound.raw,
+        })
+        if (identified.outcome === "lead_created" && identified.leadId) {
+          entityType = "lead"
+          entityId = identified.leadId
+        } else if (identified.outcome === "contact_created" && identified.contactId) {
+          entityType = "contact"
+          entityId = identified.contactId
+        }
+        // "dropped" (spam/vendor/automated) and "held" (classifier unavailable, fail-closed)
+        // both fall through unchanged — entityType stays null and the route responds
+        // { linked: false } below, exactly as an unmatched sender always has. The module
+        // itself is what counts the drop (lifecycle_events) — never a silent no-op.
+      } catch (err) {
+        console.error("[InboundRouter] unknown-sender identification failed (non-blocking):", err)
+      }
+    }
+
     if (!entityType || !entityId) return NextResponse.json({ linked: false })
   }
 
@@ -182,6 +290,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── Step 5c: CREDIT THE SEQUENCE STEP THAT EARNED THIS REPLY ───────────────
+  // `sequence_step_executions.replied_at` is the numerator of every per-channel
+  // reply rate this OS computes — lib/campaign-sequences/channel-order-runner.ts
+  // turns it into the "lead with SMS, it earns 2× the replies here" advisory,
+  // lib/intelligence/predictor-outcome-resolver.ts resolves predictions against
+  // it, and the decision-receipts trail renders it. Nothing wrote it, so every
+  // channel scored a flat 0% and the advisory could only ever rank a field that
+  // was tied at zero. This ingress is the only place in the tree that knows a
+  // contact answered.
+  //
+  // WhatsApp is deliberately not mapped: `campaign_sequence_steps.channel` has
+  // no whatsapp member, so crediting a WhatsApp reply to an SMS step would
+  // attribute a reply to a touch that never happened.
+  if (entityType === "contact" && entityId) {
+    const replyChannel =
+      inbound.channel === "sms" ? "sms" : inbound.channel === "email" ? "email" : null
+    if (replyChannel) {
+      try {
+        const { recordSequenceReply } = await import("@/lib/outcomes/provider-event-fanout")
+        const credited = await recordSequenceReply(supabase, {
+          brokerageId: inbound.brokerageId,
+          contactId: entityId,
+          channel: replyChannel,
+        })
+        // A refused write must not read as "this channel earns no replies" —
+        // that conflation is what kept the advisory blind in the first place.
+        if (credited.refusal) {
+          console.error("[InboundRouter] sequence reply credit refused:", credited.refusal)
+        }
+      } catch (err) {
+        console.error("[InboundRouter] sequence reply credit failed (non-blocking):", err)
+      }
+    }
+  }
+
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────
   // DB column is `metadata` (jsonb) — pass plain object, not JSON.stringify
   await supabase.from("lifecycle_events").insert({
@@ -199,14 +342,49 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     },
   })
 
+  // ── Step 6b: Behavioural event log — sms_reply ─────────────────────────────
+  // The contact texting back is a scored responsiveness signal (sms_reply,
+  // 10 pts in lib/lead-scoring/behavioral-events), read by the canonical
+  // scorer's behavioural 30% from lead_behavioral_data. This ingress is the
+  // only place that knows the reply happened, and it can never hold the agent
+  // session the old tracker action demanded. Identity/tenant are the ones THIS
+  // route already resolved server-side: the signature-verified provider event's
+  // sender matched within inbound.brokerageId (Steps 1–5) — never the body.
+  // entityId is a contact id or a scraped-lead id; both are the id class the
+  // scorer queries lead_behavioral_data.lead_id with. Best-effort: the recorder
+  // logs a refused write as not-recorded and never breaks ingress.
+  if (inbound.providerType === "twilio" && (inbound.text ?? "").trim()) {
+    const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+    await recordBehavioralEvent({
+      brokerageId: inbound.brokerageId,
+      contactId: entityId,
+      eventType: "sms_reply",
+      eventData: {
+        channel: inbound.channel === "whatsapp" ? "whatsapp" : "sms",
+        provider_message_id: inbound.messageId ?? null,
+        entity_type: entityType,
+      },
+    })
+  }
+
   // ── Step 7: Update last activity timestamps ─────────────────────────────────
   const now = new Date().toISOString()
 
   if (entityType === "contact") {
-    await supabase
-      .from("contacts")
-      .update({ last_contacted_at: now })
-      .eq("id", entityId)
+    await sentinelWrite(
+      supabase,
+      supabase
+        .from("contacts")
+        .update({ last_contacted_at: now })
+        .eq("id", entityId),
+      {
+        table: "contacts",
+        flow: "inbound_message_recency_stamp",
+        brokerageId: inbound.brokerageId,
+        reason:
+          "recency stamp on an inbound message that is already persisted by the spine; the OPT-OUT detection for this same message runs at step 7b below and is a separate, error-checked write",
+      },
+    )
   } else {
     await supabase
       .from("leads")
@@ -276,7 +454,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .from("users")
           .select("id")
           .eq("brokerage_id", inbound.brokerageId)
-          .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+          .in("user_type", ["compliance_officer", "admin", "broker"])
         for (const r of reviewers ?? []) {
           await supabase.from("notifications").insert({
             user_id: r.id,
@@ -328,6 +506,54 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       })
     } catch (err) {
       console.error("[InboundRouter] inbound-intent classification failed:", err)
+    }
+  }
+
+  // ── Step 8c: THE SAME DOOR, FOR EVERY LEAD INBOUND — including the ones 8b
+  // could never see. ───────────────────────────────────────────────────────────
+  //
+  // Step 8b is guarded on `inbound.fromEmail`, which an SMS never carries. So a
+  // LEAD who TEXTED in was matched at Step 4, logged at Step 6, scanned for
+  // opt-out at Step 7b — and then dropped. Their words never reached the intent
+  // classifier and they could not convert, ever. The owner's ruling names texts
+  // explicitly alongside calls, email and direct mail.
+  //
+  // This runs for BOTH branches, and does different work in each:
+  //   • SMS/WhatsApp (no fromEmail) — records the message and runs the FULL
+  //     evaluation: opt-out, then intent, then automatic conversion on a clear
+  //     positive through the canonical lane.
+  //   • Email (8b already classified) — `intentAlreadyRouted: true`, so it records
+  //     the message and BINDS the opt-out without a second model call. That
+  //     binding is the part 8b does not do: Step 7b's processOptOut writes flags
+  //     on the row but no `contact_suppression_list` row, and for a LEAD the
+  //     address-keyed suppression list is the only arm of `checkSuppression` that
+  //     can fire (the flag arm is contact-keyed).
+  //
+  // Idempotent by construction: the door records to `lead_conversation_history`
+  // first, where m488's partial unique index on (lead_id, provider_ref) refuses a
+  // retried webhook before any evaluation runs.
+  //
+  // Best-effort — a classification failure must never break ingress.
+  if (entityType === "lead" && entityId && (inbound.text ?? "").trim()) {
+    try {
+      const { ingestInboundLeadSignalAction } = await import("@/app/actions/lead-signal-ingest")
+      await ingestInboundLeadSignalAction({
+        brokerageId: inbound.brokerageId,
+        leadId: entityId,
+        channel: inbound.fromEmail ? "email" : "sms",
+        body: inbound.text ?? "",
+        providerRef: inbound.messageId ?? null,
+        context: {
+          provider: inbound.providerType,
+          from_email: inbound.fromEmail ?? null,
+          from_phone: inbound.fromPhone ?? null,
+          subject: inbound.subject ?? null,
+        },
+        intentAlreadyRouted: !!inbound.fromEmail,
+        internalSecret: process.env.CRON_SECRET,
+      })
+    } catch (err) {
+      console.error("[InboundRouter] lead inbound-intent door failed:", err)
     }
   }
 

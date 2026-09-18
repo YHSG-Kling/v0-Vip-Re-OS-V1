@@ -7,6 +7,30 @@
  * CRON_SECRET is a server-only env var — never expose it client-side via
  * NEXT_PUBLIC_. This action keeps the secret on the server and returns
  * the same JSON shape as /api/admin/scrape-test.
+ *
+ * ─── /api/admin/scrape-test WAS NOT RETIRED (wave 14) ────────────────────────
+ * A route census paired that route with this action and marked it for deletion.
+ * Left in place, for two independent reasons:
+ *   1. OWNER FENCE — "any lead scrapping needs to be left alone." The route is a
+ *      DIAGNOSTIC (dry_run: true; it writes nothing to raw_scraped_leads and no
+ *      file under lib/lead-pipeline/** changes either way), so collapsing it
+ *      would not alter scraper behaviour — but it is inside the fenced surface
+ *      and the fence is the owner's, not a lane's, to move.
+ *   2. DIFFERENT DOORS, NOT DUPLICATE DOORS. The route authorizes on
+ *      `Bearer CRON_SECRET`; this action authorizes on an admin/broker SESSION.
+ *      A secret-bearer door is by definition addressable from outside this repo
+ *      (a runbook curl, an ops check, the cron's own operator). Nothing here can
+ *      prove no such caller exists. UNRESOLVED (CLAUDE.md §1).
+ *
+ * Both halves are currently unwired — this action has no caller either. The
+ * doctrine's answer to that is BUILD the missing half (an admin surface that
+ * calls this action), not delete one of the two doors.
+ *
+ * FOUND, NOT FIXED: the gate below admits any tenant admin/broker and then reads
+ * `lead_scraping_markets` by id with NO brokerage predicate (line ~45), even
+ * though the select pulls `brokerage_id`. A brokerage admin can preview another
+ * tenant's market, its territory phrases and its budget burn. Fenced surface —
+ * reported rather than changed.
  */
 
 import { ZenrowsClient, BatchDataClient } from '@/lib/external'
@@ -16,6 +40,8 @@ import {
   isViableRecord,
 } from '@/lib/lead-pipeline/raw-record-types'
 import { createClient } from '@/lib/supabase/server'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export async function runScrapeTestAction(marketId: string, source: string) {
   const supabase = await createClient()
@@ -33,7 +59,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     .eq('id', user.id)
     .maybeSingle()
 
-  if (!userRow || !['superadmin', 'admin'].includes(userRow.user_type ?? '')) {
+  if (!userRow || !isAdminOrBroker({ user_type: userRow.user_type ?? '' })) {
     return { error: 'Forbidden', status: 403 }
   }
 
@@ -141,5 +167,66 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     estimated_cost_usd: estimatedCost,
     error:              errorMessage,
     status:             200,
+  }
+}
+
+/**
+ * verifyScrapeTestCronDoorAction — the missing IN-TREE caller for
+ * GET /api/admin/scrape-test (lane 64D, route-no-caller 6b → 0).
+ *
+ * That route authenticates on `Bearer CRON_SECRET` (lib/kernel/scraping.ts's
+ * own cron secret), NOT a browser session — runScrapeTestAction above is the
+ * session-authed sibling and stays the diagnostics panel's default door (see
+ * the file header: "DIFFERENT DOORS, NOT DUPLICATE DOORS", an owner ruling).
+ * A client component can never hold CRON_SECRET, so the only safe in-tree
+ * caller is a SERVER action that reads the secret from process.env and makes
+ * the same-origin self-call CLAUDE.md §1 names: `` `${baseUrl}/api/…` ``.
+ *
+ * Purpose: a platform-staff "Verify Cron Door" check on the Scrape
+ * Diagnostics panel — proves the bearer-secret door the cron itself uses is
+ * still live and answering, without duplicating the route's own fetch logic.
+ * Platform-staff gated (this exercises the platform-owned diagnostic door,
+ * not a tenant one) via isPlatformSuperadminIdentity — the ONE total-control
+ * test (lib/platform/platform-staff-roster.ts), same as
+ * app/dashboard/admin/scrape-diagnostics/page.tsx's isSuperadmin.
+ */
+export async function verifyScrapeTestCronDoorAction(marketId: string, source: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Unauthorized', status: 401 as const }
+
+  const { data: userRow } = await supabase
+    .from('users')
+    .select('user_type, platform_role')
+    .eq('id', user.id)
+    .maybeSingle()
+
+  if (!userRow || !isPlatformSuperadminIdentity(userRow.user_type, userRow.platform_role)) {
+    return { error: 'Forbidden — platform staff only', status: 403 as const }
+  }
+
+  const secret = process.env.CRON_SECRET
+  if (!secret) return { error: 'CRON_SECRET not configured', status: 500 as const }
+
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : (process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000')
+
+  try {
+    const res = await fetch(
+      `${baseUrl}/api/admin/scrape-test?marketId=${encodeURIComponent(marketId)}&source=${encodeURIComponent(source)}&dryRun=true`,
+      { headers: { authorization: `Bearer ${secret}` }, cache: 'no-store' },
+    )
+    const body = await res.json() as {
+      market?: { id: string; name: string; city: string; state: string; is_active: boolean; enabled_sources: string[] | null; budget_used_pct: number | null }
+      source?: string
+      dry_run?: boolean
+      would_insert?: number
+      estimated_cost_usd?: number
+      error?: string | null
+    }
+    return { status: res.status as 200 | 400 | 401 | 404 | 500, doorStatus: res.status, ok: res.ok, body }
+  } catch (err) {
+    return { error: String(err), status: 500 as const }
   }
 }

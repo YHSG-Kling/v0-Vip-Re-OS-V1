@@ -60,13 +60,18 @@ interface FormSelectorStepProps {
   contextType: FormContextType
   /** US state for state-required form filtering */
   state?: string
-  /** Pass true to auto-load forms immediately on mount */
+  /** Pass true to auto-load forms immediately on mount.
+   *  optional by design: defaults to true, which is what the one current caller wants — the
+   *  manual-load `false` path exists for a future wizard step that gates loading on a prior
+   *  user action. */
   autoLoad?: boolean
   onComplete: (selectedFormIds: string[], fieldValues: FormFieldValues) => void
   onBack: () => void
   /** Label for the primary action button */
   nextLabel?: string
-  /** When true, the primary action button is disabled (e.g. while a submission is pending) */
+  /** When true, the primary action button is disabled (e.g. while a submission is pending).
+   *  optional by design: the one current caller has no separate pending state to gate this
+   *  on beyond the component's own internal submit-in-flight handling. */
   nextDisabled?: boolean
 }
 

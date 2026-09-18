@@ -48,10 +48,21 @@ export async function reapStrandedAcceptedOffers(
     if (action !== "escalate") continue
 
     // Idempotent — one alert per stranded offer.
-    const { data: prior } = await svc
+    //
+    // Fails CLOSED, and `error` is destructured for the reason this whole wave
+    // exists: supabase-js RESOLVES a refused query, so `{ data }` alone turns
+    // "the suppression check was refused" into "no prior alert" and re-alerts.
+    // That is the same outcome an UNSTAMPED prior alert produces, since
+    // `.eq("brokerage_id", …)` can never match NULL — the writer below stamps,
+    // and this reader can now tell the two apart.
+    const { data: prior, error: priorError } = await svc
       .from("notifications").select("id")
       .eq("brokerage_id", brokerageId).eq("type", "accepted_offer_stranded").eq("entity_id", row.id)
       .limit(1).maybeSingle()
+    if (priorError) {
+      console.error(`[stranded-offer-reaper] suppression read refused for offer ${row.id}:`, priorError.message)
+      continue
+    }
     if (prior) continue
 
     try {

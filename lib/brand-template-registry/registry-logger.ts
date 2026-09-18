@@ -4,8 +4,62 @@
 // ============================================
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveBrandTemplateBrokerageId, type TenantReadClient } from "@/lib/activities/activity-tenant"
 import type { TemplateClassification } from "./template-classifier"
 import type { BrandRequirements } from "./brand-requirements"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TENANT ON EVERY ROW THIS MODULE WRITES — AND WHY THE TRIGGER NEVER SET IT.
+//
+// `activities` carries `activities_set_brokerage` (BEFORE INSERT), so every
+// census bucketed this table as trigger-covered and stopped looking. The net has
+// no `content` branch. These rows carry `entity_type: "content"` and their ONLY
+// other possible anchor was `agent_user_id: userId` — and `userId` is an OPTIONAL
+// parameter that the single live caller does not pass:
+//
+//     app/dashboard/admin/brand/brand-client.tsx:302,310,363
+//       → classifyTemplateAction(…, { contentId: template.id, logActivity: true })
+//       → app/actions/brand-template-registry.ts:93 → logTemplateClassification(contentId, …, options.userId)
+//
+// `options.userId` is `undefined` at every one of those call sites, so
+// `agent_user_id` was absent, no branch matched, and `brokerage_id` stayed NULL.
+// It is NOT NULL in the schema, so nothing was hidden — the insert was **refused,
+// 23502**, every time. The brand compliance history panel at
+// `app/dashboard/admin/brand/page.tsx:47` has been rendering an empty list not
+// because no template was ever validated but because no row was ever written.
+//
+// THE RESOLUTION IS THE RECORD: `contentId` is a `brand_templates.id` at every
+// live call site, `brand_templates.brokerage_id` is NOT NULL, and it is exactly
+// the value `page.tsx:47` compares (`context.brokerageId`, the caller's own
+// brokerage) whenever the template belongs to the caller — which the brand page's
+// own `.eq("brokerage_id", brokerageId)` template query guarantees.
+//
+// Resolved ONCE PER CALL, before the write, on the service client this module
+// already builds. Where the content id names no `brand_templates` row, NOTHING IS
+// WRITTEN and the reason is returned — a guess would file another tenant's audit
+// trail under this one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One resolver for all three writers below. Returns the row's tenant or the reason there is none. */
+async function tenantForContent(
+  supabase: TenantReadClient,
+  contentId: string,
+  label: string,
+): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+  const tenant = await resolveBrandTemplateBrokerageId(supabase, contentId)
+  if (!tenant.ok) {
+    // A REFUSED read is not "no such template". supabase-js resolves both.
+    const error = `${label} NOT logged: ${tenant.reason}`
+    console.error(`[v0] ${error}`)
+    return { ok: false, error }
+  }
+  if (!tenant.brokerageId) {
+    const error = `${label} NOT logged: content ${contentId} is not a brand_templates row, so its tenant cannot be resolved — activities.brokerage_id is NOT NULL and a guessed tenant would file this audit trail under the wrong brokerage`
+    console.error(`[v0] ${error}`)
+    return { ok: false, error }
+  }
+  return { ok: true, brokerageId: tenant.brokerageId }
+}
 
 // Agent task (correct location, no changes) — activity_type: template_classified, brand_requirements_evaluated, brand_compliance_validated
 /**
@@ -19,7 +73,12 @@ export async function logTemplateClassification(
   try {
     const supabase = createServiceClient()
 
+    const tenant = await tenantForContent(supabase, contentId, "Template classification")
+    if (!tenant.ok) return { success: false, error: tenant.error }
+
     const { error } = await supabase.from("activities").insert({
+      // TENANT: the brand template this classification is about. See header.
+      brokerage_id: tenant.brokerageId,
       entity_type: "content",
       entity_id: contentId,
       activity_type: "template_classified",
@@ -61,7 +120,12 @@ export async function logBrandRequirements(
   try {
     const supabase = createServiceClient()
 
+    const tenant = await tenantForContent(supabase, contentId, "Brand requirements evaluation")
+    if (!tenant.ok) return { success: false, error: tenant.error }
+
     const { error } = await supabase.from("activities").insert({
+      // TENANT: the brand template these requirements are about. See header.
+      brokerage_id: tenant.brokerageId,
       entity_type: "content",
       entity_id: contentId,
       activity_type: "brand_requirements_evaluated",
@@ -106,7 +170,12 @@ export async function logBrandCompliance(
   try {
     const supabase = createServiceClient()
 
+    const tenant = await tenantForContent(supabase, contentId, "Brand compliance validation")
+    if (!tenant.ok) return { success: false, error: tenant.error }
+
     const { error } = await supabase.from("activities").insert({
+      // TENANT: the brand template this validation is about. See header.
+      brokerage_id: tenant.brokerageId,
       entity_type: "content",
       entity_id: contentId,
       activity_type: "brand_compliance_validated",

@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
@@ -34,20 +35,51 @@ export async function aiGenerateClosingChecklist(params: {
   const supabase = await createClient()
 
   try {
-    const { data: transaction } = await supabase
+    // AMBIGUOUS EMBED — the `!constraint` hint is load-bearing, DO NOT remove it.
+    // `transactions` has THREE foreign keys to `contacts` (transactions_contact_id_fkey,
+    // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey). With a
+    // bare `contacts(...)` embed PostgREST cannot pick one and refuses the ENTIRE
+    // request with PGRST201 — which means `transaction` came back null and this
+    // function reported "Transaction not found" for a transaction that plainly exists.
+    // Every closing checklist generated from this path was dead for that reason.
+    //
+    // `contact_id` is the party WE represent on the deal (documented on the canonical
+    // writer, lib/transactions/offer-bridge.ts:302). The checklist is the agent's own
+    // closing runbook, so the client it names is our client — not the counterparty in
+    // buyer_contact_id / seller_contact_id, either of which is null on the other side
+    // of a one-sided deal.
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select(`
-        *,
-        contacts(first_name, last_name),
+        deal_type, purchase_price, contract_date, close_date,
+        contacts!transactions_contact_id_fkey(first_name, last_name),
         transaction_lenders(loan_type, lender_name, clear_to_close_date),
         transaction_title_escrow(title_company_name, closing_scheduled_date)
       `)
       .eq("id", params.transactionId)
       .single()
 
+    // A refused read RESOLVES in supabase-js. Without this the refusal above was
+    // reported as "Transaction not found" — an absence, not the hard error it was.
+    if (transactionError) {
+      return { success: false, error: `Could not read the transaction: ${transactionError.message}` }
+    }
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
     }
+
+    // The client embed is now actually consumed. It was selected and never read,
+    // which is how the ambiguity survived unnoticed for so long.
+    //
+    // SHAPE: transactions.contact_id -> contacts is MANY-TO-ONE, so PostgREST
+    // returns an OBJECT here, not an array. supabase-js's inference widens a
+    // hinted embed to an array regardless of direction, so this normalizes both
+    // rather than asserting one — an assertion would be a lie in whichever
+    // direction it turned out to be wrong.
+    const clientEmbed = transaction.contacts as unknown
+    const client = (Array.isArray(clientEmbed) ? clientEmbed[0] : clientEmbed) as
+      { first_name: string | null; last_name: string | null } | null | undefined
+    const clientName = [client?.first_name, client?.last_name].filter(Boolean).join(" ") || "Unknown"
 
     const { object: checklist } = await generateObject({
       model: "openai/gpt-4o",
@@ -67,6 +99,7 @@ export async function aiGenerateClosingChecklist(params: {
       }),
       prompt: `Generate a complete closing checklist for this transaction:
 
+Client we represent: ${clientName}
 Deal type: ${transaction.deal_type}
 Purchase price: $${transaction.purchase_price?.toLocaleString() ?? "Unknown"}
 Contract date: ${transaction.contract_date}
@@ -232,23 +265,55 @@ export async function completeChecklistItem(params: {
 // AI MILESTONE TRACKING
 // ============================================================================
 
+/**
+ * AI deal-health read on a transaction's closing progress.
+ *
+ * The `resolveWriteContext()` gate is NEW. This is a `"use server"` export and
+ * it had no authentication: it accepted `transactionId`, `agentId` AND
+ * `brokerageId` from the caller, UUID-shape-checked them, ran a `generateObject`
+ * model call, and then INSERTed a `transaction_timeline` row stamped with the
+ * caller's own `brokerage_id` and `performed_by`. So it was, in one endpoint:
+ *   · unauthenticated, unmetered AI spend anyone could loop; and
+ *   · a way to write a forged audit line into another tenant's deal timeline,
+ *     attributed to any user id the caller chose.
+ *
+ * Both identity inputs now come from the session, and the transaction must
+ * belong to the caller's brokerage before a single token is spent — the tenant
+ * check is deliberately BEFORE the model call, not after.
+ *
+ * NOTE FOR THE OWNER: the other exports in this file
+ * (`aiGenerateClosingChecklist`, `getClosingChecklist`, `completeChecklistItem`,
+ * `getClosingPrepSummary`) have the SAME shape — caller-supplied
+ * agentId/brokerageId, no session check — and `aiGenerateClosingChecklist` also
+ * spends on a model. They are wired, so hardening them is a change with real
+ * callers behind it and is left as a deliberate, separate decision rather than
+ * smuggled in here.
+ */
 export async function aiTrackClosingMilestones(params: {
   transactionId: string
-  agentId: string
-  brokerageId: string
+  /** ignored — the actor is the authenticated caller */
+  agentId?: string
+  /** ignored — the tenant is the authenticated caller's */
+  brokerageId?: string
 }) {
-  if (
-    !isValidUUID(params.transactionId) ||
-    !isValidUUID(params.agentId) ||
-    !isValidUUID(params.brokerageId)
-  ) {
+  if (!isValidUUID(params.transactionId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const brokerageId = ctx.brokerageId
+  const actorUserId = ctx.userId
+
+  const supabase = ctx.db
 
   try {
-    const { data: transaction } = await supabase
+    // Tenant-anchored, and the error is destructured: a refused read must not
+    // fall through to "Transaction not found" and it must certainly not fall
+    // through to a paid model call.
+    const { data: transaction, error: txErr } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -256,7 +321,12 @@ export async function aiTrackClosingMilestones(params: {
         closing_checklist_items(completed, required)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+
+    if (txErr) {
+      return { success: false, error: "Could not load that transaction." }
+    }
 
     if (!transaction) {
       return { success: false, error: "Transaction not found" }
@@ -296,17 +366,33 @@ Assess:
 4. Is there a delay risk?`,
     })
 
-    // Record a timeline entry for the analysis
-    await supabase
+    // Record a timeline entry for the analysis.
+    //
+    // performed_by is a users.id, not an agents.id — every other writer in the
+    // repo puts `user.id` / `ctx.userId` there (transaction-compliance.ts:79,
+    // dotloop-integration.ts:343, and see the explicit note at
+    // dotloop-integration.ts:1447 about a contacts id having once landed in this
+    // column). This used to write `params.agentId`. agents.id and users.id are
+    // disjoint id spaces, so that stamped a meaningless actor on every row.
+    // ctx.userId is the resolved authenticated user — the right space, resolved
+    // rather than substituted.
+    const { error: timelineErr } = await supabase
       .from("transaction_timeline")
       .insert({
         transaction_id: params.transactionId,
-        brokerage_id:   params.brokerageId,
+        brokerage_id:   brokerageId,
         activity_type:  "ai_closing_analysis",
         description:    analysis.summary,
-        performed_by:   params.agentId,
+        performed_by:   actorUserId,
         metadata:       { riskLevel: analysis.riskLevel, onTrack: analysis.onTrack },
       })
+
+    // The analysis is still returned — the model call already happened and the
+    // caller should get what it paid for — but a dropped audit line is logged
+    // rather than swallowed, which is what an undestructured insert did before.
+    if (timelineErr) {
+      console.error("[aiTrackClosingMilestones] timeline insert failed:", timelineErr.message)
+    }
 
     return { success: true, data: analysis }
   } catch (error) {

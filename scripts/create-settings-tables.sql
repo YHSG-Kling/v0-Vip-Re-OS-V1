@@ -195,42 +195,21 @@ BEGIN
   END IF;
 END $$;
 
--- Commission Structures Policies
-DO $$ 
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'commission_structures' AND policyname = 'Admins and brokers view commission structures'
-  ) THEN
-    CREATE POLICY "Admins and brokers view commission structures"
-      ON commission_structures
-      FOR SELECT
-      USING (
-        EXISTS (
-          SELECT 1 FROM users 
-          WHERE id = auth.uid() 
-          AND user_type IN ('admin', 'broker')
-        )
-      );
-  END IF;
-END $$;
-
-DO $$ 
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'commission_structures' AND policyname = 'Admins can manage commission structures'
-  ) THEN
-    CREATE POLICY "Admins can manage commission structures"
-      ON commission_structures
-      FOR ALL
-      USING (
-        EXISTS (
-          SELECT 1 FROM users 
-          WHERE id = auth.uid() 
-          AND user_type = 'admin'
-        )
-      );
-  END IF;
-END $$;
+-- Commission Structures Policies — DELIBERATELY NOT CREATED HERE.
+--
+-- This file used to create "Admins and brokers view commission structures"
+-- (SELECT) and "Admins can manage commission structures" (FOR ALL). Both tested
+-- only `user_type IN ('admin','broker')` with NO tenant term, so either one
+-- handed every admin and broker on the platform every brokerage's split table —
+-- and the FOR ALL one handed them UPDATE and DELETE on it too, because on a FOR
+-- ALL policy USING alone governs DELETE. m438 drops them.
+--
+-- They are not replaced here. commission_structures' real policies are the
+-- tenant-scoped commission_structures_tenant_{select,insert,update,delete} set
+-- from m433, which lives in supabase/migrations/ where it can be reviewed and
+-- ordered. Re-running this script must never re-open the hole, and a table left
+-- with RLS on and no policy is fail-CLOSED, which is the safe direction for a
+-- bootstrap that runs ahead of the migrations.
 
 -- Email Templates Policies
 DO $$ 

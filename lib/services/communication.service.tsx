@@ -1,5 +1,14 @@
 
-import { createClient } from "@/lib/supabase/server"
+// SERVICE CLIENT for the audit writes, on purpose (m483): this shared service
+// is reachable from CONSUMER sessions (app/actions/calculators.ts
+// sendCalculatorResults, app/actions/collaborative-search.ts
+// sendCollaborativeSearchInvite), and the message_provider_logs /
+// communication_audit_log / activities rows it appends are post-send AUDIT
+// records — the calling route/action's own gate is the authorization, and the
+// audit row must not depend on the caller's RLS seat (the staff-seat-tightened
+// INSERT policies rightly refuse a consumer seat). The provider SEND itself is
+// unchanged.
+import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import {
@@ -13,31 +22,63 @@ import {
  * Replaces scattered TODO: Send email/SMS comments throughout codebase
  */
 
-export interface SendEmailParams {
+interface SendEmailParams {
   to: string
   subject: string
   htmlBody: string
   textBody?: string
   from?: string
-  replyTo?: string
   metadata?: any
-  /** Optional audit context. Required to land a row in
-   *  message_provider_logs (brokerage_id is NOT NULL there). If neither
-   *  is supplied, the email still sends — the audit log is just skipped. */
-  brokerageId?: string
-  contactId?: string
-  /** agents.id — recorded but not strictly required. */
-  agentId?: string
 }
 
-export interface SendSMSParams {
+interface SendSMSParams {
   to: string
   message: string
-  from?: string
   metadata?: any
-  brokerageId?: string
-  contactId?: string
-  agentId?: string
+}
+
+// TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 5, lane 59C, 2026-09-12):
+// sendEmail / sendSMS NO LONGER PUBLIC — the previous exported versions plus
+// their message_provider_logs synchronous audit write (and the
+// resolveAuditBrokerageId helper it used) are deleted. SURVIVOR for the send
+// itself: lib/providers/messaging/index.ts's sendEmail (:268) / sendSMS (:51)
+// — the actually-called send path (9 live callers; see that file's own
+// header). What these thin, now-PRIVATE wrappers keep is exactly the field
+// translation sendCalculatorResults / sendCollaborativeSearchInvite /
+// sendAnniversaryMessage below need (htmlBody/textBody → html/text) — they
+// have no callers outside this file, so nothing needed the public export
+// (the lib/services barrel's re-export of these two names was removed as
+// part of this same tombstone; it had zero importers). The audit-log
+// capability these used to add is not carried forward: message_provider_logs
+// already has live writers with STRONGER data (the SendGrid/Twilio status
+// webhooks record the provider's ACTUAL delivery status, not an immediate
+// "sent" guess), so no reader of that table loses a row class that only this
+// path produced.
+async function sendEmail(params: SendEmailParams) {
+  try {
+    return await providerSendEmail({
+      to: params.to,
+      subject: params.subject,
+      html: params.htmlBody,
+      text: params.textBody,
+      from: params.from,
+    })
+  } catch (error) {
+    console.error("[CommunicationService] Send email error:", error)
+    return handleError(error, "sendEmail")
+  }
+}
+
+async function sendSMS(params: SendSMSParams) {
+  try {
+    return await providerSendSMS({
+      to: params.to,
+      message: params.message,
+    })
+  } catch (error) {
+    console.error("[CommunicationService] Send SMS error:", error)
+    return handleError(error, "sendSMS")
+  }
 }
 
 export interface LogCommunicationParams {
@@ -58,127 +99,58 @@ export interface LogCommunicationParams {
   content: string
   status: "sent" | "failed" | "queued"
   metadata?: any
+  /** approved_content_library id when the send used pre-approved content.
+   *  Stamps was_approved_content on the audit row — the column the daily
+   *  compliance cron's unapproved-content sweep reads. (Merged from the
+   *  deleted logCommunicationWithComplianceService, lane E2 2026-08-28.) */
+  approvedContentId?: string
 }
 
-// Resolve brokerage_id from explicit param, falling back to a contact lookup.
-// Returns null when neither path yields a brokerage; callers MUST skip the
-// audit-log INSERT in that case (message_provider_logs.brokerage_id NOT NULL).
-async function resolveAuditBrokerageId(
-  supabase: any,
-  brokerageId?: string,
-  contactId?: string,
-): Promise<string | null> {
-  if (brokerageId) return brokerageId
-  if (!contactId) return null
-  const { data } = await supabase
-    .from("contacts")
-    .select("brokerage_id")
-    .eq("id", contactId)
-    .maybeSingle()
-  return data?.brokerage_id ?? null
-}
-
-/**
- * Send email through the configured provider chain (personal email →
- * SendGrid) and append a message_provider_logs row when brokerage context
- * is supplied. The send itself runs regardless; audit is best-effort.
- */
-export async function sendEmail(params: SendEmailParams) {
-  try {
-    const result = await providerSendEmail({
-      to: params.to,
-      subject: params.subject,
-      html: params.htmlBody,
-      text: params.textBody,
-      from: params.from,
-    })
-
-    // Audit. Skip entirely if we can't resolve a brokerage — the table's
-    // brokerage_id is NOT NULL and fabricating a value would corrupt
-    // tenancy. The provider send already happened above.
-    const supabase = await createClient()
-    const brokerageId = await resolveAuditBrokerageId(
-      supabase, params.brokerageId, params.contactId,
-    )
-    if (brokerageId) {
-      await supabase.from("message_provider_logs").insert({
-        brokerage_id: brokerageId,
-        channel: "email",
-        direction: "outbound",
-        provider_key: result.provider ?? "sendgrid",
-        provider_status: result.success ? "sent" : "failed",
-        error_message: result.success ? null : (result.error ?? null),
-        sent_at: result.success ? new Date().toISOString() : null,
-        provider_response: { recipient: params.to, subject: params.subject, ...(params.metadata ?? {}) },
-      })
-    }
-
-    return result
-  } catch (error) {
-    console.error("[CommunicationService] Send email error:", error)
-    return handleError(error, "sendEmail")
-  }
-}
-
-/**
- * Send SMS through the configured provider chain. Audit-logs to
- * message_provider_logs when brokerage context can be resolved.
- */
-export async function sendSMS(params: SendSMSParams) {
-  try {
-    const result = await providerSendSMS({
-      to: params.to,
-      message: params.message,
-    })
-
-    const supabase = await createClient()
-    const brokerageId = await resolveAuditBrokerageId(
-      supabase, params.brokerageId, params.contactId,
-    )
-    if (brokerageId) {
-      const providerKey = ((result as any)?.provider as string | undefined) ?? "twilio"
-      await supabase.from("message_provider_logs").insert({
-        brokerage_id: brokerageId,
-        channel: "sms",
-        direction: "outbound",
-        provider_key: providerKey,
-        provider_status: result.success ? "sent" : "failed",
-        error_message: result.success ? null : (result.error ?? null),
-        sent_at: result.success ? new Date().toISOString() : null,
-        provider_response: { recipient: params.to, message_excerpt: params.message.slice(0, 200), ...(params.metadata ?? {}) },
-      })
-    }
-
-    return result
-  } catch (error) {
-    console.error("[CommunicationService] Send SMS error:", error)
-    return handleError(error, "sendSMS")
-  }
-}
+// TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 5, lane 59C, 2026-09-12):
+// sendEmail / sendSMS / resolveAuditBrokerageId DELETED — zero in-tree
+// callers (neither directly nor through the lib/services barrel re-export,
+// also removed below). SURVIVOR: lib/providers/messaging/index.ts's
+// sendEmail (:268) / sendSMS (:51) — the actually-called send path (9 live
+// callers: app/actions/lender-status-request.ts, instant-property-alerts.ts,
+// voice-call-bridge.ts, the weekly-income-digest cron, lib/contact-validation.ts,
+// lib/transactions/deal-vendor-notify.ts, lib/kernel/vendors.ts, and
+// lib/providers/dispatch.ts's dispatchEmail/dispatchSms, which these dead
+// wrappers were NOT part of). The one thing these wrappers added over the
+// survivor — a synchronous message_provider_logs audit row right after the
+// send call — is not carried forward: message_provider_logs already has live
+// writers with STRONGER data (app/api/webhooks/sendgrid-events/route.ts,
+// app/api/webhooks/twilio-sms-status/route.ts record the provider's actual
+// delivery status via webhook, not an immediate "sent" guess), so no reader
+// of that table loses a row class that only this dead path produced.
 
 // sendViaGHL was removed. GoHighLevel is NOT a message-send channel in
 // this product — it's a one-way contact-data sync target (push). Outbound
 // contact communication routes through email / sms / ai_social_dm / portal.
-// GHL sync is owned by lib/services/platform-sync.service.ts and
-// lib/ghl-integration.ts (PUT/POST contact updates to GHL's REST API).
+// GHL sync is owned by services/goHighLevelService.ts, reached through
+// lib/crm/sync.ts:syncContactToCRM (lib/ghl-integration.ts, once named here,
+// was deleted 2026-08-27 as a whole-module duplicate — tombstone at the top
+// of services/goHighLevelService.ts). The other half of that sentence used to name
+// lib/services/platform-sync.service.ts, which is DELETED — see the tombstone at
+// lib/services/index.ts:29 for where each of its halves went.
 
 /**
  * Log communication to database and optionally to contact interactions
  */
 export async function logCommunication(params: LogCommunicationParams) {
   try {
-    const supabase = await createClient()
+    // Audit-only function — same service-client rationale as the header note.
+    const supabase = createServiceClient()
 
     // Write to communication_audit_log (the canonical communication content
     // audit table — carries subject/body_snippet/channel/compliance state).
     // brokerage_id is NOT NULL there; look it up from the contact when the
     // caller didn't supply it.
     let auditBrokerageId: string | null = null
-    let contactRow: { agent_id: string | null; brokerage_id: string | null } | null = null
+    let contactRow: { agent_id: string | null; brokerage_id: string | null; lead_temperature: string | null } | null = null
     if (params.contactId && isValidUUID(params.contactId)) {
       const { data } = await supabase
         .from("contacts")
-        .select("agent_id, brokerage_id")
+        .select("agent_id, brokerage_id, lead_temperature")
         .eq("id", params.contactId)
         .maybeSingle()
       contactRow = data ?? null
@@ -191,17 +163,83 @@ export async function logCommunication(params: LogCommunicationParams) {
       // message_provider_logs.channel CHECK.
       const channel =
         params.communicationType === "notification" ? "in_app" : params.communicationType
-      await supabase.from("communication_audit_log").insert({
+
+      // ── COLD-LEAD CHANNEL RULE (merged from the deleted
+      // logCommunicationWithComplianceService, §1 keep-one, lane E2
+      // 2026-08-28). Cold leads may only be reached via email or print mail.
+      // The daily compliance cron (app/api/cron/compliance-monitoring)
+      // sweeps communication_audit_log for lead_temperature='cold' rows
+      // outside those channels — columns that previously had NO writer on any
+      // reachable path, so the sweep could never fire. The temperature comes
+      // from the CONTACT ROW, never from the caller.
+      const leadTemperature = contactRow?.lead_temperature ?? null
+      const coldChannelViolation =
+        params.status === "sent" &&
+        leadTemperature === "cold" &&
+        !["email", "print"].includes(params.communicationType)
+      if (coldChannelViolation) {
+        const { error: flagError } = await supabase.from("compliance_flags").insert({
+          brokerage_id: auditBrokerageId,
+          agent_id: params.agentId ?? contactRow?.agent_id ?? null,
+          contact_id: params.contactId ?? null,
+          content_type: params.communicationType,
+          violation_type: "cold_lead_channel_violation",
+          flagged_content: {
+            channel_used: params.communicationType,
+            lead_temperature: leadTemperature,
+            allowed_channels: ["email", "print"],
+          },
+          severity: "high",
+          status: "flagged",
+          detected_at: new Date().toISOString(),
+        })
+        if (flagError) {
+          console.error("[CommunicationService] cold-lead compliance_flags row refused:", flagError.message)
+        }
+      }
+
+      // communication_audit_log.lead_id (m611 FK, unapplied) — WRITERLESS
+      // until now: this insert never set it, so lib/contact-promotion/
+      // history-carry.ts's REPOINTED_HISTORY_TABLES re-point
+      // (`.eq("lead_id", leadId)` at conversion time) always matched zero
+      // rows here. contacts and leads are disjoint (CLAUDE.md §4) and linked
+      // only via `leads.contact_id = contacts.id` (the LINK stamped by
+      // history-carry.ts on conversion) — never via contacts.contact_id,
+      // which is an unrelated secondary uuid on the SAME table (§3 trap).
+      // Best-effort reverse lookup: a contact can in principle trace back to
+      // more than one lead after a dedup merge, so this picks the most
+      // recently converted one; a miss (never a lead, e.g. a direct contact
+      // import) leaves lead_id null exactly as before.
+      let auditLeadId: string | null = null
+      if (params.contactId && isValidUUID(params.contactId)) {
+        const { data: leadRow } = await supabase
+          .from("leads")
+          .select("id")
+          .eq("contact_id", params.contactId)
+          .eq("brokerage_id", auditBrokerageId)
+          .order("converted_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        auditLeadId = (leadRow?.id as string | undefined) ?? null
+      }
+
+      const { error: auditLogError } = await supabase.from("communication_audit_log").insert({
         brokerage_id: auditBrokerageId,
         contact_id: params.contactId ?? null,
+        lead_id: auditLeadId,
         agent_id: params.agentId ?? contactRow?.agent_id ?? null,
         communication_type: params.communicationType,
         channel,
         subject: params.subject ?? null,
         body_snippet: params.content.slice(0, 500),
-        compliance_passed: params.status === "sent" ? true : null,
+        lead_temperature: leadTemperature,
+        was_approved_content: !!params.approvedContentId,
+        compliance_passed: coldChannelViolation ? false : params.status === "sent" ? true : null,
         sent_at: params.status === "sent" ? new Date().toISOString() : null,
       })
+      if (auditLogError) {
+        console.error("[CommunicationService] communication_audit_log row refused:", auditLogError.message)
+      }
     }
 
     // Also log as an activity (the agent-facing communication-event log)
@@ -217,7 +255,7 @@ export async function logCommunication(params: LogCommunicationParams) {
       const notes = params.subject || params.content.substring(0, 100)
 
       if (agentId && brokerageId) {
-        await supabase.from("activities").insert({
+        const { error: activityError } = await supabase.from("activities").insert({
           contact_id: params.contactId,
           agent_id: agentId,
           brokerage_id: brokerageId,
@@ -229,6 +267,9 @@ export async function logCommunication(params: LogCommunicationParams) {
           outcome: params.status === "sent" ? "completed" : "failed",
           status: params.status === "sent" ? "completed" : "failed",
         })
+        if (activityError) {
+          console.error("[CommunicationService] communication activity row refused:", activityError.message)
+        }
       }
     }
 

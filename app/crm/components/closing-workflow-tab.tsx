@@ -20,11 +20,19 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { createClient } from "@/lib/supabase/client"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   getClosingChecklist,
   completeChecklistItem,
   aiGenerateClosingChecklist,
   getClosingPrepSummary,
+  // MILESTONE TRACKING, REACHABLE. aiTrackClosingMilestones reads the
+  // transaction's real milestones and checklist state and says whether the deal
+  // is on track, what is at risk and what the next critical action is. Every
+  // other export in that file is wired to this tab; this one had no caller
+  // anywhere, so the OS could show a checklist percentage and never a verdict on
+  // whether the closing was going to make its date.
+  aiTrackClosingMilestones,
 } from "@/app/actions/ai-closing-workflow"
 
 interface Props {
@@ -105,6 +113,28 @@ export function ClosingWorkflowTab({ contactId, agentId, brokerageId }: Props) {
   const [generating, setGenerating] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [contactRole, setContactRole] = useState<"buyer" | "seller" | "both">("both")
+  const [milestoneCheck, setMilestoneCheck] = useState<any>(null)
+  const [milestoneError, setMilestoneError] = useState<string | null>(null)
+  const [checkingMilestones, setCheckingMilestones] = useState(false)
+
+  async function runMilestoneCheck(transactionId: string) {
+    setCheckingMilestones(true)
+    setMilestoneError(null)
+    try {
+      // The action derives BOTH identities from the session and refuses a
+      // transaction outside the caller's brokerage before it spends anything —
+      // so no ids are passed from here.
+      const res = await aiTrackClosingMilestones({ transactionId })
+      if (!res.success) {
+        setMilestoneError((res as any).error ?? "Could not assess this closing.")
+        setMilestoneCheck(null)
+        return
+      }
+      setMilestoneCheck((res as any).data)
+    } finally {
+      setCheckingMilestones(false)
+    }
+  }
 
   async function load() {
     setLoading(true)
@@ -114,7 +144,7 @@ export function ClosingWorkflowTab({ contactId, agentId, brokerageId }: Props) {
         .from("transactions")
         .select("id, status, close_date, buyer_contact_id, seller_contact_id")
         .or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
-        .in("status", ["under_contract", "pending", "closing", "active"])
+        .in("status", [...TRANSACTION_STATUSES_OPEN])
         .order("close_date", { ascending: true, nullsFirst: false })
         .limit(1)
 
@@ -362,6 +392,63 @@ export function ClosingWorkflowTab({ contactId, agentId, brokerageId }: Props) {
               Risk: {summary.closing_risk}
             </Badge>
           )}
+
+          {/* Milestone verdict — the checklist says how much is DONE; this says
+              whether the deal is going to make its date. */}
+          <div className="pt-1">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              disabled={checkingMilestones}
+              onClick={() => runMilestoneCheck(transaction.id)}
+            >
+              {checkingMilestones ? <Loader2 className="h-3 w-3 mr-1.5 animate-spin" /> : null}
+              Check milestone risk
+            </Button>
+
+            {milestoneError && (
+              <p className="mt-2 text-xs text-destructive">{milestoneError}</p>
+            )}
+
+            {milestoneCheck && (
+              <div className="mt-2 rounded-md border bg-muted/40 p-2 space-y-1 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant="outline"
+                    className={
+                      milestoneCheck.riskLevel === "low"
+                        ? "text-emerald-700 border-emerald-300"
+                        : milestoneCheck.riskLevel === "medium"
+                        ? "text-amber-700 border-amber-300"
+                        : "text-red-700 border-red-300"
+                    }
+                  >
+                    {milestoneCheck.onTrack ? "On track" : "Off track"} · {milestoneCheck.riskLevel}
+                  </Badge>
+                  {milestoneCheck.projectedCloseDate && (
+                    <span className="text-muted-foreground">
+                      Projected close: {milestoneCheck.projectedCloseDate}
+                    </span>
+                  )}
+                </div>
+                {milestoneCheck.summary && (
+                  <p className="text-muted-foreground">{milestoneCheck.summary}</p>
+                )}
+                {milestoneCheck.nextAction && (
+                  <p><span className="font-medium">Next: </span>{milestoneCheck.nextAction}</p>
+                )}
+                {Array.isArray(milestoneCheck.atRiskMilestones) && milestoneCheck.atRiskMilestones.length > 0 && (
+                  <p className="text-muted-foreground">
+                    At risk: {milestoneCheck.atRiskMilestones.join(", ")}
+                  </p>
+                )}
+                <p className="text-[10px] text-muted-foreground">
+                  An assessment of the milestones and checklist on file — not a commitment about the closing date.
+                </p>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 

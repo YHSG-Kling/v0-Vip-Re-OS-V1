@@ -60,7 +60,7 @@ export interface TermOutcomePattern {
 // MIN_LIFT to be worth publishing (below it, the terms didn't move outcomes meaningfully).
 export const MIN_COHORT = 4
 export const MIN_RESOLVED = 12
-export const MIN_LIFT_PCT = 15
+const MIN_LIFT_PCT = 15
 
 function winRate(wins: number, total: number): number {
   return total > 0 ? (wins / total) * 100 : 0

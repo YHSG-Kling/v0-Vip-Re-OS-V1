@@ -16,6 +16,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import {
   AVATAR_EXPLAINER_PRESETS,
@@ -76,14 +77,23 @@ export async function getTeammateExplainerReadiness(): Promise<TeammateExplainer
 
     // Recent lane projects — session client, so RLS scopes visibility.
     const supabase = await createClient()
-    const { data: recentRows } = await supabase
-      .from("ai_video_projects")
-      .select("id, title, status, approval_status, created_at")
-      .eq("brokerage_id", brokerageId)
-      .eq("agent_id", userId)
-      .contains("video_metadata", { lane: "avatar_explainer" })
-      .order("created_at", { ascending: false })
-      .limit(5)
+    // Scoped: resolveCaller already fixed the brokerage this surface acts in.
+    // No agents row ⇒ no projects of your own, which is an empty list; the
+    // readiness itself is still worth returning.
+    const agentId = await resolveAgentIdInBrokerage(supabase, userId, brokerageId)
+    const { data: recentRows, error: recentError } = agentId
+      ? await supabase
+          .from("ai_video_projects")
+          .select("id, title, status, approval_status, created_at")
+          .eq("brokerage_id", brokerageId)
+          .eq("agent_id", agentId)
+          .contains("video_metadata", { lane: "avatar_explainer" })
+          .order("created_at", { ascending: false })
+          .limit(5)
+      : { data: [], error: null }
+    if (recentError) {
+      return { success: false, error: recentError.message }
+    }
 
     return {
       success: true,

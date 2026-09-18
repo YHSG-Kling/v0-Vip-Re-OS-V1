@@ -17,6 +17,10 @@
 //
 // A tenant gets the feature only if EVERY gate passes.
 
+// The override_type tolerance (canonical grant_trial/disable, legacy trial/disabled)
+// has ONE home — lib/kernel/override-vocab.ts; this resolver imports it, never re-spells it.
+import { isTrialOverride, isDisableOverride } from "@/lib/kernel/override-vocab"
+
 export interface EntitlementInputs {
   /** Platform hard rule — the god-switch. When blocked, nothing below matters
    *  (superadmins are exempted by the caller before this is set). */
@@ -53,8 +57,11 @@ export interface EntitlementDecision {
   usage?: { current: number; limit: number; remaining: number }
 }
 
-const isTrial = (t: string | null | undefined) => t === "grant_trial" || t === "trial"
-const isDisable = (t: string | null | undefined) => t === "disable" || t === "disabled"
+// TOMBSTONE (§1.1, 2026-09-03, lane L6): the local `isTrial` / `isDisable` pair
+// deleted — SURVIVOR: lib/kernel/override-vocab.ts:26-27 (isTrialOverride /
+// isDisableOverride), the documented single source of truth for the
+// feature_access_overrides.override_type vocabulary. The pair here re-spelled the
+// same both-spellings tolerance a second time; the survivor lacked nothing.
 
 /** PURE: deterministic 0–99 rollout bucket for (feature, tenant) — FNV-1a over
  *  the pair, so a tenant's bucket is stable per feature (no flapping between
@@ -99,18 +106,18 @@ export function resolveEntitlement(i: EntitlementInputs): EntitlementDecision {
   if (pct != null && pct < 100 && !i.isSuperadmin) {
     const bucket = i.rolloutBucket ?? 0
     const inCohort = bucket < Math.max(0, pct)
-    if (!inCohort && !isTrial(i.override?.type)) {
+    if (!inCohort && !isTrialOverride(i.override?.type)) {
       return { allowed: false, reason: `Feature is rolling out gradually (${pct}% of tenants) — not enabled for your account yet` }
     }
   }
 
   // 5. Tenant override (most-specific scope already selected by the caller).
-  if (isTrial(i.override?.type)) {
+  if (isTrialOverride(i.override?.type)) {
     const expired = i.override!.trialEndsAt && new Date(i.override!.trialEndsAt) <= now
     if (!expired) return { allowed: true, trial: true, trial_expires_at: i.override!.trialEndsAt ?? undefined }
     // expired trial → fall through to plan check
   }
-  if (isDisable(i.override?.type)) {
+  if (isDisableOverride(i.override?.type)) {
     return { allowed: false, disabled: true, disabled_reason: i.override!.disabledReason ?? "Access has been disabled for your account" }
   }
 

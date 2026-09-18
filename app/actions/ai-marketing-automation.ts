@@ -1,10 +1,50 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+/**
+ * TENANT + IDENTITY GUARD for every action in this file.
+ *
+ * `params.agentId` throughout this module is an AGENTS id — brand_voice_profile
+ * .agent_id, direct_mail_campaigns.agent_id, newsletter_campaigns.agent_id,
+ * listings.agent_id and offers.agent_id ALL FK agents(id), never users(id).
+ * Trusting a caller-supplied id also means trusting a caller-supplied tenant,
+ * so resolve the session and confirm the requested agent lives inside the
+ * caller's brokerage before reading or writing anything on their behalf.
+ */
+async function requireAgentInCallerBrokerage(agentId: string): Promise<
+  | { ok: true; brokerageId: string; userId: string; callerAgentId: string | null }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { ok: false, error: "No brokerage associated with your account." }
+
+  const supabase = await createClient()
+  const { data: agentRow, error: agentError } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("id", agentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+
+  if (agentError) return { ok: false, error: `Could not verify agent: ${agentError.message}` }
+  if (!agentRow) {
+    return { ok: false, error: "That agent is not in your brokerage." }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, callerAgentId: ctx.agentId }
+}
+
+/** Strips ```json fences the models keep emitting before JSON.parse. */
+function stripCodeFences(text: string): string {
+  return text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim()
+}
 
 // ============================================
 // NEWSLETTER SYSTEM WITH AI
@@ -12,12 +52,18 @@ import { handleError } from "@/lib/errors"
 
 export interface NewsletterGenerationParams {
   agentId: string
-  audienceSegment: "buyers" | "sellers" | "investors" | "lifetime_customers" | "sphere" | "all"
+  audienceSegment: "buyers" | "sellers" | "investors" | typeof LIFETIME_CUSTOMER_SEGMENT | "sphere" | "all"
   topic?: string
   tone?: "professional" | "friendly" | "educational" | "urgent"
   includeMarketData?: boolean
   includeListings?: boolean
   customSections?: string[]
+  /** Optional umbrella marketing_campaigns id. Passed THROUGH to the canonical
+   *  createNewsletterCampaign, which verifies it against the session brokerage
+   *  before writing — this action never touches the column itself. The AI
+   *  Newsletter dialog offers it from the campaigns already loaded on the
+   *  studio page. */
+  marketingCampaignId?: string
 }
 
 export interface NewsletterResult {
@@ -51,28 +97,53 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
       return { success: false, error: "Invalid agent ID" }
     }
 
+    const auth = await requireAgentInCallerBrokerage(params.agentId)
+    if (!auth.ok) return { success: false, error: auth.error }
+
     const supabase = await createClient()
 
-    // Get agent's brand voice and market data
+    // Get agent's brand voice and market data. market_data carries a
+    // brokerage_id — the unfiltered read below used to pick whichever row in
+    // the whole platform was most recent, so a newsletter could quote another
+    // brokerage's market. Anchored to the caller's brokerage.
     const [brandVoiceResult, marketDataResult, listingsResult] = await Promise.all([
       supabase.from("brand_voice_profile").select("*").eq("agent_id", params.agentId).maybeSingle(),
       params.includeMarketData
         ? supabase
             .from("market_data")
-            .select("median_sale_price, median_list_price, avg_days_on_market, active_listings, recorded_date:data_date")
+            // `median_list_price` IS DELIBERATELY ABSENT. The column carries
+            // DEFAULT 0 and has no writer anywhere — the only upsert into this
+            // table (lib/intelligence/market-insight-generator.ts:233) does not
+            // name it — so every row answers 0, and `(0).toLocaleString()` is
+            // the truthy string "0", which slipped straight past the `|| "N/A"`
+            // below and put the line "Median List Price: $0" into the prompt of
+            // a newsletter that goes to the agent's whole contact list. A
+            // fabricated market number in front of clients is worse than an
+            // absent one. The median this newsletter quotes is
+            // median_sale_price, written at market-insight-generator.ts:244.
+            .select("median_sale_price, avg_days_on_market, active_listings, recorded_date:data_date")
+            .eq("brokerage_id", auth.brokerageId)
             .order("data_date", { ascending: false })
             .limit(1)
             .maybeSingle()
-        : Promise.resolve({ data: null }),
+        : Promise.resolve({ data: null, error: null }),
       params.includeListings
         ? supabase
             .from("listings")
             .select("id, address, city, list_price, bedrooms, bathrooms, photos")
             .eq("agent_id", params.agentId)
+            .eq("brokerage_id", auth.brokerageId)
             .eq("status", "active")
             .limit(3)
-        : Promise.resolve({ data: [] }),
+        : Promise.resolve({ data: [], error: null }),
     ])
+
+    // Every one of these can be REFUSED and still resolve. Reading only `data`
+    // turns a blocked query into "this agent has no brand voice / no market /
+    // no listings" and the newsletter silently ships without them.
+    if (brandVoiceResult.error) throw brandVoiceResult.error
+    if (marketDataResult.error) throw marketDataResult.error
+    if (listingsResult.error) throw listingsResult.error
 
     const brandVoice = brandVoiceResult.data
     const marketData = marketDataResult.data
@@ -91,8 +162,8 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
     const prompt = `You are an expert real estate newsletter writer. Create a high-quality, them-first newsletter.
 
 BRAND VOICE:
-${brandVoice ? `Tone: ${brandVoice.tone_attributes?.join(", ") || "professional"}` : "Professional and helpful"}
-${brandVoice?.key_brand_messages ? `Key phrases: ${brandVoice.key_brand_messages.join(", ")}` : ""}
+${brandVoice ? `Tone: ${brandVoice.tone || "professional"}${brandVoice.style ? ` (${brandVoice.style})` : ""}` : "Professional and helpful"}
+${brandVoice?.key_brand_messages ? `Key phrases: ${Array.isArray(brandVoice.key_brand_messages) ? brandVoice.key_brand_messages.join(", ") : brandVoice.key_brand_messages}` : ""}
 
 AUDIENCE: ${params.audienceSegment}
 ${audiencePrompts[params.audienceSegment]}
@@ -103,8 +174,7 @@ TONE: ${params.tone || "friendly"}
 ${marketData ? `MARKET DATA:
 - Median Price: $${marketData.median_sale_price?.toLocaleString() || "N/A"}
 - Days on Market: ${marketData.avg_days_on_market || "N/A"}
-- Active Inventory: ${marketData.active_listings || "N/A"} homes
-- Median List Price: $${marketData.median_list_price?.toLocaleString() || "N/A"}` : ""}
+- Active Inventory: ${marketData.active_listings || "N/A"} homes` : ""}
 
 ${featuredListings.length > 0 ? `FEATURED LISTINGS:
 ${featuredListings.map((l: any) => `- ${l.address}, ${l.city} - $${l.list_price?.toLocaleString()} | ${l.bedrooms}bd/${l.bathrooms}ba`).join("\n")}` : ""}
@@ -131,6 +201,9 @@ Return JSON:
 }`
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId: params.agentId,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -144,32 +217,72 @@ Return JSON:
       return { success: false, error: "Failed to parse newsletter content" }
     }
 
-    // Save to database
-    // Canonical newsletter table is newsletter_campaigns (ai-newsletter.ts, send/
-    // analytics, sections/sends FK chains all target it). subject→subject_line;
-    // preheader/quality_score/them_percentage are returned to the caller via the
-    // spread below but are not columns here (they live in the JSON content).
-    const { data: saved, error: saveError } = await supabase
-      .from("newsletter_campaigns")
-      .insert({
-        agent_id: params.agentId,
-        campaign_name: newsletter.subject ?? "AI Newsletter",
-        subject_line: newsletter.subject,
-        content: JSON.stringify(newsletter),
-        status: "draft",
-        is_ai_generated: true,
+    // PERSIST THROUGH THE CANONICAL WRITER — not a second insert.
+    // newsletter_campaigns already has one writer, app/actions/ai-newsletter.ts
+    // ::createNewsletterCampaign, and it does four things this insert did not:
+    // resolves agents.id from the session (agent_id FKs agents), sets
+    // brokerage_id (this insert omitted it, so every AI newsletter landed with
+    // a NULL tenant and never appeared in any brokerage-scoped list) and
+    // created_by, decomposes sections into newsletter_sections (without which
+    // every recipient gets one flat body), and fires NEWSLETTER_SCHEDULED.
+    // This action keeps the them-first generation and hands the row to it.
+    const SECTION_TYPE_MAP: Record<string, "hero" | "featured_listings" | "market_update" | "tips" | "testimonial" | "cta" | "custom"> = {
+      intro: "hero",
+      hero: "hero",
+      market_update: "market_update",
+      tips: "tips",
+      listings: "featured_listings",
+      featured_listings: "featured_listings",
+      testimonial: "testimonial",
+      community: "custom",
+      cta: "cta",
+    }
+
+    const sections = (Array.isArray(newsletter.sections) ? newsletter.sections : []).map(
+      (s: { type?: string; title?: string; content?: string }, i: number) => ({
+        type: SECTION_TYPE_MAP[String(s.type ?? "custom")] ?? "custom",
+        section_type: SECTION_TYPE_MAP[String(s.type ?? "custom")] ?? "custom",
+        title: s.title ?? `Section ${i + 1}`,
+        content: s.content ?? "",
       })
-      .select()
-      .single()
+    )
 
-    if (saveError) throw saveError
+    const { createNewsletterCampaign } = await import("@/app/actions/ai-newsletter")
+    const saveResult = await createNewsletterCampaign({
+      title: newsletter.subject ?? "AI Newsletter",
+      subjectLine: newsletter.subject ?? "AI Newsletter",
+      preheaderText: newsletter.preheader ?? "",
+      template: "ai_generated",
+      content: sections,
+      audienceSegment: params.audienceSegment,
+      // The umbrella link — the canonical writer verifies the id belongs to
+      // the session's brokerage before writing it (never trusted from here).
+      marketingCampaignId: params.marketingCampaignId,
+    })
 
-    revalidatePath("/dashboard/marketing/newsletters")
+    if (!saveResult.success || !(saveResult as { newsletter?: { id: string } }).newsletter) {
+      return {
+        success: false,
+        error: (saveResult as { error?: string }).error ?? "Failed to save newsletter",
+      }
+    }
 
+    revalidatePath("/dashboard/marketing/studio")
+    revalidatePath("/newsletters")
+
+    // createNewsletterCampaign's success shape types `newsletter` loosely
+    // (Record<string, any> — it gained upsert-by-id edit semantics this wave),
+    // so the id is read with a runtime check instead of the old hard cast: a
+    // save that came back id-less must surface as a failure, not crash the
+    // spread below.
+    const savedId = (saveResult as { newsletter?: { id?: unknown } }).newsletter?.id
+    if (typeof savedId !== "string" || !savedId) {
+      return { success: false, error: "Newsletter was saved but no id came back" }
+    }
     return {
       success: true,
       newsletter: {
-        id: saved.id,
+        id: savedId,
         ...newsletter,
       },
     }
@@ -192,7 +305,13 @@ export async function generateNewsletterSubjectVariants(
       return { success: false, error: "Invalid agent ID" }
     }
 
+    const auth = await requireAgentInCallerBrokerage(agentId)
+    if (!auth.ok) return { success: false, error: auth.error }
+
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate 5 A/B test subject line variants for a real estate newsletter.
 
@@ -209,7 +328,27 @@ Create 5 different approaches:
 Return JSON array of strings, each max 50 characters.`,
     })
 
-    const variants = JSON.parse(text)
+    // The model wraps JSON in ```json fences often enough that a bare
+    // JSON.parse(text) threw and the whole action reported a generic failure.
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(stripCodeFences(text))
+    } catch {
+      const arrayMatch = text.match(/\[[\s\S]*\]/)
+      if (!arrayMatch) return { success: false, error: "AI did not return subject variants" }
+      try {
+        parsed = JSON.parse(arrayMatch[0])
+      } catch {
+        return { success: false, error: "AI did not return subject variants" }
+      }
+    }
+
+    const variants = Array.isArray(parsed)
+      ? parsed.map((v) => (typeof v === "string" ? v : String((v as { subject?: string })?.subject ?? ""))).filter(Boolean)
+      : []
+
+    if (variants.length === 0) return { success: false, error: "AI did not return subject variants" }
+
     return { success: true, variants }
   } catch (error) {
     return handleError(error, "generateNewsletterSubjectVariants") as any
@@ -256,16 +395,57 @@ export async function generateAIDirectMail(params: DirectMailParams): Promise<Di
 
     const supabase = await createClient()
 
-    // Get agent info and brand voice
+    // IDENTITY CLASS (m347). params.agentId is an AGENTS id — its only caller,
+    // AgentSuperpowersPanel, is handed agentRow.id by app/dashboard/agent/page.tsx
+    // — and direct_mail_campaigns.agent_id FKs agents, so the write below is
+    // right. But this lookup read `users` BY THAT ID, which matched nothing, so
+    // `agent` came back null and the prompt on the line building the piece read
+    // literally "AGENT: undefined undefined". Every AI-generated direct mail
+    // piece went out attributed to an agent with no name, phone or email.
+    // Read the users row THROUGH the agents row instead of guessing the class.
     const [agentResult, brandResult, propertyResult] = await Promise.all([
-      supabase.from("users").select("first_name, last_name, phone, email").eq("id", params.agentId).single(),
+      // brokerage_id rides along on the lookup already being made: it is the
+      // TENANT of the campaign written at the end of this function. See the
+      // stamp on the insert below.
+      supabase.from("agents").select("brokerage_id, users(first_name, last_name, phone, email)").eq("id", params.agentId).maybeSingle(),
       supabase.from("brand_voice_profile").select("*").eq("agent_id", params.agentId).maybeSingle(),
       params.propertyId
         ? supabase.from("listings").select("*").eq("id", params.propertyId).single()
         : Promise.resolve({ data: null }),
     ])
 
-    const agent = agentResult.data
+    // Unwrap the nested users row from the agents join above.
+    const agentRow = agentResult.data as {
+      brokerage_id?: string | null
+      users?: { first_name?: string; last_name?: string; phone?: string; email?: string } | null
+    } | null
+    const agent = agentRow?.users ?? null
+
+    // TENANT — the AGENTS row this piece is filed under. direct_mail_campaigns
+    // .agent_id FKs agents(id) (see the identity-class note above), and agents
+    // carries brokerage_id; `params.agentId` itself is never used as the tenant,
+    // because agents.id and brokerages.id are disjoint spaces.
+    //
+    // supabase-js RESOLVES a refused query, so the error is read explicitly:
+    // without it, "this read was denied" and "no such agent" are the same empty
+    // result, and this function would go on to spend an AI call and then write a
+    // campaign nobody can see.
+    if (agentResult.error) {
+      return { success: false, error: `Agent lookup refused: ${agentResult.error.message}` }
+    }
+    const mailBrokerageId = (agentRow?.brokerage_id as string | null) ?? null
+    if (!mailBrokerageId) {
+      // Every direct-mail surface narrows: listDirectMailCampaigns,
+      // getDirectMailPerformance, the marketing approval queue and the bundle
+      // attribution cron all filter `.eq("brokerage_id", …)`, and `NULL = <uuid>`
+      // is NULL, never true. An unstamped piece is generated, costed, and then
+      // absent from the queue that is supposed to approve it before it mails.
+      return {
+        success: false,
+        error:
+          "That agent profile carries no brokerage, so the mail piece could not be filed where the approval queue can see it.",
+      }
+    }
     const brandVoice = brandResult.data
     const property = propertyResult.data
 
@@ -297,7 +477,7 @@ TARGET AUDIENCE: ${params.targetAudience}
 ${audienceStrategies[params.targetAudience]}
 
 AGENT: ${agent?.first_name} ${agent?.last_name}
-BRAND VOICE: ${brandVoice?.tone_attributes?.join(", ") || "professional, approachable"}
+BRAND VOICE: ${brandVoice?.tone || "professional, approachable"}
 
 ${property ? `PROPERTY DETAILS:
 - Address: ${property.address}
@@ -328,6 +508,8 @@ Return JSON:
 }`
 
     const { text } = await generateText({
+      brokerageId: mailBrokerageId,
+      agentId: params.agentId,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -360,6 +542,7 @@ Return JSON:
     const { data: saved, error: saveError } = await supabase
       .from("direct_mail_campaigns")
       .insert({
+        brokerage_id: mailBrokerageId, // resolved above from the agents row
         agent_id: params.agentId,
         campaign_name: `${params.mailType} – ${params.targetAudience}`,
         piece_type: params.mailType,
@@ -375,7 +558,11 @@ Return JSON:
 
     if (saveError) throw saveError
 
-    revalidatePath("/dashboard/marketing/direct-mail")
+    // /dashboard/marketing/direct-mail has no page.tsx. direct_mail_campaigns is read
+    // by the full manager at app/dashboard/campaigns/mail and mirrored on the studio
+    // "mail" tab (app/dashboard/marketing/studio/marketing-studio-client.tsx:3354).
+    revalidatePath("/dashboard/campaigns/mail")
+    revalidatePath("/dashboard/marketing/studio")
 
     return {
       success: true,
@@ -396,201 +583,22 @@ Return JSON:
   }
 }
 
-// ============================================
-// LISTING CREATION SYSTEM WITH AI
-// ============================================
-
-export interface ListingCreationParams {
-  agentId: string
-  propertyData: {
-    address: string
-    city: string
-    state: string
-    zip: string
-    price: number
-    bedrooms: number
-    bathrooms: number
-    sqft: number
-    lotSize?: number
-    yearBuilt?: number
-    propertyType: string
-    features?: string[]
-    photos?: string[]
-  }
-  sellerId?: string
-}
-
-export interface ListingCreationResult {
-  success: boolean
-  listing?: {
-    id: string
-    mlsDescription: string
-    marketingDescription: string
-    socialMediaPosts: {
-      facebook: string
-      instagram: string
-      linkedin: string
-    }
-    suggestedPrice: {
-      min: number
-      max: number
-      recommended: number
-      reasoning: string
-    }
-    targetBuyerPersonas: string[]
-    marketingStrategy: string[]
-  }
-  error?: string
-}
-
-/**
- * AI-Powered Listing Creation
- * Creates MLS descriptions, marketing content, and pricing recommendations
- */
-export async function createAIListing(params: ListingCreationParams): Promise<ListingCreationResult> {
-  try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
-    }
-
-    const supabase = await createClient()
-    const { propertyData } = params
-
-    // brokerage_id is NOT NULL on listings — resolve it from the agent up front
-    // (also anchors the comps read below to the agent's own brokerage).
-    const { data: agentRow } = await supabase.from("users").select("brokerage_id").eq("id", params.agentId).maybeSingle()
-    const brokerageId = (agentRow as { brokerage_id: string | null } | null)?.brokerage_id ?? null
-    if (!brokerageId) return { success: false, error: "Could not resolve brokerage for the agent" }
-
-    // Get comparable sales for pricing
-    const { data: comps } = await supabase
-      .from("listings")
-      // listings has no sold_price/sold_date/price columns — use list_price + go_live_date.
-      .select("list_price, sqft, bedrooms, bathrooms")
-      // tenant anchor (scope burn-down): comps from the agent's own brokerage inventory
-      .eq("brokerage_id", brokerageId)
-      .eq("city", propertyData.city)
-      .eq("status", "sold")
-      .order("go_live_date", { ascending: false })
-      .limit(10)
-
-    // Calculate price per sqft from comps
-    const pricePerSqft = comps?.length
-      ? comps.reduce((sum: number, c: any) => sum + (c.list_price || 0) / (c.sqft || 1), 0) / comps.length
-      : 250
-
-    const prompt = `You are a real estate listing expert. Create comprehensive listing content and analysis.
-
-PROPERTY DETAILS:
-- Address: ${propertyData.address}, ${propertyData.city}, ${propertyData.state} ${propertyData.zip}
-- Price: $${propertyData.price.toLocaleString()}
-- Type: ${propertyData.propertyType}
-- Beds/Baths: ${propertyData.bedrooms}/${propertyData.bathrooms}
-- Sqft: ${propertyData.sqft.toLocaleString()}
-${propertyData.lotSize ? `- Lot: ${propertyData.lotSize.toLocaleString()} sqft` : ""}
-${propertyData.yearBuilt ? `- Built: ${propertyData.yearBuilt}` : ""}
-${propertyData.features?.length ? `- Features: ${propertyData.features.join(", ")}` : ""}
-
-MARKET DATA:
-- Avg Price/Sqft in area: $${pricePerSqft.toFixed(0)}
-- Recent comps: ${comps?.length || 0} sales in last 6 months
-
-Create:
-1. MLS Description (250 words max, factual, highlights key features)
-2. Marketing Description (300 words, emotional, lifestyle-focused)
-3. Social media posts for Facebook, Instagram, LinkedIn
-4. Price analysis with recommendation
-5. Target buyer personas
-6. Marketing strategy recommendations
-
-Return JSON:
-{
-  "mlsDescription": "MLS-compliant description",
-  "marketingDescription": "lifestyle-focused marketing copy",
-  "socialMediaPosts": {
-    "facebook": "post with emojis, engaging",
-    "instagram": "visual-focused, hashtags included",
-    "linkedin": "professional, investment angle"
-  },
-  "suggestedPrice": {
-    "min": number,
-    "max": number,
-    "recommended": number,
-    "reasoning": "explanation"
-  },
-  "targetBuyerPersonas": ["persona1", "persona2"],
-  "marketingStrategy": ["strategy1", "strategy2", "strategy3"]
-}`
-
-    const { text } = await generateText({
-      model: "openai/gpt-4o",
-      prompt,
-    })
-
-    let aiContent
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/)
-      aiContent = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text)
-    } catch {
-      return { success: false, error: "Failed to parse listing content" }
-    }
-
-    // Create the listing with ONLY valid columns. The MLS description is the public remarks;
-    // the marketing analysis (description/strategy/personas/suggested price) is AI-generated
-    // CONTENT and lives in listing_marketing_content, not as listings columns (the old insert
-    // wrote 5 phantom columns + spread propertyData's price/propertyType/etc. + omitted
-    // brokerage_id, so it always failed and no listing was ever created).
-    const { data: listing, error: listingError } = await supabase
-      .from("listings")
-      .insert({
-        agent_id: params.agentId,
-        brokerage_id: brokerageId,
-        seller_contact_id: params.sellerId ?? null,
-        address: propertyData.address,
-        city: propertyData.city,
-        state: propertyData.state,
-        zip: propertyData.zip,
-        list_price: propertyData.price,
-        property_type: propertyData.propertyType,
-        bedrooms: propertyData.bedrooms,
-        bathrooms: propertyData.bathrooms,
-        sqft: propertyData.sqft,
-        public_remarks: aiContent.mlsDescription,
-        status: "draft",
-      })
-      .select()
-      .single()
-
-    if (listingError) throw listingError
-
-    // Save the AI marketing analysis + social content (content_type rows, brokerage-scoped).
-    await supabase.from("listing_marketing_content").insert([
-      {
-        listing_id: listing.id, brokerage_id: brokerageId, content_type: "ai_marketing",
-        content: {
-          marketingDescription: aiContent.marketingDescription,
-          suggestedPrice:       aiContent.suggestedPrice,
-          targetPersonas:       aiContent.targetBuyerPersonas,
-          marketingStrategy:    aiContent.marketingStrategy,
-        },
-      },
-      { listing_id: listing.id, brokerage_id: brokerageId, content_type: "social_posts", content: aiContent.socialMediaPosts },
-    ])
-
-    revalidatePath("/dashboard/listings")
-
-    return {
-      success: true,
-      listing: {
-        id: listing.id,
-        ...aiContent,
-      },
-    }
-  } catch (error) {
-    console.error("[AI Listing Creation] Error:", error)
-    return handleError(error, "createAIListing") as ListingCreationResult
-  }
-}
+// TOMBSTONE (§1.1, 2026-09-07): createAIListing deleted — survivor
+// app/actions/listings-kernel.ts:createListingWithSellerContact (the listing
+// insert + seller-side deal + dotloop container) together with
+// app/actions/ai-listing-intake.ts:aiGenerateListingDescription (MLS/marketing/
+// social/email/video/SEO copy, run through guardContent's Fair Housing scan —
+// this deleted action had no compliance guard at all) and
+// :aiSuggestListPrice (comps-based pricing with confidence/positioning/timing,
+// pulling the brokerage's own sold inventory when no comps are supplied — this
+// deleted action only averaged its own naive 10-comp query). Merged: nothing —
+// the survivor pair already covers every field this produced (MLS + marketing
+// description, social content, priced comps analysis) and does strictly more
+// (the compliance guard, confidence/positioning/timing fields, listing_marketing_content
+// persistence already wired). Not carried over: target buyer personas and a
+// discrete marketing-strategy list, which are content-shape additions, not a
+// validation/guard/column fix, and have no survivor home — recorded here as an
+// open product gap, not silently dropped.
 
 /**
  * AI-Powered Listing Description Enhancement
@@ -605,10 +613,33 @@ export async function enhanceListingDescription(
       return { success: false, error: "Invalid ID" }
     }
 
-    const supabase = await createClient()
-    const { data: listing } = await supabase.from("listings").select("*").eq("id", listingId).single()
+    const auth = await requireAgentInCallerBrokerage(agentId)
+    if (!auth.ok) return { success: false, error: auth.error }
 
-    if (!listing) return { success: false, error: "Listing not found" }
+    const supabase = await createClient()
+    // PHANTOM COLUMNS. This read `listing.mls_description || listing
+    // .marketing_description`; neither column exists on `listings`. The public
+    // marketing copy lives in `public_remarks`, so the rewrite prompt used to
+    // read literally "Original: undefined" and the model invented a listing.
+    // Also: `.single()` on an unscoped read — a listing from another brokerage
+    // was fetchable by id, and a refusal was swallowed with the row.
+    const { data: listing, error: listingError } = await supabase
+      .from("listings")
+      .select("id, address, city, state, public_remarks")
+      .eq("id", listingId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+
+    if (listingError) throw listingError
+    if (!listing) return { success: false, error: "Listing not found in your brokerage" }
+
+    const original = (listing.public_remarks ?? "").trim()
+    if (!original) {
+      return {
+        success: false,
+        error: "This listing has no public remarks yet — add a description before enhancing it.",
+      }
+    }
 
     const stylePrompts: Record<string, string> = {
       luxury: "Emphasize premium finishes, exclusivity, prestige, and sophisticated lifestyle",
@@ -618,323 +649,65 @@ export async function enhanceListingDescription(
     }
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
       model: "openai/gpt-4o-mini",
       prompt: `Rewrite this listing description for a ${style} buyer:
 
-Original: ${listing.mls_description || listing.marketing_description}
+Property: ${listing.address ?? ""}${listing.city ? `, ${listing.city}` : ""}${listing.state ? `, ${listing.state}` : ""}
+
+Original: ${original}
 
 Style focus: ${stylePrompts[style]}
 
-Keep it under 300 words. Make it compelling and specific.`,
+Keep it under 300 words. Make it compelling and specific.
+Do NOT reference protected classes (race, religion, familial status, disability,
+national origin, sex) or characterize the neighbourhood's people.`,
     })
 
+    // Read-only by design: this returns copy for the agent to review. Writing
+    // it back to listings.public_remarks is the listing surface's job — see
+    // app/actions/listings-kernel.ts, which owns that column.
     return { success: true, enhanced: text }
   } catch (error) {
     return handleError(error, "enhanceListingDescription") as any
   }
 }
 
-// ============================================
-// OFFER CREATION SYSTEM WITH AI
-// ============================================
+// TOMBSTONE (§1.1, 2026-09-07): createAIOffer deleted — survivor
+// app/actions/buyer-offers.ts:createOffer (the canonical offer writer, per
+// app/actions/buyer-offer/* + lib/kernel/offers.ts). Merged: nothing — the
+// survivor already writes `escalation_clause` as a real boolean and
+// `escalation_cap` as its cap (OfferFormData types the field boolean, so the
+// column is never handed the {maxPrice, increment} object this deleted action
+// used to before its own Boolean(...) coercion fix), already uses the real
+// offer_price/closing_date columns, and already fence-extracts its one AI-JSON
+// response (getOrGenerateStrategyRecommendation). It also enforces three gates
+// this deleted action never had: buyer-lifecycle eligibility, financial
+// verification, and the pending-offer limit.
 
-export interface OfferCreationParams {
-  agentId: string
-  buyerId: string
-  listingId: string
-  offerAmount: number
-  earnestMoney?: number
-  downPaymentPercent?: number
-  financingType: "conventional" | "fha" | "va" | "cash" | "other"
-  contingencies?: string[]
-  closeDate?: string
-  escalationClause?: {
-    maxPrice: number
-    increment: number
-  }
-  additionalTerms?: string
-}
+// TOMBSTONE (§1.1, 2026-09-07): generateCounterOfferStrategy deleted —
+// survivor app/actions/ai-offer-creation.ts:aiCounterOfferStrategy (wired
+// through app/actions/negotiation-copilot.ts, with validated output,
+// escalation maths and negotiation-round context this lacked). Merged: the
+// one thing the survivor was missing — JSON fence/brace-extraction robustness
+// on the model's response (the survivor called a bare
+// `JSON.parse(strategyResult.text)`, which throws on a fenced or prose-wrapped
+// reply) — is now on aiCounterOfferStrategy at
+// app/actions/ai-offer-creation.ts:487. Not carried over: reading the live
+// offer row by id instead of taking hand-typed price/terms numbers, which is a
+// call-signature change, not a validation/guard/column fix — recorded as an
+// open product gap on the negotiation-copilot surface, not silently dropped.
 
-export interface OfferCreationResult {
-  success: boolean
-  offer?: {
-    id: string
-    summary: string
-    strengthScore: number
-    competitiveAnalysis: string
-    suggestedImprovements: string[]
-    negotiationStrategy: string
-    riskAssessment: {
-      level: "low" | "medium" | "high"
-      factors: string[]
-    }
-  }
-  error?: string
-}
-
-/**
- * AI-Powered Offer Creation and Analysis
- * Creates competitive offers with strategic recommendations
- */
-export async function createAIOffer(params: OfferCreationParams): Promise<OfferCreationResult> {
-  try {
-    if (!isValidUUID(params.agentId) || !isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
-      return { success: false, error: "Invalid ID" }
-    }
-
-    const supabase = await createClient()
-
-    // Get listing and market context
-    const [listingResult, buyerResult, compsResult] = await Promise.all([
-      supabase.from("listings").select("*, agent:users(first_name, last_name)").eq("id", params.listingId).single(),
-      supabase.from("contacts").select("*").eq("id", params.buyerId).single(),
-      supabase
-        .from("offers")
-        .select("offer_amount:offer_price, status")
-        .eq("listing_id", params.listingId)
-        .order("created_at", { ascending: false })
-        .limit(5),
-    ])
-
-    const listing = listingResult.data
-    const buyer = buyerResult.data
-    const existingOffers = compsResult.data || []
-
-    if (!listing) return { success: false, error: "Listing not found" }
-
-    // Calculate offer metrics
-    const offerToListRatio = (params.offerAmount / listing.list_price) * 100
-    const daysOnMarket = listing.listing_date
-      ? Math.floor((Date.now() - new Date(listing.listing_date).getTime()) / (1000 * 60 * 60 * 24))
-      : 0
-
-    const defaultContingencies = params.contingencies || ["inspection", "financing", "appraisal"]
-    const defaultEarnest = params.earnestMoney || params.offerAmount * 0.01
-    const defaultDownPayment = params.downPaymentPercent || (params.financingType === "cash" ? 100 : 20)
-
-    const prompt = `You are a real estate offer strategist. Analyze and optimize this offer.
-
-LISTING:
-- Address: ${listing.address}
-- List Price: $${listing.list_price.toLocaleString()}
-- Days on Market: ${daysOnMarket}
-- Listing Agent: ${listing.agent?.first_name} ${listing.agent?.last_name}
-
-OFFER DETAILS:
-- Offer Amount: $${params.offerAmount.toLocaleString()} (${offerToListRatio.toFixed(1)}% of list)
-- Earnest Money: $${defaultEarnest.toLocaleString()}
-- Down Payment: ${defaultDownPayment}%
-- Financing: ${params.financingType}
-- Contingencies: ${defaultContingencies.join(", ")}
-- Close Date: ${params.closeDate || "30 days"}
-${params.escalationClause ? `- Escalation: Up to $${params.escalationClause.maxPrice.toLocaleString()} in $${params.escalationClause.increment.toLocaleString()} increments` : ""}
-${params.additionalTerms ? `- Additional Terms: ${params.additionalTerms}` : ""}
-
-COMPETITION:
-- ${existingOffers.length} other offers on file
-${existingOffers.length > 0 ? `- Recent offer amounts: ${existingOffers.map((o: any) => `$${o.offer_amount?.toLocaleString()}`).join(", ")}` : ""}
-
-Analyze the offer and provide:
-1. Overall strength score (0-100)
-2. Competitive analysis
-3. Specific improvements to make it stronger
-4. Negotiation strategy for the listing agent
-5. Risk assessment
-
-Return JSON:
-{
-  "summary": "one-paragraph offer summary",
-  "strengthScore": 0-100,
-  "competitiveAnalysis": "detailed competitive position",
-  "suggestedImprovements": ["improvement1", "improvement2"],
-  "negotiationStrategy": "how to present and negotiate",
-  "riskAssessment": {
-    "level": "low|medium|high",
-    "factors": ["risk1", "risk2"]
-  },
-  "recommendedCounterPoints": ["point1", "point2"]
-}`
-
-    const { text } = await generateText({
-      model: "openai/gpt-4o",
-      prompt,
-    })
-
-    let aiAnalysis
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/)
-      aiAnalysis = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text)
-    } catch {
-      return { success: false, error: "Failed to parse offer analysis" }
-    }
-
-    // Create the offer
-    const { data: offer, error: offerError } = await supabase
-      .from("offers")
-      .insert({
-        listing_id: params.listingId,
-        contact_id: params.buyerId,
-        agent_id: params.agentId,
-        offer_price: params.offerAmount,
-        earnest_money: defaultEarnest,
-        down_payment_percent: defaultDownPayment,
-        financing_type: params.financingType,
-        contingencies: defaultContingencies,
-        closing_date: params.closeDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-        escalation_clause: params.escalationClause,
-        notes: params.additionalTerms ?? null,
-        ai_analysis: aiAnalysis,
-        status: "draft",
-      })
-      .select()
-      .single()
-
-    if (offerError) throw offerError
-
-    revalidatePath(`/dashboard/offers`)
-    revalidatePath(`/listings/${params.listingId}`)
-
-    return {
-      success: true,
-      offer: {
-        id: offer.id,
-        ...aiAnalysis,
-      },
-    }
-  } catch (error) {
-    console.error("[AI Offer Creation] Error:", error)
-    return handleError(error, "createAIOffer") as OfferCreationResult
-  }
-}
-
-/**
- * AI-Powered Counter Offer Strategy
- */
-export async function generateCounterOfferStrategy(
-  offerId: string,
-  agentId: string,
-  representingSide: "buyer" | "seller"
-): Promise<{ success: boolean; strategy?: any; error?: string }> {
-  try {
-    if (!isValidUUID(offerId) || !isValidUUID(agentId)) {
-      return { success: false, error: "Invalid ID" }
-    }
-
-    const supabase = await createClient()
-
-    const { data: offer } = await supabase
-      .from("offers")
-      .select(`
-        *,
-        listing:listings(*),
-        buyer:contacts(*)
-      `)
-      .eq("id", offerId)
-      .single()
-
-    if (!offer) return { success: false, error: "Offer not found" }
-
-    const { text } = await generateText({
-      model: "openai/gpt-4o",
-      prompt: `You are a real estate negotiation expert. Create a counter-offer strategy.
-
-You are representing the ${representingSide.toUpperCase()}.
-
-CURRENT OFFER:
-- List Price: $${offer.listing.list_price.toLocaleString()}
-- Offer: $${offer.offer_amount.toLocaleString()}
-- Earnest: $${offer.earnest_money.toLocaleString()}
-- Financing: ${offer.financing_type}
-- Contingencies: ${offer.contingencies?.join(", ")}
-- Close Date: ${offer.close_date}
-
-Provide a strategic counter-offer recommendation with:
-1. Recommended counter price
-2. Terms to negotiate
-3. Concessions to offer/request
-4. Timeline strategy
-5. Psychological tactics
-
-Return JSON with detailed strategy.`,
-    })
-
-    const strategy = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || text)
-    return { success: true, strategy }
-  } catch (error) {
-    return handleError(error, "generateCounterOfferStrategy") as any
-  }
-}
-
-/**
- * AI-Powered Offer Comparison for Sellers
- */
-export async function compareOffers(
-  listingId: string,
-  agentId: string
-): Promise<{ success: boolean; comparison?: any; error?: string }> {
-  try {
-    if (!isValidUUID(listingId) || !isValidUUID(agentId)) {
-      return { success: false, error: "Invalid ID" }
-    }
-
-    const supabase = await createClient()
-
-    const { data: offers } = await supabase
-      .from("offers")
-      .select(`
-        *,
-        buyer:contacts(first_name, last_name, contact_persona)
-      `)
-      .eq("listing_id", listingId)
-      .in("status", ["pending", "countered"])
-      .order("offer_price", { ascending: false })
-
-    if (!offers || offers.length === 0) {
-      return { success: false, error: "No offers to compare" }
-    }
-
-    const { data: listing } = await supabase.from("listings").select("*").eq("id", listingId).single()
-
-    const { text } = await generateText({
-      model: "openai/gpt-4o",
-      prompt: `You are a seller's agent analyzing multiple offers.
-
-LISTING:
-- Address: ${listing?.address}
-- List Price: $${listing?.price.toLocaleString()}
-
-OFFERS (${offers.length} total):
-${offers.map((o: any, i: number) => `
-Offer ${i + 1}:
-- Amount: $${o.offer_price.toLocaleString()}
-- Earnest: $${o.earnest_money.toLocaleString()}
-- Down Payment: ${o.down_payment_percent}%
-- Financing: ${o.financing_type}
-- Contingencies: ${o.contingencies?.join(", ")}
-- Close Date: ${o.closing_date}
-${o.escalation_clause ? `- Escalation: Up to $${o.escalation_clause.maxPrice.toLocaleString()}` : ""}`).join("\n")}
-
-Analyze and rank these offers. Consider:
-1. Net to seller
-2. Certainty of close
-3. Timeline
-4. Contingency risk
-5. Buyer qualification signals
-
-Return JSON:
-{
-  "ranking": [
-    { "offerId": "...", "rank": 1, "score": 95, "reasoning": "..." }
-  ],
-  "recommendation": "which offer to accept or counter",
-  "negotiationOpportunities": ["opportunity1", "opportunity2"],
-  "riskAnalysis": "overall risk assessment"
-}`,
-    })
-
-    const comparison = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || text)
-    return { success: true, comparison }
-  } catch (error) {
-    return handleError(error, "compareOffers") as any
-  }
-}
+// TOMBSTONE (§1.1, 2026-09-07): compareOffers deleted — survivor
+// app/actions/seller-offers.ts:triggerOfferComparison (→
+// lib/offers/offer-analyzer.ts:analyzeAndCompareOffers), which is
+// brokerage-scoped, computes seller-net with the brokerage's real commission
+// rate, and PERSISTS the result to `offer_comparison` (loadLatestOfferComparison
+// reads it back) plus `offers.ai_recommendation`/`ai_analysis` per offer. Merged:
+// nothing — the survivor already reads listings.list_price (never the phantom
+// `listing.price`), already reads escalation_clause/escalation_cap, and already
+// fence-strips the model's JSON (`.replace(/^\`\`\`json\n?/, "")` before
+// `JSON.parse`, guarded in try/catch) — a different but equally sufficient
+// technique to this deleted action's brace-regex extraction.

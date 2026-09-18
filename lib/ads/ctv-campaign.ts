@@ -10,15 +10,21 @@
 //      (platform='vibe_ctv', status='draft'), and return a complete LAUNCH
 //      PACKAGE — creative link, targeting + budget summaries, a real launch
 //      checklist, and the vibe.co deep link.
-//   2. lib/providers/vibe.ts — the connector slot. Dispatch FAILS HONESTLY
-//      with a not-configured / pending-vendor-contract reason until real Vibe
-//      API access exists. Status stays 'draft' until a human marks launched.
+//   2. lib/providers/vibe.ts — the LIVE connector (OAuth2 client credentials →
+//      creative upload → campaign → strategy → PUBLISH). Dispatch FAILS HONESTLY
+//      with the real reason when the brokerage has no Vibe credential; then
+//      status stays 'draft' until a human marks launched.
+//   3. launchCtvCampaignOnVibe (below) — the one flip-to-live for the API path,
+//      shared by the server action and the Ads Manager executor; and
+//      stageCtvCampaignForVideo — the autonomous staging a finished promotable
+//      render triggers through the manager bus.
 //
 // No simulated launches, no fake external ids — same honesty rule as the rest
 // of the ads domain (lib/ads/launch-assembler.ts: "no fake live state").
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { VIBE_HOME_URL } from "@/lib/providers/vibe"
+import { VIBE_HOME_URL, dispatchCtvCampaign, type CtvDispatchResult } from "@/lib/providers/vibe"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -63,8 +69,8 @@ export interface StageCtvCampaignResult {
 // ─── CREATIVE VALIDATION (pure) ──────────────────────────────────────────────
 
 /** Standard CTV spot lengths the lane accepts, with tolerance for encoder drift. */
-export const CTV_SPOT_LENGTHS_SECONDS = [15, 30] as const
-export const CTV_DURATION_TOLERANCE_SECONDS = 2
+const CTV_SPOT_LENGTHS_SECONDS = [15, 30] as const
+const CTV_DURATION_TOLERANCE_SECONDS = 2
 
 interface CreativeFacts {
   videoUrl: string | null
@@ -74,7 +80,7 @@ interface CreativeFacts {
   status: string | null
 }
 
-export interface CtvCreativeCheck {
+interface CtvCreativeCheck {
   ok: boolean
   /** Hard failures — the video cannot run as a CTV spot. */
   reasons: string[]
@@ -87,12 +93,15 @@ const NON_LANDSCAPE_FORMATS = ["9:16", "1:1", "vertical", "square", "portrait"]
 
 /** The CTV checks we CAN honestly run from recorded metadata. Anything we
  *  cannot verify becomes a warning + checklist item, never a fabricated pass. */
-export function validateCtvCreative(facts: CreativeFacts): CtvCreativeCheck {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function validateCtvCreative(facts: CreativeFacts): CtvCreativeCheck {
   const reasons: string[] = []
   const warnings: string[] = []
 
-  if (facts.status !== "completed") {
-    reasons.push(`video is not completed (status '${facts.status ?? "unknown"}') — only a fully rendered video can run on TV`)
+  // 'published' is POST-terminal and still means a rendered asset exists, so a
+  // distributed video is as eligible for TV as a merely completed one.
+  if (!facts.status || !(VIDEO_FINISHED_STATUSES as readonly string[]).includes(facts.status)) {
+    reasons.push(`video is not finished (status '${facts.status ?? "unknown"}') — only a fully rendered video can run on TV`)
   }
   if (!facts.videoUrl) {
     reasons.push("video has no rendered video_url — nothing to upload to Vibe")
@@ -127,7 +136,8 @@ function normalizeList(list?: string[]): string[] {
   return (list ?? []).map((s) => s.trim()).filter(Boolean)
 }
 
-export function summarizeCtvTargeting(t: CtvTargeting): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function summarizeCtvTargeting(t: CtvTargeting): string {
   const parts: string[] = []
   const dmas = normalizeList(t.dmas)
   const cities = normalizeList(t.cities)
@@ -138,7 +148,8 @@ export function summarizeCtvTargeting(t: CtvTargeting): string {
   return parts.join(" · ")
 }
 
-export function summarizeCtvBudget(dailyBudgetCents: number): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function summarizeCtvBudget(dailyBudgetCents: number): string {
   return `$${(dailyBudgetCents / 100).toFixed(2)}/day`
 }
 
@@ -177,7 +188,7 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     .eq("brokerage_id", brokerageId)
   videoQuery = videoProjectId
     ? videoQuery.eq("id", videoProjectId)
-    : videoQuery.eq("listing_id", listingId!).eq("status", "completed").not("video_url", "is", null)
+    : videoQuery.eq("listing_id", listingId!).in("status", [...VIDEO_FINISHED_STATUSES]).not("video_url", "is", null)
   const { data: videos, error: videoError } = await videoQuery
     .order("created_at", { ascending: false })
     .limit(1)
@@ -281,4 +292,145 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
       warnings: check.warnings,
     },
   }
+}
+
+// ─── LAUNCH ON VIBE — the one place a CTV row leaves draft by API ────────────
+//
+// dispatch (lib/providers/vibe.ts) + flip the row + ledger the launch. The
+// server action app/actions/ctv-ads.ts::dispatchCtvCampaignAction and the Ads
+// Manager executor (lib/ads/ad-manager.ts launch_ad_campaign, platform vibe_ctv)
+// both call THIS; neither re-spells the flip. No fake live state: the row moves
+// only on a Vibe-confirmed PUBLISHED campaign.
+
+export interface LaunchCtvInput {
+  campaignId: string
+  brokerageId: string
+  /** The human whose approval launched it (null when the Ads Manager ran an
+   *  approved action — the approver is on ad_manager_actions). */
+  actorUserId: string | null
+  launchedVia: "vibe_api" | "ads_manager"
+  client?: ReturnType<typeof createServiceClient>
+}
+
+export async function launchCtvCampaignOnVibe(input: LaunchCtvInput): Promise<CtvDispatchResult> {
+  const svc = input.client ?? createServiceClient()
+  const { data: campaign, error } = await svc
+    .from("ad_campaigns").select("id, targeting_config, status")
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (error) return { dispatched: false, reason: `campaign read refused: ${error.message}` }
+  if (!campaign) return { dispatched: false, reason: "Campaign not found in this brokerage" }
+  if (["live", "launching"].includes(String(campaign.status))) {
+    return { dispatched: false, reason: `campaign is already ${campaign.status}` }
+  }
+
+  const result = await dispatchCtvCampaign(input.campaignId)
+  if (!(result.dispatched && result.vibeCampaignId)) return result
+
+  const nowIso = new Date().toISOString()
+  // `external_campaign_id` is the ONE key every platform's ingest reads
+  // (lib/ads/ad-performance-ingest.ts); the vibe_* ids are the provider's own.
+  const { data: flipped, error: flipError } = await svc
+    .from("ad_campaigns")
+    .update({
+      status: "live",
+      updated_at: nowIso,
+      targeting_config: {
+        ...((campaign.targeting_config as Record<string, unknown>) ?? {}),
+        launched_via: input.launchedVia,
+        launched_at: nowIso,
+        external_campaign_id: result.vibeCampaignId,
+        vibe_campaign_id: result.vibeCampaignId,
+        vibe_strategy_id: result.vibeStrategyId ?? null,
+        vibe_creative_id: result.vibeCreativeId ?? null,
+      },
+    })
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId)
+    .select("id")
+  // An UPDATE matching nothing also resolves (§3): count what came back.
+  if (flipError || !flipped?.length) {
+    return { ...result, reason: `Published on Vibe (${result.vibeCampaignId}) but the row did NOT flip to live: ${flipError?.message ?? "no row matched"} — mark it launched by hand` }
+  }
+  const { error: eventError } = await svc.from("lifecycle_events").insert({
+    brokerage_id: input.brokerageId,
+    entity_type: "ad_campaign",
+    entity_id: input.campaignId,
+    event_type: "ad_campaign_launched",
+    actor_user_id: input.actorUserId,
+    metadata: { platform: "vibe_ctv", launched_via: input.launchedVia, vibe_campaign_id: result.vibeCampaignId },
+  })
+  if (eventError) console.error("[ctv-campaign] launch ledger refused:", eventError.message)
+  return result
+}
+
+// ─── AUTONOMOUS STAGING — a finished promotable video becomes a TV draft ─────
+//
+// The Asset Manager raises `ads_manager:video_ready` for just_listed /
+// just_sold / open_house renders (lib/kernel/video-coordination.ts), which
+// lib/kernel/manager-signals.ts turns into a `launch_ad_campaign` proposal that
+// carries ONLY a video_project_id. The executor needs a campaign; this stages
+// it — geography from the listing (its ZIP and city) or the brokerage's city,
+// budget at the lane's autonomous default — so the approved proposal can go
+// straight to Vibe. Idempotent per video.
+
+/** Autonomous default. Clamped by MAX_AD_DAILY_BUDGET_USD at execution. */
+export const CTV_AUTO_DAILY_BUDGET_USD = 25
+
+export async function stageCtvCampaignForVideo(input: {
+  brokerageId: string
+  videoProjectId: string
+  dailyBudgetUsd?: number
+  client?: ReturnType<typeof createServiceClient>
+}): Promise<{ ok: boolean; campaignId?: string; reason?: string; alreadyStaged?: boolean }> {
+  const svc = input.client ?? createServiceClient()
+  const { data: existing, error: existingError } = await svc
+    .from("ad_campaigns").select("id")
+    .eq("brokerage_id", input.brokerageId).eq("platform", "vibe_ctv")
+    .contains("targeting_config", { video_project_id: input.videoProjectId })
+    .limit(1).maybeSingle()
+  if (existingError) return { ok: false, reason: `ad_campaigns read refused: ${existingError.message}` }
+  if (existing) return { ok: true, campaignId: (existing as { id: string }).id, alreadyStaged: true }
+
+  const { data: v, error: vError } = await svc
+    .from("ai_video_projects").select("id, listing_id, agent_id")
+    .eq("id", input.videoProjectId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (vError) return { ok: false, reason: `video read refused: ${vError.message}` }
+  const video = v as { id: string; listing_id: string | null; agent_id: string | null } | null
+  if (!video) return { ok: false, reason: "video not found in this brokerage" }
+
+  // Geography: the listing's ZIP + city, else the brokerage's city. Never a
+  // demographic (Fair Housing) — the same rule the manual lane enforces.
+  const targeting: CtvTargeting = {}
+  let agentRecordId: string | null = video.agent_id
+  if (video.listing_id) {
+    const { data: l } = await svc.from("listings").select("city, zip, agent_id").eq("id", video.listing_id).maybeSingle()
+    const listing = l as { city: string | null; zip: string | null; agent_id: string | null } | null
+    if (listing?.zip) targeting.zips = [listing.zip]
+    if (listing?.city) targeting.cities = [listing.city]
+    agentRecordId = agentRecordId ?? listing?.agent_id ?? null
+  }
+  if (!targeting.zips?.length && !targeting.cities?.length) {
+    const { data: b } = await svc.from("brokerages").select("city").eq("id", input.brokerageId).maybeSingle()
+    const city = (b as { city: string | null } | null)?.city
+    if (city) targeting.cities = [city]
+  }
+  if (!targeting.zips?.length && !targeting.cities?.length) return { ok: false, reason: "no geography: the listing has no ZIP/city and the brokerage has no city" }
+
+  // agents.id and users.id are DISJOINT (§3) — cross via the resolver.
+  let agentUserId: string | null = null
+  if (agentRecordId) {
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    agentUserId = await resolveAgentRecordToUserId(agentRecordId)
+  }
+  if (!agentUserId) return { ok: false, reason: "no agent user to own the campaign (video and listing carry no resolvable agent)" }
+
+  const staged = await stageCtvCampaign({
+    brokerageId: input.brokerageId,
+    agentUserId,
+    listingId: video.listing_id,
+    videoProjectId: video.id,
+    dailyBudgetCents: Math.round((input.dailyBudgetUsd ?? CTV_AUTO_DAILY_BUDGET_USD) * 100),
+    targeting,
+  })
+  if (!staged.success || !staged.package) return { ok: false, reason: staged.error ?? "stage failed" }
+  return { ok: true, campaignId: staged.package.campaignId }
 }

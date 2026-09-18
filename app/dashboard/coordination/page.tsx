@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { getActiveSessions, getAgentMetrics } from "@/lib/intelligence/multi-agent-router"
+// Gated doors (session tenant) — the router module is server-only since 2026-09-03.
+import { getActiveSessions, getAgentMetrics } from "@/app/actions/coordination"
 import { CoordinationDashboardClient } from "./coordination-dashboard-client"
 
 export const dynamic = "force-dynamic"
@@ -28,8 +29,8 @@ export default async function CoordinationPage() {
   
   // Fetch initial data
   const [sessionsResult, metricsResult] = await Promise.all([
-    getActiveSessions(brokerageId!),
-    getAgentMetrics(brokerageId!, 7),
+    getActiveSessions(),
+    getAgentMetrics(7),
   ])
   
   // Get recent escalations

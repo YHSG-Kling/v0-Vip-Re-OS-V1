@@ -10,7 +10,6 @@
 
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Compass, Loader2, CheckCircle2, ArrowRight } from "lucide-react"
 import { submitNextMoveIntent } from "@/app/actions/portal-lifetime"
 import { nextMoveDeck, type NextMoveIntent } from "@/lib/portal/next-move"

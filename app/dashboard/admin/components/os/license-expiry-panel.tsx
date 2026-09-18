@@ -3,8 +3,7 @@
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { ShieldAlert, ShieldCheck, AlertTriangle, ChevronRight } from "lucide-react"
+import { ShieldAlert, ShieldCheck, ChevronRight } from "lucide-react"
 import Link from "next/link"
 import type { AgentLicenseStatus } from "@/app/actions/admin/license-tracking"
 
@@ -45,7 +44,12 @@ export function LicenseExpiryPanel({ agents }: Props) {
             <ShieldAlert className="h-4 w-4 text-amber-500" />
             License Expiry Tracking
           </CardTitle>
-          <Link href="/dashboard/admin/license-tracking" className="text-xs text-primary hover:underline flex items-center gap-0.5">
+          {/* SURVIVOR: the full brokerage licence board is the "License & CE" tab of
+              app/dashboard/admin/onboarding/admin-onboarding-os-client.tsx:219 — same
+              roster (getBrokerageAgentLicenseStatuses), same expiry filters, plus the
+              manual review action this summary panel has no room for.
+              /dashboard/admin/license-tracking never had a page.tsx. */}
+          <Link href="/dashboard/admin/onboarding?tab=license" className="text-xs text-primary hover:underline flex items-center gap-0.5">
             View all <ChevronRight className="h-3 w-3" />
           </Link>
         </div>

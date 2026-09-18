@@ -8,6 +8,13 @@
 // flag. Unknown property facts are left BLANK for the agent to fill. This maps the known property
 // facts onto a form's fillable fields by name; it never touches a non-property field. Pure (no I/O).
 
+/** The canonical property-identification field labels PROPERTY_PATTERNS recognizes — for a caller
+ *  with no PDF/AcroForm field list of its own (e.g. a "my forms" entry that isn't a fillable PDF) to
+ *  get a useful known/unknown preview without inventing its own field vocabulary. */
+export const KNOWN_PROPERTY_FIELD_LABELS = [
+  "Property Address", "Legal Description", "Property County", "Property City", "Property State", "Property Zip", "APN",
+] as const
+
 export interface KnownPropertyFacts {
   address?: string | null
   /** legal description — only present when the property/parcel record carries it (often unknown). */

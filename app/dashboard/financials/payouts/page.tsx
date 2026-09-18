@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import { isBrokerageFinanceAdmin } from '@/lib/auth/resolve-user-role'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -12,6 +13,9 @@ import {
 } from '../components/os'
 import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
 import { CommissionDisputeQueue } from '../components/commission-dispute-queue'
+import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
+import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = 'force-dynamic'
 
@@ -20,6 +24,13 @@ export default async function PayoutsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // user_type not role
   const { data: profile } = await supabase
     .from('users')
@@ -29,8 +40,12 @@ export default async function PayoutsPage() {
 
   if (!profile?.brokerage_id) redirect('/dashboard')
 
-  const allowedRoles = ['broker', 'admin', 'superadmin', 'team_lead']
-  if (!allowedRoles.includes(profile.user_type ?? '')) {
+  // BROKERAGE-WIDE MONEY (m472). This page is the brokerage's COMMISSION
+  // PAYOUT QUEUE — every agent's money, not one team's — and the local literal
+  // ADMITTED team_lead, which the owner's ruling holds out of exactly this. It
+  // also refused broker_owner, the person who owns the brokerage. Both are fixed
+  // by asking the ONE finance roster instead of a list written here.
+  if (!isBrokerageFinanceAdmin(profile as { user_type?: string | null })) {
     redirect('/dashboard/financials/agent')
   }
 
@@ -57,6 +72,36 @@ export default async function PayoutsPage() {
   function agentName(c: any) {
     return agentNameMap[c.agent_id] || `Agent ${(c.agent_id ?? '').slice(0, 8)}`
   }
+
+  // ─── PAYOUT READINESS ──────────────────────────────────────────────────────
+  // This panel was mounted with files={[]} and every count hardcoded to 0, so
+  // the broker saw an empty readiness board while the very same commission rows
+  // were rendered in the table below it. The data was already loaded on this
+  // page — only the wire was missing.
+  const payoutFiles = (commissionsData as any[]).map((c: any) => {
+    const status: "ready" | "blocked" | "pending_review" | "processing" =
+      c.status === "paid"       ? "processing"
+      : c.status === "approved" ? "ready"
+      : c.status === "disputed" ? "blocked"
+      : "pending_review"
+    return {
+      id: c.id,
+      agentId: c.agent_id,
+      agentName: agentName(c),
+      transactionId: c.transaction_id ?? undefined,
+      propertyAddress: c.property_address ?? undefined,
+      amount: c.agent_commission ?? 0,
+      status,
+      blockerReason: c.status === "disputed" ? (c.dispute_reason ?? "Disputed — awaiting broker resolution") : undefined,
+      closeDate: c.close_date ?? undefined,
+    }
+  })
+
+  const readyFiles     = payoutFiles.filter((f) => f.status === "ready")
+  const blockedFiles   = payoutFiles.filter((f) => f.status === "blocked")
+  const processingCnt  = payoutFiles.filter((f) => f.status === "processing").length
+  const pendingCnt     = payoutFiles.filter((f) => f.status === "pending_review").length
+  const sum = (rows: typeof payoutFiles) => rows.reduce((t, f) => t + (f.amount ?? 0), 0)
 
   // Build payout action stack
   const payoutActions: FinancialAction[] = []
@@ -144,14 +189,14 @@ export default async function PayoutsPage() {
 
       {/* Payout Readiness Panel */}
       <PayoutReadinessPanel
-        files={[]}
+        files={payoutFiles}
         summary={{
-          ready: 0,
-          blocked: 0,
-          pendingReview: pendingPayouts.length,
-          processing: 0,
-          totalReady: totalAgentPayouts,
-          totalBlocked: 0,
+          ready: readyFiles.length,
+          blocked: blockedFiles.length,
+          pendingReview: pendingCnt,
+          processing: processingCnt,
+          totalReady: sum(readyFiles),
+          totalBlocked: sum(blockedFiles),
         }}
       />
 
@@ -184,6 +229,10 @@ export default async function PayoutsPage() {
                     <th className="text-right py-2 px-2 font-semibold">Agent</th>
                     <th className="text-right py-2 px-2 font-semibold">Brokerage</th>
                     <th className="text-center py-2 px-2 font-semibold">Status</th>
+                    {/* The broker's payout board listed every commission and offered no way to
+                        move any of them. Approval (pending → approved) is the step the kernel
+                        REQUIRES before a payout is legal, and it had no surface anywhere. */}
+                    <th className="text-center py-2 px-2 font-semibold">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -200,8 +249,20 @@ export default async function PayoutsPage() {
                         <Badge variant={c.status === 'paid' ? 'default' : 'secondary'} className="text-xs">
                           {c.status === 'paid'
                             ? <><CheckCircle2 className="w-3 h-3 mr-1 inline" />Paid</>
-                            : <><Clock className="w-3 h-3 mr-1 inline" />Pending</>}
+                            : c.status === 'approved'
+                              ? <><CheckCircle2 className="w-3 h-3 mr-1 inline" />Approved</>
+                              : c.status === 'disputed'
+                                ? <>Disputed</>
+                                : <><Clock className="w-3 h-3 mr-1 inline" />Pending</>}
                         </Badge>
+                      </td>
+                      <td className="py-3 px-2 text-center">
+                        {c.status === 'pending' && (
+                          <ApproveCommissionButton commissionId={c.id} brokerageId={profile.brokerage_id} />
+                        )}
+                        {c.status === 'approved' && (
+                          <PayoutButton commissionId={c.id} brokerageId={profile.brokerage_id} />
+                        )}
                       </td>
                     </tr>
                   ))}

@@ -1,5 +1,6 @@
 import { runApifyTask } from './apify-actors'
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { runActorSyncGetDatasetItems } from "@/lib/providers/apify/client"
+import { apifyToken } from "@/lib/env/aliases"
 
 // ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
 export class ApifyClient {
@@ -24,7 +25,10 @@ export class ApifyClient {
   }
 }
 
-const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN!
+// ONE SPELLING (§6, 2026-09-03): APIFY_API_TOKEN is the survivor (connector
+// registry, launch checklist, tenancy matrix); the content-intel lane's
+// APIFY_TOKEN is accepted for one release through lib/env/aliases.ts. Resolved
+// per call rather than at module load so a token set after import is seen.
 
 export async function runApifyActor(
   actorId: string,
@@ -33,22 +37,12 @@ export async function runApifyActor(
   data: any[]
   cost: number
 }> {
-  // Apify REST paths address actors as `username~actorname` (the public slug uses
-  // a slash). Normalize so e.g. "apify/facebook-posts-scraper" → "apify~facebook-posts-scraper".
-  const id = actorId.replace("/", "~")
-
-  // run-sync-get-dataset-items: starts the actor, waits for it to finish, and
-  // returns the default dataset items in one call — the Apify-recommended pattern
-  // for synchronous scrapes. Avoids manual run polling + dataset-id resolution.
-  const runResponse = await callConnector<any>({
-    connector: "apify",
-    baseUrl: "https://api.apify.com",
-    path: `/v2/acts/${id}/run-sync-get-dataset-items`,
-    method: "POST",
-    auth: { style: "bearer", token: APIFY_API_TOKEN },
-    body: input,
-    timeoutMs: 60_000,
-  })
+  // Official Apify SDK adapter (lib/providers/apify/client.ts) — same
+  // run-sync-get-dataset-items semantics (starts the actor, waits for it to
+  // finish, returns the default dataset items), same price (Apify bills
+  // compute-unit usage, not request shape). The adapter normalizes the
+  // "owner/actor" vs "owner~actor" spelling itself.
+  const runResponse = await runActorSyncGetDatasetItems(apifyToken() ?? "", actorId, input, { timeoutSecs: 60 })
 
   // 200/201 = finished with dataset items; 408 = run timed out (actor too slow).
   if (!runResponse.ok) {

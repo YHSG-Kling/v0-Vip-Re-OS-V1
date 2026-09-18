@@ -21,6 +21,7 @@
  * Runs on the daily video-plays cron (asset_manager).
  */
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 import type { CarouselSlideRole } from "@/remotion/CarouselSlide"
 
 export interface CarouselSlidePlan {
@@ -126,8 +127,18 @@ export async function planListingCarousel(
 // RUNNER — queue slides for marketing-window listings, assemble finished sets
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function runListingCarousels(svc: any): Promise<{ carousels: number; carouselPosts: number; carouselErrors: number }> {
-  const out = { carousels: 0, carouselPosts: 0, carouselErrors: 0 }
+export interface ListingCarouselsResult {
+  carousels: number
+  carouselPosts: number
+  carouselErrors: number
+  /** Listings whose slide set the CONTENT CONTRACT refused BEFORE any row was staged — never inside `carousels`. */
+  carouselsRefused: number
+  /** One line per refusal — `<listing_id>: slide <i> (<role>): <describeMissingContent>` — so the count is never silent. */
+  carouselRefusals: string[]
+}
+
+export async function runListingCarousels(svc: any): Promise<ListingCarouselsResult> {
+  const out: ListingCarouselsResult = { carousels: 0, carouselPosts: 0, carouselErrors: 0, carouselsRefused: 0, carouselRefusals: [] }
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
 
   const { data: listings } = await svc.from("listings")
@@ -180,22 +191,45 @@ export async function runListingCarousels(svc: any): Promise<{ carousels: number
 
       const slidePhotos = [hero, ...photos.filter((p: string) => p !== hero)]
       let photoCursor = 0
+      // Every slide's payload is BUILT before any is STAGED, and the whole set
+      // is asked the content contract's question first — the same one the
+      // render backstop (render-composition/route.ts) asks before it cancels.
+      // A slide whose kicker/body came back empty from planListingCarousel used
+      // to be inserted anyway: the backstop cancelled it, the ASSEMBLE pass
+      // below then waited forever for `slideCount` finished slides, and the
+      // listing counted as a carousel produced while its other slides rendered
+      // for nothing. One refused slide refuses the SET (a carousel is one post),
+      // by name, before a single row or render minute is spent.
+      const planned: Array<Record<string, unknown>> = slides.map((s, i) => ({
+        role: s.role, slideIndex: i, slideCount: slides.length,
+        kicker: s.kicker, title: s.title, body: s.body,
+        photoUrl: s.usePhoto ? (slidePhotos[photoCursor++ % slidePhotos.length] ?? hero) : null,
+        statValue: s.statValue ?? "", statLabel: s.statLabel ?? "",
+        agentName, agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
+        handleLine: brand.brokerageName,
+        brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
+      }))
+      const refusedSlides = planned.flatMap((inputProps, i) => {
+        const missing = missingContentProps("CarouselSlide", inputProps)
+        return missing.length > 0
+          ? [`slide ${i} (${slides[i].role}): ${describeMissingContent("CarouselSlide", missing)}`]
+          : []
+      })
+      if (refusedSlides.length > 0) {
+        const reason = refusedSlides.join(" | ")
+        console.warn(`[social-carousel] listing ${l.id} carousel skipped — ${reason}`)
+        out.carouselsRefused += 1
+        out.carouselRefusals.push(`${l.id}: ${reason}`)
+        continue
+      }
+
       const { recordRenderQueued } = await import("@/lib/remotion/registry")
       let queued = 0
-      for (let i = 0; i < slides.length; i++) {
-        const s = slides[i]
-        const photoUrl = s.usePhoto ? (slidePhotos[photoCursor++ % slidePhotos.length] ?? hero) : null
+      for (const inputProps of planned) {
         const rq = await recordRenderQueued({
           brokerageId: l.brokerage_id, compositionId: "CarouselSlide", agentUserId,
           entityType: "social_carousel", entityId: l.id,
-          inputProps: {
-            role: s.role, slideIndex: i, slideCount: slides.length,
-            kicker: s.kicker, title: s.title, body: s.body,
-            photoUrl, statValue: s.statValue ?? "", statLabel: s.statLabel ?? "",
-            agentName, agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
-            handleLine: brand.brokerageName,
-            brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
-          },
+          inputProps,
           scopeType: "brokerage", scopeId: l.brokerage_id, requestedVia: "cron",
         })
         if (rq.ok) queued++

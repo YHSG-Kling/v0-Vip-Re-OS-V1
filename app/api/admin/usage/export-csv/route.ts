@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextRequest, NextResponse } from "next/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
     .maybeSingle()
 
   const resolvedType = profile?.user_type ?? profile?.role ?? ""
-  if (!profile || !["broker", "admin", "superadmin"].includes(resolvedType)) {
+  if (!profile || !isAdminOrBroker({ user_type: resolvedType })) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 

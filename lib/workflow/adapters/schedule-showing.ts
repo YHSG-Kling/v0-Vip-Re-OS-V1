@@ -21,6 +21,7 @@
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { INTEGRATION_STATUS_CONNECTED } from "@/lib/integrations/integration-status"
 
 export const scheduleShowingAdapter: ChannelAdapter = {
   channel: "schedule_showing",
@@ -68,7 +69,7 @@ export const scheduleShowingAdapter: ChannelAdapter = {
           .select("metadata, status")
           .eq("brokerage_id", brokerageId)
           .eq("provider_type", "showingtime")
-          .eq("status", "active")
+          .eq("status", INTEGRATION_STATUS_CONNECTED)
           .maybeSingle()
         integrationApiKey = (integration?.metadata as { api_key?: string } | null)?.api_key ?? null
       }

@@ -4,7 +4,11 @@ import { ScrapeDiagnosticsClient } from "./scrape-diagnostics-client"
 import { TenantCoverageCard } from "./tenant-coverage-card"
 import { loadTenantCoverage, type TenantCoverage } from "@/lib/analytics/territory-coverage"
 import { loadTerritoryRoi, type TerritoryRoiReport } from "@/lib/analytics/territory-roi"
+import { rollupIntentPhrases, type IntentPhraseStat } from "@/lib/analytics/intent-phrase-rollup"
+import { IntentPhraseCard } from "./intent-phrase-card"
 import { redirect } from "next/navigation"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export const metadata = {
   title:       "Scrape Diagnostics | Kernel OS Admin",
@@ -36,20 +40,30 @@ export default async function ScrapeDiagnosticsPage() {
 
   const { data: userData } = await supabase
     .from("users")
-    .select("user_type, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   const userType    = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? undefined
+  // Platform scope from BOTH identity columns. `userType === "superadmin"` is
+  // FALSE for the platform's only superadmin (user_type='admin',
+  // platform_role='superadmin'), so this page always ran the brokerage-scoped
+  // branch: the owner saw one tenant's scrape runs behind a header reading
+  // "Production", and the tenant-coverage card (a card explicitly not meant for
+  // them) rendered instead. Same shape as public.is_platform_admin() in RLS —
+  // see app/actions/vendor-budget.ts:136-147.
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(userType, userData?.platform_role)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     redirect("/dashboard")
   }
 
   // Delegate all data loading to the kernel command
   const diagnostics = await loadScrapingDiagnostics({
-    brokerageId: userType === "superadmin" ? undefined : brokerageId,
+    brokerageId: isSuperadmin ? undefined : brokerageId,
     limit:       100,
   })
 
@@ -73,7 +87,7 @@ export default async function ScrapeDiagnosticsPage() {
   let tenantCoverageError: string | null = null
   let tenantRoi: TerritoryRoiReport | null = null
   let tenantRoiError: string | null = null
-  if (userType !== "superadmin" && brokerageId) {
+  if (!isSuperadmin && brokerageId) {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
     const [cov, roi] = await Promise.all([
@@ -86,15 +100,34 @@ export default async function ScrapeDiagnosticsPage() {
     tenantRoiError = roi.error
   }
 
+  // WHICH PHRASES CONVERT — the reverse-cohort rollup. Scope follows the same
+  // rule as everything else on this page: a brokerage admin sees only their own
+  // raw rows, platform staff (no single brokerage) see the platform aggregate.
+  // The rollup runs on the service client, so passing the brokerage id is what
+  // makes the tenant view a tenant view.
+  const INTENT_PHRASE_WINDOW_DAYS = 60
+  const intentPhrases = await rollupIntentPhrases({
+    sinceDays:   INTENT_PHRASE_WINDOW_DAYS,
+    limit:       25,
+    brokerageId: isSuperadmin ? null : (brokerageId ?? null),
+  })
+  const intentPhraseStats: IntentPhraseStat[] = intentPhrases.stats
+
   return (
     <>
       <ScrapeDiagnosticsClient
         data={diagnostics}
         actorHealth={actorHealth ?? []}
-        isSuperadmin={userType === "superadmin"}
+        isSuperadmin={isSuperadmin}
         currentUserId={user.id}
       />
-      {userType !== "superadmin" && brokerageId && (
+      <IntentPhraseCard
+        stats={intentPhraseStats}
+        error={intentPhrases.error}
+        scopeLabel={isSuperadmin ? "Platform-wide" : "Your brokerage"}
+        sinceDays={INTENT_PHRASE_WINDOW_DAYS}
+      />
+      {!isSuperadmin && brokerageId && (
         <TenantCoverageCard
           coverage={tenantCoverage}
           coverageError={tenantCoverageError}
