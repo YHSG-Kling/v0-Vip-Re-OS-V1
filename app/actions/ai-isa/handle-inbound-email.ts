@@ -23,6 +23,9 @@ import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { buildISATools } from '@/lib/ai-isa/tools'
 import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
+import { resolveToolPersona, filterRentCastToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
+import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -245,7 +248,8 @@ export async function processInboundEmail(params: {
       `id, first_name, last_name, email, brokerage_id, agent_id,
        motivation_type, property_interest, budget_min, budget_max,
        timeline, lead_score, lifecycle_state, lead_type,
-       contact_id, preferred_channel, call_stop_flag`
+       contact_id, preferred_channel, call_stop_flag,
+       persona, home_owner_status`
     )
     .eq('id', params.leadId)
   if (callerBrokerageId) {
@@ -263,7 +267,7 @@ export async function processInboundEmail(params: {
         .from('contacts')
         .select(
           `id, first_name, last_name, email, phone,
-           contact_type, persona:contact_persona, buyer_stage,
+           contact_type, persona:contact_persona, buyer_stage, home_owner_status,
            lifecycle_state, status, tcpa_consent, tcpa_consent_date,
            isa_reengage_allowed, dnc_status, brokerage_id, team_id, agent_id`
         )
@@ -398,26 +402,48 @@ export async function processInboundEmail(params: {
     inboundExcerpt: params.body.slice(0, 280),
   })
 
-  // BatchData property-intelligence tools (wave 71) — gated: {} when
-  // BatchData's MCP is unconfigured (batchDataIsaTools resolves the SAME
-  // token lib/external/batchdata-mcp.ts itself uses), so an ISA conversation
-  // with no BatchData token behaves exactly as before. Persona is always
-  // "isa" here — the inbound-email handler qualifies a known lead, never an
-  // investor-portal visitor. conversationKey = leadId scopes the ordering
-  // (page-before-preview/count) and per-conversation spend budget to THIS
-  // lead's thread across turns.
+  // BatchData/RentCast property-intelligence tools (wave 71, widened lane 73B)
+  // — gated: {} when BatchData's MCP is unconfigured (batchDataIsaTools
+  // resolves the SAME token lib/external/batchdata-mcp.ts itself uses), so an
+  // ISA conversation with no BatchData token behaves exactly as before.
+  // Persona is DERIVED (resolveToolPersona, lib/ai-isa/persona-tool-policy.ts)
+  // from the linked CONTACT's own contact_type/contact_persona/home_owner_
+  // status when this lead already carries one, else the LEAD's own persona/
+  // home_owner_status/lead_type — never a request body. conversationKey =
+  // leadId scopes the ordering (page-before-preview/count) and per-persona
+  // spend budget to THIS lead's thread across turns.
+  const toolPersona = resolveToolPersona({
+    contactType: contact?.contact_type ?? (lead.lead_type === 'seller' ? 'seller' : 'buyer'),
+    contactPersona: contact?.persona ?? lead.persona ?? null,
+    homeOwnerStatus: contact?.home_owner_status ?? lead.home_owner_status ?? null,
+  })
   const batchDataTools = await batchDataIsaTools({
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
-    persona: 'isa',
+    persona: toolPersona,
     conversationKey: lead.id,
     contactId: lead.contact_id ?? null,
+  })
+  // RentCast MCP tools (wave 69), narrowed per persona (buyer: listing/valuation-
+  // shaped tools; renter: rental-shaped tools; relocation: market/listing-shaped
+  // tools; seller/investor/sphere: {} — persona-tool-policy.ts's rentCastEnabled).
+  const rentCastTools = filterRentCastToolsForPersona(
+    await rentCastMcpTools({ brokerageId: lead.brokerage_id, userId: null }),
+    toolPersona,
+  )
+  // Free internal tools (own context, showing/call request, our own listings) —
+  // lib/ai-isa/customer-context-tools.ts, shared with every other customer surface.
+  const freeTools = buildCustomerFreeTools({
+    brokerageId: lead.brokerage_id,
+    contactId: lead.contact_id ?? null,
+    leadId: lead.id,
+    agentId: lead.agent_id ?? null,
   })
 
   const { text: replyBody } = await generateText({
     feature: 'ai_isa_response',
     system: systemPrompt,
-    tools: { ...isaTools, ...batchDataTools },
+    tools: { ...isaTools, ...freeTools, ...batchDataTools, ...rentCastTools },
     maxSteps: 5,
     messages: [
       {

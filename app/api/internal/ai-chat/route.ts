@@ -7,6 +7,8 @@ import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import { batchDataMcpTools } from "@/lib/external/batchdata-ai-tools"
 import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
+import { resolveEffectiveBatchDataToolTier, filterToolsByTier } from "@/lib/ai-isa/persona-tool-policy"
+import { writeFollowUpActivity } from "@/lib/ai-isa/customer-context-tools"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -576,23 +578,21 @@ export async function POST(req: NextRequest) {
         title: z.string().describe("Short title, e.g. 'Follow-up call with John'"),
       }),
       execute: async ({ contact_id, activity_type, scheduled_at, notes, title }) => {
-        const { data, error } = await service
-          .from("activities")
-          .insert({
-            brokerage_id: brokerageId,
-            agent_id: await resolveAgentId(service as any, user.id),
-            contact_id,
-            activity_type,
-            scheduled_at,
-            notes: notes ?? undefined,
-            title,
-            status: "scheduled",
-          })
-          .select("id, title, scheduled_at")
-          .maybeSingle()
-
-        if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-        return { success: true, activity_id: data.id, title: data.title, scheduled_at: data.scheduled_at }
+        // Reused via lib/ai-isa/customer-context-tools.ts::writeFollowUpActivity — the
+        // SAME insert shape this tool always wrote (§6: one implementation, two call
+        // sites: this arbitrary-contact_id STAFF tool, and that file's contact-LOCKED
+        // request_showing for customer-facing surfaces).
+        const result = await writeFollowUpActivity({
+          brokerageId,
+          agentId: await resolveAgentId(service as any, user.id),
+          contactId: contact_id,
+          activityType: activity_type,
+          scheduledAt: scheduled_at,
+          notes,
+          title,
+        })
+        if (!result.success) return { success: false, error: result.error }
+        return { success: true, activity_id: result.activityId, title, scheduled_at: result.scheduledAt }
       },
     }),
 
@@ -1228,7 +1228,17 @@ export async function POST(req: NextRequest) {
   // {} otherwise), so an agent surface with no BatchData token behaves exactly as
   // before. Tenant scoped from the SESSION-resolved brokerageId/user.id above, never
   // a request body (CLAUDE.md §4); each tool call meters its own spend.
-  const batchDataTools = await batchDataMcpTools({ brokerageId, userId: user.id })
+  //
+  // LANE 73B — the FULL, ungoverned catalogue above is still staff-only (no
+  // persona split, per wave 72B's own docs), but it is NOT exempt from the
+  // platform's BATCHDATA_TOOL_TIER constriction: "off" = zero BatchData tools,
+  // even for staff (RentCast + agentTools untouched); "lean" (the documented
+  // default) narrows the discovered catalogue to preview/count/lookup_property/
+  // verify-prefixed/check_dnc_status/check_tcpa_status tool names, cutting any
+  // `_page` or skip-trace-shaped tool the account's MCP happens to expose.
+  const batchDataToolsFull = await batchDataMcpTools({ brokerageId, userId: user.id })
+  const batchDataToolsTier = await resolveEffectiveBatchDataToolTier()
+  const batchDataTools = filterToolsByTier(batchDataToolsFull, batchDataToolsTier)
 
   // RentCast property-lookup MCP tools (wave 69) — gated: only added when RENTCAST_API_KEY is
   // configured (rentCastMcpTools resolves {} otherwise). Agent-copilot lookups ONLY — every

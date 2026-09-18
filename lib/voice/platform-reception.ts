@@ -126,6 +126,16 @@ export type PlatformTurnAction =
 export interface PlatformTurnPlan {
   say: string
   action: PlatformTurnAction
+  /** Lane 73B — the schema field exists for parity with
+   *  lib/voice/reception-brain.ts's VoiceTurnPlan, but this line has NO
+   *  tenant/brokerage and no property context at all (it is the PLATFORM's
+   *  own prospect/support line, not a tenant's) — there is nothing a
+   *  persona-scoped property tool could look up here. ALWAYS null; the model
+   *  is never instructed to populate it (PLATFORM_TURN_INSTRUCTIONS has no
+   *  tool_request line) and nothing executes it. Recorded as UNRESOLVED per
+   *  CLAUDE.md §1 rather than silently wired past a context this line does
+   *  not have. */
+  toolRequest?: null
 }
 
 export const PLATFORM_TURN_INSTRUCTIONS = [

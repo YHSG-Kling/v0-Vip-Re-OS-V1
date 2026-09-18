@@ -85,6 +85,21 @@
  * and are skipped entirely when `ctx.contactId` is not known (an anonymous
  * pre-capture conversation still gets the flag back for the model, it just
  * has no tenant-scoped row to persist it to).
+ *
+ * LANE 73B — PERSONA CATALOGUE WIDENED, GATING NOW POLICY-DRIVEN. The two
+ * hand-rolled personas above ("isa" as a buyer/seller catch-all, "investor")
+ * are RETIRED in favor of `lib/ai-isa/persona-tool-policy.ts`'s `ToolPersona`
+ * (buyer/seller/investor/renter/relocation/sphere), derived from the SAME
+ * contact_type/contact_persona/home_owner_status vocabulary every mounting
+ * surface already reads (never a second vocabulary — CLAUDE.md §6). Every
+ * `if (ctx.persona === "isa" | "investor")` gate below is now
+ * `isToolAllowedForPersona(ctx.persona, "<name>")` against that file's ONE
+ * policy table, and the whole registry is filtered a SECOND time through the
+ * platform's `BATCHDATA_TOOL_TIER` (full/lean/off, auto-downgraded on monthly
+ * spend) before it is returned — see persona-tool-policy.ts's header for both
+ * rulings in full. investor/property-only redaction behavior is UNCHANGED;
+ * it is now applied to every persona `persona-tool-policy.ts` marks
+ * "property-only" (buyer, investor, renter, relocation), not only "investor".
  */
 
 import { tool } from "ai"
@@ -108,17 +123,29 @@ import {
   verifyPhone as mcpVerifyPhone,
   type BuyBoxMatchRow,
 } from "@/lib/external/batchdata-mcp"
+import {
+  type ToolPersona,
+  PERSONA_TOOL_POLICY,
+  isToolAllowedForPersona,
+  redactionModeForPersona,
+  resolveEffectiveBatchDataToolTier,
+  filterToolsByTier,
+} from "@/lib/ai-isa/persona-tool-policy"
 
-export type BatchDataIsaPersona = "isa" | "investor"
+/** @deprecated alias for `ToolPersona` (lib/ai-isa/persona-tool-policy.ts) — kept so any
+ *  external importer of the old name keeps compiling; every new caller should import
+ *  `ToolPersona` directly. */
+export type BatchDataIsaPersona = ToolPersona
+export type { ToolPersona }
 
 export interface BatchDataIsaToolsContext {
   brokerageId: string
   userId?: string | null
   agentId?: string | null
-  /** "isa" (seller/buyer qualification) or "investor" (investor portal — property-only,
-   *  never skip-trace/owner-contact tools). Caller derives this from the surface, never
-   *  from a request body. */
-  persona: BatchDataIsaPersona
+  /** buyer | seller | investor | renter | relocation | sphere — lib/ai-isa/persona-tool-
+   *  policy.ts's ToolPersona, derived by the CALLER (resolveToolPersona) from the contact/
+   *  lead's own contact_type/contact_persona/home_owner_status, never from a request body. */
+  persona: ToolPersona
   /** Stable key scoping ordering + spend-budget state to ONE conversation — never shared
    *  across tenants or conversations. leadId for the ISA's inbound-email handler;
    *  embedSessionId (preferred) or contactId for the live avatar (custom-llm route). */
@@ -128,6 +155,13 @@ export interface BatchDataIsaToolsContext {
    *  anonymous/pre-capture conversation; the tool still runs, it just has nothing
    *  tenant-scoped to write to. */
   contactId?: string | null
+  /** Declares this conversation outbound-eligible — required (default false, fail closed)
+   *  before the "sphere" persona's verify_phone/check_dnc_status/check_tcpa_status tools are
+   *  registered at all. A sphere-of-influence/referral contact is not being sold a
+   *  property; those tools exist ONLY to confirm a number is safe to call before the
+   *  outbound gate (lib/communication/tcpa-gate.ts) itself runs, never as a substitute for
+   *  it and never as general-purpose lookups for a persona with no property need. */
+  outboundEligible?: boolean
 }
 
 // ─── PER-CONVERSATION STATE — ordering + spend budget ──────────────────────────────
@@ -186,6 +220,16 @@ export function resolveBatchDataIsaBudgetCents(): number {
   const raw = process.env.BATCHDATA_ISA_BUDGET_CENTS
   const n = raw !== undefined ? Number(raw) : NaN
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_BUDGET_CENTS
+}
+
+/** @proofSeam PURE — the EFFECTIVE per-conversation cap for `persona`: the tighter of the
+ *  env-wide ceiling (resolveBatchDataIsaBudgetCents) and that persona's OWN cap
+ *  (PERSONA_TOOL_POLICY[persona].capCents — e.g. buyer $1.00, renter $0.00). An env
+ *  override can only ever TIGHTEN a persona's spend, never loosen it past what the policy
+ *  table grants — a platform operator raising BATCHDATA_ISA_BUDGET_CENTS must not
+ *  accidentally hand the renter persona a BatchData budget it has no tools to spend. */
+export function resolvePersonaBudgetCents(persona: ToolPersona): number {
+  return Math.min(resolveBatchDataIsaBudgetCents(), PERSONA_TOOL_POLICY[persona].capCents)
 }
 
 export type ToolRefusal = { success: false; error: string }
@@ -293,8 +337,10 @@ export function toIsaFacingToolRow(row: BuyBoxMatchRow): BuyBoxMatchRow {
   return row
 }
 
-function mapRows(persona: BatchDataIsaPersona, rows: BuyBoxMatchRow[]): unknown[] {
-  return persona === "investor" ? rows.map(toInvestorFacingToolRow) : rows.map(toIsaFacingToolRow)
+function mapRows(persona: ToolPersona, rows: BuyBoxMatchRow[]): unknown[] {
+  return redactionModeForPersona(persona) === "property-only"
+    ? rows.map(toInvestorFacingToolRow)
+    : rows.map(toIsaFacingToolRow)
 }
 
 /** The zod schema below models "no city given" as `null` (an LLM-friendly explicit
@@ -337,7 +383,7 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
   if (!ctx.brokerageId || !ctx.conversationKey) return {}
 
   const state = getConversationState(ctx.conversationKey)
-  const budgetCents = resolveBatchDataIsaBudgetCents()
+  const budgetCents = resolvePersonaBudgetCents(ctx.persona)
 
   /** Refuses BEFORE any BatchData call and BEFORE any metering when the call would push
    *  this conversation over its budget. Returns null when the call may proceed. Delegates
@@ -381,8 +427,8 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
 
   const registry: Record<string, unknown> = {}
 
-  // ── lookup_property (isa only) ──────────────────────────────────────────────────
-  if (ctx.persona === "isa") {
+  // ── lookup_property (seller only — it IS their own home) ────────────────────────
+  if (isToolAllowedForPersona(ctx.persona, "lookup_property")) {
     registry.lookup_property = tool({
       description: "Look up a single property's full BatchData record by address — tax assessor, valuation, building characteristics. Use to answer a lead's question about their own (or a property they're asking about) home.",
       inputSchema: z.object(AddressCriteriaShape),
@@ -397,38 +443,42 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
     })
   }
 
-  // ── search_properties_preview / count (both personas) ──────────────────────────
-  registry.search_properties_preview = tool({
-    description: "Free/no-charge sample of properties matching the given address/city/state/zip. ALWAYS call this (or search_properties_count) before search_properties_page for the same criteria.",
-    inputSchema: z.object(AddressCriteriaShape),
-    execute: async (args: { address: string; city: string | null; state: string | null; zip: string | null }) => {
-      const r = await callBatchDataMcp("search_properties_preview", args)
-      if (!r.ok) return { success: false, error: r.error ?? "BatchData search_properties_preview failed" }
-      markSeen("search_properties", args)
-      // Preview is documented as the no-charge sample (lib/external/batchdata-mcp.ts's
-      // own investorBuyboxPreview doc comment) — no spend to record.
-      return { success: true, data: mapRows(ctx.persona, extractRows(r.data)) }
-    },
-  })
+  // ── search_properties_preview / count (investor, relocation) ────────────────────
+  if (isToolAllowedForPersona(ctx.persona, "search_properties_preview")) {
+    registry.search_properties_preview = tool({
+      description: "Free/no-charge sample of properties matching the given address/city/state/zip. ALWAYS call this (or search_properties_count) before search_properties_page for the same criteria.",
+      inputSchema: z.object(AddressCriteriaShape),
+      execute: async (args: { address: string; city: string | null; state: string | null; zip: string | null }) => {
+        const r = await callBatchDataMcp("search_properties_preview", args)
+        if (!r.ok) return { success: false, error: r.error ?? "BatchData search_properties_preview failed" }
+        markSeen("search_properties", args)
+        // Preview is documented as the no-charge sample (lib/external/batchdata-mcp.ts's
+        // own investorBuyboxPreview doc comment) — no spend to record.
+        return { success: true, data: mapRows(ctx.persona, extractRows(r.data)) }
+      },
+    })
+  }
 
-  registry.search_properties_count = tool({
-    description: "Billed count of properties matching the given address/city/state/zip (no rows returned) — use to size a search before paying for a full page. ALWAYS call this (or search_properties_preview) before search_properties_page for the same criteria.",
-    inputSchema: z.object(AddressCriteriaShape),
-    execute: async (args: { address: string; city: string | null; state: string | null; zip: string | null }) => {
-      const cost = MCP_TOOL_CALL_COST_USD / 5 // a count returns no rows — priced as a fraction of a full page pull, derived from the SAME estimate rather than a second invented number
-      const refusal = budgetRefusal(cost)
-      if (refusal) return refusal
-      const r = await callBatchDataMcp<Record<string, unknown>>("search_properties_count", args)
-      if (!r.ok) return { success: false, error: r.error ?? "BatchData search_properties_count failed" }
-      markSeen("search_properties", args)
-      recordSpend(cost, "search_properties_count")
-      const count = typeof r.data?.count === "number" ? r.data.count : typeof r.data === "number" ? (r.data as number) : null
-      return { success: true, count }
-    },
-  })
+  if (isToolAllowedForPersona(ctx.persona, "search_properties_count")) {
+    registry.search_properties_count = tool({
+      description: "Billed count of properties matching the given address/city/state/zip (no rows returned) — use to size a search before paying for a full page. ALWAYS call this (or search_properties_preview) before search_properties_page for the same criteria.",
+      inputSchema: z.object(AddressCriteriaShape),
+      execute: async (args: { address: string; city: string | null; state: string | null; zip: string | null }) => {
+        const cost = MCP_TOOL_CALL_COST_USD / 5 // a count returns no rows — priced as a fraction of a full page pull, derived from the SAME estimate rather than a second invented number
+        const refusal = budgetRefusal(cost)
+        if (refusal) return refusal
+        const r = await callBatchDataMcp<Record<string, unknown>>("search_properties_count", args)
+        if (!r.ok) return { success: false, error: r.error ?? "BatchData search_properties_count failed" }
+        markSeen("search_properties", args)
+        recordSpend(cost, "search_properties_count")
+        const count = typeof r.data?.count === "number" ? r.data.count : typeof r.data === "number" ? (r.data as number) : null
+        return { success: true, count }
+      },
+    })
+  }
 
   // ── search_properties_page (investor only) ──────────────────────────────────────
-  if (ctx.persona === "investor") {
+  if (isToolAllowedForPersona(ctx.persona, "search_properties_page")) {
     registry.search_properties_page = tool({
       description: "Full (billed) page of properties matching the given address/city/state/zip. REFUSED unless search_properties_preview or search_properties_count already ran for the SAME criteria this conversation.",
       inputSchema: z.object({ ...AddressCriteriaShape, take: z.number().int().min(1).max(50).nullable().describe("Rows to return, max 50"), skip: z.number().int().min(0).nullable().describe("Rows to skip") }),
@@ -445,8 +495,9 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
     })
   }
 
-  // ── verify_address (isa only — investor never needs a mailing address) ─────────
-  if (ctx.persona === "isa") {
+  // ── verify_address (seller only — investor/buyer/renter/relocation never need a
+  //    mailing address, and only the owner's own address is being confirmed) ──────
+  if (isToolAllowedForPersona(ctx.persona, "verify_address")) {
     registry.verify_address = tool({
       description: "Verify and standardize a mailing address via BatchData's Address API. Use before sending mail or recording a contact's address as confirmed.",
       inputSchema: z.object({ street: z.string(), city: z.string().nullable(), state: z.string().nullable(), zip: z.string().nullable() }),
@@ -466,8 +517,14 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
         return { success: true, verified, standardized: r.data ?? null }
       },
     })
+  }
 
-    // ── verify_phone / check_dnc_status / check_tcpa_status (isa only) ───────────
+  // ── verify_phone / check_dnc_status / check_tcpa_status (sphere only, AND only when
+  //    the caller declares this conversation outbound-eligible — fail closed) ───────
+  if (
+    isToolAllowedForPersona(ctx.persona, "verify_phone") &&
+    (ctx.persona !== "sphere" || ctx.outboundEligible === true)
+  ) {
     registry.verify_phone = tool({
       description: "Verify a phone number is reachable and get its line type via BatchData. Use before recording a phone as confirmed, or before an outbound call/SMS is scheduled.",
       inputSchema: z.object(PhoneShape),
@@ -531,19 +588,22 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
     })
   }
 
-  // ── comparable_property_preview / count (both personas) ────────────────────────
-  registry.comparable_property_preview = tool({
-    description: "Free/no-charge sample of comparable properties (comps) for the given address.",
-    inputSchema: z.object(AddressCriteriaShape),
-    execute: async (args: { address: string; city: string | null; state: string | null; zip: string | null }) => {
-      const r = await comparablePropertyPreview(forTypedWrapper(args))
-      if (r.unconfigured) return { success: false, error: "BatchData MCP not configured" }
-      if (!r.ok) return { success: false, error: r.error ?? "BatchData comparable_property_preview failed" }
-      markSeen("comparable_property", args)
-      return { success: true, data: mapRows(ctx.persona, r.rows) }
-    },
-  })
+  // ── comparable_property_preview / count (buyer, seller, investor) ───────────────
+  if (isToolAllowedForPersona(ctx.persona, "comparable_property_preview")) {
+    registry.comparable_property_preview = tool({
+      description: "Free/no-charge sample of comparable properties (comps) for the given address.",
+      inputSchema: z.object(AddressCriteriaShape),
+      execute: async (args: { address: string; city: string | null; state: string | null; zip: string | null }) => {
+        const r = await comparablePropertyPreview(forTypedWrapper(args))
+        if (r.unconfigured) return { success: false, error: "BatchData MCP not configured" }
+        if (!r.ok) return { success: false, error: r.error ?? "BatchData comparable_property_preview failed" }
+        markSeen("comparable_property", args)
+        return { success: true, data: mapRows(ctx.persona, r.rows) }
+      },
+    })
+  }
 
+  if (isToolAllowedForPersona(ctx.persona, "comparable_property_count")) {
   registry.comparable_property_count = tool({
     description: "Billed count of comparable properties for the given address (no rows).",
     inputSchema: z.object(AddressCriteriaShape),
@@ -559,9 +619,10 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
       return { success: true, count: r.count }
     },
   })
+  }
 
   // ── investor_buybox_preview / count (investor only) ─────────────────────────────
-  if (ctx.persona === "investor") {
+  if (isToolAllowedForPersona(ctx.persona, "investor_buybox_preview")) {
     registry.investor_buybox_preview = tool({
       description: "Free/no-charge sample of investors whose buy-box matches this subject property.",
       inputSchema: z.object(AddressCriteriaShape),
@@ -591,5 +652,13 @@ export async function batchDataIsaTools(ctx: BatchDataIsaToolsContext): Promise<
     })
   }
 
-  return registry
+  // ── PLATFORM COST-TIER CONSTRICTION (lane 73B) ──────────────────────────────────
+  // Applied LAST, after the persona allowlist above already narrowed the registry —
+  // the tier can only narrow further, never grant a persona a tool its own policy
+  // never listed. "full" → no change. "lean" (the documented default) → preview/
+  // count/lookup_property/verify_*/check_dnc_status/check_tcpa_status survive, any
+  // `_page` pull is cut. "off" → {} (RentCast/internal tools, filtered separately by
+  // each mounting surface, are untouched). See persona-tool-policy.ts's header.
+  const tier = await resolveEffectiveBatchDataToolTier()
+  return filterToolsByTier(registry, tier)
 }

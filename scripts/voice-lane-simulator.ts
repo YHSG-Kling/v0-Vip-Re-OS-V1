@@ -465,9 +465,9 @@ console.log("\n── SOURCE: wiring ──")
     && src("lib/voice/call-analysis.ts").includes("voice_call_id") && src("lib/voice/call-analysis.ts").includes("agentUserId"))
   check("VOICE INTEL: the manual analyzer's sentiment now maps to the live CHECK vocabulary (very_* was silently dropped)",
     src("app/actions/ai-voice-transcription.ts").includes('replace(/^very_/, "")'))
-  check("INVENTORY: reception answers from LIVE listings — planReceptionTurn injects loadInventoryContext; BOTH transports pass svc",
+  check("INVENTORY: reception answers from LIVE listings — planReceptionTurn injects loadInventoryContext; BOTH transports pass svc (lane 73B appended a voiceToolCtx arg after svc — prefix match, not an exact-call pin, per CLAUDE.md §2)",
     src("lib/voice/twilio-voice.ts").includes("loadInventoryContext")
-    && turn.includes("planReceptionTurn(ctx, transcript, speech, svc)")
+    && turn.includes("planReceptionTurn(ctx, transcript, speech, svc,")
     && src("app/api/voice/relay/plan/route.ts").includes("planReceptionTurn(ctx, transcript, req.utterance, svc"))
   check("SETTINGS CASCADE: identity resolution walks agent → TEAM → brokerage (nothing hardcoded, brand flows all the way down)",
     src("lib/voice/twilio-voice.ts").includes('"team"') && src("lib/voice/twilio-voice.ts").includes("team_id"))

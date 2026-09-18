@@ -11,6 +11,9 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
+import { resolveToolPersona, filterRentCastToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
+import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
 
@@ -134,27 +137,54 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
       ledgerUserId = agentRow?.user_id ?? null
     }
 
-    // ── BatchData property-intelligence tools (lane 72B) ──────────────────
-    // The anonymous pre-lead lane lib/ai-isa/batchdata-isa-tools.ts's own
-    // header named as still unwired in wave 71 (only the ISA email handler
-    // and the D-ID live-avatar brain were reached). Persona is always 'isa'
-    // here — a widget visitor with no contact record yet can never be the
-    // investor-portal persona (that requires an authenticated investor
-    // contact, which this anonymous, pre-capture lane does not have).
-    // conversationKey = the session row's id (stable across this visitor's
-    // whole chat, survives capture) — never the request body. contactId is
-    // the session's own linked contact when capture already happened this
-    // session, else null (the tool still runs, it just has nothing tenant-
-    // scoped to persist a verify/DNC verdict to yet). Gated: {} when
-    // BatchData's MCP is unconfigured, so a deployment with no BatchData
-    // token streams exactly as before this change.
+    // ── BatchData/RentCast property-intelligence tools (lane 72B, widened 73B) ──
+    // The anonymous pre-lead lane. Persona is DERIVED (resolveToolPersona,
+    // lib/ai-isa/persona-tool-policy.ts) from the session's OWN linked
+    // contact when capture already happened this session; a still-anonymous
+    // visitor has no contact_type/contact_persona/home_owner_status to read
+    // and resolves to the 'buyer' default (the SAME default posture
+    // lib/campaigns/contact-sources.ts already documents). conversationKey =
+    // the session row's id (stable across this visitor's whole chat, survives
+    // capture) — never the request body. contactId is the session's own
+    // linked contact when capture already happened this session, else null
+    // (the tool still runs, it just has nothing tenant-scoped to persist a
+    // verify/DNC verdict to yet). Gated: {} when BatchData's MCP is
+    // unconfigured, so a deployment with no BatchData token streams exactly
+    // as before this change.
+    let widgetContactType: string | null = null
+    let widgetContactPersona: string | null = null
+    let widgetHomeOwnerStatus: string | null = null
+    if (session.contact_id) {
+      const { data: widgetContact } = await supabase
+        .from('contacts')
+        .select('contact_type, contact_persona, home_owner_status')
+        .eq('id', session.contact_id)
+        .maybeSingle()
+      widgetContactType = widgetContact?.contact_type ?? null
+      widgetContactPersona = widgetContact?.contact_persona ?? null
+      widgetHomeOwnerStatus = widgetContact?.home_owner_status ?? null
+    }
+    const widgetPersona = resolveToolPersona({
+      contactType: widgetContactType,
+      contactPersona: widgetContactPersona,
+      homeOwnerStatus: widgetHomeOwnerStatus,
+    })
     const batchDataTools = await batchDataIsaTools({
       brokerageId: session.brokerage_id,
       userId: ledgerUserId,
       agentId: session.agent_id,
-      persona: 'isa',
+      persona: widgetPersona,
       conversationKey: session.id,
       contactId: session.contact_id ?? null,
+    })
+    const rentCastTools = filterRentCastToolsForPersona(
+      await rentCastMcpTools({ brokerageId: session.brokerage_id, userId: ledgerUserId }),
+      widgetPersona,
+    )
+    const freeTools = buildCustomerFreeTools({
+      brokerageId: session.brokerage_id,
+      contactId: session.contact_id ?? null,
+      agentId: session.agent_id,
     })
 
     // Routed streaming entry: routing table model, tenant fair-use cap checked
@@ -167,7 +197,7 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
         messages: await convertToModelMessages(recentMessages),
         temperature: 0.7,
         maxTokens: 512,
-        tools: batchDataTools,
+        tools: { ...freeTools, ...batchDataTools, ...rentCastTools },
         maxSteps: 5,
         userId: ledgerUserId,
         brokerageId: session.brokerage_id,

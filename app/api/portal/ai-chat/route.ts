@@ -6,6 +6,9 @@ import type { UIMessage } from 'ai'
 import { NextResponse } from 'next/server'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
+import { resolveToolPersona, filterRentCastToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
+import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 
 // Portal AI chat — authenticated contacts only.
 // Business rules enforced here:
@@ -52,7 +55,7 @@ export async function POST(request: Request) {
     // ── Verify caller has access to this contactId ─────────────────────────────
     const { data: contact } = await supabase
       .from('contacts')
-      .select('id, first_name, last_name, brokerage_id, agent_id, contact_type, buyer_stage, contact_persona, email')
+      .select('id, first_name, last_name, brokerage_id, agent_id, contact_type, buyer_stage, contact_persona, home_owner_status, email')
       .eq('id', contactId)
       .maybeSingle()
 
@@ -407,21 +410,22 @@ export async function POST(request: Request) {
       }).then(() => {}, () => {})
     }
 
-    // ── BatchData property-intelligence tools (lane 72B) ────────────────────────
-    // This is the CONTACT-facing surface lib/ai-isa/batchdata-isa-tools.ts's own
-    // header names as still needing to be wired (it only reached the ISA email
-    // handler and the D-ID live-avatar brain in wave 71). Persona derived from
-    // the ACCESS-CHECKED contact row's contact_persona — never the request body
-    // (CLAUDE.md §4): 'investor' → property-only tools (search/comps/buybox,
-    // no skip-trace/owner-contact tool exists in that persona's registry at
-    // all — wave 68 ruling); everything else (buyer/seller/lifetime) → 'isa'.
-    // conversationKey = contactId scopes the page-before-preview/count
-    // ordering rule and the per-conversation spend budget to THIS contact's
-    // portal thread across turns. Gated: {} when BatchData's MCP is
-    // unconfigured (batchDataIsaTools resolves the SAME token
-    // lib/external/batchdata-mcp.ts itself uses), so a deployment with no
-    // BatchData token streams exactly as before this change.
-    const portalPersona = contact.contact_persona === 'investor' ? 'investor' : 'isa'
+    // ── BatchData/RentCast property-intelligence tools (lane 72B, widened 73B) ──
+    // Persona DERIVED (resolveToolPersona, lib/ai-isa/persona-tool-policy.ts)
+    // from the ACCESS-CHECKED contact row's own contact_type/contact_persona/
+    // home_owner_status — never the request body (CLAUDE.md §4). Six personas
+    // now (buyer/seller/investor/renter/relocation/sphere), each with its own
+    // tool allowlist + spend cap (persona-tool-policy.ts's header). conversation
+    // Key = contactId scopes the page-before-preview/count ordering rule and
+    // the per-persona spend budget to THIS contact's portal thread across
+    // turns. Gated: {} when BatchData's MCP is unconfigured (batchDataIsaTools
+    // resolves the SAME token lib/external/batchdata-mcp.ts itself uses), so a
+    // deployment with no BatchData token streams exactly as before this change.
+    const portalPersona = resolveToolPersona({
+      contactType: contact.contact_type,
+      contactPersona: contact.contact_persona,
+      homeOwnerStatus: contact.home_owner_status,
+    })
     const batchDataTools = await batchDataIsaTools({
       brokerageId: contact.brokerage_id,
       userId: user.id,
@@ -429,6 +433,15 @@ export async function POST(request: Request) {
       persona: portalPersona,
       conversationKey: contactId,
       contactId,
+    })
+    const rentCastTools = filterRentCastToolsForPersona(
+      await rentCastMcpTools({ brokerageId: contact.brokerage_id, userId: user.id }),
+      portalPersona,
+    )
+    const freeTools = buildCustomerFreeTools({
+      brokerageId: contact.brokerage_id,
+      contactId,
+      agentId: contact.agent_id ?? null,
     })
 
     // ── Stream response ────────────────────────────────────────────────────────
@@ -440,7 +453,7 @@ export async function POST(request: Request) {
       feature:  'portal_chat_stream',
       system:   systemPrompt,
       messages: await convertToModelMessages(messages),
-      tools:    batchDataTools,
+      tools:    { ...freeTools, ...batchDataTools, ...rentCastTools },
       maxSteps: 5,
       userId:      user.id,
       brokerageId: contact.brokerage_id,

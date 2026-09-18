@@ -291,23 +291,145 @@ export async function createCallbackTaskFromCall(
   }
 }
 
+/**
+ * Lane 73B — the CALL-scoped context a voice turn's `toolRequest` executes
+ * against. Deliberately a SEPARATE, smaller shape than the AI-SDK chat
+ * surfaces' contexts (portal/widget/custom-llm/handle-inbound-email) because a
+ * voice turn resolves its own persona from the CALL's linked contact (or has
+ * none — an anonymous caller resolves to the 'buyer' default, same posture as
+ * every other surface), never from a request body.
+ */
+export interface VoiceToolExecContext {
+  brokerageId: string
+  agentId: string | null
+  /** contacts.id linked to this call, when known — feeds resolveToolPersona
+   *  AND lets verify_address persist its verdict, same as every chat surface. */
+  contactId: string | null
+  /** Stable per-CALL key (voice_calls.id) — scopes the page-before-preview/
+   *  count ordering rule and the persona spend cap to THIS call, never shared
+   *  across calls or tenants. */
+  conversationKey: string
+}
+
+type GenerateTextRoutedFn = (args: { feature: string; prompt: string; temperature: number; maxTokens: number }) => Promise<{ text: string }>
+type BatchDataIsaToolsFn = (ctx: {
+  brokerageId: string; agentId: string | null; persona: string; conversationKey: string; contactId: string | null
+}) => Promise<Record<string, unknown>>
+
+/** Injectable dependencies for `planTurnWithPrompt`/`executeVoiceToolRound` —
+ *  @proofSeam so a proof can exercise the WHOLE bounded-round loop (plan →
+ *  execute → re-plan, discard a second request) with zero network calls and
+ *  zero real AI-gateway/BatchData spend. Production callers omit `deps`
+ *  entirely; the real `generateTextRouted`/`batchDataIsaTools` are imported
+ *  lazily exactly as before this lane. */
+export interface VoiceToolRoundDeps {
+  generateTextRouted?: GenerateTextRoutedFn
+  batchDataIsaTools?: BatchDataIsaToolsFn
+}
+
+/** Runs AT MOST ONE tool call for `plan.toolRequest` against the SAME
+ *  persona-scoped registry every chat surface uses, then re-plans ONCE with
+ *  the result folded into the prompt — bounded, never chained: whatever
+ *  `toolRequest` the RE-PLAN itself asks for is discarded, not executed. */
+async function executeVoiceToolRound(
+  plan: VoiceTurnPlan,
+  toolCtx: VoiceToolExecContext,
+  systemPrompt: string,
+  convo: string,
+  callerUtterance: string,
+  deps: VoiceToolRoundDeps,
+): Promise<VoiceTurnPlan> {
+  const req = plan.toolRequest
+  if (!req) return plan
+
+  const batchDataIsaToolsFn: BatchDataIsaToolsFn =
+    deps.batchDataIsaTools ?? (await import("@/lib/ai-isa/batchdata-isa-tools")).batchDataIsaTools
+  const { resolveToolPersona } = await import("@/lib/ai-isa/persona-tool-policy")
+
+  let contactType: string | null = null
+  let contactPersona: string | null = null
+  let homeOwnerStatus: string | null = null
+  if (toolCtx.contactId) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: contact } = await svc
+        .from("contacts")
+        .select("contact_type, contact_persona, home_owner_status")
+        .eq("id", toolCtx.contactId)
+        .maybeSingle()
+      contactType = (contact as any)?.contact_type ?? null
+      contactPersona = (contact as any)?.contact_persona ?? null
+      homeOwnerStatus = (contact as any)?.home_owner_status ?? null
+    } catch { /* an unreadable contact row just resolves the default persona below */ }
+  }
+  const persona = resolveToolPersona({ contactType, contactPersona, homeOwnerStatus })
+
+  const registry = await batchDataIsaToolsFn({
+    brokerageId: toolCtx.brokerageId,
+    agentId: toolCtx.agentId,
+    persona,
+    conversationKey: toolCtx.conversationKey,
+    contactId: toolCtx.contactId,
+  })
+
+  const toolDef = (registry as Record<string, any>)[req.name]
+  let toolResultText: string
+  if (!toolDef || typeof toolDef.execute !== "function") {
+    // Not in this persona's allowlist (or the platform tier/BatchData token
+    // refused it) — the model is told plainly so it can say so out loud,
+    // never silently retried or substituted.
+    toolResultText = `"${req.name}" is not available for this call.`
+  } else {
+    try {
+      const result = await toolDef.execute(
+        { address: req.address, street: req.address, city: req.city, state: req.state, zip: req.zip },
+        { toolCallId: `voice-${Date.now()}`, messages: [] },
+      )
+      toolResultText = JSON.stringify(result).slice(0, 2000)
+    } catch (e: any) {
+      toolResultText = `"${req.name}" failed: ${e?.message ?? "unknown error"}`
+    }
+  }
+
+  const generateFn: GenerateTextRoutedFn = deps.generateTextRouted ?? (await import("@/lib/ai/models")).generateTextRouted
+  const { text } = await generateFn({
+    feature: "voice_reception_turn",
+    prompt: `${systemPrompt}\n\n${TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nTOOL RESULT for ${req.name}: ${toolResultText}\n\nGive your FINAL JSON turn now, using this result. Do NOT include tool_request this time — you already had your one tool call for this turn.\n\nYour JSON:`,
+    temperature: 0.4,
+    maxTokens: 300,
+  })
+  const finalPlan = parseTurnPlan(text)
+  // Bounded to ONE call per turn regardless of what the re-plan asks for.
+  return { ...finalPlan, toolRequest: null }
+}
+
 /** One turn against ANY system prompt (reception or outbound brief) — the
- *  shared engine both directions ride. */
+ *  shared engine both directions ride. `toolCtx` is OPTIONAL: when omitted
+ *  (e.g. the outbound ISA lane today), a `toolRequest` in the model's plan is
+ *  returned as-is and simply never executed — the smallest possible hook
+ *  rather than a silent behavior change for a caller that has not opted in.
+ *  `deps` is a @proofSeam (see VoiceToolRoundDeps) — production callers never
+ *  pass it. */
 export async function planTurnWithPrompt(
   systemPrompt: string,
   transcript: string | null,
   callerUtterance: string,
+  toolCtx?: VoiceToolExecContext,
+  deps: VoiceToolRoundDeps = {},
 ): Promise<VoiceTurnPlan> {
   const history = transcriptToMessages(transcript)
   const convo = history.map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
-  const { generateTextRouted } = await import("@/lib/ai/models")
-  const { text } = await generateTextRouted({
+  const generateFn: GenerateTextRoutedFn = deps.generateTextRouted ?? (await import("@/lib/ai/models")).generateTextRouted
+  const { text } = await generateFn({
     feature: "voice_reception_turn",
     prompt: `${systemPrompt}\n\n${TURN_INSTRUCTIONS}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${callerUtterance}\n\nYour JSON:`,
     temperature: 0.4,
     maxTokens: 300,
   })
-  return parseTurnPlan(text)
+  const plan = parseTurnPlan(text)
+  if (!plan.toolRequest || !toolCtx) return plan
+  return executeVoiceToolRound(plan, toolCtx, systemPrompt, convo, callerUtterance, deps)
 }
 
 /** The booking side-effect BOTH transports share (Gather turn + relay plan):
@@ -370,6 +492,13 @@ export async function planReceptionTurn(
   callerUtterance: string,
   svc?: any,
   extraRules?: string,
+  /** Lane 73B — when the CALLER passes the call row's own id + linked contact
+   *  (voice_calls.id / .contact_id), a `toolRequest` in this turn's plan
+   *  executes for real (see executeVoiceToolRound above). Omitted → the
+   *  field is still PARSED (the schema exists on every turn) but never run —
+   *  the smallest hook, not a silent behavior change for a caller that has
+   *  not threaded a call id through yet. */
+  voiceToolCtx?: { callId: string; contactId: string | null },
 ): Promise<VoiceTurnPlan> {
   const { systemPrompt } = buildReceptionPrompt(ctx.identity)
   let prompt = systemPrompt
@@ -379,5 +508,8 @@ export async function planReceptionTurn(
     if (inventory) prompt = `${prompt}\n\n${inventory}`
   }
   if (extraRules) prompt = `${prompt}\n\n${extraRules}`
-  return planTurnWithPrompt(prompt, transcript, callerUtterance)
+  const toolCtx: VoiceToolExecContext | undefined = voiceToolCtx
+    ? { brokerageId: ctx.brokerageId, agentId: null, contactId: voiceToolCtx.contactId, conversationKey: voiceToolCtx.callId }
+    : undefined
+  return planTurnWithPrompt(prompt, transcript, callerUtterance, toolCtx)
 }

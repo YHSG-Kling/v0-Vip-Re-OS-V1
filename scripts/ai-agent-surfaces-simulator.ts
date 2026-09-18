@@ -292,15 +292,15 @@ const ctClean = costTrackingClean
 check("calculateCost() reads getModelPricing()[model] rather than a second price table",
   /function calculateCost[\s\S]{0,300}getModelPricing\(\)\[model\]/.test(ctClean))
 
-console.log("\n[h] wave 71 — D-ID live avatar brain wires the persona-scoped BatchData ISA tool set")
+console.log("\n[h] wave 71/lane 73B — D-ID live avatar brain wires the persona-scoped BatchData ISA tool set")
 {
   const customLlmClean = clean(read("app/api/did/custom-llm/route.ts"))
   check("app/api/did/custom-llm/route.ts imports batchDataIsaTools",
     /import\s*\{\s*batchDataIsaTools\s*\}\s*from\s*["']@\/lib\/ai-isa\/batchdata-isa-tools["']/.test(customLlmClean))
-  check("app/api/did/custom-llm/route.ts derives persona from the resolved contact's contact_persona, never a request body",
-    /contactPersona\s*===\s*["']investor["']/.test(customLlmClean))
-  check("app/api/did/custom-llm/route.ts passes the built tools into streamTextRouted",
-    /tools:\s*batchDataTools/.test(customLlmClean))
+  check("app/api/did/custom-llm/route.ts derives persona via resolveToolPersona from the resolved contact's own context, never a request body (lane 73B — six-persona catalogue replaces the old contactPersona === 'investor' ternary)",
+    /const toolPersona = resolveToolPersona\(\{/.test(customLlmClean))
+  check("app/api/did/custom-llm/route.ts passes the built (free + batchData + rentCast) tools into streamTextRouted",
+    /tools:\s*\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}/.test(customLlmClean))
 }
 
 console.log("\n──────────────────────────────────────────────────")
