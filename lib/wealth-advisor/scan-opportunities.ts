@@ -26,7 +26,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateTextRouted } from "@/lib/ai/models"
 import { getCurrentAvm } from "@/lib/avm/provider-chain"
 import { WEALTH_STATUS_DEFAULT } from "@/lib/wealth-advisor/recommendation-status"
@@ -180,6 +180,7 @@ async function processBrokerageWealthScan(
         contact: c,
         prior,
         marketRate,
+        brokerageId,
       })
       if (opportunities.refreshedAvm) avmRefreshes++
 
@@ -223,12 +224,19 @@ async function processBrokerageWealthScan(
       }
 
       // Stamp last_pls_scored_at so the round-robin moves forward
-      await bestEffort(
+      await sentinelWrite(
+        supabase,
         supabase
           .from("contacts")
           .update({ last_pls_scored_at: new Date().toISOString() })
           .eq("id", c.id),
-        "round-robin cursor for the wealth-advisor sweep; the opportunities themselves are already written and the sweep is idempotent, so a lost cursor costs an early re-scan",
+        {
+          table: "contacts",
+          flow: "wealth_advisor_scan_cursor",
+          brokerageId,
+          reason:
+            "round-robin cursor for the wealth-advisor sweep; the opportunities themselves are already written and the sweep is idempotent, so a lost cursor costs an early re-scan",
+        },
       )
     } catch {
       errors++
@@ -306,8 +314,9 @@ async function detectOpportunities(input: {
   }
   prior?: PriorTransaction
   marketRate: MarketRate
+  brokerageId?: string
 }): Promise<{ opportunities: DetectedOpportunity[]; refreshedAvm: boolean }> {
-  const { contact, prior, marketRate } = input
+  const { contact, prior, marketRate, brokerageId } = input
   const opportunities: DetectedOpportunity[] = []
   let refreshedAvm = false
   let avm = contact.home_value_estimate ?? null
@@ -334,7 +343,8 @@ async function detectOpportunities(input: {
       refreshedAvm = true
       // Persist back to contact row
       const supabase = createServiceClient()
-      await bestEffort(
+      await sentinelWrite(
+        supabase,
         supabase
           .from("contacts")
           .update({
@@ -342,7 +352,13 @@ async function detectOpportunities(input: {
             last_enriched_at: new Date().toISOString(),
           })
           .eq("id", contact.id),
-        "caches a refreshed AVM back onto the contact; the value in hand is used for this scan regardless and the 14-day cache check simply re-fetches next time, so a lost cache costs an AVM call, not a result",
+        {
+          table: "contacts",
+          flow: "wealth_advisor_avm_refresh_cache",
+          brokerageId,
+          reason:
+            "caches a refreshed AVM back onto the contact; the value in hand is used for this scan regardless and the 14-day cache check simply re-fetches next time, so a lost cache costs an AVM call, not a result",
+        },
       )
     }
   }

@@ -31,7 +31,7 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { CONTACT_STATUSES, canonicalContactStatus } from "@/lib/contact-promotion/qualification"
 import type { ComplianceGate } from "@/lib/voice/tool-registry"
@@ -1624,12 +1624,19 @@ async function logActivity(
   if (error || !data) return { error: error?.message ?? "Failed to log activity" }
 
   // Bump contacts.last_contacted_at so the CRM reflects the touchpoint.
-  await bestEffort(
+  await sentinelWrite(
+    supabase,
     supabase
       .from("contacts")
       .update({ last_contacted_at: new Date().toISOString() })
       .eq("id", contactId),
-    "recency stamp mirroring the activities row that was just inserted AND error-checked above; the activity is the record of the touchpoint, this only keeps the CRM's 'last touched' column agreeing with it",
+    {
+      table: "contacts",
+      flow: "voice_admin_log_activity_recency_stamp",
+      brokerageId: session.brokerage_id,
+      reason:
+        "recency stamp mirroring the activities row that was just inserted AND error-checked above; the activity is the record of the touchpoint, this only keeps the CRM's 'last touched' column agreeing with it",
+    },
   )
 
   // Surface the spoken action on the manager bus → the Command Center's "managers talking".

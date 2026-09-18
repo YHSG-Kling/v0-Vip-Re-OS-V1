@@ -27,6 +27,7 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { bestEffort } from "@/lib/db/best-effort"
 import { rawRoleVariantsFor, type CanonicalRole } from "@/lib/security/types"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
@@ -126,18 +127,21 @@ export async function notifyEsignSigned(
     if (existing) return
   }
 
-  await supabase.from("notifications").insert({
-    user_id:       input.agentUserId,
-    brokerage_id:  input.brokerageId,
-    type:          OFFER_AUDIT_EVENT.BUYER_SIGNED,
-    title:         "Buyer signed the offer",
-    body:          `Envelope completed via ${input.provider}. Forward to the listing agent and await the seller's response.`,
-    entity_type:   "offer",
-    entity_id:     input.offerId,
-    priority:      "high",
-    channel:       "in_app",
-    activity_id:   input.activityId ?? null,
-  })
+  await bestEffort(
+    supabase.from("notifications").insert({
+      user_id:       input.agentUserId,
+      brokerage_id:  input.brokerageId,
+      type:          OFFER_AUDIT_EVENT.BUYER_SIGNED,
+      title:         "Buyer signed the offer",
+      body:          `Envelope completed via ${input.provider}. Forward to the listing agent and await the seller's response.`,
+      entity_type:   "offer",
+      entity_id:     input.offerId,
+      priority:      "high",
+      channel:       "in_app",
+      activity_id:   input.activityId ?? null,
+    }),
+    "the e-sign completion itself (OFFER_AUDIT_EVENT.BUYER_SIGNED activity row) was already written and error-checked by the caller before this runs; this is only the bell that rings for it, and `supabase` here is caller-supplied and may be either client kind, so bestEffort (not sentinelWrite, which needs a service-role client to reach the ledger) is the always-safe instrument",
+  )
 }
 
 // ─── notifyComplianceFlag ───────────────────────────────────────────────────

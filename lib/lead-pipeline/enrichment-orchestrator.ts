@@ -4,7 +4,7 @@
 //               vendor-tracking.ts, /api/cron/contact-enrichment
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { bestEffort } from '@/lib/db/best-effort'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
 import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
 import {
@@ -810,12 +810,19 @@ export async function processEnrichmentQueue(
               scored_at: new Date().toISOString(),
             })
 
-            await bestEffort(
+            await sentinelWrite(
+              supabase,
               supabase
                 .from('contacts')
                 .update({ last_scored_at: new Date().toISOString() })
                 .eq('id', entityId),
-              'round-robin recency stamp for the scorer; the score itself is already on the lead_score_history row inserted above and re-scoring is idempotent, so a lost stamp costs an early re-score, not a fact',
+              {
+                table: 'contacts',
+                flow: 'enrichment_orchestrator_score_recency_stamp',
+                brokerageId,
+                reason:
+                  'round-robin recency stamp for the scorer; the score itself is already on the lead_score_history row inserted above and re-scoring is idempotent, so a lost stamp costs an early re-score, not a fact',
+              },
             )
 
             await supabase.from('lifecycle_events').insert({

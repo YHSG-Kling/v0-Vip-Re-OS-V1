@@ -1,13 +1,1 @@
-[
-  "app/api/agent-assistant/tool-call/route.ts",
-  "lib/campaign-sequences/step-executor.ts",
-  "lib/contact-pipeline/contact-capture.ts",
-  "lib/kernel/jobs.ts",
-  "lib/kernel/transactions.ts",
-  "lib/lead-intelligence/signal-extensions.ts",
-  "lib/lead-intent/inbound-lead-intent.ts",
-  "lib/lead-pipeline/enrichment-orchestrator.ts",
-  "lib/platform/deal-room-demo.ts",
-  "lib/predictive-listing/run-scoring.ts",
-  "lib/wealth-advisor/scan-opportunities.ts"
-]
+[]

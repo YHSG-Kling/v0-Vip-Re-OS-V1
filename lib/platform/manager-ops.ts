@@ -104,3 +104,62 @@ export async function loadManagerOps(client?: Svc, windowHours = 24): Promise<Ma
     },
   }
 }
+
+// ─── VOICE TOOL-ROUND DEADLINE STATS (blind-spot burn-down, lane 74C, 2026-09-18) ──
+//
+// lib/voice/twilio-voice.ts's VOICE_TOOL_ROUND_DEADLINE_MS was DERIVED, not
+// measured (its own header says so), with "retune against real production
+// call audio" left UNRESOLVED because no telemetry existed to retune it
+// FROM. planTurnWithPrompt now tags every tool-round attempt (success AND
+// the fallback-triggering failure/timeout) with `context_json.toolRound:
+// true` on the SAME EXISTING ledger loadManagerOps reads (ai_tool_usage) —
+// this is the narrower reader that answers the specific question the
+// deadline needs answered: not "how is ai_isa doing overall" (which mixes in
+// every OTHER ai_isa-attributed call) but "how often does the bounded
+// native-tool-calling round actually hit its ceiling, and what would a
+// looser or tighter one look like against the SAME calls".
+export interface VoiceToolRoundDeadlineStats {
+  windowHours: number
+  attempts: number
+  deadlineHits: number
+  deadlineHitRate: number
+  avgMs: number
+  p95Ms: number
+  /** How many of the p95 population would ALSO have hit a tighter or looser
+   *  ceiling — lets an operator ask "what if the deadline were 3000ms
+   *  instead of 4000ms" directly from the same sample, not a fresh query. */
+  hitRateAtMs: (candidateMs: number) => number
+}
+
+/** Cross-tenant — the deadline is one platform-wide constant
+ *  (VOICE_TOOL_ROUND_DEADLINE_MS), not a per-brokerage setting, so the stat
+ *  that tunes it reads across every tenant's calls, same posture as
+ *  loadManagerOps. */
+export async function loadVoiceToolRoundDeadlineStats(client?: Svc, windowHours = 24 * 7): Promise<VoiceToolRoundDeadlineStats> {
+  const svc = client ?? createServiceClient()
+  const since = new Date(Date.now() - windowHours * 3_600_000).toISOString()
+
+  const { data } = await svc
+    .from("ai_tool_usage")
+    .select("execution_time_ms, success, context_json")
+    .eq("tool_name", "ai_model")
+    .eq("feature", "voice_reception_turn")
+    .eq("manager", "ai_isa")
+    .gte("created_at", since)
+    .limit(50_000)
+
+  const rows = ((data ?? []) as any[]).filter((r) => (r.context_json as Record<string, unknown> | null)?.toolRound === true)
+  const durations = rows.map((r) => Number(r.execution_time_ms)).filter((v) => Number.isFinite(v))
+  const hits = rows.filter((r) => (r.context_json as Record<string, unknown> | null)?.deadlineHit === true)
+
+  return {
+    windowHours,
+    attempts: rows.length,
+    deadlineHits: hits.length,
+    deadlineHitRate: rows.length ? hits.length / rows.length : 0,
+    avgMs: durations.length ? Math.round(durations.reduce((s, v) => s + v, 0) / durations.length) : 0,
+    p95Ms: percentile(durations, 95),
+    hitRateAtMs: (candidateMs: number) =>
+      durations.length ? durations.filter((v) => v >= candidateMs).length / durations.length : 0,
+  }
+}

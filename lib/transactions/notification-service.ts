@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSms } from "@/lib/providers/dispatch"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 interface NotificationParams {
   /**
@@ -149,7 +150,13 @@ export class NotificationService {
       created_at:   new Date().toISOString(),
     }))
 
-    await this.supabase.from("notifications").insert(notifications)
+    await sentinelWrite(this.supabase, this.supabase.from("notifications").insert(notifications), {
+      table: "notifications",
+      flow: "transaction_notification_in_app_fanout",
+      brokerageId: params.brokerageId,
+      reason:
+        "in-app mirror of a multi-channel send; email/SMS/push on the same call are attempted independently and each logs its own outcome to notification_log, so a lost in-app row must still be observable rather than silently indistinguishable from 'nothing to send'",
+    })
   }
 
   private async sendEmailNotification(
@@ -170,21 +177,31 @@ export class NotificationService {
 
     // Queue emails for each recipient
     for (const profile of recipientProfiles) {
-      await this.supabase.from("email_queue").insert({
-        to_email: profile.email,
-        to_name: `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() || null,
-        subject: params.title,
-        body: this.formatEmailBody(params.message, params.metadata),
-        template: "transaction_notification",
-        brokerage_id: params.brokerageId,
-        metadata: {
-          transaction_id: params.transactionId,
-          event_type: params.eventType,
-          ...params.metadata
+      await sentinelWrite(
+        this.supabase,
+        this.supabase.from("email_queue").insert({
+          to_email: profile.email,
+          to_name: `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() || null,
+          subject: params.title,
+          body: this.formatEmailBody(params.message, params.metadata),
+          template: "transaction_notification",
+          brokerage_id: params.brokerageId,
+          metadata: {
+            transaction_id: params.transactionId,
+            event_type: params.eventType,
+            ...params.metadata
+          },
+          status: "pending",
+          created_at: new Date().toISOString()
+        }),
+        {
+          table: "email_queue",
+          flow: "transaction_notification_email_enqueue",
+          brokerageId: params.brokerageId,
+          reason:
+            "the SAME event is also delivered in-app above (checked) and, per the caller, may go by SMS/push too — a lost enqueue for one recipient's email is one missed channel on an event the recipient still sees in-app, not a lost event",
         },
-        status: "pending",
-        created_at: new Date().toISOString()
-      })
+      )
     }
   }
 
@@ -228,13 +245,17 @@ export class NotificationService {
       created_at: new Date().toISOString(),
     }))
 
-    await (async () => {
-      try {
-        await this.supabase.from("push_notification_queue").insert(pushPayloads)
-      } catch (err: unknown) {
-        // Table may not exist yet — fail silently
-      }
-    })()
+    await sentinelWrite(
+      this.supabase,
+      this.supabase.from("push_notification_queue").insert(pushPayloads),
+      {
+        table: "push_notification_queue",
+        flow: "transaction_notification_push_enqueue",
+        brokerageId: params.brokerageId,
+        reason:
+          "the caller already gated on the brokerage's push_notifications_enabled setting; a lost enqueue means this one push never reaches app/api/cron/queue-drain's push rail, but the SAME event already landed in-app and by email above, so the alert itself is not lost",
+      },
+    )
   }
 
   /**
@@ -264,13 +285,13 @@ export class NotificationService {
       created_at: new Date().toISOString(),
     }))
 
-    await (async () => {
-      try {
-        await this.supabase.from("notification_log").insert(logEntries)
-      } catch (err: unknown) {
-        // Log failure silently to avoid blocking notifications
-      }
-    })()
+    await sentinelWrite(this.supabase, this.supabase.from("notification_log").insert(logEntries), {
+      table: "notification_log",
+      flow: "transaction_notification_delivery_log",
+      brokerageId: params.brokerageId,
+      reason:
+        "the send attempt this logs has already happened (success or failure) by the time this runs; losing the audit row must not re-throw and block the notification pipeline, but escalateFailedNotificationDeliveries above depends on this table, so the loss itself must be ledgered rather than silently dropped",
+    })
   }
 
   /**

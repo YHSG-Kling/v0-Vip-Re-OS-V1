@@ -181,6 +181,16 @@ export async function logAIUsage(params: {
   executionTimeMs?: number | null
   /** false if the call errored — feeds per-manager error-rate. Defaults to true. */
   success?: boolean
+  /**
+   * Additive fields merged onto `context_json` beside the token/pricing
+   * snapshot below — for a caller whose usage row needs to carry something
+   * this ledger's fixed columns do not (e.g. lib/voice/twilio-voice.ts's
+   * `toolRound` / `deadlineHit` flags, blind-spot burn-down, lane 74C). Never
+   * overwrites `input_tokens` / `output_tokens` / `request_id` /
+   * `pricing_snapshot` — those are spread first, so a caller cannot silently
+   * clobber the cost-ledger's own fields.
+   */
+  contextExtra?: Record<string, unknown> | null
 }): Promise<void> {
   try {
     // SERVICE CLIENT, like every other usage writer (log-media-usage,
@@ -217,7 +227,8 @@ export async function logAIUsage(params: {
           input_tokens: params.inputTokens,
           output_tokens: params.outputTokens,
           request_id: params.requestId,
-          pricing_snapshot: pricing
+          pricing_snapshot: pricing,
+          ...(params.contextExtra ?? {}),
         }
       })
     

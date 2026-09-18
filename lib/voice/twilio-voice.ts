@@ -319,6 +319,9 @@ export interface VoiceToolExecContext {
 type GenerateTextRoutedFn = (args: {
   feature: string; prompt: string; temperature: number; maxTokens: number
   tools?: Record<string, unknown>; maxSteps?: number; abortSignal?: AbortSignal
+  /** Usage-logging only, never routing — see lib/ai/models.ts RoutedTextRequest. */
+  brokerageId?: string | null; agentId?: string | null; manager?: string | null
+  contextExtra?: Record<string, unknown> | null
 }) => Promise<{ text: string }>
 type BatchDataIsaToolsFn = (ctx: {
   brokerageId: string; agentId: string | null; persona: ToolPersona; conversationKey: string; contactId: string | null
@@ -461,6 +464,14 @@ export async function planTurnWithPrompt(
   // call entirely rather than paying for one with an empty `tools:` map.
   if (Object.keys(voiceTools).length === 0) return plainCall()
 
+  // DEADLINE TELEMETRY (blind-spot burn-down, lane 74C, 2026-09-18) — the
+  // deadline above was DERIVED, not measured (see its own header), with the
+  // real production-call measurement UNRESOLVED. This closes that: every
+  // tool-round attempt lands on ai_tool_usage (the EXISTING cost/latency
+  // ledger, manager_ops.ts's own per-manager p95 reader) tagged
+  // `context_json.toolRound: true`, so the deadline can be retuned from real
+  // call data instead of the policy-ceiling reasoning alone.
+  const toolRoundStartedAt = Date.now()
   try {
     const { text } = await generateFn({
       feature: "voice_reception_turn",
@@ -470,10 +481,52 @@ export async function planTurnWithPrompt(
       tools: voiceTools,
       maxSteps: VOICE_TOOL_ROUND_MAX_STEPS,
       abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS),
+      brokerageId: toolCtx.brokerageId,
+      agentId: toolCtx.agentId,
+      manager: "ai_isa",
+      contextExtra: { toolRound: true, deadlineMs: VOICE_TOOL_ROUND_DEADLINE_MS, deadlineHit: false },
     })
     return parseTurnPlan(text)
   } catch (e: any) {
+    const elapsedMs = Date.now() - toolRoundStartedAt
+    // A hit is inferred from elapsed time, not from the error shape: the AI
+    // SDK's own abort surfaces as an ordinary thrown error (this file's own
+    // header says so), so there is no reliable "TimeoutError" to match on —
+    // >=90% of the deadline window covers both a clean AbortSignal fire and
+    // the fallback-model retry the primary catch inside generateTextRouted
+    // itself can trigger before this catch ever sees it.
+    const deadlineHit = elapsedMs >= VOICE_TOOL_ROUND_DEADLINE_MS * 0.9
     console.error("[twilio-voice] native tool round failed or hit its deadline — falling back to the plan-only path (fail safe, never silence on a live call):", e?.message ?? e)
+    // generateTextRouted's OWN ai_tool_usage write only runs on its success
+    // path — when it throws (this catch), NOTHING lands on the ledger, so a
+    // timed-out or erroring tool round was previously INVISIBLE to the very
+    // data this deadline needs to be tuned from. Logged directly, best-effort
+    // (a lost telemetry row must never turn a fail-safe fallback into a
+    // dropped call).
+    try {
+      const { logAIUsage } = await import("@/lib/ai/cost-tracking")
+      const { selectModelForTask } = await import("@/lib/ai/models")
+      if (toolCtx.brokerageId) {
+        await logAIUsage({
+          userId: null,
+          brokerageId: toolCtx.brokerageId,
+          agentId: toolCtx.agentId,
+          model: selectModelForTask("voice_reception_turn").model,
+          inputTokens: 0,
+          outputTokens: 0,
+          feature: "voice_reception_turn",
+          manager: "ai_isa",
+          executionTimeMs: elapsedMs,
+          success: false,
+          contextExtra: {
+            toolRound: true,
+            deadlineMs: VOICE_TOOL_ROUND_DEADLINE_MS,
+            deadlineHit,
+            errorMessage: String(e?.message ?? e).slice(0, 300),
+          },
+        })
+      }
+    } catch { /* telemetry is best-effort — the fallback below still runs */ }
     return plainCall()
   }
 }

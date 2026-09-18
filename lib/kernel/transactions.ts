@@ -29,7 +29,7 @@ import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -1403,7 +1403,8 @@ export async function closeTransactionCommand(params: {
     //    the task; we just need to plant the prompt here.
     try {
       for (const contactId of lifetimeContactIds) {
-        await bestEffort(
+        await sentinelWrite(
+          supabase,
           supabase.from("activities").insert({
             brokerage_id:   params.brokerageId,
             agent_id:       agentRecordId,
@@ -1418,7 +1419,13 @@ export async function closeTransactionCommand(params: {
             scheduled_at:   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
             created_at:     nowIso,
           }),
-          "the transaction is already CLOSED and error-checked above; a gift-reminder task is a nudge, and one missing nudge must not report a completed closing as failed",
+          {
+            table: "activities",
+            flow: "transaction_close_gift_reminder_task",
+            brokerageId: params.brokerageId,
+            reason:
+              "the transaction is already CLOSED and error-checked above; a gift-reminder task is a nudge, and one missing nudge must not report a completed closing as failed",
+          },
         )
       }
     } catch {}

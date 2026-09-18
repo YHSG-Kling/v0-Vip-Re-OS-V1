@@ -128,6 +128,7 @@ import { readFileSync, existsSync, statSync, writeFileSync, readdirSync } from "
 import { join, relative, dirname, normalize } from "node:path"
 import { walkTs } from "./runtime-roots"
 import { stripComments, blankComments, blankStrings } from "./strip-comments"
+import { claimOf } from "./migration-status"
 
 const root = process.cwd()
 const BASELINE_PATH = join(root, "scripts", "hidden-wire-baseline.json")
@@ -933,16 +934,79 @@ function migrationFiles(): string[] {
   } catch { return [] }
 }
 const definedFns = new Set<string>()
+// Which migration file(s) define a given function name — kept ALONGSIDE the
+// comment-stripped scan above (that copy is for the name regex only; claimOf
+// below needs the RAW file, because a migration's status banner LIVES in a
+// `--` comment that regex already threw away).
+const definedFnFiles = new Map<string, string[]>()
 for (const rel of migrationFiles()) {
-  const sql = readFileSync(join(root, rel), "utf8").replace(/--[^\n]*/g, "")
+  const raw2 = readFileSync(join(root, rel), "utf8")
+  const sql = raw2.replace(/--[^\n]*/g, "")
   const re = /create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?"?([a-zA-Z0-9_]+)"?/gi
   let m: RegExpExecArray | null
-  while ((m = re.exec(sql))) definedFns.add(m[1])
+  while ((m = re.exec(sql))) {
+    definedFns.add(m[1])
+    const arr = definedFnFiles.get(m[1]) ?? []
+    if (!arr.includes(rel)) arr.push(rel)
+    definedFnFiles.set(m[1], arr)
+  }
 }
 const categoryDMissing: string[] = [] // called, no migration defines it
 const categoryDUnused: string[] = []  // defined in migrations, never called
 for (const [name] of rpcCalls) if (!definedFns.has(name)) categoryDMissing.push(name)
 for (const name of definedFns) if (!rpcCalls.has(name)) categoryDUnused.push(name)
+
+// ── (d) RATCHET SPLIT — blind-spot burn-down, lane 74C, 2026-09-18 ──────────
+// "migration-defined-never-called" conflates two very different things: a
+// function defined in a migration that was NEVER APPLIED does not exist live
+// at all yet, so "nothing calls it" is trivially true and uninteresting — it
+// is scripts/migration-claim-guard.ts's own NOT_APPLIED ratchet's job to track
+// that work-in-flight, not this one's to re-count it. A function defined in an
+// APPLIED migration and never called from app/ or lib/ is the real orphan
+// doctrine question (§1: a capability nothing reads) and is what gets ratcheted
+// here. `claimOf` (scripts/migration-status.ts, §6 — the SAME header
+// classifier migration-claim-guard.ts itself uses) answers per DEFINING FILE;
+// a function is treated as live the moment ANY file that (re)defines it says
+// "applied" — a later CREATE OR REPLACE in an applied migration keeps the
+// function live even if an earlier draft of it was never-applied prose.
+const categoryDUnusedAppliedRaw: string[] = []
+const categoryDUnusedNotYetLive: string[] = []
+for (const name of categoryDUnused) {
+  const files2 = definedFnFiles.get(name) ?? []
+  const claims = files2.map((f) => claimOf(readFileSync(join(root, f), "utf8")))
+  if (claims.some((c) => c === "applied")) categoryDUnusedAppliedRaw.push(name)
+  else categoryDUnusedNotYetLive.push(name)
+}
+
+// ── SQL-INTERNAL CALLERS — a Postgres function can be CALLED from inside the
+//    database itself: an RLS policy's USING/WITH CHECK clause, a trigger's
+//    EXECUTE FUNCTION, another function's body, a CHECK constraint, a DEFAULT
+//    expression. None of those go through app code's `.rpc("name")`, so
+//    category (d) as built above is BLIND to them by construction — and three
+//    of the applied/never-.rpc'd names found this run (is_brokerage_admin,
+//    is_brokerage_finance_admin — RLS predicate helpers used across dozens of
+//    policies; set_dsr_due_at — a trigger function, m582) are exactly this
+//    shape, not orphans. Detected by counting occurrences of `name(` across
+//    every migration's comment-stripped SQL and subtracting the occurrences
+//    that are themselves the `CREATE [OR REPLACE] FUNCTION name(` declaration
+//    — anything left over is a real call site somewhere in the database.
+const migrationCorpusStripped = migrationFiles().map((f) => readFileSync(join(root, f), "utf8").replace(/--[^\n]*/g, ""))
+function hasSqlInternalCaller(name: string): boolean {
+  const callRe = new RegExp(`\\b${name}\\s*\\(`, "g")
+  const declRe = new RegExp(`create\\s+(?:or\\s+replace\\s+)?function\\s+(?:public\\.)?"?${name}"?\\s*\\(`, "gi")
+  let calls = 0, decls = 0
+  for (const sql2 of migrationCorpusStripped) {
+    calls += (sql2.match(callRe) ?? []).length
+    decls += (sql2.match(declRe) ?? []).length
+  }
+  return calls > decls
+}
+const categoryDUnusedSqlInternal: string[] = []
+const categoryDUnusedApplied: string[] = []
+for (const name of categoryDUnusedAppliedRaw) {
+  if (hasSqlInternalCaller(name)) categoryDUnusedSqlInternal.push(name)
+  else categoryDUnusedApplied.push(name)
+}
 
 // ── POSITIVE CONTROLS (CLAUDE.md §2) ────────────────────────────────────────
 function runControls(): string[] {
@@ -1205,6 +1269,26 @@ function runControls(): string[] {
     ok("(d) control: real .rpc() call site still detected", /\.rpc\(\s*["']fakeCalledInCode["']/.test(blanked))
   }
 
+  // (d) SQL-internal-caller rule (blind-spot burn-down, lane 74C) — POSITIVE:
+  // a function referenced from an RLS policy / trigger / another function's
+  // body has MORE occurrences of `name(` than CREATE FUNCTION declarations of
+  // it, so it must NOT be treated as an orphan even though nothing .rpc()s it.
+  {
+    const declOnly = "create or replace function public.zz_synth_a() returns void as $$ begin null; end $$ language plpgsql;"
+    const declPlusCall = declOnly + "\ncreate policy p on t using (public.zz_synth_a());"
+    const callRe = /\bzz_synth_a\s*\(/g
+    const declRe = /create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?"?zz_synth_a"?\s*\(/gi
+    ok("(d) SQL-internal control: a DECLARATION-only function has calls === decls (0 internal callers)",
+      (declOnly.match(callRe) ?? []).length === (declOnly.match(declRe) ?? []).length)
+    ok("(d) SQL-internal control: the SAME function referenced from an RLS policy has calls > decls (1 internal caller found)",
+      (declPlusCall.match(callRe) ?? []).length > (declPlusCall.match(declRe) ?? []).length)
+  }
+  // NEGATIVE — a real orphan (categoryDUnusedApplied) must still come through
+  // with NO SQL-internal caller, or the rule would blanket-excuse category (d)
+  // rather than rescuing only the functions it can prove are called somewhere.
+  ok("(d) SQL-internal control NEGATIVE: the rule does not fire for EVERY applied-unused function — it left at least one in categoryDUnusedApplied when one existed, or explicitly found none (both are checked, never silently assumed)",
+    categoryDUnusedAppliedRaw.length === 0 || categoryDUnusedApplied.length + categoryDUnusedSqlInternal.length === categoryDUnusedAppliedRaw.length)
+
   return bad
 }
 
@@ -1232,6 +1316,8 @@ console.log(`(a) IMPORTED-BUT-UNUSED: ${categoryA.length} / ${totalImportBinding
 console.log(`(b) IMPORTED-BUT-ONLY-FORWARDED: ${categoryB.length} findings (${categoryBRaw.length} raw, ${rescuedByOneHop} rescued by a real one-hop-downstream call) ; ${candidateFunctionExports} candidate function-shaped exports checked, ${ambiguousExportNames} skipped (same name declared in >1 file — ambiguous attribution)`)
 console.log(`(c) PROPS DRIFT: ${categoryCDeclared.length} declared-never-passed, ${categoryCUnread.length} passed-never-read ; ${propsTypes.length} <Name>Props types found, ${componentsWithSignature} matched to a component signature, ${componentsWithSpread} excluded from the unread half (rest/spread destructure), ${localDestructureRescues} prop-reads rescued by the LOCAL two-step destructure recognizer (wave 49), ${optionalByDesignExcluded} prop findings excluded via a documented '/** optional by design: ... */' JSDoc (wave 49) ; ${totalJsxCallSites} JSX call sites scanned, ${skippedUnresolvedCallSites} skipped (component import unresolved/external — not attributed to any file), ${ambiguousPropsAttribution} Props declarations skipped (same component name declared in >1 file, not co-located with its signature — ambiguous attribution, wave 50)`)
 console.log(`(d) RPC WIRING: ${categoryDMissing.length} called-with-no-migration ; ${categoryDUnused.length} migration-defined-never-called (of ${definedFns.size} functions across ${migrationFiles().length} migration files; ${rpcCalls.size} distinct .rpc() names called)`)
+console.log(`      · split by APPLIED status (scripts/migration-status.ts claimOf, cross-checked against migration-claim-guard's own classifier): ${categoryDUnusedAppliedRaw.length} defined in an APPLIED migration and never called via app-side .rpc() · ${categoryDUnusedNotYetLive.length} defined ONLY in a migration that has not (yet) stated 'applied' (work-in-flight — migration-claim-guard's own NOT_APPLIED ratchet tracks that, not this one)`)
+console.log(`      · of the ${categoryDUnusedAppliedRaw.length} applied-and-never-.rpc()'d: ${categoryDUnusedSqlInternal.length} have a SQL-INTERNAL caller (RLS policy predicate / trigger EXECUTE FUNCTION / another function's body — not an orphan, .rpc() was never the right door) · ${categoryDUnusedApplied.length} have NO caller anywhere, in-app or in-SQL (the real orphan — ratcheted below)`)
 console.log(`(e) DEAD SERVER-ACTION IMPORT (subset of a): ${categoryE.length}`)
 console.log("")
 console.log("BLIND SPOTS (see file header for the full statement):")
@@ -1239,20 +1325,31 @@ console.log("  scope = app/ + lib/ + hooks/ only; dynamic/string-keyed dispatch 
 console.log("  (c) only <Name>Props-named types, one balanced brace level, spread components excluded from 'unread';")
 console.log("  (c) call sites resolve one import hop (local decl / relative / @/ / one barrel re-export) — unresolved or out-of-scope imports are skipped, never attributed;")
 console.log("  (d) dynamic .rpc(variable) names invisible; dashboard-authored functions false-positive as missing.")
+console.log("  (d) ratchet split: a function whose defining migration(s) say 'unstated' or 'not_applied' is treated")
+console.log("      as not-yet-live and excluded from the ratchet — if that migration was in fact applied via a")
+console.log("      path its header never recorded (direct SQL, MCP with no header update), this undercounts the")
+console.log("      real orphan set rather than overcounts it; migration-claim-guard's own live ledger check is")
+console.log("      the layer that can actually resolve 'unstated', not this offline script.")
 
 // ── RATCHET BASELINE ─────────────────────────────────────────────────────────
-interface Baseline { a: string[]; b: string[]; e: string[] }
+interface Baseline { a: string[]; b: string[]; e: string[]; d?: string[] }
 const keyA = (u: UnusedImport) => `${u.file}::${u.name}`
 const keyB = (b: ForwardedOnly) => `${b.file}::${b.name}`
 const fresh: Baseline = {
   a: categoryA.map(keyA).sort(),
   b: categoryB.map(keyB).sort(),
   e: categoryE.map(keyA).sort(),
+  // (d) ratchets ONLY the applied-and-never-called subset (see the split
+  // above) — never the whole 114, which mixes in migrations still in flight.
+  // Never a DELETE list (CLAUDE.md §1: "deleting migrations to move a number
+  // is forbidden") — this baseline names DB FUNCTIONS with no caller, not
+  // migration files, and this file never deletes a migration.
+  d: categoryDUnusedApplied.slice().sort(),
 }
 
 if (process.env.HIDDEN_WIRE_BASELINE === "1") {
   writeFileSync(BASELINE_PATH, `${JSON.stringify(fresh, null, 2)}\n`)
-  console.log(`\n  baseline written: scripts/hidden-wire-baseline.json (a=${fresh.a.length} b=${fresh.b.length} e=${fresh.e.length})`)
+  console.log(`\n  baseline written: scripts/hidden-wire-baseline.json (a=${fresh.a.length} b=${fresh.b.length} e=${fresh.e.length} d=${fresh.d!.length})`)
   console.log(" ✅ HIDDEN_WIRE_PASS (baseline write)")
   process.exit(0)
 }
@@ -1270,8 +1367,9 @@ function diff(baseArr: string[], freshArr: string[]): { newOnes: string[]; burne
 const dA = diff(base.a ?? [], fresh.a)
 const dB = diff(base.b ?? [], fresh.b)
 const dE = diff(base.e ?? [], fresh.e)
-const allNew = [...dA.newOnes.map((k) => `a ${k}`), ...dB.newOnes.map((k) => `b ${k}`), ...dE.newOnes.map((k) => `e ${k}`)]
-const allBurned = [...dA.burned.map((k) => `a ${k}`), ...dB.burned.map((k) => `b ${k}`), ...dE.burned.map((k) => `e ${k}`)]
+const dD = diff(base.d ?? [], fresh.d!)
+const allNew = [...dA.newOnes.map((k) => `a ${k}`), ...dB.newOnes.map((k) => `b ${k}`), ...dE.newOnes.map((k) => `e ${k}`), ...dD.newOnes.map((k) => `d ${k}`)]
+const allBurned = [...dA.burned.map((k) => `a ${k}`), ...dB.burned.map((k) => `b ${k}`), ...dE.burned.map((k) => `e ${k}`), ...dD.burned.map((k) => `d ${k}`)]
 
 if (allBurned.length > 0) {
   console.log(`\n  ↓ ${allBurned.length} baseline entr(ies) fixed — tighten with HIDDEN_WIRE_BASELINE=1`)
@@ -1284,4 +1382,4 @@ if (allNew.length > 0) {
   console.log(" ❌ HIDDEN_WIRE_FAIL")
   process.exit(1)
 }
-console.log(`\n ✅ HIDDEN_WIRE_PASS — no NEW hidden wire (a=${fresh.a.length} b=${fresh.b.length} e=${fresh.e.length} on the ratchet; c/d reported, not ratcheted — see report)`)
+console.log(`\n ✅ HIDDEN_WIRE_PASS — no NEW hidden wire (a=${fresh.a.length} b=${fresh.b.length} e=${fresh.e.length} d=${fresh.d!.length} on the ratchet; c and the not-yet-live slice of d (${categoryDUnusedNotYetLive.length}) reported, not ratcheted — see report)`)

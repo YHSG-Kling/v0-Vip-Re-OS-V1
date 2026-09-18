@@ -726,6 +726,19 @@ export interface RoutedTextRequest {
    * today's behavior for every existing caller.
    */
   abortSignal?: AbortSignal
+  /**
+   * Used only for usage logging (lib/platform/manager-ops.ts's per-manager
+   * cost/latency/SLO rollup), never for routing. Blind-spot burn-down, lane
+   * 74C: previously only streamTextRouted threaded this through, so every
+   * generateTextRouted call (including every voice turn) logged with
+   * `manager: null` and rolled up under 'unassigned' — invisible to that
+   * reader no matter how many calls it made.
+   */
+  manager?: string | null
+  /** Merged onto the ai_tool_usage row's context_json — see
+   *  lib/ai/cost-tracking.ts:logAIUsage's `contextExtra`. Used only for
+   *  usage logging, never for routing. */
+  contextExtra?: Record<string, unknown> | null
 }
 
 /**
@@ -882,6 +895,7 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
 export async function generateTextRouted(
   request: RoutedTextRequest
 ): Promise<{ text: string; usage: RoutedUsage }> {
+  const _generateTextRoutedStartedAt = Date.now()
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
@@ -964,6 +978,10 @@ export async function generateTextRouted(
       inputTokens,
       outputTokens,
       feature,
+      manager:        request.manager ?? null,
+      executionTimeMs: Date.now() - _generateTextRoutedStartedAt,
+      success:        true,
+      contextExtra:   request.contextExtra ?? undefined,
     })
   }
 

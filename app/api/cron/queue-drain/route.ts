@@ -120,12 +120,13 @@ async function drainEmailQueue(supabase: Svc): Promise<QueueCounts> {
   // is worse than none. Expire stale pendings in bulk before draining, so a
   // drain outage can't end with a backlog blast when the drain returns.
   const staleCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: expired } = await supabase
+  const { data: expired, error: expireErr } = await supabase
     .from("email_queue")
     .update({ status: "failed", error_msg: "expired_in_queue (older than 7d at drain time — never sent)" })
     .eq("status", "pending")
     .lt("created_at", staleCutoff)
     .select("id")
+  if (expireErr) counts.errors.push(`stale-expiry sweep refused: ${expireErr.message}`)
   if (expired?.length) counts.errors.push(`expired ${expired.length} stale pending email(s) >7d old (never sent)`)
 
   const { data: rows, error } = await supabase

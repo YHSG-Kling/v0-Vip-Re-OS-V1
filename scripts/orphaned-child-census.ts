@@ -293,9 +293,44 @@ const CROSS_SCHEMA_FK = new Set<string>([
   "vendor_marketplace_profiles.user_id",
 ])
 
+// ── EXTERNAL_PROVIDER_ID_COLLISION (blind-spot burn-down, lane 74C, 2026-09-18,
+//    OC1 wire-list item 2 of 2, resolved per CLAUDE.md §1/§2) ────────────────
+//
+// `tax_categories.provider_account_id` was flagged by OC1 because the oracle's
+// consensus vote for the column NAME `provider_account_id` is 3/3 →
+// `calendar_provider_accounts` — the OTHER two columns of that exact name really
+// are FKs into the calendar-sync tables (lib/kernel/calendar-sync.ts). But
+// `tax_categories.provider_account_id` is a DIFFERENT idea that happens to share
+// the name: an EXTERNAL accounting-provider (QuickBooks/Xero) account id, keyed
+// by `category_name`, resolved by lib/finance/accounting-egress.ts:76 and
+// written by app/actions/accounting-sync.ts:461 — "NEVER a fabricated account
+// id" per that file's own comment. It cannot reference `calendar_provider_
+// accounts` (that would be a WRONG-PARENT schema defect, the exact thing
+// CLAUDE.md §1 forbids — wiring a wrong parent just to make a census pass), and
+// it cannot reference any OTHER table in this schema either, because the id it
+// holds does not live in this database at all.
+//
+// This is documented at length in supabase/migrations/
+// m608-eighty-orphaned-child-links-oc1-burn-down.sql (the "1 WRONG-PARENT
+// FINDING, reported not silenced" section), which names two ways to close it:
+// rename one of the two colliding columns (a live-schema rename, needing the
+// integrator's migration-apply authority this lane does not hold — CLAUDE.md
+// §3), or "teach the consensus oracle about this collision" — the latter is
+// what this declaration does. It is NOT a `CROSS_SCHEMA_FK` entry (that set is
+// for links the DATABASE enforces somewhere the public FK cache cannot see —
+// this column is enforced NOWHERE, by design, because its parent is outside
+// Postgres entirely) and not a rename (out of this lane's authority) — it is a
+// THIRD, narrower kind of exclusion: a column whose consensus-voted "parent"
+// table is PROVABLY the wrong one for THIS specific column, verified against
+// the two live call sites above.
+const EXTERNAL_PROVIDER_ID_COLLISION = new Set<string>([
+  "tax_categories.provider_account_id",
+])
+
 const POLY_BASES_SEEN = new Set<string>()
 let oc1Views = 0
 let oc1CrossSchema = 0
+let oc1ExternalProviderId = 0
 let oc1SelfRef = 0
 let oc1Poly = 0
 let oc1Protected = 0
@@ -319,7 +354,7 @@ let oc1Examined = 0
  * the same function, there is no second spelling to drift (§6).
  */
 export type Oc1Verdict =
-  | "protected" | "cross_schema_fk" | "self_ref" | "polymorphic" | "view" | "unprotected"
+  | "protected" | "cross_schema_fk" | "external_provider_id_collision" | "self_ref" | "polymorphic" | "view" | "unprotected"
 export function oc1Verdict(
   table: string,
   col: string,
@@ -330,6 +365,8 @@ export function oc1Verdict(
   views: Set<string> = PUBLIC_VIEWS,
   /** CROSS_SCHEMA_FK by default; a parameter for the same reason. */
   crossSchema: Set<string> = CROSS_SCHEMA_FK,
+  /** EXTERNAL_PROVIDER_ID_COLLISION by default; a parameter for the same reason. */
+  externalProviderIdCollision: Set<string> = EXTERNAL_PROVIDER_ID_COLLISION,
 ): Oc1Verdict | null {
   if (!consensusParent) return null
   if (fks[col]) return "protected"
@@ -344,6 +381,13 @@ export function oc1Verdict(
   // cache's own answer: if the FK map ever learns about these the cache wins and
   // this declaration becomes dead weight rather than a competing opinion (§6).
   if (crossSchema.has(`${table}.${col}`)) return "cross_schema_fk"
+  // NOT ENFORCED ANYWHERE, BY DESIGN — the consensus-voted "parent" is wrong for
+  // THIS column specifically (a name collision with an unrelated same-named FK
+  // elsewhere in the schema); its real referent lives outside this database
+  // entirely (an external accounting provider's account id). Ordered ahead of
+  // self_ref/polymorphic/view because it is a per-column override of the vote,
+  // not a structural shape test.
+  if (externalProviderIdCollision.has(`${table}.${col}`)) return "external_provider_id_collision"
   if (consensusParent === table) return "self_ref"
   if (colSet.has(`${col.replace(/_id$/, "")}_type`)) return "polymorphic"
   // A VIEW HOLDS NO ROWS. Ordered AFTER "protected" deliberately: if a relation
@@ -369,6 +413,7 @@ for (const table of snapshotTables) {
     if (verdict === "polymorphic") { oc1Poly++; POLY_BASES_SEEN.add(col.replace(/_id$/, "")); continue }
     if (verdict === "view") { oc1Views++; continue }
     if (verdict === "cross_schema_fk") { oc1CrossSchema++; continue }
+    if (verdict === "external_provider_id_collision") { oc1ExternalProviderId++; continue }
     add(
       "oc1",
       `${table}.${col}`,
@@ -686,6 +731,25 @@ for (const dir of appDirs) {
     oc1Verdict("zz_synthetic_child", "user_id", new Set(["id", "user_id"]), { user_id: "users" }, "users",
       new Set<string>(), new Set(["zz_synthetic_child.user_id"])) === "protected")
 
+  // ── OC1, the EXTERNAL-PROVIDER-ID-COLLISION rule (blind-spot burn-down, lane
+  //    74C). Same three-arm discipline as the VIEW/cross-schema rules above.
+  control("oc1 NEGATIVE: does NOT flag tax_categories.provider_account_id — a name\n            collision with the unrelated calendar_provider_accounts FK, not a missing link\n            (supabase/migrations/m608-…: '1 WRONG-PARENT FINDING, reported not silenced')",
+    !oc1Keys.has("tax_categories.provider_account_id"))
+  control("oc1 POSITIVE: the collision rule is a rule, not a blanket — the same\n            synthetic child is 'unprotected' undeclared and 'external_provider_id_collision' declared",
+    oc1Verdict("zz_synthetic_child", "provider_account_id", new Set(["id", "provider_account_id"]), {}, "calendar_provider_accounts",
+      new Set<string>(), new Set<string>(), new Set<string>()) === "unprotected"
+      && oc1Verdict("zz_synthetic_child", "provider_account_id", new Set(["id", "provider_account_id"]), {}, "calendar_provider_accounts",
+        new Set<string>(), new Set<string>(), new Set(["zz_synthetic_child.provider_account_id"])) === "external_provider_id_collision")
+  control("oc1 POSITIVE: the collision exclusion matched a real column",
+    oc1ExternalProviderId > 0, `${oc1ExternalProviderId} external-provider-id collision(s) excluded`)
+  // The cache still WINS — if this column ever gains a REAL FK (e.g. the rename
+  // the migration proposes as the other fix), it must read as protected, not as
+  // the stale declaration, so this exclusion degrades toward the truth.
+  control("oc1 NEGATIVE: a declared collision column whose FK exists reads as\n            'protected' — the cache outranks the declaration here too",
+    oc1Verdict("zz_synthetic_child", "provider_account_id", new Set(["id", "provider_account_id"]),
+      { provider_account_id: "calendar_provider_accounts" }, "calendar_provider_accounts",
+      new Set<string>(), new Set<string>(), new Set(["zz_synthetic_child.provider_account_id"])) === "protected")
+
   // ── OC3, both arms ────────────────────────────────────────────────────────
   control("oc3 POSITIVE: the dual-keyed finder still sees the tables it counts",
     DUAL_KEYED.length >= 25 && DUAL_KEYED.includes("motivated_seller_signals"),
@@ -753,6 +817,8 @@ console.log(`      · ${oc1Protected} already carry an FK · ${oc1Poly} polymorp
 console.log(`      · ${oc1Views} column(s) on a VIEW — excluded: a view holds no rows and PostgreSQL refuses an FK on one`)
 console.log(`      · ${oc1CrossSchema} column(s) FK'd to a NON-public parent (auth.users) — excluded: enforced, but by a`)
 console.log(`        constraint the public-schema FK cache cannot see. ${CROSS_SCHEMA_FK.size} declared, measured live 2026-08-23.`)
+console.log(`      · ${oc1ExternalProviderId} column(s) excluded as an EXTERNAL-PROVIDER-ID name collision (the consensus-voted`)
+console.log(`        parent is provably wrong for that specific column — see EXTERNAL_PROVIDER_ID_COLLISION, lane 74C 2026-09-18)`)
 console.log(`      · PUBLIC_VIEWS declares ${PUBLIC_VIEWS.size} view(s), measured live 2026-08-23 (relkind is in NO schema cache —`)
 console.log(`        the same gap OC2 records for confdeltype). BLIND SPOT: a view created since is not in it and WILL be accused.`)
 console.log(`      · ${CONSENSUS.size} column names have a consensus parent (≥${MIN_VOTES} votes, ≥${CONSENSUS_RATIO * 100}% agreement)`)

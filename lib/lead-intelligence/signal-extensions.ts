@@ -23,7 +23,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export type SignalSource =
   | "offer_lost"
@@ -235,9 +235,16 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
     contactUpdate.intent_score = next.intent
   }
   if (Object.keys(contactUpdate).length) {
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase.from("contacts").update(contactUpdate).eq("id", delta.contactId),
-      "only-pushes-up mirror of two derived score columns; the authoritative snapshot is the lead_score_history row inserted below (whose error IS checked), and the next signal recomputes from it",
+      {
+        table: "contacts",
+        flow: "signal_delta_score_mirror",
+        brokerageId: signalBrokerageId,
+        reason:
+          "only-pushes-up mirror of two derived score columns; the authoritative snapshot is the lead_score_history row inserted below (whose error IS checked), and the next signal recomputes from it",
+      },
     )
   }
 

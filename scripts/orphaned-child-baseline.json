@@ -1,15 +1,14 @@
 {
-  "generated": "2026-09-16",
+  "generated": "2026-09-18",
   "counts": {
-    "oc1": 2,
+    "oc1": 1,
     "oc2": 0,
     "oc3": 0,
     "oc4": 0
   },
   "keys": {
     "oc1": [
-      "journey_states.user_id",
-      "tax_categories.provider_account_id"
+      "journey_states.user_id"
     ],
     "oc2": [],
     "oc3": [],

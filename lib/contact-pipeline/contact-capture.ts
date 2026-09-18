@@ -11,7 +11,7 @@ import { calculateFuzzyMatch } from '@/lib/lead-pipeline/fuzzy-matcher'
 import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
 import { resolveAgentForContact } from '@/lib/lead-assignment/contact-assignment'
 import { mergeIdentityFields } from '@/lib/data-steward/field-steward'
-import { bestEffort } from '@/lib/db/best-effort'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 // PURE — no server-only, no SCHEMA_SNAPSHOT at module scope (see that file's
 // own header note) — safe as a static import into this shared pipeline file.
 import { localeToElevenLabsLanguage } from '@/lib/video/multilingual-reel'
@@ -658,12 +658,19 @@ export async function queueContactEnrichmentAndScore(params: {
     scored_at: new Date().toISOString(),
   })
 
-  await bestEffort(
+  await sentinelWrite(
+    supabase,
     supabase
       .from('contacts')
       .update({ last_scored_at: new Date().toISOString() })
       .eq('id', params.contactId),
-    'round-robin recency stamp for the scorer; the score itself is already on lead_score_history above and re-scoring is idempotent, so a lost stamp costs an early re-score, not a fact',
+    {
+      table: 'contacts',
+      flow: 'contact_capture_score_recency_stamp',
+      brokerageId: params.brokerageId,
+      reason:
+        'round-robin recency stamp for the scorer; the score itself is already on lead_score_history above and re-scoring is idempotent, so a lost stamp costs an early re-score, not a fact',
+    },
   )
 
   await supabase.from('lifecycle_events').insert({

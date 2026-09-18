@@ -12,7 +12,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { applySignalDelta } from "@/lib/lead-intelligence/signal-extensions"
 import {
   runTenureEquityGenerator,
@@ -145,12 +145,19 @@ async function processBrokerage(
     if (allDeltas.length === 0) {
       // Still update last_pls_scored_at so we don't re-process this contact
       // tomorrow with the same null result
-      await bestEffort(
+      await sentinelWrite(
+        supabase,
         supabase
           .from("contacts")
           .update({ last_pls_scored_at: new Date().toISOString() })
           .eq("id", contact.id),
-        "round-robin cursor for the nightly PLS sweep; a lost stamp only re-processes this contact tomorrow to the same null result — one contact's stamp must not abort the batch",
+        {
+          table: "contacts",
+          flow: "predictive_listing_score_cursor_noop",
+          brokerageId,
+          reason:
+            "round-robin cursor for the nightly PLS sweep; a lost stamp only re-processes this contact tomorrow to the same null result — one contact's stamp must not abort the batch",
+        },
       )
       continue
     }
@@ -203,12 +210,19 @@ async function processBrokerage(
       )
 
     // 6. Update last_pls_scored_at for round-robin
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase
         .from("contacts")
         .update({ last_pls_scored_at: new Date().toISOString() })
         .eq("id", contact.id),
-      "round-robin cursor for the nightly PLS sweep; the score itself was just upserted to predictive_listing_scores (the record of fact) and the sweep is idempotent, so a lost cursor costs an early re-score",
+      {
+        table: "contacts",
+        flow: "predictive_listing_score_cursor",
+        brokerageId,
+        reason:
+          "round-robin cursor for the nightly PLS sweep; the score itself was just upserted to predictive_listing_scores (the record of fact) and the sweep is idempotent, so a lost cursor costs an early re-score",
+      },
     )
 
     if (plsScore >= PLS_THRESHOLD) {

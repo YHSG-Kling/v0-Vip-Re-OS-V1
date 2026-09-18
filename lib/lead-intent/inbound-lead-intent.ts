@@ -106,7 +106,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
 import {
   applyLeadOptOut,
@@ -403,7 +403,8 @@ async function routeInboundIntent(
   })
 
   if (routed.outcome === "converted" && !routed.alreadyConverted) {
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase.from("lifecycle_events").insert({
         brokerage_id: signal.brokerageId,
         entity_type: "lead",
@@ -418,7 +419,13 @@ async function routeInboundIntent(
         },
         created_at: new Date().toISOString(),
       }),
-      "inbound-intent conversion audit row — the conversion lane already wrote LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT; this one records WHICH inbound message caused it and must not unwind the conversion",
+      {
+        table: "lifecycle_events",
+        flow: "inbound_lead_intent_conversion_audit",
+        brokerageId: signal.brokerageId,
+        reason:
+          "inbound-intent conversion audit row — the conversion lane already wrote LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT; this one records WHICH inbound message caused it and must not unwind the conversion",
+      },
     )
   }
 

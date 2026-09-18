@@ -32,6 +32,27 @@ export function mapInsights(row: Record<string, unknown> | null | undefined): Pr
   return { spend, impressions, clicks, leads, conversions, ctr, costPerLead, revenue }
 }
 
+/**
+ * PURE — Marketing API v25 refuses Advantage+ Shopping/App campaign creation.
+ * Recognizes both platform-native discriminators: `smart_promotion_type`
+ * (Meta's own field, set to AUTOMATED_SHOPPING_ADS for Advantage+ Shopping or
+ * SMART_APP_PROMOTION for Advantage+ App) on either the campaign or the ad
+ * set, and the OUTCOME_APP_PROMOTION objective (App campaigns are always
+ * Advantage+ under v25 — there is no non-Advantage+ App objective any more).
+ * @proofSeam already wired internally by metaConnector.publishCampaign below; exported for scripts/ad-connector-simulator.ts
+ */
+export function detectAdvantagePlusShoppingOrApp(
+  campaign: Record<string, unknown> | undefined,
+  adSet: Record<string, unknown> | undefined,
+): "Shopping" | "App" | null {
+  const spt = String(campaign?.smart_promotion_type ?? adSet?.smart_promotion_type ?? "").toUpperCase()
+  if (spt === "AUTOMATED_SHOPPING_ADS") return "Shopping"
+  if (spt === "SMART_APP_PROMOTION") return "App"
+  const objective = String(campaign?.objective ?? "").toUpperCase()
+  if (objective === "OUTCOME_APP_PROMOTION") return "App"
+  return null
+}
+
 // Wave 71A: routes through the official `facebook-nodejs-business-sdk` adapter
 // (lib/providers/meta/client.ts) instead of a hand-rolled `fetch`. Keeps this
 // file's calling convention (`graph(path, {method, token, body?})` →
@@ -54,18 +75,32 @@ async function graph(path: string, init: RequestInit & { token: string }): Promi
 export const metaConnector: AdConnector = {
   platform: "facebook",
 
-  // NOTE (integrator research, 2026-09-17): as of Marketing API v25, Advantage+
-  // Shopping / Advantage+ App campaigns CANNOT be created via the Marketing
-  // API at all (Meta requires Ads Manager for those objectives) — this is a
-  // platform-side API restriction, not something the SDK swap changes. Any
-  // caller building an Advantage+ Shopping/App structure through
-  // publishCampaign below will get a real Meta error back; record that as a
-  // known limitation rather than a regression if it surfaces.
+  // (integrator research, 2026-09-17, blind-spot burn-down 2026-09-18): as of
+  // Marketing API v25, Advantage+ Shopping / Advantage+ App campaigns CANNOT be
+  // created via the Marketing API at all (Meta requires Ads Manager for those
+  // objectives) — a platform-side API restriction, not something the SDK swap
+  // changes. This OS's own objective vocabulary (lib/ads/connectors/ad-payload.ts
+  // AdObjective) never sets `smart_promotion_type` or an OUTCOME_APP_PROMOTION
+  // objective through the normal ad-creator/launch-assembler path, so the shape
+  // is unreachable there today — but `PublishArgs.structure` is
+  // `Record<string, unknown>` (lib/ads/connectors/types.ts), so nothing at the
+  // TYPE level stops a future caller from assembling one directly. Originally
+  // this just let the call through and relied on "Meta will return a real
+  // error" — which is a SILENT API FAILURE from this OS's point of view (an
+  // opaque provider 4xx, not a clear refusal a caller can act on). Refuse
+  // LOCALLY instead, before any Graph call, with a clear, actionable message.
   async publishCampaign(args): Promise<{ ok: boolean; externalCampaignId?: string; error?: string }> {
     const { cred } = args
     if (!cred.accessToken || !cred.accountId) return { ok: false, error: "meta credential not connected" }
     const s = args.structure as { campaign?: Record<string, unknown>; adSet?: Record<string, unknown>; adCreative?: Record<string, unknown>; ad?: Record<string, unknown> }
     if (!s.campaign || !s.adSet || !s.adCreative || !s.ad) return { ok: false, error: "incomplete ad structure" }
+    const advantagePlus = detectAdvantagePlusShoppingOrApp(s.campaign, s.adSet)
+    if (advantagePlus) {
+      return {
+        ok: false,
+        error: `Meta Marketing API v25 refuses Advantage+ ${advantagePlus} campaign creation via the API — this must be built in Meta Ads Manager directly. This is a Meta platform restriction, not a VIP RE OS limitation.`,
+      }
+    }
     const acct = `act_${cred.accountId}`
     const post = (path: string, body: Record<string, unknown>) =>
       graph(path, { method: "POST", token: cred.accessToken, headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
