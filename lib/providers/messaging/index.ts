@@ -309,6 +309,14 @@ export interface SendEmailParams {
    *  naming a contactId is gated (wave 68 owner ruling verbatim: "we do want to make sure
    *  that the phone/scrub and email before using it"). */
   skipVerificationGate?: boolean
+  /** Attach an ICS calendar invite (lib/ai-isa/listing-appointment.ts's auto calendar
+   *  emails). Wired ONLY through the Tier-2 SendGrid path below — SendGrid's
+   *  /v3/mail/send accepts a base64 `attachments[]` entry directly. The Tier-1
+   *  personal-mailbox path (Gmail/Outlook send) would need a raw MIME multipart
+   *  body neither adapter builds today, so a send carrying an ICS SKIPS the
+   *  personal-mailbox tier and goes straight to SendGrid — never a silently
+   *  dropped attachment. */
+  icsAttachment?: { filename: string; content: string }
 }
 
 export interface SendEmailResult {
@@ -380,7 +388,8 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
   // Tier 1: when agentUserId is provided, try the agent's personal mailbox.
   // This makes agent→contact email come from sarah@kw.com instead of platform
   // noreply, so contacts can reply naturally and threads stay in agent's inbox.
-  if (params.agentUserId) {
+  // SKIPPED when an ICS is attached — see icsAttachment's own doc comment.
+  if (params.agentUserId && !params.icsAttachment) {
     try {
       const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
       const result = await sendPersonalEmail({
@@ -465,6 +474,14 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         { type: "text/plain", value: params.text || params.html.replace(/<[^>]*>/g, "") },
         { type: "text/html", value: params.html },
       ],
+      attachments: params.icsAttachment
+        ? [{
+            content: Buffer.from(params.icsAttachment.content, "utf-8").toString("base64"),
+            filename: params.icsAttachment.filename,
+            type: "text/calendar; method=REQUEST",
+            disposition: "attachment",
+          }]
+        : undefined,
     },
   })
 

@@ -418,13 +418,31 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       `AI qualification looked up a home value and booked a callback (signal ${signal.signalType}: ${signal.message}).`,
     )
   },
-  // AI ISA → Listing Concierge: a no-obligation agent visit was requested.
+  // RETIRED handler — kept so a stray legacy row already on the bus (status
+  // 'open' before this deploy) still gets a real disposition instead of a
+  // silent no-op. No live path publishes this signal any more; see the
+  // tombstone at lib/kernel/signal-registry.ts.
   "listing_concierge:qualification_appointment_handoff": (signal, ctx) => proposeQualificationConfirmation(
     signal, ctx, "listing_concierge",
     "Looking forward to meeting",
     "Great — I've passed this along and your agent will reach out to confirm a time. No obligation, just a conversation.",
     `AI qualification booked a no-obligation agent visit (signal ${signal.signalType}: ${signal.message}).`,
   ),
+  // AI ISA → Listing Concierge (wave 75C): a listing appointment was booked
+  // LIVE on the agent's connected calendar (tentative hold, ≥7 days out) and
+  // is pending the agent's one-click confirmation. The client-facing
+  // confirmation names the property; the agent's own confirm happens through
+  // the existing action-queue rail (dispositionPortalEventAction "execute"),
+  // not through this handler.
+  "listing_concierge:listing_appointment_pending_confirmation": (signal, ctx) => {
+    const address = (signal.payload?.propertyAddress as string | undefined) ?? "the property"
+    return proposeQualificationConfirmation(
+      signal, ctx, "listing_concierge",
+      "Your listing appointment",
+      `Thanks — we've found a time to visit ${address}. Your agent is confirming it now and you'll get a calendar invite once it's locked in.`,
+      `AI ISA booked a tentative listing appointment (signal ${signal.signalType}: ${signal.message}).`,
+    )
+  },
   // Listing Concierge → AI ISA: an expired/withdrawn listing's ACUTE re-list call.
   "ai_isa:relist_recovery": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "re-list recovery call"),
   // Shopping Agent → AI ISA: a rejected-offer same-day regroup call.

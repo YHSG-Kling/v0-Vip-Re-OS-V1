@@ -11,7 +11,7 @@
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { getFreshPersonalToken, type EmailOwner } from "@/lib/providers/email/personal-email-adapter"
-import { computeFreeSlots } from "./free-slots"
+import { computeFreeSlots, type WorkingHours } from "./free-slots"
 import type {
   CalendarEvent,
   CreateEventResult,
@@ -61,6 +61,9 @@ export async function createEventViaPersonal(agentUserId: string, event: Calenda
         start: { dateTime: event.startTime },
         end: { dateTime: event.endTime },
         attendees: event.attendees?.map((a) => ({ email: a.email, displayName: a.name })),
+        // Google Calendar's own status field — tentative until the agent
+        // confirms (defaults to confirmed, Google's own default, when omitted).
+        status: event.status,
       },
     })
     if (!res.ok) return { success: false, error: `Google Calendar (${res.status}): ${res.error ?? ""}` }
@@ -83,7 +86,7 @@ export async function createEventViaPersonal(agentUserId: string, event: Calenda
   return { success: true, eventId: res.data?.id, conferenceUrl: res.data?.onlineMeeting?.joinUrl }
 }
 
-export async function getAvailabilityViaPersonal(agentUserId: string, params: GetAvailabilityParams, owner?: EmailOwner): Promise<GetAvailabilityResult | null> {
+export async function getAvailabilityViaPersonal(agentUserId: string, params: GetAvailabilityParams, owner?: EmailOwner, hours?: WorkingHours): Promise<GetAvailabilityResult | null> {
   const tok = await getFreshPersonalToken(agentUserId, owner).catch(() => null)
   if (!tok) return null
   const timeMin = new Date(params.startDate).toISOString()
@@ -111,7 +114,7 @@ export async function getAvailabilityViaPersonal(agentUserId: string, params: Ge
       .filter((b: any) => !Number.isNaN(b.start) && !Number.isNaN(b.end))
   }
 
-  return { success: true, slots: computeFreeSlots(busy, params) }
+  return { success: true, slots: hours ? computeFreeSlots(busy, params, hours) : computeFreeSlots(busy, params) }
 }
 
 export async function updateEventViaPersonal(agentUserId: string, eventId: string, updates: Partial<CalendarEvent>, owner?: EmailOwner): Promise<UpdateEventResult | null> {
@@ -125,6 +128,7 @@ export async function updateEventViaPersonal(agentUserId: string, eventId: strin
     if (updates.location) body.location = updates.location
     if (updates.startTime) body.start = { dateTime: updates.startTime }
     if (updates.endTime) body.end = { dateTime: updates.endTime }
+    if (updates.status) body.status = updates.status
     const res = await callConnector({
       connector: "google_calendar", baseUrl: GOOGLE_CAL,
       path: `/calendars/primary/events/${encodeURIComponent(eventId)}`, method: "PATCH",

@@ -654,41 +654,127 @@ export function buildScheduleHomeValueReviewTool(ctx: CustomerContextToolsContex
   })
 }
 
-/** book_agent_appointment — "did they want to setup an appt for an agent to
- *  come out to discuss/no obligation." Reuses the SAME follow-up writer as
- *  request_showing/schedule_callback — a different meeting_type, not a
- *  second insert shape (§6). */
-export function buildBookAgentAppointmentTool(ctx: CustomerContextToolsContext) {
+/**
+ * find_listing_appointment_slots / book_listing_appointment (wave 75C) —
+ * "did they want to setup an appt for an agent to come out to discuss/no
+ * obligation." Owner ruling: "the no obligation meeting should be marked as
+ * a listing appointment so that the workflow creates the follow up until the
+ * appt which should be at least a week out. since this is an appt for an
+ * agent, the calendar should be hooked up so that the ai agent can find a
+ * time and day that works for the person and set up the appt right then and
+ * the agent just confirms it."
+ *
+ * TOMBSTONE (§1.1): buildBookAgentAppointmentTool (an activities/leads row
+ * with a "now" placeholder timestamp — no calendar, no real time) is RETIRED.
+ * Survivor: lib/ai-isa/listing-appointment.ts (findAgentAppointmentSlots +
+ * bookListingAppointment), driven through these two tools:
+ *   1. find_listing_appointment_slots — reads the assigned agent's connected
+ *      calendar and offers real slots ≥ 7 days out (fails closed to a
+ *      callback offer — never invents a slot).
+ *   2. book_listing_appointment — books the person's chosen slot as a
+ *      TENTATIVE hold; the agent confirms it from the existing action-queue
+ *      rail (app/actions/portal-stream.ts::dispositionPortalEventAction), and
+ *      confirmation is what fires the auto calendar emails + portal push +
+ *      reminder cadence, per lib/ai-isa/listing-appointment.ts's own header.
+ *
+ * A LEAD caller (ctx.leadId, no ctx.contactId yet) is a positive-intent
+ * signal — lane 75A's canonical hop converts it to a contact FIRST (never a
+ * second converter): convertSellerLeadOnIntent(reason:"positive_reply"), no
+ * `appointment` param, so it does ONLY the conversion + welcome, never its
+ * own (pre-calendar) booking path — this tool then books the REAL,
+ * calendar-backed appointment on the resulting contact.
+ *
+ * Never surfaces an AVM/home value in the result (owner ruling, wave 75:
+ * "never give the person a value over the conversation") — this tool never
+ * reads or returns one.
+ */
+export function buildFindListingAppointmentSlotsTool(ctx: CustomerContextToolsContext) {
   return tool({
-    description: "Book a NO-OBLIGATION in-person or video visit from the agent — nothing required of them. Use when they want an agent to come out and talk it through, rather than a phone callback.",
+    description: "Find real, available times for an agent's no-obligation listing appointment — at least a week out. Call this BEFORE book_listing_appointment; offer 2-3 of the returned times to the person in plain language and let them pick.",
     inputSchema: z.object({
-      preferred_window: z.string().nullable().describe("Free-text time preference, or null"),
+      preferred_days: z.array(z.string()).nullable().describe("Weekday names they mentioned (e.g. [\"tuesday\",\"thursday\"]), or null"),
+      preferred_window: z.enum(["morning", "afternoon", "evening"]).nullable().describe("Time-of-day preference, or null"),
+    }),
+    execute: async ({ preferred_days, preferred_window }: { preferred_days: string[] | null; preferred_window: "morning" | "afternoon" | "evening" | null }) => {
+      if (!ctx.agentId) return { success: false, error: "No agent is assigned yet — offer a callback instead." }
+      const { findAgentAppointmentSlots } = await import("@/lib/ai-isa/listing-appointment")
+      const result = await findAgentAppointmentSlots({
+        brokerageId: ctx.brokerageId,
+        agentId: ctx.agentId,
+        preferredDays: preferred_days ?? undefined,
+        preferredWindows: preferred_window ? [preferred_window] : undefined,
+      })
+      if (!result.success) {
+        // FAIL CLOSED — never invent slots. Log a callback so the person is
+        // still followed up on even though we couldn't offer a live time.
+        await scheduleFollowUp(ctx, {
+          activityType: "call",
+          scheduledAt: new Date().toISOString(),
+          notes: `Wanted a listing appointment but the agent's calendar isn't connected — call to set a time. (${result.reason})`,
+          title: "Listing appointment — calendar unavailable, callback needed",
+        }).catch(() => null)
+        return { success: false, offerCallback: true, message: result.message }
+      }
+      return {
+        success: true,
+        slots: result.slots.map((s) => ({ start: s.startTime, end: s.endTime })),
+        minDaysOut: result.minDaysOut,
+      }
+    },
+  })
+}
+
+export function buildBookListingAppointmentTool(ctx: CustomerContextToolsContext) {
+  return tool({
+    description: "Book the no-obligation listing appointment on the SLOT the person chose from find_listing_appointment_slots. Nothing required of them — it's just a conversation. Do not call this before find_listing_appointment_slots has offered real times.",
+    inputSchema: z.object({
+      slot_start_iso: z.string().describe("The exact start time (ISO 8601) the person picked from the offered slots"),
+      slot_end_iso: z.string().describe("The matching end time (ISO 8601) from the same offered slot"),
+      property_address: z.string().describe("The address the agent is visiting to discuss"),
       notes: z.string().describe("What they want to discuss"),
     }),
-    execute: async ({ preferred_window, notes }: { preferred_window: string | null; notes: string }) => {
-      const result = await scheduleFollowUp(ctx, {
-        activityType: "meeting",
-        scheduledAt: new Date().toISOString(),
-        notes: [preferred_window ? `Preferred: ${preferred_window}` : null, `No-obligation visit — ${notes}`].filter(Boolean).join("\n"),
-        title: "No-obligation agent visit requested",
+    execute: async ({ slot_start_iso, slot_end_iso, property_address, notes }: { slot_start_iso: string; slot_end_iso: string; property_address: string; notes: string }) => {
+      if (!ctx.agentId) return { success: false, error: "No agent is assigned yet — offer a callback instead." }
+
+      // A LEAD converts to a CONTACT first — the canonical hop (lane 75A's
+      // survivor), never a second converter. Positive intent to book an
+      // appointment is exactly the "positive_reply" signal that path expects;
+      // `reason:"appointment_request"` is deliberately NOT used here — that
+      // reason's OWN internal booking path pre-dates the calendar-backed flow
+      // this tool drives, so passing no `appointment` keeps it to
+      // conversion + welcome only.
+      let contactId = ctx.contactId ?? null
+      if (!contactId && ctx.leadId) {
+        const { convertSellerLeadOnIntent } = await import("@/lib/ai-isa/convert-seller-lead-on-intent")
+        const converted = await convertSellerLeadOnIntent({
+          brokerageId: ctx.brokerageId,
+          leadId: ctx.leadId,
+          reason: "positive_reply",
+          propertyData: { address: property_address },
+        })
+        if (!converted.success || !converted.contactId) {
+          return { success: false, error: converted.error ?? "Could not convert this lead before booking." }
+        }
+        contactId = converted.contactId
+      }
+      if (!contactId) return { success: false, error: "No contact or lead is linked to this conversation yet" }
+
+      const { bookListingAppointment } = await import("@/lib/ai-isa/listing-appointment")
+      const result = await bookListingAppointment({
+        brokerageId: ctx.brokerageId,
+        contactId,
+        agentId: ctx.agentId,
+        slot: { startTime: slot_start_iso, endTime: slot_end_iso },
+        propertyAddress: property_address,
+        notes,
       })
       if (!result.success) return { success: false, error: result.error }
-      await notifyAssignedAgent(ctx, {
-        type: "qualification_agent_visit_requested",
-        title: "Client requested a no-obligation agent visit",
-        body: `${notes}${preferred_window ? ` (${preferred_window})` : ""}`,
-        entityType: ctx.contactId ? "contact" : "lead",
-        entityId: (ctx.contactId ?? ctx.leadId) as string,
-      })
-      await publishQualificationSignal({
-        brokerageId: ctx.brokerageId,
-        toManager: "listing_concierge",
-        signalType: "qualification_appointment_handoff",
-        message: "AI qualification booked a no-obligation agent visit",
-        contactId: ctx.contactId ?? null,
-        leadId: ctx.leadId ?? null,
-      })
-      return { success: true, scheduledVia: result.via }
+      return {
+        success: true,
+        calendarEventId: result.calendarEventId,
+        startAt: result.startAt,
+        pendingAgentConfirmation: true,
+      }
     },
   })
 }
@@ -810,7 +896,8 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
 /**
  * The bundle every customer-facing surface spreads alongside its persona-
  * scoped BatchData/RentCast tools. `request_showing`, `schedule_callback`,
- * `schedule_home_value_review` and `book_agent_appointment` are omitted
+ * `schedule_home_value_review`, `find_listing_appointment_slots` and
+ * `book_listing_appointment` are omitted
  * entirely (never registered, never merely gated inside `execute`) when
  * there is no contactId AND no leadId — a conversation with neither cannot
  * be followed up under an identity it does not have yet.
@@ -829,7 +916,8 @@ export function buildCustomerFreeTools(ctx: CustomerContextToolsContext): Record
   if (ctx.contactId || ctx.leadId) {
     out.schedule_callback = buildScheduleCallbackTool(ctx)
     out.schedule_home_value_review = buildScheduleHomeValueReviewTool(ctx)
-    out.book_agent_appointment = buildBookAgentAppointmentTool(ctx)
+    out.find_listing_appointment_slots = buildFindListingAppointmentSlotsTool(ctx)
+    out.book_listing_appointment = buildBookListingAppointmentTool(ctx)
     out.send_matching_listings = buildSendMatchingListingsTool(ctx)
     out.record_qualification = buildRecordQualificationTool(ctx)
   }

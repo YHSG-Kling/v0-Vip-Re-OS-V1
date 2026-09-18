@@ -440,7 +440,23 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   qualification_call_requested:     { consumers: ["shopping_agent"], disposition: "handled", kind: "handoff", what: "someone asked to be called back later (not now) — persona-scoped (wave 75, owner verbatim: 'if a person says to call back again, that lead has not been qualified yet and the ai isa needs to call them back'): a CONTACT (already qualified) publishes with contactId set and the assigned agent's queue is notified via a gated confirmation (proposeQualificationConfirmation) so a human follow-up actually happens; a LEAD (not yet qualified) publishes with contactId null purely for visibility — the actual callback is placed autonomously by the AI ISA itself through lib/ai-isa/callback-task.ts::createCallbackTask → app/api/cron/ai-callback-dispatch, never a human task, and the handler correctly no-ops on it ('no contact linked yet') (lib/ai-isa/customer-context-tools.ts::buildScheduleCallbackTool)" },
   qualification_criteria_captured:  { consumers: ["shopping_agent"], disposition: "handled", kind: "update", what: "the AI qualified a buyer/renter's criteria and sent matching listings + enrolled a standing property_alerts alert — Shopping Agent's queue is notified so ongoing matching is on their radar (lib/ai-isa/customer-context-tools.ts::buildSendMatchingListingsTool)" },
   qualification_valuation_handoff:  { consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "the AI qualified a seller, ran the AVM chain for their property, and booked a discuss-it callback — Listing Concierge's queue is notified with the estimated value so the human follow-up is grounded (lib/ai-isa/customer-context-tools.ts::buildScheduleHomeValueReviewTool)" },
-  qualification_appointment_handoff:{ consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "the AI qualified a person who wants a no-obligation in-person/video visit from the agent — the assigned agent's queue is notified (lib/ai-isa/customer-context-tools.ts::buildBookAgentAppointmentTool)" },
+  // TOMBSTONE (wave 75C, CLAUDE.md §1.1): buildBookAgentAppointmentTool (the
+  // publisher of this signal) is RETIRED — survivor lib/ai-isa/customer-
+  // context-tools.ts::buildBookListingAppointmentTool now books a REAL slot
+  // on the agent's connected calendar via lib/ai-isa/listing-appointment.ts
+  // and publishes listing_appointment_pending_confirmation instead (below).
+  // Entry kept catalogued (never deleted to move a number) — no code path
+  // publishes this type any more.
+  qualification_appointment_handoff:{ consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "RETIRED — the AI qualified a person who wants a no-obligation in-person/video visit from the agent — the assigned agent's queue is notified (formerly lib/ai-isa/customer-context-tools.ts::buildBookAgentAppointmentTool, now buildBookListingAppointmentTool — see listing_appointment_pending_confirmation)" },
+  // wave 75C — the owner ruling that the no-obligation visit IS a listing
+  // appointment, booked live on the agent's calendar and pending their
+  // confirmation. lib/ai-isa/listing-appointment.ts::bookListingAppointment
+  // publishes this after creating the tentative calendar hold; the
+  // listing_concierge handler proposes a gated client confirmation message
+  // (lib/kernel/manager-signals.ts) while dispositionPortalEventAction's
+  // "execute" branch (app/actions/portal-stream.ts) is what the agent's own
+  // one-click confirm calls.
+  listing_appointment_pending_confirmation: { consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "a listing appointment was booked live on the agent's connected calendar (tentative) and is pending the agent's one-click confirmation — the agent's queue is notified and a gated client confirmation is proposed (lib/ai-isa/listing-appointment.ts::bookListingAppointment)" },
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */

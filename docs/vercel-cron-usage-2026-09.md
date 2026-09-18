@@ -183,6 +183,23 @@ entries run at 06:00/07:00 and this sweep must run AFTER the overnight
 `poll-did-videos` retries have had their five ticks. Baseline raised
 `9383.052` → `9384.052`/day for that reason and no other.
 
+### Raise justified — lane 75C (2026-09-18)
+
+**`/api/cron/listing-appointment-reminders`** (`0 13 * * *`, owner
+`listing_concierge`) was added: **+1.0/day, +30/mo** — the listing
+appointment's 5-day/2-day/morning-of reminder cadence (owner ruling wave 75:
+"the workflow creates the follow up until the appt"). Daily is sufficient
+for a day-granularity 3-tier cadence — no sub-hour polling is needed, and
+folding it into an existing `listing_concierge` daily tick was considered
+and rejected: the existing daily entries (`listing-health-scan`,
+`listing-propensity`, `seller-updates`) each own a DIFFERENT table/read
+shape, and coupling this sweep's failure mode to theirs would widen every
+other daily job's blast radius for a one-table, low-volume read. Baseline
+raise (`9384.052` → `9385.052`/day) is left to the integrator's
+`--write-baseline` run (lane rule: lanes do not regenerate baselines) —
+`npx tsx scripts/cron-cost-census.ts` currently reports `CRON_COST_FAIL` on
+this exact +1.0/day delta until that run happens.
+
 ### Considered and explicitly NOT consolidated
 
 - **Scraping crons** (`/api/cron/lead-scraping` and everything the frozen

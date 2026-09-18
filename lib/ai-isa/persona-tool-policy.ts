@@ -419,7 +419,8 @@ export const FREE_INTERNAL_TOOL_NAMES: readonly string[] = [
   "schedule_callback",
   "send_matching_listings",
   "schedule_home_value_review",
-  "book_agent_appointment",
+  "find_listing_appointment_slots",
+  "book_listing_appointment",
   "record_qualification",
 ]
 

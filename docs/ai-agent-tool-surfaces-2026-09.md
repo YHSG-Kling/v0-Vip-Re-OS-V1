@@ -249,11 +249,13 @@ salesy, one question at a time, mirror their words, value before ask, fair
 housing in the writing prompt (never characterize a neighborhood or infer a
 demographic fact). Follow-up menu: `schedule_callback`,
 `send_matching_listings`, `schedule_home_value_review`,
-`book_agent_appointment`, `request_showing` — the free ACTION tools in
+`find_listing_appointment_slots` + `book_listing_appointment`, `request_showing`
+— the free ACTION tools in
 `lib/ai-isa/customer-context-tools.ts`, contactId/leadId-locked, every write
 via `sentinelWrite`, every action publishing a `manager_signals` row
 (`qualification_call_requested` / `qualification_criteria_captured` /
-`qualification_valuation_handoff` / `qualification_appointment_handoff` —
+`qualification_valuation_handoff` / `listing_appointment_pending_confirmation`
+— wave 75C survivor of the retired `qualification_appointment_handoff` —
 `lib/kernel/signal-registry.ts` + `lib/kernel/manager-signals.ts`
 `SIGNAL_HANDLERS`) so the Shopping Agent / Listing Concierge loops pick the
 follow-up up autonomously beside the immediate agent notification each tool
@@ -264,6 +266,36 @@ migration (every column this lane touches — `contacts`/`leads`
 `address`, `qualification_summary`, `contact_type`/`lead_type`, and
 `property_preferences`'s existing `preferred_price_*`/`inferred_*` columns —
 was already live).
+
+**Listing appointment (wave 75C, owner verbatim: "the no obligation meeting
+should be marked as a listing appointment so that the workflow creates the
+follow up until the appt which should be at least a week out ... the calendar
+should be hooked up so that the ai agent can find a time and day that works
+for the person and set up the appt right then and the agent just confirms
+it. then the auto calendar emails go out and is pushed to their portal in
+app.")** — `lib/ai-isa/listing-appointment.ts` is the ONE survivor:
+`findAgentAppointmentSlots` reads the assigned agent's OWN connected
+Google/Microsoft calendar (`lib/providers/calendar/personal-calendar.ts`'s
+existing REST adapter over the connector gateway — `googleapis` is not a repo
+dependency, so no new SDK) and fails CLOSED to a callback offer when nothing
+is connected — it never invents a slot. `bookListingAppointment` books a
+TENTATIVE hold ≥7 days out on `calendar_events`
+(`event_type='listing_appointment'`, already a live enum member — no CHECK
+constraint exists on that column, so no migration was needed) at
+`status='pending_agent_confirmation'`, and reuses the EXISTING agent
+action-queue rail (`portal_event_stream` + `app/actions/portal-stream.ts`'s
+`dispositionPortalEventAction`) for "the agent just confirms it" — no new UI.
+Confirming fires `confirmListingAppointment`: the Google event flips to
+`confirmed`, auto calendar emails go out to BOTH agent and contact with an
+ICS attachment (`lib/providers/messaging/index.ts`'s `sendEmail` extended
+with `icsAttachment`), and a portal in-app card is pushed (the same
+`portal_event_stream` table `getCustomerPortalFeed` already reads). The
+5-day / 2-day / morning-of reminder cadence runs from
+`sendListingAppointmentReminders` (cron `listing-appointment-reminders`,
+owner `listing_concierge`); a reschedule supersedes (cancels) the prior open
+appointment, which removes it from that cadence — "cancel on reschedule."
+Proof: `test:listing-appointment`. Never surfaces an AVM value (owner
+ruling: "never give the person a value over the conversation").
 
 **Cost-ranked tool order** (owner: "tools for the ai agents should not be
 using batchdata tools if there are less expensive tools to look up

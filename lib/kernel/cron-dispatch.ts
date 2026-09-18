@@ -41,6 +41,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/notification-delivery-escalation", schedule: "*/30 * * * *" }, // notification_log reconciliation (readerless-write-census)
   // review-response "review" mode auto-publish clock (m625, WRITTEN NOT APPLIED) — see route header.
   { path: "/api/cron/review-response-auto-publish",    schedule: "*/30 * * * *" },
+  // Listing appointment 5-day/2-day/morning-of reminder cadence (wave 75C) — see route header.
+  { path: "/api/cron/listing-appointment-reminders",   schedule: "0 13 * * *" },
   { path: "/api/cron/vendor-follow-up-cadence",        schedule: "0 14 * * *" },    // vendor_communications.sent_at cadence (readerless-write-census)
   // Sphere handoff safety net: a CLOSED listing whose linked transaction never
   // reaches its own terminal stage gets no deal_closed welcome from either

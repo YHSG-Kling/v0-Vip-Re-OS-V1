@@ -116,7 +116,8 @@ console.log("\n[Layer 3 · follow-up tools are id-locked and write via sentinelW
 const toolsSrc = stripped("lib/ai-isa/customer-context-tools.ts")
 const FOLLOW_UP_BUILDERS = [
   "buildScheduleCallbackTool", "buildSendMatchingListingsTool",
-  "buildScheduleHomeValueReviewTool", "buildBookAgentAppointmentTool", "buildRecordQualificationTool",
+  "buildScheduleHomeValueReviewTool", "buildFindListingAppointmentSlotsTool",
+  "buildBookListingAppointmentTool", "buildRecordQualificationTool",
 ]
 for (const fn of FOLLOW_UP_BUILDERS) {
   check(`${fn} is exported`, toolsSrc.includes(`export function ${fn}`))
@@ -143,7 +144,8 @@ check("a BatchData bulk page / skip-trace tool ranks 3 (the most expensive tier)
   costRankForTool("search_properties_page") === 3 && costRankForTool("skip_trace_property") === 3)
 check("FREE_INTERNAL_TOOL_NAMES carries every follow-up tool name (so they rank 0, not the rank-2 default)",
   FREE_INTERNAL_TOOL_NAMES.includes("schedule_callback") && FREE_INTERNAL_TOOL_NAMES.includes("send_matching_listings") &&
-  FREE_INTERNAL_TOOL_NAMES.includes("schedule_home_value_review") && FREE_INTERNAL_TOOL_NAMES.includes("book_agent_appointment") &&
+  FREE_INTERNAL_TOOL_NAMES.includes("schedule_home_value_review") && FREE_INTERNAL_TOOL_NAMES.includes("book_listing_appointment") &&
+  FREE_INTERNAL_TOOL_NAMES.includes("find_listing_appointment_slots") &&
   FREE_INTERNAL_TOOL_NAMES.includes("record_qualification"))
 
 const fakeFn = (): Record<string, never> => ({});
@@ -219,6 +221,9 @@ const { classifyCoordination } = await import("../lib/kernel/coordination-kind")
 const QUALIFICATION_SIGNALS = [
   "qualification_call_requested", "qualification_criteria_captured",
   "qualification_valuation_handoff", "qualification_appointment_handoff",
+  // wave 75C survivor of qualification_appointment_handoff (still catalogued
+  // above, tombstoned — no live publisher any more).
+  "listing_appointment_pending_confirmation",
 ]
 for (const type of QUALIFICATION_SIGNALS) {
   const spec = SIGNAL_REGISTRY[type]

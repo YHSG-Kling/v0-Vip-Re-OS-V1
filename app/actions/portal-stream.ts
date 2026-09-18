@@ -26,6 +26,7 @@ import { requireCaller } from "@/lib/auth/require-caller"
 import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
+import { LISTING_APPOINTMENT_CONFIRM_EVENT_TYPE } from "@/lib/ai-isa/listing-appointment"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -324,10 +325,28 @@ export async function dispositionPortalEventAction(params: {
   // Load the row so we can write a matching activities audit row + fan out
   const { data: row } = await supabase
     .from("portal_event_stream")
-    .select("id, brokerage_id, contact_id, transaction_id, event_type, agent_copy, agent_action_label, agent_user_id")
+    .select("id, brokerage_id, contact_id, transaction_id, event_type, agent_copy, agent_action_label, agent_user_id, metadata")
     .eq("id", params.eventId)
     .maybeSingle()
   if (!row) return { success: false, error: "Event not found" }
+
+  // ── wave 75C: "execute" on a listing-appointment confirmation card calls
+  // the SURVIVOR — lib/ai-isa/listing-appointment.ts::confirmListingAppointment
+  // — instead of only flipping this row's status. This is what "the agent
+  // just confirms it" means: the SAME action-queue disposition every other
+  // agent-action card already uses, extended with ONE event_type branch
+  // rather than a second confirm surface. A failed confirm refuses here so
+  // the row is never marked completed_executed while the appointment itself
+  // is still pending.
+  if (params.mode === "execute" && row.event_type === LISTING_APPOINTMENT_CONFIRM_EVENT_TYPE) {
+    const calendarEventId = (row.metadata as Record<string, unknown> | null)?.calendar_event_id as string | undefined
+    if (!calendarEventId) return { success: false, error: "This confirmation card is missing its appointment reference." }
+    const { confirmListingAppointment } = await import("@/lib/ai-isa/listing-appointment")
+    const confirmed = await confirmListingAppointment({
+      brokerageId: row.brokerage_id, calendarEventId, confirmedByUserId: user.id,
+    })
+    if (!confirmed.success) return { success: false, error: confirmed.error }
+  }
 
   const statusMap: Record<DispositionMode, "completed_manual" | "completed_executed" | "completed_ai" | "dismissed"> = {
     manual:       "completed_manual",

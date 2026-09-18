@@ -80,8 +80,17 @@
  *                                 just described
  *   - schedule_home_value_review — look up what their property is worth and
  *                                 call back to discuss it
- *   - book_agent_appointment    — a no-obligation in-person/video visit from
- *                                 the agent, nothing required
+ *   - book_listing_appointment  — a no-obligation LISTING APPOINTMENT: the
+ *                                 model calls find_listing_appointment_slots
+ *                                 first, offers real times ≥7 days out off
+ *                                 the agent's own connected calendar, and
+ *                                 books the one the person picks (wave 75,
+ *                                 owner: "the no obligation meeting should be
+ *                                 marked as a listing appointment ... the
+ *                                 calendar should be hooked up so that the ai
+ *                                 agent can find a time and day that works
+ *                                 for the person and set up the appt right
+ *                                 then and the agent just confirms it")
  *   - request_showing           — see a specific property, meet, or call now
  * The model picks ONE that matches what the PERSON asked for — never all
  * five, never a forced choice.
@@ -160,7 +169,7 @@ export const QUALIFICATION_FOLLOW_UP_MENU: readonly FollowUpOption[] = [
   { tool: "schedule_callback", label: "Call them back later", when: "they're interested but not ready to talk further right now — ask when a good time to call back is" },
   { tool: "send_matching_listings", label: "Send matching listings", when: "they described buyer/renter criteria — send what matches, and keep sending as new matches come in" },
   { tool: "schedule_home_value_review", label: "Look up their home's value", when: "they mentioned selling or asked what their home is worth — look it up and schedule a callback to discuss it" },
-  { tool: "book_agent_appointment", label: "Book a no-obligation agent visit", when: "they want an agent to come out (in person or video) and talk it through — make clear it's no-obligation" },
+  { tool: "book_listing_appointment", label: "Book a no-obligation listing appointment", when: "they want an agent to come out and talk it through — find real times at least a week out on the agent's calendar (call find_listing_appointment_slots first), offer 2-3, and book the one they pick; make clear it's no-obligation" },
   { tool: "request_showing", label: "Request a showing / meeting / call now", when: "they want to see a specific property, meet, or talk right away" },
 ] as const
 
