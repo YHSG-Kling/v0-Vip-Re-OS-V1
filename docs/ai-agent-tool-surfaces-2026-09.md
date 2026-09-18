@@ -223,3 +223,89 @@ allowlists, cost-tier constriction incl. the monthly-cap-trips-to-lean
 downgrade, `resolveToolPersona` derivation, redaction, budget/ordering) and
 `scripts/lead-intake-pipeline-simulator.ts` (PeopleData identity resolution)
 are the adjacent proofs this doc's claims lean on.
+
+## 8. Qualification playbook (lane 74B)
+
+Owner, wave 74 verbatim: "the ai agents need to not be salesy but also try to
+get them qualified so that they can setup a meeting/showing, get their
+contact info, what their intent is, property address that they are selling,
+determine their persona, etc. they can setup followup whether calling them
+again when they are ready, sending a list of properties that they just told
+us their criteria for, setting up a time to look up their property value and
+give them a call back to discuss or did they want to setup an appt for an
+agent to come out to discuss/no obligation, etc. typical real estate talk
+unless there is a competitor which is doing this another more inventive way.
+this goes for the platform ai agents."
+
+**One playbook, mounted everywhere** — `lib/ai-isa/qualification-playbook.ts`
+(`buildQualificationPrompt`, `QUALIFICATION_GOALS`,
+`QUALIFICATION_FOLLOW_UP_MENU`). Every hand-rolled qualification paragraph
+this doc's §1 surfaces used to carry independently is now a call into this
+one builder, tombstoned in place at its old location. Goals: contact info,
+intent (buy/sell/both/invest/rent/relocate), persona (m589 vocabulary),
+seller property address, buyer criteria, timeline (the live 1-3/3-6/6-12
+bucket CHECK — CLAUDE.md §5), financing status. Conversational rules: never
+salesy, one question at a time, mirror their words, value before ask, fair
+housing in the writing prompt (never characterize a neighborhood or infer a
+demographic fact). Follow-up menu: `schedule_callback`,
+`send_matching_listings`, `schedule_home_value_review`,
+`book_agent_appointment`, `request_showing` — the free ACTION tools in
+`lib/ai-isa/customer-context-tools.ts`, contactId/leadId-locked, every write
+via `sentinelWrite`, every action publishing a `manager_signals` row
+(`qualification_call_requested` / `qualification_criteria_captured` /
+`qualification_valuation_handoff` / `qualification_appointment_handoff` —
+`lib/kernel/signal-registry.ts` + `lib/kernel/manager-signals.ts`
+`SIGNAL_HANDLERS`) so the Shopping Agent / Listing Concierge loops pick the
+follow-up up autonomously beside the immediate agent notification each tool
+already sends. `record_qualification` writes persona/intent/address/
+criteria/timeline/financing to the columns that already exist — no new
+migration (every column this lane touches — `contacts`/`leads`
+`contact_persona`/`persona`, `timeline`, `lender_status`, `property_type`,
+`address`, `qualification_summary`, `contact_type`/`lead_type`, and
+`property_preferences`'s existing `preferred_price_*`/`inferred_*` columns —
+was already live).
+
+**Cost-ranked tool order** (owner: "tools for the ai agents should not be
+using batchdata tools if there are less expensive tools to look up
+properties") — `persona-tool-policy.ts`'s `costRankForTool` (0 internal / 1
+RentCast / 2 BatchData preview-count-lookup-verify / 3 BatchData
+page/skip-trace) and `selectToolsForPersona`, which sorts a surface's merged
+tool map cheapest-first and DROPS a BatchData tool (`lookup_property`,
+`comparable_property_preview/count`) when a RentCast tool already in the
+SAME registry covers the need — property lookup and comps respectively.
+Valuation has no such drop because it is never offered as a raw tool at all;
+`schedule_home_value_review` calls the AVM chain directly (RentCast-first,
+BatchData only when the chain reaches it and the platform tier is not
+`"off"`), so there is nothing to rank-compete there. Every chat surface
+(`handle-inbound-email.ts`, `widget/message`, `portal/ai-chat`,
+`did/custom-llm`) and the voice line (`twilio-voice.ts`'s
+`VOICE_TOOL_ALLOWLIST` build) route their merged property/free tool maps
+through `selectToolsForPersona` before handing them to the model.
+
+**Competitor scan (2026 AI real-estate ISA / conversational agents)** — one
+Exa search across Structurely (Aisa Holmes), Ylopo (rAIya), Lofty AI Sales
+Agent, Follow Up Boss AI, Roof AI, and Perspective AI:
+
+| Move | Source | Adopted? | Why |
+|---|---|---|---|
+| Probe a vague/conditional answer with ONE follow-up instead of recording it as a flat field ("it depends on the school district" → ask, don't drop) | Perspective AI's stated differentiator over scripted-branch competitors | **Adopted** | Added to `conversationalRulesBlock()` — a real conversational gain that fits "never a form disguised as a sentence" exactly. |
+| Explicit lead-situation tagging that drives downstream automation (Lofty's "AI: Intend to Sell" / "AI: Need Financing" / "AI: Investor" tag table) | Lofty AI Sales Agent qualification docs | **Already covered, reinforced** | This is what `record_qualification` writing `contact_persona`/`lender_status`/`contact_type` already does structurally (a real column, not a display tag) — no new build needed. |
+| Behavioral prospecting — surfacing intent from in-platform behavior (listings viewed, price ranges browsed) rather than only responding to inbound | Lofty AI Sales Agent | **Already covered, declined as net-new** | `lib/behavior-learning/*`, `external_behavior`, `lead_property_searches`, and `property_preferences.inferred_*` already do this; this lane is the CONVERSATION half, not the behavior-mining half. |
+| Hot/Warm/Cold routing with a 15-minute hot-lead SLA and a distinct handoff message style per tier | Multiple (Structurely/Ylopo docs, "Bot-to-Human Handoff Protocol") | **Already covered, declined as net-new** | `lead_temperature`/`urgency_level` + the existing ISA escalation/handoff signal kinds already carry this distinction; this lane's four new signals are `handoff`/`update` kind exactly along those lines. |
+| Deliberate human-mimicking delays/casual filler so the lead does not realize it is an AI | Structurely's Aisa Holmes | **Declined** | Conflicts with the platform's own AI-disclosure rule (`lib/communication/call-disclosures.ts`, and every voice/reception prompt's "if asked whether you are an AI, confirm honestly and immediately") — a compliance line this lane does not get to move. |
+| Multi-language auto-detection (Lofty: English/Spanish/Mandarin/French) | Lofty AI Sales Agent | **Declined for this lane** | Out of scope for the qualification-playbook build; a real capability, but a separate i18n project, not a qualification-conversation change. |
+
+## 9. Follow-up action tools & cost-ranked selection — proof
+
+`scripts/qualification-playbook-simulator.ts` (`npm run test:qualification-playbook`)
+proves: every surface's system prompt contains the shared
+`buildQualificationPrompt` call (stripped source) with no duplicated
+qualification prose remaining (a positive-control fixture proves the scanner
+still catches duplicated prose if it existed); the four follow-up tools
+write via `sentinelWrite` and are persona/contactId-locked from `ctx`, never
+a model-suppliable id; `costRankForTool`/`selectToolsForPersona` sort
+cheapest-first and drop a BatchData tool a cheaper tool covers, with a
+POSITIVE CONTROL proving a need only BatchData covers (the seller persona's
+`lookup_property`, since sellers never get RentCast) survives; and
+`record_qualification` only ever writes columns
+`scripts/schema-snapshot.ts` lists as live.

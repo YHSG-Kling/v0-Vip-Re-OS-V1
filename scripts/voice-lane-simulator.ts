@@ -508,6 +508,14 @@ console.log("\n── SOURCE: wiring ──")
     && src("app/api/voice/relay/plan/route.ts").includes("planTurnWithPrompt("))
   check("platform-reception.ts carries no leftover toolRequest schema field now that it has a REAL tool (platform_faq_lookup)",
     !src("lib/voice/platform-reception.ts").includes("toolRequest") && src("lib/voice/platform-reception.ts").includes("platform_faq_lookup"))
+
+  // ── Lane 74B: the shared qualification playbook + cost-ranked tool order ──
+  check("reception-brain.ts mounts the shared qualification playbook on both the inbound reception and outbound prompts (never a hand-rolled job list)",
+    (src("lib/voice/reception-brain.ts").match(/buildQualificationPrompt\(/g) ?? []).length >= 2)
+  check("platform-reception.ts mounts the SAME shared builder (conversational-rules-only variant — a platform prospect is not a real-estate buyer/seller)",
+    src("lib/voice/platform-reception.ts").includes("buildQualificationPrompt("))
+  check("twilio-voice.ts routes the voice tool allowlist through selectToolsForPersona (cost-ranked order, same rule as chat surfaces — CLAUDE.md §6)",
+    voiceLib.includes("selectToolsForPersona(allowlisted)"))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

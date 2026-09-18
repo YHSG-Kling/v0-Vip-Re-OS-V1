@@ -428,6 +428,17 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   offer_os_counter_responded:     { consumers: [], disposition: "feed_only", kind: "update", what: "a buyer responded (accept/reject/counter) to a seller's counter-offer — same family as offer_os_countered (lib/kernel/offers.ts respondToCounter)" },
   offer_os_rejected:              { consumers: [], disposition: "feed_only", kind: "update", what: "an offer was rejected — same family as offer_os_countered (lib/kernel/offers.ts rejectOffer)" },
   offer_os_withdrawn:             { consumers: [], disposition: "feed_only", kind: "alert", what: "an offer was withdrawn — same family as offer_os_countered; classifies as 'alert' (classifyCoordination matches 'withdrawn') rather than 'update' (lib/kernel/offers.ts withdrawOffer)" },
+
+  // ── Lane 74B — the AI ISA qualification playbook's follow-up ACTIONS. Every
+  // customer-facing surface's schedule_callback/send_matching_listings/
+  // schedule_home_value_review/book_agent_appointment tool (lib/ai-isa/
+  // customer-context-tools.ts) publishes one of these so the ISA/agent loops
+  // pick the follow-up up autonomously, beside the durable write (activities/
+  // leads.next_followup_at/property_alerts) the tool already made.
+  qualification_call_requested:     { consumers: ["shopping_agent"], disposition: "handled", kind: "handoff", what: "the AI qualified a person and they asked to be called back later (not now) — the assigned agent's queue is notified so a human follow-up actually happens (lib/ai-isa/customer-context-tools.ts::buildScheduleCallbackTool)" },
+  qualification_criteria_captured:  { consumers: ["shopping_agent"], disposition: "handled", kind: "update", what: "the AI qualified a buyer/renter's criteria and sent matching listings + enrolled a standing property_alerts alert — Shopping Agent's queue is notified so ongoing matching is on their radar (lib/ai-isa/customer-context-tools.ts::buildSendMatchingListingsTool)" },
+  qualification_valuation_handoff:  { consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "the AI qualified a seller, ran the AVM chain for their property, and booked a discuss-it callback — Listing Concierge's queue is notified with the estimated value so the human follow-up is grounded (lib/ai-isa/customer-context-tools.ts::buildScheduleHomeValueReviewTool)" },
+  qualification_appointment_handoff:{ consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "the AI qualified a person who wants a no-obligation in-person/video visit from the agent — the assigned agent's queue is notified (lib/ai-isa/customer-context-tools.ts::buildBookAgentAppointmentTool)" },
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */

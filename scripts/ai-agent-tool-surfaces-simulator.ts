@@ -70,31 +70,35 @@ const SURFACES: SurfaceCheck[] = [
     path: "app/actions/ai-isa/handle-inbound-email.ts",
     label: "ISA inbound-email handler",
     audience: "lead (email reply)",
-    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools"],
+    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools", "buildQualificationPrompt", "selectToolsForPersona"],
   },
   {
     path: "app/api/did/custom-llm/route.ts",
     label: "D-ID live-avatar brain",
     audience: "visitor or contact (spoken), persona derived from contact context",
-    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools"],
+    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools", "buildQualificationPrompt", "selectToolsForPersona"],
   },
   {
     path: "app/api/internal/ai-chat/route.ts",
     label: "in-app agent copilot",
     audience: "tenant staff / licensed agent",
-    expect: ["batchDataMcpTools", "rentCastMcpTools", "resolveEffectiveBatchDataToolTier", "filterToolsByTier"],
+    // No selectToolsForPersona here on purpose — wave 72B's own ruling stands
+    // ("no persona split — staff get the whole toolkit"); the cost TIER
+    // constriction (filterToolsByTier) still applies. buildQualificationPrompt
+    // is mounted as a COMPACT draft_ai_reply reference block (lane 74B).
+    expect: ["batchDataMcpTools", "rentCastMcpTools", "resolveEffectiveBatchDataToolTier", "filterToolsByTier", "buildQualificationPrompt"],
   },
   {
     path: "app/api/portal/ai-chat/route.ts",
     label: "portal contact assistant",
     audience: "known contact (buyer/seller/investor/renter/relocation/sphere)",
-    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools"],
+    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools", "buildQualificationPrompt", "selectToolsForPersona"],
   },
   {
     path: "app/api/widget/message/route.ts",
     label: "website visitor widget",
     audience: "anonymous pre-lead visitor",
-    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools"],
+    expect: ["batchDataIsaTools", "resolveToolPersona", "buildCustomerFreeTools", "buildQualificationPrompt", "selectToolsForPersona"],
   },
 ]
 

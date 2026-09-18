@@ -387,3 +387,97 @@ export function filterRentCastToolsForPersona<T extends Record<string, unknown>>
   }
   return out as Partial<T>
 }
+
+// ─── COST-RANKED TOOL ORDER (lane 74B) ──────────────────────────────────────
+//
+// Owner, wave 74 verbatim: "tools for the ai agents should not be using
+// batchdata tools if there are less expensive tools to look up properties."
+// `costRank` is the ONE cost ladder every mounting surface (chat AND voice)
+// orders its tools by:
+//   0 — internal/free (lib/ai-isa/customer-context-tools.ts's bundle +
+//       record_qualification — no vendor spend, never metered).
+//   1 — RentCast (`rentcast_<name>` — platform-key metered, materially
+//       cheaper per call than BatchData's per-record pricing).
+//   2 — BatchData preview/count/lookup/verify/compliance tools (cheap-tier
+//       survivors under BATCHDATA_TOOL_TIER="lean" — see isToolAllowedForTier
+//       above; the SAME predicate, reused rather than re-spelled, §6).
+//   3 — BatchData bulk/page pulls and skip-trace (`_page`, `skip_trace_
+//       property`, `reverse_skip_trace`) — the most expensive tier, offered
+//       last and only when nothing cheaper covers the need.
+export type ToolCostRank = 0 | 1 | 2 | 3
+
+const BATCHDATA_BULK_PATTERN = /_page$|skip_trace_property|reverse_skip_trace/
+
+/** PURE — every known FREE internal tool name (never a BatchData/RentCast
+ *  spend). Kept as an explicit set (not a regex over "no known vendor
+ *  prefix") so a future tool is rank-2-by-default (fail toward the pricier,
+ *  auditable bucket) until it is deliberately added here. */
+export const FREE_INTERNAL_TOOL_NAMES: readonly string[] = [
+  "get_my_context",
+  "search_our_listings",
+  "request_showing",
+  "schedule_callback",
+  "send_matching_listings",
+  "schedule_home_value_review",
+  "book_agent_appointment",
+  "record_qualification",
+]
+
+/** PURE — the cost rank for one tool NAME. Generic over any registry's key
+ *  shape (persona-scoped, voice-allowlisted, or the staff copilot's full
+ *  catalogue) — never a second cost table per surface. */
+export function costRankForTool(toolName: string): ToolCostRank {
+  if (FREE_INTERNAL_TOOL_NAMES.includes(toolName)) return 0
+  if (toolName.startsWith("rentcast_")) return 1
+  if (BATCHDATA_BULK_PATTERN.test(toolName)) return 3
+  return 2 // every other named tool (BatchData preview/count/lookup/verify/compliance, and any unrecognized future tool) — the auditable default, never the cheapest
+}
+
+/** Which NEED a rank-2/3 BatchData tool answers, when a cheaper tool covering
+ *  the SAME need should make it redundant. Not every BatchData tool has a
+ *  cheaper substitute in this codebase (valuation is answered by the AVM
+ *  chain — lib/avm/provider-chain.ts — which is a SEPARATE call path, not a
+ *  tool in this registry, so there is nothing to drop here for it; comps and
+ *  property-lookup DO have a same-registry substitute when RentCast is on). */
+const BATCHDATA_TOOL_NEED: Readonly<Record<string, string>> = {
+  lookup_property: "property_lookup",
+  comparable_property_preview: "comps",
+  comparable_property_count: "comps",
+}
+
+/**
+ * PURE — the cost-ranked, need-deduplicated tool selection every surface
+ * (chat AND voice) should build its final `tools:` map through. Takes the
+ * ALREADY persona+tier-filtered registry (BatchData persona/tier filters +
+ * RentCast persona filter + the free bundle, merged) and:
+ *   1. DROPS a rank-2/3 BatchData tool when a rank-1 RentCast tool ALREADY
+ *      IN THIS SAME REGISTRY covers the same need (a RentCast tool is
+ *      present at all → cheaper property lookup covered; a RentCast tool
+ *      whose name matches /comp/i → cheaper comps covered). A persona whose
+ *      policy has RentCast disabled (e.g. "seller") or whose RentCast name
+ *      pattern excludes comps never gets ANY rentcast_ tool into the
+ *      registry in the first place, so the BatchData tool that need only
+ *      BatchData covers SURVIVES — the positive control this rule needs
+ *      (CLAUDE.md §2): the rule can demonstrably keep a tool, not just drop
+ *      one, proving it discriminates rather than stripping everything.
+ *   2. Returns the SURVIVING tools sorted ascending by costRank, so a caller
+ *      that reads `Object.keys(...)` in order (or logs it) sees the cheapest
+ *      tools first.
+ */
+export function selectToolsForPersona<T extends Record<string, unknown>>(registry: T): Partial<T> {
+  const names = Object.keys(registry)
+  const rentcastNames = names.filter((n) => n.startsWith("rentcast_"))
+  const coveredNeeds = new Set<string>()
+  if (rentcastNames.length > 0) coveredNeeds.add("property_lookup")
+  if (rentcastNames.some((n) => /comp/i.test(n))) coveredNeeds.add("comps")
+
+  const survivors = names.filter((n) => {
+    const need = BATCHDATA_TOOL_NEED[n]
+    return !(need && coveredNeeds.has(need))
+  })
+  survivors.sort((a, b) => costRankForTool(a) - costRankForTool(b))
+
+  const out: Record<string, unknown> = {}
+  for (const n of survivors) out[n] = registry[n]
+  return out as Partial<T>
+}

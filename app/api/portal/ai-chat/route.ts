@@ -6,9 +6,10 @@ import type { UIMessage } from 'ai'
 import { NextResponse } from 'next/server'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
-import { resolveToolPersona, filterRentCastToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
+import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
 
 // Portal AI chat — authenticated contacts only.
 // Business rules enforced here:
@@ -99,6 +100,17 @@ export async function POST(request: Request) {
     if (!hasAccess) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
+
+    // Persona DERIVED (resolveToolPersona) from the ACCESS-CHECKED contact
+    // row's own contact_type/contact_persona/home_owner_status — never the
+    // request body (CLAUDE.md §4). Resolved HERE (before the system prompt)
+    // so buildQualificationPrompt can flavor its goal list if the contact
+    // raises new buy/sell intent mid-servicing (lane 74B).
+    const portalPersona = resolveToolPersona({
+      contactType: contact.contact_type,
+      contactPersona: contact.contact_persona,
+      homeOwnerStatus: contact.home_owner_status,
+    })
 
     // ── Resolve or create portal chat session ──────────────────────────────────
     const serviceClient = createServiceClient()
@@ -360,6 +372,12 @@ export async function POST(request: Request) {
       '',
       'TONE: Warm, clear, reassuring. Plain English. No jargon unless you explain it.',
       'ESCALATION: If the contact asks to speak to a human, says this is urgent, or seems very stressed, tell them their agent will be notified right away.',
+      '',
+      // If this contact raises NEW buy/sell intent mid-servicing conversation
+      // (e.g. "actually we want to sell our other place too"), follow the
+      // shared playbook rather than improvising — lane 74B, CLAUDE.md §6.
+      'IF NEW INTENT COMES UP (something beyond their current transaction/listing):',
+      buildQualificationPrompt({ surface: 'portal', persona: portalPersona }),
     ].filter(Boolean).join('\n')
 
     // ── Detect escalation in latest user message ───────────────────────────────
@@ -411,21 +429,15 @@ export async function POST(request: Request) {
     }
 
     // ── BatchData/RentCast property-intelligence tools (lane 72B, widened 73B) ──
-    // Persona DERIVED (resolveToolPersona, lib/ai-isa/persona-tool-policy.ts)
-    // from the ACCESS-CHECKED contact row's own contact_type/contact_persona/
-    // home_owner_status — never the request body (CLAUDE.md §4). Six personas
-    // now (buyer/seller/investor/renter/relocation/sphere), each with its own
-    // tool allowlist + spend cap (persona-tool-policy.ts's header). conversation
-    // Key = contactId scopes the page-before-preview/count ordering rule and
-    // the per-persona spend budget to THIS contact's portal thread across
-    // turns. Gated: {} when BatchData's MCP is unconfigured (batchDataIsaTools
-    // resolves the SAME token lib/external/batchdata-mcp.ts itself uses), so a
-    // deployment with no BatchData token streams exactly as before this change.
-    const portalPersona = resolveToolPersona({
-      contactType: contact.contact_type,
-      contactPersona: contact.contact_persona,
-      homeOwnerStatus: contact.home_owner_status,
-    })
+    // Six personas (buyer/seller/investor/renter/relocation/sphere), each
+    // with its own tool allowlist + spend cap (persona-tool-policy.ts's
+    // header) — portalPersona resolved above (before the system prompt).
+    // conversationKey = contactId scopes the page-before-preview/count
+    // ordering rule and the per-persona spend budget to THIS contact's
+    // portal thread across turns. Gated: {} when BatchData's MCP is
+    // unconfigured (batchDataIsaTools resolves the SAME token lib/external/
+    // batchdata-mcp.ts itself uses), so a deployment with no BatchData token
+    // streams exactly as before this change.
     const batchDataTools = await batchDataIsaTools({
       brokerageId: contact.brokerage_id,
       userId: user.id,
@@ -453,7 +465,8 @@ export async function POST(request: Request) {
       feature:  'portal_chat_stream',
       system:   systemPrompt,
       messages: await convertToModelMessages(messages),
-      tools:    { ...freeTools, ...batchDataTools, ...rentCastTools },
+      // Lane 74B — cost-ranked order + need-dedup (selectToolsForPersona).
+      tools:    selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),
       maxSteps: 5,
       userId:      user.id,
       brokerageId: contact.brokerage_id,

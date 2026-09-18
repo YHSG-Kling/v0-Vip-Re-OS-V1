@@ -11,9 +11,10 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
-import { resolveToolPersona, filterRentCastToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
+import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
 
@@ -92,11 +93,41 @@ export async function POST(req: NextRequest) {
       agentId: session.agent_id ?? null,
     })
 
+    // Persona is DERIVED (resolveToolPersona) from the session's OWN linked
+    // contact when capture already happened this session — resolved HERE,
+    // before the system prompt, so buildQualificationPrompt can flavor its
+    // goal list (lane 74B). A still-anonymous visitor has no contact_type/
+    // contact_persona/home_owner_status to read and resolves to the 'buyer'
+    // default (the SAME default posture lib/campaigns/contact-sources.ts
+    // already documents).
+    let widgetContactType: string | null = null
+    let widgetContactPersona: string | null = null
+    let widgetHomeOwnerStatus: string | null = null
+    if (session.contact_id) {
+      const { data: widgetContact } = await supabase
+        .from('contacts')
+        .select('contact_type, contact_persona, home_owner_status')
+        .eq('id', session.contact_id)
+        .maybeSingle()
+      widgetContactType = widgetContact?.contact_type ?? null
+      widgetContactPersona = widgetContact?.contact_persona ?? null
+      widgetHomeOwnerStatus = widgetContact?.home_owner_status ?? null
+    }
+    const widgetPersona = resolveToolPersona({
+      contactType: widgetContactType,
+      contactPersona: widgetContactPersona,
+      homeOwnerStatus: widgetHomeOwnerStatus,
+    })
+
     // ── Build system prompt ───────────────────────────────────────────────
+    // TOMBSTONE (lane 74B) — the inline "qualify their intent (buying or
+    // selling), and naturally collect their name, email, and phone number…"
+    // paragraph stood here. SURVIVOR: lib/ai-isa/qualification-playbook.ts
+    // ::buildQualificationPrompt (CLAUDE.md §6).
     const system = `${brand.systemBlock}
 
-Your job is to help prospects with their questions, qualify their intent (buying or selling),
-and naturally collect their name, email, and phone number when appropriate — never pushy.
+${buildQualificationPrompt({ surface: 'widget', persona: widgetPersona })}
+
 If you have collected enough to identify them (name + email OR phone), say:
 "I have your info and someone from the team will follow up shortly!"
 Do NOT make up property listings. Do NOT discuss competitor brokerages.`
@@ -138,37 +169,14 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
     }
 
     // ── BatchData/RentCast property-intelligence tools (lane 72B, widened 73B) ──
-    // The anonymous pre-lead lane. Persona is DERIVED (resolveToolPersona,
-    // lib/ai-isa/persona-tool-policy.ts) from the session's OWN linked
-    // contact when capture already happened this session; a still-anonymous
-    // visitor has no contact_type/contact_persona/home_owner_status to read
-    // and resolves to the 'buyer' default (the SAME default posture
-    // lib/campaigns/contact-sources.ts already documents). conversationKey =
-    // the session row's id (stable across this visitor's whole chat, survives
-    // capture) — never the request body. contactId is the session's own
-    // linked contact when capture already happened this session, else null
-    // (the tool still runs, it just has nothing tenant-scoped to persist a
-    // verify/DNC verdict to yet). Gated: {} when BatchData's MCP is
-    // unconfigured, so a deployment with no BatchData token streams exactly
-    // as before this change.
-    let widgetContactType: string | null = null
-    let widgetContactPersona: string | null = null
-    let widgetHomeOwnerStatus: string | null = null
-    if (session.contact_id) {
-      const { data: widgetContact } = await supabase
-        .from('contacts')
-        .select('contact_type, contact_persona, home_owner_status')
-        .eq('id', session.contact_id)
-        .maybeSingle()
-      widgetContactType = widgetContact?.contact_type ?? null
-      widgetContactPersona = widgetContact?.contact_persona ?? null
-      widgetHomeOwnerStatus = widgetContact?.home_owner_status ?? null
-    }
-    const widgetPersona = resolveToolPersona({
-      contactType: widgetContactType,
-      contactPersona: widgetContactPersona,
-      homeOwnerStatus: widgetHomeOwnerStatus,
-    })
+    // The anonymous pre-lead lane. conversationKey = the session row's id
+    // (stable across this visitor's whole chat, survives capture) — never
+    // the request body. contactId is the session's own linked contact when
+    // capture already happened this session, else null (the tool still
+    // runs, it just has nothing tenant-scoped to persist a verify/DNC
+    // verdict to yet). Gated: {} when BatchData's MCP is unconfigured, so a
+    // deployment with no BatchData token streams exactly as before this
+    // change. widgetPersona is resolved above (before the system prompt).
     const batchDataTools = await batchDataIsaTools({
       brokerageId: session.brokerage_id,
       userId: ledgerUserId,
@@ -197,7 +205,11 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
         messages: await convertToModelMessages(recentMessages),
         temperature: 0.7,
         maxTokens: 512,
-        tools: { ...freeTools, ...batchDataTools, ...rentCastTools },
+        // Lane 74B — cost-ranked order + need-dedup (persona-tool-policy.ts
+        // ::selectToolsForPersona): free tools first, RentCast next,
+        // BatchData last, and a BatchData tool a cheaper same-registry tool
+        // already covers is dropped.
+        tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),
         maxSteps: 5,
         userId: ledgerUserId,
         brokerageId: session.brokerage_id,

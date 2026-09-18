@@ -369,12 +369,24 @@ let sphereToolsEligible: Record<string, unknown> = {}
   ok(/import\s*\{\s*resolveToolPersona/.test(inboundEmail),
      "app/actions/ai-isa/handle-inbound-email.ts: imports resolveToolPersona (lane 73B)")
   ok(/persona:\s*toolPersona/.test(inboundEmail), "app/actions/ai-isa/handle-inbound-email.ts: builds the tools with the DERIVED persona, not a literal")
-  ok(/\.\.\.isaTools,\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools/.test(inboundEmail), "app/actions/ai-isa/handle-inbound-email.ts: spreads free + batchData + rentCast tools into the SAME tools object generateText receives")
+  // Lane 74B: the free/batchData/rentCast spread now routes through
+  // selectToolsForPersona (cost-ranked order + need-based BatchData drop —
+  // persona-tool-policy.ts) before it reaches generateText, so the LITERAL
+  // 4-way spread this assertion used to pin no longer appears verbatim.
+  // Re-anchored on the two real facts: the SAME three registries feed the
+  // ONE selector call, and the selector's result is what generateText's
+  // tools: actually receives (never a rival merge).
+  ok(/selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\)/.test(inboundEmail),
+     "app/actions/ai-isa/handle-inbound-email.ts: free + batchData + rentCast tools flow through the ONE cost-ranked selector (lane 74B)")
+  ok(/tools:\s*\{\s*\.\.\.isaTools,\s*\.\.\.propertyAndFreeTools\s*\}/.test(inboundEmail),
+     "app/actions/ai-isa/handle-inbound-email.ts: generateText receives the CRM tools + the selector's cost-ranked output, not a hand-merged map")
 
   const customLlm = readBlanked("app/api/did/custom-llm/route.ts")
   ok(/import\s*\{\s*resolveToolPersona/.test(customLlm), "app/api/did/custom-llm/route.ts: imports resolveToolPersona (lane 73B)")
   ok(/const toolPersona = resolveToolPersona\(/.test(customLlm), "app/api/did/custom-llm/route.ts: derives persona via resolveToolPersona from the resolved contact's context, never a request body")
-  ok(/tools:\s*\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}/.test(customLlm), "app/api/did/custom-llm/route.ts: passes free + batchData + rentCast tools into streamTextRouted")
+  // Lane 74B: same cost-ranked selector re-anchor as the inbound-email check above.
+  ok(/tools:\s*selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\)/.test(customLlm),
+     "app/api/did/custom-llm/route.ts: passes free + batchData + rentCast tools through the cost-ranked selector into streamTextRouted (lane 74B)")
 
   // POSITIVE CONTROL for the stripped-source read itself — a comment-only mention must NOT
   // count. blankComments should have erased this fixture's // line, so the regex below finds

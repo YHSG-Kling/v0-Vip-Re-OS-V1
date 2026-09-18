@@ -442,10 +442,20 @@ export async function planTurnWithPrompt(
     conversationKey: toolCtx.conversationKey,
     contactId: toolCtx.contactId,
   })
-  const voiceTools: Partial<Record<VoiceToolName, unknown>> = {}
+  // Lane 74B — cost-ranked order applies to voice too (owner: "tools for the
+  // ai agents should not be using batchdata tools if there are less
+  // expensive tools"). VOICE_TOOL_ALLOWLIST narrows to the property-only
+  // subset FIRST (unchanged); selectToolsForPersona then drops any
+  // BatchData tool a cheaper same-registry tool already covers and sorts
+  // the survivors cheapest-first. Today the voice registry carries no
+  // rentcast_ tools, so this is a no-op ordering pass — it is here so the
+  // rule is ONE function (§6), not re-derived if/when RentCast joins voice.
+  const { selectToolsForPersona } = await import("@/lib/ai-isa/persona-tool-policy")
+  const allowlisted: Record<string, unknown> = {}
   for (const name of VOICE_TOOL_ALLOWLIST) {
-    if ((registry as Record<string, unknown>)[name]) voiceTools[name] = (registry as Record<string, unknown>)[name]
+    if ((registry as Record<string, unknown>)[name]) allowlisted[name] = (registry as Record<string, unknown>)[name]
   }
+  const voiceTools: Partial<Record<VoiceToolName, unknown>> = selectToolsForPersona(allowlisted) as Partial<Record<VoiceToolName, unknown>>
   // No token configured, or this persona's allowlist grants none of the four
   // voice-line tools — nothing to offer the model, so skip the tool-enabled
   // call entirely rather than paying for one with an empty `tools:` map.

@@ -16,6 +16,7 @@
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
 import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
+import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
 
 // ── Number routing ────────────────────────────────────────────────────────────
 
@@ -96,6 +97,11 @@ export function buildPlatformReceptionPrompt(id: {
     "Tone: warm, professional, concise. Keep answers short — this is a phone call, not an essay.",
     `WHAT THE PRODUCT IS: ${(id.voicePitch ?? "").trim() || `${id.brandName} — ${id.tagline}`}.`,
     `CURRENT PLANS (the ONLY pricing you may state — read from the live plan catalog):\n${id.tierLines.map((l) => `- ${l}`).join("\n")}`,
+    // "this goes for the platform ai agents" (wave 74) — the shared
+    // conversational discipline (never salesy, one question at a time,
+    // value before ask), NOT the real-estate buyer/seller goal list: a
+    // platform prospect is asking about the SOFTWARE, not a property.
+    buildQualificationPrompt({ surface: "platform_reception" }),
     "FOR PROSPECTS: (1) learn their name and what they run — solo agent, team, brokerage, or multi-location; (2) answer honestly from what you know above; (3) ask for the best email so the team can send details and set up a walkthrough. Once they've shared contact details, use the 'prospect' action to save them.",
     id.hasTransfer
       ? "FOR EXISTING CUSTOMERS NEEDING SUPPORT: offer to connect them to the team right away (action 'transfer')."

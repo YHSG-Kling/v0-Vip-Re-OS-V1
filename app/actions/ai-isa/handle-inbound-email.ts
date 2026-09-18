@@ -23,9 +23,10 @@ import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { buildISATools } from '@/lib/ai-isa/tools'
 import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
-import { resolveToolPersona, filterRentCastToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
+import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -369,20 +370,39 @@ export async function processInboundEmail(params: {
     .slice(-10)
     .map(({ role, content }) => ({ role, content }))
 
+  // Persona is DERIVED (resolveToolPersona, lib/ai-isa/persona-tool-policy.ts)
+  // from the linked CONTACT's own contact_type/contact_persona/home_owner_
+  // status when this lead already carries one, else the LEAD's own persona/
+  // home_owner_status/lead_type — never a request body. Computed BEFORE the
+  // system prompt so buildQualificationPrompt can persona-flavor its goal
+  // list (lane 74B).
+  const toolPersona = resolveToolPersona({
+    contactType: contact?.contact_type ?? (lead.lead_type === 'seller' ? 'seller' : 'buyer'),
+    contactPersona: contact?.persona ?? lead.persona ?? null,
+    homeOwnerStatus: contact?.home_owner_status ?? lead.home_owner_status ?? null,
+  })
+
   // ── Build system prompt with brand voice ──────────────────────────────────
+  // TOMBSTONE (lane 74B) — the hand-rolled "Qualify leads with genuine
+  // warmth… ending with one qualifying question" bullet list stood here.
+  // SURVIVOR: lib/ai-isa/qualification-playbook.ts::buildQualificationPrompt
+  // (CLAUDE.md §6 — one vocabulary; four surfaces hand-rolled this prose
+  // independently before this lane merged them onto one builder).
   const baseSystem = [
     'You are an AI Inside Sales Agent (ISA) for a real estate brokerage.',
-    'Qualify leads with genuine warmth — no pushy sales tactics.',
-    'Keep replies concise (3–5 sentences max), conversational, ending with one qualifying question.',
+    'Keep replies concise (3–5 sentences max), conversational.',
     'Never reveal you are an AI unless directly asked.',
     'If the lead seems highly motivated or mentions a specific timeline, reflect urgency back.',
     'Do not make up property details, pricing, or market data.',
     'Respect TCPA, DNC, and fair housing requirements in every message.',
     '',
+    buildQualificationPrompt({ surface: 'isa_email', persona: toolPersona }),
+    '',
     'You can take real CRM actions via tools:',
     '- escalate_to_agent: when the lead asks for a human or needs urgent attention',
     '- mark_qualification: when the lead reveals stronger or weaker buying signals',
     '- request_appointment: when the lead asks to meet, call, or tour',
+    '- record_qualification: when you learn their intent, persona, property address, criteria, timeline, or financing status',
     '- mark_do_not_contact: when the lead clearly opts out (TCPA — irreversible)',
     'Call tools BEFORE generating your reply text. The reply should reflect any actions you took (e.g., "I just looped in your agent — they\'ll reach out shortly").',
   ].join('\n')
@@ -406,17 +426,8 @@ export async function processInboundEmail(params: {
   // — gated: {} when BatchData's MCP is unconfigured (batchDataIsaTools
   // resolves the SAME token lib/external/batchdata-mcp.ts itself uses), so an
   // ISA conversation with no BatchData token behaves exactly as before.
-  // Persona is DERIVED (resolveToolPersona, lib/ai-isa/persona-tool-policy.ts)
-  // from the linked CONTACT's own contact_type/contact_persona/home_owner_
-  // status when this lead already carries one, else the LEAD's own persona/
-  // home_owner_status/lead_type — never a request body. conversationKey =
-  // leadId scopes the ordering (page-before-preview/count) and per-persona
-  // spend budget to THIS lead's thread across turns.
-  const toolPersona = resolveToolPersona({
-    contactType: contact?.contact_type ?? (lead.lead_type === 'seller' ? 'seller' : 'buyer'),
-    contactPersona: contact?.persona ?? lead.persona ?? null,
-    homeOwnerStatus: contact?.home_owner_status ?? lead.home_owner_status ?? null,
-  })
+  // conversationKey = leadId scopes the ordering (page-before-preview/count)
+  // and per-persona spend budget to THIS lead's thread across turns.
   const batchDataTools = await batchDataIsaTools({
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
@@ -440,10 +451,18 @@ export async function processInboundEmail(params: {
     agentId: lead.agent_id ?? null,
   })
 
+  // Lane 74B — cost-ranked order: free tools first, RentCast next, BatchData
+  // last, and a BatchData tool a cheaper same-registry tool already covers
+  // (property lookup → RentCast; comps → RentCast comps) is DROPPED — the
+  // ONE selector (persona-tool-policy.ts::selectToolsForPersona), never a
+  // second ordering rule per surface (§6). isaTools (escalate_to_agent,
+  // mark_qualification, request_appointment, mark_do_not_contact) are CRM
+  // actions, not property-data tools, so they are spread in separately.
+  const propertyAndFreeTools = selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools })
   const { text: replyBody } = await generateText({
     feature: 'ai_isa_response',
     system: systemPrompt,
-    tools: { ...isaTools, ...freeTools, ...batchDataTools, ...rentCastTools },
+    tools: { ...isaTools, ...propertyAndFreeTools },
     maxSteps: 5,
     messages: [
       {

@@ -9,6 +9,7 @@ import { batchDataMcpTools } from "@/lib/external/batchdata-ai-tools"
 import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { resolveEffectiveBatchDataToolTier, filterToolsByTier } from "@/lib/ai-isa/persona-tool-policy"
 import { writeFollowUpActivity } from "@/lib/ai-isa/customer-context-tools"
+import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -333,6 +334,8 @@ RESTRICTIONS — never do any of these:
 - Never give legal, financial, or tax advice
 - Never reference other users' private data not in context
 - Never save notes silently — always surface as a draft for human approval
+
+${buildQualificationPrompt({ surface: "staff_copilot" })}
 
 NOTE_AUTO_DRAFT:
 After responding to a genuinely high-signal exchange — such as a call outcome being discussed, a decision or agreement reached, an important fact shared (timeline, budget, motivation), or a follow-up promised — you MAY append the following marker ONCE at the very end of your response (after your main answer text).

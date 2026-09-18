@@ -9,6 +9,7 @@
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
 import { composeBusinessHoursRule, type InboundIdentity } from "@/lib/voice/inbound-number-binding"
+import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
 
 /** PURE: the reception system prompt from the tenant's AI identity — shared by
  *  every engine. Mirrors the Vapi builder's rules exactly (one brain). */
@@ -20,10 +21,18 @@ export function buildReceptionPrompt(id: InboundIdentity): { name: string; first
   const firstMessage = withAiCallDisclosures(rawFirst, { recorded: true })
   const prohibited = (id.prohibitedLanguage ?? []).filter(Boolean).slice(0, 20)
 
+  // TOMBSTONE (lane 74B) — the hand-rolled six-item job list ("(1) learn who
+  // is calling… (5) if they mention selling… offer a real valuation and
+  // capture their property address…") stood here. SURVIVOR:
+  // lib/ai-isa/qualification-playbook.ts::buildQualificationPrompt
+  // (CLAUDE.md §6). "(4) invite/RSVP an open house" is kept — it is specific
+  // to this voice surface's live-inventory capability, not a qualification
+  // goal.
   const systemPrompt = [
     `You are ${name}, the AI reception assistant answering inbound phone calls for ${who}.`,
     id.tone ? `Tone: ${id.tone}.` : "Tone: warm, professional, concise.",
-    "Your job on every call: (1) learn who is calling and get a callback number; (2) find out what they need — buying, selling, a showing, or a question on a specific property; (3) offer to book an appointment or a showing; (4) when the LIVE INVENTORY shows an upcoming open house that fits what they want, INVITE them and RSVP them on the spot if they say yes; (5) if they mention selling or ask what their home is worth, never guess a number — offer to have the team prepare a real valuation and capture their property address; (6) if they ask for the agent directly or the matter is urgent, offer to transfer.",
+    buildQualificationPrompt({ surface: "voice_reception" }),
+    "Additionally: when the LIVE INVENTORY shows an upcoming open house that fits what they want, INVITE them and RSVP them on the spot if they say yes. If they mention selling or ask what their home is worth, never guess a number — offer to have the team prepare a real valuation.",
     "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
     prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",
     composeBusinessHoursRule(id.answerMode, id.businessHours),
@@ -57,6 +66,7 @@ export function buildOutboundPrompt(id: InboundIdentity, brief: {
     id.tone ? `Tone: ${id.tone}.` : "Tone: warm, professional, concise.",
     `THIS CALL'S OBJECTIVE: ${brief.objective.slice(0, 500)}`,
     brief.extraSystemPrompt ? brief.extraSystemPrompt.slice(0, 2000) : "",
+    buildQualificationPrompt({ surface: "voice_outbound" }),
     "OUTBOUND RULES: You called THEM — respect their time. State why you're calling within the first two exchanges. One ask per call; if they decline, thank them and close — never pressure, never argue. If they say to stop calling or not to contact them, acknowledge it clearly, confirm it's recorded, and end the call immediately.",
     "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
     prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",

@@ -356,9 +356,75 @@ async function proposeOutreachPausedNotice(signal: ManagerSignal, ctx: { brokera
   return error ? null : "notified the assigned agent that ISA nurture paused (under contract)"
 }
 
+/**
+ * Lane 74B — the AI ISA qualification playbook's follow-up handlers. Each
+ * tool in lib/ai-isa/customer-context-tools.ts already made the durable
+ * write (activities/leads.next_followup_at/property_alerts) AND notified
+ * the assigned agent directly; these SIGNAL_HANDLERS entries are the
+ * autonomous MANAGER-level pickup beside that immediate notice — a proposed
+ * gated client confirmation (never auto-sent), or for criteria capture,
+ * running the free matcher NOW instead of waiting for the next cron pass.
+ */
+async function proposeQualificationConfirmation(
+  signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc },
+  agentKind: "shopping_agent" | "listing_concierge", subject: string, body: string, rationale: string,
+): Promise<string | null> {
+  if (!signal.contactId) return "no contact linked yet — nothing to confirm to (lead-stage thread)"
+  const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+  const res = await proposeClientMessage({
+    brokerageId: ctx.brokerageId, agentKind, entityType: "contact",
+    entityId: signal.contactId, recipientContactId: signal.contactId, audience: "buyer",
+    subject, body, rationale, channel: "portal",
+  }, ctx.supabase)
+  return res.ok ? `proposed a gated confirmation message (${res.id})` : null
+}
+
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
+  // AI ISA → Shopping Agent: a qualified person asked for a later callback.
+  "shopping_agent:qualification_call_requested": (signal, ctx) => proposeQualificationConfirmation(
+    signal, ctx, "shopping_agent",
+    "We'll call you back",
+    "Thanks for chatting! I've got you down for a callback — talk soon.",
+    `AI qualification scheduled a callback (signal ${signal.signalType}: ${signal.message}).`,
+  ),
+  // AI ISA → Shopping Agent: buyer/renter criteria captured — seed matches NOW
+  // (the free matcher, lib/buyer-search/market-watch.ts) instead of waiting
+  // for the next scheduled cron pass, so the standing alert has something to
+  // show on its very first run.
+  "shopping_agent:qualification_criteria_captured": async (signal, ctx) => {
+    if (!signal.contactId) return "no contact linked yet — criteria alert stays lead-stage until conversion"
+    try {
+      const { runMarketWatchForBuyer } = await import("@/lib/buyer-search/market-watch")
+      const r = await runMarketWatchForBuyer(ctx.supabase, ctx.brokerageId, signal.contactId)
+      return r.reason ? `market watch ran (${r.reason})` : `market watch ran now — ${r.matched} matched (${r.newMatches} new)`
+    } catch (e) {
+      console.error("[manager-signals] qualification_criteria_captured market watch failed:", e)
+      return null
+    }
+  },
+  // AI ISA → Listing Concierge: a seller's home value was looked up + a
+  // discuss-it callback booked.
+  "listing_concierge:qualification_valuation_handoff": (signal, ctx) => {
+    const address = (signal.payload?.propertyAddress as string | undefined) ?? "your property"
+    const value = signal.payload?.avmValue as number | null | undefined
+    return proposeQualificationConfirmation(
+      signal, ctx, "listing_concierge",
+      "Your home value review",
+      value
+        ? `Thanks for sharing ${address} — early estimate looks to be around $${value.toLocaleString()}. Your agent will call to go over it in detail.`
+        : `Thanks for sharing ${address} — your agent will call to go over its value in detail.`,
+      `AI qualification looked up a home value and booked a callback (signal ${signal.signalType}: ${signal.message}).`,
+    )
+  },
+  // AI ISA → Listing Concierge: a no-obligation agent visit was requested.
+  "listing_concierge:qualification_appointment_handoff": (signal, ctx) => proposeQualificationConfirmation(
+    signal, ctx, "listing_concierge",
+    "Looking forward to meeting",
+    "Great — I've passed this along and your agent will reach out to confirm a time. No obligation, just a conversation.",
+    `AI qualification booked a no-obligation agent visit (signal ${signal.signalType}: ${signal.message}).`,
+  ),
   // Listing Concierge → AI ISA: an expired/withdrawn listing's ACUTE re-list call.
   "ai_isa:relist_recovery": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "re-list recovery call"),
   // Shopping Agent → AI ISA: a rejected-offer same-day regroup call.

@@ -58,9 +58,10 @@ import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import { SPOKEN_REALISM_DIRECTIVE } from "@/lib/video/realism-profile"
 import { streamTextRouted, AIFairUseError, selectModelForTask } from "@/lib/ai/models"
 import { batchDataIsaTools } from "@/lib/ai-isa/batchdata-isa-tools"
-import { resolveToolPersona, filterRentCastToolsForPersona } from "@/lib/ai-isa/persona-tool-policy"
+import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona, type ToolPersona } from "@/lib/ai-isa/persona-tool-policy"
 import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { buildCustomerFreeTools } from "@/lib/ai-isa/customer-context-tools"
+import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -271,6 +272,7 @@ function buildSystemPrompt(input: {
   isAnonymous: boolean
   ctx: ContactContext | null
   brandVoiceBlock: string
+  toolPersona: ToolPersona
 }): string {
   const lines: string[] = [
     input.isAnonymous
@@ -332,6 +334,16 @@ function buildSystemPrompt(input: {
   // REALISM (owner ruling, wave 55/57) — folded in on every turn, not just
   // checked after the fact.
   lines.push(SPOKEN_REALISM_DIRECTIVE)
+
+  // Lane 74B — the shared qualification playbook (CLAUDE.md §6). No
+  // active transaction/listing bound yet is exactly when this surface
+  // should be doing qualification work (contact info, intent, persona,
+  // property address, criteria, timeline, financing) rather than only
+  // servicing an existing deal.
+  if (!input.ctx?.activeTransaction && !input.ctx?.activeListing) {
+    lines.push("")
+    lines.push(buildQualificationPrompt({ surface: "did_avatar", persona: input.toolPersona }))
+  }
 
   return lines.join("\n")
 }
@@ -401,8 +413,17 @@ export async function POST(request: NextRequest) {
     contactId: resolvedContactId ?? undefined,
   }).catch(() => ({ systemBlock: "" }))
 
+  // Persona DERIVED from the CALLER (resolveToolPersona) — resolved HERE
+  // (before the system prompt) so buildSystemPrompt can mount the shared
+  // qualification playbook persona-flavored (lane 74B).
+  const toolPersona = resolveToolPersona({
+    contactType: ctx?.contactType ?? null,
+    contactPersona: ctx?.contactPersona ?? null,
+    homeOwnerStatus: ctx?.homeOwnerStatus ?? null,
+  })
+
   const systemPrompt = buildSystemPrompt({
-    contactName, isAnonymous, ctx, brandVoiceBlock: brand.systemBlock ?? "",
+    contactName, isAnonymous, ctx, brandVoiceBlock: brand.systemBlock ?? "", toolPersona,
   })
 
   if (latestUserText && detectsEscalation(latestUserText)) {
@@ -426,11 +447,6 @@ export async function POST(request: NextRequest) {
   // BatchData's MCP is unconfigured (batchDataIsaTools resolves the SAME
   // token lib/external/batchdata-mcp.ts itself uses), so a deployment with no
   // BatchData token streams exactly as before.
-  const toolPersona = resolveToolPersona({
-    contactType: ctx?.contactType ?? null,
-    contactPersona: ctx?.contactPersona ?? null,
-    homeOwnerStatus: ctx?.homeOwnerStatus ?? null,
-  })
   const conversationKey = embedSessionId ?? resolvedContactId ?? brokerageId
   const batchDataTools = await batchDataIsaTools({
     brokerageId,
@@ -461,7 +477,8 @@ export async function POST(request: NextRequest) {
         .filter((m) => m.role !== "system")
         .map((m) => ({ role: m.role, content: String(m.content ?? "") })),
       temperature: 0.7,
-      tools: { ...freeTools, ...batchDataTools, ...rentCastTools },
+      // Lane 74B — cost-ranked order + need-dedup (selectToolsForPersona).
+      tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),
       maxSteps: 5,
       userId: agentUserId,
       brokerageId,
