@@ -27,6 +27,7 @@ import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPerson
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
+import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -330,6 +331,19 @@ export async function processInboundEmail(params: {
     contactId: lead.contact_id ?? undefined,
   })
 
+  // Wave 75 — business processes/SOPs, brand KB, office hours, service
+  // areas. `preloadedVoice: brandVoice` + `omitVoiceBlock: true` because
+  // `brandVoice.systemBlock` is appended onto `systemPrompt` below already —
+  // never restated twice in one prompt.
+  const brandPlaybook = await loadBrandPlaybookContext({
+    brokerageId: lead.brokerage_id,
+    agentId: lead.agent_id ?? null,
+    contactId: lead.contact_id ?? null,
+    preloadedVoice: brandVoice,
+    omitVoiceBlock: true,
+    knowledgeQuery: `${params.subject ?? ''} ${params.body ?? ''}`.trim(),
+  }).catch(() => null)
+
   // ── Conversation context from the LEAD-class ledgers ─────────────────────
   // DEAD READ REPLACED (pass 4): this used to read messages by
   // contact_id = leadId — always EMPTY, because lead ids never land in that
@@ -396,7 +410,7 @@ export async function processInboundEmail(params: {
     'Do not make up property details, pricing, or market data.',
     'Respect TCPA, DNC, and fair housing requirements in every message.',
     '',
-    buildQualificationPrompt({ surface: 'isa_email', persona: toolPersona }),
+    buildQualificationPrompt({ surface: 'isa_email', persona: toolPersona, brand: brandPlaybook }),
     '',
     'You can take real CRM actions via tools:',
     '- escalate_to_agent: when the lead asks for a human or needs urgent attention',
@@ -444,11 +458,12 @@ export async function processInboundEmail(params: {
   )
   // Free internal tools (own context, showing/call request, our own listings) —
   // lib/ai-isa/customer-context-tools.ts, shared with every other customer surface.
-  const freeTools = buildCustomerFreeTools({
+  const freeTools = await buildCustomerFreeTools({
     brokerageId: lead.brokerage_id,
     contactId: lead.contact_id ?? null,
     leadId: lead.id,
     agentId: lead.agent_id ?? null,
+    persona: toolPersona,
   })
 
   // Lane 74B — cost-ranked order: free tools first, RentCast next, BatchData

@@ -10,6 +10,13 @@
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
 import { composeBusinessHoursRule, type InboundIdentity } from "@/lib/voice/inbound-number-binding"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import type { BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
+
+/** `InboundIdentity.brand` is typed `unknown` so the identity-binding module
+ *  never imports the AI-ISA playbook — this is the one narrowing site. */
+function brandOf(id: InboundIdentity): BrandPlaybookContext | null | undefined {
+  return id.brand as BrandPlaybookContext | null | undefined
+}
 
 /** PURE: the reception system prompt from the tenant's AI identity — shared by
  *  every engine. Mirrors the Vapi builder's rules exactly (one brain). */
@@ -31,7 +38,7 @@ export function buildReceptionPrompt(id: InboundIdentity): { name: string; first
   const systemPrompt = [
     `You are ${name}, the AI reception assistant answering inbound phone calls for ${who}.`,
     id.tone ? `Tone: ${id.tone}.` : "Tone: warm, professional, concise.",
-    buildQualificationPrompt({ surface: "voice_reception" }),
+    buildQualificationPrompt({ surface: "voice_reception", brand: brandOf(id) }),
     "Additionally: when the LIVE INVENTORY shows an upcoming open house that fits what they want, INVITE them and RSVP them on the spot if they say yes. If they mention selling or ask what their home is worth, never guess a number — offer to have the team prepare a real valuation.",
     "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
     prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",
@@ -66,7 +73,7 @@ export function buildOutboundPrompt(id: InboundIdentity, brief: {
     id.tone ? `Tone: ${id.tone}.` : "Tone: warm, professional, concise.",
     `THIS CALL'S OBJECTIVE: ${brief.objective.slice(0, 500)}`,
     brief.extraSystemPrompt ? brief.extraSystemPrompt.slice(0, 2000) : "",
-    buildQualificationPrompt({ surface: "voice_outbound" }),
+    buildQualificationPrompt({ surface: "voice_outbound", brand: brandOf(id) }),
     "OUTBOUND RULES: You called THEM — respect their time. State why you're calling within the first two exchanges. One ask per call; if they decline, thank them and close — never pressure, never argue. If they say to stop calling or not to contact them, acknowledge it clearly, confirm it's recorded, and end the call immediately.",
     "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
     prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",

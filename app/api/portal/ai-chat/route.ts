@@ -10,6 +10,7 @@ import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPerson
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
+import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
 
 // Portal AI chat — authenticated contacts only.
 // Business rules enforced here:
@@ -377,7 +378,24 @@ export async function POST(request: Request) {
       // (e.g. "actually we want to sell our other place too"), follow the
       // shared playbook rather than improvising — lane 74B, CLAUDE.md §6.
       'IF NEW INTENT COMES UP (something beyond their current transaction/listing):',
-      buildQualificationPrompt({ surface: 'portal', persona: portalPersona }),
+      buildQualificationPrompt({
+        surface: 'portal',
+        persona: portalPersona,
+        // Wave 75 — business processes/SOPs, brand KB, office hours, service
+        // areas. `omitVoiceBlock: true` + `preloadedVoice: brand` because this
+        // route ALREADY rendered brand's tone/FAQ/objections above — the
+        // brand-voice cascade is not re-queried and not restated twice.
+        brand: await loadBrandPlaybookContext({
+          brokerageId: contact.brokerage_id,
+          agentId: contact.agent_id ?? null,
+          contactId,
+          preloadedVoice: brand,
+          omitVoiceBlock: true,
+          knowledgeQuery: [...messages].reverse().find(m => m.role === 'user')?.parts
+            ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+            .map(p => p.text).join('') ?? null,
+        }),
+      }),
     ].filter(Boolean).join('\n')
 
     // ── Detect escalation in latest user message ───────────────────────────────
@@ -450,10 +468,11 @@ export async function POST(request: Request) {
       await rentCastMcpTools({ brokerageId: contact.brokerage_id, userId: user.id }),
       portalPersona,
     )
-    const freeTools = buildCustomerFreeTools({
+    const freeTools = await buildCustomerFreeTools({
       brokerageId: contact.brokerage_id,
       contactId,
       agentId: contact.agent_id ?? null,
+      persona: portalPersona,
     })
 
     // ── Stream response ────────────────────────────────────────────────────────

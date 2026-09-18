@@ -114,22 +114,45 @@ check("POSITIVE CONTROL: the duplicate-prose scan DOES find a retired phrase in 
 console.log("\n[Layer 3 · follow-up tools are id-locked and write via sentinelWrite]")
 
 const toolsSrc = stripped("lib/ai-isa/customer-context-tools.ts")
+const catalogueSrc = stripped("lib/ai-isa/capability-catalogue.ts")
 const FOLLOW_UP_BUILDERS = [
   "buildScheduleCallbackTool", "buildSendMatchingListingsTool",
   "buildScheduleHomeValueReviewTool", "buildFindListingAppointmentSlotsTool",
   "buildBookListingAppointmentTool", "buildRecordQualificationTool",
+  "buildScheduleHomeValueReviewTool", "buildRecordQualificationTool",
 ]
 for (const fn of FOLLOW_UP_BUILDERS) {
   check(`${fn} is exported`, toolsSrc.includes(`export function ${fn}`))
 }
-check("sentinelWrite is used at least 6 times across the follow-up tools (schedule_callback via scheduleFollowUp, home-value-review's address write, record_qualification's contact/lead write + property_preferences insert/update)",
-  (toolsSrc.match(/sentinelWrite\(/g) ?? []).length >= 6)
+check("TOMBSTONE: buildBookAgentAppointmentTool is GONE from customer-context-tools.ts (retired — book_listing_appointment is the survivor)",
+  !toolsSrc.includes("export function buildBookAgentAppointmentTool"))
+// Wave 75 integration: the CALENDAR-BACKED builder in customer-context-tools.ts
+// (lane 75C) is the survivor; the catalogue keeps the capability id and a tombstone.
+check("buildBookListingAppointmentTool is exported from customer-context-tools.ts (the calendar-backed survivor)",
+  toolsSrc.includes("export function buildBookListingAppointmentTool"))
+check("the capability catalogue no longer exports its own stand-in booking tool (tombstoned onto the survivor)",
+  !catalogueSrc.includes("export function buildBookListingAppointmentTool"))
+// sentinelWrite's call sites split across THREE files after lane 75B's
+// qualification-signals.ts extraction (scheduleFollowUp's leads.update moved
+// there so capability-catalogue.ts could reuse it without an import cycle —
+// see qualification-signals.ts's header) — count the family, not one file.
+const signalsSrc = stripped("lib/ai-isa/qualification-signals.ts")
+const sentinelWriteTotal =
+  (toolsSrc.match(/sentinelWrite\(/g) ?? []).length +
+  (signalsSrc.match(/sentinelWrite\(/g) ?? []).length +
+  (catalogueSrc.match(/sentinelWrite\(/g) ?? []).length
+check("sentinelWrite is used at least 6 times across the follow-up-tool family (customer-context-tools.ts + qualification-signals.ts + capability-catalogue.ts): schedule_callback via scheduleFollowUp, home-value-review's address write, record_qualification's contact/lead write + property_preferences insert/update, book_listing_appointment's calendar_events insert",
+  sentinelWriteTotal >= 6, `found ${sentinelWriteTotal}`)
 check("no follow-up tool's inputSchema accepts a model-suppliable contact_id/lead_id (id always comes from ctx, never the model)",
   !/z\.object\(\{[^}]*contact_id:\s*z\./s.test(toolsSrc) && !/z\.object\(\{[^}]*lead_id:\s*z\./s.test(toolsSrc))
 check("every follow-up write is locked to ctx.contactId / ctx.leadId, never a bare `contactId` or `leadId` destructured from tool args",
   !/execute:\s*async\s*\(\s*\{[^}]*\bcontactId\b/.test(toolsSrc) && !/execute:\s*async\s*\(\s*\{[^}]*\bleadId\b/.test(toolsSrc))
 check("record_qualification refuses when NEITHER contactId nor leadId is linked (fail closed, not a silent no-op write)",
   toolsSrc.includes('No contact or lead is linked to this conversation yet'))
+check("the capability catalogue's new tools also never accept a model-suppliable contact_id/lead_id",
+  !/z\.object\(\{[^}]*contact_id:\s*z\./s.test(catalogueSrc) && !/z\.object\(\{[^}]*lead_id:\s*z\./s.test(catalogueSrc))
+check("the capability catalogue's new tools are locked to ctx.contactId / ctx.leadId, never a bare destructured contactId/leadId",
+  !/execute:\s*async\s*\(\s*\{[^}]*\bcontactId\b/.test(catalogueSrc) && !/execute:\s*async\s*\(\s*\{[^}]*\bleadId\b/.test(catalogueSrc))
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 4 · cost-ranked tool order — drop-when-covered + positive control]")
@@ -147,6 +170,11 @@ check("FREE_INTERNAL_TOOL_NAMES carries every follow-up tool name (so they rank 
   FREE_INTERNAL_TOOL_NAMES.includes("schedule_home_value_review") && FREE_INTERNAL_TOOL_NAMES.includes("book_listing_appointment") &&
   FREE_INTERNAL_TOOL_NAMES.includes("find_listing_appointment_slots") &&
   FREE_INTERNAL_TOOL_NAMES.includes("record_qualification"))
+check("TOMBSTONE: FREE_INTERNAL_TOOL_NAMES no longer names the retired book_agent_appointment",
+  !FREE_INTERNAL_TOOL_NAMES.includes("book_agent_appointment"))
+check("FREE_INTERNAL_TOOL_NAMES carries the three brand-new catalogue capabilities (lane 75B)",
+  FREE_INTERNAL_TOOL_NAMES.includes("send_newsletter") && FREE_INTERNAL_TOOL_NAMES.includes("send_market_report") &&
+  FREE_INTERNAL_TOOL_NAMES.includes("send_explainer_video"))
 
 const fakeFn = (): Record<string, never> => ({});
 {
@@ -155,11 +183,14 @@ const fakeFn = (): Record<string, never> => ({});
   check("selectToolsForPersona DROPS lookup_property when a rentcast_ tool covers property lookup in the SAME registry",
     !("lookup_property" in withRentcast) && "rentcast_value_lookup" in withRentcast)
 
-  // POSITIVE CONTROL — no RentCast in the registry (the seller persona's real shape: rentCastEnabled=false) →
-  // lookup_property SURVIVES. Proves the rule discriminates rather than stripping everything.
-  const sellerShape = selectToolsForPersona({ lookup_property: fakeFn, comparable_property_preview: fakeFn, get_my_context: fakeFn })
-  check("POSITIVE CONTROL: lookup_property SURVIVES when NO RentCast tool is present (the seller persona's real registry shape — the rule discriminates, it does not just drop everything)",
-    "lookup_property" in sellerShape && "comparable_property_preview" in sellerShape)
+  // POSITIVE CONTROL — no RentCast tool in the registry (a rentCastEnabled=false persona's
+  // shape, e.g. seller/investor — a SYNTHETIC fixture testing the PURE rule, not a claim
+  // about either persona's actual BatchData allowlist, which lane 75B narrowed to empty
+  // for seller) → lookup_property SURVIVES. Proves the rule discriminates rather than
+  // stripping everything.
+  const noRentcastShape = selectToolsForPersona({ lookup_property: fakeFn, comparable_property_preview: fakeFn, get_my_context: fakeFn })
+  check("POSITIVE CONTROL: lookup_property SURVIVES when NO RentCast tool is present in the registry — the rule discriminates, it does not just drop everything",
+    "lookup_property" in noRentcastShape && "comparable_property_preview" in noRentcastShape)
 
   // comps: RentCast comps-named tool present → comparable_property_preview/count DROPPED.
   const withRentcastComps = selectToolsForPersona({ comparable_property_preview: fakeFn, comparable_property_count: fakeFn, rentcast_comp_search: fakeFn })
@@ -224,6 +255,8 @@ const QUALIFICATION_SIGNALS = [
   // wave 75C survivor of qualification_appointment_handoff (still catalogued
   // above, tombstoned — no live publisher any more).
   "listing_appointment_pending_confirmation",
+  "qualification_newsletter_enrolled", "qualification_market_report_sent",
+  "qualification_explainer_video_requested",
 ]
 for (const type of QUALIFICATION_SIGNALS) {
   const spec = SIGNAL_REGISTRY[type]
@@ -238,7 +271,109 @@ for (const type of QUALIFICATION_SIGNALS) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n[Layer 7 · schedule_callback is persona-scoped — LEAD → AI ISA callback, CONTACT → agent follow-up]")
+console.log("\n[Layer 7 · brand playbook context present in every surface's prompt]")
+
+// Every surface either calls loadBrandPlaybookContext directly, or reads
+// `identity.brand`/`ctx.brand` populated by an I/O resolver that does
+// (voice_reception/voice_outbound via lib/voice/twilio-voice.ts::resolveInboundContext,
+// platform_reception via resolvePlatformReceptionContext) — both patterns prove the
+// SAME thing: this surface's buildQualificationPrompt call carries a `brand:` argument.
+const BRAND_SURFACES: Array<{ path: string; label: string }> = [
+  { path: "app/actions/ai-isa/handle-inbound-email.ts", label: "ISA inbound-email handler" },
+  { path: "app/api/widget/message/route.ts", label: "website visitor widget" },
+  { path: "app/api/portal/ai-chat/route.ts", label: "portal contact assistant" },
+  { path: "app/api/did/custom-llm/route.ts", label: "D-ID live-avatar brain" },
+  { path: "app/api/internal/ai-chat/route.ts", label: "in-app staff copilot" },
+  { path: "lib/voice/reception-brain.ts", label: "voice reception + outbound prompts" },
+  { path: "lib/voice/twilio-voice.ts", label: "voice call-context resolver (feeds reception-brain's brand)" },
+  { path: "lib/voice/platform-reception.ts", label: "platform reception line" },
+]
+for (const s of BRAND_SURFACES) {
+  const src = stripped(s.path)
+  check(`${s.label} threads brand playbook context (loadBrandPlaybookContext or a brand: argument)`,
+    src.includes("loadBrandPlaybookContext") || src.includes("brand:"))
+}
+check("lib/ai-isa/qualification-playbook.ts's buildQualificationPrompt accepts a `brand` input and injects its block",
+  playbookSrc.includes("brand?:") && playbookSrc.includes("input.brand?.block"))
+check("lib/ai-isa/brand-playbook-context.ts exists and exports the ONE loader",
+  stripped("lib/ai-isa/brand-playbook-context.ts").includes("export async function loadBrandPlaybookContext"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 8 · follow-up menu ↔ capability catalogue — IDENTICAL tool sets]")
+
+const { QUALIFICATION_FOLLOW_UP_MENU } = await import("../lib/ai-isa/qualification-playbook")
+const { CAPABILITY_CATALOGUE, CAPABILITY_IDS } = await import("../lib/ai-isa/capability-catalogue")
+
+const menuTools = new Set(QUALIFICATION_FOLLOW_UP_MENU.map((o) => o.tool))
+const catalogueIds = new Set(CAPABILITY_IDS as readonly string[])
+const menuOnly = [...menuTools].filter((t) => !catalogueIds.has(t))
+const catalogueOnlyNonMenu = [...catalogueIds].filter((c) => !menuTools.has(c))
+check("every menu tool name is a real catalogue capability id",
+  menuOnly.length === 0, menuOnly.length ? `menu names not in catalogue: ${menuOnly.join(", ")}` : undefined)
+// get_my_context / search_our_listings / record_qualification are catalogue capabilities
+// that are NOT offered as a follow-up MENU choice (they're not a "thing you offer the
+// person" — get_my_context is a silent lookup, record_qualification is a silent write,
+// search_our_listings is used ad hoc, not offered) — this is the documented, expected
+// remainder, not a mismatch.
+const EXPECTED_CATALOGUE_ONLY = new Set(["get_my_context", "search_our_listings", "record_qualification"])
+const unexpectedCatalogueOnly = catalogueOnlyNonMenu.filter((c) => !EXPECTED_CATALOGUE_ONLY.has(c))
+check("every OTHER catalogue capability (beyond the 3 documented non-offered ones) is on the follow-up menu",
+  unexpectedCatalogueOnly.length === 0, unexpectedCatalogueOnly.length ? unexpectedCatalogueOnly.join(", ") : undefined)
+check("CAPABILITY_CATALOGUE has exactly 11 entries (the 7 pre-existing + 4 new lane-75B capabilities)",
+  CAPABILITY_CATALOGUE.length === 11)
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 9 · schedule_home_value_review NEVER emits a number — positive control]")
+
+check("getCurrentAvm / the AVM chain is GONE from buildScheduleHomeValueReviewTool (no value computed at all)",
+  !toolsSrc.includes("getCurrentAvm"))
+check("buildScheduleHomeValueReviewTool's return object carries no numeric value fields",
+  !/estimatedValue|valueSource|avmValue/.test(toolsSrc.slice(toolsSrc.indexOf("buildScheduleHomeValueReviewTool"))))
+check("the tool states plainly that the agent — never the AI — speaks the number",
+  toolsSrc.includes("never spoken by the AI") || toolsSrc.includes("never quoted by the AI"))
+// POSITIVE CONTROL — the scanner above must be capable of catching a dollar figure;
+// prove it against a fixture that STILL has one, so "0 found" above is not a blind regex.
+const fixtureWithLeakedValue = `
+return { success: true, estimatedValue: avm.value, valueSource: avm.source }
+`
+check("POSITIVE CONTROL: the numeric-value-field scan DOES find estimatedValue/valueSource in a fixture that leaks one",
+  /estimatedValue|valueSource|avmValue/.test(fixtureWithLeakedValue))
+check("send_market_report's return value is scoped to condition/trend/inventory/summary — no dollar-figure field (avgPriceChange/hotNeighborhoods/competitorAnalysis) leaves the tool",
+  !/return\s*\{\s*success:\s*true,\s*marketCondition[^}]*avgPriceChange/s.test(catalogueSrc) &&
+  catalogueSrc.includes("marketCondition: result.report.marketCondition"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 10 · brand settings toggle disables a catalogue capability]")
+
+const { isCapabilityEnabled, parseCapabilitiesSettings } = await import("../lib/ai-isa/capability-catalogue")
+check("a capability is enabled by default (no settings row)", isCapabilityEnabled("send_newsletter", null, []))
+check("the settings toggle DISABLES a named capability",
+  !isCapabilityEnabled("send_newsletter", null, parseCapabilitiesSettings({ ai_agent_capabilities: { disabled: ["send_newsletter"] } }).disabled))
+check("disabling one capability leaves an UNNAMED one enabled (the toggle discriminates, it does not blanket-disable)",
+  isCapabilityEnabled("send_market_report", null, parseCapabilitiesSettings({ ai_agent_capabilities: { disabled: ["send_newsletter"] } }).disabled))
+check("a persona-gated capability (schedule_home_value_review, seller-only) is withheld from a buyer",
+  !isCapabilityEnabled("schedule_home_value_review", "buyer" as any, []))
+check("that SAME persona-gated capability is offered to a seller",
+  isCapabilityEnabled("schedule_home_value_review", "seller" as any, []))
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 11 · a brand's custom tool may only compose REAL catalogue capabilities]")
+
+const { validateCustomToolDefinition } = await import("../lib/ai-isa/capability-catalogue")
+const validCustom = validateCustomToolDefinition({
+  id: "seller_concierge", label: "Seller Concierge", copy: "Our concierge handles everything for sellers.",
+  composesCapabilities: ["schedule_home_value_review", "book_listing_appointment"],
+})
+check("a custom tool composing REAL catalogue capabilities validates OK", validCustom.ok && validCustom.unknownCapabilities.length === 0)
+const invalidCustom = validateCustomToolDefinition({
+  id: "made_up", label: "Made Up Tool", copy: "…",
+  composesCapabilities: ["schedule_home_value_review", "totally_invented_capability"],
+})
+check("a custom tool naming an UNKNOWN capability is REFUSED",
+  !invalidCustom.ok && invalidCustom.unknownCapabilities.includes("totally_invented_capability"))
+check("an empty composesCapabilities list is REFUSED (a custom tool must compose SOMETHING real)",
+  !validateCustomToolDefinition({ id: "empty", label: "Empty", copy: "…", composesCapabilities: [] }).ok)
+console.log("\n[Layer 12 · schedule_callback is persona-scoped — LEAD → AI ISA callback, CONTACT → agent follow-up]")
 
 {
   // ── SOURCE (stripped) — the branch exists, and the LEAD arm calls the

@@ -220,12 +220,19 @@ check("lib/ai-isa/listing-appointment.ts never mentions AVM/estimated value (the
 // the closing brace right before buildBookAgentAppointmentTool's retirement comment no longer
 // exists — so isolate up to buildCustomerFreeTools instead, which is the next real boundary).
 const newToolsBlockStart = toolsSrc.indexOf("export function buildFindListingAppointmentSlotsTool")
-const newToolsBlockEnd = toolsSrc.indexOf("export function buildCustomerFreeTools")
+// End at the first exported function AFTER the book tool (wave 75 integration:
+// the two builders no longer sit immediately before buildCustomerFreeTools).
+const bookToolStart = toolsSrc.indexOf("export function buildBookListingAppointmentTool")
+const newToolsBlockEnd = bookToolStart >= 0 ? toolsSrc.indexOf("\nexport function", bookToolStart + 1) : -1
 const newToolsBlock = toolsSrc.slice(newToolsBlockStart, newToolsBlockEnd)
 check("the isolated slice actually captured both new tool builders (not an empty/mis-sliced window)",
   newToolsBlockStart >= 0 && newToolsBlockEnd > newToolsBlockStart && newToolsBlock.includes("buildBookListingAppointmentTool"))
 check("neither find_listing_appointment_slots nor book_listing_appointment mentions AVM/value", !/avm|estimatedvalue|estimated_value/i.test(newToolsBlock))
-check("POSITIVE CONTROL: the WIDER customer-context-tools.ts file (schedule_home_value_review legitimately runs the AVM chain) DOES match /avm/i — the scanner is not simply blind", /avm/i.test(toolsSrc))
+// POSITIVE CONTROL on a literal fixture: lane 75B removed the AVM call from
+// schedule_home_value_review (owner: never give a value in conversation), so the
+// wider file is legitimately AVM-free now; the scanner is proven live on a fixture.
+check("POSITIVE CONTROL: the AVM scanner still recognises the defect on a fixture (`const v = await getCurrentAvm(address)`)", /avm/i.test("const v = await getCurrentAvm(address)"))
+check("customer-context-tools.ts as a whole no longer runs the AVM chain (owner ruling: never give the person a value over the conversation)", !/getCurrentAvm\(/.test(toolsSrc))
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 12 · signal registry wiring]")

@@ -15,6 +15,7 @@ import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPerson
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
+import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
 
@@ -124,9 +125,23 @@ export async function POST(req: NextRequest) {
     // selling), and naturally collect their name, email, and phone number…"
     // paragraph stood here. SURVIVOR: lib/ai-isa/qualification-playbook.ts
     // ::buildQualificationPrompt (CLAUDE.md §6).
+    // Wave 75 — business processes/SOPs, brand KB, office hours, service
+    // areas. `preloadedVoice: brand` + `omitVoiceBlock: true` because
+    // `brand.systemBlock` is already rendered on the line above — the
+    // brand-voice cascade is not re-queried and not restated twice.
+    const lastMsgForKb = messages[messages.length - 1]
+    const brandPlaybook = await loadBrandPlaybookContext({
+      brokerageId: session.brokerage_id,
+      agentId: session.agent_id ?? null,
+      contactId: session.contact_id ?? null,
+      preloadedVoice: brand,
+      omitVoiceBlock: true,
+      knowledgeQuery: lastMsgForKb?.parts?.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('') ?? null,
+    })
+
     const system = `${brand.systemBlock}
 
-${buildQualificationPrompt({ surface: 'widget', persona: widgetPersona })}
+${buildQualificationPrompt({ surface: 'widget', persona: widgetPersona, brand: brandPlaybook })}
 
 If you have collected enough to identify them (name + email OR phone), say:
 "I have your info and someone from the team will follow up shortly!"
@@ -189,10 +204,11 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
       await rentCastMcpTools({ brokerageId: session.brokerage_id, userId: ledgerUserId }),
       widgetPersona,
     )
-    const freeTools = buildCustomerFreeTools({
+    const freeTools = await buildCustomerFreeTools({
       brokerageId: session.brokerage_id,
       contactId: session.contact_id ?? null,
       agentId: session.agent_id,
+      persona: widgetPersona,
     })
 
     // Routed streaming entry: routing table model, tenant fair-use cap checked

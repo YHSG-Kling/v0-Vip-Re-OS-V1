@@ -32,8 +32,15 @@ import { tool } from "ai"
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 import { QUALIFICATION_FOLLOW_UP_MENU, QUALIFICATION_GOALS } from "@/lib/ai-isa/qualification-playbook"
+import {
+  writeFollowUpActivity, scheduleFollowUp, notifyAssignedAgent, publishQualificationSignal,
+} from "@/lib/ai-isa/qualification-signals"
+// Re-exported so app/api/internal/ai-chat/route.ts's existing import keeps
+// working — the implementation lives in qualification-signals.ts (§6, the
+// ONE writer both the staff tool and every customer-safe tool below share).
+export { writeFollowUpActivity }
+import { buildNewCatalogueTools, loadEnabledCapabilities, type CustomerCapabilityContext } from "@/lib/ai-isa/capability-catalogue"
 
 export interface CustomerContextToolsContext {
   brokerageId: string
@@ -44,41 +51,21 @@ export interface CustomerContextToolsContext {
    *  thread, e.g. the ISA inbound-email handler). */
   leadId?: string | null
   agentId?: string | null
+  /** lib/ai-isa/persona-tool-policy.ts's ToolPersona — when the caller has
+   *  already resolved one (every surface does, before buildQualificationPrompt),
+   *  passed through so the wave-75 capability catalogue's per-capability
+   *  persona allowlist can gate send_newsletter/send_market_report/
+   *  send_explainer_video/book_listing_appointment the SAME way persona-tool-
+   *  policy.ts already gates BatchData/RentCast tools. Omitted = no persona-based
+   *  narrowing (only the settings toggle + identity gate apply). */
+  persona?: import("@/lib/ai-isa/persona-tool-policy").ToolPersona | null
 }
 
-/**
- * The SHARED write helper both the staff tool (app/api/internal/ai-chat's
- * schedule_follow_up, arbitrary contact_id) and this file's customer-safe
- * `request_showing` (LOCKED contact_id) call — one implementation, two
- * call sites, never two divergent inserts into `activities` (CLAUDE.md §6).
- */
-export async function writeFollowUpActivity(params: {
-  brokerageId: string
-  agentId: string | null
-  contactId: string
-  activityType: "call" | "email" | "text" | "meeting" | "check_in" | "showing"
-  scheduledAt: string
-  notes?: string | null
-  title: string
-}): Promise<{ success: true; activityId: string; scheduledAt: string } | { success: false; error: string }> {
-  const svc = createServiceClient()
-  const { data, error } = await svc
-    .from("activities")
-    .insert({
-      brokerage_id: params.brokerageId,
-      agent_id: params.agentId,
-      contact_id: params.contactId,
-      activity_type: params.activityType,
-      scheduled_at: params.scheduledAt,
-      notes: params.notes ?? undefined,
-      title: params.title,
-      status: "scheduled",
-    })
-    .select("id, title, scheduled_at")
-    .maybeSingle()
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-  return { success: true, activityId: data.id, scheduledAt: data.scheduled_at }
-}
+// TOMBSTONE (lane 75B) — writeFollowUpActivity's implementation moved to
+// lib/ai-isa/qualification-signals.ts:29 (re-exported above so this module's
+// own callers and app/api/internal/ai-chat/route.ts's import both still
+// resolve) — the missing half lib/ai-isa/capability-catalogue.ts needed to
+// reuse the SAME writer without an import cycle back into this file.
 
 /**
  * get_my_context — READ ONLY, bound to ctx.contactId/leadId (never a
@@ -255,84 +242,9 @@ export function buildSearchOurListingsTool(ctx: CustomerContextToolsContext) {
 // email conversations, which run lead-only until qualification.
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function scheduleFollowUp(
-  ctx: CustomerContextToolsContext,
-  input: { activityType: "call" | "meeting" | "showing"; scheduledAt: string; notes: string; title: string },
-): Promise<{ success: true; via: "activity" | "lead_followup"; activityId?: string } | { success: false; error: string }> {
-  if (ctx.contactId) {
-    const r = await writeFollowUpActivity({
-      brokerageId: ctx.brokerageId,
-      agentId: ctx.agentId ?? null,
-      contactId: ctx.contactId,
-      activityType: input.activityType,
-      scheduledAt: input.scheduledAt,
-      notes: input.notes,
-      title: input.title,
-    })
-    if (!r.success) return { success: false, error: r.error }
-    return { success: true, via: "activity", activityId: r.activityId }
-  }
-  if (ctx.leadId) {
-    const svc = createServiceClient()
-    const ok = await sentinelWrite(
-      svc,
-      svc.from("leads").update({
-        next_followup_at: input.scheduledAt,
-        next_followup_reason: `${input.title}${input.notes ? ` — ${input.notes}` : ""}`.slice(0, 500),
-      }).eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId),
-      { table: "leads", flow: "qualification_followup", brokerageId: ctx.brokerageId },
-    )
-    return ok ? { success: true, via: "lead_followup" } : { success: false, error: "Lead follow-up write failed" }
-  }
-  return { success: false, error: "No contact or lead is linked to this conversation yet" }
-}
-
-/** Notifies the assigned agent (best-effort, never blocks the tool result) —
- *  same notifications-row shape buildRequestShowingTool already uses. */
-async function notifyAssignedAgent(ctx: CustomerContextToolsContext, input: {
-  type: string; title: string; body: string; entityType: "contact" | "lead"; entityId: string
-}): Promise<void> {
-  if (!ctx.agentId) return
-  const svc = createServiceClient()
-  const { data: agent } = await svc.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
-  if (!agent?.user_id) return
-  await svc.from("notifications").insert({
-    user_id: agent.user_id,
-    brokerage_id: ctx.brokerageId,
-    type: input.type,
-    title: input.title,
-    body: input.body,
-    priority: "medium",
-    entity_type: input.entityType,
-    entity_id: input.entityId,
-  }).then(undefined, () => {})
-}
-
-/** Publishes a manager signal (best-effort — a failed publish never fails the
- *  tool call; the notification above + the durable write already carry the
- *  follow-up). fromManager is always "ai_isa" (every mounting surface here
- *  runs under the AI ISA's qualification job). */
-async function publishQualificationSignal(input: {
-  brokerageId: string; toManager: "shopping_agent" | "listing_concierge"
-  signalType: string; message: string; contactId: string | null; leadId: string | null
-  payload?: Record<string, unknown>
-}): Promise<void> {
-  try {
-    await publishManagerSignal({
-      brokerageId: input.brokerageId,
-      fromManager: "ai_isa",
-      toManager: input.toManager,
-      signalType: input.signalType,
-      message: input.message,
-      entityType: input.contactId ? "contact" : input.leadId ? "lead" : null,
-      entityId: input.contactId ?? input.leadId ?? null,
-      contactId: input.contactId ?? null,
-      payload: input.payload ?? {},
-    })
-  } catch (e) {
-    console.error(`[customer-context-tools] publishQualificationSignal(${input.signalType}) failed:`, e)
-  }
-}
+// TOMBSTONE (lane 75B) — scheduleFollowUp / notifyAssignedAgent /
+// publishQualificationSignal moved to lib/ai-isa/qualification-signals.ts
+// (imported above), for the same import-cycle reason as writeFollowUpActivity.
 
 /**
  * schedule_callback — "call them again when they're ready." PERSONA-SCOPED
@@ -600,26 +512,24 @@ export function buildScheduleHomeValueReviewTool(ctx: CustomerContextToolsContex
           { table: "leads", flow: "qualification_home_value", brokerageId: ctx.brokerageId })
       }
 
-      // AVM chain: RentCast first; BatchData only if the chain reaches it AND
-      // the platform tier allows it (persona-tool-policy.ts's own cost tier —
-      // reused, never a second budget knob, §6).
-      const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
-      const { resolveEffectiveBatchDataToolTier } = await import("@/lib/ai-isa/persona-tool-policy")
-      const tier = await resolveEffectiveBatchDataToolTier()
-      const avm = await getCurrentAvm({
-        address: property_address,
-        zipCode: zip_code,
-        brokerageId: ctx.brokerageId,
-        usePaidProviders: true,
-        skipProviders: tier === "off" ? ["batchdata"] : [],
-      })
-
+      // NEVER RUN OR SPEAK A VALUE HERE. Owner ruling (wave 75 verbatim):
+      // "never give the person a value over the conversation since that is
+      // what the agent will speak about once they talk." This tool used to
+      // call lib/avm/provider-chain.ts::getCurrentAvm and return/notify a
+      // dollar figure — REMOVED. The address is recorded and the callback is
+      // booked; the value is prepared by the AGENT ahead of the call (when
+      // the callback is escalated to an on-site visit, book_listing_
+      // appointment's calendar_events row is what the listing-presentation-
+      // prep cron — app/api/cron/listing-presentation-prep/route.ts — picks
+      // up to run the REAL CMA for the agent's own prep, never spoken by the
+      // AI). Positive control: scripts/qualification-playbook-simulator.ts
+      // asserts a fixture literal `$` figure never reaches this tool's return.
       const result = await scheduleFollowUp(ctx, {
         activityType: "call",
         scheduledAt: new Date().toISOString(),
         notes: [
           `Property: ${property_address}`,
-          avm ? `Estimated value: $${avm.value.toLocaleString()} (${avm.source}, confidence ${Math.round(avm.confidence * 100)}%)` : "Estimated value: not available yet — the agent will confirm.",
+          "Value prepared by agent ahead of the call — never quoted by the AI.",
           `Preferred callback: ${preferred_callback_window}`,
         ].join("\n"),
         title: "Home value review — callback to discuss",
@@ -629,7 +539,7 @@ export function buildScheduleHomeValueReviewTool(ctx: CustomerContextToolsContex
       await notifyAssignedAgent(ctx, {
         type: "qualification_home_value_requested",
         title: "Client wants a home value review",
-        body: `${property_address}${avm ? ` — est. $${avm.value.toLocaleString()}` : ""}`,
+        body: `${property_address} — prepare the valuation ahead of the callback (never quoted by the AI).`,
         entityType: ctx.contactId ? "contact" : "lead",
         entityId: (ctx.contactId ?? ctx.leadId) as string,
       })
@@ -637,23 +547,27 @@ export function buildScheduleHomeValueReviewTool(ctx: CustomerContextToolsContex
         brokerageId: ctx.brokerageId,
         toManager: "listing_concierge",
         signalType: "qualification_valuation_handoff",
-        message: `AI qualification looked up a home value and booked a discuss-it callback (${property_address})`,
+        message: `AI qualification recorded a home-value address and booked a discuss-it callback (${property_address})`,
         contactId: ctx.contactId ?? null,
         leadId: ctx.leadId ?? null,
-        payload: { propertyAddress: property_address, avmValue: avm?.value ?? null, avmSource: avm?.source ?? null },
+        payload: { propertyAddress: property_address },
       })
 
       return {
         success: true,
-        estimatedValue: avm?.value ?? null,
-        valueSource: avm?.source ?? null,
-        confidence: avm?.confidence ?? null,
         callbackScheduled: true,
+        note: "The agent will prepare and discuss the value on the call — never state a number here.",
       }
     },
   })
 }
 
+// NOTE (wave 75 integration): lane 75B's capability catalogue lists
+// book_listing_appointment as a brand-toggleable capability; the CALENDAR-BACKED
+// implementation below (lane 75C) is the survivor and the catalogue's earliest-slot
+// stand-in is tombstoned in lib/ai-isa/capability-catalogue.ts. The brand disable
+// list (brokerage_settings.settings.ai_agent_capabilities.disabled) is honoured at
+// the registration site in buildCustomerFreeTools.
 /**
  * find_listing_appointment_slots / book_listing_appointment (wave 75C) —
  * "did they want to setup an appt for an agent to come out to discuss/no
@@ -896,16 +810,24 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
 /**
  * The bundle every customer-facing surface spreads alongside its persona-
  * scoped BatchData/RentCast tools. `request_showing`, `schedule_callback`,
- * `schedule_home_value_review`, `find_listing_appointment_slots` and
- * `book_listing_appointment` are omitted
- * entirely (never registered, never merely gated inside `execute`) when
- * there is no contactId AND no leadId — a conversation with neither cannot
- * be followed up under an identity it does not have yet.
+ * `schedule_home_value_review`, `find_listing_appointment_slots`,
+ * `book_listing_appointment`, `send_newsletter`, `send_market_report` and
+ * `send_explainer_video` are omitted entirely (never registered, never merely
+ * gated inside `execute`) when there is no contactId AND no leadId — a
+ * conversation with neither cannot be followed up under an identity it does
+ * not have yet.
  * `send_matching_listings` and `record_qualification` register whenever
  * EITHER id is known (both degrade gracefully with no contactId — see their
  * own headers).
+ *
+ * Lane 75B — ASYNC now (was sync): the four NEW catalogue capabilities
+ * (lib/ai-isa/capability-catalogue.ts) are additionally gated by the
+ * brokerage's `ai_agent_capabilities` settings toggle (brokerage_settings.
+ * settings — app/dashboard/settings/assistant/capabilities-panel.tsx), which
+ * this function reads once per call (loadEnabledCapabilities has its own
+ * short TTL cache, same posture as brand-playbook-context.ts).
  */
-export function buildCustomerFreeTools(ctx: CustomerContextToolsContext): Record<string, unknown> {
+export async function buildCustomerFreeTools(ctx: CustomerContextToolsContext): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {
     get_my_context: buildGetMyContextTool(ctx),
     search_our_listings: buildSearchOurListingsTool(ctx),
@@ -913,13 +835,17 @@ export function buildCustomerFreeTools(ctx: CustomerContextToolsContext): Record
   if (ctx.contactId) {
     out.request_showing = buildRequestShowingTool({ ...ctx, contactId: ctx.contactId })
   }
+  const enabledCapabilities = await loadEnabledCapabilities(ctx.brokerageId)
   if (ctx.contactId || ctx.leadId) {
     out.schedule_callback = buildScheduleCallbackTool(ctx)
     out.schedule_home_value_review = buildScheduleHomeValueReviewTool(ctx)
-    out.find_listing_appointment_slots = buildFindListingAppointmentSlotsTool(ctx)
-    out.book_listing_appointment = buildBookListingAppointmentTool(ctx)
+    if (!enabledCapabilities.disabled.includes("book_listing_appointment")) {
+      out.find_listing_appointment_slots = buildFindListingAppointmentSlotsTool(ctx)
+      out.book_listing_appointment = buildBookListingAppointmentTool(ctx)
+    }
     out.send_matching_listings = buildSendMatchingListingsTool(ctx)
     out.record_qualification = buildRecordQualificationTool(ctx)
+    Object.assign(out, await buildNewCatalogueTools(ctx as CustomerCapabilityContext, enabledCapabilities))
   }
   // ONE VOCABULARY (wave 74 integration): the playbook's follow-up menu names
   // tools by string, so a menu entry with no registered tool would be a

@@ -439,7 +439,11 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   // leads.next_followup_at/property_alerts) the tool already made.
   qualification_call_requested:     { consumers: ["shopping_agent"], disposition: "handled", kind: "handoff", what: "someone asked to be called back later (not now) — persona-scoped (wave 75, owner verbatim: 'if a person says to call back again, that lead has not been qualified yet and the ai isa needs to call them back'): a CONTACT (already qualified) publishes with contactId set and the assigned agent's queue is notified via a gated confirmation (proposeQualificationConfirmation) so a human follow-up actually happens; a LEAD (not yet qualified) publishes with contactId null purely for visibility — the actual callback is placed autonomously by the AI ISA itself through lib/ai-isa/callback-task.ts::createCallbackTask → app/api/cron/ai-callback-dispatch, never a human task, and the handler correctly no-ops on it ('no contact linked yet') (lib/ai-isa/customer-context-tools.ts::buildScheduleCallbackTool)" },
   qualification_criteria_captured:  { consumers: ["shopping_agent"], disposition: "handled", kind: "update", what: "the AI qualified a buyer/renter's criteria and sent matching listings + enrolled a standing property_alerts alert — Shopping Agent's queue is notified so ongoing matching is on their radar (lib/ai-isa/customer-context-tools.ts::buildSendMatchingListingsTool)" },
-  qualification_valuation_handoff:  { consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "the AI qualified a seller, ran the AVM chain for their property, and booked a discuss-it callback — Listing Concierge's queue is notified with the estimated value so the human follow-up is grounded (lib/ai-isa/customer-context-tools.ts::buildScheduleHomeValueReviewTool)" },
+  // NEVER carries a dollar figure in its payload (owner ruling, wave 75 —
+  // see lib/kernel/manager-signals.ts's handler comment). This signal fires
+  // once the address is recorded and a discuss-it callback is booked; the
+  // AVM itself is no longer run by this tool at all.
+  qualification_valuation_handoff:  { consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "the AI qualified a seller, recorded their property's address, and booked a discuss-it callback — Listing Concierge's queue is notified so the human follow-up is grounded; the value itself is prepared and spoken by the AGENT, never this signal (lib/ai-isa/customer-context-tools.ts::buildScheduleHomeValueReviewTool)" },
   // TOMBSTONE (wave 75C, CLAUDE.md §1.1): buildBookAgentAppointmentTool (the
   // publisher of this signal) is RETIRED — survivor lib/ai-isa/customer-
   // context-tools.ts::buildBookListingAppointmentTool now books a REAL slot
@@ -457,6 +461,16 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   // "execute" branch (app/actions/portal-stream.ts) is what the agent's own
   // one-click confirm calls.
   listing_appointment_pending_confirmation: { consumers: ["listing_concierge"], disposition: "handled", kind: "handoff", what: "a listing appointment was booked live on the agent's connected calendar (tentative) and is pending the agent's one-click confirmation — the agent's queue is notified and a gated client confirmation is proposed (lib/ai-isa/listing-appointment.ts::bookListingAppointment)" },
+
+  // ── Lane 75B — the capability catalogue's THREE new follow-up actions
+  // (lib/ai-isa/capability-catalogue.ts). feed_only: each tool already made
+  // its own durable write (newsletter_subscribers / the report call itself /
+  // ai_video_projects) and already notified what it needed to synchronously —
+  // these are cross-manager VISIBILITY only, the same posture
+  // qr_scan_received and isa_qualification_started already carry.
+  qualification_newsletter_enrolled:        { consumers: [], disposition: "feed_only", kind: "update", what: "the AI enrolled a qualified person in the brand's newsletter — Campaign Orchestrator's visibility into a new subscriber sourced by qualification, not a signup form (lib/ai-isa/capability-catalogue.ts::buildSendNewsletterTool)" },
+  qualification_market_report_sent:         { consumers: [], disposition: "feed_only", kind: "update", what: "the AI sent a market-condition report for a qualified person's area (condition/trend/inventory only — never a dollar figure) — Campaign Orchestrator's visibility (lib/ai-isa/capability-catalogue.ts::buildSendMarketReportTool)" },
+  qualification_explainer_video_requested:  { consumers: [], disposition: "feed_only", kind: "update", what: "the AI commissioned a buying/selling-process explainer video for a qualified person through the SAME Director rail every avatar video rides (lib/video/avatar-explainer.ts) — Asset Manager's visibility; distinct from video_generation_requested (that signal's FROM/TO is fixed and routed by the video project's own entity association, never re-published here) (lib/ai-isa/capability-catalogue.ts::buildSendExplainerVideoTool)" },
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */

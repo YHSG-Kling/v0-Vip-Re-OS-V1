@@ -62,6 +62,7 @@ import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPerson
 import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { buildCustomerFreeTools } from "@/lib/ai-isa/customer-context-tools"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -273,6 +274,7 @@ function buildSystemPrompt(input: {
   ctx: ContactContext | null
   brandVoiceBlock: string
   toolPersona: ToolPersona
+  brand?: BrandPlaybookContext | null
 }): string {
   const lines: string[] = [
     input.isAnonymous
@@ -342,7 +344,7 @@ function buildSystemPrompt(input: {
   // servicing an existing deal.
   if (!input.ctx?.activeTransaction && !input.ctx?.activeListing) {
     lines.push("")
-    lines.push(buildQualificationPrompt({ surface: "did_avatar", persona: input.toolPersona }))
+    lines.push(buildQualificationPrompt({ surface: "did_avatar", persona: input.toolPersona, brand: input.brand }))
   }
 
   return lines.join("\n")
@@ -422,8 +424,21 @@ export async function POST(request: NextRequest) {
     homeOwnerStatus: ctx?.homeOwnerStatus ?? null,
   })
 
+  // Wave 75 — business processes/SOPs, brand KB, office hours, service
+  // areas. `omitVoiceBlock: true` because `brandVoiceBlock` above ALREADY
+  // carries the brand-voice cascade text — never restated twice in one
+  // prompt. (loadBrandPlaybookContext's own 60s cache absorbs the cost of
+  // the brand-voice query it re-runs internally — the fallback shape `brand`
+  // degrades to above has no full BrandVoicePromptResult to pass through as
+  // `preloadedVoice`.)
+  const brandPlaybook = await loadBrandPlaybookContext({
+    brokerageId, agentId: agentId ?? null, contactId: resolvedContactId ?? null,
+    omitVoiceBlock: true,
+    knowledgeQuery: latestUserText || null,
+  }).catch(() => null)
+
   const systemPrompt = buildSystemPrompt({
-    contactName, isAnonymous, ctx, brandVoiceBlock: brand.systemBlock ?? "", toolPersona,
+    contactName, isAnonymous, ctx, brandVoiceBlock: brand.systemBlock ?? "", toolPersona, brand: brandPlaybook,
   })
 
   if (latestUserText && detectsEscalation(latestUserText)) {
@@ -460,10 +475,11 @@ export async function POST(request: NextRequest) {
     await rentCastMcpTools({ brokerageId, userId: agentUserId }),
     toolPersona,
   )
-  const freeTools = buildCustomerFreeTools({
+  const freeTools = await buildCustomerFreeTools({
     brokerageId,
     contactId: resolvedContactId ?? null,
     agentId,
+    persona: toolPersona,
   })
 
   // ── Stream via the routed entry ─────────────────────────────────────────

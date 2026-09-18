@@ -16,6 +16,7 @@ import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
 import { ListeningPreferencesPanel } from "./listening-preferences-panel"
 import { ReplyStylePanel } from "./reply-style-panel"
 import { AutoResponsePanel, type AutoResponseSettings } from "./auto-response-panel"
+import { AiAgentCapabilitiesPanel } from "./capabilities-panel"
 import { getAgentContext } from "@/lib/identity"
 import { getAgentChatPreferences } from "@/app/actions/ai-chat"
 import { getAutoResponseSettings } from "@/app/actions/ai-auto-response"
@@ -99,6 +100,14 @@ async function AssistantContent() {
       {ctx.agentId && autoResponse.success && autoResponse.settings && (
         <AutoResponsePanel initial={autoResponse.settings as AutoResponseSettings} />
       )}
+
+      {/* Lane 75B — brand-configurable AI agent capabilities (the customer-
+          care catalogue: newsletter, market report, explainer video, listing
+          appointment, etc). Tenant-admin gated by its own server action —
+          the panel itself just reflects whatever that gate returns. */}
+      <div className="mt-6">
+        <AiAgentCapabilitiesPanel />
+      </div>
     </div>
   )
 }

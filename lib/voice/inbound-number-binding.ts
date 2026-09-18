@@ -19,6 +19,13 @@ export interface BusinessHours {
 export interface InboundIdentity {
   assistantName: string | null
   welcomeMessage: string | null
+  /** Wave 75 — brand voice + KB + business processes + office hours +
+   *  service areas, resolved ONCE by resolveInboundContext via
+   *  lib/ai-isa/brand-playbook-context.ts::loadBrandPlaybookContext and
+   *  threaded through to buildQualificationPrompt's `brand` input. Typed as
+   *  `unknown` here to avoid this identity-binding module importing the AI-ISA
+   *  playbook module (reception-brain.ts, the consumer, imports the real type). */
+  brand?: unknown
   tone: string | null
   brokerageName: string | null
   agentName: string | null

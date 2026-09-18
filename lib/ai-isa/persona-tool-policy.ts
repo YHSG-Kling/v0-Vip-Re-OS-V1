@@ -44,18 +44,19 @@
  * new tool implementation here — this file only decides WHICH of the existing
  * ones a given persona may reach):
  *
- *   buyer      — RentCast (listing/valuation-shaped tools) FIRST; BatchData
- *                limited to comparable_property_preview/count. Never
- *                lookup_property, never the owner's own record — a buyer is
- *                asking about a home that is not theirs.
- *   seller     — lookup_property (it IS their own home), comparable_property_
- *                preview/count, verify_address. Skip-trace NEVER — a seller is
- *                the owner, skip-tracing them is nonsensical and the tool name
- *                does not even exist in this registry (wave 68's investor
- *                ruling extended by construction: nobody skip-traces the
- *                person they are already talking to).
- *   investor   — UNCHANGED from wave 71/72: search_properties_preview/count/
- *                page, comparable_property_preview/count, investor_buybox_
+ *   buyer      — RentCast (listing/valuation-shaped tools) only. ZERO BatchData
+ *                (lane 75B — owner ruling: "random batchdata tools" are out of
+ *                customer care; every need this persona had is now served by
+ *                lib/ai-isa/capability-catalogue.ts).
+ *   seller     — ZERO BatchData (lane 75B, same ruling) — lookup_property /
+ *                comparable_property_* could surface a dollar figure
+ *                mid-conversation, exactly the "value over the conversation"
+ *                the owner ruled against; schedule_home_value_review (the
+ *                catalogue) books a callback and never runs an AVM at all.
+ *   investor   — UNCHANGED from wave 71/72 (lane 75B EXCEPTION, owner's own
+ *                wording: "property-only search/comps preview since that IS
+ *                its service"): search_properties_preview/count/page,
+ *                comparable_property_preview/count, investor_buybox_
  *                preview/count — property fields ONLY, passed through
  *                `toInvestorFacingToolRow`'s redaction. No RentCast (BatchData
  *                is the off-market/quicklist provider that persona needs —
@@ -63,10 +64,9 @@
  *   renter     — RentCast RENTAL-shaped tools only. Zero BatchData — a renter
  *                is not buying, so BatchData's per-record cost has nothing to
  *                buy for them.
- *   relocation — area/market visibility only: search_properties_preview/count
- *                (never `_page` — no bulk pull) plus RentCast market/listing
- *                tools. No owner data — every row still passes through the
- *                property-only redaction below.
+ *   relocation — ZERO BatchData (lane 75B) — RentCast market/listing tools
+ *                plus the catalogue's search_our_listings/send_matching_
+ *                listings cover area visibility without a paid per-record call.
  *   sphere     — verify_phone / check_dnc_status / check_tcpa_status ONLY, and
  *                ONLY when the caller declares the conversation
  *                outbound-eligible (`ctx.outboundEligible`, default false —
@@ -172,15 +172,32 @@ export interface PersonaToolPolicy {
 }
 
 export const PERSONA_TOOL_POLICY: Record<ToolPersona, PersonaToolPolicy> = {
+  // Lane 75B — owner verbatim (wave 75): "if a brand wants to create a
+  // specific tool that should be an option with all of the different
+  // capabilities that we have built... I think those tools are better
+  // suited than random batchdata tools... don't create tools that is not
+  // useful for customer care in the real estate business." BatchData
+  // property-VALUE tools (lookup_property, comparable_property_*,
+  // verify_address) are REMOVED from buyer/seller/relocation: every need
+  // they covered is now served by lib/ai-isa/capability-catalogue.ts's
+  // customer-care capabilities (schedule_home_value_review books a callback
+  // and NEVER runs an AVM; send_matching_listings/search_our_listings cover
+  // area/inventory visibility) — and a comparable-property tool that could
+  // surface a dollar figure mid-conversation is exactly the "value over the
+  // conversation" the owner ruled against (wave 75, same ruling). investor
+  // is the EXPLICIT exception (property-only search/comps IS its service,
+  // per the owner's own wording) and sphere is UNCHANGED (verify_phone/
+  // check_dnc_status/check_tcpa_status are an OUTBOUND COMPLIANCE gate, not
+  // a customer-care capability — a need the catalogue does not cover).
   buyer: {
-    batchDataToolNames: ["comparable_property_preview", "comparable_property_count"],
+    batchDataToolNames: [],
     rentCastEnabled: true,
     rentCastNamePattern: /listing|sale|value|avm|market/i,
     capCents: 100,
     redaction: "property-only",
   },
   seller: {
-    batchDataToolNames: ["lookup_property", "comparable_property_preview", "comparable_property_count", "verify_address"],
+    batchDataToolNames: [],
     rentCastEnabled: false,
     rentCastNamePattern: null,
     capCents: 200,
@@ -205,7 +222,7 @@ export const PERSONA_TOOL_POLICY: Record<ToolPersona, PersonaToolPolicy> = {
     redaction: "property-only",
   },
   relocation: {
-    batchDataToolNames: ["search_properties_preview", "search_properties_count"],
+    batchDataToolNames: [],
     rentCastEnabled: true,
     rentCastNamePattern: /market|listing/i,
     capCents: 50,
@@ -422,6 +439,14 @@ export const FREE_INTERNAL_TOOL_NAMES: readonly string[] = [
   "find_listing_appointment_slots",
   "book_listing_appointment",
   "record_qualification",
+  // Lane 75B — the customer-care capability catalogue (lib/ai-isa/
+  // capability-catalogue.ts CAPABILITY_CATALOGUE). "book_agent_appointment"
+  // is RETIRED (tombstone in lib/ai-isa/customer-context-tools.ts naming
+  // book_listing_appointment as its survivor).
+  "send_newsletter",
+  "send_market_report",
+  "send_explainer_video",
+  "book_listing_appointment",
 ]
 
 /** PURE — the cost rank for one tool NAME. Generic over any registry's key

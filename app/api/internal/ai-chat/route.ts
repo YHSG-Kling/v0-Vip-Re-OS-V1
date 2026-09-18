@@ -10,6 +10,7 @@ import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { resolveEffectiveBatchDataToolTier, filterToolsByTier } from "@/lib/ai-isa/persona-tool-policy"
 import { writeFollowUpActivity } from "@/lib/ai-isa/customer-context-tools"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -279,7 +280,7 @@ interface AIIdentity {
   formality_level: string
 }
 
-function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?: AIIdentity): string {
+function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?: AIIdentity, brand?: BrandPlaybookContext | null): string {
   const name = identity?.assistant_name ?? "AI-ISA"
   const persona = identity?.persona_label ?? "internal assistant"
   const tone = identity?.tone ?? "professional"
@@ -335,7 +336,7 @@ RESTRICTIONS — never do any of these:
 - Never reference other users' private data not in context
 - Never save notes silently — always surface as a draft for human approval
 
-${buildQualificationPrompt({ surface: "staff_copilot" })}
+${buildQualificationPrompt({ surface: "staff_copilot", brand })}
 
 NOTE_AUTO_DRAFT:
 After responding to a genuinely high-signal exchange — such as a call outcome being discussed, a decision or agreement reached, an important fact shared (timeline, budget, motivation), or a follow-up promised — you MAY append the following marker ONCE at the very end of your response (after your main answer text).
@@ -417,7 +418,7 @@ export async function POST(req: NextRequest) {
   let identity: AIIdentity | undefined
 
   // Load identity: agent-scope first, brokerage-scope fallback
-  const [contextResult, agentIdentityResult] = await Promise.allSettled([
+  const [contextResult, agentIdentityResult, brandPlaybookResult] = await Promise.allSettled([
     (async () => {
       if (role === "agent" || role === "isa" || role === "team_lead") return loadAgentContext(service, user.id, brokerageId)
       else if (role === "broker" || role === "admin") return loadBrokerContext(service, brokerageId)
@@ -451,12 +452,22 @@ export async function POST(req: NextRequest) {
         formality_level: brand.formalityLevel ?? "formal",
       } satisfies AIIdentity
     })(),
+    // Wave 75 — business processes/SOPs, brand KB, office hours, service
+    // areas. `omitVoiceBlock: true` — this file ALREADY renders tone/
+    // formality into the "Role: X | Tone: Y | Formality: Z" line above, so
+    // the brand-voice cascade's own systemBlock sentence is left out of
+    // `brand.block` to avoid stating the same thing twice.
+    (async () => {
+      const scopeAgentId = await resolveAgentId(service as any, user.id)
+      return loadBrandPlaybookContext({ brokerageId, agentId: scopeAgentId ?? null, omitVoiceBlock: true })
+    })(),
   ])
 
   if (contextResult.status === "fulfilled") ctx = contextResult.value ?? {}
   if (agentIdentityResult.status === "fulfilled") identity = agentIdentityResult.value
+  const brandPlaybook = brandPlaybookResult.status === "fulfilled" ? brandPlaybookResult.value : null
 
-  const systemPrompt = buildSystemPrompt(role, ctx, identity)
+  const systemPrompt = buildSystemPrompt(role, ctx, identity, brandPlaybook)
 
   // ── The claimed session must be YOURS before anything is written into it ──
   //

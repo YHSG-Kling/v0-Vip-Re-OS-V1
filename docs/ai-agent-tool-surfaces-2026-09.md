@@ -337,7 +337,108 @@ still catches duplicated prose if it existed); the four follow-up tools
 write via `sentinelWrite` and are persona/contactId-locked from `ctx`, never
 a model-suppliable id; `costRankForTool`/`selectToolsForPersona` sort
 cheapest-first and drop a BatchData tool a cheaper tool covers, with a
-POSITIVE CONTROL proving a need only BatchData covers (the seller persona's
-`lookup_property`, since sellers never get RentCast) survives; and
-`record_qualification` only ever writes columns
+POSITIVE CONTROL (a synthetic no-RentCast registry fixture, testing the PURE
+`selectToolsForPersona` rule — not a claim about any one persona's current
+allowlist) proving a tool with no cheaper substitute in the SAME registry
+survives; and `record_qualification` only ever writes columns
 `scripts/schema-snapshot.ts` lists as live.
+
+*(Re-anchored, lane 75B, wave 75 owner ruling — "random batchdata tools" are
+out of customer care: buyer/seller/relocation's REAL BatchData allowlists
+(`PERSONA_TOOL_POLICY`) are now EMPTY; investor is the one EXPLICIT
+exception the owner named ("property-only search/comps preview since that
+IS its service"). See `scripts/batchdata-isa-tools-simulator.ts` section 3
+for the full re-anchored assertions against the real, live policy table.)*
+
+## 10. The customer-care capability catalogue (lane 75B)
+
+Owner verbatim (wave 75): *"there should not only be a playbook but the
+brand settings like brand voice, any other business process, brand
+knowledge base, etc. needs to be included. the tools in the playbook and
+what were built do not match up… if a brand wants to create a specific tool
+that should be an option with all of the different capabilities that we
+have built in this agentic saas os using autonomous ai or we should include
+a selection of more capabilities like sending a newsletter or market report
+or maybe even an explainer video of the selling or buying process etc. I
+think those tools are better suited than random batchdata tools… never give
+the person a value over the conversation since that is what the agent will
+speak about once they talk… don't create tools that is not useful for
+customer care in the real estate business."*
+
+### 10.1 Brand playbook context
+
+`lib/ai-isa/brand-playbook-context.ts::loadBrandPlaybookContext` is the ONE
+loader every mounting surface calls before building its qualification
+prompt. Sources (every one an existing survivor, never a duplicate):
+
+| Field | Source | Notes |
+|---|---|---|
+| Brand voice (tone, formality, prohibited/preferred words, tagline, mission, FAQ, objections) | `lib/ai-isa/brand-voice-prompt.ts::loadBrandVoicePrompt` | The SAME brokerage→team→agent cascade every other surface already mounts. |
+| Brand knowledge base | `lib/intelligence/kb-search.ts::searchKB` | Scoped to the brokerage; `brokerageId: null` for the platform surface (tenant-free rows only — the same degrade `platform_faq_lookup` already relies on). |
+| Business processes / SOPs | `brokerage_settings.settings.ai_agent_capabilities` … `settings.business_processes` (an EXISTING generic jsonb column — no new migration) | `parseBusinessProcesses` — tolerant of a missing/malformed key. |
+| Office hours | `ai_identity_profiles.business_hours` at brokerage scope | The SAME column `lib/voice/twilio-voice.ts` reads for the inbound voice brain's after-hours rule. |
+| Service areas / territories | `subscriber_service_areas` (active rows) | The platform-subscriber territory table, never the acquisition-side `lead_scraping_markets`. |
+| Platform's own brand (platform_reception only) | `lib/platform/product-brand.ts::loadProductBrand` | No tenant brand-voice cascade exists for a platform prospect line. |
+
+Mounted on all eight surfaces: `isa_email`, `widget`, `portal`, `did_avatar`,
+`voice_reception`, `voice_outbound` (via `lib/voice/twilio-voice.ts`'s
+`resolveInboundContext`, which resolves it once per call and threads it
+through `InboundIdentity.brand`), `platform_reception` (its own brand/KB,
+never a tenant's), and `staff_copilot` (with `omitVoiceBlock: true` — that
+surface already renders tone/formality itself, so the cascade's own sentence
+is not restated).
+
+### 10.2 Capability × persona × survivor × signal
+
+| Capability | Personas | Survivor | Kernel signal |
+|---|---|---|---|
+| `get_my_context` | all | `lib/ai-isa/customer-context-tools.ts::buildGetMyContextTool` | read-only |
+| `search_our_listings` | all | `lib/ai-isa/customer-context-tools.ts::buildSearchOurListingsTool` | read-only |
+| `request_showing` | buyer, seller, renter, relocation | `lib/ai-isa/customer-context-tools.ts::buildRequestShowingTool` | notification only |
+| `schedule_callback` | all | `lib/ai-isa/customer-context-tools.ts::buildScheduleCallbackTool` | `qualification_call_requested` |
+| `send_matching_listings` | buyer, renter, relocation | `lib/ai-isa/customer-context-tools.ts::buildSendMatchingListingsTool` | `qualification_criteria_captured` |
+| `schedule_home_value_review` | seller | `lib/ai-isa/customer-context-tools.ts::buildScheduleHomeValueReviewTool` — **never runs an AVM, never speaks a number** | `qualification_valuation_handoff` |
+| `record_qualification` | all | `lib/ai-isa/customer-context-tools.ts::buildRecordQualificationTool` | direct write only |
+| `send_newsletter` | all | `lib/content/newsletter-enrollment.ts::enrollContactInNewsletter` / `enrollLeadInNewsletter` | `qualification_newsletter_enrolled` |
+| `send_market_report` | buyer, seller, renter, relocation, investor | `lib/market-intelligence/report-builder.ts::buildMarketReportAnalysis` — returns condition/trend/inventory only, never a dollar figure | `qualification_market_report_sent` |
+| `send_explainer_video` | buyer, seller, renter, relocation | `lib/video/avatar-explainer.ts::commissionAvatarExplainer` | `qualification_explainer_video_requested` |
+| `book_listing_appointment` | seller | ≥7-day floor (`lib/home-value/listing-appointment.ts`) + `calendar_events(event_type='listing_appointment')` — the SAME shape the existing `listing-presentation-prep` cron already reads, so the CMA + seller drip prep runs autonomously | `qualification_appointment_handoff` |
+
+Every capability is FREE (cost rank 0, no vendor spend), gated by identity
+(`contactId`/`leadId` locked from `ctx`, never model-suppliable), and the
+four new ones are additionally gated by the brokerage's
+`ai_agent_capabilities.disabled` settings toggle
+(`lib/ai-isa/capability-catalogue.ts::isCapabilityEnabled`).
+
+### 10.3 `book_listing_appointment` — the autonomous hook-up
+
+Owner ruling (wave 75 verbatim): *"the no obligation meeting should be
+marked as a listing appointment so that the workflow creates the follow up
+until the appt which should be at least a week out… the calendar should be
+hooked up so that the ai agent can find a time and day that works for the
+person and set up the appt right then and the agent just confirms it."*
+
+`buildBookListingAppointmentTool` books the EARLIEST valid slot
+(`earliestListingAppointmentAt()`, ≥7 days out) in a `pending_confirmation`
+calendar_events row — this is the "until lane 75C's live calendar-slot
+helper lands" fallback named in the lane brief. TOMBSTONE:
+`buildBookAgentAppointmentTool` (lib/ai-isa/customer-context-tools.ts) is
+retired — its activity-write/notify/signal shape is carried forward WIDENED
+with the calendar_events row, so the existing
+`app/api/cron/listing-presentation-prep` cron (which already reads
+`calendar_events.event_type = 'listing_appointment'`, written by
+`app/actions/home-value.ts`'s own booking path) picks this appointment up on
+its next tick and builds the CMA + pre-listing seller drip autonomously —
+never a second implementation of that pipeline.
+
+### 10.4 Brand-configurable tools
+
+`brokerage_settings.settings.ai_agent_capabilities` (the EXISTING generic
+settings jsonb column — no migration): `{ disabled: CapabilityId[], custom:
+CustomToolDefinition[] }`. A custom tool definition names a brand-authored
+label/description plus a list of catalogue capability ids it COMPOSES —
+`validateCustomToolDefinition` refuses any definition naming a capability id
+that is not in `CAPABILITY_CATALOGUE` (never a brand-invented capability
+with no real implementation). Settings surface:
+`app/dashboard/settings/assistant/capabilities-panel.tsx` (tenant-admin
+gated), listing the catalogue with per-capability toggles.

@@ -404,18 +404,20 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       return null
     }
   },
-  // AI ISA → Listing Concierge: a seller's home value was looked up + a
-  // discuss-it callback booked.
+  // AI ISA → Listing Concierge: a seller's home-value address was recorded +
+  // a discuss-it callback booked. NEVER a dollar figure here (owner ruling,
+  // wave 75 verbatim: "never give the person a value over the conversation
+  // since that is what the agent will speak about once they talk") —
+  // lib/ai-isa/customer-context-tools.ts::buildScheduleHomeValueReviewTool no
+  // longer publishes an avmValue on this signal's payload (it never runs the
+  // AVM at all now), so this handler has nothing to quote even if it wanted to.
   "listing_concierge:qualification_valuation_handoff": (signal, ctx) => {
     const address = (signal.payload?.propertyAddress as string | undefined) ?? "your property"
-    const value = signal.payload?.avmValue as number | null | undefined
     return proposeQualificationConfirmation(
       signal, ctx, "listing_concierge",
       "Your home value review",
-      value
-        ? `Thanks for sharing ${address} — early estimate looks to be around $${value.toLocaleString()}. Your agent will call to go over it in detail.`
-        : `Thanks for sharing ${address} — your agent will call to go over its value in detail.`,
-      `AI qualification looked up a home value and booked a callback (signal ${signal.signalType}: ${signal.message}).`,
+      `Thanks for sharing ${address} — your agent will call to go over its value in detail.`,
+      `AI qualification recorded a home-value address and booked a callback (signal ${signal.signalType}: ${signal.message}).`,
     )
   },
   // RETIRED handler — kept so a stray legacy row already on the bus (status
@@ -426,7 +428,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     signal, ctx, "listing_concierge",
     "Looking forward to meeting",
     "Great — I've passed this along and your agent will reach out to confirm a time. No obligation, just a conversation.",
-    `AI qualification booked a no-obligation agent visit (signal ${signal.signalType}: ${signal.message}).`,
+    `AI qualification booked a listing appointment, pending agent confirmation (signal ${signal.signalType}: ${signal.message}).`,
   ),
   // AI ISA → Listing Concierge (wave 75C): a listing appointment was booked
   // LIVE on the agent's connected calendar (tentative hold, ≥7 days out) and

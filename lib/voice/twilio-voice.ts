@@ -58,9 +58,11 @@ export async function resolveInboundContext(svc: any, toNumber: string): Promise
   // the brokerage profile.
   let profile: any = null
   let teamId: string | null = null
+  let agentsId: string | null = null
   if (n.agent_user_id) {
     const { data: agent } = await svc.from("agents").select("id, team_id").eq("user_id", n.agent_user_id).maybeSingle()
     if (agent) {
+      agentsId = (agent as any).id ?? null
       teamId = (agent as any).team_id ?? null
       const { data: p } = await svc.from("ai_identity_profiles").select("*")
         .eq("scope_type", "agent").eq("scope_id", (agent as any).id).maybeSingle()
@@ -93,6 +95,17 @@ export async function resolveInboundContext(svc: any, toNumber: string): Promise
     agentName = u ? [(u as any).first_name, (u as any).last_name].filter(Boolean).join(" ") || null : null
   }
 
+  // Wave 75 — brand voice + KB + business processes + office hours + service
+  // areas, resolved ONCE per call and threaded into every voice prompt via
+  // buildQualificationPrompt's `brand` input (lib/voice/reception-brain.ts).
+  // Best-effort: a resolution failure degrades to no brand block, never a
+  // dropped call.
+  let brand: unknown = null
+  try {
+    const { loadBrandPlaybookContext } = await import("@/lib/ai-isa/brand-playbook-context")
+    brand = await loadBrandPlaybookContext({ brokerageId: n.brokerage_id, agentId: agentsId, teamId })
+  } catch { /* brand context unavailable — the call still connects */ }
+
   return {
     brokerageId: n.brokerage_id,
     agentUserId: n.agent_user_id,
@@ -110,6 +123,7 @@ export async function resolveInboundContext(svc: any, toNumber: string): Promise
       forwardNumber: profile?.ai_call_forward_number ?? null,
       answerMode: profile?.ai_answer_mode ?? null,
       businessHours: profile?.business_hours ?? null,
+      brand,
     },
   }
 }

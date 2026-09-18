@@ -151,10 +151,17 @@ let sphereToolsEligible: Record<string, unknown> = {}
      "RULING (wave 68/69): investor persona STILL has no skip-trace/owner-contact tool")
   ok(!("skip_trace_property" in sellerTools) && !("reverse_skip_trace" in sellerTools),
      "RULING (owner, wave 73): seller persona NEVER gets skip-trace — they are the owner")
-  ok("lookup_property" in sellerTools && "verify_address" in sellerTools,
-     "RULING: seller persona DOES get lookup_property + verify_address (it is their own home)")
+  // RULING SUPERSEDED (owner, wave 75 verbatim): "random batchdata tools" are out of customer
+  // care — lookup_property/comparable_property_* could surface a dollar figure mid-conversation,
+  // the exact "value over the conversation" the owner ruled against. seller's BatchData
+  // allowlist is now EMPTY; lib/ai-isa/capability-catalogue.ts::buildScheduleHomeValueReviewTool
+  // (never runs an AVM, only books a callback) is the survivor for "what's my home worth".
+  ok(Object.keys(sellerTools).length === 0, "RULING (wave 75): seller persona has NO BatchData tools of any kind — schedule_home_value_review is the survivor")
   ok(!("search_properties_preview" in buyerTools) && !("search_properties_page" in buyerTools),
      "RULING: buyer persona has no direct BatchData property search — RentCast is first, BatchData is comps-only")
+  ok(Object.keys(buyerTools).length === 0, "RULING (wave 75): buyer persona has NO BatchData tools of any kind — the capability catalogue covers customer care instead")
+  ok(Object.keys(relocationTools).length === 0, "RULING (wave 75): relocation persona has NO BatchData tools of any kind — search_our_listings/send_matching_listings cover area visibility")
+  ok(Object.keys(investorTools).length > 0, "RULING (wave 75 EXCEPTION, owner's own wording): investor persona KEEPS its property-only search/comps preview — \"that IS its service\"")
 
   // ── sphere: outbound-eligibility gate, fail closed by default ──────────
   ok(Object.keys(sphereToolsBlocked).length === 0,
@@ -208,8 +215,8 @@ let sphereToolsEligible: Record<string, unknown> = {}
   // resolvePersonaBudgetCents: the tighter of the env ceiling and the persona's OWN cap.
   ok(resolvePersonaBudgetCents("renter") === 0, "resolvePersonaBudgetCents: renter's own cap ($0.00) wins even though the env ceiling defaults to $2.00")
   ok(resolvePersonaBudgetCents("buyer") === 100, "resolvePersonaBudgetCents: buyer's own cap ($1.00) is tighter than the env default")
-  process.env.BATCHDATA_ISA_BUDGET_CENTS = "10" // 10¢ — tighter than seller's own $2.00 cap
-  ok(resolvePersonaBudgetCents("seller") === 10, "resolvePersonaBudgetCents: an env override TIGHTENS a persona's cap, never loosens it")
+  process.env.BATCHDATA_ISA_BUDGET_CENTS = "10" // 10¢ — tighter than sphere's own $0.50 cap
+  ok(resolvePersonaBudgetCents("sphere") === 10, "resolvePersonaBudgetCents: an env override TIGHTENS a persona's cap, never loosens it")
   delete process.env.BATCHDATA_ISA_BUDGET_CENTS
 
   const underBudget = evaluateBudget(0, 200, 0.05)
@@ -218,19 +225,22 @@ let sphereToolsEligible: Record<string, unknown> = {}
   ok(overBudget !== null && overBudget.success === false, "evaluateBudget: refuses a call that would push spend over the budget")
   ok(/\$1\.99 of \$2\.00/.test(overBudget?.error ?? ""), "evaluateBudget: refusal message names the actual spent/budget figures")
 
-  // (b) ACTUAL tool call — seller persona's verify_address, budget set to 1¢ (verify_address
+  // (b) ACTUAL tool call — sphere persona's verify_phone, budget set to 1¢ (verify_phone
   // costs MCP_TOOL_CALL_COST_USD, well over 1¢). NO NETWORK ATTEMPT: budgetRefusal is
   // checked FIRST in every execute(), before callBatchDataMcp is ever reached.
+  // (RULING wave 75 superseded seller's own BatchData allowlist to EMPTY — see section 3 —
+  // so sphere is now the persona with a non-empty allowlist AND no outbound network need to
+  // fake; outboundEligible: true is required or sphere's tools do not register at all.)
   process.env.BATCHDATA_API_KEY = "test-fake-key-never-used-for-a-real-call"
   process.env.BATCHDATA_ISA_BUDGET_CENTS = "1"
   process.env.BATCHDATA_TOOL_TIER = "full"
-  const budgetSellerTools = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "seller", conversationKey: "conv-budget-1" })
-  const verifyAddressTool = budgetSellerTools.verify_address as { execute: (args: any) => Promise<any> } | undefined
-  ok(!!verifyAddressTool, "seller persona exposes verify_address to call")
-  if (verifyAddressTool) {
-    const result = await verifyAddressTool.execute({ street: "1 Main St", city: null, state: null, zip: null })
-    ok(result.success === false, "verify_address.execute: refused when the conversation's $0.01 budget can't cover the call")
-    ok(/budget/i.test(result.error ?? ""), "verify_address.execute: refusal names the budget, not a network/config error")
+  const budgetSphereTools = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "sphere", conversationKey: "conv-budget-1", outboundEligible: true })
+  const verifyPhoneTool = budgetSphereTools.verify_phone as { execute: (args: any) => Promise<any> } | undefined
+  ok(!!verifyPhoneTool, "sphere persona (outbound-eligible) exposes verify_phone to call")
+  if (verifyPhoneTool) {
+    const result = await verifyPhoneTool.execute({ phone: "5125551234" })
+    ok(result.success === false, "verify_phone.execute: refused when the conversation's $0.01 budget can't cover the call")
+    ok(/budget/i.test(result.error ?? ""), "verify_phone.execute: refusal names the budget, not a network/config error")
   }
   delete process.env.BATCHDATA_ISA_BUDGET_CENTS
   delete process.env.BATCHDATA_TOOL_TIER

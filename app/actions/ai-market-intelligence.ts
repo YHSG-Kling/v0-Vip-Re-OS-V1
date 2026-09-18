@@ -7,6 +7,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { requireCaller } from "@/lib/auth/require-caller"
+import { buildMarketReportAnalysis } from "@/lib/market-intelligence/report-builder"
 
 // ============================================================================
 // AI MARKET INTELLIGENCE SYSTEM
@@ -37,104 +38,24 @@ export async function generateMarketReport(params: {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  const supabase = await createClient()
-
+  // TOMBSTONE (lane 75B) — the market-data read, recent-sales read and AI
+  // analysis call that stood here moved to lib/market-intelligence/
+  // report-builder.ts::buildMarketReportAnalysis, a PLAIN (non-"use server")
+  // lib module so lib/ai-isa/capability-catalogue.ts's `send_market_report`
+  // AI-agent capability can build the SAME analysis without this file's
+  // export becoming a brokerageId-by-argument public endpoint (CLAUDE.md §4).
+  // `auth.brokerageId` (the SESSION's own tenant) is the only source of scope
+  // here, same as before.
   try {
-    // Get market data from database.
-    //
-    // `county` is NOT a column on market_data — the table geolocates by zip_code, city, state
-    // and the curated `market_area` label, and NO table in the schema has a `county` column at
-    // all. PostgREST rejects the ENTIRE request when an .or() string names an unknown column,
-    // so this read returned null for every caller (county supplied or not) and every "market
-    // report" below has been generated from an empty market_data set.
-    // The county term is DROPPED rather than repointed: `market_area` is a free-text area label
-    // written by market_data_sources ("Austin Metro"), not a county, so ilike-matching a county
-    // name against it would be a guess. Restoring county filtering needs a real
-    // market_data.county column first. params.county still reaches the model below, in the
-    // prompt's "Market Area" line.
-    //
-    // NB: this comment sits ABOVE the statement on purpose — a comment BETWEEN chained calls
-    // ends the contiguous method chain that schema-drift-guard attributes filters by, which
-    // would hide this very .or() from the check that found it.
-    const { data: marketData } = await supabase
-      .from("market_data")
-      .select("*")
-      .or(`zip_code.eq.${params.zipCode},city.ilike.%${params.city}%`)
-      .order("data_date", { ascending: false })
-      .limit(100)
-
-    // Get recent sales for analysis
-    const { data: recentSales } = await supabase
-      .from("listings")
-      .select("*")
-      // tenant anchor (scope burn-down): sales history from the caller's own brokerage
-      .eq("brokerage_id", auth.brokerageId)
-      .eq("status", "sold")
-      .order("go_live_date", { ascending: false })
-      .limit(50)
-
-    // Generate AI market analysis
-    const { object: analysis } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        summary: z.string(),
-        marketCondition: z.enum(["buyers_market", "sellers_market", "balanced"]),
-        trendDirection: z.enum(["appreciating", "depreciating", "stable"]),
-        avgPriceChange: z.number(),
-        avgDaysOnMarket: z.number(),
-        inventoryLevel: z.enum(["low", "moderate", "high"]),
-        demandLevel: z.enum(["low", "moderate", "high"]),
-        priceRangeDemand: z.array(z.object({
-          range: z.string(),
-          demandLevel: z.string(),
-          recommendation: z.string()
-        })),
-        hotNeighborhoods: z.array(z.object({
-          name: z.string(),
-          reason: z.string(),
-          avgPrice: z.number()
-        })),
-        buyerTrends: z.array(z.string()),
-        sellerRecommendations: z.array(z.string()),
-        investmentOpportunities: z.array(z.object({
-          type: z.string(),
-          description: z.string(),
-          potentialROI: z.string()
-        })),
-        forecast: z.object({
-          threeMonth: z.string(),
-          sixMonth: z.string(),
-          oneYear: z.string()
-        }),
-        competitorAnalysis: z.object({
-          avgListingPrice: z.number(),
-          avgSellingPrice: z.number(),
-          priceReductionRate: z.number(),
-          topPerformingAgents: z.array(z.string())
-        })
-      }),
-      prompt: `Analyze the real estate market data and provide comprehensive insights:
-
-Market Area: ${params.zipCode || params.city || params.county || "General"}
-Property Type: ${params.propertyType || "All types"}
-Timeframe: ${params.timeframe || "90 days"}
-
-Recent Market Data:
-${JSON.stringify(marketData?.slice(0, 20) || [], null, 2)}
-
-Recent Sales:
-${JSON.stringify(recentSales?.slice(0, 20) || [], null, 2)}
-
-Provide actionable market intelligence including:
-1. Overall market summary and condition
-2. Price trends and forecasts
-3. Inventory analysis
-4. Hot neighborhoods and emerging areas
-5. Buyer behavior trends
-6. Seller recommendations
-7. Investment opportunities
-8. Competitor analysis`
+    const result = await buildMarketReportAnalysis({
+      brokerageId: auth.brokerageId,
+      zipCode: params.zipCode,
+      city: params.city,
+      county: params.county,
+      propertyType: params.propertyType,
+      timeframe: params.timeframe,
     })
+    if (!result.success) return { success: false, error: result.error }
 
     // pass 14: market_reports was a PHANTOM table (insert errored on every run;
     // no reader anywhere — the adapters consume the returned analysis directly and
@@ -142,7 +63,7 @@ Provide actionable market intelligence including:
 
     return {
       success: true,
-      report: analysis,
+      report: result.report,
       reportId: undefined
     }
   } catch (error) {

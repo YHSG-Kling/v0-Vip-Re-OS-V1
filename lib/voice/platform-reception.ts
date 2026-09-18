@@ -17,6 +17,7 @@
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
 import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import type { BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 
 // ── Number routing ────────────────────────────────────────────────────────────
 
@@ -39,6 +40,10 @@ export interface PlatformReceptionContext {
   tierLines: string[]
   forwardNumber: string | null
   authToken: string
+  /** Wave 75 — the PLATFORM's own brand + tenant-free KB (never a tenant's),
+   *  resolved once by resolvePlatformReceptionContext via
+   *  loadBrandPlaybookContext({brokerageId: null, ...}). */
+  brand: BrandPlaybookContext | null
 }
 
 /** PURE: subscription_tiers rows → spoken pricing lines. Cents → dollars; only
@@ -61,12 +66,14 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
   const authToken = process.env.TWILIO_AUTH_TOKEN
   if (!authToken) return null
   const { loadProductBrand } = await import("@/lib/platform/product-brand")
-  const [brand, tiers] = await Promise.all([
+  const { loadBrandPlaybookContext } = await import("@/lib/ai-isa/brand-playbook-context")
+  const [brand, tiers, playbookBrand] = await Promise.all([
     loadProductBrand(svc),
     svc.from("subscription_tiers")
       .select("display_name, monthly_price_cents, max_agents, is_active")
       .eq("is_active", true).order("monthly_price_cents", { ascending: true })
       .then((r: any) => r.data ?? [], () => []),
+    loadBrandPlaybookContext({ brokerageId: null }).catch(() => null),
   ])
   return {
     brandName: brand.name,
@@ -76,6 +83,7 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
     tierLines: composeTierLines(tiers),
     forwardNumber: (process.env.PLATFORM_RECEPTION_FORWARD_NUMBER ?? "").trim() || null,
     authToken,
+    brand: playbookBrand,
   }
 }
 
@@ -84,6 +92,7 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
 export function buildPlatformReceptionPrompt(id: {
   brandName: string; tagline: string; tierLines: string[]; hasTransfer: boolean
   voicePitch?: string; receptionGreeting?: string
+  brand?: BrandPlaybookContext | null
 }): { firstMessage: string; systemPrompt: string } {
   // NO HARDCODED COPY (owner rule): the greeting question + product pitch are
   // SETTINGS (product_brand.receptionGreeting / .voicePitch — resolved with
@@ -101,7 +110,7 @@ export function buildPlatformReceptionPrompt(id: {
     // conversational discipline (never salesy, one question at a time,
     // value before ask), NOT the real-estate buyer/seller goal list: a
     // platform prospect is asking about the SOFTWARE, not a property.
-    buildQualificationPrompt({ surface: "platform_reception" }),
+    buildQualificationPrompt({ surface: "platform_reception", brand: id.brand }),
     "FOR PROSPECTS: (1) learn their name and what they run — solo agent, team, brokerage, or multi-location; (2) answer honestly from what you know above; (3) ask for the best email so the team can send details and set up a walkthrough. Once they've shared contact details, use the 'prospect' action to save them.",
     id.hasTransfer
       ? "FOR EXISTING CUSTOMERS NEEDING SUPPORT: offer to connect them to the team right away (action 'transfer')."
@@ -241,7 +250,7 @@ export async function planPlatformReceptionTurn(
 ): Promise<PlatformTurnPlan> {
   let { systemPrompt } = buildPlatformReceptionPrompt({
     brandName: ctx.brandName, tagline: ctx.tagline, tierLines: ctx.tierLines, hasTransfer: !!ctx.forwardNumber,
-    voicePitch: ctx.voicePitch, receptionGreeting: ctx.receptionGreeting,
+    voicePitch: ctx.voicePitch, receptionGreeting: ctx.receptionGreeting, brand: ctx.brand,
   })
   if (extraRules) systemPrompt = `${systemPrompt}\n\n${extraRules}`
   const { transcriptToMessages } = await import("@/lib/voice/reception-brain")

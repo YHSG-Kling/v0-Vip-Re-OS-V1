@@ -78,8 +78,8 @@
  *   - schedule_callback         — call them back when THEY say they're ready
  *   - send_matching_listings    — the properties matching the criteria they
  *                                 just described
- *   - schedule_home_value_review — look up what their property is worth and
- *                                 call back to discuss it
+ *   - schedule_home_value_review — record the address and book a discuss-it
+ *                                 callback (never a value spoken by the AI)
  *   - book_listing_appointment  — a no-obligation LISTING APPOINTMENT: the
  *                                 model calls find_listing_appointment_slots
  *                                 first, offers real times ≥7 days out off
@@ -92,8 +92,12 @@
  *                                 for the person and set up the appt right
  *                                 then and the agent just confirms it")
  *   - request_showing           — see a specific property, meet, or call now
- * The model picks ONE that matches what the PERSON asked for — never all
- * five, never a forced choice.
+ *   - send_newsletter           — stay in the loop without committing further
+ *   - send_market_report        — condition/trend for their area, never a $
+ *   - send_explainer_video      — a buying/selling process explainer video
+ * The model picks ONE that matches what the PERSON asked for — never
+ * several at once, never a forced choice. lib/ai-isa/capability-catalogue.ts
+ * (lane 75B) is the wider registry these mirror — see its header.
  *
  * ── COMPETITOR AWARENESS (wave 74, "unless there is a competitor which is
  *    doing this another more inventive way") ──────────────────────────────
@@ -124,6 +128,7 @@
  */
 
 import type { ToolPersona } from "./persona-tool-policy"
+import type { BrandPlaybookContext } from "./brand-playbook-context"
 
 export type QualificationSurface =
   | "isa_email"
@@ -164,13 +169,24 @@ export interface FollowUpOption {
   when: string
 }
 
-/** ONE menu — mirrors the free tools in lib/ai-isa/customer-context-tools.ts. */
+/**
+ * ONE menu — mirrors lib/ai-isa/capability-catalogue.ts's CAPABILITY_CATALOGUE
+ * (lane 75B; wave 74's own version mirrored lib/ai-isa/customer-context-
+ * tools.ts's free tools directly — the catalogue is now the wider registry
+ * both this menu and every settings/docs surface read, CLAUDE.md §6). Every
+ * `tool` name here MUST be a real, registered tool name — the existing
+ * proof (scripts/qualification-playbook-simulator.ts) asserts the menu and
+ * the catalogue name IDENTICAL tool sets.
+ */
 export const QUALIFICATION_FOLLOW_UP_MENU: readonly FollowUpOption[] = [
   { tool: "schedule_callback", label: "Call them back later", when: "they're interested but not ready to talk further right now — ask when a good time to call back is" },
   { tool: "send_matching_listings", label: "Send matching listings", when: "they described buyer/renter criteria — send what matches, and keep sending as new matches come in" },
-  { tool: "schedule_home_value_review", label: "Look up their home's value", when: "they mentioned selling or asked what their home is worth — look it up and schedule a callback to discuss it" },
+  { tool: "schedule_home_value_review", label: "Look up their home's value", when: "they mentioned selling or asked what their home is worth — record the address and schedule a callback; the AGENT states the number, never you" },
   { tool: "book_listing_appointment", label: "Book a no-obligation listing appointment", when: "they want an agent to come out and talk it through — find real times at least a week out on the agent's calendar (call find_listing_appointment_slots first), offer 2-3, and book the one they pick; make clear it's no-obligation" },
   { tool: "request_showing", label: "Request a showing / meeting / call now", when: "they want to see a specific property, meet, or talk right away" },
+  { tool: "send_newsletter", label: "Send the newsletter", when: "they want to stay in the loop without committing to anything else right now" },
+  { tool: "send_market_report", label: "Send a market report for their area", when: "they ask about the market, pricing trends, or whether now is a good time — share the CONDITION and TREND, never a dollar figure" },
+  { tool: "send_explainer_video", label: "Send a process explainer video", when: "a first-time buyer or an unsure seller wants to understand the steps before committing to anything" },
 ] as const
 
 /** PURE — the "never salesy" conversational rules, shared by every surface
@@ -237,6 +253,18 @@ export interface BuildQualificationPromptInput {
   /** What this conversation already knows, so the prompt does not ask the
    *  model to re-collect it. */
   known?: QualificationKnownFacts
+  /**
+   * Wave 75 owner ruling: "there should not only be a playbook but the brand
+   * settings like brand voice, any other business process, brand knowledge
+   * base, etc. needs to be included." The caller resolves this ONCE per
+   * request via lib/ai-isa/brand-playbook-context.ts::loadBrandPlaybookContext
+   * (brand voice cascade, brand KB, business processes/SOPs, office hours,
+   * service areas — or the platform's own brand for `platform_reception`) and
+   * passes the result straight through; this function never fetches it itself
+   * (buildQualificationPrompt stays PURE). Omitted/null degrades to the
+   * qualification rules alone — never a hard failure.
+   */
+  brand?: BrandPlaybookContext | null
 }
 
 /**
@@ -246,14 +274,18 @@ export interface BuildQualificationPromptInput {
  * section every one of them shares.
  */
 export function buildQualificationPrompt(input: BuildQualificationPromptInput): string {
+  const brandBlock = input.brand?.block?.trim() || ""
+
   if (input.surface === "platform_reception") {
     // "this goes for the platform ai agents" — the conversational discipline
     // applies; the real-estate goal list does not (a platform prospect is not
-    // discussing a property).
-    return conversationalRulesBlock()
+    // discussing a property). Brand here is the PLATFORM's own brand/KB
+    // (loadBrandPlaybookContext({brokerageId: null, ...})) — never a tenant's.
+    return [brandBlock, conversationalRulesBlock()].filter(Boolean).join("\n\n")
   }
   if (input.surface === "staff_copilot") {
     return [
+      brandBlock,
       "WHEN DRAFTING A CLIENT-FACING MESSAGE (draft_ai_reply), follow the shared qualification playbook:",
       conversationalRulesBlock(),
       goalsBlock(input.persona ?? null),
@@ -262,6 +294,7 @@ export function buildQualificationPrompt(input: BuildQualificationPromptInput): 
   }
 
   const parts = [
+    brandBlock,
     conversationalRulesBlock(),
     goalsBlock(REAL_ESTATE_SURFACES.includes(input.surface) ? (input.persona ?? null) : null),
     followUpMenuBlock(),
