@@ -68,7 +68,7 @@ import {
 // content-contract, both DB-free) — the companion-card gate and the hint cutter.
 import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { describeMissingContent } from "@/lib/remotion/content-contract"
-import { scanForAiTells } from "@/lib/video/realism-profile"
+import { scanForAiTells, withSpokenScriptStandards } from "@/lib/video/realism-profile"
 
 export { AVATAR_EXPLAINER_PRESETS }
 export type { AvatarExplainerPreset, ExplainerVoiceSource }
@@ -341,9 +341,16 @@ Non-negotiable rules:
 - ZERO pushy phrasing: no "act now", "limited time", "don't miss out".
 - NEVER guarantee a price, appraisal, ROI, or sale outcome.
 - NEVER state a specific price, dollar amount, or rate — the agent adds
-  figures during review if needed.${brandVoiceBlock}
+  figures during review if needed.${brandVoiceBlock}`
 
-Return the JSON now.`
+    // THE SHARED STANDARDS (lane 76D). This narration is SPOKEN by a D-ID
+    // avatar, and this writer carried neither the SCRIPT_QUALITY_CHARTER nor
+    // the SPOKEN_REALISM_DIRECTIVE the other spoken-script writers splice —
+    // scanForAiTells (below) was grading for tells the prompt never asked the
+    // model to avoid. withSpokenScriptStandards is the ONE composer; the
+    // JSON-format instruction stays LAST so the output shape ask is the final
+    // thing the model reads.
+    const standardsPrompt = `${withSpokenScriptStandards(basePrompt)}\n\nReturn the JSON now.`
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations }) => {
@@ -353,7 +360,7 @@ Return the JSON now.`
         const { text } = await generateTextRouted({
           feature: "video_script_generation",
           brokerageId: args.brokerageId,
-          prompt: basePrompt + fb,
+          prompt: standardsPrompt + fb,
           temperature: violations.length ? 0.4 : 0.7,
           maxTokens: 700,
         } as Parameters<typeof generateTextRouted>[0])
@@ -480,7 +487,9 @@ export async function commissionAvatarExplainer(
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
-  const brand = await resolveReelBrand(svc, params.brokerageId)
+  // Agent-scoped: the cascade's team tier (an agent on a team gets the team's
+  // logo/colors their contacts recognise) — lane 76D, one brand cascade.
+  const brand = await resolveReelBrand(svc, params.brokerageId, { agentUserId: params.agentUserId })
 
   const { resolveBrandContext } = await import("@/lib/branding/resolve-brand-context")
   const brandCtx = await resolveBrandContext({

@@ -1058,6 +1058,13 @@ export async function commissionVideo(
     const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
     const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
     const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+    // REALISM (lane 76D): the hook line IS the spoken narration on every
+    // avatar-led Director format (script_content: hookLine), so it gets the
+    // SAME AI-tell scan every other spoken script gets, folded into the SAME
+    // one-redraft gate (§6). Every deterministic fallback hook in
+    // VIDEO_FINISH_SPEC was probed tell-free before this was wired, so the
+    // fallback path can never be refused by it.
+    const { scanForAiTells } = await import("@/lib/video/realism-profile")
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations: priorViolations }) => {
@@ -1085,7 +1092,8 @@ export async function commissionVideo(
           messageType: "social",
           content: s,
         })
-        return { allowed: r.allowed, violations: r.violations }
+        const tells = scanForAiTells(s)
+        return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
       },
     })
     if (result.ok) {

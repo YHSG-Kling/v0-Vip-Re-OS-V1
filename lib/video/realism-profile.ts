@@ -113,6 +113,11 @@
  */
 
 import { spokenWords, spokenSentences, avatarFadeOutFrame, estimateDurationSeconds } from "./script-structure"
+// RELATIVE, like every import in this file: remotion/components/AvatarPIP.tsx
+// and remotion/_BrollLayer.tsx pull this module into the Remotion webpack
+// bundle, which resolves no "@/" alias. lib/ai/script-standards.ts carries
+// zero imports of its own, so it is bundle-safe.
+import { withScriptStandards } from "../ai/script-standards"
 export { avatarFadeOutFrame } from "./script-structure"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -701,6 +706,39 @@ export const SPOKEN_REALISM_DIRECTIVE = [
   "7. Read it aloud in your head before finishing: if it would sound stiff coming out of a real person's mouth, rewrite it.",
   "8. Vary sentence length — mix a short punchy line with an occasional longer one. A script where every sentence lands at nearly the same length reads as a machine-paced list, not a person talking.",
 ].join("\n")
+
+/**
+ * withSpokenScriptStandards — THE ONE prompt-side standard for a script an
+ * avatar or voiceover will SPEAK (lane 76D, §6 one vocabulary per function).
+ *
+ * Two standards apply to every spoken script and they are different concerns:
+ *   · lib/ai/script-standards.ts SCRIPT_QUALITY_CHARTER — what is SAID
+ *     (them-first, lead with value, never salesy, never basic, depth
+ *     calibrated to the consumer, read-aloud test). Its own header says it is
+ *     "appended to every generator's system prompt — copy rail, education
+ *     authors, video scripts"; the audit that produced this helper found it on
+ *     the copy rail and the education authors and on NONE of the eight video
+ *     narration writers.
+ *   · SPOKEN_REALISM_DIRECTIVE (above) — how it is said ALOUD.
+ *
+ * Before this helper, each writer spliced the directive by hand and none
+ * spliced the charter: two writers had neither (avatar-explainer.ts, the two
+ * remotion render routes' own draft prompts), and the ones that had the
+ * directive had it in three different adjacency shapes. One composer, one
+ * order (prompt → charter → directive), so a future writer cannot get half of
+ * the standard by copying the wrong neighbour. String prompts call this; the
+ * two writers that assemble a system-prompt ARRAY (app/actions/video/
+ * generate-script.ts, lib/kernel/ai-copy.ts) carry both constants in that
+ * array and are proved to by scripts/avatar-pipeline-hardening-simulator.ts's
+ * §scriptStandards roster — same standard, array-shaped.
+ *
+ * PURE. Appends only; a prompt that ends with an output-format instruction
+ * ("Return the JSON now.") should place that instruction AFTER this call so
+ * the format ask stays last.
+ */
+export function withSpokenScriptStandards(prompt: string): string {
+  return `${withScriptStandards(prompt)}\n\n${SPOKEN_REALISM_DIRECTIVE}`
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § THE AI-TELL SCANNER — the deterministic backstop for what a model ships

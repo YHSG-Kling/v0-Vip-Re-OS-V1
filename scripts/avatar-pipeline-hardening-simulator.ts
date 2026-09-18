@@ -91,6 +91,7 @@ import {
   budgetForWordCount,
   stripExpressiveAudioTags,
   enforceExpressiveAudioTagBudget,
+  withSpokenScriptStandards,
 } from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -478,8 +479,11 @@ function languageSection() {
 
   check("intro-video-reactor.ts's draft prompt gets a language directive that is EMPTY for English (byte-identical prior prompt)",
     /languageLine\s*=\s*args\.language\s*&&\s*args\.language\s*!==\s*["']en["']/.test(reactor))
+  // Re-anchored lane 76D: the prompt now passes through the ONE standards
+  // composer (withSpokenScriptStandards(basePrompt)); either spelling — bare
+  // basePrompt or the composed one — proves the tail still reaches the call.
   check("the language directive actually reaches the model call (concatenated into the prompt, not computed and discarded — wave 55 spliced SPOKEN_REALISM_DIRECTIVE in ahead of it, so this matches the prompt's TAIL rather than pinning the whole literal, §2 no waypoint)",
-    /languageLine\s*\+\s*violationLine/.test(reactor) && /prompt:\s*\n?\s*basePrompt/.test(reactor))
+    /languageLine\s*\+\s*violationLine/.test(reactor) && /prompt:\s*\n?\s*(?:withSpokenScriptStandards\()?basePrompt/.test(reactor))
   check("ai_video_projects.locale is stamped with the resolved language (mirrors commissionMultilingualReel's own column, §6)",
     /locale:\s*language/.test(reactor))
 
@@ -624,6 +628,30 @@ function reelProducersSection() {
       /(?:await )?import\(["']@\/lib\/video\/multilingual-reel["']\)/.test(src))
   }
 
+  // ── lane 76D: the two Remotion render routes synthesize through the SAME
+  //    primitive, not a private synthesizeSpeech path. Before this, both
+  //    called lib/voice/elevenlabs-tts.ts directly with NO modelId — so the
+  //    primitive's legacy `eleven_monolingual_v1` default (the oldest model in
+  //    the catalogue) narrated every listing promo and every newsletter video
+  //    while every other lane resolves eleven_v3 via elevenLabsModelForLane;
+  //    the newsletter call also omitted brokerageId, so the vendor budget gate
+  //    inside the primitive never ran for it. ──────────────────────────────
+  const promoRoute = readStripped("app/api/internal/remotion/render-just-listed/route.ts")
+  const newsletterRoute = readStripped("app/api/internal/remotion/render-newsletter-video/route.ts")
+  for (const [label, src] of [["render-just-listed", promoRoute], ["render-newsletter-video", newsletterRoute]] as const) {
+    check(`${label} synthesizes its narration through prepareReelVoiceover (the ONE primitive: v3 via elevenLabsModelForLane, budget-gated, cached)`,
+      /prepareReelVoiceover\(\{/.test(src) && /brokerageId:/.test(src.slice(src.indexOf("prepareReelVoiceover({"), src.indexOf("prepareReelVoiceover({") + 400)))
+    check(`${label} no longer calls synthesizeSpeech / synthesizeSpeechWithTimestamps itself (no second TTS path, no monolingual_v1 default)`,
+      !/\bsynthesizeSpeech(?:WithTimestamps)?\(/.test(src))
+  }
+  check("render-newsletter-video now builds word-accurate captionsCues from the survivor's alignment (its private path returned none)",
+    /buildCaptionPlan\(vo\.alignment \?\? script/.test(newsletterRoute))
+  // POSITIVE CONTROL (§2): the retired shape — a bare synthesizeSpeech with
+  // neither modelId nor brokerageId — is recognised as the defect.
+  const bareSynthSpecimen = `const tts = await synthesizeSpeech({ text: script, voiceId })`
+  check("CONTROL: a bare synthesizeSpeech({ text, voiceId }) call (no modelId, no brokerageId) IS recognised as the retired private-path shape",
+    /\bsynthesizeSpeech(?:WithTimestamps)?\(/.test(bareSynthSpecimen) && !/modelId/.test(bareSynthSpecimen) && !/brokerageId/.test(bareSynthSpecimen))
+
   // POSITIVE CONTROL (§2): the ORIGINAL wave-51 gap this section closes —
   // a prepareReelVoiceover call with no languageCode at all — is correctly
   // recognised as unwired, proving the pattern checks above aren't vacuously
@@ -746,13 +774,21 @@ function realismSection() {
   const talkingHead = readStripped("remotion/AgentTalkingHeadReel.tsx")
 
   // ── the directive reaches every SPOKEN-delivery script prompt ─────────────
-  check("intro-video-reactor (the welcome/anniversary avatar spine) imports and splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
-    /import \{ SPOKEN_REALISM_DIRECTIVE, scanForAiTells, describeAiTellCoverage \} from "@\/lib\/video\/realism-profile"/.test(reactor) &&
-    /SPOKEN_REALISM_DIRECTIVE \+ languageLine \+ violationLine/.test(reactor))
-  check("listing-promo-reactor splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
-    /SPOKEN_REALISM_DIRECTIVE\}\$\{violationLine\}/.test(promo))
-  check("chapter-video-generator splices SPOKEN_REALISM_DIRECTIVE into its draft prompt",
-    /\$\{SPOKEN_REALISM_DIRECTIVE\}`/.test(chapter))
+  // Re-anchored lane 76D (§2 — never pin to a waypoint): the directive now
+  // reaches these three prompts THROUGH the one composer
+  // withSpokenScriptStandards (lib/video/realism-profile.ts), which appends
+  // SCRIPT_QUALITY_CHARTER + SPOKEN_REALISM_DIRECTIVE in one order. The
+  // adjacency each check pins is the composed call in the exact position the
+  // bare directive used to sit — the §scriptStandards roster below proves the
+  // composer itself carries the directive, so this is the same rule, not a
+  // weaker one.
+  check("intro-video-reactor (the welcome/anniversary avatar spine) imports and splices the spoken-script standards into its draft prompt",
+    /import \{ withSpokenScriptStandards, scanForAiTells, describeAiTellCoverage \} from "@\/lib\/video\/realism-profile"/.test(reactor) &&
+    /withSpokenScriptStandards\(basePrompt\) \+ languageLine \+ violationLine/.test(reactor))
+  check("listing-promo-reactor splices the spoken-script standards into its draft prompt (violation feedback stays LAST)",
+    /const prompt = withSpokenScriptStandards\(`/.test(promo) && /`\) \+ violationLine/.test(promo))
+  check("chapter-video-generator splices the spoken-script standards into its draft prompt",
+    /const prompt = withSpokenScriptStandards\(`/.test(chapter) && /just what the agent will say on camera\.`\)/.test(chapter))
   // Re-anchored lane 73D (CLAUDE.md §2 — never pin an assertion to a
   // waypoint): the literal adjacency "SPOKEN_REALISM_DIRECTIVE,\n`Write ONLY
   // the script content" broke the moment a v3 audio-tag instruction was
@@ -1351,6 +1387,111 @@ function sideDoorSection() {
 
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// §scriptStandards (lane 76D) — EVERY automated video type's narration writer
+// carries the SHARED script standards: the SCRIPT_QUALITY_CHARTER (what is
+// said — lib/ai/script-standards.ts, whose header promises it is on "every
+// generator's system prompt … video scripts") AND the SPOKEN_REALISM_DIRECTIVE
+// (how it is said aloud), in the prompt that WRITES the script; and the
+// scanForAiTells pass on what came back. ONE composer for string prompts
+// (withSpokenScriptStandards); the two array-shaped system prompts carry both
+// constants directly. The audit that produced this section found the charter
+// on ZERO of the eight narration writers and the directive missing from four.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The roster: every module whose model call authors text an avatar or
+ *  voiceover SPEAKS, mapped to the automated video types it serves. A writer
+ *  that only TRANSLATES (multilingual-reel.ts) or assembles DETERMINISTIC
+ *  narration (partners-meeting, board-packet, deal-room, listing-pitch) is
+ *  out of scope here — no prompt writes those words. */
+const SPOKEN_SCRIPT_WRITERS: ReadonlyArray<{ file: string; serves: string; shape: "string" | "array" }> = [
+  { file: "lib/video/intro-video-reactor.ts", serves: "welcome + anniversary/equity avatar video", shape: "string" },
+  { file: "lib/video/listing-promo-reactor.ts", serves: "listing promo (just listed / sold / open house / coming soon / price drop)", shape: "string" },
+  { file: "app/api/internal/remotion/render-just-listed/route.ts", serves: "listing promo render-time fallback draft", shape: "string" },
+  { file: "app/api/internal/remotion/render-newsletter-video/route.ts", serves: "market update / newsletter digest video", shape: "string" },
+  { file: "lib/video/chapter-video-generator.ts", serves: "seller listing-presentation chapters", shape: "string" },
+  { file: "lib/video/avatar-explainer.ts", serves: "education/explainer (AgentExplainerReel / TeammateExplainerReel, incl. the Director's explainer formats)", shape: "string" },
+  { file: "app/actions/video/create-video-project.ts", serves: "studio script rewrite (improveScript)", shape: "string" },
+  { file: "app/actions/link-to-video.ts", serves: "content-studio link-to-video voiceover", shape: "string" },
+  { file: "app/actions/video/generate-script.ts", serves: "video studio wizard (product / custom / property tour / market update / seller update / testimonial / tips)", shape: "array" },
+  { file: "lib/kernel/ai-copy.ts", serves: "every Director hook line — CMA reel, market update, lead reel, geo reel, memory video, equity, coming soon, open house (spoken by the avatar-led formats)", shape: "array" },
+]
+
+function scriptStandardsSection() {
+  console.log("\n── §scriptStandards — the SHARED standards reach every automated video type's writer ──")
+  const profile = readStripped("lib/video/realism-profile.ts")
+
+  // The composer itself: ONE definition, composes BOTH standards, prompt first.
+  check("withSpokenScriptStandards is defined exactly ONCE, in the realism home (§6)",
+    (profile.match(/export function withSpokenScriptStandards\(/g) ?? []).length === 1)
+  check("…and composes the charter (withScriptStandards) THEN the directive — never one without the other",
+    /withScriptStandards\(prompt\)\}\\n\\n\$\{SPOKEN_REALISM_DIRECTIVE\}/.test(profile) &&
+    // RELATIVE import (never "@/"): this module is pulled into the Remotion
+    // webpack bundle by remotion/components/AvatarPIP.tsx, which resolves no alias.
+    /import \{ withScriptStandards \} from "\.\.\/ai\/script-standards"/.test(profile))
+  const composed = withSpokenScriptStandards("PROMPT-BODY")
+  check("[runtime] the composed prompt keeps the caller's ask FIRST, then the charter, then the directive (order is the contract)",
+    composed.indexOf("PROMPT-BODY") === 0 &&
+    composed.indexOf("SCRIPT QUALITY CHARTER") > composed.indexOf("PROMPT-BODY") &&
+    composed.indexOf("SPOKEN-DELIVERY REALISM") > composed.indexOf("SCRIPT QUALITY CHARTER"))
+  check("[runtime] the composed prompt carries the charter's named rules (THEM-FIRST / LEAD WITH VALUE / NEVER SALESY) and the directive's (contractions / no self-intro)",
+    /THEM-FIRST/.test(composed) && /LEAD WITH VALUE/.test(composed) && /NEVER SALESY/.test(composed) &&
+    /Use contractions throughout/.test(composed) && /never a self-introduction/.test(composed))
+
+  // The roster: charter + directive reach the WRITING prompt; the scanner runs on the OUTPUT.
+  const carriesCharter = (src: string, shape: "string" | "array") =>
+    shape === "string" ? /withSpokenScriptStandards\(/.test(src) : /SCRIPT_QUALITY_CHARTER,/.test(src)
+  const carriesDirective = (src: string, shape: "string" | "array") =>
+    shape === "string" ? /withSpokenScriptStandards\(/.test(src) : /SPOKEN_REALISM_DIRECTIVE/.test(src)
+  for (const w of SPOKEN_SCRIPT_WRITERS) {
+    const src = readStripped(w.file)
+    check(`${w.file} (${w.serves}): the SCRIPT_QUALITY_CHARTER reaches the writing prompt`, carriesCharter(src, w.shape))
+    check(`${w.file}: the SPOKEN_REALISM_DIRECTIVE reaches the writing prompt`, carriesDirective(src, w.shape))
+    if (w.file !== "lib/kernel/ai-copy.ts") {
+      // ai-copy.ts is a generic copy engine; its ONLY spoken caller is the
+      // Director's hook line, which is scanned at the Director's own gate
+      // (checked by name below) — the engine does not scan every postcard.
+      check(`${w.file}: scanForAiTells runs on the model's OUTPUT (the deterministic backstop for what a prompt could not prevent)`,
+        /scanForAiTells\(/.test(src))
+    }
+  }
+  const director = readStripped("lib/video/video-director.ts")
+  check("video-director folds scanForAiTells into the hook line's SAME one-redraft gate (the hook IS the spoken narration on avatar-led formats)",
+    /const tells = scanForAiTells\(s\)/.test(director) &&
+    /allowed: r\.allowed && tells\.length === 0, violations: \[\.\.\.r\.violations, \.\.\.tells\]/.test(director))
+  check("the two remotion render routes fold scanForAiTells into their SAME one-redraft gates (not a second scan loop)",
+    /const tells = scanForAiTells\(script\)/.test(readStripped("app/api/internal/remotion/render-just-listed/route.ts")) &&
+    /const tells = scanForAiTells\(s\)/.test(readStripped("app/api/internal/remotion/render-newsletter-video/route.ts")))
+  check("link-to-video records AI-tell findings as ADVISORY warnings beside the kernel findings (never a needs_revision hold — §5)",
+    /\.\.\.scanForAiTells\(response\.text\)\]/.test(readStripped("app/actions/link-to-video.ts")))
+  check("avatar-explainer keeps the JSON-format instruction LAST, after the standards (the output-shape ask is the final thing the model reads)",
+    /withSpokenScriptStandards\(basePrompt\)\}\\n\\nReturn the JSON now\.`/.test(readStripped("lib/video/avatar-explainer.ts")))
+
+  // No writer still hand-splices the bare directive into a STRING prompt —
+  // that is the second spelling the composer replaces (§6). The two array
+  // shapes are the documented exception and are named in the roster.
+  const bareSplice = /\$\{SPOKEN_REALISM_DIRECTIVE\}|\+\s*SPOKEN_REALISM_DIRECTIVE\s*\+/
+  const stillBare = SPOKEN_SCRIPT_WRITERS.filter((w) => w.shape === "string" && bareSplice.test(readStripped(w.file))).map((w) => w.file)
+  check("no string-prompt writer still hand-splices the bare SPOKEN_REALISM_DIRECTIVE (one composer, one spelling)",
+    stillBare.length === 0, stillBare.join(", "))
+
+  // POSITIVE CONTROLS (§2) — the roster finders recognise the defects they exist to catch.
+  const noStandardsSpecimen = `
+    const prompt = \`Write a voiceover script for a real-estate reel. Return ONLY the script text.\`
+    const { text } = await generateTextRouted({ prompt, feature: "listing_promo_voiceover_script" })
+    return fitNarrationToBudget(text.trim(), budget)
+  `
+  check("CONTROL: a writer with NEITHER standard in its prompt is flagged by both roster finders",
+    !carriesCharter(noStandardsSpecimen, "string") && !carriesDirective(noStandardsSpecimen, "string"))
+  const bareSpliceSpecimen = "const prompt = `Write a script.\n\n${SPOKEN_REALISM_DIRECTIVE}${violationLine}`"
+  check("CONTROL: the historical bare-directive splice (\\${SPOKEN_REALISM_DIRECTIVE}) IS recognised as the retired spelling",
+    bareSplice.test(bareSpliceSpecimen))
+  check("CONTROL: a writer that never scans its output is flagged", !/scanForAiTells\(/.test(noStandardsSpecimen))
+  const arrayWithoutCharter = `const sys = [FAIR_HOUSING_LINE, SPOKEN_REALISM_DIRECTIVE, "Return STRICT JSON"].join("\\n")`
+  check("CONTROL: an array-shaped system prompt carrying the directive but NOT the charter is flagged on the charter finder",
+    carriesDirective(arrayWithoutCharter, "array") && !carriesCharter(arrayWithoutCharter, "array"))
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════════════════")
   console.log(" Avatar pipeline hardening simulator (D-ID → Remotion → delivery)")
@@ -1368,6 +1509,7 @@ async function main() {
   anniversarySection()
   durationOverrunSection()
   realismSection()
+  scriptStandardsSection()
   avatarPipWindowSection()
   advancedRealismSection()
   v3Section()

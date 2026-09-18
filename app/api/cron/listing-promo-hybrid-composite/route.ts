@@ -167,11 +167,12 @@ export async function GET(req: NextRequest) {
             .eq("id", p.listing_id)
             .maybeSingle()
           const lr = listingRow as { address: string | null; city: string | null; state: string | null } | null
-          const { data: brokerage } = await svc.from("brokerages")
-            .select("name, logo_url, brand_primary_color:primary_color")
-            .eq("id", p.brokerage_id)
-            .maybeSingle()
-          const br = brokerage as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null
+          // THE ONE BRAND CASCADE (lane 76D, §1/§6) — was a private brokerages
+          // read that typed `brand_accent_color` without selecting it (accent
+          // always the default) and never saw the team tier. Survivor:
+          // lib/video/reel-brand.ts resolveReelBrand.
+          const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+          const reelBrand = await resolveReelBrand(svc, p.brokerage_id, { agentUserId: projAgentUserId })
           const subject = [lr?.address, [lr?.city, lr?.state].filter(Boolean).join(", ")]
             .filter(Boolean).join(" — ") || "New listing"
           void runPersonaVariantPostPass({
@@ -180,10 +181,10 @@ export async function GET(req: NextRequest) {
             brokerageId:  p.brokerage_id,
             agentUserId:  projAgentUserId,
             brand: {
-              primaryColor:  br?.brand_primary_color ?? "#0F172A",
-              accentColor:   br?.brand_accent_color  ?? "#F59E0B",
-              logoUrl:       br?.logo_url            ?? undefined,
-              brokerageName: br?.name                ?? "Your Brokerage",
+              primaryColor:  reelBrand.primaryColor,
+              accentColor:   reelBrand.accentColor,
+              logoUrl:       reelBrand.logoUrl ?? undefined,
+              brokerageName: reelBrand.brokerageName,
             },
             mainVideoUrl:    hybridUrl,
             subject,

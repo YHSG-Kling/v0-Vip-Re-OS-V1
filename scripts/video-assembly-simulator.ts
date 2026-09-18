@@ -821,6 +821,76 @@ function brandingSection() {
       /<EqualHousingMark\b/.test(source) &&
       !/const\s+EhoBadge/.test(source))
   }
+
+  // ── §brandCascade (lane 76D) — the brand every reel/thumbnail/flyer carries
+  // resolves through the ONE tenant brand cascade (lib/branding/
+  // resolve-brand-context.ts — team → brokerage → the per-brokerage
+  // global_settings row the onboarding wizard writes), never a second
+  // brokerage-only read and never the PLATFORM's own product brand. The
+  // pre-fix lib/video/reel-brand.ts read brokerages + brokerage_brand_settings
+  // itself, so a wizard-configured brand rendered as navy/amber defaults on
+  // every reel and an agent on a team never got the team's logo.
+  console.log("\n── §brandCascade — tenant video brand through the ONE cascade, never the platform brand ──")
+  const reelBrand = readStripped("lib/video/reel-brand.ts")
+  check("resolveReelBrand delegates to resolveBrandContext (the survivor test:brand-cascade proves) and maps its visual.* fields",
+    /resolveBrandContext\(\{\s*brokerageId,\s*teamId,\s*agentUserId/.test(reelBrand) &&
+    /ctx\.visual\.primaryColor/.test(reelBrand) && /ctx\.visual\.logoUrl/.test(reelBrand) && /ctx\.visual\.accentColor/.test(reelBrand))
+  check("resolveReelBrand no longer carries its own brokerages/brokerage_brand_settings brand read (one resolver, not two)",
+    !/\.from\(\s*["']brokerages["']\s*\)/.test(reelBrand) && !/\.from\(\s*["']brokerage_brand_settings["']\s*\)/.test(reelBrand))
+  check("the agent-scoped reels pass the agent through so the cascade's TEAM tier applies (users.id → agents.user_id, never agents.id — §3 disjoint ids)",
+    /\.from\(\s*["']agents["']\s*\)\.select\(\s*["']team_id["']\s*\)\.eq\(\s*["']user_id["'],\s*scope\.agentUserId\)/.test(reelBrand) &&
+    /resolveReelBrand\(svc, params\.brokerageId, \{ agentUserId: params\.agentUserId \}\)/.test(readStripped("lib/video/avatar-explainer.ts")) &&
+    /resolveReelBrand\(svc, brokerageId, \{ agentUserId \}\)/.test(readStripped("lib/video/director-content.ts")) &&
+    /resolveReelBrand\(svc, p\.brokerageId, \{ agentUserId: p\.agentUserId \}\)/.test(readStripped("lib/video/listing-pitch-reel.ts")) &&
+    /resolveReelBrand\(svc, b\.id, \{ agentUserId \}\)/.test(readStripped("lib/kernel/deal-room-reel.ts")))
+  // The three render/composite routes that built a `brand` prop from their OWN
+  // brokerages read (`select("name, logo_url, brand_primary_color:primary_color")`
+  // — typing brand_accent_color without ever selecting it, so the accent was
+  // always the default) now go through the adapter too.
+  const BRAND_ROUTES = [
+    "app/api/internal/remotion/render-just-listed/route.ts",
+    "app/api/internal/remotion/render-newsletter-video/route.ts",
+    "app/api/cron/listing-promo-hybrid-composite/route.ts",
+  ]
+  const privateBrandRead = /\.select\(\s*["']name,\s*logo_url,\s*brand_primary_color:primary_color["']\s*\)/
+  for (const f of BRAND_ROUTES) {
+    const src = readStripped(f)
+    check(`${f}: brand comes from resolveReelBrand (the cascade adapter), agent-scoped`,
+      /resolveReelBrand\(svc,\s*[A-Za-z_.]+,\s*\{\s*agentUserId/.test(src))
+    check(`${f}: the private brokerages brand read is gone (no accent-never-selected shape left)`,
+      !privateBrandRead.test(src) && !/br\?\.brand_accent_color/.test(src))
+  }
+  check("CONTROL: the retired private brand read IS recognised by the finder (a re-typed copy could not slip back in unseen)",
+    privateBrandRead.test('svc.from("brokerages").select("name, logo_url, brand_primary_color:primary_color").eq("id", id)'))
+  const cascade = readStripped("lib/branding/resolve-brand-context.ts")
+  check("the survivor's global_settings fold is TENANT-scoped (.eq(\"brokerage_id\", …)) — a wizard brand, never a platform-wide row, reaches a tenant video",
+    /from\(\s*["']global_settings["']\s*\)[\s\S]{0,200}?\.eq\(\s*["']brokerage_id["'],\s*args\.brokerageId\)/.test(cascade))
+  // The platform's own product brand (lib/platform/product-brand.ts) must reach
+  // ONLY the platform's self-marketing composition — never a tenant reel.
+  const productBrandImport = /from\s+["']@\/lib\/platform\/product-brand["']|from\s+["']\.\.?\/[^"']*product-brand["']/
+  const tenantVideoFiles = [
+    "lib/video/reel-brand.ts", "lib/video/director-content.ts", "lib/video/avatar-explainer.ts",
+    "lib/video/listing-pitch-reel.ts", "lib/kernel/deal-room-reel.ts", "lib/kernel/board-packet-reel.ts",
+    "lib/intelligence/partners-meeting.ts", "lib/video/video-plays.ts", "lib/remotion/render-coordinator.ts",
+    ...Object.values(VIDEO_COMPOSITION_FILES).filter((f) => f !== "remotion/ProductPromoReel.tsx"),
+  ]
+  const platformLeaks = tenantVideoFiles.filter((f) => productBrandImport.test(readStripped(f)))
+  check(`no tenant video producer or composition imports the PLATFORM product brand (${tenantVideoFiles.length} files scanned; ProductPromoReel is the platform's own reel and is excluded by name)`,
+    platformLeaks.length === 0, platformLeaks.join(", "))
+  // POSITIVE CONTROLS (§2)
+  check("CONTROL: the platform-brand import finder recognises the import it hunts",
+    productBrandImport.test('import { resolveProductBrand } from "@/lib/platform/product-brand"'))
+  const preFixReelBrand = `
+    export async function resolveReelBrand(svc: any, brokerageId: string): Promise<ReelBrand> {
+      const [{ data: b }, { data: bs }] = await Promise.all([
+        svc.from("brokerages").select("name, primary_color, logo_url").eq("id", brokerageId).maybeSingle(),
+        svc.from("brokerage_brand_settings").select("accent_color").eq("brokerage_id", brokerageId).maybeSingle(),
+      ])
+      return { primaryColor: b?.primary_color ?? "#0F172A" }
+    }
+  `
+  check("CONTROL: the PRE-FIX second resolver (its own brokerages + brokerage_brand_settings read, no cascade) IS flagged by both checks above",
+    !/resolveBrandContext\(/.test(preFixReelBrand) && /\.from\(\s*["']brokerages["']\s*\)/.test(preFixReelBrand))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

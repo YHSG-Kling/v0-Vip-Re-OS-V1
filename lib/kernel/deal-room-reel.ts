@@ -162,7 +162,7 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           import("@/lib/video/reel-brand"), import("@/lib/video/video-identity"),
         ])
         const [brand, identity] = await Promise.all([
-          resolveReelBrand(svc, b.id),
+          resolveReelBrand(svc, b.id, { agentUserId }),
           resolveVideoIdentity(svc, { brokerageId: b.id, agentUserId, purpose: "contact_facing" }),
         ])
         const props = buildDealRoomReelProps({

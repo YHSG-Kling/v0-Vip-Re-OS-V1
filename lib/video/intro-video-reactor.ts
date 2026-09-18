@@ -103,7 +103,7 @@ import {
   verifyEquityClaims,
 } from "@/lib/video/anniversary-script"
 import type { Persona, JourneyType } from "@/lib/kernel/types"
-import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells, describeAiTellCoverage } from "@/lib/video/realism-profile"
+import { withSpokenScriptStandards, scanForAiTells, describeAiTellCoverage } from "@/lib/video/realism-profile"
 
 /**
  * THE WORD BUDGET THE SPOKEN SCRIPT HAS, DERIVED FROM THE COMPOSITION THAT
@@ -1198,13 +1198,15 @@ Avoid any reference to protected characteristics. Return ONLY the script text th
 
   const { text } = await generateTextRouted({
     feature:     "intro_video_script",
-    // REALISM (wave 55): SPOKEN_REALISM_DIRECTIVE (lib/video/realism-profile.ts)
-    // appended for BOTH triggers — contractions, one idea per sentence, no
-    // AI self-reference, no stock phrases, specific facts, a natural
-    // sign-off. Placed AFTER the trigger-specific ask (so an exact
-    // word-for-word greeting instruction is not overridden) and BEFORE the
-    // language/violation lines, matching this prompt's existing ordering.
-    prompt:      basePrompt + "\n\n" + SPOKEN_REALISM_DIRECTIVE + languageLine + violationLine,
+    // REALISM (wave 55) + THE CHARTER (lane 76D): withSpokenScriptStandards
+    // (lib/video/realism-profile.ts) appends the SCRIPT_QUALITY_CHARTER and
+    // SPOKEN_REALISM_DIRECTIVE for BOTH triggers — them-first / never salesy
+    // / never basic, then contractions, one idea per sentence, no AI
+    // self-reference, no stock phrases, specific facts, a natural sign-off.
+    // Placed AFTER the trigger-specific ask (so an exact word-for-word
+    // greeting instruction is not overridden) and BEFORE the language/
+    // violation lines, matching this prompt's existing ordering.
+    prompt:      withSpokenScriptStandards(basePrompt) + languageLine + violationLine,
     // BOTH lanes pay for the words the composition can actually speak — the
     // ONE token budget sized from the ONE word budget. The assignment lane's
     // prior flat 300 bought ~3× the text the 14s reel can carry, and the

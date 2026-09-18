@@ -259,14 +259,21 @@ export async function improveScript(params: {
   const actor = { userId: auth.userId, brokerageId: auth.brokerageId }
   const complianceBlocks = await buildComplianceSystemBlocks(auth.brokerageId)
 
-  const prompt = `${complianceBlocks.join("\n\n")}
+  // THE SHARED SPOKEN-SCRIPT STANDARDS (lane 76D): the rewrite is a new
+  // spoken script, so it carries the SCRIPT_QUALITY_CHARTER + SPOKEN_REALISM_
+  // DIRECTIVE through the ONE composer — "make it more engaging" / "elevate
+  // the language" are exactly the asks that invite a salesy, stiff, or
+  // AI-sounding rewrite, and scanForAiTells (below) was grading for tells the
+  // prompt never told the model to avoid.
+  const { withSpokenScriptStandards } = await import("@/lib/video/realism-profile")
+  const prompt = withSpokenScriptStandards(`${complianceBlocks.join("\n\n")}
 
 ${improvementPrompts[params.improvement]}
 
 Original script:
 ${params.currentScript}
 
-Return only the improved script text, no explanations.`
+Return only the improved script text, no explanations.`)
 
   let result: { text: string }
   try {

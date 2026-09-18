@@ -33,7 +33,11 @@ import { NextResponse, type NextRequest } from "next/server"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
-import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+// TOMBSTONE (lane 76D): `synthesizeSpeech` from lib/voice/elevenlabs-tts was
+// imported here for a private synthesis path. Survivor: lib/video/
+// reel-voiceover.ts prepareReelVoiceover (v3 model via the ONE selector,
+// budget-gated, cached, alignment-returning).
+import { buildCaptionPlan } from "@/lib/video/caption-plan"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -48,6 +52,10 @@ import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geom
 // below the render for why this route needs both).
 import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, NEWSLETTER_DIGEST_THUMB } from "@/lib/geo/video-landing"
 import { describeMissingContent } from "@/lib/remotion/content-contract"
+// THE SHARED SPOKEN-SCRIPT STANDARDS (lane 76D) — see render-just-listed's
+// own import note: this draft prompt carried neither standard and its output
+// was never scanned for AI tells. ONE composer, ONE scanner.
+import { scanForAiTells, withSpokenScriptStandards } from "@/lib/video/realism-profile"
 import {
   narrationBudget,
   narrationLengthDirective,
@@ -119,11 +127,12 @@ export async function POST(req: NextRequest) {
     const camp = campaign as { id: string; brokerage_id: string; agent_id: string | null; subject_line: string | null; campaign_name: string | null } | null
     if (!camp) throw new Error("newsletter_campaign not found")
 
-    const { data: brokerage } = await svc.from("brokerages")
-      .select("name, logo_url, brand_primary_color:primary_color")
-      .eq("id", camp.brokerage_id)
-      .maybeSingle()
-    const br = brokerage as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null
+    // THE ONE BRAND CASCADE (lane 76D, §1/§6) — was a private brokerages read
+    // that typed `brand_accent_color` without selecting it (accent always the
+    // default) and never saw the team tier or the onboarding-wizard
+    // global_settings fold. Survivor: lib/video/reel-brand.ts resolveReelBrand.
+    const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+    const reelBrand = await resolveReelBrand(svc, camp.brokerage_id, { agentUserId: ledgerAgentUserId })
 
     // Per-recipient section variants exist in newsletter_sections (m115); the
     // video's "section titles" use the section TYPES present on this campaign
@@ -238,7 +247,7 @@ export async function POST(req: NextRequest) {
       const fix = violations.length > 0
         ? `\n\nResolve these violations from prior draft:\n- ${violations.join("\n- ")}`
         : ""
-      const basePrompt = `Write a 25-35 word VOICEOVER narration for a real-estate weekly newsletter intro video.
+      const basePrompt = withSpokenScriptStandards(`Write a 25-35 word VOICEOVER narration for a real-estate weekly newsletter intro video.
 
 THE VIDEO IS NOT A LIST OF OUR SECTIONS. It opens with a hook from the
 audience's lens — what's the most timely VALUE insight the recipient
@@ -258,7 +267,7 @@ Banned: protected-class refs (race, religion, family status, etc.);
 phrases like "perfect for families"; rate / valuation / appreciation
 guarantees; exclamation marks.
 ${narrationLengthDirective(narrationCap)}
-Return ONLY the spoken text.${fix}`
+Return ONLY the spoken text.`) + fix
       // ── VERIFY, DON'T TRUST — AND NOW SOMETHING READS THE VERDICT (§1) ────
       // A word ceiling in a prompt is a request; fitNarrationToBudget is the
       // enforcement, and an overrun is trimmed at a sentence boundary. What
@@ -306,7 +315,11 @@ Return ONLY the spoken text.${fix}`
           actorContext: { brokerageId: camp.brokerage_id, userId: ledgerAgentUserId ?? "", role: "system" },
           journeyType:  "buyer", persona: "other", messageType: "email", content: s,
         })
-        return { allowed: r.allowed, violations: r.violations }
+        // REALISM (lane 76D): AI tells ride the SAME one-redraft gate — the
+        // idiom every other narration writer uses (§6). The authored fallback
+        // (deterministicNewsletterNarration) is tell-free by construction.
+        const tells = scanForAiTells(s)
+        return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
       },
     })
     if (!complianceResult.ok) throw new Error(`compliance failed after redraft: ${complianceResult.violations.join("; ")}`)
@@ -322,14 +335,27 @@ Return ONLY the spoken text.${fix}`
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) throw new Error("agent has no elevenlabs_voice_id — Settings → Voice & Avatar")
 
-    const tts = await synthesizeSpeech({ text: script, voiceId })
-    if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
-    const voiceoverUrlStored = await hostRenderedMedia(
-      svc,
-      `newsletter-video/voiceover/${ledger.id}.mp3`,
-      tts.audioBuffer,
-      "audio/mpeg",
-    )
+    // MERGED ONTO THE ONE NARRATION PRIMITIVE (lane 76D, orphan doctrine §1.1).
+    // This used to be `synthesizeSpeech({ text: script, voiceId })` + its own
+    // hostRenderedMedia at `newsletter-video/voiceover/${ledger.id}.mp3` — a
+    // second synthesis path that passed NO modelId (so the legacy
+    // `eleven_monolingual_v1` default spoke every newsletter video while every
+    // other lane resolves eleven_v3 through elevenLabsModelForLane), NO
+    // brokerageId (so the vendor budget gate inside the primitive never ran —
+    // an over-ceiling tenant still paid for synthesis), no narration cache,
+    // no alignment (captions could only ever estimate). Survivor:
+    // lib/video/reel-voiceover.ts prepareReelVoiceover. Its null-on-failure
+    // contract is turned back into this route's throw (the ledger stamps
+    // error_message) — a newsletter video never ships silent.
+    const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+    const vo = await prepareReelVoiceover({
+      brokerageId: camp.brokerage_id,
+      narration:   script,
+      voiceId,
+      renderKey:   `newsletter-video-${ledger.id}`,
+    })
+    if (!vo) throw new Error("ElevenLabs failed (prepareReelVoiceover returned no clip — budget gate, synthesis, or hosting)")
+    const voiceoverUrlStored = vo.url
 
     // 4c. Mint (or reuse) the tracked outro QR for this campaign. Newsletter
     //     → landing_page. Never throws; null mint = render without a QR.
@@ -351,22 +377,36 @@ Return ONLY the spoken text.${fix}`
       marketBeat,
       sectionTitles:  sectionTitles.length > 0 ? sectionTitles : ["Market Update", "New Listings", "Local News"],
       brand: {
-        primaryColor:  br?.brand_primary_color ?? "#0F172A",
-        accentColor:   br?.brand_accent_color  ?? "#F59E0B",
-        logoUrl:       br?.logo_url            ?? undefined,
-        brokerageName: br?.name                ?? "Your Brokerage",
+        primaryColor:  reelBrand.primaryColor,
+        accentColor:   reelBrand.accentColor,
+        logoUrl:       reelBrand.logoUrl ?? undefined,
+        brokerageName: reelBrand.brokerageName,
+        showEhoMark:   reelBrand.showEhoMark,
       },
       voiceoverUrl: voiceoverUrlStored,
       // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
       // compliance-gated `script` this route just synthesized into
-      // voiceoverUrlStored above (never a second text, §6). synthesizeSpeech
-      // here has no timestamped-alignment variant, so this is the honest
-      // fallback CaptionLayer estimates timing from.
+      // voiceoverUrlStored above (never a second text, §6). The honest
+      // fallback CaptionLayer estimates timing from; word-accurate cues are
+      // added below once the composition's real geometry is known (lane 76D —
+      // the survivor primitive returns the ElevenLabs alignment this route's
+      // private synthesizeSpeech call never had).
       captionScript: script,
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption:     "Scan to read",
     }
     const composition = await selectComposition({ serveUrl: bundleLoc, id: NEWSLETTER_VIDEO_COMPOSITION, inputProps })
+
+    // SOUND-OFF CAPTIONS, word-accurate (lane 76D) — the same idiom
+    // render-just-listed uses: plan against the SELECTED composition's real
+    // duration/fps, prefer the REAL alignment, fall back to the script text
+    // (honest even-distribution). A caption failure never blocks the render.
+    try {
+      const plan = buildCaptionPlan(vo.alignment ?? script, composition.durationInFrames, composition.fps, { maxWordsPerCue: 4 })
+      if (plan.cues.length > 0) (inputProps as Record<string, unknown>).captionsCues = plan.cues
+    } catch (e) {
+      console.warn(`[render-newsletter-video] caption plan failed; rendering with the estimated captions:`, (e as Error).message)
+    }
 
     let executablePath: string | undefined
     if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
@@ -401,7 +441,9 @@ Return ONLY the spoken text.${fix}`
     const newsletterCard = companionCard(NEWSLETTER_DIGEST_THUMB, {
       subject:     inputProps.subject,
       personaHook: seoHintFromNarration(script, SEO_HINT_MAX_CHARS, 1),
-      agentName:   br?.name ?? null,
+      // Same brokerage-of-record name the pre-fix `br?.name` carried — now
+      // from the cascade adapter (never null once resolveReelBrand ran).
+      agentName:   reelBrand.brokerageName,
       brand:       inputProps.brand,
       seoHint:     seoHintFromNarration(script),
     })
@@ -522,10 +564,10 @@ Return ONLY the spoken text.${fix}`
       brokerageId:  camp.brokerage_id,
       agentUserId:  ledgerAgentUserId ?? "",
       brand: {
-        primaryColor:  br?.brand_primary_color ?? "#0F172A",
-        accentColor:   br?.brand_accent_color  ?? "#F59E0B",
-        logoUrl:       br?.logo_url            ?? undefined,
-        brokerageName: br?.name                ?? "Your Brokerage",
+        primaryColor:  reelBrand.primaryColor,
+        accentColor:   reelBrand.accentColor,
+        logoUrl:       reelBrand.logoUrl ?? undefined,
+        brokerageName: reelBrand.brokerageName,
       },
       mainVideoUrl:     reelUrlStored,
       subject:          camp.subject_line ?? camp.campaign_name ?? "This week",

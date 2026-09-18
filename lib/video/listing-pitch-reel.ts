@@ -127,7 +127,7 @@ export async function queueListingPitchReel(
     import("@/lib/video/reel-brand"), import("@/lib/video/video-identity"), import("@/lib/intelligence/roi-ledger"),
   ])
   const [brand, identity, roi] = await Promise.all([
-    resolveReelBrand(svc, p.brokerageId),
+    resolveReelBrand(svc, p.brokerageId, { agentUserId: p.agentUserId }),
     resolveVideoIdentity(svc, { brokerageId: p.brokerageId, agentUserId: p.agentUserId, purpose: "contact_facing" }),
     generateRoiLedger(svc, p.brokerageId),
   ])

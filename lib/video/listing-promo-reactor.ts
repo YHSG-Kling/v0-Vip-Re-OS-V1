@@ -70,7 +70,7 @@ import {
   narrationLengthDirective,
   narrationMaxTokens,
 } from "@/lib/video/script-structure"
-import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells } from "@/lib/video/realism-profile"
+import { withSpokenScriptStandards, scanForAiTells } from "@/lib/video/realism-profile"
 
 // Wave 27 — extended from 3 event types to the full 7-moment listing
 // lifecycle. The reactor remains the single dispatcher; per-event branches
@@ -407,7 +407,11 @@ async function draftScript(args: {
   const violationLine = args.violations.length > 0
     ? `\n\nYour previous draft failed the compliance gate with these violations:\n- ${args.violations.join("\n- ")}\n\nRewrite so EVERY violation is resolved. Same length + same intent, just compliance-clean.`
     : ""
-  const prompt = `Write a ${budget.compositionSeconds}-second social-media video script for a real estate agent. ${tmpl.intent}
+  // THE SHARED STANDARDS (lane 76D): withSpokenScriptStandards appends the
+  // SCRIPT_QUALITY_CHARTER + SPOKEN_REALISM_DIRECTIVE in the one order every
+  // spoken-script writer uses; the violation feedback stays LAST so a redraft
+  // sees what it must fix after the standing rules.
+  const prompt = withSpokenScriptStandards(`Write a ${budget.compositionSeconds}-second social-media video script for a real estate agent. ${tmpl.intent}
 
 Use ONLY these property facts — do not invent any number, feature, or claim:
 - Address: ${args.facts.address || "(omitted)"}
@@ -431,9 +435,7 @@ Style:
 - AVOID guaranteed-return / value-promise / market-direction claims ("prices are going up", "you'll make money", "tight inventory will push prices")
 - Skip any fact that's "(omitted)"
 ${tmpl.extraConstraints ? `- ${tmpl.extraConstraints}\n` : ""}
-Return ONLY the script text the agent will speak on camera.
-
-${SPOKEN_REALISM_DIRECTIVE}${violationLine}`
+Return ONLY the script text the agent will speak on camera.`) + violationLine
 
   const { text } = await generateTextRouted({
     brokerageId: args.brokerageId ?? null,

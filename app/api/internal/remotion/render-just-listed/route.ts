@@ -47,7 +47,11 @@ import { NextResponse, type NextRequest } from "next/server"
 // this route was already using for its thumbnail pass.
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
-import { synthesizeSpeech, synthesizeSpeechWithTimestamps, type CharacterAlignment } from "@/lib/voice/elevenlabs-tts"
+// TOMBSTONE (lane 76D): `synthesizeSpeech` / `synthesizeSpeechWithTimestamps`
+// were imported here for renderVoiceover's private synthesis path. Survivor:
+// lib/video/reel-voiceover.ts prepareReelVoiceover (v3 model via the ONE
+// selector, budget-gated, cached, alignment-returning). Only the type stays.
+import type { CharacterAlignment } from "@/lib/voice/elevenlabs-tts"
 import { buildCaptionPlan } from "@/lib/video/caption-plan"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
@@ -58,6 +62,12 @@ import { generateTextRouted } from "@/lib/ai/models"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import { mintVideoQr, type VideoQrKind } from "@/lib/video/video-qr"
+// THE SHARED SPOKEN-SCRIPT STANDARDS (lane 76D) — this route's own draft
+// prompt (the fallback writer when the reactor's pre-cleared script is absent
+// or fails the render-time gate) carried neither the SCRIPT_QUALITY_CHARTER
+// nor the SPOKEN_REALISM_DIRECTIVE, and nothing scanned its output for AI
+// tells. Same ONE composer + ONE scanner every other narration writer uses.
+import { scanForAiTells, withSpokenScriptStandards } from "@/lib/video/realism-profile"
 import {
   compositionForPromoEvent,
   buildPromoProps,
@@ -454,24 +464,28 @@ async function loadListingFacts(svc: ReturnType<typeof createServiceClient>, lis
 }
 
 async function loadBrandContext(svc: ReturnType<typeof createServiceClient>, brokerageId: string, agentUserId: string): Promise<BrandContext> {
-  const { data: b } = await svc.from("brokerages")
-    .select("name, logo_url, brand_primary_color:primary_color")
-    .eq("id", brokerageId)
-    .maybeSingle()
-  const br = b as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null
+  // THE ONE BRAND CASCADE (lane 76D, §1/§6). This used to be a private
+  // `brokerages.select("name, logo_url, brand_primary_color:primary_color")`
+  // read — brokerage tier only (no team logo/colors, no onboarding-wizard
+  // global_settings fold), and it typed `brand_accent_color` without ever
+  // SELECTING it, so every promo reel's accent was the "#F59E0B" default no
+  // matter what the tenant configured. Survivor: lib/video/reel-brand.ts
+  // resolveReelBrand → lib/branding/resolve-brand-context.ts.
+  const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+  const reelBrand = await resolveReelBrand(svc, brokerageId, { agentUserId })
   const { data: u } = await svc.from("users")
     .select("first_name, last_name, phone")
     .eq("id", agentUserId)
     .maybeSingle()
   const ur = u as { first_name: string | null; last_name: string | null; phone: string | null } | null
   return {
-    primaryColor: br?.brand_primary_color ?? "#0F172A",
-    accentColor:  br?.brand_accent_color  ?? "#F59E0B",
-    logoUrl:      br?.logo_url            ?? undefined,
+    primaryColor: reelBrand.primaryColor,
+    accentColor:  reelBrand.accentColor,
+    logoUrl:      reelBrand.logoUrl ?? undefined,
     agentName:    [ur?.first_name, ur?.last_name].filter(Boolean).join(" ") || undefined,
     agentPhone:   ur?.phone ?? undefined,
-    showEhoMark:  true,
-    brokerageName: br?.name ?? undefined,
+    showEhoMark:  reelBrand.showEhoMark,
+    brokerageName: reelBrand.brokerageName,
   }
 }
 
@@ -550,7 +564,7 @@ async function draftAndClearScript(args: {
     const violationLine = violations.length > 0
       ? `\n\nYour previous draft failed compliance. Resolve these violations:\n- ${violations.join("\n- ")}\n`
       : ""
-    const basePrompt = `Write a voiceover script for a real-estate ${eventLabel(args.eventType)} reel.
+    const basePrompt = withSpokenScriptStandards(`Write a voiceover script for a real-estate ${eventLabel(args.eventType)} reel.
 Use ONLY these facts — do not invent:
 - Address: ${args.facts.address || "(omitted)"}
 - Location: ${args.facts.city_state || "(omitted)"}
@@ -563,7 +577,7 @@ Use ONLY these facts — do not invent:
 Style: first-person, energetic but professional. Lead with the hook, hit the strongest 1-2 facts, close with "DM me to tour."
 Banned: protected-class refs (race, religion, family status, national origin, gender, sexual orientation, disability, source of income); phrases like "perfect for families" or "ideal starter home"; rate/valuation/appreciation guarantees; exclamation marks.
 ${narrationLengthDirective(budget)}
-Return ONLY the script text the avatar will speak — no scene directions.${violationLine}`
+Return ONLY the script text the avatar will speak — no scene directions.`) + violationLine
     // ── THE OVERRUN IS READ, NOT WARNED ABOUT (§1) ─────────────────────────
     // VERIFY, don't trust — a word ceiling in a prompt is a request, not a
     // guarantee, and fitNarrationToBudget is the enforcement. What NOTHING did
@@ -616,7 +630,14 @@ Return ONLY the script text the avatar will speak — no scene directions.${viol
         messageType:  "social",
         content:      script,
       })
-      return { allowed: r.allowed, violations: r.violations }
+      // REALISM (lane 76D): AI tells ride the SAME one-redraft gate as the
+      // compliance findings — the idiom lib/video/listing-promo-reactor.ts and
+      // intro-video-reactor.ts already use (§6: one retry mechanism). The
+      // deterministic fallback narration (deterministicPromoNarration) is
+      // tell-free by construction, so the authored path can never be refused
+      // by this line — probed offline against scanForAiTells before wiring.
+      const tells = scanForAiTells(script)
+      return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
     },
   })
   if (!result.ok) throw new Error(`compliance failed after redraft: ${result.violations.join("; ")}`)
@@ -671,34 +692,36 @@ async function renderVoiceover(args: {
   const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
   if (!voiceId) throw new Error("agent has no elevenlabs_voice_id — Settings → Voice & Avatar")
 
-  // SOUND-OFF CAPTIONS — prefer the timestamped TTS path so captions can be
-  // placed WORD-ACCURATELY. It returns the SAME mp3 buffer contract plus the
-  // per-character alignment. Any failure falls back to the default buffered path
-  // (no alignment → the caption plan even-distributes honestly), so captions
-  // NEVER block the render.
-  let audioBuffer: Buffer | null = null
-  let alignment: CharacterAlignment | null = null
-  const stamped = await synthesizeSpeechWithTimestamps({ text: args.script, voiceId, brokerageId: args.brokerageId })
-  if (stamped.success && stamped.audioBuffer) {
-    audioBuffer = stamped.audioBuffer
-    alignment = stamped.alignment ?? null
-  } else {
-    const tts = await synthesizeSpeech({ text: args.script, voiceId, brokerageId: args.brokerageId })
-    if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs TTS failed: ${stamped.error ?? tts.error}`)
-    audioBuffer = tts.audioBuffer
-  }
-
-  // Was @vercel/blob's put(). Survivor: lib/remotion/media-host.ts#hostRenderedMedia
-  // (owner ruling — all file storage lives in Supabase buckets). `video-assets`
-  // is its default and the right bucket: this MP3 is fetched by URL by the
-  // Remotion render worker, which holds no session.
-  const url = await hostRenderedMedia(
-    args.svc,
-    `listing-promo/voiceover/${args.promoId}.mp3`,
-    audioBuffer,
-    "audio/mpeg",
-  )
-  return { url, alignment }
+  // MERGED ONTO THE ONE NARRATION PRIMITIVE (lane 76D, orphan doctrine §1.1).
+  // This function used to be a SECOND synthesis path: its own
+  // synthesizeSpeechWithTimestamps → synthesizeSpeech fallback → hostRenderedMedia
+  // at `listing-promo/voiceover/${promoId}.mp3`. Three things were wrong with
+  // the copy, all of them fixed by the survivor and none of them here:
+  //   · it passed NO modelId, so lib/voice/elevenlabs-tts.ts's legacy default
+  //     `eleven_monolingual_v1` (the oldest model in the catalogue) spoke every
+  //     listing promo while every other narration lane resolves eleven_v3
+  //     through the ONE selector (elevenLabsModelForLane, realism-profile.ts);
+  //   · it never used narration_cache (m310) — a retried or re-rendered promo
+  //     paid ElevenLabs again for the identical script in the identical voice;
+  //   · it had no natural-pause pacing (withNaturalPauses) and no pause-markup
+  //     stripping on the alignment, so its captions and audio could not carry
+  //     v3 pacing safely.
+  // Survivor: lib/video/reel-voiceover.ts prepareReelVoiceover — same
+  // { url, alignment } contract, brokerageId-gated by the vendor budget,
+  // cached on (brokerage, voice, script hash), hosted on Supabase storage.
+  // It returns null on any failure (silent video is the survivor's contract
+  // for reels); THIS route's contract is that a promo is never shipped
+  // without its narration, so null is turned back into the throw the caller
+  // already handles (listing_promo_videos.error_message).
+  const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+  const vo = await prepareReelVoiceover({
+    brokerageId: args.brokerageId,
+    narration:   args.script,
+    voiceId,
+    renderKey:   `listing-promo-${args.promoId}`,
+  })
+  if (!vo) throw new Error("ElevenLabs TTS failed (prepareReelVoiceover returned no clip — budget gate, synthesis, or hosting)")
+  return { url: vo.url, alignment: vo.alignment }
 }
 
 /** Map a listing-promo event_type to a video-qr kind. just_sold maps to its

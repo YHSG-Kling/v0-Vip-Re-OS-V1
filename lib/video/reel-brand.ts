@@ -5,10 +5,32 @@
 // both producers were about to grow their own brand lookups and their own
 // completed-render sweeps — this is the single copy.
 //
-// Brand comes from the LIVE tenant tables (brokerages.primary_color/logo_url
-// + brokerage_brand_settings.accent_color) — never the legacy HeyGen-era
+// Brand comes from the LIVE tenant tables — never the legacy HeyGen-era
 // video_branding_presets. Defaults keep the reels rendering when a tenant
 // hasn't finished the brand wizard (navy/amber, the composition defaults).
+//
+// ── MERGED ONTO THE ONE BRAND CASCADE (lane 76D, orphan doctrine §1.1) ──────
+// This function used to be a SECOND brand resolver: its own two-table read
+// (brokerages.primary_color/logo_url + brokerage_brand_settings.accent_color)
+// beside lib/branding/resolve-brand-context.ts resolveBrandContext — the
+// resolver scripts/brand-cascade-simulator.ts (test:brand-cascade) proves is
+// "THE single brand source of truth every consumer should call". The two
+// disagreed in exactly the way that proof exists to catch: the onboarding
+// brand WIZARD writes logo + colors to global_settings (per brokerage_id), and
+// resolveBrandContext folds that tier in (team → brokerages → global_settings)
+// while this read never did — so a tenant whose brand was configured through
+// onboarding got navy/amber DEFAULTS on every reel, thumbnail, flyer and door
+// hanger this resolver feeds, and an agent on a team never got the team's
+// logo/colors their contacts recognise. Same drift test:brand-cascade closed
+// for postcards / portal / email in wave 36, still open on the video lane.
+//
+// Survivor: resolveBrandContext (per-attribute cascade, tenant-scoped at every
+// tier — global_settings is read `.eq("brokerage_id", …)`, so no platform
+// brand can ever reach a tenant video through it). This is now an ADAPTER to
+// the ReelBrand shape the compositions consume, not a resolver. The `svc`
+// parameter stays: it resolves the agent's team (agents.team_id) so an
+// agent-scoped render inherits the team tier — the same agents→team walk
+// lib/remotion/stock-pick.ts and lib/video/broll-picker.ts do for stock assets.
 
 const HEX = /^#[0-9a-fA-F]{6}$/
 
@@ -20,18 +42,40 @@ export interface ReelBrand {
   showEhoMark: boolean
 }
 
-/** The tenant's video brand from the live brand tables (never HeyGen presets). */
-export async function resolveReelBrand(svc: any, brokerageId: string): Promise<ReelBrand> {
+// File-local (not exported): callers pass an object literal; nothing imports the shape.
+interface ReelBrandScope {
+  /** users.id of the rendering agent — resolves the team tier of the cascade
+   *  (teams.logo_url / primary_color / accent_color win over the brokerage's)
+   *  and the agent's own tagline source. Omit for brokerage-level reels
+   *  (partners' meeting, board packet). */
+  agentUserId?: string | null
+  /** teams.id when the caller already knows it; otherwise derived from the agent. */
+  teamId?: string | null
+}
+
+/** The tenant's video brand through the ONE brand cascade (resolveBrandContext),
+ *  adapted to the shape every reel composition's `brand` prop consumes. */
+export async function resolveReelBrand(svc: any, brokerageId: string, scope: ReelBrandScope = {}): Promise<ReelBrand> {
   let name = "Your Brokerage", primary: string | null = null, logo: string | null = null, accent: string | null = null
   try {
-    const [{ data: b }, { data: bs }] = await Promise.all([
-      svc.from("brokerages").select("name, primary_color, logo_url").eq("id", brokerageId).maybeSingle(),
-      svc.from("brokerage_brand_settings").select("accent_color").eq("brokerage_id", brokerageId).maybeSingle(),
-    ])
-    if ((b as any)?.name) name = String((b as any).name)
-    primary = (b as any)?.primary_color ?? null
-    logo = (b as any)?.logo_url ?? null
-    accent = (bs as any)?.accent_color ?? null
+    // The team tier is keyed by teams.id; an agent-scoped render finds it
+    // through agents.team_id (users.id → agents.user_id — the two id classes
+    // are DISJOINT, CLAUDE.md §3). Best-effort: no team row → brokerage tier.
+    let teamId: string | null = scope.teamId ?? null
+    if (!teamId && scope.agentUserId) {
+      try {
+        const { data: agentRow } = await svc.from("agents").select("team_id").eq("user_id", scope.agentUserId).maybeSingle()
+        teamId = (agentRow as { team_id?: string | null } | null)?.team_id ?? null
+      } catch { /* team resolution is best-effort — the cascade falls to the brokerage tier */ }
+    }
+    // Dynamic import: resolve-brand-context.ts is `server-only`; this module
+    // stays importable by the proofs that read its pure delivery sweep.
+    const { resolveBrandContext } = await import("@/lib/branding/resolve-brand-context")
+    const ctx = await resolveBrandContext({ brokerageId, teamId, agentUserId: scope.agentUserId ?? null })
+    name = ctx.brokerageName
+    primary = ctx.visual.primaryColor
+    logo = ctx.visual.logoUrl
+    accent = ctx.visual.accentColor
   } catch { /* defaults below */ }
   return {
     primaryColor: HEX.test(primary ?? "") ? (primary as string) : "#0F172A",

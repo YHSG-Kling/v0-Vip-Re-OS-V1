@@ -118,10 +118,16 @@ export async function generateVideoScript(params: {
     // graded it.
     const complianceBlocks = await buildComplianceSystemBlocks(auth.brokerageId)
 
+    // THE SHARED SPOKEN-SCRIPT STANDARDS (lane 76D): this is a VOICEOVER
+    // script — SCRIPT_QUALITY_CHARTER + SPOKEN_REALISM_DIRECTIVE through the
+    // ONE composer (lib/video/realism-profile.ts), and scanForAiTells on the
+    // result below, same as every other narration writer.
+    const { scanForAiTells, withSpokenScriptStandards } = await import("@/lib/video/realism-profile")
+
     // Use AI to generate script from URL content
     const response = await generateAIResponse({
       system: complianceBlocks.join("\n\n"),
-      prompt: `Create a 75-word engaging voiceover script for a ${params.contentCategory} video based on this URL: ${params.url}
+      prompt: withSpokenScriptStandards(`Create a 75-word engaging voiceover script for a ${params.contentCategory} video based on this URL: ${params.url}
 
 Requirements:
 - Professional yet conversational tone
@@ -130,7 +136,7 @@ Requirements:
 - Focus on benefits and features
 - Make it compelling for social media
 
-Return ONLY the script text, no formatting or labels.`,
+Return ONLY the script text, no formatting or labels.`),
       metadata: {
         userId: auth.userId,
         brokerageId: auth.brokerageId,
@@ -166,11 +172,17 @@ Return ONLY the script text, no formatting or labels.`,
     // it writes the compliance_events audit row. A deterministic Fair Housing
     // hit is not overridable by the AI's opinion, so it forces the row back to
     // needs_revision even if checkCompliance had just approved it.
-    const kernelWarnings = await postcheckScript(
+    const kernelFindings = await postcheckScript(
       { userId: auth.userId, brokerageId: auth.brokerageId },
       response.text,
       params.contentCategory === "property_listing" ? "seller" : "buyer",
     )
+    // REALISM (lane 76D) — ADVISORY, same posture as generate-script.ts and
+    // create-video-project.ts's improveScript: an AI-tell finding never
+    // starts with the FairHousing:/ProhibitedPhrase(blocking):/Compliance:
+    // UNKNOWN prefixes the severity map below grades as a violation, so it
+    // lands as a `warning` flag the agent sees and never forces needs_revision.
+    const kernelWarnings = [...(kernelFindings ?? []), ...scanForAiTells(response.text)]
 
     if (kernelWarnings?.length) {
       const { data: current } = await supabase

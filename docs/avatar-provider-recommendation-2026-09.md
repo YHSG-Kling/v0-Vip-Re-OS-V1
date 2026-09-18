@@ -171,3 +171,56 @@ spec if/when the owner decides to unlock provider selection here.
 - Hedra's and Argil's documented consent/likeness policy for enrollment-style
   cloning — no source found in this pass; treat as a gap, not a clearance,
   if either is ever considered.
+
+## Wave 76D update (2026-09-18) — render-leg cost per minute, re-verified
+
+Second pass, Exa web_search + web_fetch on 2026-09-18, scoped to the question
+"is there a provider that achieves the same at lower cost than D-ID Express v4
++ Simli backup + ElevenLabs v3, and what does each leg of a tenant video cost?"
+HeyGen stays excluded by the standing ruling (no HeyGen); it is listed only so
+the price column has its reference point.
+
+| Leg / provider | Unit price (published) | $/min of finished video | API shape for OUR pipeline | Source (date) |
+| --- | --- | --- | --- | --- |
+| **D-ID render (current)** | Official API plans (d-id.com/pricing/api, recorded 2026-09-12): Scale $297 = 1,200 credits, 1 credit = 15 s offline video (30 s streaming) | **≈ $0.99/min** at Scale; $1.11 Launch; $1.13 Build (credits void monthly). Third-party claims of "$0.30/min" (aipromptshub.co 2026-06-21) and "$0.05/sec = $3.00/min" (heyfish.ai 2026-03-24) both contradict the official credit math — use the credit math. | Async `/talks` `/clips` `/expressives` + poll; consent gate in place | d-id.com/pricing (2025-01-30, "rounded up to the nearest 15-second interval"); lib/video/realism-profile.ts header |
+| **D-ID streaming (live agent)** | same credits, 30 s/credit | ≈ $0.50/min at Scale | WebRTC Agents | same |
+| **Simli (current backup, live only)** | ≈ $0.009 per streamed minute, render leg only (docs.simli.com, recorded 2026-09-14; simli.com/pricing fetch 2026-09-18: CRAWL_NOT_FOUND) | $0.009/min | Real-time audio→video stream; NOT a batch render API | lib/video/realism-profile.ts SIMLI_USD_PER_STREAMING_MINUTE |
+| Tavus | Starter $59 = 100 conversational + 10 generation min; "Phoenix-3 from $0.10/min" (swfte.com 2026-05-06); $0.54/convo-min (kompozy.io 2026-05-21); $2.95/min personalized (aipromptshub.co 2026-06-21) | $0.10–$2.95/min depending on leg — generation minutes are bundled, no clean render price | `POST /v2/videos` (replica_id + script or audio_url, callback_url) — same shape as ours | docs.tavus.io/api-reference/video-request/create-video; tavus.io/pricing |
+| Synthesia | Starter $18–29 / 10 min | $1.80–$2.90/min | API "in beta and not actively prioritised"; Enterprise-only | veed.io/learn/best-talking-head-video-apis (2026-04-17); khaby.ai (2026-03-06) |
+| Hedra Character-3 | 540p 2.5¢/s · 720p 5¢/s · 1080p 6.25¢/s, prepaid API wallet, `POST /v3/models/hedra-character-3` takes image + audio, `duration_ms` follows the supplied audio | **$1.50 / $3.00 / $3.75 per min** | Drop-in SHAPE for a batch backup (our ElevenLabs mp3 + agent photo → mp4) — but consent/likeness policy still undocumented (see Unresolved) | hedra.com/develop/models/video/hedra-character-3; hedra.com/docs/api-reference/v3 (fetched 2026-09-18) |
+| Argil | Classic $39 = 1,600 credits ≈ 25 min | ≈ $1.56/min | API on Classic; thin compliance posture (unchanged) | argil.ai/blog (2026-02-09); kompozy.io (2026-05-21) |
+| HeyGen (excluded) | Creator $29 = 600 credits ≈ 30 min; API Avatar IV $0.30/credit | ≈ $0.97/min | — | kompozy.io (2026-05-21); aipromptshub.co (2026-06-21) |
+| ElevenLabs Avatars / Sync 3 | credits from the Image & Video pool | not published per minute | **"Is there an Avatar API? Not at initial launch."** — no API, so not a candidate | elevenlabs.io/avatars; elevenlabs.io/video/sync-3 (fetched 2026-09-18) |
+| ElevenLabs TTS (current) | v3 / multilingual v2 $0.10 per 1k chars; Flash v2.5 $0.05 | ≈ $0.02–0.03 per min of speech (150 wpm ≈ 900 chars/min) | `/with-timestamps` docs list `model_id` default `eleven_multilingual_v2` and no v3 exclusion — the wave-57 finding stands, and reel-voiceover.ts still falls back to plain synthesis | elevenlabs.io/pricing/api; elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps (fetched 2026-09-18) |
+| Open source (SadTalker / Wav2Lip / MuseTalk / LivePortrait / Hallo) | free per call; GPU host required. MuseTalk ≈ 75 s per ~4 s clip on an M4/CUDA, mouth-only (no head motion/blink), 3.7 GB weights | ≈ $0.30–0.60/min on a ~$0.70/h L4-class GPU at that throughput, before ops, retries and storage | Self-hosted; likeness governance becomes ours | github.com/alfredang/lipsyncdemo; veed.io comparison (2026-04-17) |
+| Remotion Lambda (body render) | official cost example, 2048 MB ARM, us-east-1: 1-min 1080p ≈ $0.017 warm / $0.021 cold; 10 s 4K ≈ $0.013–0.014; plus S3 egress/storage/CloudWatch; Company License for teams of 4+ | **≈ $0.02/min** | our render rail | remotion.dev/docs/lambda/cost-example; remotion.dev/docs/lambda/estimateprice |
+| Vercel AI Gateway video/image models | Veo 3.1 Fast $0.10/s, Veo 3.1 $0.20/s, Veo 3.0 Fast $0.10/s; Kling v2.5/2.6/3.0, Seedance, Wan 2.5/2.6, Grok Imagine Video, bfl/flux-3-video listed; Imagen 4 Fast $0.02/img, Imagen 4 $0.04, Ultra $0.06 | $6–12/min of generated footage | `generateVideo` via AI SDK; NONE is a talking-head/lip-sync model — b-roll and stills only | vercel.com/ai-gateway/models; vercel.com/ai-gateway/models/labs/google; vercel.com/docs/ai-gateway/modalities/video-generation/text-to-video (fetched 2026-09-18) |
+
+**Recommendation (76D): KEEP D-ID Express/V4 + ElevenLabs v3; KEEP Simli as
+the live fail-over only; ADD nothing this wave.** Reasons: (1) at ≈ $1/min on
+credits D-ID is still the cheapest API-mature batch render with a consent gate
+we already run; Tavus's render leg cannot be priced cleanly and Hedra's
+cheapest tier ($1.50/min at 540p) is above it with no documented consent flow;
+(2) Simli's $0.009/min is a *streaming render leg* — it cannot replace a batch
+render, which is why it stays behind `lib/live-agent/face-render.ts` and is not
+a drop-in for the D-ID one-shot path; (3) no AI-Gateway model does lip-sync, so
+the gateway is a b-roll/stills source at $0.60 per 6-second Veo Fast clip —
+far above licensed stock or agent-uploaded b-roll, and only Imagen at
+$0.02–0.04/still is cheap enough to fill a Ken Burns window when a tenant has
+no photos (the IMAGE_SCENE_REALISM_PROMPT_BLOCK already exists for that).
+
+**Cheapest path for a tenant video:** voiceover-narrated Remotion (ElevenLabs v3
+≈ $0.03/min + Lambda ≈ $0.02/min ≈ **$0.05/min**) versus avatar-presented
+(D-ID ≈ $1.00/min + the same) ≈ **$1.05/min** — a 20× gap. Route the
+non-personal formats (market update, newsletter digest, listing promo body,
+CMA/equity chart reels) to voiceover + word-synced captions, and spend D-ID
+only where the agent's face is the point (welcome, anniversary, explainer,
+listing-pitch bookends), which is what the finish-spec already declares; keep
+the narration cache (m310) so a retry never re-buys a clip; and size the D-ID
+plan to measured usage, because unused credits void monthly.
+
+If a **batch** backup behind the face-render seam is ever wanted, Hedra
+Character-3 is the only candidate whose request shape (image + our own audio
+→ mp4, cost quotable via `POST /models/{model}/estimate`) is a drop-in; it is
+NOT implemented — its consent/likeness policy is still undocumented and no
+offline proof of the adapter is possible without a wallet.

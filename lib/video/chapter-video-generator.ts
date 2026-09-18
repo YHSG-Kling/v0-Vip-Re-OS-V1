@@ -46,7 +46,7 @@ import {
   spokenWords,
   targetWordCount,
 } from "@/lib/video/script-structure"
-import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells } from "@/lib/video/realism-profile"
+import { withSpokenScriptStandards, scanForAiTells } from "@/lib/video/realism-profile"
 
 /**
  * The declared runtime of one presentation chapter clip. Drip-ready content:
@@ -442,7 +442,9 @@ async function generateChapterScript(params: {
   // an editorial target, not a frame cap.
   const chapterBudget = narrationBudget("chapter_video", CHAPTER_TARGET_SECONDS_MAX, 0)
 
-  const prompt = `You are ${agentName || "a real estate agent"} speaking directly to a potential seller before a listing appointment.
+  // THE SHARED STANDARDS (lane 76D): SCRIPT_QUALITY_CHARTER + SPOKEN_REALISM_
+  // DIRECTIVE through the ONE composer (lib/video/realism-profile.ts).
+  const prompt = withSpokenScriptStandards(`You are ${agentName || "a real estate agent"} speaking directly to a potential seller before a listing appointment.
 
 Write a ${CHAPTER_TARGET_SECONDS_MIN}-${CHAPTER_TARGET_SECONDS_MAX} second video script for the chapter titled "${chapter.title}".
 Chapter focus: ${chapter.focus ?? "general"}
@@ -457,9 +459,7 @@ Style:
 
 ${presentationContent ? `Source material from the listing presentation:\n${presentationContent.slice(0, 2000)}\n` : ""}
 
-Return only the script text — no scene directions, no headers, just what the agent will say on camera.
-
-${SPOKEN_REALISM_DIRECTIVE}`
+Return only the script text — no scene directions, no headers, just what the agent will say on camera.`)
 
   const { text } = await generateTextRouted({
     feature: "listing_presentation",

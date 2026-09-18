@@ -589,7 +589,8 @@ export async function resolveDirectorIdentity(
     agentPhotoUrl = a?.photo_url ?? a?.profile_image_url ?? null
   } catch { /* a photo is cosmetic */ }
   const { resolveReelBrand } = await import("./reel-brand")
-  const brand = await resolveReelBrand(svc, brokerageId)
+  // Agent-scoped: the ONE brand cascade's team tier applies (lane 76D).
+  const brand = await resolveReelBrand(svc, brokerageId, { agentUserId })
   return {
     agentName, agentPhone, agentPhotoUrl,
     brokerageName: brand.brokerageName,

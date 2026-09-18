@@ -404,6 +404,66 @@ function captionWindowSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// § captionWordBudget (lane 76D) · the captions MATCH the narration word
+//   budget on BOTH host kinds: every spoken word of the FITTED script (the one
+//   that survives fitNarrationToBudget — never the draft that overran) appears
+//   in exactly one cue, no cue exceeds the readable per-cue ceiling, and the
+//   cue count is bounded by the budget's own word ceiling. A caption plan
+//   built from the draft rather than the fit would show words the viewer
+//   never hears — the sound-off viewer would read a sentence the audio cut.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function captionWordBudgetSection() {
+  console.log("\n── §captionWordBudget · caption cues carry exactly the fitted narration's words, both host kinds ──")
+  const fps = 30
+  const MAX_WORDS_PER_CUE = 4 // buildCaptionPlan's own default (caption-plan.ts) — asserted below, not assumed
+  const cueWords = (cues: ReturnType<typeof buildCaptionPlan>["cues"]) => cues.flatMap((c) => spokenWords(c.text))
+
+  for (const id of [...VOICEOVER_HOSTS, ...AVATAR_HOSTS]) {
+    const g = geometryFor(id)
+    if (!g) continue
+    const budget = narrationBudget(id, compositionSeconds(g))
+    for (const secs of FIXTURE_SECONDS) {
+      const fit = fitNarrationToBudget(FIXTURE_SCRIPTS[secs], budget)
+      if (!fit.script) continue // a composition with no runtime refuses narration — proven in §narrationFit
+      const plan = buildCaptionPlan(fit.script, g.duration_frames, fps)
+      const words = cueWords(plan.cues)
+      const label = `${id} @ ${secs}s fixture`
+      check(`${label}: every spoken word of the FITTED script lands in a cue, in order, none dropped or duplicated (${words.length} words)`,
+        words.join(" ") === spokenWords(fit.script).join(" "))
+      check(`${label}: the cue word total never exceeds the budget's own word ceiling (${budget.maxWords}) — captions cannot promise more than the composition can speak`,
+        words.length <= budget.maxWords)
+      check(`${label}: no cue exceeds the ${MAX_WORDS_PER_CUE}-word readable ceiling (muted-feed legibility)`,
+        plan.cues.every((c) => spokenWords(c.text).length <= MAX_WORDS_PER_CUE))
+      check(`${label}: cue count is bounded by ceil(words / ${MAX_WORDS_PER_CUE}) … words (one cue per phrase, never one per word by accident)`,
+        plan.cues.length >= Math.ceil(words.length / MAX_WORDS_PER_CUE) && plan.cues.length <= words.length)
+    }
+  }
+
+  // POSITIVE CONTROLS (§2)
+  // (a) A plan built from the DRAFT that overran carries words the fitted
+  //     audio never speaks — the exact mismatch this section exists to catch.
+  const shortHost = geometryFor("JustSoldReelSquare")!
+  const shortBudget = narrationBudget("JustSoldReelSquare", compositionSeconds(shortHost))
+  const draft = FIXTURE_SCRIPTS[90]
+  const fitted = fitNarrationToBudget(draft, shortBudget)
+  check("[control] the 90s fixture DOES overrun the 12s JustSoldReelSquare budget (the control is a real overrun, not a no-op)",
+    fitted.overran && fitted.droppedWords > 0)
+  const fromDraft = cueWords(buildCaptionPlan(draft, shortHost.duration_frames, fps).cues)
+  const fromFit = cueWords(buildCaptionPlan(fitted.script, shortHost.duration_frames, fps).cues)
+  check("[control] a caption plan built from the OVERRUN DRAFT carries MORE words than the fitted narration speaks — the word-match check above would catch a producer captioning the draft",
+    fromDraft.length > fromFit.length && fromDraft.length > shortBudget.maxWords)
+  // (b) A tampered cue list (one word dropped) fails the order/completeness join.
+  const tampered = buildCaptionPlan(fitted.script, shortHost.duration_frames, fps).cues.map((c, i) => i === 0 ? { ...c, text: spokenWords(c.text).slice(1).join(" ") } : c)
+  check("[control] dropping one word from a cue IS detected by the word-join comparison",
+    cueWords(tampered).join(" ") !== spokenWords(fitted.script).join(" "))
+  // (c) The per-cue ceiling really is buildCaptionPlan's default (a re-tune moves this, and the check follows).
+  const wide = buildCaptionPlan(fitted.script, shortHost.duration_frames, fps, { maxWordsPerCue: 8 }).cues
+  check("[control] raising maxWordsPerCue to 8 produces a cue wider than the default 4 — proves the ceiling check reads the plan, not a constant",
+    wide.some((c) => spokenWords(c.text).length > MAX_WORDS_PER_CUE))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // § music · sidechain duck settings + volume math at the fixture durations,
 //   for both a short (20s-class) and long (90s-class) composition — the fade-
 //   out never fires on a track shorter than the fades combined, and the ONE
@@ -597,6 +657,7 @@ async function main() {
   narrationFitSection()
   avatarBoundsSection()
   captionWindowSection()
+  captionWordBudgetSection()
   musicSection()
   kenBurnsSection()
   costLedgerSection()
