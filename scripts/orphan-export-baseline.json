@@ -24,7 +24,7 @@
     "lib/ads/audience-source-rules.ts": 2,
     "lib/ads/connectors/ad-payload.ts": 2,
     "lib/ads/connectors/google.ts": 1,
-    "lib/ads/connectors/meta.ts": 1,
+    "lib/ads/connectors/meta.ts": 2,
     "lib/ads/connectors/pii.ts": 3,
     "lib/ads/fb-audience-templates.ts": 1,
     "lib/ads/promote-post.ts": 1,
@@ -56,7 +56,7 @@
     "lib/ai-isa/callback-task.ts": 2,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
-    "lib/ai-isa/customer-context-tools.ts": 3,
+    "lib/ai-isa/customer-context-tools.ts": 8,
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
@@ -64,10 +64,11 @@
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
     "lib/ai-isa/next-best-touch.ts": 1,
-    "lib/ai-isa/persona-tool-policy.ts": 5,
+    "lib/ai-isa/persona-tool-policy.ts": 6,
     "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
+    "lib/ai-isa/qualification-playbook.ts": 1,
     "lib/ai-isa/reengagement-policy.ts": 2,
     "lib/ai-isa/resolve-isa-settings.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
@@ -141,6 +142,7 @@
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
     "lib/external/permit-signals.ts": 11,
+    "lib/external/review-extract.ts": 1,
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
@@ -292,6 +294,8 @@
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
     "lib/lead-pipeline/promotion-address-verification.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
+    "lib/lead-pipeline/rental-graduation-sourcer.ts": 1,
+    "lib/lead-pipeline/review-acquisition-sourcer.ts": 2,
     "lib/lead-pipeline/scraper-health.ts": 2,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 1,
     "lib/lead-pipeline/social-sourcer.ts": 11,
@@ -422,7 +426,7 @@
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
     "lib/video/promo-composition.ts": 1,
-    "lib/video/realism-profile.ts": 5,
+    "lib/video/realism-profile.ts": 4,
     "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
@@ -442,7 +446,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9622,
+  "census": 9644,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -912,7 +916,7 @@
     "app/actions/strategy-session.ts": 3,
     "app/actions/superadmin/a2p-verify.ts": 1,
     "app/actions/superadmin/active-listing-sources.ts": 2,
-    "app/actions/superadmin/ai-ops.ts": 6,
+    "app/actions/superadmin/ai-ops.ts": 7,
     "app/actions/superadmin/brokerage-management.ts": 10,
     "app/actions/superadmin/config-snapshots.ts": 4,
     "app/actions/superadmin/connector-healing.ts": 4,
@@ -2602,7 +2606,7 @@
     "lib/ads/connection-status.ts": 3,
     "lib/ads/connectors/ad-payload.ts": 4,
     "lib/ads/connectors/google.ts": 1,
-    "lib/ads/connectors/meta.ts": 1,
+    "lib/ads/connectors/meta.ts": 2,
     "lib/ads/connectors/pii.ts": 5,
     "lib/ads/connectors/registry.ts": 2,
     "lib/ads/connectors/types.ts": 2,
@@ -2715,7 +2719,7 @@
     "lib/ai-isa/conversation-handler.ts": 3,
     "lib/ai-isa/convert-buyer-lead-on-intent.ts": 1,
     "lib/ai-isa/convert-seller-lead-on-intent.ts": 1,
-    "lib/ai-isa/customer-context-tools.ts": 5,
+    "lib/ai-isa/customer-context-tools.ts": 10,
     "lib/ai-isa/direct-mail-trigger.ts": 2,
     "lib/ai-isa/email-generator.ts": 2,
     "lib/ai-isa/first-touch-copy.ts": 1,
@@ -2736,12 +2740,13 @@
     "lib/ai-isa/next-best-touch.ts": 4,
     "lib/ai-isa/opt-out-utils.ts": 1,
     "lib/ai-isa/outreach-identity.ts": 2,
-    "lib/ai-isa/persona-tool-policy.ts": 11,
+    "lib/ai-isa/persona-tool-policy.ts": 13,
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
+    "lib/ai-isa/qualification-playbook.ts": 2,
     "lib/ai-isa/reengagement-policy.ts": 10,
     "lib/ai-isa/resolve-isa-settings.ts": 5,
     "lib/ai-isa/saved-home-nudge.ts": 1,
@@ -3144,6 +3149,7 @@
     "lib/external/rentcast-ai-tools.ts": 1,
     "lib/external/rentcast-mcp.ts": 2,
     "lib/external/rentcast-typed.ts": 2,
+    "lib/external/review-extract.ts": 3,
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
@@ -3636,6 +3642,8 @@
     "lib/lead-pipeline/reactivation-enroller.ts": 1,
     "lib/lead-pipeline/reactivation-sequence-installer.ts": 1,
     "lib/lead-pipeline/relisting-detector.ts": 1,
+    "lib/lead-pipeline/rental-graduation-sourcer.ts": 2,
+    "lib/lead-pipeline/review-acquisition-sourcer.ts": 4,
     "lib/lead-pipeline/schedule-followup.ts": 1,
     "lib/lead-pipeline/scrape-territories.ts": 3,
     "lib/lead-pipeline/scraper-health.ts": 4,
@@ -3653,7 +3661,7 @@
     "lib/lead-pipeline/stale-preapproval-reengage.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 2,
     "lib/lead-pipeline/tavily-sourcer.ts": 2,
-    "lib/lead-pipeline/unknown-sender-identification.ts": 4,
+    "lib/lead-pipeline/unknown-sender-identification.ts": 5,
     "lib/lead-pipeline/variant-winner.ts": 1,
     "lib/lead-promotion/eligibility-core.ts": 1,
     "lib/lead-promotion/eligibility-evaluator.ts": 1,
@@ -3844,7 +3852,7 @@
     "lib/platform/growth-funnel.ts": 6,
     "lib/platform/impersonation.ts": 5,
     "lib/platform/launch-checklist.ts": 1,
-    "lib/platform/manager-ops.ts": 3,
+    "lib/platform/manager-ops.ts": 4,
     "lib/platform/nps.ts": 5,
     "lib/platform/os-sentinel.ts": 5,
     "lib/platform/platform-controls.ts": 5,
@@ -7385,6 +7393,7 @@
     "app/actions/superadmin/ai-ops.ts": [
       "getAiOpsAction",
       "getManagerOpsAction",
+      "getVoiceToolRoundDeadlineStatsAction",
       "getCredentialRotationAction",
       "runCredentialRefreshAction",
       "replaySignalAction",
@@ -13072,7 +13081,8 @@
       "mapReport"
     ],
     "lib/ads/connectors/meta.ts": [
-      "mapInsights"
+      "mapInsights",
+      "detectAdvantagePlusShoppingOrApp"
     ],
     "lib/ads/connectors/pii.ts": [
       "sha256Hex",
@@ -13575,6 +13585,11 @@
       "buildGetMyContextTool",
       "buildRequestShowingTool",
       "buildSearchOurListingsTool",
+      "buildScheduleCallbackTool",
+      "buildSendMatchingListingsTool",
+      "buildScheduleHomeValueReviewTool",
+      "buildBookAgentAppointmentTool",
+      "buildRecordQualificationTool",
       "buildCustomerFreeTools"
     ],
     "lib/ai-isa/direct-mail-trigger.ts": [
@@ -13680,7 +13695,9 @@
       "resolveEffectiveBatchDataToolTier",
       "isToolAllowedForTier",
       "filterToolsByTier",
-      "filterRentCastToolsForPersona"
+      "filterRentCastToolsForPersona",
+      "costRankForTool",
+      "selectToolsForPersona"
     ],
     "lib/ai-isa/personalize-outreach.ts": [
       "buildPersonalizationFacts",
@@ -13708,6 +13725,10 @@
     "lib/ai-isa/qualification-evaluator.ts": [
       "evaluateLeadQualification",
       "persistQualificationSignals"
+    ],
+    "lib/ai-isa/qualification-playbook.ts": [
+      "conversationalRulesBlock",
+      "buildQualificationPrompt"
     ],
     "lib/ai-isa/reengagement-policy.ts": [
       "ghostReengagementStopReason",
@@ -15841,6 +15862,11 @@
     "lib/external/rentcast-typed.ts": [
       "callRentcastGet",
       "callRentcastGetById"
+    ],
+    "lib/external/review-extract.ts": [
+      "classifyReviewIntent",
+      "normalizeExtractedReviews",
+      "regexFallbackReviews"
     ],
     "lib/external/socrata-client.ts": [
       "socrataQuery",
@@ -18384,6 +18410,16 @@
     "lib/lead-pipeline/relisting-detector.ts": [
       "detectRelistedListings"
     ],
+    "lib/lead-pipeline/rental-graduation-sourcer.ts": [
+      "normalizeRentalGraduationSignal",
+      "sourceRentalToBuyerGraduation"
+    ],
+    "lib/lead-pipeline/review-acquisition-sourcer.ts": [
+      "normalizeFullName",
+      "normalizeReviewAcquisitionEntry",
+      "sourceReviewAcquisitionIntent",
+      "routeReviewAcquisitionHits"
+    ],
     "lib/lead-pipeline/schedule-followup.ts": [
       "setEntityFollowup"
     ],
@@ -18487,6 +18523,7 @@
       "sourceTavilyIntent"
     ],
     "lib/lead-pipeline/unknown-sender-identification.ts": [
+      "resolveInboundMailboxOwner",
       "extractInboundHeaderText",
       "preFilterAutomatedSender",
       "classifyUnknownSenderIntent",
@@ -19427,7 +19464,8 @@
     "lib/platform/manager-ops.ts": [
       "percentile",
       "classifyManagerSlo",
-      "loadManagerOps"
+      "loadManagerOps",
+      "loadVoiceToolRoundDeadlineStats"
     ],
     "lib/platform/nps.ts": [
       "classifyNps",

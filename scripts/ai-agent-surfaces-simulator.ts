@@ -299,8 +299,11 @@ console.log("\n[h] wave 71/lane 73B — D-ID live avatar brain wires the persona
     /import\s*\{\s*batchDataIsaTools\s*\}\s*from\s*["']@\/lib\/ai-isa\/batchdata-isa-tools["']/.test(customLlmClean))
   check("app/api/did/custom-llm/route.ts derives persona via resolveToolPersona from the resolved contact's own context, never a request body (lane 73B — six-persona catalogue replaces the old contactPersona === 'investor' ternary)",
     /const toolPersona = resolveToolPersona\(\{/.test(customLlmClean))
+  // Wave 74B wraps the merged map in selectToolsForPersona (cost-ranked, cheapest
+  // first); the proof accepts either spelling so the control still bites if the
+  // three registries stop reaching streamTextRouted at all.
   check("app/api/did/custom-llm/route.ts passes the built (free + batchData + rentCast) tools into streamTextRouted",
-    /tools:\s*\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}/.test(customLlmClean))
+    /tools:\s*(?:selectToolsForPersona\()?\s*\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\)?/.test(customLlmClean))
 }
 
 console.log("\n──────────────────────────────────────────────────")
