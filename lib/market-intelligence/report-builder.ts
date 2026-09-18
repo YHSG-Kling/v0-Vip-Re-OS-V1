@@ -21,8 +21,14 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "@/lib/ai/generate"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED lane, not the raw shim: generateObjectRouted books the spend to
+// ai_tool_usage under the TENANT (CLAUDE.md §5 — ai_tool_usage is the cost
+// ledger that feeds meter_readings.ai_tokens and the overage projection; an
+// unbooked call is a wrong invoice). The extraction from
+// app/actions/ai-market-intelligence.ts carried that action's raw
+// `generateObject` call with it, and ai-spend-booked-guard flagged this file
+// as a NEW unbooked model call site (wave 75 chain).
+import { generateObjectRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 export interface MarketReportInput {
@@ -107,9 +113,11 @@ export async function buildMarketReportAnalysis(input: MarketReportInput): Promi
       .order("go_live_date", { ascending: false })
       .limit(50)
 
-    const { object: analysis } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const { object: analysis } = await generateObjectRouted({
+      feature: "market_report",
+      brokerageId: input.brokerageId,
       schema: MarketReportSchema,
+      maxTokens: 4000,
       prompt: `Analyze the real estate market data and provide comprehensive insights:
 
 Market Area: ${input.zipCode || input.city || input.county || "General"}

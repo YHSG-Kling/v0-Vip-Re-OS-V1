@@ -27,9 +27,6 @@
     "app/actions/ai-lead-scoring.ts": [
       "shim:generateObject"
     ],
-    "app/actions/ai-listing-intake.ts": [
-      "shim:generateObject"
-    ],
     "app/actions/ai-listing-presentation.ts": [
       "shim:generateObject"
     ],
