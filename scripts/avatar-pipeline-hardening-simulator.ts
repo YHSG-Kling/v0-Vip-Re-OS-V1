@@ -645,7 +645,10 @@ function reelProducersSection() {
       !/\bsynthesizeSpeech(?:WithTimestamps)?\(/.test(src))
   }
   check("render-newsletter-video now builds word-accurate captionsCues from the survivor's alignment (its private path returned none)",
-    /buildCaptionPlan\(vo\.alignment \?\? script/.test(newsletterRoute))
+    // The clip is bound as `voiceover` (wave 76 part 6 — the guard message must
+    // name the noun it guards, error-message-honesty); the alignment it carries
+    // is what the caption plan reads.
+    /buildCaptionPlan\(voiceover\.alignment \?\? script/.test(newsletterRoute))
   // POSITIVE CONTROL (§2): the retired shape — a bare synthesizeSpeech with
   // neither modelId nor brokerageId — is recognised as the defect.
   const bareSynthSpecimen = `const tts = await synthesizeSpeech({ text: script, voiceId })`
