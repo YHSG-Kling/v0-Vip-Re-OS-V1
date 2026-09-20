@@ -749,7 +749,18 @@ async function confirmAppointmentCore(params: ConfirmCoreParams): Promise<Confir
     .select("id, brokerage_id, agent_user_id, entity_type, entity_id, event_type, start_at, end_at, location, status, metadata")
     .eq("id", params.calendarEventId)
     .eq("event_type", spec.eventType)
-  if (params.brokerageId) q = q.eq("brokerage_id", params.brokerageId)
+  // FAIL CLOSED BY KIND (CLAUDE.md §4 — a missing tenant id must never decay
+  // into "every tenant"). The listing kind is a TENANT row: no brokerageId, no
+  // confirm. The demo kind is a PLATFORM row (the caller was gated as platform
+  // staff and the row's brokerage is the rep's own), so its scope is the entity
+  // class it can only ever be — never a tenant's contact row — rather than an
+  // optional tenant predicate.
+  if (params.kind === "listing_appointment") {
+    if (!params.brokerageId) return { success: false, error: `${spec.label} not found.` }
+    q = q.eq("brokerage_id", params.brokerageId)
+  } else {
+    q = q.eq("entity_type", spec.entityType)
+  }
   const { data: row, error } = await q.maybeSingle()
   if (error || !row) return { success: false, error: `${spec.label} not found.` }
   const r = row as AppointmentRow
