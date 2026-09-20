@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { GetStartedForm } from "./get-started-form"
+import { ProspectChat } from "./prospect-chat"
 import { TrialFunnelForm, type FunnelSnapshotMap } from "./trial-funnel-form"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadProductBrand } from "@/lib/platform/product-brand"
@@ -84,6 +85,9 @@ export default async function GetStartedPage({ searchParams }: { searchParams: P
             </p>
           </div>
           <GetStartedForm source={source} />
+          {/* Lane 76B — the platform's AI assistant on its own site: the same
+              brain as the phone line (demo / signup link / human). */}
+          <div className="mt-8"><ProspectChat brandName={brand.name} /></div>
         </div>
       </div>
     </div>

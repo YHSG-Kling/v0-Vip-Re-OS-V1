@@ -1,6 +1,7 @@
 import Link from "next/link"
 import type { Metadata } from "next"
 import { DemoRequestForm } from "./demo-request-form"
+import { ProspectChat } from "@/app/get-started/prospect-chat"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 
@@ -31,11 +32,15 @@ export default async function DemoPage() {
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">Book a 15-minute demo</h1>
           <p className="text-muted-foreground mt-3">
             A live look at the {brand.name} AI team handing a real deal between managers — no slides.
-            Tell us a few times that work for you; a real person on our team will reply to confirm one.
-            No auto-scheduler, no credit card, no obligation.
+            Tell us a few times that work for you and a real person on our team will reply to confirm one —
+            or ask the assistant below to book a live slot on a rep&apos;s calendar right now.
+            No credit card, no obligation.
           </p>
         </div>
         <DemoRequestForm />
+        {/* Lane 76B — or book it live in conversation: the assistant finds real
+            times on a sales rep's calendar (a rep confirms, invites go out). */}
+        <div className="mt-8"><ProspectChat brandName={brand.name} /></div>
       </div>
     </div>
   )

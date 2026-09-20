@@ -19,7 +19,15 @@ import { emitKernelEvent } from './emit'
 import { CalendarEventType } from './calendar-types'
 
 // ─── CALENDAR EVENT TYPE → KERNEL EVENT MAP ───────────────────────────────────
-const CALENDAR_TYPE_TO_KERNEL_EVENT: Record<CalendarEventType, KernelEvent> = {
+// Lane 76B — CalendarEventType.DEMO_APPOINTMENT (a PLATFORM prospect's product
+// demo, entity_type 'platform_prospect', keyed to the sales rep's brokerage)
+// is deliberately EXCLUDED from this map by its type: it has no tenant
+// lifecycle and must never fire a tenant KernelEvent. The loop below marks
+// such rows notified without emitting, so they do not re-log as "Unknown
+// event_type" on every run. Its own reminders ride
+// lib/ai-isa/listing-appointment.ts::sendAppointmentReminders.
+type TenantCalendarEventType = Exclude<CalendarEventType, CalendarEventType.DEMO_APPOINTMENT>
+const CALENDAR_TYPE_TO_KERNEL_EVENT: Record<TenantCalendarEventType, KernelEvent> = {
   [CalendarEventType.INSPECTION]:          KernelEvent.INSPECTION_DUE,
   [CalendarEventType.APPRAISAL]:           KernelEvent.APPRAISAL_DUE,
   [CalendarEventType.FINANCING_DEADLINE]:  KernelEvent.FINANCING_DUE,
@@ -93,6 +101,12 @@ export async function checkUpcomingDeadlines(
 
   // ── Step 2: Emit one KernelEvent notification per calendar event ──────────
   for (const calEvent of events as CalendarEventRow[]) {
+    // A platform demo is not a tenant deadline (see the map's header) — mark
+    // it seen so it stops matching, and emit nothing.
+    if (calEvent.event_type === CalendarEventType.DEMO_APPOINTMENT) {
+      notifiedIds.push(calEvent.id)
+      continue
+    }
     const kernelEventType = CALENDAR_TYPE_TO_KERNEL_EVENT[calEvent.event_type]
 
     if (!kernelEventType) {

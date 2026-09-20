@@ -435,7 +435,11 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
     !platformReceptionSrc.includes("function planPlatformReceptionTurn") && !platformReceptionSrc.includes("VOICE_TOOL_ROUND_MAX_STEPS"))
   check("twilio-voice.ts's planReceptionTurn platform branch feeds platformFaqTools() through the SAME runVoiceTurnRound the tenant branch calls — one bound, one deadline, one fallback, for both deployments",
     twilioVoiceSrc.includes('deployment === "platform"')
-    && twilioVoiceSrc.includes("tools: await platformFaqTools()") && twilioVoiceSrc.includes("runVoiceTurnRound({"))
+    // Lane 76B — the platform round is platformReceptionTools (FAQ + the prospect
+    // funnel bundle) when a server-resolved prospect context is threaded, and the
+    // FAQ-only platformFaqTools() otherwise; either way it is ONE runVoiceTurnRound.
+    && twilioVoiceSrc.includes("await platformReceptionTools({") && twilioVoiceSrc.includes(": await platformFaqTools()")
+    && twilioVoiceSrc.includes("runVoiceTurnRound({"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

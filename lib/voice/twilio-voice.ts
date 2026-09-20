@@ -761,21 +761,37 @@ export type ReceptionTurnInput =
       transcript: string | null
       utterance: string
       extraRules?: string
+      /** Lane 76B — the prospect funnel bundle's server-resolved identity:
+       *  the caller-ID phone (Twilio's From, never a body value) and the call
+       *  ledger row (platform_reception_calls.id / .prospect_id) so
+       *  save_prospect can link the prospect onto the call. Omitted → the
+       *  FAQ-only round, exactly as before this lane. */
+      prospect?: { phone: string | null; prospectId: string | null; callId: string | null }
     }
 
 export async function planReceptionTurn(input: ReceptionTurnInput, deps: VoiceToolRoundDeps = {}): Promise<VoiceTurnPlan> {
   if (input.deployment === "platform") {
-    const { buildPlatformReceptionPrompt, platformFaqTools } = await import("@/lib/voice/platform-reception")
+    const { buildPlatformReceptionPrompt, platformFaqTools, platformReceptionTools } = await import("@/lib/voice/platform-reception")
     let systemPrompt = buildPlatformReceptionPrompt({
       brandName: input.ctx.brandName, tagline: input.ctx.tagline, tierLines: input.ctx.tierLines,
       hasTransfer: !!input.ctx.forwardNumber, voicePitch: input.ctx.voicePitch, receptionGreeting: input.ctx.receptionGreeting,
+      brand: input.ctx.brand, channel: "voice",
     }).systemPrompt
     if (input.extraRules) systemPrompt = `${systemPrompt}\n\n${input.extraRules}`
     const generateFn: GenerateTextRoutedFn = deps.generateTextRouted ?? (await import("@/lib/ai/models")).generateTextRouted
+    // Lane 76B — with a prospect context the round carries the FAQ lookup
+    // PLUS the funnel bundle (save / demo slots / book demo / signup link /
+    // human handoff); without one it is the FAQ-only round it always was.
+    const tools = input.prospect
+      ? await platformReceptionTools({
+          source: "phone:reception", phone: input.prospect.phone, prospectId: input.prospect.prospectId,
+          callId: input.prospect.callId, brand: input.ctx.productBrand, hasLiveTransfer: !!input.ctx.forwardNumber,
+        })
+      : await platformFaqTools()
     return runVoiceTurnRound({
       systemPrompt, turnInstructions: PLATFORM_TURN_INSTRUCTIONS, toolGuidance: PLATFORM_TOOL_TURN_GUIDANCE,
       transcript: input.transcript, callerUtterance: input.utterance,
-      tools: await platformFaqTools(), telemetry: null, generateFn,
+      tools, telemetry: null, generateFn,
     })
   }
 

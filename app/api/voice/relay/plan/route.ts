@@ -38,9 +38,11 @@ export async function POST(request: NextRequest) {
     const pctx = await resolvePlatformReceptionContext(svc)
     if (!pctx) return json({ say: "Sorry, something went wrong. Goodbye.", endSession: true })
     const { data: call } = await svc.from("platform_reception_calls")
-      .select("id, transcript").eq("call_sid", req.callSid).maybeSingle()
+      .select("id, transcript, prospect_id").eq("call_sid", req.callSid).maybeSingle()
     const transcript = (call as any)?.transcript ?? null
-    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: req.utterance, extraRules: composePacingRule(req.interrupts) })
+    // Lane 76B — same server-resolved prospect identity the <Gather> turn passes.
+    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: req.utterance, extraRules: composePacingRule(req.interrupts),
+      prospect: { phone: req.from ?? null, prospectId: (call as any)?.prospect_id ?? null, callId: (call as any)?.id ?? null } })
     const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
     if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 

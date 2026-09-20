@@ -58,7 +58,7 @@ export const APPOINTMENT_EVENT_TYPES = [
   // lib/ai-isa/listing-appointment.ts (wave 75C, owner: "the no obligation
   // meeting should be marked as a listing appointment...") — reuse this SAME
   // no-show/24h-reminder autopilot rather than a second one; the appointment's
-  // OWN 5-day/2-day/morning-of cadence (sendListingAppointmentReminders) is
+  // OWN 5-day/2-day/morning-of cadence (sendAppointmentReminders — lane 76B rename, both kinds) is
   // additive, not a replacement for this generic within-24h client reminder.
   "listing_appointment",
 ] as const

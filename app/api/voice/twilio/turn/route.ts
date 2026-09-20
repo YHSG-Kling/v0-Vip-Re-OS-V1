@@ -45,7 +45,10 @@ export async function POST(request: NextRequest) {
       return xml(twimlHangup(closer))
     }
 
-    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: speech })
+    // Lane 76B — the prospect funnel bundle's identity is SERVER-resolved:
+    // Twilio's signed From and the ledger row found by CallSid, never a body.
+    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: speech,
+      prospect: { phone: params.From ?? null, prospectId: (call as any)?.prospect_id ?? null, callId: (call as any)?.id ?? null } })
     const newTranscript = appendTranscript(transcript, speech, plan.say)
     if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 

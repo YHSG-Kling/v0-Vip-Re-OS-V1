@@ -315,8 +315,12 @@ console.log("\n── SOURCE: wiring ──")
   check("PLATFORM scope: inbound + turn routes branch by the platform's own number; ledger is platform_reception_calls",
     inbound.includes("isPlatformNumber") && inbound.includes('from("platform_reception_calls")')
     && turn.includes("isPlatformNumber") && turn.includes("finishPlatformCall"))
-  check("PLATFORM scope: prospect hand-raise lands in the EXISTING growth funnel (capturePhoneProspect → platform_prospects)",
-    turn.includes("capturePhoneProspect") && src("lib/voice/platform-reception.ts").includes('from("platform_prospects")')
+  // Lane 76B — capturePhoneProspect is now a thin wrapper over the ONE
+  // platform_prospects writer (lib/platform/prospect-capture.ts); the phone
+  // line's source literal lives on the wrapper, the table write on the survivor.
+  check("PLATFORM scope: prospect hand-raise lands in the EXISTING growth funnel (capturePhoneProspect → upsertPlatformProspect → platform_prospects)",
+    turn.includes("capturePhoneProspect") && src("lib/voice/platform-reception.ts").includes("upsertPlatformProspect(")
+    && src("lib/platform/prospect-capture.ts").includes('from("platform_prospects")')
     && src("lib/voice/platform-reception.ts").includes('"phone:reception"'))
   check("PLATFORM scope: nothing about the product hardcoded — brand from platform_settings, pricing from subscription_tiers",
     src("lib/voice/platform-reception.ts").includes("loadProductBrand") && src("lib/voice/platform-reception.ts").includes('from("subscription_tiers")'))

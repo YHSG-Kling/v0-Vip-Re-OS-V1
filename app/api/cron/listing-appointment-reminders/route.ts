@@ -6,7 +6,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { sendListingAppointmentReminders } from "@/lib/ai-isa/listing-appointment"
+import { sendAppointmentReminders } from "@/lib/ai-isa/listing-appointment"
 
 /**
  * LISTING APPOINTMENT REMINDER CADENCE — wave 75C, owner verbatim: "the
@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
   await recordCronStartAction({ context_id: contextId })
 
   try {
-    const result = await sendListingAppointmentReminders()
+    const result = await sendAppointmentReminders()
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: result.scanned,

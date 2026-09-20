@@ -18,6 +18,7 @@ function brandOf(id: InboundIdentity): BrandPlaybookContext | null | undefined {
   return id.brand as BrandPlaybookContext | null | undefined
 }
 import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
+import { PLATFORM_PROSPECT_TOOL_GUIDANCE } from "@/lib/platform/prospect-agent-tools"
 
 /** PURE: the reception system prompt from the tenant's AI identity — shared by
  *  every engine. Mirrors the Vapi builder's rules exactly (one brain). */
@@ -225,7 +226,11 @@ export const PLATFORM_TURN_INSTRUCTIONS = [
 
 export const PLATFORM_TOOL_TURN_GUIDANCE = [
   "You have a platform FAQ lookup tool available. Call it when the caller asks something factual about the product or how it works that isn't already covered by WHAT THE PRODUCT IS / CURRENT PLANS above — never guess, and never call it for something you can already answer from those.",
-  "This is a LIVE phone call — call at most one or two times, only when genuinely needed.",
+  // Lane 76B — the prospect funnel bundle rides the SAME round
+  // (lib/platform/prospect-agent-tools.ts::PLATFORM_PROSPECT_TOOL_GUIDANCE is
+  // the one wording; imported so the two surfaces cannot drift).
+  PLATFORM_PROSPECT_TOOL_GUIDANCE,
+  "This is a LIVE phone call — call at most a couple of tools per turn, only when genuinely needed.",
   "Once you have what you need (or decide no lookup is needed), respond with your FINAL turn as the JSON object described above and NOTHING else.",
 ].join("\n")
 

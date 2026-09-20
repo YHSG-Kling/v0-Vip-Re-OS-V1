@@ -25,6 +25,13 @@ export enum CalendarEventType {
 
   // ── Appointments & Events ─────────────────────────────────────────────────
   LISTING_APPOINTMENT = 'listing_appointment',
+  // Lane 76B — a PLATFORM prospect's product demo on a platform sales rep's
+  // connected calendar (lib/ai-isa/listing-appointment.ts::bookDemoAppointment,
+  // the SAME find/book/confirm/remind survivor the listing appointment rides).
+  // entity_type on such a row is 'platform_prospect' (calendar_events carries
+  // no CHECK on entity_type/event_type — verified live 2026-09-18), never
+  // 'contact'/'lead': a platform prospect is neither.
+  DEMO_APPOINTMENT    = 'demo_appointment',
   OPEN_HOUSE          = 'open_house',
 }
 

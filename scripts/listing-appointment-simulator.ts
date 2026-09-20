@@ -146,14 +146,20 @@ check("the fail-closed result NEVER returns a `slots` array (no invented slots o
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 7 · bookListingAppointment — appointment_type + pending confirmation, via sentinelWrite]")
 
-check(`writes event_type: LISTING_APPOINTMENT_EVENT_TYPE inside a sentinelWrite(...calendar_events".insert...) call`,
-  /sentinelWrite\(\s*svc,\s*svc\s*\.from\("calendar_events"\)\s*\.insert\(\{[\s\S]{0,400}event_type:\s*LISTING_APPOINTMENT_EVENT_TYPE/.test(apptSrc))
+// Lane 76B — the insert lives in the ONE bookAppointmentCore; its event_type is
+// the kind's spec value (APPOINTMENT_KIND_SPEC[kind].eventType, bound to
+// `eventType`), which for the listing kind IS LISTING_APPOINTMENT_EVENT_TYPE
+// (asserted below at runtime). Rule kept: the row is written via sentinelWrite.
+check(`writes event_type: <kind spec> inside a sentinelWrite(...calendar_events".insert...) call`,
+  /sentinelWrite\(\s*svc,\s*svc\s*\.from\("calendar_events"\)\s*\.insert\(\{[\s\S]{0,400}event_type:\s*(LISTING_APPOINTMENT_EVENT_TYPE|eventType)/.test(apptSrc))
+const { APPOINTMENT_KIND_SPEC } = await import("../lib/ai-isa/listing-appointment")
+check("APPOINTMENT_KIND_SPEC.listing_appointment.eventType IS LISTING_APPOINTMENT_EVENT_TYPE (the generalized core still writes the listing event_type)", APPOINTMENT_KIND_SPEC.listing_appointment.eventType === LISTING_APPOINTMENT_EVENT_TYPE)
 check("the SAME insert sets status: LISTING_APPOINTMENT_STATUS.PENDING_AGENT_CONFIRMATION",
   /svc\.from\("calendar_events"\)\s*\.insert\(\{[\s\S]{0,500}status:\s*LISTING_APPOINTMENT_STATUS\.PENDING_AGENT_CONFIRMATION/.test(apptSrc))
 check("LISTING_APPOINTMENT_EVENT_TYPE resolves to the LIVE CalendarEventType.LISTING_APPOINTMENT enum member ('listing_appointment')", LISTING_APPOINTMENT_EVENT_TYPE === "listing_appointment")
 check("LISTING_APPOINTMENT_STATUS.PENDING_AGENT_CONFIRMATION is the exact spelling the portal-stream execute branch keys on", LISTING_APPOINTMENT_STATUS.PENDING_AGENT_CONFIRMATION === "pending_agent_confirmation")
-check("cancel-on-reschedule: an existing OPEN appointment for the same contact is superseded (status → CANCELLED) BEFORE the new insert",
-  /existingOpen[\s\S]{0,600}LISTING_APPOINTMENT_STATUS\.CANCELLED[\s\S]{0,800}calendarEventId\s*=\s*crypto\.randomUUID/.test(apptSrc))
+check("cancel-on-reschedule: an existing OPEN appointment for the same entity is superseded (status → CANCELLED) BEFORE the new insert",
+  /existingOpen[\s\S]{0,600}LISTING_APPOINTMENT_STATUS\.CANCELLED[\s\S]{0,900}calendarEventId\s*=\s*crypto\.randomUUID/.test(apptSrc))
 check(`sentinelWrite is used at least 6 times in ${LISTING_APPT_PATH} (supersede, book insert, calendar-sync metadata update, agent notification, portal card, confirm update)`,
   (apptSrc.match(/sentinelWrite\(/g) ?? []).length >= 6)
 
@@ -166,10 +172,15 @@ console.log("\n[Layer 8 · confirmListingAppointment — calendar emails (ICS) +
 // DispatchEmailParams.icsAttachment.
 check("the module does NOT import the low-level lib/providers/messaging sender (egress governance: dispatchEmail only)",
   !/from\s+"@\/lib\/providers\/messaging"/.test(apptSrc) && /from\s+"@\/lib\/providers\/dispatch"/.test(apptSrc))
-check("sends an email to the CONTACT via dispatchEmail with an icsAttachment and systemSource listing_appointment",
-  /dispatchEmail\(\{[\s\S]{0,300}to:\s*c\.email[\s\S]{0,300}systemSource:\s*"listing_appointment"[\s\S]{0,200}icsAttachment:/.test(apptSrc))
+// Lane 76B — one confirm core for both kinds: systemSource is the kind spec's
+// value (asserted at runtime below to be "listing_appointment" for this kind).
+check("sends an email to the ATTENDEE via dispatchEmail with an icsAttachment and the kind's systemSource",
+  /dispatchEmail\(\{[\s\S]{0,300}to:\s*c\.email[\s\S]{0,400}systemSource:\s*(spec\.systemSource|"listing_appointment")[\s\S]{0,200}icsAttachment:/.test(apptSrc))
+check("the listing kind's systemSource is 'listing_appointment' (unchanged attribution key)", APPOINTMENT_KIND_SPEC.listing_appointment.systemSource === "listing_appointment")
+check("the attendee send passes contactId ONLY when the row's entity IS a contact (a platform prospect id never flows into contactId)",
+  /entity_type\s*===\s*"contact"\s*\?\s*\{\s*contactId:\s*r\.entity_id\s*\}\s*:\s*\{\}/.test(apptSrc))
 check("sends an email to the AGENT via dispatchEmail with an icsAttachment (userId = calendar_events.agent_user_id, a USERS id — never agentId)",
-  /dispatchEmail\(\{[\s\S]{0,300}to:\s*a\.email[\s\S]{0,400}userId:\s*r\.agent_user_id[\s\S]{0,300}icsAttachment:/.test(apptSrc) && !/agentId:\s*a\.id/.test(apptSrc))
+  /dispatchEmail\(\{[\s\S]{0,300}to:\s*a\.email[\s\S]{0,500}userId:\s*r\.agent_user_id[\s\S]{0,300}icsAttachment:/.test(apptSrc) && !/agentId:\s*a\.id/.test(apptSrc))
 check("buildAppointmentIcs is called once per confirm (one ICS shared by both sends)", (apptSrc.match(/buildAppointmentIcs\(\{/g) ?? []).length === 1)
 check("pushes a CONFIRMED portal_event_stream card (event_type LISTING_APPOINTMENT_CONFIRMED_EVENT_TYPE)",
   /portal_event_stream"\)\s*\.insert\(\{[\s\S]{0,300}event_type:\s*LISTING_APPOINTMENT_CONFIRMED_EVENT_TYPE/.test(apptSrc))
@@ -187,13 +198,18 @@ check("a confirm FAILURE refuses the disposition (never marks the card completed
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 9 · reminder cron only touches CONFIRMED rows — cancel-on-reschedule]")
 
-check("sendListingAppointmentReminders filters status = LISTING_APPOINTMENT_STATUS.CONFIRMED", /\.eq\("status",\s*LISTING_APPOINTMENT_STATUS\.CONFIRMED\)/.test(apptSrc))
-check("sendListingAppointmentReminders filters event_type = LISTING_APPOINTMENT_EVENT_TYPE", /sendListingAppointmentReminders[\s\S]{0,600}\.eq\("event_type",\s*LISTING_APPOINTMENT_EVENT_TYPE\)/.test(apptSrc))
+// Lane 76B — sendListingAppointmentReminders → sendAppointmentReminders (both
+// kinds, ONE sweep). Rule kept: CONFIRMED rows only, and ONLY the event_types
+// this module owns (APPOINTMENT_EVENT_TYPES, which contains the listing type).
+check("sendAppointmentReminders filters status = LISTING_APPOINTMENT_STATUS.CONFIRMED", /\.eq\("status",\s*LISTING_APPOINTMENT_STATUS\.CONFIRMED\)/.test(apptSrc))
+check("sendAppointmentReminders filters event_type to the module's own APPOINTMENT_EVENT_TYPES", /sendAppointmentReminders[\s\S]{0,700}\.in\("event_type",\s*APPOINTMENT_EVENT_TYPES\)/.test(apptSrc))
+const { APPOINTMENT_EVENT_TYPES } = await import("../lib/ai-isa/listing-appointment")
+check("APPOINTMENT_EVENT_TYPES contains LISTING_APPOINTMENT_EVENT_TYPE (the listing kind is still swept)", APPOINTMENT_EVENT_TYPES.includes(LISTING_APPOINTMENT_EVENT_TYPE))
 check("a sent tier is recorded on calendar_events.metadata.reminder_tiers_sent (idempotent — a tier is never re-sent)", apptSrc.includes("reminder_tiers_sent:"))
 check("LISTING_APPOINTMENT_STATUS.CANCELLED is a DIFFERENT value than CONFIRMED (so a superseded row structurally drops out of the reminder query)", (LISTING_APPOINTMENT_STATUS.CANCELLED as string) !== (LISTING_APPOINTMENT_STATUS.CONFIRMED as string))
 
 const cronSrc = stripped("app/api/cron/listing-appointment-reminders/route.ts")
-check("the cron route calls sendListingAppointmentReminders and verifies cron auth", cronSrc.includes("sendListingAppointmentReminders(") && cronSrc.includes("verifyCronAuth("))
+check("the cron route calls sendAppointmentReminders and verifies cron auth", cronSrc.includes("sendAppointmentReminders(") && cronSrc.includes("verifyCronAuth("))
 
 const cronDispatchSrc = stripped("lib/kernel/cron-dispatch.ts")
 check("CRON_REGISTRY carries /api/cron/listing-appointment-reminders", /path:\s*"\/api\/cron\/listing-appointment-reminders"/.test(cronDispatchSrc))
@@ -266,8 +282,13 @@ console.log("\n[Layer 13 · package.json registration — guard tail right after
 
 const pkg = raw("package.json")
 check(`"test:listing-appointment" script is registered`, /"test:listing-appointment":\s*"tsx --conditions=react-server scripts\/listing-appointment-simulator\.ts"/.test(pkg))
-check("the guard chain runs it immediately after test:scrapers (the exact anchor this lane's brief named)",
-  pkg.includes("npm run test:scrapers && npm run test:listing-appointment && npm run test:qualification-playbook"))
+// Wave 76 ruling: "New proofs append after `&& npm run test:scrapers`" — so
+// the RULE is ordering (scrapers before this proof, in the same chain), not a
+// pinned adjacency that every later lane's insertion would break (CLAUDE.md §2:
+// never pin to a waypoint).
+const guardLine = /"guard":\s*"([^"]+)"/.exec(pkg)?.[1] ?? ""
+check("the guard chain runs it AFTER test:scrapers (wave 76 ruling: new proofs append after test:scrapers)",
+  guardLine.indexOf("npm run test:scrapers") >= 0 && guardLine.indexOf("npm run test:listing-appointment") > guardLine.indexOf("npm run test:scrapers"))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Layer 14 · Microsoft Graph tentative state (lane 76C blind-spot burn-down).

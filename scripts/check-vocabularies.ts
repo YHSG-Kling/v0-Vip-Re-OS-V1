@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 439 tables, 775 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-16
+ * generated: 2026-09-20
  * source: public.live_check_constraints_json()
- * body-sha256: 608a7d45fa9367a0c8ea42b78bee36f8fabd401a2afc9dd15af4dfdbf83585f2
+ * body-sha256: b1086478828823fa1b9f4440024ed5b1b7a06672f9cf12bb14c9139cce51db34
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1150,7 +1150,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   platform_prospects: {
     role_interest: ["brokerage", "multi_location", "solo_agent", "team", "unknown"],
-    status: ["contacted", "converted", "lost", "new", "trial"],
+    status: ["contacted", "converted", "demo_scheduled", "lost", "new", "trial"],
   },
   platform_reception_calls: {
     status: ["completed", "in_progress", "transferred"],

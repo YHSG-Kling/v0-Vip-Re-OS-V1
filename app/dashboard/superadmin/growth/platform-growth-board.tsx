@@ -5,22 +5,24 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Loader2, Sparkles, FileText, Copy } from 'lucide-react'
+import { Loader2, Sparkles, FileText, Copy, CalendarCheck } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
-import { advanceProspectAction, draftProspectOutreachAction, generateProspectProposalAction, listPlatformProspectsAction } from '@/app/actions/superadmin/platform-growth'
-import { PROPOSAL_SECTIONS, proposalPricingLine, proposalToClipboardText, type ProspectProposal } from '@/lib/platform/growth-funnel'
+import { advanceProspectAction, confirmProspectDemoAction, draftProspectOutreachAction, generateProspectProposalAction, listPlatformProspectsAction } from '@/app/actions/superadmin/platform-growth'
+import { PROPOSAL_SECTIONS, PROSPECT_STATUSES, describeProspectNextTouch, proposalPricingLine, proposalToClipboardText, type ProspectProposal } from '@/lib/platform/growth-funnel'
 
-const STATUSES = ['new', 'contacted', 'trial', 'converted', 'lost']
+// ONE status list — the funnel vocabulary (lane 76B: 'demo_scheduled', m654).
+const STATUSES: readonly string[] = PROSPECT_STATUSES
 const STATUS_BADGE: Record<string, string> = {
-  new: 'bg-slate-100 text-slate-700', contacted: 'bg-blue-100 text-blue-800', trial: 'bg-violet-100 text-violet-800',
-  converted: 'bg-emerald-100 text-emerald-800', lost: 'bg-slate-100 text-slate-400',
+  new: 'bg-slate-100 text-slate-700', contacted: 'bg-blue-100 text-blue-800', demo_scheduled: 'bg-amber-100 text-amber-800',
+  trial: 'bg-violet-100 text-violet-800', converted: 'bg-emerald-100 text-emerald-800', lost: 'bg-slate-100 text-slate-400',
 }
 
 interface Prospect {
   // email is null for a phone-only capture (AI reception caller who gave no
   // email — l32-s01 made the column nullable); phone is the reachable channel then.
   id: string; name: string | null; email: string | null; phone?: string | null; company: string | null; role_interest: string; source: string; status: string
-  details?: { proposal?: ProspectProposal } | null
+  followup_count?: number | null; last_followup_at?: string | null; created_at?: string | null
+  details?: { proposal?: ProspectProposal; qualification?: Record<string, unknown> } & Record<string, unknown> | null
 }
 interface Funnel { total: number; byStatus: Record<string, number>; conversionRate: number; activationRate: number }
 
@@ -38,6 +40,15 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
   }
   function pitch(id: string) {
     startTransition(async () => { const r = await draftProspectOutreachAction(id); if (r.ok) setDraft({ subject: r.subject, body: r.body }); else toast({ title: 'Error', description: r.error, variant: 'destructive' }) })
+  }
+  // Lane 76B — the rep's one-click demo confirm: flips the calendar hold to
+  // confirmed and sends both calendar invites (ICS). Honest toast on the sends.
+  function confirmDemo(id: string) {
+    startTransition(async () => {
+      const r = await confirmProspectDemoAction({ prospectId: id })
+      if (r.ok) { toast({ title: 'Demo confirmed', description: `Invite to prospect: ${r.icsSentToProspect ? 'sent' : 'NOT sent'} · to rep: ${r.icsSentToRep ? 'sent' : 'NOT sent'}` }); reload() }
+      else toast({ title: 'Could not confirm', description: r.error, variant: 'destructive' })
+    })
   }
   // Assisted-sale proposal — AI-authored + persisted on the prospect row; a stored
   // proposal opens instantly, "Regenerate" re-authors. Honest-absence on AI failure.
@@ -61,13 +72,18 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
   }
 
   const pct = (n: number) => `${Math.round(n * 100)}%`
+  const qualLine = (p: Prospect): string => {
+    const q = (p.details?.qualification ?? null) as Record<string, unknown> | null
+    if (!q) return ''
+    return [q.size_seats ? `${q.size_seats} seats` : null, q.role_title, q.timeline, q.territory].filter(Boolean).join(' · ')
+  }
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-2">
         <Card><CardContent className="p-3"><div className="text-2xl font-bold">{funnel.total}</div><div className="text-[11px] text-muted-foreground">Prospects</div></CardContent></Card>
         {STATUSES.map((s) => (
-          <Card key={s}><CardContent className="p-3"><div className="text-2xl font-bold">{funnel.byStatus[s] ?? 0}</div><div className="text-[11px] text-muted-foreground capitalize">{s}</div></CardContent></Card>
+          <Card key={s}><CardContent className="p-3"><div className="text-2xl font-bold">{funnel.byStatus[s] ?? 0}</div><div className="text-[11px] text-muted-foreground capitalize">{s.replace('_', ' ')}</div></CardContent></Card>
         ))}
       </div>
       <div className="flex gap-4 text-sm">
@@ -126,20 +142,31 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
         <CardContent className="p-0 overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b bg-muted/10 text-left text-xs text-muted-foreground">
-              <th className="px-4 py-2">Name / Company</th><th className="px-4 py-2">Reach</th><th className="px-4 py-2">Interest</th><th className="px-4 py-2">Source</th><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Actions</th>
+              <th className="px-4 py-2">Name / Company</th><th className="px-4 py-2">Reach</th><th className="px-4 py-2">Interest</th><th className="px-4 py-2">Source</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Next touch / demo</th><th className="px-4 py-2 text-right">Actions</th>
             </tr></thead>
             <tbody>
-              {prospects.map((p) => (
+              {prospects.map((p) => {
+                const next = describeProspectNextTouch(p)
+                return (
                 <tr key={p.id} className="border-b last:border-0">
-                  <td className="px-4 py-2 font-medium">{p.name || '—'}<span className="block text-[11px] text-muted-foreground">{p.company}</span></td>
+                  <td className="px-4 py-2 font-medium">{p.name || '—'}<span className="block text-[11px] text-muted-foreground">{p.company}</span>{qualLine(p) && <span className="block text-[11px] text-muted-foreground">{qualLine(p)}</span>}</td>
                   <td className="px-4 py-2 text-xs text-muted-foreground">{p.email ?? p.phone ?? '—'}{p.email && p.phone ? <span className="block">{p.phone}</span> : null}</td>
                   <td className="px-4 py-2 text-xs">{p.role_interest}</td>
                   <td className="px-4 py-2 text-xs">{p.source}</td>
-                  <td className="px-4 py-2"><Badge className={'text-[10px] ' + (STATUS_BADGE[p.status] ?? '')}>{p.status}</Badge></td>
+                  <td className="px-4 py-2"><Badge className={'text-[10px] ' + (STATUS_BADGE[p.status] ?? '')}>{p.status.replace('_', ' ')}</Badge></td>
+                  <td className="px-4 py-2 text-xs">
+                    <span className={next.handoffOpen ? 'text-amber-700' : ''}>{next.label}</span>
+                    {next.at && <span className="block text-muted-foreground">{new Date(next.at).toLocaleString()}</span>}
+                    {next.demoState === 'pending_rep_confirmation' && (
+                      <Button size="sm" variant="outline" className="mt-1 h-7 text-[11px]" disabled={pending} onClick={() => confirmDemo(p.id)}>
+                        <CalendarCheck className="h-3 w-3 mr-1" />Confirm demo
+                      </Button>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-right">
                     <div className="inline-flex items-center gap-2">
                       <select className="rounded border p-1 text-xs" value={p.status} disabled={pending} onChange={(e) => advance(p.id, e.target.value)}>
-                        {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                        {STATUSES.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
                       </select>
                       <Button size="sm" variant="ghost" disabled={pending} onClick={() => pitch(p.id)} title="Draft pitch">
                         {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
@@ -151,8 +178,8 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
                     </div>
                   </td>
                 </tr>
-              ))}
-              {prospects.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">No prospects yet — hand-raises from the site land here.</td></tr>}
+              )})}
+              {prospects.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">No prospects yet — hand-raises from the site, the phone line and the site assistant land here.</td></tr>}
             </tbody>
           </table>
         </CardContent>

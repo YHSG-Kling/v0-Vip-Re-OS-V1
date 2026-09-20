@@ -310,6 +310,46 @@ function personaGuideBlock(persona: ToolPersona | null | undefined): string {
   return lines.join("\n")
 }
 
+// ── PLATFORM PROSPECT (lane 76B — "this goes for the platform ai agents") ──
+// The platform's own line/chat talks to a SOFTWARE buyer (a brokerage, team,
+// or agent evaluating the OS), so it gets its OWN goal list and its OWN
+// three-exit menu — never the real-estate goals above. One list each, read by
+// every platform surface (voice reception + the website prospect chat);
+// scripts/platform-prospect-funnel-simulator.ts asserts every `tool` named in
+// PLATFORM_EXIT_MENU is a registered tool in
+// lib/platform/prospect-agent-tools.ts::PLATFORM_PROSPECT_TOOL_NAMES.
+
+export const PLATFORM_QUALIFICATION_GOALS: readonly QualificationGoal[] = [
+  { key: "contact_info", label: "Contact info", detail: "their name and a work email (phone is already on the call when they called in) — collected as the conversation earns it, never demanded up front" },
+  { key: "brokerage_name", label: "Brokerage / team name", detail: "the business they run or work in" },
+  { key: "size_seats", label: "Size", detail: "roughly how many agents / seats — solo, a team, a brokerage, or several offices" },
+  { key: "role_title", label: "Their role", detail: "broker-owner, team lead, operations, marketing, or an agent — who decides on software" },
+  { key: "current_tools", label: "Current tools", detail: "what they use today for CRM, lead follow-up, marketing, and transactions" },
+  { key: "pain", label: "What hurts", detail: "the one thing they wish ran itself — in THEIR words" },
+  { key: "timeline", label: "Timeline", detail: "when they want to be up and running — right away, 1-3 months, 3-6 months, 6-12 months, 12+ months, or still researching" },
+  { key: "territory", label: "Territory", detail: "the markets / metro areas they work" },
+] as const
+
+/** THE THREE EXITS every platform surface offers once a prospect is engaged —
+ *  a live demo on a rep's calendar, the online signup link, or a human. */
+export const PLATFORM_EXIT_MENU: readonly FollowUpOption[] = [
+  { tool: "book_demo_appointment", label: "Book a live demo", when: "they want to see it working — call find_demo_slots first, offer 2-3 real times, then book the one they pick (a rep confirms it and calendar invites go out)" },
+  { tool: "send_signup_link", label: "Send the online signup link", when: "they'd rather start the free trial themselves — text or email them the signup link" },
+  { tool: "request_human_handoff", label: "Hand off to a person", when: "they want to talk pricing, contracts, migration, or anything you can't answer — a real person follows up (on a call, offer the live transfer first when one is available)" },
+] as const
+
+function platformGoalsBlock(): string {
+  const lines = ["WHAT TO LEARN ABOUT THE PROSPECT, OVER THE COURSE OF THE CONVERSATION (one at a time, as it comes up naturally) — and call save_prospect as soon as you learn any of it:"]
+  for (const g of PLATFORM_QUALIFICATION_GOALS) lines.push(`- ${g.label}: ${g.detail}`)
+  return lines.join("\n")
+}
+
+function platformExitMenuBlock(): string {
+  const lines = ["THREE EXITS — once you understand what they want, offer the ONE that fits (never all three, never forced):"]
+  for (const f of PLATFORM_EXIT_MENU) lines.push(`- ${f.label} (${f.tool}): ${f.when}`)
+  return lines.join("\n")
+}
+
 /** PURE — the "never salesy" conversational rules, shared by every surface
  *  that talks to a person (customer-facing or platform-prospect-facing
  *  alike). Doubles as the fair-housing-safe-phrasing rule for the writing
@@ -405,9 +445,11 @@ export function buildQualificationPrompt(input: BuildQualificationPromptInput): 
   if (input.surface === "platform_reception") {
     // "this goes for the platform ai agents" — the conversational discipline
     // applies; the real-estate goal list does not (a platform prospect is not
-    // discussing a property). Brand here is the PLATFORM's own brand/KB
+    // discussing a property). Lane 76B: the platform gets its OWN goals (the
+    // software buyer's qualification) and its OWN three-exit menu (demo /
+    // signup link / human). Brand here is the PLATFORM's own brand/KB
     // (loadBrandPlaybookContext({brokerageId: null, ...})) — never a tenant's.
-    return [brandBlock, conversationalRulesBlock()].filter(Boolean).join("\n\n")
+    return [brandBlock, conversationalRulesBlock(), platformGoalsBlock(), platformExitMenuBlock()].filter(Boolean).join("\n\n")
   }
   if (input.surface === "staff_copilot") {
     return [

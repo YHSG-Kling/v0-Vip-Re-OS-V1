@@ -16,29 +16,37 @@ import {
   PROPOSAL_SECTIONS, proposalPricingLine, type ProspectProposal, type ProposalSectionKey,
 } from "@/lib/platform/growth-funnel"
 import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
+import { upsertPlatformProspect } from "@/lib/platform/prospect-capture"
 
 // ── PUBLIC: capture a prospect (no auth — a "get started / notify me" hand-raise) ──
+// TOMBSTONE (lane 76B): the inline `.upsert({...}, { onConflict: "email" })`
+// that stood here was one of THREE spellings of the platform_prospects writer
+// (with requestPlatformDemoAction below and lib/voice/platform-reception.ts's
+// capturePhoneProspect). Survivor: lib/platform/prospect-capture.ts::
+// upsertPlatformProspect — email-keyed here exactly as before, but a repeat
+// hand-raise now MERGES onto a phone caller's row instead of never finding it.
 export async function capturePlatformProspectAction(input: {
   name?: string; email: string; company?: string; roleInterest?: string; source?: string; interestNote?: string
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const v = validateProspectInput(input)
   if (!v.ok) return { ok: false, error: v.error }
   const svc = createServiceClient()
-  // Idempotent by email — a repeat hand-raise updates, never duplicates.
-  const { data, error } = await svc.from("platform_prospects").upsert({
-    name: v.value.name, email: v.value.email, company: v.value.company,
-    role_interest: v.value.roleInterest, source: v.value.source, interest_note: v.value.interestNote,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: "email" }).select("id").single()
-  if (error) return { ok: false, error: error.message }
-  return { ok: true, id: (data as any).id }
+  const saved = await upsertPlatformProspect(svc, {
+    email: v.value.email, name: v.value.name, company: v.value.company,
+    roleInterest: v.value.roleInterest, source: v.value.source, note: v.value.interestNote,
+  })
+  if (!saved) return { ok: false, error: "Could not save your details — please try again." }
+  return { ok: true, id: saved.id }
 }
 
 // ── PUBLIC: demo-request capture (the /demo booking form) ─────────────────────
 // Same platform_prospects rail as the get-started hand-raise (idempotent by
 // email), stamped source 'demo_request' so the growth board surfaces it, with
 // the preferred times kept on BOTH interest_note (skimmable) and details jsonb
-// (structured). Honest flow: a human follows up — nothing is auto-scheduled.
+// (structured). Honest flow: a human follows up — nothing is auto-scheduled
+// from THIS form; the assistant beside it (app/api/platform/prospect-chat)
+// can book a live slot. TOMBSTONE (lane 76B): the read-merge-upsert that stood
+// here → upsertPlatformProspect's detailsPatch (the SAME merge, one place).
 export async function requestPlatformDemoAction(input: {
   name?: string; email: string; company?: string; roleInterest?: string; preferredTimes?: string
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
@@ -50,20 +58,13 @@ export async function requestPlatformDemoAction(input: {
   })
   if (!v.ok) return { ok: false, error: v.error }
   const svc = createServiceClient()
-  // Merge details (a repeat request must not clobber a stored proposal).
-  const { data: existing, error: readErr } = await svc.from("platform_prospects").select("details").eq("email", v.value.email).maybeSingle()
-  if (readErr) return { ok: false, error: readErr.message }
-  const details = {
-    ...(((existing as any)?.details as Record<string, unknown>) ?? {}),
-    demo_request: { preferred_times: preferredTimes, requested_at: new Date().toISOString() },
-  }
-  const { data, error } = await svc.from("platform_prospects").upsert({
-    name: v.value.name, email: v.value.email, company: v.value.company,
-    role_interest: v.value.roleInterest, source: v.value.source, interest_note: v.value.interestNote,
-    details, updated_at: new Date().toISOString(),
-  }, { onConflict: "email" }).select("id").single()
-  if (error) return { ok: false, error: error.message }
-  return { ok: true, id: (data as any).id }
+  const saved = await upsertPlatformProspect(svc, {
+    email: v.value.email, name: v.value.name, company: v.value.company,
+    roleInterest: v.value.roleInterest, source: v.value.source, note: v.value.interestNote,
+    detailsPatch: { demo_request: { preferred_times: preferredTimes, requested_at: new Date().toISOString() } },
+  })
+  if (!saved) return { ok: false, error: "Could not save your request — please try again." }
+  return { ok: true, id: saved.id }
 }
 
 // ── Gated: platform marketing staff (or superadmin) ───────────────────────────
@@ -100,11 +101,35 @@ export async function listPlatformProspectsAction(): Promise<{ ok: true; prospec
   // (email null — l32-s01 dropped the NOT NULL): without it the board showed a
   // caller with NO way to reach them (the phone column was written by
   // capturePhoneProspect and read by nothing staff-facing — §1.2, 2026-08-27).
+  // Lane 76B: followup_count / last_followup_at ride along so the board can
+  // say what the autonomous ladder will do NEXT (describeProspectNextTouch),
+  // and `details` carries the demo / handoff / signup-link stamps.
   const { data, error } = await svc.from("platform_prospects")
-    .select("id, name, email, phone, company, role_interest, source, status, interest_note, details, contacted_at, created_at")
+    .select("id, name, email, phone, company, role_interest, source, status, interest_note, details, contacted_at, followup_count, last_followup_at, created_at")
     .order("created_at", { ascending: false }).limit(500)
   if (error) return { ok: false, error: error.message }
   return { ok: true, prospects: data ?? [], funnel: rollupGrowthFunnel(data ?? []) }
+}
+
+/** Lane 76B — the rep's one-click demo confirm (the demo kind's confirm rail:
+ *  a prospect has no portal action queue). Gated to platform marketing staff,
+ *  audited; the confirm itself is lib/ai-isa/listing-appointment.ts::
+ *  confirmDemoAppointment — the SAME status flip + Google PATCH + two ICS
+ *  emails the listing appointment's confirm runs. */
+export async function confirmProspectDemoAction(input: { prospectId: string }): Promise<{ ok: true; icsSentToProspect: boolean; icsSentToRep: boolean } | { ok: false; error: string }> {
+  const auth = await requireMarketingStaff()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const { data: p, error: pErr } = await svc.from("platform_prospects").select("id, details").eq("id", input.prospectId).maybeSingle()
+  if (pErr) return { ok: false, error: pErr.message }
+  const stamp = ((p as any)?.details?.demo_appointment ?? null) as { calendar_event_id?: string } | null
+  if (!stamp?.calendar_event_id) return { ok: false, error: "This prospect has no demo booked." }
+  const { confirmDemoAppointment } = await import("@/lib/ai-isa/listing-appointment")
+  const r = await confirmDemoAppointment({ calendarEventId: stamp.calendar_event_id, confirmedByUserId: auth.userId })
+  if (!r.success) return { ok: false, error: r.error }
+  await audit(auth.userId, auth.email, "platform_prospect.demo_confirmed", input.prospectId, { calendar_event_id: stamp.calendar_event_id, ics_sent_to_prospect: r.icsSentToProspect, ics_sent_to_rep: r.icsSentToRep })
+  revalidatePath("/dashboard/superadmin/growth")
+  return { ok: true, icsSentToProspect: r.icsSentToProspect, icsSentToRep: r.icsSentToRep }
 }
 
 export async function advanceProspectAction(input: { id: string; status: string }): Promise<{ ok: boolean; error?: string }> {
