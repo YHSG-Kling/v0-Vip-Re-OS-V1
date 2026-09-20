@@ -53,25 +53,23 @@
     "lib/ai-isa/adaptive-reengagement.ts": 2,
     "lib/ai-isa/appointment-form.ts": 1,
     "lib/ai-isa/batchdata-isa-tools.ts": 7,
-    "lib/ai-isa/brand-playbook-context.ts": 1,
     "lib/ai-isa/callback-task.ts": 2,
-    "lib/ai-isa/capability-catalogue.ts": 5,
+    "lib/ai-isa/capability-catalogue.ts": 4,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
-    "lib/ai-isa/customer-context-tools.ts": 9,
+    "lib/ai-isa/customer-context-tools.ts": 6,
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 1,
-    "lib/ai-isa/listing-appointment.ts": 5,
+    "lib/ai-isa/listing-appointment.ts": 6,
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
     "lib/ai-isa/next-best-touch.ts": 1,
-    "lib/ai-isa/persona-tool-policy.ts": 6,
+    "lib/ai-isa/persona-tool-policy.ts": 5,
     "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
-    "lib/ai-isa/qualification-playbook.ts": 1,
     "lib/ai-isa/reengagement-policy.ts": 2,
     "lib/ai-isa/resolve-isa-settings.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
@@ -359,16 +357,19 @@
     "lib/platform/demo-tenant.ts": 1,
     "lib/platform/go-live-readiness.ts": 1,
     "lib/platform/impersonation.ts": 1,
-    "lib/platform/manager-ops.ts": 2,
+    "lib/platform/manager-ops.ts": 4,
     "lib/platform/nps.ts": 1,
     "lib/platform/os-sentinel.ts": 3,
     "lib/platform/platform-controls.ts": 1,
     "lib/platform/platform-staff-roster.ts": 2,
     "lib/platform/product-content.ts": 2,
+    "lib/platform/prospect-agent-tools.ts": 1,
+    "lib/platform/prospect-capture.ts": 5,
     "lib/platform/prospect-sourcer.ts": 2,
     "lib/platform/provider-posture.ts": 1,
     "lib/platform/referral-payouts.ts": 1,
     "lib/platform/revenue-analytics.ts": 1,
+    "lib/platform/sales-rep.ts": 2,
     "lib/platform/self-audit-rollup.ts": 1,
     "lib/platform/subscription-oversight.ts": 2,
     "lib/platform/territory-marketplace.ts": 1,
@@ -378,6 +379,7 @@
     "lib/portal/home-maintenance.ts": 1,
     "lib/portal/portal-showing-feed.ts": 2,
     "lib/providers/calendar/graph-event-shape.ts": 1,
+    "lib/providers/calendar/personal-calendar.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
     "lib/recruiting/career-tier.ts": 4,
@@ -449,7 +451,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9675,
+  "census": 9699,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -940,7 +942,7 @@
     "app/actions/superadmin/platform-brand.ts": 6,
     "app/actions/superadmin/platform-content.ts": 5,
     "app/actions/superadmin/platform-controls.ts": 6,
-    "app/actions/superadmin/platform-growth.ts": 6,
+    "app/actions/superadmin/platform-growth.ts": 7,
     "app/actions/superadmin/platform-overview.ts": 3,
     "app/actions/superadmin/platform-providers.ts": 2,
     "app/actions/superadmin/platform-reception.ts": 2,
@@ -1363,6 +1365,7 @@
     "app/api/onboarding/training/progress/route.ts": 1,
     "app/api/open-house/attend/route.ts": 1,
     "app/api/open-house/convert-attendee/route.ts": 1,
+    "app/api/platform/prospect-chat/route.ts": 1,
     "app/api/podcast/widget/route.ts": 1,
     "app/api/portal/[contactId]/calendar.ics/route.ts": 1,
     "app/api/portal/[contactId]/modules/route.ts": 1,
@@ -2423,6 +2426,7 @@
     "app/embed/[publicId]/embed-widget.tsx": 1,
     "app/get-started/actions.ts": 1,
     "app/get-started/get-started-form.tsx": 1,
+    "app/get-started/prospect-chat.tsx": 1,
     "app/get-started/trial-funnel-form.tsx": 1,
     "app/home-value/[agentSlug]/home-value-client.tsx": 1,
     "app/home-value/page.tsx": 1,
@@ -2715,7 +2719,7 @@
     "lib/ai-isa/appointment-scheduler.ts": 1,
     "lib/ai-isa/batchdata-isa-tools.ts": 8,
     "lib/ai-isa/book-seller-appointment.ts": 1,
-    "lib/ai-isa/brand-playbook-context.ts": 2,
+    "lib/ai-isa/brand-playbook-context.ts": 1,
     "lib/ai-isa/brand-voice-prompt.ts": 2,
     "lib/ai-isa/build-call-context.ts": 1,
     "lib/ai-isa/buyer-intent-router.ts": 1,
@@ -2727,7 +2731,7 @@
     "lib/ai-isa/conversation-handler.ts": 3,
     "lib/ai-isa/convert-buyer-lead-on-intent.ts": 1,
     "lib/ai-isa/convert-seller-lead-on-intent.ts": 1,
-    "lib/ai-isa/customer-context-tools.ts": 10,
+    "lib/ai-isa/customer-context-tools.ts": 7,
     "lib/ai-isa/direct-mail-trigger.ts": 2,
     "lib/ai-isa/email-generator.ts": 2,
     "lib/ai-isa/first-touch-copy.ts": 1,
@@ -2742,20 +2746,20 @@
     "lib/ai-isa/lead-channel-policy.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 2,
     "lib/ai-isa/lead-reel-brief.ts": 1,
-    "lib/ai-isa/listing-appointment.ts": 9,
+    "lib/ai-isa/listing-appointment.ts": 13,
     "lib/ai-isa/long-term-nurture.ts": 2,
     "lib/ai-isa/meeting-followthrough.ts": 5,
     "lib/ai-isa/meeting-recap.ts": 9,
     "lib/ai-isa/next-best-touch.ts": 4,
     "lib/ai-isa/opt-out-utils.ts": 1,
     "lib/ai-isa/outreach-identity.ts": 2,
-    "lib/ai-isa/persona-tool-policy.ts": 13,
+    "lib/ai-isa/persona-tool-policy.ts": 12,
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
-    "lib/ai-isa/qualification-playbook.ts": 2,
+    "lib/ai-isa/qualification-playbook.ts": 1,
     "lib/ai-isa/qualification-signals.ts": 4,
     "lib/ai-isa/reengagement-policy.ts": 10,
     "lib/ai-isa/resolve-isa-settings.ts": 5,
@@ -3710,7 +3714,7 @@
     "lib/listing-presentation/section-narration-orchestrator.ts": 3,
     "lib/listing-presentation/section-narration.ts": 3,
     "lib/listing-presentation/section-render.ts": 1,
-    "lib/listings/attribution.ts": 1,
+    "lib/listings/attribution.ts": 2,
     "lib/listings/back-on-market.ts": 1,
     "lib/listings/compute-dom.ts": 2,
     "lib/listings/expiry-decision.ts": 2,
@@ -3860,10 +3864,10 @@
     "lib/platform/engagement-risk.ts": 2,
     "lib/platform/expansion-advisor.ts": 1,
     "lib/platform/go-live-readiness.ts": 2,
-    "lib/platform/growth-funnel.ts": 6,
+    "lib/platform/growth-funnel.ts": 7,
     "lib/platform/impersonation.ts": 5,
     "lib/platform/launch-checklist.ts": 1,
-    "lib/platform/manager-ops.ts": 4,
+    "lib/platform/manager-ops.ts": 6,
     "lib/platform/nps.ts": 5,
     "lib/platform/os-sentinel.ts": 5,
     "lib/platform/platform-controls.ts": 5,
@@ -3874,6 +3878,8 @@
     "lib/platform/product-brand.ts": 5,
     "lib/platform/product-content-autopilot.ts": 3,
     "lib/platform/product-content.ts": 6,
+    "lib/platform/prospect-agent-tools.ts": 2,
+    "lib/platform/prospect-capture.ts": 10,
     "lib/platform/prospect-conversion.ts": 1,
     "lib/platform/prospect-followup.ts": 1,
     "lib/platform/prospect-sourcer.ts": 3,
@@ -3882,6 +3888,7 @@
     "lib/platform/referral-payouts.ts": 7,
     "lib/platform/require-capability.ts": 2,
     "lib/platform/revenue-analytics.ts": 2,
+    "lib/platform/sales-rep.ts": 3,
     "lib/platform/save-offer.ts": 2,
     "lib/platform/self-audit-rollup.ts": 2,
     "lib/platform/service-catalogue-scope.ts": 2,
@@ -3955,7 +3962,7 @@
     "lib/providers/calendar/free-slots.ts": 1,
     "lib/providers/calendar/graph-event-shape.ts": 2,
     "lib/providers/calendar/index.ts": 4,
-    "lib/providers/calendar/personal-calendar.ts": 5,
+    "lib/providers/calendar/personal-calendar.ts": 6,
     "lib/providers/content-safety.ts": 1,
     "lib/providers/dispatch.ts": 4,
     "lib/providers/elevenlabs/client.ts": 3,
@@ -4012,6 +4019,7 @@
     "lib/referrals/partner-vocabulary.ts": 4,
     "lib/referrals/referral-reciprocity-runner.ts": 1,
     "lib/referrals/referral-reciprocity.ts": 3,
+    "lib/referrals/referral-record.ts": 1,
     "lib/referrals/referral-status.ts": 4,
     "lib/remotion/bundle-cache.ts": 1,
     "lib/remotion/code-revision.ts": 4,
@@ -4223,7 +4231,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 19,
+    "lib/video/realism-profile.ts": 20,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -4256,7 +4264,7 @@
     "lib/voice/number-provisioning.ts": 4,
     "lib/voice/outbound-call-gates.ts": 1,
     "lib/voice/parse-team-command.ts": 1,
-    "lib/voice/platform-reception.ts": 6,
+    "lib/voice/platform-reception.ts": 7,
     "lib/voice/reception-brain.ts": 9,
     "lib/voice/reception-inventory.ts": 3,
     "lib/voice/recording-playback-path.ts": 1,
@@ -7531,6 +7539,7 @@
       "capturePlatformProspectAction",
       "requestPlatformDemoAction",
       "listPlatformProspectsAction",
+      "confirmProspectDemoAction",
       "advanceProspectAction",
       "generateProspectProposalAction",
       "draftProspectOutreachAction"
@@ -9215,6 +9224,9 @@
       "POST"
     ],
     "app/api/open-house/convert-attendee/route.ts": [
+      "POST"
+    ],
+    "app/api/platform/prospect-chat/route.ts": [
       "POST"
     ],
     "app/api/podcast/widget/route.ts": [
@@ -12487,6 +12499,9 @@
     "app/get-started/get-started-form.tsx": [
       "GetStartedForm"
     ],
+    "app/get-started/prospect-chat.tsx": [
+      "ProspectChat"
+    ],
     "app/get-started/trial-funnel-form.tsx": [
       "TrialFunnelForm"
     ],
@@ -13556,7 +13571,6 @@
       "bookSellerListingAppointment"
     ],
     "lib/ai-isa/brand-playbook-context.ts": [
-      "parseBusinessProcesses",
       "loadBrandPlaybookContext"
     ],
     "lib/ai-isa/brand-voice-prompt.ts": [
@@ -13579,14 +13593,14 @@
       "detectCallbackRequest"
     ],
     "lib/ai-isa/capability-catalogue.ts": [
-      "isCapabilityId",
       "parseCapabilitiesSettings",
       "validateCustomToolDefinition",
       "loadEnabledCapabilities",
       "isCapabilityEnabled",
-      "buildSendNewsletterTool",
-      "buildSendMarketReportTool",
-      "buildSendExplainerVideoTool",
+      "buildGetListingDetailsTool",
+      "buildRequestVendorReferralTool",
+      "buildCaptureReferralTool",
+      "buildGetMyVendorStatusTool",
       "buildNewCatalogueTools"
     ],
     "lib/ai-isa/cold-contact-escalation.ts": [
@@ -13619,9 +13633,6 @@
       "convertSellerLeadOnIntent"
     ],
     "lib/ai-isa/customer-context-tools.ts": [
-      "buildGetMyContextTool",
-      "buildRequestShowingTool",
-      "buildSearchOurListingsTool",
       "buildScheduleCallbackTool",
       "buildSendMatchingListingsTool",
       "buildScheduleHomeValueReviewTool",
@@ -13688,15 +13699,19 @@
       "buildLeadIntroReelBrief"
     ],
     "lib/ai-isa/listing-appointment.ts": [
+      "appointmentKindForEventType",
       "isAtLeastMinDaysOut",
       "reminderTierForAppointment",
       "filterSlotsByPreference",
       "resolveWorkingHours",
       "buildAppointmentIcs",
       "findAgentAppointmentSlots",
+      "findDemoAppointmentSlots",
       "bookListingAppointment",
+      "bookDemoAppointment",
       "confirmListingAppointment",
-      "sendListingAppointmentReminders"
+      "confirmDemoAppointment",
+      "sendAppointmentReminders"
     ],
     "lib/ai-isa/long-term-nurture.ts": [
       "runMonthlyNurtureCadence",
@@ -13740,7 +13755,6 @@
       "resolveConfiguredBatchDataToolTier",
       "resolveBatchDataToolMonthlyCapCents",
       "evaluateEffectiveBatchDataTier",
-      "readPlatformBatchDataMonthlySpendCents",
       "resolveEffectiveBatchDataToolTier",
       "isToolAllowedForTier",
       "filterToolsByTier",
@@ -13776,7 +13790,6 @@
       "persistQualificationSignals"
     ],
     "lib/ai-isa/qualification-playbook.ts": [
-      "conversationalRulesBlock",
       "buildQualificationPrompt"
     ],
     "lib/ai-isa/qualification-signals.ts": [
@@ -18768,6 +18781,7 @@
       "renderSectionsForPresentation"
     ],
     "lib/listings/attribution.ts": [
+      "listingAttributionHref",
       "listingAttributionLine"
     ],
     "lib/listings/back-on-market.ts": [
@@ -19504,6 +19518,7 @@
     "lib/platform/growth-funnel.ts": [
       "validateProspectInput",
       "rollupGrowthFunnel",
+      "describeProspectNextTouch",
       "composeProspectNudge",
       "proposalPricingLine",
       "proposalToClipboardText",
@@ -19523,6 +19538,8 @@
       "percentile",
       "classifyManagerSlo",
       "loadManagerOps",
+      "recommendVoiceToolRoundDeadlineMs",
+      "parseContextJson",
       "loadVoiceToolRoundDeadlineStats"
     ],
     "lib/platform/nps.ts": [
@@ -19605,6 +19622,22 @@
       "videoProofBeats",
       "composeProductVideoSpec"
     ],
+    "lib/platform/prospect-agent-tools.ts": [
+      "platformExitMenuMatchesTools",
+      "buildPlatformProspectTools"
+    ],
+    "lib/platform/prospect-capture.ts": [
+      "normalizeProspectEmail",
+      "normalizeProspectQualification",
+      "buildProspectColumnPatch",
+      "mergeProspectDetails",
+      "upsertPlatformProspect",
+      "advanceProspectStatus",
+      "markProspectDemoScheduled",
+      "markProspectDemoConfirmed",
+      "markProspectSignupLinkSent",
+      "markProspectHandoff"
+    ],
     "lib/platform/prospect-conversion.ts": [
       "stampProspectConversion"
     ],
@@ -19645,6 +19678,11 @@
     "lib/platform/revenue-analytics.ts": [
       "rollupRevenueAnalytics",
       "loadRevenueAnalytics"
+    ],
+    "lib/platform/sales-rep.ts": [
+      "salesBenchDerivesFromRoster",
+      "rankSalesRepCandidates",
+      "resolvePlatformSalesRep"
     ],
     "lib/platform/save-offer.ts": [
       "resolveRetentionOfferConfig",
@@ -19985,6 +20023,7 @@
       "deleteCalendarEvent"
     ],
     "lib/providers/calendar/personal-calendar.ts": [
+      "graphShowAsFor",
       "hasPersonalCalendar",
       "createEventViaPersonal",
       "getAvailabilityViaPersonal",
@@ -20260,6 +20299,9 @@
       "classifyReciprocity",
       "buildReciprocityReport",
       "normalizeName"
+    ],
+    "lib/referrals/referral-record.ts": [
+      "insertReferralRecord"
     ],
     "lib/referrals/referral-status.ts": [
       "isReferralStatus",
@@ -21244,6 +21286,7 @@
       "budgetForWordCount",
       "stripExpressiveAudioTags",
       "enforceExpressiveAudioTagBudget",
+      "withSpokenScriptStandards",
       "sentenceLengthCoefficientOfVariation",
       "describeAiTellCoverage",
       "scanForAiTells",
@@ -21438,6 +21481,7 @@
       "resolvePlatformReceptionContext",
       "buildPlatformReceptionPrompt",
       "platformFaqTools",
+      "platformReceptionTools",
       "capturePhoneProspect"
     ],
     "lib/voice/reception-brain.ts": [
