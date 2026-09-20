@@ -714,14 +714,14 @@ async function renderVoiceover(args: {
   // without its narration, so null is turned back into the throw the caller
   // already handles (listing_promo_videos.error_message).
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
-  const vo = await prepareReelVoiceover({
+  const voiceover = await prepareReelVoiceover({
     brokerageId: args.brokerageId,
     narration:   args.script,
     voiceId,
     renderKey:   `listing-promo-${args.promoId}`,
   })
-  if (!vo) throw new Error("ElevenLabs TTS failed (prepareReelVoiceover returned no clip — budget gate, synthesis, or hosting)")
-  return { url: vo.url, alignment: vo.alignment }
+  if (!voiceover) throw new Error("Voiceover clip missing — prepareReelVoiceover returned no clip (budget gate, synthesis, or hosting)")
+  return { url: voiceover.url, alignment: voiceover.alignment }
 }
 
 /** Map a listing-promo event_type to a video-qr kind. just_sold maps to its

@@ -67,6 +67,11 @@ const src = (p: string) =>
 
 const VOCAB    = src("lib/referrals/referral-status.ts")
 const ACTIONS  = src("app/actions/referrals/referral-actions.ts")
+// Lane 76A: the ONE referrals insert moved out of the "use server" action into
+// lib/referrals/referral-record.ts::insertReferralRecord (the AI-agent
+// capture_referral tool reuses it). Column writes are asserted on the SURVIVOR;
+// the action is asserted to pass each parameter through.
+const RECORD   = src("lib/referrals/referral-record.ts")
 const PANEL    = src("app/dashboard/referrals/components/os/referral-pipeline-panel.tsx")
 const OSCLIENT = src("app/referrals/referrals-os-client.tsx")
 const PIPECLI  = src("app/referrals/pipeline/pipeline-os-client.tsx")
@@ -146,8 +151,8 @@ console.log("\n── trackReferral's four capabilities live on the wired path �
 
   check("[2/4] referred_lead_id has a caller-facing parameter",
     /referredLeadId\?:\s*string/.test(ACTIONS))
-  check("…and the insert writes it",
-    /referred_lead_id:\s*params\.referredLeadId \?\? null/.test(ACTIONS))
+  check("…and the insert writes it (action passes it, survivor writes it)",
+    /referredLeadId:\s*params\.referredLeadId \?\? null/.test(ACTIONS) && /referred_lead_id:\s*input\.referredLeadId \?\? null/.test(RECORD))
 
   check("[3/4] a partner-less referral is expressible",
     /partnerId\?:\s*string/.test(ACTIONS) && /partner_id:\s*params\.partnerId \?\? null/.test(ACTIONS))
@@ -179,12 +184,12 @@ console.log("\n── trackReferral's four capabilities live on the wired path �
 
 console.log("\n── the create dialog's fields reach a column ──")
 {
-  check("referral_name is written",
-    /referral_name:\s*referralName/.test(ACTIONS))
+  check("referral_name is written (action passes referralName, survivor writes the column)",
+    /referralName,/.test(ACTIONS) && /referral_name:\s*input\.referralName/.test(RECORD))
   check("…derived from the referred person, not from a partner row",
     /referralName[\s\S]{0,200}?params\.referredPerson\?\.firstName/.test(ACTIONS))
   check("value_estimate has its own parameter and is not folded into commission",
-    /valueEstimate\?:\s*number/.test(ACTIONS) && /value_estimate:\s*params\.valueEstimate \?\? null/.test(ACTIONS))
+    /valueEstimate\?:\s*number/.test(ACTIONS) && /valueEstimate:\s*params\.valueEstimate \?\? null/.test(ACTIONS) && /value_estimate:\s*input\.valueEstimate \?\? null/.test(RECORD))
   check("notes has its own parameter and is not sent as referral_source",
     /notes\?:\s*string/.test(ACTIONS) && /notes:\s*params\.notes\?\.trim\(\) \|\| null/.test(ACTIONS))
   check("the board sends the name it makes required",

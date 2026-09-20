@@ -348,14 +348,14 @@ Return ONLY the spoken text.`) + fix
     // contract is turned back into this route's throw (the ledger stamps
     // error_message) — a newsletter video never ships silent.
     const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
-    const vo = await prepareReelVoiceover({
+    const voiceover = await prepareReelVoiceover({
       brokerageId: camp.brokerage_id,
       narration:   script,
       voiceId,
       renderKey:   `newsletter-video-${ledger.id}`,
     })
-    if (!vo) throw new Error("ElevenLabs failed (prepareReelVoiceover returned no clip — budget gate, synthesis, or hosting)")
-    const voiceoverUrlStored = vo.url
+    if (!voiceover) throw new Error("Voiceover clip missing — prepareReelVoiceover returned no clip (budget gate, synthesis, or hosting)")
+    const voiceoverUrlStored = voiceover.url
 
     // 4c. Mint (or reuse) the tracked outro QR for this campaign. Newsletter
     //     → landing_page. Never throws; null mint = render without a QR.
@@ -402,7 +402,7 @@ Return ONLY the spoken text.`) + fix
     // duration/fps, prefer the REAL alignment, fall back to the script text
     // (honest even-distribution). A caption failure never blocks the render.
     try {
-      const plan = buildCaptionPlan(vo.alignment ?? script, composition.durationInFrames, composition.fps, { maxWordsPerCue: 4 })
+      const plan = buildCaptionPlan(voiceover.alignment ?? script, composition.durationInFrames, composition.fps, { maxWordsPerCue: 4 })
       if (plan.cues.length > 0) (inputProps as Record<string, unknown>).captionsCues = plan.cues
     } catch (e) {
       console.warn(`[render-newsletter-video] caption plan failed; rendering with the estimated captions:`, (e as Error).message)

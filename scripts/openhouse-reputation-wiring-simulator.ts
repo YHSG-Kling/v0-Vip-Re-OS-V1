@@ -228,6 +228,11 @@ const F = {
   reputationSurface: "app/components/reputation/ReputationPanel.tsx",
   lifetimeSurface: "app/lifetime-customers/page.tsx",
   referralWriter: "app/actions/referrals/referral-actions.ts",
+  // Lane 76A moved the ONE referrals insert out of the "use server" action
+  // into a plain lib module (the AI-agent capture_referral tool reuses it);
+  // the survivor's column set is asserted THERE now, and the action is
+  // asserted to call it.
+  referralRecord: "lib/referrals/referral-record.ts",
   // The referral STAGE GRAPH moved here from lib/kernel/reputation.ts when the
   // duplicate that owned it was deleted (§6 — the graph belongs beside the
   // vocabulary it is written in). The two checks below follow it rather than
@@ -601,8 +606,10 @@ function staticLayer(): void {
       /maybeSingle\(\)/.test(advance) && /not found/i.test(advance))
 
     const create = functionBody(S.referralWriter, "createReferral")
-    check("MERGED-REFERRAL-REFERRER-COLUMNS", "the survivor writes the three columns only the duplicate wrote",
-      /referred_by:/.test(create) && /source_contact_name:/.test(create) && /commission_potential:/.test(create))
+    const insertRecord = functionBody(S.referralRecord, "insertReferralRecord")
+    check("MERGED-REFERRAL-REFERRER-COLUMNS", "the survivor (lib/referrals/referral-record.ts::insertReferralRecord) writes the three columns only the duplicate wrote, and createReferral routes its insert through it",
+      /referred_by:/.test(insertRecord) && /source_contact_name:/.test(insertRecord) && /commission_potential:/.test(insertRecord)
+      && /insertReferralRecord\s*\(/.test(create) && !/\.from\(\s*"referrals"\s*\)\s*\.insert\(/.test(create))
 
     // THE GRAPH LIVES WITH THE VOCABULARY IT IS WRITTEN IN (§6), and the won
     // terminal is DERIVED so inserting a stage cannot leave a stale literal.
