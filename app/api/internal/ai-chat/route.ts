@@ -7,23 +7,25 @@ import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import { batchDataMcpTools } from "@/lib/external/batchdata-ai-tools"
 import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
-import { resolveEffectiveBatchDataToolTier, filterToolsByTier } from "@/lib/ai-isa/persona-tool-policy"
-import { writeFollowUpActivity } from "@/lib/ai-isa/customer-context-tools"
+import { resolveEffectiveBatchDataToolTier, filterToolsByTier, resolveToolPersona } from "@/lib/ai-isa/persona-tool-policy"
+import { writeFollowUpActivity, buildCustomerFreeTools } from "@/lib/ai-isa/customer-context-tools"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
 import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
+import {
+  COPILOT_ADMITTED_ROLES, USER_TYPE_TOOL_POLICY, resolveUserTypeSeat, selectToolsForSeat, seatPromptBlock,
+  type UserTypeSeat,
+} from "@/lib/ai-isa/user-type-tool-policy"
+import { buildUserTypeSeatTools } from "@/lib/ai-isa/user-type-tools"
 import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
-// Roles that are permitted to use the internal AI assistant.
-// Uses canonical role values from lib/security/types.ts.
-// Legacy DB values (e.g. "transaction_coordinator") are normalised below.
-const PERMITTED_ROLES = new Set([
-  "agent", "broker", "admin", "tc", "transaction_coordinator",
-  "lender", "vendor", "title", "title_agent",
-  "compliance_officer", "compliance_manager",
-  "superadmin", "super_admin",
-  "isa", "team_lead",
-])
+// TOMBSTONE (lane 77A, CLAUDE.md §6): the hand-typed PERMITTED_ROLES set that
+// lived here (which OMITTED broker_owner and broker_admin — two storable seats
+// this route refused with a 403) is GONE. Survivor: lib/ai-isa/user-type-
+// tool-policy.ts::COPILOT_ADMITTED_ROLES, DERIVED from TENANT_ADMIN_USER_TYPES
+// plus the producing/support/partner seats — one roster, never a second copy.
+// Legacy spellings are still canonicalised by ROLE_ALIASES below before the
+// set is consulted.
 
 // ─── Role-scoped context loaders ────────────────────────────────────────────
 
@@ -112,45 +114,27 @@ async function loadLenderContext(service: ReturnType<typeof createServiceClient>
   return { lenderTxns }
 }
 
-async function loadVendorContext(service: ReturnType<typeof createServiceClient>, userId: string, brokerageId: string) {
-  // Get vendor_id via vendors table (not vendor_directory)
-  const { data: vendor } = await service
-    .from("vendors")
-    .select("id, name, category")
-    .eq("brokerage_id", brokerageId)
-    .limit(1)
-    .maybeSingle()
+async function loadVendorContext(service: ReturnType<typeof createServiceClient>, userId: string, brokerageId: string, vendorId: string | null) {
+  // LANE 77A — the identity is the SESSION'S OWN vendor grant, resolved ONCE in
+  // POST (selectVendorId over readRoleGrants) and passed in. This loader used to
+  // read `vendors … .eq("brokerage_id", brokerageId).limit(1).maybeSingle()` —
+  // an ARBITRARY vendor of the tenant, preferred over the grant — so a vendor
+  // user's AI context could carry ANOTHER vendor's jobs and bookings
+  // (CLAUDE.md §4: identity from the session; §5: a vendor sees only their own).
+  if (!vendorId) return { jobs: [], bookings: [], vendorName: null }
 
-  // Fallback: check user_role_assignments for vendor_id.
-  //
-  // This one did not even narrow to the vendor-bearing grants, so `.maybeSingle()`
-  // errored for ANY user holding more than one grant, and the discarded error read
-  // as "no vendor" — the vendor assistant then answered with an empty job list
-  // rather than saying anything was wrong.
-  const grantsResult = await readRoleGrants(service, userId)
-  if (!grantsResult.ok) {
-    console.error("[ai-chat] vendor role grant read failed:", grantsResult.error)
-  }
-  const { vendorId: grantVendorId, ambiguous } = grantsResult.ok
-    ? selectVendorId(grantsResult.grants)
-    : { vendorId: null, ambiguous: false }
-  if (ambiguous) {
-    console.error("[ai-chat] user", userId, "is linked to more than one vendor")
-  }
-
-  const vendorId = vendor?.id ?? grantVendorId
-  if (!vendorId) return { jobs: [], bookings: [] }
-
-  const [{ data: jobs }, { data: bookings }] = await Promise.all([
+  const [{ data: vendor, error: vErr }, { data: jobs }, { data: bookings }] = await Promise.all([
+    service.from("vendors").select("id, name, category").eq("id", vendorId).eq("brokerage_id", brokerageId).maybeSingle(),
     service.from("vendor_jobs")
       .select("id, job_title, status, cost_estimate, cost_actual, scheduled_date: created_at, transaction_id")
-      .eq("vendor_id", vendorId).limit(15),
+      .eq("vendor_id", vendorId).eq("brokerage_id", brokerageId).limit(15),
     service.from("vendor_bookings")
       .select("id, service_type, status, scheduled_date, cost, transaction_id")
-      .eq("vendor_id", vendorId).order("scheduled_date", { ascending: true }).limit(15),
+      .eq("vendor_id", vendorId).eq("brokerage_id", brokerageId).order("scheduled_date", { ascending: true }).limit(15),
   ])
+  if (vErr) console.error("[ai-chat] vendor row read refused for user", userId, ":", vErr.message)
 
-  return { jobs, bookings, vendorName: vendor?.name }
+  return { jobs, bookings, vendorName: vendor?.name ?? null }
 }
 
 async function loadTCContext(service: ReturnType<typeof createServiceClient>, userId: string, brokerageId: string) {
@@ -203,9 +187,15 @@ async function loadComplianceContext(service: ReturnType<typeof createServiceCli
     { data: recentAuditLogs },
     { data: agentSummary },
   ] = await Promise.all([
-    // compliance_flags is the correct table (compliance_violations doesn't exist)
+    // compliance_flags is the correct table (compliance_violations doesn't exist).
+    // Lane 77A: TENANT-PINNED — compliance_flags carries brokerage_id
+    // (scripts/schema-snapshot.ts) and this read had no predicate on it, so a
+    // compliance officer's AI context carried every tenant's open flags.
+    // (audit_log below has NO brokerage_id column — its read stays as it was
+    // and is published as unresolved in the lane notes rather than guessed at.)
     service.from("compliance_flags")
       .select("id, violation_type, severity, status, created_at, user_id", { count: "exact" })
+      .eq("brokerage_id", brokerageId)
       .neq("status", "resolved")
       .order("created_at", { ascending: false })
       .limit(15),
@@ -280,17 +270,20 @@ interface AIIdentity {
   formality_level: string
 }
 
-function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?: AIIdentity, brand?: BrandPlaybookContext | null): string {
+function buildSystemPrompt(
+  role: string, ctx: Record<string, unknown>, identity: AIIdentity | undefined, brand: BrandPlaybookContext | null | undefined,
+  seat: UserTypeSeat, mountedSeatTools: readonly string[],
+): string {
   const name = identity?.assistant_name ?? "AI-ISA"
   const persona = identity?.persona_label ?? "internal assistant"
   const tone = identity?.tone ?? "professional"
   const formality = identity?.formality_level ?? "formal"
+  // Lane 77A — the seat decides which tool section the prompt carries: a
+  // partner seat (vendor/lender/title) has NO staff tool, so describing the
+  // staff toolkit to it would promise tools that are not mounted.
+  const hasStaffToolkit = USER_TYPE_TOOL_POLICY[seat].staffToolkit === "all"
 
-  const base = `You are ${name}, a ${persona} embedded in the Kernel OS real estate platform.
-Role: ${role} | Tone: ${tone} | Formality: ${formality}
-Date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-
-TOOLS — use these when staff explicitly asks you to take an action:
+  const staffToolsSection = hasStaffToolkit ? `TOOLS — use these when staff explicitly asks you to take an action:
   Read tools (information lookup):
   - lookup_contact: Search for contacts by name, email, or phone
   - get_today_schedule: Return today's showings and scheduled activities
@@ -318,9 +311,17 @@ TOOLS — use these when staff explicitly asks you to take an action:
 For all stage_* tools: when the result has open_url, speak it back so the agent knows where to navigate. If a stage_listing_packet or stage_offer_packet result has needs_more_info=true, relay the questions to the agent and call the same tool again on the next turn with the same session_id.
 
 Only call a write tool when the instruction is clear and explicit. If you're missing a key parameter (contact name, listing id, date, target stage), ask one clarifying question first.
+` : ""
+
+  const base = `You are ${name}, a ${persona} embedded in the Kernel OS real estate platform.
+Role: ${role} | Seat: ${seat} | Tone: ${tone} | Formality: ${formality}
+Date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+
+${staffToolsSection}
+${seatPromptBlock(seat, mountedSeatTools)}
 
 CAPABILITIES:
-- Use tools above when staff explicitly asks ("create a task for...", "draft a reply to...", "advance the listing to active")
+- Use the tools above when the person explicitly asks ("create a task for...", "draft a reply to...", "where does my invoice stand?")
 - Answer questions and summarize entities from the context below
 - Explain processes, real estate terms, and platform features
 - Suggest next actions based on context data and upcoming dates
@@ -369,7 +370,11 @@ export async function POST(req: NextRequest) {
   // AND admin) that is not an edge case, it is the ordinary account.
   const [grantsResult, { data: userData }] = await Promise.all([
     readRoleGrants(supabase, user.id),
-    supabase.from("users").select("role, brokerage_id").eq("id", user.id).maybeSingle(),
+    // user_type is the seat's declared identity (lib/auth/resolve-user-role.ts:
+    // "user_type is the single source of truth"); platform_role is where
+    // platform staff live (CLAUDE.md §4). `role` is the legacy column, still
+    // read as the LAST fallback for the context loader's one-branch pick.
+    supabase.from("users").select("role, user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle(),
   ])
   if (!grantsResult.ok) {
     console.error("[ai-chat] role grant read failed:", grantsResult.error)
@@ -390,16 +395,21 @@ export async function POST(req: NextRequest) {
   // holds ANY permitted role. Testing one picked role name would lock out a seat
   // whose permitted grant simply was not the one that got picked.
   const heldRoles = allRoles(grants).map(canonical)
+  const profileUserType = userData?.user_type ? canonical(String(userData.user_type)) : null
   const profileRole = userData?.role ? canonical(String(userData.role)) : null
-  const admissible = [...heldRoles, ...(profileRole ? [profileRole] : [])]
-  if (!admissible.some((r) => PERMITTED_ROLES.has(r))) {
+  const platformRole = (userData?.platform_role as string | null | undefined) ?? null
+  const admissible = [...heldRoles, ...(profileUserType ? [profileUserType] : []), ...(profileRole ? [profileRole] : [])]
+  const isPlatformStaff = resolveUserTypeSeat({ role: null, userType: profileUserType, platformRole, vendorCategory: null, hasVendorId: false, isTitleUser: false }) === "platform_staff"
+  if (!isPlatformStaff && !admissible.some((r) => COPILOT_ADMITTED_ROLES.has(r))) {
     return NextResponse.json({ error: "Role not permitted" }, { status: 403 })
   }
 
   // The CONTEXT LOADER can only run one branch, so one role is genuinely needed.
-  // The seat's own declared identity wins when it is actually granted; otherwise
-  // authority order decides — deterministically, never by row order.
-  const role = canonical(selectPrimaryRole(grants, userData?.role as string | null) ?? String(userData?.role ?? "agent"))
+  // The seat's own declared identity (user_type — lane 77A; the legacy `role`
+  // column only as the last fallback) wins when it is actually granted;
+  // otherwise authority order decides — deterministically, never by row order.
+  const preferredRole = profileUserType ?? profileRole
+  const role = canonical(selectPrimaryRole(grants, preferredRole) ?? String(preferredRole ?? "agent"))
   if (heldRoles.length > 1) {
     console.warn("[ai-chat] user", user.id, "holds roles", heldRoles.join("+"), "— loading context for", role)
   }
@@ -407,27 +417,63 @@ export async function POST(req: NextRequest) {
   // untenanted grant (contact/lender) can no longer win and blank it.
   const brokerageId = (selectTenantBrokerageId(grants) ?? userData?.brokerage_id) as string
 
-  const { messages } = await req.json()
+  const body = await req.json()
+  const { messages } = body as { messages?: unknown }
   if (!messages || !Array.isArray(messages)) {
     return NextResponse.json({ error: "messages required" }, { status: 400 })
   }
 
-  // Load role-scoped context + AI identity profile in parallel
+  // ── SEAT RESOLUTION (lane 77A — lib/ai-isa/user-type-tool-policy.ts) ──────
+  // Identity facts come from the SESSION: the vendor grant (ONE vendor or
+  // none — selectVendorId reports ambiguity rather than picking), that
+  // vendor's category (LENDER IS A VENDOR CATEGORY, CLAUDE.md §4), and the
+  // session's own title_company_users rows. Nothing here reads the body.
   const service = createServiceClient()
+  const { vendorId: sessionVendorId, ambiguous: vendorAmbiguous } = selectVendorId(grants)
+  if (vendorAmbiguous) console.error("[ai-chat] user", user.id, "is linked to more than one vendor — no vendor identity resolved (fail closed)")
+  const [vendorRow, titleRows] = await Promise.all([
+    sessionVendorId
+      ? service.from("vendors").select("id, category, brokerage_id").eq("id", sessionVendorId).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    service.from("title_company_users").select("id, transaction_id").eq("user_id", user.id).limit(50),
+  ])
+  if (vendorRow.error) console.error("[ai-chat] vendor category read refused:", vendorRow.error.message)
+  if (titleRows.error) console.error("[ai-chat] title membership read refused:", titleRows.error.message)
+  // A vendor whose row sits in ANOTHER tenant is no identity here (fail closed).
+  const vendorInTenant = !!vendorRow.data && (vendorRow.data as { brokerage_id?: string | null }).brokerage_id === brokerageId
+  const vendorIdForSeat = vendorInTenant ? sessionVendorId : null
+  const titleMemberships = (titleRows.data ?? []).map((r: { id: string; transaction_id: string | null }) => ({ id: r.id, transactionId: r.transaction_id }))
+  const seat = resolveUserTypeSeat({
+    role,
+    userType: profileUserType,
+    platformRole,
+    vendorCategory: vendorInTenant ? (vendorRow.data as { category?: string | null }).category ?? null : null,
+    hasVendorId: !!vendorIdForSeat,
+    isTitleUser: titleMemberships.length > 0,
+  })
+  const seatPolicy = USER_TYPE_TOOL_POLICY[seat]
+  const seatTools = buildUserTypeSeatTools({ seat, brokerageId, userId: user.id, vendorId: vendorIdForSeat, titleMemberships })
+  const mountedSeatToolNames = Object.keys(seatTools)
+
+  // Load role-scoped context + AI identity profile in parallel
   let ctx: Record<string, unknown> = {}
   let identity: AIIdentity | undefined
 
   // Load identity: agent-scope first, brokerage-scope fallback
   const [contextResult, agentIdentityResult, brandPlaybookResult] = await Promise.allSettled([
     (async () => {
+      // Lane 77A — the SEAT picks the partner loaders (a lender is a vendor
+      // category, so the word 'lender' in a grant never selects the lender
+      // context on a non-lender vendor); the role word still splits the
+      // staff-side loaders as before.
+      if (seat === "lender") return loadLenderContext(service, user.id)
+      if (seat === "vendor") return loadVendorContext(service, user.id, brokerageId, vendorIdForSeat)
+      if (seat === "title") return loadTitleContext(service, user.id)
+      if (seat === "platform_staff") return loadSuperadminContext(service)
       if (role === "agent" || role === "isa" || role === "team_lead") return loadAgentContext(service, user.id, brokerageId)
-      else if (role === "broker" || role === "admin") return loadBrokerContext(service, brokerageId)
-      else if (role === "lender") return loadLenderContext(service, user.id)
-      else if (role === "vendor") return loadVendorContext(service, user.id, brokerageId)
+      else if (role === "broker" || role === "broker_owner" || role === "broker_admin" || role === "admin") return loadBrokerContext(service, brokerageId)
       else if (role === "tc") return loadTCContext(service, user.id, brokerageId)
-      else if (role === "title_agent") return loadTitleContext(service, user.id)
       else if (role === "compliance_officer") return loadComplianceContext(service, brokerageId)
-      else if (role === "superadmin") return loadSuperadminContext(service)
       return {}
     })(),
     // ONE brand-voice cascade (CLAUDE.md §1/§6) — survivor
@@ -467,7 +513,7 @@ export async function POST(req: NextRequest) {
   if (agentIdentityResult.status === "fulfilled") identity = agentIdentityResult.value
   const brandPlaybook = brandPlaybookResult.status === "fulfilled" ? brandPlaybookResult.value : null
 
-  const systemPrompt = buildSystemPrompt(role, ctx, identity, brandPlaybook)
+  const systemPrompt = buildSystemPrompt(role, ctx, identity, brandPlaybook, seat, mountedSeatToolNames)
 
   // ── The claimed session must be YOURS before anything is written into it ──
   //
@@ -1261,6 +1307,39 @@ export async function POST(req: NextRequest) {
   // per-request rate as REST, plus LLM token overhead).
   const rentCastTools = await rentCastMcpTools({ brokerageId, userId: user.id })
 
+  // ── ACTING FOR A CONTACT (lane 77A) — staff-side seats only ───────────────
+  // The copilot panel sends the contact it is OPEN ON (pageContext.contactId,
+  // app/components/shared/internal-ai-assistant.tsx). That id is an ENTITY
+  // pointer, not an identity or a tenant: it is honoured only after the row is
+  // proven to belong to the SESSION's brokerage, and the persona is derived
+  // from that row's own columns (resolveToolPersona) — never from the body.
+  // Partner seats never reach this (policy.customerPersonaToolsForContact).
+  let customerTools: Record<string, unknown> = {}
+  const claimedContactId = typeof (body as { contactId?: unknown }).contactId === "string" ? (body as { contactId: string }).contactId : null
+  if (seatPolicy.customerPersonaToolsForContact && claimedContactId) {
+    const { data: contact, error: cErr } = await service
+      .from("contacts")
+      .select("id, agent_id, contact_type, contact_persona, home_owner_status")
+      .eq("id", claimedContactId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (cErr) console.error("[ai-chat] acting-for contact read refused:", cErr.message)
+    if (contact) {
+      customerTools = await buildCustomerFreeTools({
+        brokerageId,
+        contactId: contact.id,
+        agentId: contact.agent_id ?? (await resolveAgentId(service as any, user.id)),
+        persona: resolveToolPersona({ contactType: contact.contact_type, contactPersona: contact.contact_persona, homeOwnerStatus: contact.home_owner_status }),
+      })
+    }
+  }
+
+  // ── THE ONE SELECTION (lane 77A — lib/ai-isa/user-type-tool-policy.ts) ────
+  // A staff-side seat keeps the WHOLE toolkit (wave 72B ruling) + BatchData
+  // (tier-filtered) + RentCast; a partner seat (vendor/lender/title) gets ONLY
+  // its own seat tools — no contact search, no CRM writes, no property data.
+  const tools = selectToolsForSeat(seat, { staffTools: agentTools, seatTools, batchDataTools, rentCastTools, customerTools })
+
   // Routed streaming entry — routing table model, tenant fair-use cap checked
   // BEFORE streaming, cost ledger written on finish (totalUsage, so every
   // tool-calling step is billed). Identity is the session-resolved user +
@@ -1272,7 +1351,7 @@ export async function POST(req: NextRequest) {
       system: systemPrompt,
       messages: await convertToModelMessages(messages),
       maxTokens: 1024,
-      tools: { ...agentTools, ...batchDataTools, ...rentCastTools },
+      tools,
       maxSteps: 5,
       userId: user.id,
       brokerageId,

@@ -124,15 +124,17 @@ let sphereToolsEligible: Record<string, unknown> = {}
   sphereToolsBlocked = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "sphere", conversationKey: "conv-sphere-1" }) // outboundEligible omitted → false
   sphereToolsEligible = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "sphere", conversationKey: "conv-sphere-2", outboundEligible: true })
 
-  for (const persona of ["buyer", "seller", "investor", "renter", "relocation", "sphere", "vendor"] as const) {
+  for (const persona of ["buyer", "seller", "investor", "renter", "relocation", "sphere"] as const) {
     ok(persona in PERSONA_TOOL_POLICY, `PERSONA_TOOL_POLICY names a policy for "${persona}"`)
   }
-  // Lane 76A — vendor (contacts.contact_type 'vendor', a live CHECK value): ZERO
-  // BatchData tools, zero RentCast, cap $0 — a vendor asks about their OWN
-  // placement/document/payout status, never property data.
-  const vendorTools = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "vendor", conversationKey: "conv-vendor-1", contactId: "contact-9" })
-  ok(Object.keys(vendorTools).length === 0, "RULING (lane 76A): vendor persona has NO BatchData tools of any kind")
-  ok(PERSONA_TOOL_POLICY.vendor.capCents === 0 && PERSONA_TOOL_POLICY.vendor.rentCastEnabled === false, "vendor persona: $0 cap and no RentCast — nothing to buy for a vendor")
+  // Lane 77A — "vendors are not contact type, they are user type" (owner,
+  // wave 77): the `vendor` persona lane 76A added is GONE. A vendor SEAT never
+  // reaches this customer registry at all (lib/ai-isa/user-type-tool-policy.ts
+  // mounts zero BatchData on it), and the registry FAILS CLOSED on the stale
+  // persona word — the positive control that an unknown persona gets nothing.
+  ok(!("vendor" in PERSONA_TOOL_POLICY), "TOMBSTONE (lane 77A): PERSONA_TOOL_POLICY has NO vendor row — a vendor is a seat, never a persona")
+  const staleVendorPersona = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "vendor" as unknown as ToolPersona, conversationKey: "conv-vendor-1", contactId: "contact-9" })
+  ok(Object.keys(staleVendorPersona).length === 0, "FAIL CLOSED: the stale 'vendor' persona word gets ZERO BatchData tools (unknown persona → no allowlist, no cap, nothing)")
 
   const assertExact = (label: string, actual: Record<string, unknown>, expected: readonly string[]) => {
     for (const name of expected) ok(name in actual, `${label}: has ${name}`)
@@ -372,7 +374,7 @@ let sphereToolsEligible: Record<string, unknown> = {}
   ok(resolveToolPersona({ contactType: "referral_partner" }) === "sphere", "resolveToolPersona: contact_type 'referral_partner' → sphere")
   ok(resolveToolPersona({ contactType: "lifetime_customer" }) === "sphere", "resolveToolPersona: contact_type 'lifetime_customer' → sphere (wave 47's own CLOSED→sphere_of_influence ruling)")
   ok(resolveToolPersona({ contactType: "buyer" }) === "buyer", "resolveToolPersona: contact_type 'buyer' → buyer")
-  ok(resolveToolPersona({ contactType: "vendor" }) === "vendor", "resolveToolPersona: contact_type 'vendor' → vendor (lane 76A — never the buyer default)")
+  ok(resolveToolPersona({ contactType: "vendor" }) === "sphere", "resolveToolPersona: contact_type 'vendor' → sphere (lane 77A — a CRM record about a vendor is a business relationship; never the buyer default, never a persona of its own)")
   ok(resolveToolPersona({}) === "buyer", "resolveToolPersona: an unknown/empty row defaults to buyer (same posture as lib/campaigns/contact-sources.ts)")
   ok(resolveToolPersona({ contactType: "both" }) === "buyer", "resolveToolPersona: contact_type 'both' falls to the buyer default")
   ok(resolveToolPersona({ contactType: "SELLER" }) === "seller", "resolveToolPersona: case-insensitive on contact_type")

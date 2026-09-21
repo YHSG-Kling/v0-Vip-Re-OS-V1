@@ -772,6 +772,12 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
       }).nullable(),
       timeline: z.enum(RECORD_QUALIFICATION_TIMELINES).nullable(),
       financing_status: z.enum(RECORD_QUALIFICATION_FINANCING).nullable(),
+      // Lane 77A — goals 8/9 (representation, follow-up preference). No live
+      // column on contacts/leads carries either (scripts/schema-snapshot.ts),
+      // so both land in the qualification_summary trace — a published blind
+      // spot, never a silently dropped answer.
+      already_represented: z.boolean().nullable().describe("Are they already working with an agent? null if not asked yet"),
+      follow_up_preference: z.string().nullable().describe("Best way and time for the agent to follow up, in their words — or null"),
     }),
     execute: async (args: {
       intent: "buy" | "sell" | "both" | "invest" | "rent" | "relocate" | null
@@ -781,6 +787,8 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
       buyer_criteria: { city: string | null; state: string | null; min_price: number | null; max_price: number | null; min_beds: number | null; min_baths: number | null; property_type: string | null; must_haves?: string[] | null; move_in_date?: string | null; pets?: string | null } | null
       timeline: (typeof RECORD_QUALIFICATION_TIMELINES)[number] | null
       financing_status: (typeof RECORD_QUALIFICATION_FINANCING)[number] | null
+      already_represented?: boolean | null
+      follow_up_preference?: string | null
     }) => {
       if (!ctx.contactId && !ctx.leadId) return { success: false, error: "No contact or lead is linked to this conversation yet" }
       args = filterRecordableArgs(args)
@@ -823,6 +831,8 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
       if (args.buyer_criteria?.pets) summaryBits.push(`pets: ${args.buyer_criteria.pets.slice(0, 60)}`)
       if (args.timeline) { patch.timeline = args.timeline; summaryBits.push(`timeline: ${args.timeline}`) }
       if (args.financing_status) { patch.lender_status = args.financing_status; summaryBits.push(`financing: ${args.financing_status}`) }
+      if (args.already_represented === true || args.already_represented === false) summaryBits.push(`already represented by an agent: ${args.already_represented ? "yes" : "no"}`)
+      if (args.follow_up_preference) summaryBits.push(`follow-up preference: ${args.follow_up_preference.slice(0, 120)}`)
 
       let wrote = false
       // Lane 76A — a summary-only learning (reason for the move, condition,
@@ -889,20 +899,15 @@ export async function buildCustomerFreeTools(ctx: CustomerContextToolsContext): 
   const enabledCapabilities = await loadEnabledCapabilities(ctx.brokerageId)
   const disabled = enabledCapabilities.disabled
 
-  // Lane 76A — a VENDOR persona (contacts.contact_type='vendor', a live CHECK
-  // value) is the ONE persona with a disjoint tool set: their own status
-  // lookup, a callback, a call/meeting request and their own context. Never
-  // listings, never a home-value review, never a newsletter or process video
-  // (capability-catalogue.ts::VENDOR_SAFE_CAPABILITIES is the one list).
-  if (ctx.persona === "vendor") {
-    const vendorOut: Record<string, unknown> = { get_my_context: buildGetMyContextTool(ctx) }
-    if (ctx.contactId) vendorOut.request_showing = buildRequestShowingTool({ ...ctx, contactId: ctx.contactId })
-    if (ctx.contactId || ctx.leadId) {
-      vendorOut.schedule_callback = buildScheduleCallbackTool(ctx)
-      Object.assign(vendorOut, await buildNewCatalogueTools(ctx as CustomerCapabilityContext, enabledCapabilities))
-    }
-    return vendorOut
-  }
+  // TOMBSTONE (lane 77A, CLAUDE.md §1.3): lane 76A's `ctx.persona === "vendor"`
+  // branch (a disjoint vendor-safe bundle) is GONE — "vendors are not contact
+  // type, they are user type" (owner, wave 77). A vendor SEAT never reaches
+  // this customer bundle at all; its tools are built by
+  // lib/ai-isa/user-type-tools.ts::buildUserTypeSeatTools under the ONE seat
+  // table in lib/ai-isa/user-type-tool-policy.ts, and mounted by
+  // app/api/internal/ai-chat/route.ts (the surface the vendor/lender/title
+  // portals actually render). A CONTACT row typed 'vendor' is a CRM record
+  // about a business relationship and resolves to the `sphere` persona.
 
   const out: Record<string, unknown> = {
     get_my_context: buildGetMyContextTool(ctx),
@@ -955,6 +960,7 @@ const RECORD_ARG_TO_GOAL: Record<string, string> = {
   intent: "intent", persona: "persona", seller_property_address: "seller_address",
   seller_situation: "seller_situation",
   buyer_criteria: "buyer_criteria", timeline: "timeline", financing_status: "financing_status",
+  already_represented: "representation", follow_up_preference: "follow_up_preference",
 }
 /** Drops any argument whose playbook goal is not recordable — a goal removed
  *  from the playbook can never keep being written through this tool. */

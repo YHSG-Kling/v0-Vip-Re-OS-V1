@@ -56,6 +56,18 @@
  *   7. financing_status — for a buyer: cash / pre_approved /
  *                         needs_pre_approval / unknown (contacts.lender_status
  *                         / leads.lender_status — the live CHECK vocabulary).
+ *   8. representation   — (lane 77A) whether they are ALREADY working with an
+ *                         agent. Every working ISA asks it (Lofty's 'AI: Has
+ *                         Agent' tag, Roof AI's "agent representation status",
+ *                         CINC/Structurely intake); it decides whether the
+ *                         conversation is a hand-off or a courtesy. No live
+ *                         column — record_qualification appends it to
+ *                         qualification_summary (blind spot published in the
+ *                         lane notes).
+ *   9. follow_up_preference — (lane 77A) the best channel and time for the
+ *                         agent's follow-up, in their words — the hand-off
+ *                         detail every competitor captures last ("what's the
+ *                         best way for an agent to follow up?").
  *
  * ── THE CONVERSATIONAL RULES (never salesy — the owner's own words) ────────
  * Helpful and curious, not a script being read at someone. One question at a
@@ -110,6 +122,23 @@
  * Follow Up Boss AI, Roof AI) and which of their more inventive moves this
  * playbook adopted vs. declined, with reasons — this file is where the
  * ADOPTED ones live in the actual prompt, not a second list.
+ * Lane 77A re-ran the scan (sources in scratchpad lane77A-notes.md:
+ * Structurely/CINC "Alex" qualification engine, Ylopo rAIya, Lofty Sales
+ * Agent tag table + qualification process, Roof AI lead-qualification data
+ * points, Rechat Lucy, tradeworksai's bot-to-human hand-off protocol,
+ * Perspective AI's pre-listing discovery playbook) and adopted three moves:
+ *   (a) the REPRESENTATION ask ("already working with an agent?") and the
+ *       FOLLOW-UP-PREFERENCE ask, as goals 8 and 9 above;
+ *   (b) the HOT / WARM / COLD hand-off rule (`handoffRuleBlock`): right-away
+ *       + pre-approved/specific property → the agent calls now (request_
+ *       showing / schedule_callback and say so); 1-6 months → book the
+ *       appointment or value-review callback; 12+ / researching → newsletter
+ *       or market report and let nurture run — never pushed;
+ *   (c) the seller NEXT-STEP ask ("a value review call, or an agent coming
+ *       out — no obligation?") spoken as a choice, not a close.
+ * Declined: Lofty-style scoring tags in the prompt (record_qualification
+ * already writes the real columns), and any competitor move that quotes a
+ * home value in-conversation (owner ruling stands: the agent speaks the number).
  *
  * ── SURFACE VARIANTS ────────────────────────────────────────────────────────
  * `buildQualificationPrompt` is mounted on EVERY AI-agent surface (tenant and
@@ -170,6 +199,9 @@ export const QUALIFICATION_GOALS: readonly QualificationGoal[] = [
   { key: "buyer_criteria", label: "Buyer criteria", detail: "if they're buying or renting: the area, price range (or monthly rent), bedrooms/bathrooms, property type, must-haves, and for a renter the move-in date and pets" },
   { key: "timeline", label: "Timeline", detail: "a realistic window — right away, 1-3 months, 3-6 months, 6-12 months, 12+ months, or still just researching" },
   { key: "financing_status", label: "Financing status", detail: "for a buyer: paying cash, already pre-approved, still needs pre-approval, or not sure yet" },
+  // Lane 77A — the two asks every working ISA captures that this list did not.
+  { key: "representation", label: "Representation", detail: "whether they're already working with an agent — asked plainly and respected if yes (then help as a courtesy and stop qualifying)" },
+  { key: "follow_up_preference", label: "Follow-up preference", detail: "the best way and time for the agent to follow up — call, text or email, and roughly when" },
 ] as const
 
 export interface FollowUpOption {
@@ -212,13 +244,18 @@ export const QUALIFICATION_FOLLOW_UP_MENU: readonly FollowUpOption[] = [
 // far as the questions or info that they would be looking for." The seven
 // goals above are the WHAT; this table is the HOW for each persona — the
 // questions a working agent actually asks and the things they actually offer,
-// distilled from the 2026 competitor scan (Structurely/Aisa Holmes, Ylopo
-// rAIya, Lofty Sales Agent tags, CINC AI script goals, Alma/Noem/Hyperleap
-// receptionist intake, TalkLuna leasing/vendor intake — sources cited in the
-// lane notes). Every `offers` entry names a REGISTERED tool by its exact name
-// (scripts/qualification-playbook-simulator.ts holds this table against the
-// capability catalogue), so the prompt can never promise a tool that does not
-// exist. `staff`/platform are NOT personas here (see the header).
+// distilled from the 2026 competitor scan (lane 76A: Structurely/Aisa Holmes,
+// Ylopo rAIya, Lofty Sales Agent tags, CINC AI script goals, Alma/Noem/
+// Hyperleap receptionist intake, TalkLuna leasing intake; lane 77A re-scan:
+// CINC "Alex"/Structurely qualification engine, Lofty's qualification-process
+// + tag table, Roof AI's lead-qualification data points, Rechat Lucy, the
+// tradeworksai hand-off protocol, Perspective AI's pre-listing discovery — all
+// cited in scratchpad lane77A-notes.md). Every `offers` entry names a
+// REGISTERED tool by its exact name (scripts/qualification-playbook-
+// simulator.ts holds this table against the capability catalogue), so the
+// prompt can never promise a tool that does not exist. `staff`/platform/
+// vendor are NOT personas here — a seat gets its tools from
+// lib/ai-isa/user-type-tool-policy.ts (lane 77A tombstone below).
 export interface PersonaQuestionGuide {
   /** The questions this persona expects, in the order a conversation earns them. */
   asks: readonly string[]
@@ -228,75 +265,97 @@ export interface PersonaQuestionGuide {
 
 export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> = {
   seller: {
+    // The pre-listing discovery a listing agent runs BEFORE the appointment
+    // (Perspective AI's 2026 playbook: motivation, timeline, price expectation
+    // captured before the meeting so the appointment is a confirmation, not a
+    // pitch; Roof AI: "address, timeline, listing situation"; Lofty: 'Intend
+    // to Sell' → home evaluation appointment). NEVER a number from us.
     asks: [
       "the address of the home they're selling",
       "what's prompting the move (their words — never assume)",
       "their timeline in a bucket: right away, 1-3, 3-6, 6-12 months, or just researching",
-      "the home's condition and any recent updates",
-      "whether it's already listed, for-sale-by-owner, or an expired listing",
+      "the home's condition and any recent updates (move-in ready, minor updates, major work)",
+      "whether it's already listed, for-sale-by-owner, an expired listing — or whether they're already working with an agent",
+      "what they have in mind on price, in THEIR words only — you never suggest, estimate or react to a number; the agent brings the value to the call",
       "whether they'll also need to buy their next home (then run the buyer questions too)",
+      "which next step suits them: a call once the agent has reviewed the home's value, or an agent coming out to talk it through — no obligation, at least a week out",
     ],
     offers: ["schedule_home_value_review", "book_listing_appointment", "send_market_report", "send_explainer_video", "schedule_callback", "request_vendor_referral"],
   },
   buyer: {
+    // The buyer intake every ISA converges on (CINC/Structurely: location,
+    // beds/baths, price, financing, agent relationship; inboundrem's six:
+    // budget AS A RANGE, financing readiness, timeline, location, PURPOSE —
+    // own home vs investment — and contact preference).
     asks: [
       "the area(s) or neighborhoods they're focused on",
-      "price range, bedrooms/bathrooms, property type and must-haves",
+      "a price range (a range, not an exact figure — it lowers resistance), bedrooms/bathrooms, property type and must-haves",
+      "whether this is a home to live in or an investment (an investment changes the whole conversation — switch to the investor questions)",
       "their timeline bucket",
-      "whether they're pre-approved, paying cash, or still need a lender",
-      "whether they also have a home to sell first",
+      "whether they're pre-approved, paying cash, or still need a lender (offer a lender intro from our bench if they need one)",
+      "whether they're already working with an agent",
+      "whether they also have a home to sell first (then run the seller questions too)",
       "whether there's a specific listing that prompted the conversation, and if they'd like to see it",
+      "the best way and time for the agent to follow up",
     ],
     offers: ["send_matching_listings", "get_listing_details", "request_showing", "request_vendor_referral", "send_explainer_video", "send_market_report", "schedule_callback"],
   },
   investor: {
-    asks: [
-      "their buy box: area, price range, property type, and strategy (buy-and-hold, flip, multi-family)",
-      "whether they're financing or paying cash",
-      "how soon they want to place capital",
-      "whether they'd like to be sent matching on-market and off-market opportunities",
-    ],
     // Property-only by ruling (wave 68/69): comps/search PREVIEW and matching
-    // listings, never an owner's contact details. No explainer video.
+    // listings, never an owner's contact details. No explainer video. The buy
+    // box is the whole conversation (property type drives the analysis —
+    // SFR vs 2-4 unit vs 5+ vs condo/STR vs land — the realestate skill's
+    // own property-type split).
+    asks: [
+      "their buy box: area, price range, property type (single-family, 2-4 unit, 5+ unit, condo, short-term rental, land) and strategy (buy-and-hold, flip, BRRRR, short-term rental)",
+      "whether they're financing or paying cash, and how soon they want to place capital",
+      "how many deals they're looking to do this year, and whether they already own rentals in the area",
+      "whether they'd like matching on-market and off-market opportunities sent as they come up",
+      "the best way and time for the agent to follow up",
+    ],
     offers: ["send_matching_listings", "get_listing_details", "request_showing", "send_market_report", "schedule_callback"],
   },
   renter: {
+    // TalkLuna/Lofty renter intake, plus the ONE ask that turns a renter into
+    // a future buyer — the repo's own rental-graduation lane
+    // (lib/lead-pipeline/rental-graduation-sourcer.ts) exists for exactly it.
     asks: [
       "the area they want to rent in",
       "monthly budget, bedrooms, and move-in date",
       "pets and lease length",
       "whether they'd like to tour a specific rental",
+      "whether buying is something they'd consider down the road (never pushed — just so the agent can keep them posted)",
     ],
     offers: ["send_matching_listings", "get_listing_details", "request_showing", "schedule_callback"],
   },
   relocation: {
     asks: [
-      "where they're moving to and roughly when",
+      "where they're moving to and roughly when — and whether a job or employer date is driving it",
       "whether they're buying or renting on arrival, and their price range",
       "commute or other practical constraints THEY raise (never characterize an area for them)",
-      "whether they need to sell a home where they are now",
-      "whether a virtual tour or a visit trip is planned",
+      "whether they need to sell a home where they are now (then run the seller questions too)",
+      "whether a virtual tour or a visit trip is planned, and whether they're already working with an agent on either end",
     ],
     offers: ["send_matching_listings", "send_market_report", "get_listing_details", "request_showing", "request_vendor_referral", "schedule_callback"],
   },
   sphere: {
+    // The past-client / lifetime-customer conversation (Rechat Lucy's
+    // birthdays + home anniversaries, every referral program's "anyone you
+    // know?"). Value first: the equity check-in is the offer, never a pitch.
     asks: [
       "how they've been since closing / their home anniversary",
       "whether they'd like an updated look at their home's equity (the AGENT prepares and speaks the number)",
       "whether they need a trusted vendor — contractor, plumber, mover, lender for a refinance",
-      "whether anyone they know is thinking of buying, selling or renting",
+      "whether anyone they know is thinking of buying, selling or renting (with permission to pass the name along)",
       "whether they themselves are thinking of a move (then run the seller or buyer questions)",
     ],
     offers: ["schedule_home_value_review", "request_vendor_referral", "capture_referral", "send_market_report", "send_newsletter", "schedule_callback"],
   },
-  vendor: {
-    asks: [
-      "which placement, assignment or job they're calling about",
-      "whether it's an invoice/document or a payout they're asking after",
-      "what they need from the agent and when",
-    ],
-    offers: ["get_my_vendor_status", "schedule_callback", "request_showing"],
-  },
+  // TOMBSTONE (lane 77A): the `vendor` guide lane 76A added here is GONE —
+  // "vendors are not contact type, they are user type" (owner, wave 77). The
+  // vendor SEAT's own asks/tools live in lib/ai-isa/user-type-tool-policy.ts
+  // (USER_TYPE_TOOL_POLICY.vendor + seatPromptBlock), mounted by
+  // app/api/internal/ai-chat/route.ts for the vendor portal.
 }
 
 function personaGuideBlock(persona: ToolPersona | null | undefined): string {
@@ -374,14 +433,31 @@ function goalsBlock(persona: ToolPersona | null | undefined): string {
     // A "buyer" is the UNKNOWN default (persona-tool-policy.ts) and may also be
     // selling ("both" is a live contact_type), so the seller goals are only
     // withheld from personas that are POSITIVELY not selling their own home.
-    const notSellingOwnHome = persona === "investor" || persona === "renter" || persona === "vendor"
+    // (Lane 77A: the `vendor` branches lane 76A added here are gone — a vendor
+    // is a seat, never a persona; see PERSONA_QUESTION_GUIDE's tombstone.)
+    const notSellingOwnHome = persona === "investor" || persona === "renter"
     if ((g.key === "seller_address" || g.key === "seller_situation") && notSellingOwnHome) continue
-    if (g.key === "buyer_criteria" && (persona === "seller" || persona === "vendor")) continue
-    if (g.key === "financing_status" && (persona === "seller" || persona === "sphere" || persona === "vendor")) continue
-    if (persona === "vendor" && (g.key === "persona" || g.key === "timeline" || g.key === "intent")) continue
+    if (g.key === "buyer_criteria" && persona === "seller") continue
+    if (g.key === "financing_status" && (persona === "seller" || persona === "sphere")) continue
+    // A past client already HAS their agent — the representation ask is for a
+    // new lead, never a lifetime customer.
+    if (g.key === "representation" && persona === "sphere") continue
     lines.push(`- ${g.label}: ${g.detail}`)
   }
   return lines.join("\n")
+}
+
+/** PURE (lane 77A) — the HOT / WARM / COLD hand-off rule, adopted from the
+ *  2026 competitor scan's bot-to-human protocol and re-spoken in this
+ *  playbook's own never-salesy terms. Real-estate surfaces only. */
+function handoffRuleBlock(): string {
+  return [
+    "WHEN TO HAND OFF (read from what they say, never pushed):",
+    "- READY NOW (right away, pre-approved or paying cash, a specific property in mind, or they ask to talk): log it with request_showing or schedule_callback and tell them plainly the agent will reach out shortly — the agent's first message will reference this conversation, so they never repeat themselves.",
+    "- A FEW MONTHS OUT (1-6 months): offer the ONE follow-up that fits — a home-value review callback or a no-obligation listing appointment for a seller, matching listings for a buyer/renter — and record what you learned.",
+    "- LATER / JUST RESEARCHING (12+ months, 'just looking'): offer to keep them posted (newsletter or a market report for their area), record it, and let the follow-up run — no pressure, no re-asking next time.",
+    "- ALREADY WITH AN AGENT: answer what you can as a courtesy, thank them, and stop qualifying.",
+  ].join("\n")
 }
 
 function followUpMenuBlock(): string {
@@ -413,7 +489,7 @@ function knownFactsBlock(known: QualificationKnownFacts | undefined): string {
 export interface BuildQualificationPromptInput {
   /** The tool persona this conversation resolved to (buyer/seller/investor/
    *  renter/relocation/sphere), when known. Null/undefined for a not-yet-
-   *  captured or platform/staff surface. */
+   *  captured or platform/staff surface. Never a user type (lane 77A). */
   persona?: ToolPersona | null
   surface: QualificationSurface
   /** What this conversation already knows, so the prompt does not ask the
@@ -469,6 +545,7 @@ export function buildQualificationPrompt(input: BuildQualificationPromptInput): 
     goalsBlock(realEstatePersona),
     personaGuideBlock(realEstatePersona),
     followUpMenuBlock(),
+    handoffRuleBlock(),
     knownFactsBlock(input.known),
   ].filter(Boolean)
   return parts.join("\n\n")

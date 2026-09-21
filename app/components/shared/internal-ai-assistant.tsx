@@ -591,6 +591,10 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
     transport: new DefaultChatTransport({
       api: "/api/internal/ai-chat",
       headers: sessionIdForTransport ? { "x-internal-session-id": sessionIdForTransport } : {},
+      // Lane 77A — the contact the panel is OPEN ON, so a staff seat gets the
+      // customer free bundle for that person (the route tenant-checks the row
+      // and derives the persona from it; a partner seat ignores it).
+      body: pageContext?.contactId ? { contactId: pageContext.contactId } : {},
       fetch: async (url, options) => {
         const response = await fetch(url, options as RequestInit)
         const newId = response.headers.get("x-session-id")

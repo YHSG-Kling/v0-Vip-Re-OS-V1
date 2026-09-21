@@ -607,9 +607,12 @@ export async function planTurnWithPrompt(
   // (wave 75 integration) buildCustomerFreeTools is async since lane 75B —
   // it reads the brand's capability toggles — so it MUST be awaited; a bare
   // spread of the promise silently emptied the capture bundle on every call.
-  // Lane 76A — the resolved persona now reaches the bundle (a vendor caller
-  // gets only VENDOR_SAFE_CAPABILITIES; everyone else the identity-gated set),
-  // and agentId is the call row's agents.id (see VoiceToolExecContext).
+  // Lane 76A — the resolved persona now reaches the bundle (the identity-gated
+  // set, persona-steered by the catalogue's allowlist), and agentId is the
+  // call row's agents.id (see VoiceToolExecContext). Lane 77A: a vendor is a
+  // SEAT, not a persona — a contact typed 'vendor' resolves to sphere here and
+  // the vendor seat's own tools never ride the customer voice line
+  // (lib/ai-isa/user-type-tool-policy.ts).
   const freeTools = await buildCustomerFreeTools({
     brokerageId: toolCtx.brokerageId, contactId: toolCtx.contactId, leadId: toolCtx.leadId, agentId: toolCtx.agentId,
     persona,

@@ -86,7 +86,12 @@ const SURFACES: SurfaceCheck[] = [
     // ("no persona split — staff get the whole toolkit"); the cost TIER
     // constriction (filterToolsByTier) still applies. buildQualificationPrompt
     // is mounted as a COMPACT draft_ai_reply reference block (lane 74B).
-    expect: ["batchDataMcpTools", "rentCastMcpTools", "resolveEffectiveBatchDataToolTier", "filterToolsByTier", "buildQualificationPrompt"],
+    // Lane 77A — the SEAT split (lib/ai-isa/user-type-tool-policy.ts): the
+    // same route serves the vendor/lender/title portals' assistant, and the
+    // final tools map goes through selectToolsForSeat so a partner seat gets
+    // its own tools and never the staff toolkit / BatchData / RentCast.
+    expect: ["batchDataMcpTools", "rentCastMcpTools", "resolveEffectiveBatchDataToolTier", "filterToolsByTier", "buildQualificationPrompt",
+      "resolveUserTypeSeat", "buildUserTypeSeatTools", "selectToolsForSeat", "seatPromptBlock"],
   },
   {
     path: "app/api/portal/ai-chat/route.ts",

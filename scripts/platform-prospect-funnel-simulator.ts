@@ -329,7 +329,10 @@ console.log("\n[Layer 13 · registration]")
 const pkg = raw("package.json")
 check(`"test:platform-prospect-funnel" script is registered`, /"test:platform-prospect-funnel":\s*"tsx --conditions=react-server scripts\/platform-prospect-funnel-simulator\.ts"/.test(pkg))
 const guardLine = /"guard":\s*"([^"]+)"/.exec(pkg)?.[1] ?? ""
-check("the guard chain runs it right after test:scrapers (wave 76 ruling)", guardLine.includes("npm run test:scrapers && npm run test:platform-prospect-funnel"))
+// ORDER, not adjacency (CLAUDE.md §2 — a pinned neighbour is a waypoint that
+// every later wave's proof insertion breaks): it runs AFTER test:scrapers.
+check("the guard chain runs it after test:scrapers (wave 76 ruling)",
+  guardLine.indexOf("npm run test:scrapers") > -1 && guardLine.indexOf("npm run test:platform-prospect-funnel") > guardLine.indexOf("npm run test:scrapers"))
 const registrySrc = stripped("lib/kernel/manager-registry.ts")
 check("MAINTENANCE_DOMAINS carries platform_prospect_funnel, owner data_steward, proof test:platform-prospect-funnel", /platform_prospect_funnel:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:platform-prospect-funnel"/.test(registrySrc))
 

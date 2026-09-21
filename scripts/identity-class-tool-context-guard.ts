@@ -29,8 +29,11 @@
  *   Layer 4 — prompt ↔ registry: every tool name the voice guidance, the follow-up
  *             menu and the per-persona guide promise is a REGISTERED tool name.
  *   Layer 5 — runtime (no DB, no network): buildCustomerFreeTools never mounts a
- *             contact-requiring tool on a lead-only thread, a vendor persona gets
- *             only its safe set, and the callback note round-trips a leads.id.
+ *             contact-requiring tool on a lead-only thread, a contact typed
+ *             'vendor' is a SPHERE persona (lane 77A: a vendor is a seat, never
+ *             a persona — its tools live on lib/ai-isa/user-type-tools.ts and
+ *             never enter the customer bundle), and the callback note
+ *             round-trips a leads.id.
  *
  * Run:  npx tsx scripts/identity-class-tool-context-guard.ts
  */
@@ -52,6 +55,10 @@ const stripped = (path: string) => stripComments(readFileSync(path, "utf8"))
 const AUDITED_FILES = [
   "lib/ai-isa/customer-context-tools.ts",
   "lib/ai-isa/capability-catalogue.ts",
+  // Lane 77A — the user-type (seat) tool surface: userId = users.id,
+  // vendorId = vendors.id, agent_id args = agents.id, never crossed.
+  "lib/ai-isa/user-type-tool-policy.ts",
+  "lib/ai-isa/user-type-tools.ts",
   "lib/ai-isa/listing-appointment.ts",
   "lib/ai-isa/callback-task.ts",
   "lib/ai-isa/qualification-signals.ts",
@@ -256,9 +263,10 @@ console.log("\n[Layer 4 · prompt ↔ registry — every promised tool name is a
     check(`PERSONA_QUESTION_GUIDE.${persona}.offers ⊆ CAPABILITY_IDS`, unknown.length === 0, unknown.join(", "))
     check(`PERSONA_QUESTION_GUIDE.${persona} asks at least 3 realistic questions`, guide.asks.length >= 3)
   }
-  check("every ToolPersona in PERSONA_TOOL_POLICY has a question guide (vendor included — a live contacts_contact_type_check value)",
-    Object.keys(PERSONA_TOOL_POLICY).every((p) => p in PERSONA_QUESTION_GUIDE) && "vendor" in PERSONA_QUESTION_GUIDE)
-  check("resolveToolPersona: contact_type 'vendor' → vendor (never the buyer default)", resolveToolPersona({ contactType: "vendor" }) === "vendor")
+  check("every ToolPersona in PERSONA_TOOL_POLICY has a question guide, and the guide names NO user type (lane 77A: vendor is a seat, not a persona)",
+    Object.keys(PERSONA_TOOL_POLICY).every((p) => p in PERSONA_QUESTION_GUIDE) && !("vendor" in PERSONA_QUESTION_GUIDE) && !("vendor" in PERSONA_TOOL_POLICY))
+  check("resolveToolPersona: contact_type 'vendor' → sphere (a CRM record about a vendor is a business relationship — never the buyer default, never a persona of its own)",
+    resolveToolPersona({ contactType: "vendor" }) === "sphere")
 
   // The voice tool guidance's parenthesised tool list — every snake_case token must be registered.
   const promised = (TOOL_TURN_GUIDANCE.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []).filter((t) => t.includes("_"))
@@ -272,14 +280,13 @@ console.log("\n[Layer 4 · prompt ↔ registry — every promised tool name is a
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n[Layer 5 · runtime — identity gates on the free bundle, vendor set, callback note round-trip]")
+console.log("\n[Layer 5 · runtime — identity gates on the free bundle, vendor-typed contact, callback note round-trip]")
 {
   const { buildCustomerFreeTools } = await import("../lib/ai-isa/customer-context-tools")
-  const { VENDOR_SAFE_CAPABILITIES } = await import("../lib/ai-isa/capability-catalogue")
   const { encodeCallbackNote, decodeCallbackNote, bumpCallbackAttempt } = await import("../lib/ai-isa/callback-task")
 
   const leadOnly = Object.keys(await buildCustomerFreeTools({ brokerageId: "b-1", contactId: null, leadId: "lead-1", agentId: null }))
-  check("lead-only thread: NO contact-requiring tool is mounted (request_showing, get_my_vendor_status absent)",
+  check("lead-only thread: NO contact-requiring tool is mounted (request_showing absent), and no SEAT tool ever rides the customer bundle (get_my_vendor_status absent)",
     !leadOnly.includes("request_showing") && !leadOnly.includes("get_my_vendor_status"), leadOnly.join(","))
   check("lead-only thread: the lead-safe follow-ups + the new persona tools ARE mounted (record_qualification, schedule_callback, request_vendor_referral, capture_referral, get_listing_details)",
     ["record_qualification", "schedule_callback", "request_vendor_referral", "capture_referral", "get_listing_details"].every((n) => leadOnly.includes(n)), leadOnly.join(","))
@@ -288,12 +295,14 @@ console.log("\n[Layer 5 · runtime — identity gates on the free bundle, vendor
   check("contact thread (persona unresolved): the full bundle incl. request_showing and the seller tools (buyer is the UNKNOWN default; 'both' is live)",
     ["request_showing", "schedule_home_value_review", "book_listing_appointment", "send_matching_listings", "get_listing_details", "request_vendor_referral", "capture_referral"].every((n) => contactKeys.includes(n)) && !contactKeys.includes("get_my_vendor_status"), contactKeys.join(","))
 
-  const vendorKeys = Object.keys(await buildCustomerFreeTools({ brokerageId: "b-1", contactId: "c-2", leadId: null, agentId: "a-1", persona: "vendor" }))
-  check("vendor persona: ONLY the vendor-safe set is mounted (own status, callback, meeting request, own context) — no listings / home value / newsletter / video",
-    vendorKeys.every((k) => VENDOR_SAFE_CAPABILITIES.has(k as never)) && vendorKeys.includes("get_my_vendor_status") && !vendorKeys.includes("search_our_listings") && !vendorKeys.includes("schedule_home_value_review"), vendorKeys.join(","))
-  const vendorLead = Object.keys(await buildCustomerFreeTools({ brokerageId: "b-1", contactId: null, leadId: "lead-9", agentId: null, persona: "vendor" }))
-  check("vendor persona on a lead-only thread: get_my_vendor_status (contact-only) is NOT mounted; schedule_callback is",
-    !vendorLead.includes("get_my_vendor_status") && vendorLead.includes("schedule_callback"), vendorLead.join(","))
+  // Lane 77A — a CONTACT typed 'vendor' is a sphere persona: it gets the
+  // sphere-shaped customer bundle (referral capture, vendor bench, equity
+  // review) and never a seat tool. The vendor SEAT's own tools are proved in
+  // scripts/user-type-tool-surfaces-guard.ts.
+  const { resolveToolPersona: resolvePersonaAgain } = await import("../lib/ai-isa/persona-tool-policy")
+  const vendorTypedKeys = Object.keys(await buildCustomerFreeTools({ brokerageId: "b-1", contactId: "c-2", leadId: null, agentId: "a-1", persona: resolvePersonaAgain({ contactType: "vendor" }) }))
+  check("a contact typed 'vendor' resolves to the SPHERE persona and gets the sphere customer bundle (capture_referral, request_vendor_referral, schedule_home_value_review) — and NO seat tool (get_my_vendor_status absent)",
+    vendorTypedKeys.includes("capture_referral") && vendorTypedKeys.includes("request_vendor_referral") && vendorTypedKeys.includes("schedule_home_value_review") && !vendorTypedKeys.includes("get_my_vendor_status"), vendorTypedKeys.join(","))
 
   const note = encodeCallbackNote({ phone: "+15125550100", reason: "pricing", rawPhrase: "tomorrow 3pm", voiceCallId: null, leadId: "lead-42" })
   const decoded = decodeCallbackNote(note)
@@ -313,5 +322,5 @@ if (failed > 0) {
   console.log("\n❌ IDENTITY_CLASS_TOOL_CONTEXT — see failures above")
   process.exit(1)
 } else {
-  console.log(" ✅ IDENTITY_CLASS_TOOL_CONTEXT — no leads.id in a contacts.id slot, no users.id in an agents.id slot, no lead-shaped compliance contact, every promised tool name registered")
+  console.log(" ✅ IDENTITY_CLASS_TOOL_CONTEXT — no leads.id in a contacts.id slot, no users.id in an agents.id slot, no lead-shaped compliance contact, every promised tool name registered, no user type in the persona vocabulary")
 }

@@ -108,7 +108,10 @@ export type CapabilityId =
   | "get_listing_details"
   | "request_vendor_referral"
   | "capture_referral"
-  | "get_my_vendor_status"
+  // TOMBSTONE (lane 77A): "get_my_vendor_status" left this union — a vendor
+  // is a SEAT, not a customer persona (owner, wave 77). Survivor:
+  // lib/ai-isa/user-type-tools.ts::buildGetMyVendorStatusTool, keyed on the
+  // session-resolved vendors.id, under lib/ai-isa/user-type-tool-policy.ts.
 
 export interface CapabilityDefinition {
   id: CapabilityId
@@ -124,9 +127,9 @@ export interface CapabilityDefinition {
    *  find/book_listing_appointment, record_qualification, request_showing) are
    *  registered on IDENTITY, not persona, because "buyer" is the UNKNOWN default
    *  and buy+sell ("both") is a live contact_type — withholding the seller
-   *  tools from a buyer-defaulted thread would lose the move-up seller. The
-   *  ONE hard persona exclusion is `vendor`, which gets only its own
-   *  VENDOR_SAFE set (see isCapabilityEnabled). */
+   *  tools from a buyer-defaulted thread would lose the move-up seller.
+   *  (Lane 77A: the `vendor` persona exclusion lane 76A carved here is GONE —
+   *  a vendor is a seat; lib/ai-isa/user-type-tool-policy.ts.) */
   personas: readonly ToolPersona[] | null
   /** costRankForTool's bucket — every catalogue capability is 0 (free,
    *  internal, no vendor spend), the SAME rank persona-tool-policy.ts's
@@ -172,7 +175,7 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
     id: "request_showing",
     label: "Request a showing, call, or meeting",
     usefulFor: "the person wants to see a property, meet, or talk right now",
-    personas: ["buyer", "seller", "renter", "relocation", "investor", "sphere", "vendor"],
+    personas: ["buyer", "seller", "renter", "relocation", "investor", "sphere"],
     costRank: 0,
     signalType: "(notification only — no manager signal)",
     requiresIdentity: true,
@@ -289,26 +292,17 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
     requiresIdentity: true,
     survivor: "lib/referrals/referral-record.ts::insertReferralRecord (extracted from app/actions/referrals/referral-actions.ts::createReferral) + lib/contact-pipeline/contact-capture.ts::captureContact",
   },
-  {
-    id: "get_my_vendor_status",
-    label: "Look up my own placement / document / payout status",
-    usefulFor: "a vendor (contacts.contact_type='vendor') asks where their assignment, invoice or payout stands — their OWN rows only, never another vendor's and never a brokerage financial",
-    personas: ["vendor"],
-    costRank: 0,
-    signalType: "(read-only — no signal)",
-    requiresIdentity: true,
-    survivor: "vendors / vendor_assignments / vendor_invoices / vendor_payouts (live tables, scripts/live-tables.ts), resolved from the contact's own email/phone within the tenant",
-  },
+  // TOMBSTONE (lane 77A, CLAUDE.md §1.3): the `get_my_vendor_status` entry
+  // lane 76A added here (a vendor persona's own placement/invoice/payout read,
+  // resolved by a CONTACT's email/phone) is GONE, together with
+  // VENDOR_SAFE_CAPABILITIES and the vendor branch of isCapabilityEnabled.
+  // Owner (wave 77): "vendors are not contact type, they are user type."
+  // Survivor: lib/ai-isa/user-type-tools.ts::buildGetMyVendorStatusTool — the
+  // SAME three reads (vendor_assignments / vendor_invoices / vendor_payouts),
+  // now keyed on the SESSION-resolved vendors.id (user_role_assignments.
+  // vendor_id, lib/auth/role-grants.ts::selectVendorId) + brokerage_id, never
+  // an email/phone match — under lib/ai-isa/user-type-tool-policy.ts.
 ] as const
-
-/** Lane 76A — the ONLY capabilities a `vendor` persona may reach, even among
- *  the persona-null "universal" ones: a vendor is not a buyer/seller and must
- *  never be offered listings, a home-value review, a newsletter or a process
- *  video. Held in one set so isCapabilityEnabled and the free-bundle builder
- *  agree (CLAUDE.md §6). */
-export const VENDOR_SAFE_CAPABILITIES: ReadonlySet<CapabilityId> = new Set<CapabilityId>([
-  "get_my_context", "get_my_vendor_status", "schedule_callback", "request_showing",
-])
 
 export const CAPABILITY_IDS: readonly CapabilityId[] = CAPABILITY_CATALOGUE.map((c) => c.id)
 
@@ -418,24 +412,17 @@ export function isCapabilityEnabled(id: CapabilityId, persona: ToolPersona | nul
   if (disabled.includes(id)) return false
   const def = CAPABILITY_CATALOGUE.find((c) => c.id === id)
   if (!def) return false
-  // Lane 76A — a vendor is the ONE persona with a disjoint tool set (see
-  // VENDOR_SAFE_CAPABILITIES): persona-null "universal" capabilities do NOT
-  // reach it.
-  if (persona === "vendor") return VENDOR_SAFE_CAPABILITIES.has(id)
+  // (Lane 77A: lane 76A's two `vendor` branches here are gone — see the
+  // catalogue tombstone above. Every persona in ToolPersona is a customer.)
   if (!def.personas) return true
-  // A vendor-ONLY capability (its own status lookup) never mounts for an
-  // unresolved or non-vendor persona — the "do not withhold when unresolved"
-  // posture below is for buyer/seller-shaped tools, where the default persona
-  // is an unknown; a vendor's own records are not.
-  if (def.personas.length === 1 && def.personas[0] === "vendor") return false
   if (!persona) return true // persona not yet resolved — do not withhold, the identity gate still applies
   return (def.personas as readonly string[]).includes(persona)
 }
 
-/** Capabilities whose EXECUTE needs a contacts.id (they read the contact's own
- *  row) — never mounted on a lead-only thread, the same registration-time
- *  discipline request_showing already follows in customer-context-tools.ts. */
-const CONTACT_ONLY_CAPABILITIES: ReadonlySet<CapabilityId> = new Set<CapabilityId>(["get_my_vendor_status"])
+// TOMBSTONE (lane 77A): CONTACT_ONLY_CAPABILITIES (whose only member was
+// get_my_vendor_status) is gone with that capability — see the catalogue
+// tombstone. request_showing's contact-only registration discipline lives in
+// customer-context-tools.ts::buildCustomerFreeTools, unchanged.
 
 // ─── NEW capability #1 — send_newsletter ───────────────────────────────────
 
@@ -789,51 +776,14 @@ export function buildCaptureReferralTool(ctx: CustomerCapabilityContext) {
   })
 }
 
-// ─── Lane 76A capability #8 — get_my_vendor_status ─────────────────────────
-// A vendor who reaches a customer surface (calls the office line and is
-// resolved/captured as a contacts.contact_type='vendor' row) asks where THEIR
-// OWN job, invoice or payout stands (TalkLuna's vendor-call intake: ETA,
-// work-order reference, callback). contacts carries no FK to vendors, so the
-// vendors row is resolved by the contact's OWN email/phone digits within the
-// tenant — an honest "not linked" when neither matches, never a guess and
-// never another vendor's rows. Own rows only: a vendor's own invoice total and
-// payout amount are THEIR financials (CLAUDE.md §5 "only their own").
-export function buildGetMyVendorStatusTool(ctx: CustomerCapabilityContext) {
-  return tool({
-    description: "For a VENDOR asking about their own work: look up their open assignments/placements, invoices (status, due date) and payouts (status) with this brokerage. Their own records only. If the vendor account can't be matched, say the agent will follow up.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      if (!ctx.contactId) return { success: false, error: "No contact is linked to this conversation yet" }
-      const svc = createServiceClient()
-      const { data: contact, error: cErr } = await svc.from("contacts").select("email, phone_digits").eq("id", ctx.contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-      if (cErr || !contact) return { success: false, error: cErr?.message ?? "Contact not found" }
-      const email = ((contact as { email?: string | null }).email ?? "").trim().toLowerCase()
-      const digits = ((contact as { phone_digits?: string | null }).phone_digits ?? "").trim()
-      if (!email && !digits) return { success: false, linked: false, error: "No email or phone on file to match a vendor account — the agent will follow up" }
-
-      const { data: vendors } = await svc.from("vendors").select("id, name, category, email, phone, status").eq("brokerage_id", ctx.brokerageId).limit(200)
-      const vendor = (vendors ?? []).find((v: { email?: string | null; phone?: string | null }) =>
-        (email && (v.email ?? "").trim().toLowerCase() === email) ||
-        (digits && (v.phone ?? "").replace(/\D/g, "").endsWith(digits.slice(-10)) && digits.length >= 10),
-      ) as { id: string; name: string | null; category: string | null; status: string | null } | undefined
-      if (!vendor) return { success: false, linked: false, error: "No vendor account matches this contact's email/phone — the agent will follow up" }
-
-      const [{ data: assignments }, { data: invoices }, { data: payouts }] = await Promise.all([
-        svc.from("vendor_assignments").select("id, assignment_type, status, scheduled_date, completed_date").eq("vendor_id", vendor.id).eq("brokerage_id", ctx.brokerageId).order("scheduled_date", { ascending: false }).limit(5),
-        svc.from("vendor_invoices").select("id, invoice_number, status, invoice_date, due_date, paid_at, total_amount").eq("vendor_id", vendor.id).eq("brokerage_id", ctx.brokerageId).order("invoice_date", { ascending: false }).limit(5),
-        svc.from("vendor_payouts").select("id, status, amount, initiated_at, completed_at, payout_method").eq("vendor_id", vendor.id).eq("brokerage_id", ctx.brokerageId).order("initiated_at", { ascending: false }).limit(5),
-      ])
-      return {
-        success: true,
-        linked: true,
-        vendor: { name: vendor.name, category: vendor.category, status: vendor.status },
-        assignments: assignments ?? [],
-        invoices: invoices ?? [],
-        payouts: payouts ?? [],
-      }
-    },
-  })
-}
+// ─── TOMBSTONE (lane 77A) — lane 76A capability #8, get_my_vendor_status ──
+// buildGetMyVendorStatusTool is GONE from this file. It resolved a VENDOR by
+// matching a contact's email/phone against the brokerage's vendors table —
+// the wrong identity class for a seat: a vendor who talks to the OS is a
+// signed-in user (users.user_type='vendor', user_role_assignments.vendor_id),
+// never a contacts row. Survivor: lib/ai-isa/user-type-tools.ts::
+// buildGetMyVendorStatusTool (SAME three reads, keyed on the session-resolved
+// vendors.id + brokerage_id), mounted under lib/ai-isa/user-type-tool-policy.ts.
 
 // ─── Assembly ───────────────────────────────────────────────────────────────
 
@@ -847,7 +797,7 @@ const NEW_CAPABILITY_BUILDERS: Partial<Record<CapabilityId, (ctx: CustomerCapabi
   // by customer-context-tools.ts::buildCustomerFreeTools beside search_our_listings.
   request_vendor_referral: buildRequestVendorReferralTool,
   capture_referral: buildCaptureReferralTool,
-  get_my_vendor_status: buildGetMyVendorStatusTool,
+  // get_my_vendor_status: moved to lib/ai-isa/user-type-tools.ts (lane 77A tombstone above)
 }
 
 /**
@@ -865,7 +815,6 @@ export async function buildNewCatalogueTools(
   const out: Record<string, unknown> = {}
   for (const [id, builder] of Object.entries(NEW_CAPABILITY_BUILDERS) as Array<[CapabilityId, (ctx: CustomerCapabilityContext) => unknown]>) {
     if (!isCapabilityEnabled(id, ctx.persona, settings.disabled)) continue
-    if (CONTACT_ONLY_CAPABILITIES.has(id) && !ctx.contactId) continue // a leads.id cannot stand in for a contacts.id
     out[id] = builder(ctx)
   }
   return out

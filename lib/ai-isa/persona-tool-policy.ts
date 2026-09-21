@@ -75,14 +75,22 @@
  *                conversation is confirming a number is safe to call BEFORE
  *                the outbound gate runs (lib/communication/tcpa-gate.ts),
  *                never a substitute for it.
- *   vendor     — ZERO BatchData, ZERO RentCast (lane 76A). contacts.contact_type
- *                'vendor' is a LIVE CHECK value (contacts_contact_type_check —
- *                never invented here); a vendor who reaches a customer surface
- *                (calls the office line, is captured as a contact) asks about
- *                THEIR OWN placement/assignment, invoice/document and payout
- *                status — lib/ai-isa/capability-catalogue.ts::get_my_vendor_status
- *                — never about property data, so no paid tool has anything to
- *                buy for them.
+ *
+ * ── TOMBSTONE (lane 77A, CLAUDE.md §1.3) — `vendor` is NOT a ToolPersona ──
+ * Lane 76A added a `vendor` persona here, derived from contacts.contact_type
+ * ='vendor'. Owner correction (wave 77, verbatim): "vendors are not contact
+ * type, they are user type. persona tools need to be for true persona types
+ * and other user types need their own tools if there are no tools already
+ * covered." A ToolPersona is a CUSTOMER shape (buyer/seller/investor/renter/
+ * relocation/sphere); a vendor is a SEAT (users.user_type='vendor', with
+ * lender/title as vendors.category — CLAUDE.md §4). The vendor's own tools
+ * (placements, invoices, payouts, coverage, ratings…) now live on the
+ * USER-TYPE surface: lib/ai-isa/user-type-tool-policy.ts (the ONE seat table)
+ * + lib/ai-isa/user-type-tools.ts (the builders), mounted by
+ * app/api/internal/ai-chat/route.ts for the vendor/lender/title portals. A
+ * contacts row whose contact_type is 'vendor' is a CRM RECORD ABOUT a vendor
+ * (a business relationship the brokerage keeps), not a person being
+ * qualified — resolveToolPersona routes it to `sphere` (see below).
  *
  * ── WHAT EACH PERSONA ACTUALLY ASKS (lane 76A research, sources in
  *    scratchpad lane76A-notes.md — Structurely/Aisa Holmes, Ylopo rAIya, Lofty
@@ -127,9 +135,13 @@
  * spend alone would justify.
  */
 
-export type ToolPersona = "buyer" | "seller" | "investor" | "renter" | "relocation" | "sphere" | "vendor"
+// CUSTOMER personas only — never a user type (lane 77A tombstone above;
+// scripts/user-type-tool-surfaces-guard.ts holds this union against
+// lib/ai-isa/user-type-tool-policy.ts::USER_TYPE_SEATS and goes red if a seat
+// name ever lands here again).
+export type ToolPersona = "buyer" | "seller" | "investor" | "renter" | "relocation" | "sphere"
 
-export const TOOL_PERSONAS: readonly ToolPersona[] = ["buyer", "seller", "investor", "renter", "relocation", "sphere", "vendor"]
+export const TOOL_PERSONAS: readonly ToolPersona[] = ["buyer", "seller", "investor", "renter", "relocation", "sphere"]
 
 export interface ToolPersonaInput {
   /** contacts.contact_type / leads.lead_type-derived ('buyer'|'seller'|...) */
@@ -147,9 +159,10 @@ export interface ToolPersonaInput {
  * 'relocated' > home_owner_status 'renter' > contact_type 'seller' >
  * contact_type 'sphere'/'referral_partner'/'lifetime_customer' (past clients
  * and referral-network contacts are the sphere_of_influence manager's
- * territory — wave 47's own CLOSED→sphere_of_influence ruling) > contact_type
- * 'vendor' (lane 76A — a live contacts_contact_type_check value; a vendor is
- * never a property buyer, so it must not fall to the buyer default) > default
+ * territory — wave 47's own CLOSED→sphere_of_influence ruling; lane 77A adds
+ * contact_type 'vendor' to the SAME branch — a CRM record about a vendor is a
+ * business relationship the brokerage keeps, never a property buyer, and
+ * never a persona of its own — see the tombstone in the header) > default
  * 'buyer'. The 'buyer' default mirrors lib/campaigns/contact-sources.ts's
  * own documented posture ("an unknown type is treated as a buyer rather than
  * dropped, so a capture never falls out of the funnel") — contact_type
@@ -169,8 +182,9 @@ export function resolveToolPersona(input: ToolPersonaInput): ToolPersona {
 
   const type = (input.contactType ?? "").trim().toLowerCase()
   if (type === "seller") return "seller"
-  if (type === "sphere" || type === "referral_partner" || type === "lifetime_customer") return "sphere"
-  if (type === "vendor") return "vendor"
+  // 'vendor' rides the sphere branch (lane 77A): the vendor SEAT's own tools
+  // live on lib/ai-isa/user-type-tool-policy.ts, never on a persona.
+  if (type === "sphere" || type === "referral_partner" || type === "lifetime_customer" || type === "vendor") return "sphere"
 
   return "buyer"
 }
@@ -264,16 +278,10 @@ export const PERSONA_TOOL_POLICY: Record<ToolPersona, PersonaToolPolicy> = {
     capCents: 50,
     redaction: "identity",
   },
-  vendor: {
-    // Lane 76A — a vendor asks about THEIR OWN placement/document/payout
-    // status (capability-catalogue.ts::get_my_vendor_status); there is no
-    // property-data need, so no paid tool of either provider is ever offered.
-    batchDataToolNames: [],
-    rentCastEnabled: false,
-    rentCastNamePattern: null,
-    capCents: 0,
-    redaction: "identity",
-  },
+  // TOMBSTONE (lane 77A): the `vendor` row lane 76A added here is GONE — a
+  // vendor is a user type, not a persona. Survivor: lib/ai-isa/
+  // user-type-tool-policy.ts::USER_TYPE_TOOL_POLICY.vendor (zero BatchData,
+  // zero RentCast, seat tools only).
 }
 
 /** PURE — is `toolName` allowed for `persona` BEFORE the platform tier filter? */
@@ -485,12 +493,16 @@ export const FREE_INTERNAL_TOOL_NAMES: readonly string[] = [
   "send_explainer_video",
   // Lane 76A — persona-realistic free tools (lib/ai-isa/capability-catalogue.ts):
   // a specific listing's facts from OUR OWN table, a trusted-vendor / lender
-  // intro from the brokerage's own bench, a sphere referral captured onto the
-  // existing referrals rail, and a vendor's own placement/document/payout status.
+  // intro from the brokerage's own bench, and a sphere referral captured onto
+  // the existing referrals rail.
   "get_listing_details",
   "request_vendor_referral",
   "capture_referral",
-  "get_my_vendor_status",
+  // TOMBSTONE (lane 77A): "get_my_vendor_status" left this list — it is a
+  // VENDOR SEAT tool now (lib/ai-isa/user-type-tools.ts, mounted only on the
+  // user-type surface, which never carries a BatchData/RentCast tool to rank
+  // against — lib/ai-isa/user-type-tool-policy.ts). Seat tools are rank-0 by
+  // construction on their own surface; they never enter selectToolsForPersona.
 ]
 
 /** PURE — the cost rank for one tool NAME. Generic over any registry's key

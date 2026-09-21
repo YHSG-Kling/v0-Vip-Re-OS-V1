@@ -315,10 +315,11 @@ check("every menu tool name is a real catalogue capability id",
 // person" — get_my_context is a silent lookup, record_qualification is a silent write,
 // search_our_listings is used ad hoc, not offered) — this is the documented, expected
 // remainder, not a mismatch.
-// Lane 76A adds two more silent/ad-hoc ones: get_listing_details (answers a
-// question about ONE of our listings — a lookup, not an offer) and
-// get_my_vendor_status (a vendor's own status read — a lookup, not an offer).
-const EXPECTED_CATALOGUE_ONLY = new Set(["get_my_context", "search_our_listings", "record_qualification", "get_listing_details", "get_my_vendor_status"])
+// Lane 76A adds one more silent/ad-hoc one: get_listing_details (answers a
+// question about ONE of our listings — a lookup, not an offer). Lane 77A
+// REMOVED get_my_vendor_status from the catalogue — a vendor is a SEAT, and
+// its tools live in lib/ai-isa/user-type-tools.ts (never a customer capability).
+const EXPECTED_CATALOGUE_ONLY = new Set(["get_my_context", "search_our_listings", "record_qualification", "get_listing_details"])
 const unexpectedCatalogueOnly = catalogueOnlyNonMenu.filter((c) => !EXPECTED_CATALOGUE_ONLY.has(c))
 check("every OTHER catalogue capability (beyond the 5 documented non-offered ones) is on the follow-up menu",
   unexpectedCatalogueOnly.length === 0, unexpectedCatalogueOnly.length ? unexpectedCatalogueOnly.join(", ") : undefined)
@@ -327,8 +328,10 @@ check("every OTHER catalogue capability (beyond the 5 documented non-offered one
 check("CAPABILITY_CATALOGUE is exactly the follow-up menu ∪ the documented non-offered lookups (derived, not a pinned count)",
   CAPABILITY_CATALOGUE.length === menuTools.size + EXPECTED_CATALOGUE_ONLY.size && catalogueIds.size === CAPABILITY_CATALOGUE.length,
   `catalogue=${CAPABILITY_CATALOGUE.length} menu=${menuTools.size} nonOffered=${EXPECTED_CATALOGUE_ONLY.size}`)
-check("lane 76A's four persona-realistic capabilities are catalogued (get_listing_details, request_vendor_referral, capture_referral, get_my_vendor_status)",
-  ["get_listing_details", "request_vendor_referral", "capture_referral", "get_my_vendor_status"].every((c) => catalogueIds.has(c)))
+check("lane 76A's three persona-realistic CUSTOMER capabilities are catalogued (get_listing_details, request_vendor_referral, capture_referral)",
+  ["get_listing_details", "request_vendor_referral", "capture_referral"].every((c) => catalogueIds.has(c)))
+check("TOMBSTONE (lane 77A): get_my_vendor_status is NOT a customer capability any more — it is a vendor SEAT tool (lib/ai-isa/user-type-tools.ts)",
+  !catalogueIds.has("get_my_vendor_status"))
 {
   // Persona-realism: the guide's every offer is a catalogue id, and the two
   // personas the owner named (sellers → home value/listing appointment;
@@ -341,11 +344,39 @@ check("lane 76A's four persona-realistic capabilities are catalogued (get_listin
     ["schedule_home_value_review", "request_vendor_referral", "capture_referral"].every((t) => PERSONA_QUESTION_GUIDE.sphere.offers.includes(t)))
   check("PERSONA_QUESTION_GUIDE.investor stays property-only (no explainer video, no home-value review, no vendor bench)",
     !PERSONA_QUESTION_GUIDE.investor.offers.some((t) => t === "send_explainer_video" || t === "schedule_home_value_review" || t === "request_vendor_referral"))
-  check("PERSONA_QUESTION_GUIDE.vendor offers only its own status lookup + callback/meeting",
-    PERSONA_QUESTION_GUIDE.vendor.offers.every((t) => ["get_my_vendor_status", "schedule_callback", "request_showing"].includes(t)))
+  // Lane 77A — persona realism (owner: "the persona tools I believe are not
+  // realistic as far as the questions or info that they would be looking
+  // for"): the asks every working ISA converges on are present, and the
+  // guide names NO user type.
+  check("TOMBSTONE (lane 77A): PERSONA_QUESTION_GUIDE has NO `vendor` entry — a vendor is a seat, never a persona",
+    !("vendor" in PERSONA_QUESTION_GUIDE))
+  const asksOf = (p: keyof typeof PERSONA_QUESTION_GUIDE) => PERSONA_QUESTION_GUIDE[p].asks.join(" | ").toLowerCase()
+  check("seller asks: address, reason, timeline bucket, condition, listed/FSBO/expired, needs-to-buy-next, and the value-review-call vs no-obligation-appointment next step — never a number from us",
+    /address/.test(asksOf("seller")) && /prompting|reason|why/.test(asksOf("seller")) && /1-3, 3-6, 6-12/.test(asksOf("seller")) && /condition/.test(asksOf("seller"))
+    && /for-sale-by-owner|fsbo/.test(asksOf("seller")) && /expired/.test(asksOf("seller")) && /buy their next home/.test(asksOf("seller"))
+    && /no obligation/.test(asksOf("seller")) && /never suggest, estimate or react to a number/.test(asksOf("seller")))
+  check("buyer asks include the representation ask ('already working with an agent'), own-home-vs-investment, a price RANGE, financing, home-to-sell-first and the follow-up preference",
+    /already working with an agent/.test(asksOf("buyer")) && /investment/.test(asksOf("buyer")) && /range, not an exact figure/.test(asksOf("buyer"))
+    && /pre-approved/.test(asksOf("buyer")) && /home to sell first/.test(asksOf("buyer")) && /best way and time/.test(asksOf("buyer")))
+  check("renter asks: budget, beds, move-in, pets, lease length, tour — plus the rental-graduation ask (buying down the road, never pushed)",
+    /monthly budget/.test(asksOf("renter")) && /move-in/.test(asksOf("renter")) && /pets/.test(asksOf("renter")) && /lease length/.test(asksOf("renter")) && /never pushed/.test(asksOf("renter")))
+  check("investor asks stay property-only (buy box incl. property type + strategy, financing/cash, deal volume, off-market alerts) — no owner-contact ask",
+    /buy box/.test(asksOf("investor")) && /strategy/.test(asksOf("investor")) && /off-market/.test(asksOf("investor")) && !/owner('s)? (name|phone|contact)/.test(asksOf("investor")))
+  const { QUALIFICATION_GOALS: goals, buildQualificationPrompt: buildPrompt } = await import("../lib/ai-isa/qualification-playbook")
+  check("QUALIFICATION_GOALS carries the two lane-77A goals (representation, follow_up_preference)",
+    goals.some((g) => g.key === "representation") && goals.some((g) => g.key === "follow_up_preference"))
+  const sellerPrompt = buildPrompt({ surface: "widget", persona: "seller" as any })
+  check("a real-estate surface prompt carries the HOT/WARM/COLD hand-off rule and the seller guide, and never a 'vendor' persona line",
+    sellerPrompt.includes("WHEN TO HAND OFF") && sellerPrompt.includes("READY NOW") && sellerPrompt.includes("THIS PERSON LOOKS LIKE A SELLER") && !sellerPrompt.includes("LOOKS LIKE A VENDOR"))
+  const platformPrompt = buildPrompt({ surface: "platform_reception" })
+  check("the platform-reception prompt does NOT carry the real-estate hand-off rule (a software prospect is not a buyer/seller)",
+    !platformPrompt.includes("WHEN TO HAND OFF"))
+  const spherePrompt = buildPrompt({ surface: "portal", persona: "sphere" as any })
+  check("the representation goal is withheld from a SPHERE persona (a past client already has their agent) and present for a buyer",
+    !spherePrompt.includes("- Representation:") && buildPrompt({ surface: "portal", persona: "buyer" as any }).includes("- Representation:"))
   const { isCapabilityEnabled: capEnabled } = await import("../lib/ai-isa/capability-catalogue")
-  check("a vendor persona is withheld the persona-null universal capabilities (send_newsletter) and granted only its own status lookup",
-    !capEnabled("send_newsletter", "vendor" as any, []) && capEnabled("get_my_vendor_status", "vendor" as any, []) && !capEnabled("get_my_vendor_status", "buyer" as any, []))
+  check("isCapabilityEnabled has no vendor branch left: the stale 'vendor' persona word no longer withholds a universal capability, and no vendor-only capability exists to unlock",
+    capEnabled("send_newsletter", "vendor" as any, []) && !catalogueIds.has("get_my_vendor_status"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
