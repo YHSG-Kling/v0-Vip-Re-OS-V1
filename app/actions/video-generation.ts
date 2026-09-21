@@ -1383,8 +1383,16 @@ Requirements:
 
 Return ONLY the script text, no formatting or labels.`
 
+    // LANE 77D — the Director gate on EVERY spoken writer: this is the studio
+    // script the agent's D-ID avatar SPEAKS (generateVideoFromScript reads it
+    // back out of video_scripts_library), so the SHARED spoken-delivery
+    // standards ride the prompt (withSpokenScriptStandards keeps the ask first,
+    // then the charter, then the directive) and the AI-tell scan runs on the
+    // output as an ADVISORY beside the kernel findings. Found by
+    // test:video-type-matrix's derived writer scan.
+    const { withSpokenScriptStandards, scanForAiTells } = await import("@/lib/video/realism-profile")
     const response = await generateAIResponse({
-      prompt,
+      prompt: withSpokenScriptStandards(prompt),
       // Brand voice + ThemFirst + Fair Housing, injected proactively so the
       // model complies before the advisory post-check ever runs.
       system: complianceBlocks.join("\n\n"),
@@ -1398,7 +1406,7 @@ Return ONLY the script text, no formatting or labels.`
     const script = response.text.trim()
 
     // Advisory — the agent sees what slipped through, next to a Regenerate button.
-    const complianceWarnings = await postcheckScript(actor, script, journeyType)
+    const complianceWarnings = [...((await postcheckScript(actor, script, journeyType)) ?? []), ...scanForAiTells(script)]
 
     return { success: true, script, complianceWarnings }
   } catch (error: any) {

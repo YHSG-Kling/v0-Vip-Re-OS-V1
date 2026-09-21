@@ -124,7 +124,21 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
       backgroundColor: brand.primaryColor,
       fontFamily: "system-ui, -apple-system, sans-serif",
     }}>
-      {voiceoverUrl && <Audio src={voiceoverUrl} />}
+      {/* NARRATION STARTS WITH THE QUOTE, NOT UNDER THE COVER (lane 77D). The
+          CaptionLayer below declares the cover tile silent (visibleFromFrame=
+          COVER) and clips its cues to [COVER, COVER+QUOTE+REACT) — but this
+          <Audio> was mounted at the ROOT, so a supplied voiceover played from
+          frame 0 under the "silent" brand cover: two seconds of speech with no
+          caption, then captions that ended two seconds before the words did.
+          Delaying the track to COVER (audio.md "Delaying" — a <Sequence>
+          around <Audio>) makes the audio and its own declared window the same
+          fact; test:video-type-matrix proves the fitted words all land inside
+          it on both caption paths. */}
+      {voiceoverUrl && (
+        <Sequence from={COVER}>
+          <Audio src={voiceoverUrl} />
+        </Sequence>
+      )}
 
       {/* COVER — 0-2s. "REVIEW" eyebrow + client role chip. */}
       <Sequence from={0} durationInFrames={COVER}>

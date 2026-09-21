@@ -27,7 +27,14 @@ const MAX_CARDS = 3
  *  (works whether the match is our listing OR an external MLS/RentCast/IDX property). */
 export function buildBuyerMatchReelProps(
   facts: PropertyFacts[],
-  ctx: { agentName: string; agentPhone: string; brokerageName: string },
+  ctx: {
+    agentName: string; agentPhone: string; brokerageName: string
+    /** The tenant's brand through the ONE cascade (lib/video/reel-brand.ts
+     *  resolveReelBrand). OPTIONAL so the pure proof runs without a database;
+     *  absent → the composition defaults (navy/amber). Lane 77D — see the
+     *  `brand:` note below. */
+    brand?: { primaryColor: string; accentColor: string; logoUrl?: string | null }
+  },
 ): Record<string, unknown> | null {
   const examples = facts
     .filter((f) => f && (f.address || f.city))
@@ -56,7 +63,17 @@ export function buildBuyerMatchReelProps(
     ctaLabel:        "See your full list",
     agentName:       ctx.agentName,
     agentPhone:      ctx.agentPhone,
-    brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", brokerageName: ctx.brokerageName, showEhoMark: true },
+    // BRAND FROM THE TENANT CASCADE (lane 77D). "#0F172A"/"#F59E0B" were
+    // literals here — the composition's stock navy/amber — so a wizard-branded
+    // brokerage's buyer-match reel never carried its own colours or logo. The
+    // cascade value wins; the literals remain only as the no-brand fallback.
+    brand: {
+      primaryColor: ctx.brand?.primaryColor ?? "#0F172A",
+      accentColor: ctx.brand?.accentColor ?? "#F59E0B",
+      ...(ctx.brand?.logoUrl ? { logoUrl: ctx.brand.logoUrl } : {}),
+      brokerageName: ctx.brokerageName,
+      showEhoMark: true,
+    },
   }
 }
 
@@ -194,11 +211,19 @@ export async function produceBuyerMatchReel(
       if ((u as any)?.phone) agentPhone = String((u as any).phone)
     }
   }
-  let brokerageName = "Your Brokerage"
-  const { data: b } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
-  if ((b as { name?: string } | null)?.name) brokerageName = String((b as { name: string }).name)
+  // TOMBSTONE (lane 77D): a private `brokerages.select("name")` read stood
+  // here beside literal brand colours. Name, colours and logo now come through
+  // the ONE brand cascade (lib/video/reel-brand.ts resolveReelBrand), agent-
+  // scoped so the team tier applies — the same call every other tenant reel
+  // makes; the adapter's own defaults cover a tenant with no brand configured.
+  const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+  const reelBrand = await resolveReelBrand(supabase, brokerageId, { agentUserId })
+  const brokerageName = reelBrand.brokerageName
 
-  const inputProps = buildBuyerMatchReelProps(facts, { agentName, agentPhone, brokerageName })
+  const inputProps = buildBuyerMatchReelProps(facts, {
+    agentName, agentPhone, brokerageName,
+    brand: { primaryColor: reelBrand.primaryColor, accentColor: reelBrand.accentColor, logoUrl: reelBrand.logoUrl },
+  })
   if (!inputProps) return { queued: false, reason: "no renderable matches" }
 
   // ── REFUSE BEFORE THE QR IS MINTED ──────────────────────────────────────────

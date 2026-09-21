@@ -87,13 +87,12 @@ import {
   type IntroCompositionRequest,
 } from "@/lib/video/avatar-render-orchestrator"
 import {
-  narrationBudget,
   narrationLengthDirective,
   narrationMaxTokens,
   fitNarrationToBudget,
   type NarrationBudget,
 } from "@/lib/video/script-structure"
-import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import { narrationWindowBudget } from "@/lib/video/narration-window"
 import { DEFAULT_LANGUAGE, languageName } from "@/lib/video/multilingual-reel"
 import {
   anniversaryGreeting,
@@ -124,8 +123,16 @@ import { withSpokenScriptStandards, scanForAiTells, describeAiTellCoverage } fro
  * that ignores the ceiling anyway.
  */
 function introNarrationBudget(): NarrationBudget {
-  const geo = geometryFor(INTRO_VIDEO_COMPOSITION)
-  return narrationBudget(INTRO_VIDEO_COMPOSITION, geo ? compositionSeconds(geo) : 0)
+  // LANE 77D — the WINDOW, not the whole composition. The header above says
+  // "11.2 claimable seconds" and, three lines later, "BODY = 10s, so the agent
+  // was simply cut off": a budget sized to 14 s of runtime still overran the
+  // 10 s crop by 1.2 s at the average pace. narrationWindowBudget applies the
+  // same NARRATION_HEADROOM to the frames the D-ID track is actually mounted
+  // in (lib/video/narration-window.ts — proven equal to the composition's own
+  // CaptionLayer window by test:video-type-matrix), so the ceiling is now 8 s /
+  // 20 words. An id with no declared window (never this one) falls back to the
+  // whole-composition budget, byte-for-byte the prior behaviour.
+  return narrationWindowBudget(INTRO_VIDEO_COMPOSITION)
 }
 
 /**

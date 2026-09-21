@@ -224,3 +224,61 @@ Character-3 is the only candidate whose request shape (image + our own audio
 → mp4, cost quotable via `POST /models/{model}/estimate`) is a drop-in; it is
 NOT implemented — its consent/likeness policy is still undocumented and no
 offline proof of the adapter is possible without a wallet.
+
+## Wave 77D addendum (2026-09-21) — what changed since 2026-09-18, and the sourced D-ID rate
+
+Third pass, Exa web_search + web_fetch on 2026-09-21 (6 calls). Standing rulings
+unchanged: no HeyGen; D-ID Express v4 primary; Simli live backup only; ElevenLabs
+v3; Remotion 4.0.521 (installed; the vendored skill is pinned to the same).
+
+| Leg / provider | What the source says (date) | Unit → $/min of finished video | Δ since 76D | Source |
+| --- | --- | --- | --- | --- |
+| **D-ID render (current)** | Official FAQ: "each credit is worth up to 15 seconds of video … a 40-second video consumes 3 credits"; API plans (mirrored verbatim 2026-09-07, page renders client-side): Build $18 = 64 credits (16 offline min), Launch $50/$99/$149 = 180/360/540, Scale $198/$248/$297 = 800/1,000/1,200 (300 offline min). Studio page (2025-01-30): "rounded up to the nearest 15-second interval", unused minutes void monthly. | Scale $297/1,200 credits = **$0.2475/credit = $0.0165/s = $0.99/min**; Launch $50/180 = $0.0185/s = $1.11/min; Build $18/64 = $0.01875/s = $1.125/min; annual Scale ($207.90) = $0.0116/s = $0.69/min. **Bill in 15 s blocks: cost = ceil(seconds/15) × credit price.** | none — the credit math 76D recorded still holds; the "$0.30/min" (aipromptshub 2026-06-21) and "$0.05/s" (heyfish) third-party figures remain contradicted by the FAQ | d-id.com/faqs; d-id.com/pricing (2025-01-30); spatius.ai/blog/d-id-pricing-2026 (2026-09-07); magichour.ai/blog/d-id-ai-review (2026-09-12) |
+| D-ID V4 Expressive via API | "API customers can upgrade by selecting the V4 model and optionally passing sentiment parameters. No major infrastructure changes are required." `/expressives/avatars` (V4 Avatars) is in the public OpenAPI. | same credits as above | closes the wave-56 "is V4 reachable through the API" unresolved item | d-id.com/introducing-v4-expressive-avatars (2026-02-02); docs.d-id.com/reference/listv4avatars |
+| D-ID streaming (live agent) | FAQ: "for streaming customers using our API, the price of credits is halved"; Agent metering has TWO published readings (0.5 credit/30 s vs 0.5 credit per 15 s response) — the API bundle allowances match the second | ≈ $0.50/min Scale monthly, $0.35 annual (spatius) | none; the two-reading conflict is new and UNRESOLVED (ask D-ID before forecasting Agent minutes) | d-id.com/faqs; spatius.ai (2026-09-07) |
+| **Simli (current backup)** | simli.com/pricing: CRAWL_NOT_FOUND again (2026-09-21); docs.simli.com/introduction: 404. simli.com home: "Free $10 on signup … monthly top-up of 50 minutes … volume discounts and flexible pay-as-you-go"; two independent 2026 write-ups: "$0.009 per minute" rendering-only, "roughly an order of magnitude below the pixel-diffusion providers", idle-state quality flagged | **$0.009/min streamed** (render leg only; STT/LLM/TTS/transport extra) | none; still not a batch render API | simli.com (fetched 2026-09-21); meetcody.ai/blog/real-time-ai-avatar-models-compared (2026-08-28); spatius.ai/blog/compare-pricing-leading-ai-avatar-services-2026 (2026-07-05) |
+| Tavus | Official pricing page (fetched 2026-09-21): Developer Basic free (25 min CVI + 5 min generation), Starter $59/mo + PAYG (100 min CVI, 10 min generation, 3 concurrent), Growth $397 (1,250/100), Enterprise custom; third parties: $0.37/streamed min Starter, $0.32 Growth, 6-second rounding, 30-second minimum | generation minutes bundled — still **no clean per-minute render price** | Sparrow-2 turn-taking model announced; PAL consumer plans added; no render-price change | tavus.io/pricing; web3aiblog.com (2026-09-16); spatius.ai (2026-07-05) |
+| Hedra | Official pricing page (fetched 2026-09-21): Basic $15, Creator $30, Teams $75, Enterprise custom — "Build with the Hedra API … unified inference"; no per-minute API rate on the page; versusref: 420 credits per finished minute, "API draws from the Studio credit balance" | Basic $15/1,500 credits ≈ **$4.20/min**; Character-3 API wallet (76D) 540p 2.5¢/s = $1.50/min | consent/likeness policy still undocumented | hedra.com/pricing; versusref.com/avatar-video/hedra-vs-tavus ("Aug 24" 2026) |
+| Synthesia | Starter $29/mo (10 min) = $2.90/min, $18 yearly (120 min/yr) = $1.80/min; API Enterprise-only | $1.80–$2.90/min | none | web3aiblog.com (2026-09-16); khaby.ai (2026-03-06) |
+| Argil | Classic $27–39 ≈ 25 min | ≈ $1.56/min | none | kompozy.io (2026-05-06) |
+| ElevenLabs TTS (current) | Official API pricing (fetched 2026-09-21): Multilingual v2 / v3 **$0.10 per 1k chars**, Flash/Turbo $0.05; Speech Engine (agents) $0.08/min; Music $0.15/min; Dubbing $0.33/min; Scribe v2 $0.22/h | ≈ $0.02–0.03 per spoken minute (≈ 900 chars/min at 150 wpm) | none; **no avatar/video API** on the API pricing page — still not a candidate | elevenlabs.io/pricing/api |
+| Remotion Lambda (body render) | Official cost example (2048 MB, us-east-1): 1-min 1080p ≈ $0.017 warm / $0.021 cold; 10-min remote HD ≈ $0.10; 10 s 4K ≈ $0.013; plus S3/CloudWatch; Company License for 4+ people. Third-party 2026 numbers agree ($0.10–0.15 per 60–90 s video incl. storage/CDN; break-even vs an always-on c6g.xlarge ≈ 400 renders/day) | **≈ $0.02/min** compute; ≈ $0.10–0.15/video all-in | none; the render leg is a rounding error next to D-ID | remotion.dev/docs/lambda/cost-example; remotion.dev/docs/compare-ssr; rendercomp.com (2026-08-19); dineshchalla.dev (2026-04-26) |
+| Vercel AI Gateway video/image | Gateway charges list price, no markup (vercel.com/docs/ai-gateway/pricing); the per-model page for Veo 3.1 Fast returned CRAWL_NOT_FOUND today, so the 76D figures stand (Veo 3.1 Fast $0.10/s, Veo 3.1 $0.20/s, Imagen 4 Fast $0.02/img); a third-party 2026 comparison quotes Veo 3.1 Fast $0.15/s, Kling 3.0 $0.09–0.14/s, Sora 2 ≈ $0.10/s through resellers | **$6–12 per minute of generated footage** — b-roll/stills only, none does lip-sync | none | vercel.com/docs/ai-gateway/pricing; modelslab.com (undated 2026); github.com/kometolabs/ai-video-generation-cost-analysis |
+
+**The sourced D-ID rate for `DID_USD_PER_VIDEO_SECOND` (lane 77C is annotating
+the constant; this lane supplies the number):** the constant reads `0.05`
+($3.00/min). The official credit math gives **$0.0165/s at Scale-1,200 monthly
+($0.99/min), $0.0185/s at Launch-180, $0.01875/s at Build-64, $0.0116/s at
+Scale annual** — the constant is 2.7–4.3× the plan rate (LANE_RULES' "≈3×
+credit math" blind spot, now quantified). Two things the constant cannot
+express as a flat per-second number: (1) D-ID bills in **15-second blocks**
+(`ceil(seconds/15)` credits), so a 16-second clip costs 30 seconds; (2)
+unused credits **void monthly**, so the effective rate rises with
+under-utilisation. Recommended shape: `DID_USD_PER_CREDIT` (plan-derived,
+0.2475 at Scale-1,200) × `ceil(seconds / DID_SECONDS_PER_CREDIT)` with
+`DID_SECONDS_PER_CREDIT = 15`, and the plan tier read from configuration
+rather than guessed — booked to the tenant at the plan the platform actually
+holds (§5: a wrong number is a wrong invoice; over-estimating is the safer
+wrong until the tier is known).
+
+**Recommendation (77D): KEEP D-ID Express/V4 + ElevenLabs v3; KEEP Simli as
+the live fail-over only; ADD nothing.** Nothing moved since 76D that changes
+the ranking: D-ID at ≈ $1/min is still the cheapest API-mature batch render
+with a consent gate this OS already runs; Tavus still bundles generation
+minutes with no clean render price; Hedra's Studio credits put a finished
+minute at ≈ $4.20 and its API wallet at ≥ $1.50 with no documented consent
+flow; Simli's $0.009/min is a streaming render leg, not a one-shot render;
+no gateway model does lip-sync. The cheapest path for a tenant video is
+unchanged — **voiceover-narrated Remotion ≈ $0.05/min vs avatar-presented
+≈ $1.05/min** — which is why this lane's per-type matrix
+(scripts/video-type-matrix-simulator.ts) routes the non-personal formats to
+voiceover + word-synced captions and keeps D-ID for the formats where the
+agent's face is the point. Implemented nothing provider-new: the only
+provider-facing changes this wave are on the EXISTING stack (the last video
+lane moved onto the cached v3 primitive, the avatar word budget now sized to
+the window the D-ID track is cropped to).
+
+Unresolved (recorded, not guessed): D-ID Agent metering has two published
+readings (see table); Simli's pricing page is still uncrawlable so $0.009/min
+rests on two third-party write-ups and the home page's free-tier wording;
+Hedra's per-minute API rate is not on its pricing page.

@@ -31,6 +31,7 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { LowerThird } from "./components/LowerThird"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface TeammateExplainerReelProps {
@@ -118,36 +119,9 @@ const IntroCard: React.FC<{
   )
 }
 
-/** Persistent lower-third: accent bar + agent name + brokerage. */
-const LowerThird: React.FC<{
-  agentName: string
-  brokerageName: string
-  primaryColor: string
-  accentColor: string
-}> = ({ agentName, brokerageName, primaryColor, accentColor }) => {
-  const frame = useCurrentFrame()
-  const slideIn = interpolate(frame, [0, 16], [-560, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
-  return (
-    <div style={{ position: "absolute", left: 0, bottom: 168, translate: `${slideIn}px` }}>
-      <div
-        style={{
-          display: "flex", alignItems: "stretch",
-          backgroundColor: `${primaryColor}E6`,
-          borderRadius: "0 8px 8px 0", overflow: "hidden",
-          boxShadow: "0 4px 18px rgba(0,0,0,0.35)",
-        }}
-      >
-        <div style={{ width: 10, backgroundColor: accentColor }} />
-        <div style={{ padding: "16px 28px 16px 20px" }}>
-          <div style={{ fontSize: 34, fontWeight: 800, color: "#fff", lineHeight: 1.1 }}>{agentName}</div>
-          <div style={{ fontSize: 20, fontWeight: 600, color: accentColor, letterSpacing: 1, marginTop: 4 }}>
-            {brokerageName}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+// TOMBSTONE (lane 77D): the private `LowerThird` that stood here moved to
+// remotion/components/LowerThird.tsx — the ONE lower-third, now also mounted
+// by AgentTalkingHeadReel (§6: one spelling of "who is speaking").
 
 /** Full-frame avatar body with watermark + lower-third. */
 const AvatarBody: React.FC<{

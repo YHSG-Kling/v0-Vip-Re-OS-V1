@@ -201,8 +201,15 @@ function main() {
   check("the retired '55-75 words' ask is gone from live code",
     !RAW_RANGE.test(expl))
   check("…while the RAW source keeps it legible as the record", explRaw.includes("55-75 words"))
+  // Re-anchored lane 77D (§2 — assert the RULE, not the spelling): the author
+  // now derives its budget through narrationWindowBudget(args.compositionId)
+  // (lib/video/narration-window.ts), which applies the SAME narrationBudget
+  // headroom to the frames the avatar track is actually cropped to rather than
+  // the whole composition — still "the composition it is told about", now the
+  // window of it the viewer will hear. test:video-type-matrix proves the window
+  // table equals each composition's own declared CaptionLayer window.
   check("the author derives its budget from the composition it is told about",
-    /narrationBudget\(args\.compositionId,/.test(expl))
+    /narrationWindowBudget\(args\.compositionId\)/.test(expl) || /narrationBudget\(args\.compositionId,/.test(expl))
   check("a composition with no runtime is a REFUSAL, not 'no limit'",
     /budget\.maxWords\s*<=\s*0/.test(expl) && /no runtime to narrate/.test(explRaw))
   check("the prompt asks the ONE directive",

@@ -58,6 +58,23 @@ export interface CharacterAlignment {
   character_end_times_seconds: number[]
 }
 
+/**
+ * One WORD inside a cue, with the absolute frame it is spoken — the timing the
+ * CaptionLayer's kinetic highlight reads (lane 77D; the skill's
+ * remotion-captions/display-captions.md "Word highlighting" pattern, applied
+ * to this repo's phrase-cue shape rather than TikTokPage tokens). On the
+ * alignment path this is the REAL first-character time of the word; on the
+ * even-distribution path it is the same honest estimate the cue itself is,
+ * spread across the cue by character length. `text` carries no whitespace —
+ * the layer joins with a single space, the same spelling `spokenWords`
+ * splits on.
+ */
+export interface CaptionWord {
+  text: string
+  /** Absolute frame this word starts. Always inside its cue's window. */
+  fromFrame: number
+}
+
 /** One on-screen caption cue the Remotion CaptionLayer renders. */
 export interface CaptionCue {
   /** The phrase text shown for this cue (≤ maxWordsPerCue words). */
@@ -66,6 +83,12 @@ export interface CaptionCue {
   fromFrame: number
   /** How many frames this cue stays on screen (before the next cue / end). */
   durationFrames: number
+  /** Per-word timing for the kinetic highlight. OPTIONAL and additive: a cue
+   *  built before lane 77D (a stored input_props row) has none, and the layer
+   *  renders the plain phrase exactly as before. When present it satisfies:
+   *  words.join(" ") === text, words[0].fromFrame === fromFrame, frames are
+   *  non-decreasing and every one lies in [fromFrame, fromFrame+durationFrames). */
+  words?: CaptionWord[]
 }
 
 export interface CaptionPlan {
@@ -173,9 +196,58 @@ function stripTagsFromCues(cues: CaptionCue[]): CaptionCue[] {
   const out: CaptionCue[] = []
   for (const cue of cues) {
     const text = stripExpressiveAudioTags(stripNaturalPauseMarkup(cue.text)).trim()
-    if (text) out.push({ ...cue, text })
+    if (!text) continue
+    // The words get the SAME strip, word by word, so a tag-only word ("[laughs]")
+    // drops out of the highlight track exactly as it drops out of the text — the
+    // join invariant (words.join(" ") === text) survives because both sides ran
+    // the same function. A word that stripped to several tokens ("[sighs]well"
+    // → "well") keeps its timing.
+    const words = cue.words
+      ?.map((w) => ({ text: stripExpressiveAudioTags(stripNaturalPauseMarkup(w.text)).trim(), fromFrame: w.fromFrame }))
+      .filter((w) => w.text.length > 0)
+    const joined = words?.map((w) => w.text).join(" ")
+    // If the per-word strip and the whole-text strip ever disagree (a tag that
+    // spanned a space), drop the word track rather than ship a highlight that
+    // does not match the phrase — the plain cue is the honest fallback.
+    out.push(words && words.length > 0 && joined === text ? { ...cue, text, words } : { text, fromFrame: cue.fromFrame, durationFrames: cue.durationFrames })
   }
   return out
+}
+
+/**
+ * Spread a cue's words across its window by character weight — the even-
+ * distribution path's per-word estimate, and the layer's fallback when a cue
+ * arrives with timing for the phrase but not the words. The first word always
+ * starts AT the cue's own fromFrame; later words never leave the window.
+ * PURE. Exported for the CaptionLayer and its proof.
+ */
+export function evenWordFrames(words: string[], fromFrame: number, durationFrames: number): CaptionWord[] {
+  if (words.length === 0) return []
+  const span = Math.max(1, Math.floor(durationFrames))
+  const weights = words.map((w) => Math.max(1, w.length))
+  const total = weights.reduce((s, w) => s + w, 0)
+  const out: CaptionWord[] = []
+  let acc = 0
+  for (let i = 0; i < words.length; i++) {
+    const offset = i === 0 ? 0 : Math.min(span - 1, Math.round((acc / total) * span))
+    out.push({ text: words[i], fromFrame: fromFrame + offset })
+    acc += weights[i]
+  }
+  return out
+}
+
+/** Clamp a cue's word frames into its (possibly re-anchored) window and keep
+ *  them non-decreasing — the one place the invariant is enforced after any
+ *  shift/clip/nudge. Returns undefined when the cue carries no word track. */
+function boundWords(words: CaptionWord[] | undefined, fromFrame: number, durationFrames: number): CaptionWord[] | undefined {
+  if (!words || words.length === 0) return undefined
+  const last = fromFrame + Math.max(1, durationFrames) - 1
+  let floor = fromFrame
+  return words.map((w, i) => {
+    const f = i === 0 ? fromFrame : Math.max(floor, Math.min(last, Math.floor(w.fromFrame)))
+    floor = f
+    return { text: w.text, fromFrame: f }
+  })
 }
 
 // ─── Path A: alignment → word-timed phrase cues ──────────────────────────────
@@ -225,13 +297,16 @@ function cuesFromAlignment(
   // Chunk into phrases on word boundaries / sentence punctuation.
   const phrases = chunkWords(words.map((w) => w.text), maxWords)
 
-  // Re-walk to attach each phrase's first-word startFrame.
+  // Re-walk to attach each phrase's first-word startFrame — and every word's
+  // own REAL start frame for the kinetic highlight (lane 77D).
   const cues: CaptionCue[] = []
   let wordIdx = 0
   for (const phrase of phrases) {
     const firstWord = words[wordIdx]
     const fromFrame = Math.min(usableFrames - 1, firstWord ? firstWord.startFrame : 0)
-    cues.push({ text: phrase.join(" "), fromFrame, durationFrames: 0 })
+    const timed = words.slice(wordIdx, wordIdx + phrase.length)
+      .map((w) => ({ text: w.text, fromFrame: Math.min(usableFrames - 1, w.startFrame) }))
+    cues.push({ text: phrase.join(" "), fromFrame, durationFrames: 0, words: timed })
     wordIdx += phrase.length
   }
 
@@ -269,7 +344,7 @@ function cuesFromEvenDistribution(
     const end = i === texts.length - 1 ? usableFrames : Math.round(acc)
     const fromFrame = cursor
     const durationFrames = Math.max(1, end - fromFrame)
-    cues.push({ text: texts[i], fromFrame, durationFrames })
+    cues.push({ text: texts[i], fromFrame, durationFrames, words: evenWordFrames(phrases[i], fromFrame, durationFrames) })
     cursor = end
   }
 
@@ -317,7 +392,8 @@ function finalizeDurations(
     const isLast = i === ordered.length - 1
     const cap = isLast ? usableFrames - from : nextFrom - from
     const durationFrames = Math.max(1, Math.min(Math.max(gap, minCueFrames), cap))
-    out.push({ text: ordered[i].text, fromFrame: from, durationFrames })
+    const words = boundWords(ordered[i].words, from, durationFrames)
+    out.push(words ? { text: ordered[i].text, fromFrame: from, durationFrames, words } : { text: ordered[i].text, fromFrame: from, durationFrames })
   }
   return out
 }
@@ -361,7 +437,11 @@ export function activeCueIndex(cues: CaptionCue[], frame: number): number {
 export function shiftCaptionCues(cues: CaptionCue[], offsetFrames: number): CaptionCue[] {
   if (!Number.isFinite(offsetFrames) || offsetFrames === 0) return cues
   const shift = Math.floor(offsetFrames)
-  return cues.map((c) => ({ ...c, fromFrame: Math.max(0, c.fromFrame + shift) }))
+  return cues.map((c) => {
+    const fromFrame = Math.max(0, c.fromFrame + shift)
+    const words = boundWords(c.words?.map((w) => ({ text: w.text, fromFrame: w.fromFrame + shift })), fromFrame, c.durationFrames)
+    return words ? { ...c, fromFrame, words } : { text: c.text, fromFrame, durationFrames: c.durationFrames }
+  })
 }
 
 /**
@@ -387,7 +467,8 @@ export function clipCaptionCuesFromFrame(
     const fromFrame = Math.max(c.fromFrame, from)
     const durationFrames = end - fromFrame
     if (durationFrames <= 0) continue
-    out.push({ text: c.text, fromFrame, durationFrames })
+    const words = boundWords(c.words, fromFrame, durationFrames)
+    out.push(words ? { text: c.text, fromFrame, durationFrames, words } : { text: c.text, fromFrame, durationFrames })
   }
   return out
 }
@@ -432,7 +513,26 @@ export function clipCaptionCuesBeforeFrame(
     const end = c.fromFrame + c.durationFrames
     const durationFrames = end > cutoff ? cutoff - c.fromFrame : c.durationFrames
     if (durationFrames <= 0) continue
-    out.push({ text: c.text, fromFrame: c.fromFrame, durationFrames })
+    const words = boundWords(c.words, c.fromFrame, durationFrames)
+    out.push(words ? { text: c.text, fromFrame: c.fromFrame, durationFrames, words } : { text: c.text, fromFrame: c.fromFrame, durationFrames })
   }
   return out
+}
+
+/**
+ * activeWordIndex — PURE helper the CaptionLayer uses for the kinetic
+ * highlight: the index of the word being spoken at `frame` inside `cue`, i.e.
+ * the LAST word whose fromFrame <= frame. -1 when the cue carries no word
+ * track or the frame precedes its first word (the layer then renders the plain
+ * phrase). Bounds-safe like activeCueIndex.
+ */
+export function activeWordIndex(cue: CaptionCue, frame: number): number {
+  const words = cue.words
+  if (!words || words.length === 0) return -1
+  let idx = -1
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].fromFrame <= frame) idx = i
+    else break
+  }
+  return idx
 }

@@ -48,13 +48,23 @@ async function authorPlaybookCopy(args: {
   try {
     const { generateTextRouted } = await import("@/lib/ai/models")
     const { withScriptStandards } = await import("@/lib/ai/script-standards")
+    // LANE 77D — the Director gate on EVERY spoken writer. A shape that carries
+    // a `script` key is the VIDEO channel: its text is stored as
+    // ai_video_projects.script_content and handed to dispatchVideo (D-ID +
+    // ElevenLabs), i.e. SPOKEN by the agent's avatar. That channel gets the
+    // SHARED spoken-delivery standards (withSpokenScriptStandards = the charter
+    // withScriptStandards already applied here PLUS the spoken directive:
+    // contractions, no self-intro, no stage directions); written channels keep
+    // the charter alone. Found by test:video-type-matrix's derived writer scan.
+    const { withSpokenScriptStandards } = await import("@/lib/video/realism-profile")
+    const systemAsk = `You write real-estate marketing copy for ${args.brandLine}. Fair-Housing safe: never reference protected classes, family status, or steer. Write like a sharp human, never like a template.`
     const keys = Object.entries(args.shape).map(([k, hint]) => `"${k}": ${hint}`).join(", ")
     const { text } = await generateTextRouted({
       feature: "client_message",
       brokerageId: args.brokerageId,
-      system: withScriptStandards(
-        `You write real-estate marketing copy for ${args.brandLine}. Fair-Housing safe: never reference protected classes, family status, or steer. Write like a sharp human, never like a template.`,
-      ),
+      system: "script" in args.shape
+        ? withSpokenScriptStandards(systemAsk)
+        : withScriptStandards(systemAsk),
       prompt:
         `Campaign: "${args.playbookTitle}". Channel: ${args.kind}.\n` +
         `Strategy brief (write copy that accomplishes exactly this):\n${args.brief}\n\n` +
@@ -404,6 +414,16 @@ async function createPlaybookVideo(args: {
   // agentRecordId is the agents id already resolved by the caller's context —
   // the same one the voice-profile gate above keys on. agentUserId stays for
   // the compliance/dispatch calls, which are users-class.
+  // AI-tell scan on the OUTPUT (lane 77D) — the deterministic backstop for
+  // what the prompt could not prevent. ADVISORY (§5: warnings pass through;
+  // only a hard fair-housing flag escalates): the finding rides the install
+  // notes the broker reads, and the render proceeds.
+  {
+    const { scanForAiTells } = await import("@/lib/video/realism-profile")
+    const tells = scanForAiTells(copy.script)
+    if (tells.length > 0) notes.push(`${args.videoStep.label}: AI-tell scan flagged the spoken script (advisory) — ${tells.join("; ")}`)
+  }
+
   const { data: project, error: projErr } = await svc
     .from("ai_video_projects")
     .insert({

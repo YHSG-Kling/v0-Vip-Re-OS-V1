@@ -34,6 +34,7 @@ import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } fr
 import {
   buildCaptionPlan,
   activeCueIndex,
+  activeWordIndex,
   clipCaptionCuesBeforeFrame,
   clipCaptionCuesFromFrame,
   shiftCaptionCues,
@@ -148,6 +149,17 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
   })
   const opacity = Math.min(fadeIn, fadeOut)
 
+  // KINETIC WORD HIGHLIGHT (lane 77D — the skill's display-captions.md "Word
+  // highlighting", on this repo's phrase cues): the word being spoken NOW is
+  // drawn in the brand accent, the rest stay white. `cue.words` carries the
+  // REAL per-word frame on the alignment path and the same honest estimate
+  // the cue itself is on the even path (caption-plan.ts). A cue with no word
+  // track (a row staged before this shipped) renders the plain phrase, so the
+  // change is additive. Whitespace is a single space between tokens — the
+  // same spelling spokenWords splits on — so the join reads as the phrase.
+  const activeWord = activeWordIndex(cue, frame)
+  const tokens = cue.words && cue.words.length > 0 ? cue.words.map((w) => w.text) : null
+
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       <div
@@ -187,7 +199,13 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
               textShadow: "0 3px 14px rgba(0,0,0,0.55)",
             }}
           >
-            {cue.text}
+            {tokens
+              ? tokens.map((t, i) => (
+                  <span key={`${cue.fromFrame}-${i}`} style={{ color: i === activeWord ? accent : "#FFFFFF" }}>
+                    {i > 0 ? " " : ""}{t}
+                  </span>
+                ))
+              : cue.text}
           </span>
         </div>
         <div

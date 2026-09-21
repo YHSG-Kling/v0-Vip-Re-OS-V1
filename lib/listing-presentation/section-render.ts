@@ -176,16 +176,26 @@ export async function renderSectionsForPresentation(
   }
   const areaName = (pres.property_address ?? "").split(",").slice(1).join(",").trim() || null
 
+  // BRAND FROM THE TENANT CASCADE (lane 77D). The name, colours and logo used
+  // to come from a private `brokerages.select("name, logo_url, …")` read with
+  // the colours as literals — the composition's stock navy/amber — so a
+  // brokerage that finished the brand wizard (global_settings) or an agent on
+  // a team never saw their own chrome on a listing-presentation section, while
+  // every Director-commissioned reel did (director-content.ts → resolveReelBrand).
+  // The ONE adapter now supplies name/colours/logo; the brokerages read keeps
+  // ONLY the license line, which the cascade does not carry.
+  const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+  const reelBrand = await resolveReelBrand(supabase, pres.brokerage_id, { agentUserId: pres.agent_user_id ?? null })
   const { data: brk } = await supabase
     .from("brokerages")
-    .select("name, logo_url, license_number, license_state")
+    .select("license_number, license_state")
     .eq("id", pres.brokerage_id)
     .maybeSingle()
   const brand = {
-    primaryColor:  "#0F172A",
-    accentColor:   "#F59E0B",
-    brokerageName: (brk as any)?.name ?? "Your Brokerage",
-    logoUrl:       (brk as any)?.logo_url ?? undefined,
+    primaryColor:  reelBrand.primaryColor,
+    accentColor:   reelBrand.accentColor,
+    brokerageName: reelBrand.brokerageName,
+    logoUrl:       reelBrand.logoUrl ?? undefined,
     licenseLine:   [(brk as any)?.license_number, (brk as any)?.license_state].filter(Boolean).join(" · ") || undefined,
     showEhoMark:   true,
   }

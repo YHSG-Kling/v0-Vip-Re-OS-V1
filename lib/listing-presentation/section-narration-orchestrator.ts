@@ -254,24 +254,39 @@ export async function narratePresentationSections(
     let voiceoverUrl: string | null = null
     if (synthesizeVoiceover && voiceId) {
       try {
-        const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
-        // MODEL + PACING through the ONE selector (lane 77C): a presentation
-        // section is spoken narration — the v3 lane — never the primitive's
-        // old monolingual_v1 default.
-        const { elevenLabsModelForLane, withNaturalPauses } = await import("@/lib/video/realism-profile")
-        const sectionModel = elevenLabsModelForLane("presentation_narration")
-        const tts = await synthesizeSpeech({ text: withNaturalPauses(script, sectionModel), voiceId, modelId: sectionModel, brokerageId: pres.brokerage_id })
-        if (tts.success && tts.audioBuffer) {
-          // Was @vercel/blob's put(). Survivor:
-          // lib/remotion/media-host.ts#hostRenderedMedia → `video-assets`, the
-          // bucket the Remotion workers already fetch narration from by URL.
-          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-          voiceoverUrl = await hostRenderedMedia(
-            supabase,
-            `narration/${pres.brokerage_id}/${r.id}.mp3`,
-            tts.audioBuffer,
-            "audio/mpeg",
-          )
+        // TOMBSTONE (lane 77D): a private `synthesizeSpeech({ text, voiceId,
+        // brokerageId })` + its own hostRenderedMedia upload stood here — the
+        // LAST video lane still on a bare synthesis call. With no modelId it
+        // fell to elevenlabs-tts.ts's own default (eleven_monolingual_v1, the
+        // oldest model in the catalog — realism-profile.ts's research header),
+        // hosted under a per-render path so an identical section script paid
+        // for a fresh clip on every re-narration, and returned no alignment,
+        // so ListingSectionReel's CaptionLayer only ever had the even-
+        // distribution ESTIMATE to work from. Survivor: lib/video/reel-
+        // voiceover.ts prepareReelVoiceover — eleven_v3 through the ONE
+        // selector (elevenLabsModelForLane), natural pauses, the vendor budget
+        // gate, the (brokerage, voice, script-hash) narration cache (m310), a
+        // Supabase-hosted URL, and the per-character alignment that makes the
+        // captions word-accurate. Same move render-just-listed and
+        // render-newsletter-video made in lane 76D.
+        const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+        const voiceover = await prepareReelVoiceover({
+          brokerageId: pres.brokerage_id, narration: script, voiceId, renderKey: r.id,
+        })
+        if (voiceover) {
+          voiceoverUrl = voiceover.url
+          // WORD-SYNCED CAPTIONS, for free: the alignment the primitive already
+          // returns, planned against the geometry THIS row renders on. The row's
+          // captionScript (staged by section-render.ts) stays as the fallback;
+          // CaptionLayer prefers `cues` when both are present. No alignment (the
+          // plain-synthesis fallback inside the primitive) → no cues staged, the
+          // even-distribution estimate stands, honestly labelled by the planner.
+          const { geometryFor } = await import("@/lib/remotion/composition-geometry")
+          const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
+          const geo = geometryFor(r.composition_id)
+          const cues = geo && voiceover.alignment
+            ? buildCaptionPlan(voiceover.alignment, geo.duration_frames, geo.fps, { maxWordsPerCue: 4 }).cues
+            : []
           // narrationScript is written back as the script that was ACTUALLY
           // spoken. Leaving the pre-trim text beside the trimmed audio would
           // make the row disagree with its own mp3, and this column is the only
@@ -283,17 +298,21 @@ export async function narratePresentationSections(
           // and the record of what the voice said is wrong, with nothing
           // anywhere saying so. The error is read and surfaced on the result.
           const { error: writeBackError } = await supabase.from("remotion_composition_renders")
-            .update({ input_props: { ...props, narrationScript: script, voiceoverUrl }, used_voiceover: true })
+            .update({
+              input_props: { ...props, narrationScript: script, voiceoverUrl, ...(cues.length > 0 ? { captionsCues: cues } : {}) },
+              used_voiceover: true,
+            })
             .eq("id", r.id)
           if (writeBackError) {
             console.error(`[section-narration-orchestrator] render ${r.id} — voiceover write-back REFUSED (${writeBackError.message}); the mp3 at ${voiceoverUrl} is hosted but the row still carries the pre-trim script and no voiceoverUrl`)
             result.refusals.push({ renderId: r.id, step: "voiceover_write_back", reason: writeBackError.message })
           }
         } else {
-          // synthesizeSpeech never throws — it RETURNS its failure (no key,
-          // budget ceiling, vendor error). Degrading to on-screen is still the
-          // right outcome; degrading without a trace is not.
-          const reason = tts.error ?? tts.errorCode ?? "synthesis returned no audio"
+          // prepareReelVoiceover never throws — it RETURNS null on every
+          // failure (no key, budget ceiling, vendor error, hosting). Degrading
+          // to on-screen is still the right outcome; degrading without a trace
+          // is not.
+          const reason = "prepareReelVoiceover returned no clip (budget gate, synthesis, or hosting)"
           console.warn(`[section-narration-orchestrator] render ${r.id} — voiceover NOT synthesized (${reason}); section ships on-screen only`)
           result.refusals.push({ renderId: r.id, step: "voiceover_synthesis", reason })
         }

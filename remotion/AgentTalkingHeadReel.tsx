@@ -47,6 +47,8 @@ import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { BrollLayer } from "./_BrollLayer"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { LowerThird } from "./components/LowerThird"
+import { SceneFade } from "./components/SceneFade"
 import { avatarFadeOutFrame } from "../lib/video/script-structure"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -162,6 +164,9 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
       {voiceoverUrl && <Audio src={voiceoverUrl} />}
       {/* COVER — 0-2s. Brand badge + hook + agent name. */}
       <Sequence from={0} durationInFrames={COVER}>
+        {/* SceneFade (lane 77D): a dissolve at every cut, timeline untouched —
+            see remotion/components/SceneFade.tsx for why not TransitionSeries. */}
+        <SceneFade>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center",
@@ -187,11 +192,13 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             {agentName}
           </div>
         </AbsoluteFill>
+        </SceneFade>
       </Sequence>
 
       {/* BODY — 2-12s. Avatar video centered in a brand letterbox,
           caption strip on top, brokerage chrome at corners. */}
       <Sequence from={COVER} durationInFrames={BODY}>
+        <SceneFade>
         <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
           {/* B-roll background (TikTok pattern): cutaway footage behind the
               floating avatar, brand-tinted so the caption strip stays legible. */}
@@ -254,22 +261,26 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             {caption}
           </div>
 
-          {/* Bottom-left brand chip — persistent so any frame
-              screenshot stays attributable. */}
-          <div style={{
-            position: "absolute", bottom: 24, left: 24,
-            padding: "8px 16px", borderRadius: 6,
-            backgroundColor: "rgba(0,0,0,0.55)", color: "#fff",
-            fontSize: 18, fontWeight: 600,
-          }}>
-            {brand.brokerageName}
-          </div>
+          {/* Lower-third — agent name + brokerage, persistent so any frame
+              screenshot stays attributable. Lane 77D: this was a brokerage-only
+              chip; the PERSONAL reel never named the person speaking. The ONE
+              lower-third (remotion/components/LowerThird.tsx) replaces it, at the
+              chip's own 24px so it sits under the floating avatar card. */}
+          <LowerThird
+            agentName={agentName}
+            brokerageName={brand.brokerageName}
+            primaryColor={brand.primaryColor}
+            accentColor={brand.accentColor}
+            bottom={24}
+          />
         </AbsoluteFill>
+        </SceneFade>
       </Sequence>
 
       {/* OUTRO — 12-14s. CTA + phone + EHO mark. Solid brand
           background so the avatar-to-card transition is clean. */}
       <Sequence from={COVER + BODY} durationInFrames={OUTRO}>
+        <SceneFade>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -302,6 +313,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             accentColor={brand.accentColor}
           />
         </AbsoluteFill>
+        </SceneFade>
       </Sequence>
 
       {/* Total duration sanity sentinel. */}

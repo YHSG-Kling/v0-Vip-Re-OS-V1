@@ -32,6 +32,15 @@ import { generateTextRouted } from "@/lib/ai/models"
 // requests actually go out. Removing the import removes the escape hatch the
 // header forbids.
 import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
+// LANE 77D — the Director gate on EVERY spoken writer. This kernel drafts the
+// script the studio's D-ID render actually speaks (generateVideoScript →
+// script_content → submitVideoGenerationJob → dispatchVideo) and was the one
+// model-authored spoken path that carried neither the SHARED standards in its
+// prompt (withSpokenScriptStandards: SCRIPT_QUALITY_CHARTER + the spoken-
+// delivery directive) nor the deterministic AI-tell scan on its output. Found
+// by test:video-type-matrix's DERIVED writer scan (a routed model call + a
+// spoken sink), which is why a roster could not have caught it.
+import { withSpokenScriptStandards, scanForAiTells } from "@/lib/video/realism-profile"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -214,8 +223,13 @@ export async function generateVideoScript(
     userId: user?.id ?? null,
   })
 
-  const complianceWarnings = actor
-    ? await postcheckScript(actor, scriptText, "buyer")
+  // AI-tell scan on the OUTPUT (the deterministic backstop for what a prompt
+  // could not prevent) — ADVISORY, riding beside the kernel findings: §5 says
+  // warnings pass through and only a hard fair-housing flag escalates.
+  const tells = scanForAiTells(scriptText)
+  const kernelFindings = actor ? await postcheckScript(actor, scriptText, "buyer") : undefined
+  const complianceWarnings = kernelFindings || tells.length
+    ? [...(kernelFindings ?? []), ...tells]
     : undefined
 
   const scenes = parseSceneBreakpoints(scriptText, input.duration)
@@ -732,7 +746,11 @@ async function generateScriptViaAI(params: {
     ? `${params.complianceBlocks.join("\n\n")}\n\n`
     : ""
 
-  const prompt = `${guidelines}You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.
+  // withSpokenScriptStandards keeps the caller's ask FIRST, then the charter,
+  // then the spoken-delivery directive (the composer's contract) — so the
+  // compliance guidelines still lead, and the output-format instruction sits
+  // inside the ask the standards are appended to.
+  const prompt = withSpokenScriptStandards(`${guidelines}You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.
 
 Title: "${params.title}"${params.description ? `\nContext: ${params.description}` : ""}
 Strategy: ${params.strategy}
@@ -745,7 +763,7 @@ Format each scene as:
 <narration text>
 
 Focus on viewer benefits — what the home means for their life — not feature lists.
-Keep narration natural and conversational.`
+Keep narration natural and conversational.`)
 
   const { text } = await generateTextRouted({
     brokerageId: params.brokerageId ?? null,

@@ -57,9 +57,8 @@ import {
 // durationInFrames (TeammateExplainerReel 900f/30fps = 30s, AgentExplainerReel
 // 540f/30fps = 18s): an overrun there is CUT, so the words asked of the model
 // come from the geometry through the ONE contract (§6), never a typed range.
-import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import { narrationWindowBudget } from "@/lib/video/narration-window"
 import {
-  narrationBudget,
   narrationLengthDirective,
   fitNarrationToBudget,
   spokenWords,
@@ -262,8 +261,14 @@ export async function authorExplainerContent(args: {
 }): Promise<AuthorExplainerResult> {
   // THE BUDGET, DERIVED. An unregistered id yields maxWords 0, which means
   // "this composition cannot carry narration" — refuse, never "no limit".
-  const geo = geometryFor(args.compositionId)
-  const budget = narrationBudget(args.compositionId, geo ? compositionSeconds(geo) : 0)
+  // LANE 77D — the avatar WINDOW, not the whole composition: AgentExplainerReel
+  // mounts the D-ID track only across B1+B2+B3 (14 s of its 18 s) and
+  // TeammateExplainerReel only in BODY, so a budget sized to the full runtime
+  // overran the crop at the average pace. narrationWindowBudget (lib/video/
+  // narration-window.ts, proven against each composition's own CaptionLayer
+  // window) applies the same headroom to the frames the viewer will hear; an id
+  // with no declared window falls back to the whole-composition budget.
+  const budget = narrationWindowBudget(args.compositionId)
   if (budget.maxWords <= 0) {
     return {
       ok: false,

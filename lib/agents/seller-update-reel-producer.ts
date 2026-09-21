@@ -103,7 +103,14 @@ export function interestLabelFor(levels: Array<string | null>): SellerUpdateStat
 /** Pure: the talking-head avatar props (what the agent's avatar "says" on screen). */
 export function buildSellerUpdateReelProps(
   stats: SellerUpdateStats,
-  identity: { agentName: string; brokerageName: string; agentPhone?: string; agentPhotoUrl?: string | null },
+  identity: {
+    agentName: string; brokerageName: string; agentPhone?: string; agentPhotoUrl?: string | null
+    /** The tenant's brand through the ONE cascade (lib/video/reel-brand.ts
+     *  resolveReelBrand). OPTIONAL so the pure proof can call this without a
+     *  database; absent → the composition defaults (navy/amber), which is what
+     *  every tenant got before lane 77D wired the cascade in (see below). */
+    brand?: { primaryColor: string; accentColor: string; logoUrl?: string | null }
+  },
 ): Record<string, unknown> {
   const safeAgent = sanitizeProperNoun(identity.agentName, 60) ?? "Your Agent"
   const showingLine = stats.showingsThisWeek === 0
@@ -124,9 +131,18 @@ export function buildSellerUpdateReelProps(
     // derived from this value rather than asserted.
     avatarVideoUrl: null,
     agentPhotoUrl: identity.agentPhotoUrl ?? null,
+    // BRAND FROM THE TENANT CASCADE (lane 77D). These were the literals
+    // "#0F172A"/"#F59E0B" — the composition's own navy/amber defaults — so a
+    // brokerage that finished the brand wizard still got the platform's stock
+    // colours on every weekly seller update, and no logo at all, while the same
+    // reel commissioned through the Director carried the tenant's brand
+    // (director-content.ts → resolveReelBrand). Two spellings of one reel's
+    // brand (§6); the cascade wins, the literals stay only as the no-brand
+    // fallback the pure proof exercises.
     brand: {
-      primaryColor: "#0F172A",
-      accentColor: "#F59E0B",
+      primaryColor: identity.brand?.primaryColor ?? "#0F172A",
+      accentColor: identity.brand?.accentColor ?? "#F59E0B",
+      ...(identity.brand?.logoUrl ? { logoUrl: identity.brand.logoUrl } : {}),
       brokerageName: sanitizeProperNoun(identity.brokerageName, 80) ?? "Your Brokerage",
       agentPhone: identity.agentPhone ?? "",
       showEhoMark: true,
@@ -304,9 +320,16 @@ export async function requestSellerUpdateReel(
       if ((u as any)?.phone) agentPhone = String((u as any).phone)
     }
   }
-  let brokerageName = "Your Brokerage"
-  const { data: b } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
-  if ((b as { name?: string } | null)?.name) brokerageName = String((b as { name: string }).name)
+  // TOMBSTONE (lane 77D): a private `brokerages.select("name")` read stood here
+  // and the brand colours were literals. The tenant's name, colours and logo now
+  // come through the ONE brand cascade (lib/video/reel-brand.ts resolveReelBrand
+  // → resolveBrandContext: team → brokerage → the wizard's global_settings row),
+  // agent-scoped so an agent on a team gets the team's chrome — the same call
+  // every other tenant reel makes. Defaults inside the adapter keep the reel
+  // rendering when a tenant has not finished the brand wizard.
+  const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+  const reelBrand = await resolveReelBrand(supabase, brokerageId, { agentUserId })
+  const brokerageName = reelBrand.brokerageName
 
   // The seller-safe narration, composed ONCE (§6) — the avatar speaks it below
   // and the companion card's seoHint is cut from it, so the two cannot drift
@@ -314,7 +337,10 @@ export async function requestSellerUpdateReel(
   const sellerScript = buildSellerUpdateMessage(gathered.stats, agentName).body
 
   const props: Record<string, unknown> = {
-    ...buildSellerUpdateReelProps(gathered.stats, { agentName, brokerageName, agentPhone, agentPhotoUrl }),
+    ...buildSellerUpdateReelProps(gathered.stats, {
+      agentName, brokerageName, agentPhone, agentPhotoUrl,
+      brand: { primaryColor: reelBrand.primaryColor, accentColor: reelBrand.accentColor, logoUrl: reelBrand.logoUrl },
+    }),
     listing_id: listingId,
     seller_contact_id: gathered.sellerContactId,
     // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit): the SAME

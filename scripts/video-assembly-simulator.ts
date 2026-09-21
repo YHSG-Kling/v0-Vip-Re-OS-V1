@@ -93,6 +93,10 @@ import {
 } from "../lib/video/realism-profile"
 import { clipCaptionCuesBeforeFrame, clipCaptionCuesFromFrame, shiftCaptionCues, buildCaptionPlan, type CaptionCue } from "../lib/video/caption-plan"
 import { shouldAutoRequeueFailedRender, MAX_AUTO_REQUEUE_ATTEMPTS } from "../lib/remotion/render-decision"
+import {
+  VIDEO_COMPOSITION_FILES, safeEval, buildScope, extractSegments, extractKeyedUnitDurations,
+  gapExplainedByKeyedRepeat, tileSegments, type Segment,
+} from "./composition-segments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const readStripped = (rel: string): string => stripComments(readFileSync(join(root, rel), "utf8"))
@@ -108,224 +112,15 @@ function check(name: string, cond: boolean, detail?: string) {
 // ═══════════════════════════════════════════════════════════════════════════
 // §sums — the whitelisted arithmetic evaluator + Sequence tiler
 // ═══════════════════════════════════════════════════════════════════════════
-
-/** Every registered composition's remotion/ source file, by id. STILLS
- *  (duration_frames === 1) are out of scope — they have no timeline to tile. */
-const VIDEO_COMPOSITION_FILES: Record<string, string> = {
-  JustListedReel: "remotion/JustListedReel.tsx",
-  JustListedReelSquare: "remotion/JustListedReelSquare.tsx",
-  JustListedReelHorizontal: "remotion/JustListedReelHorizontal.tsx",
-  JustSoldReelSquare: "remotion/JustSoldReelSquare.tsx",
-  PhotoWalkthroughReel: "remotion/PhotoWalkthroughReel.tsx",
-  AgentTalkingHeadReel: "remotion/AgentTalkingHeadReel.tsx",
-  AgentExplainerReel: "remotion/AgentExplainerReel.tsx",
-  TeammateExplainerReel: "remotion/TeammateExplainerReel.tsx",
-  ExplainerAnimReel: "remotion/ExplainerAnimReel.tsx",
-  MarketUpdateReel: "remotion/MarketUpdateReel.tsx",
-  ComingSoonReel: "remotion/ComingSoonReel.tsx",
-  OpenHouseAnnounceReel: "remotion/OpenHouseAnnounceReel.tsx",
-  TestimonialReel: "remotion/TestimonialReel.tsx",
-  NeighborhoodSpotlightReel: "remotion/NeighborhoodSpotlightReel.tsx",
-  AffordabilitySnapshotReel: "remotion/AffordabilitySnapshotReel.tsx",
-  CMAReel: "remotion/CMAReel.tsx",
-  EquityReportReel: "remotion/EquityReportReel.tsx",
-  ListingSectionReel: "remotion/ListingSectionReel.tsx",
-  NewsletterDigestVideo: "remotion/NewsletterDigestVideo.tsx",
-  PartnersMeetingReel: "remotion/PartnersMeetingReel.tsx",
-  ProductPromoReel: "remotion/ProductPromoReel.tsx",
-  // Single-segment slides — the WHOLE duration is one continuous body (an
-  // avatar PIP rides over it via avatarStartFrame/avatarEndFrame, not a
-  // Sequence chain). Checked separately in §sums-slides below.
-  ListingPresentationSlide: "remotion/ListingPresentationSlide.tsx",
-  BuyerConsultationSlide: "remotion/BuyerConsultationSlide.tsx",
-}
-
-/** A tag using the from={…}/durationInFrames={…} contract — Sequence itself,
- *  or a locally-defined wrapper sharing the exact same two-prop contract
- *  (CMAReel's `Slide`). Matched by CONTRACT, not by tag name, so a future
- *  wrapper needs no update here. `key=` between the tag name and `from=`
- *  excludes per-shot/mapped repeats (their expressions reference runtime
- *  values — `perPhoto`, `i` — this checker cannot and should not resolve). */
-const SEGMENT_TAG = /<([A-Za-z][A-Za-z0-9.]*)\s+from=\{([^}]+)\}\s+durationInFrames=\{([^}]+)\}/g
-
-/** `const NAME = EXPR` (module- or function-scope; both appear in this
- *  fleet — PartnersMeetingReel's COVER/ASK/OUTRO/cardTotal are function-
- *  scoped, most others are module-scoped). Captured in FILE ORDER so later
- *  consts (TOTAL, cardTotal) can reference earlier ones when evaluated
- *  sequentially. */
-const CONST_DECL = /const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n;]+);?/g
-
-/** `const FRAMES = { KEY: 60, KEY2: 120, ... }` — the alternate segment-
- *  boundary idiom (JustListedReel, NewsletterDigestVideo). Non-greedy up to
- *  the first `}`: none of this fleet's FRAMES objects nest braces. */
-const FRAMES_OBJECT = /const\s+FRAMES\s*=\s*\{([^}]+)\}/
-const FRAMES_ENTRY = /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([0-9]+(?:\.[0-9]+)?)/g
-
-/** Only these characters may reach `new Function` — no backticks, no
- *  brackets, no semicolons, nothing that could smuggle in anything but
- *  arithmetic over already-known identifiers. A string with `?`, `:` (ternary),
- *  object/array literals, or JSX therefore fails closed (thrown, caught,
- *  skipped) rather than evaluated. */
-const SAFE_EXPR = /^[0-9A-Za-z_.\s+\-*/(),]+$/
-
-function safeEval(expr: string, scope: Record<string, unknown>): number {
-  const cleaned = expr.trim()
-  if (!SAFE_EXPR.test(cleaned)) throw new Error(`unsafe expression: ${cleaned}`)
-  const names = Object.keys(scope)
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function(...names, `"use strict"; return (${cleaned});`)
-  const out = fn(...names.map((n) => scope[n]))
-  if (typeof out !== "number" || !Number.isFinite(out)) throw new Error(`non-numeric result: ${cleaned}`)
-  return out
-}
-
-/** Build the numeric scope for one composition: fps/FPS=30 (every registered
- *  row in COMPOSITION_GEOMETRY is 30fps — asserted once below rather than
- *  assumed forever), durationInFrames=the registered total (PartnersMeetingReel
- *  derives cardTotal from it), FRAMES.<key> flattened from a FRAMES object when
- *  present, then every `const NAME = EXPR` that evaluates cleanly against the
- *  scope built so far — evaluated in file order, skipping (not failing on) any
- *  declaration that is not simple arithmetic (strings, JSX, object literals,
- *  ternaries) because this checker only needs the numeric timeline consts. */
-function buildScope(source: string, geometry: RegisteredGeometry): Record<string, number> {
-  const scope: Record<string, number> = { fps: geometry.fps, FPS: geometry.fps, durationInFrames: geometry.duration_frames }
-
-  const framesMatch = FRAMES_OBJECT.exec(source)
-  if (framesMatch) {
-    const flat: Record<string, number> = {}
-    let m: RegExpExecArray | null
-    FRAMES_ENTRY.lastIndex = 0
-    while ((m = FRAMES_ENTRY.exec(framesMatch[1]))) flat[m[1]] = Number(m[2])
-    ;(scope as Record<string, unknown>).FRAMES = flat
-  }
-
-  CONST_DECL.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = CONST_DECL.exec(source))) {
-    const [, name, expr] = m
-    if (name === "FRAMES") continue // object form handled above
-    try {
-      scope[name] = safeEval(expr, scope)
-    } catch {
-      // Not simple arithmetic (a string, JSX, an object literal, a ternary
-      // over a runtime prop like `images.length`) — not a timeline const;
-      // skip rather than fail the whole scope build.
-    }
-  }
-  return scope
-}
-
-interface Segment { tag: string; from: number; duration: number; fromExpr: string; durExpr: string }
-
-/** Every from/durationInFrames tag this checker could resolve to numbers,
- *  in source order. Unresolvable candidates (a generic wrapper DEFINITION
- *  using its own prop names as the expression, e.g. CMAReel's
- *  `<Sequence from={from} durationInFrames={durationInFrames}>` inside the
- *  `Slide` component itself) throw on an unknown identifier and are DROPPED —
- *  correctly, since they are not a literal instantiation. */
-/** Resolvable `durationInFrames` values off KEYED tags — a `.map()`-generated
- *  repeat (per-shot images, per-card stats, per-proof beats) that a flat
- *  top-level tiler cannot see AS individual entries, because their `from`
- *  expressions reference the map's own loop variable (`i`, `idx`) and are
- *  therefore unresolvable by design (extractSegments already drops them for
- *  exactly that reason). What CAN be resolved, when the keyed tag's own
- *  `durationInFrames` does not reference the loop variable, is how big ONE
- *  repeat is — enough to explain a gap between two resolved top-level
- *  segments as "N repeats of a keyed shot", not a real hole in the timeline. */
-function extractKeyedUnitDurations(source: string, scope: Record<string, number>): number[] {
-  const KEYED_TAG = /<[A-Za-z][A-Za-z0-9.]*\s+key=\{[^}]*\}\s+from=\{[^}]+\}\s+durationInFrames=\{([^}]+)\}/g
-  const out: number[] = []
-  let m: RegExpExecArray | null
-  KEYED_TAG.lastIndex = 0
-  while ((m = KEYED_TAG.exec(source))) {
-    try { out.push(safeEval(m[1], scope)) } catch { /* references the loop var, or a ternary — not a single resolvable unit */ }
-  }
-  return out
-}
-
-/** Does ANY keyed-unit size evenly divide this gap? A gap the source itself
- *  cannot otherwise explain is still reported as real. */
-function gapExplainedByKeyedRepeat(gapFrames: number, unitSizes: number[]): number | null {
-  for (const size of unitSizes) {
-    if (size > 0 && gapFrames % size === 0) return gapFrames / size
-  }
-  return null
-}
-
-function extractSegments(source: string, scope: Record<string, number>): Segment[] {
-  const out: Segment[] = []
-  SEGMENT_TAG.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = SEGMENT_TAG.exec(source))) {
-    const [, tag, fromExpr, durExpr] = m
-    try {
-      const from = safeEval(fromExpr, scope)
-      const duration = safeEval(durExpr, scope)
-      out.push({ tag, from, duration, fromExpr, durExpr })
-    } catch {
-      // Unresolvable — a wrapper definition, not an instantiation. Skip.
-    }
-  }
-  return out
-}
-
-interface TileResult {
-  ok: boolean
-  reason: string
-  segments: Segment[]
-}
-
-/**
- * THE INVARIANT: sorted by `from`, segments start at 0, tile with NO GAP and
- * NO OVERLAP (the one documented exception is a trailing 1-frame "anchor"
- * sentinel at exactly `total - 1`, present in nearly every file in this fleet
- * as `<Sequence from={TOTAL - 1} durationInFrames={1}>` — a deliberate re-mount
- * of an empty frame to keep the registry's duration authoritative, not a real
- * segment, and excluded by the exact rule its own comments describe: duration
- * 1, from === total - 1), and the total equals `expectedTotal` exactly. No
- * segment may have a non-positive duration.
- *
- * PURE — a plain data transform, which is what lets the positive controls
- * below exercise it directly with synthetic segment lists.
- */
-function tileSegments(segments: Segment[], expectedTotal: number): TileResult {
-  const real = segments.filter((s) => !(s.duration === 1 && s.from === expectedTotal - 1))
-  if (real.length === 0) return { ok: false, reason: "no resolvable segments", segments: real }
-
-  const negative = real.find((s) => s.duration <= 0)
-  if (negative) {
-    return { ok: false, reason: `negative/zero durationInFrames on ${negative.tag} from={${negative.fromExpr}} durationInFrames={${negative.durExpr}} = ${negative.duration}`, segments: real }
-  }
-
-  const sorted = [...real].sort((a, b) => a.from - b.from)
-  if (sorted[0].from !== 0) {
-    return { ok: false, reason: `timeline does not start at 0 (first segment from=${sorted[0].from})`, segments: real }
-  }
-  for (let i = 1; i < sorted.length; i++) {
-    const prevEnd = sorted[i - 1].from + sorted[i - 1].duration
-    if (sorted[i].from !== prevEnd) {
-      return {
-        ok: false,
-        reason: sorted[i].from > prevEnd
-          ? `GAP of ${sorted[i].from - prevEnd} frames between segment ending at ${prevEnd} and the next starting at ${sorted[i].from}`
-          : `OVERLAP of ${prevEnd - sorted[i].from} frames — segment starting at ${sorted[i].from} begins before the previous ends at ${prevEnd}`,
-        segments: real,
-      }
-    }
-  }
-  const last = sorted[sorted.length - 1]
-  const total = last.from + last.duration
-  if (total !== expectedTotal) {
-    return {
-      ok: false,
-      reason: total > expectedTotal
-        ? `OVERRUN — segments sum to ${total} frames, past the registered durationInFrames ${expectedTotal}`
-        : `UNDERRUN — segments sum to ${total} frames, short of the registered durationInFrames ${expectedTotal}`,
-      segments: real,
-    }
-  }
-  return { ok: true, reason: "tiles exactly", segments: real }
-}
+//
+// TOMBSTONE (lane 77D): VIDEO_COMPOSITION_FILES, SEGMENT_TAG, CONST_DECL,
+// FRAMES_OBJECT/FRAMES_ENTRY, SAFE_EXPR, safeEval, buildScope, Segment,
+// extractKeyedUnitDurations, gapExplainedByKeyedRepeat, extractSegments,
+// TileResult and tileSegments were declared HERE (lines 109-328 before the
+// move) and now live in scripts/composition-segments.ts, the ONE extractor the
+// per-type matrix proof (scripts/video-type-matrix-simulator.ts) shares with
+// this file (§6 — one evaluator, two proofs). Behaviour is unchanged; every
+// assertion below calls the same functions through the import.
 
 function sumsSection() {
   console.log("\n── §sums — intro + body + outro tile [0, durationInFrames) exactly ──")

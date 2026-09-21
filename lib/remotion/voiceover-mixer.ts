@@ -25,15 +25,17 @@
 // (narration_cache.duration_seconds) — no probe, no second vendor call. When
 // either length is unknown the old behaviour is kept rather than guessed at.
 
+import { createRequire } from "node:module"
 import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+// createRequire, NOT a bare `require(...)` — see lib/remotion/music-mixer.ts
+// for the ESM-context failure this closes (lane 77D).
 let FFMPEG_BIN: string | null = null
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const ffmpegStatic = require("ffmpeg-static")
+  const ffmpegStatic = createRequire(import.meta.url)("ffmpeg-static")
   FFMPEG_BIN = typeof ffmpegStatic === "string" ? ffmpegStatic : null
 } catch { FFMPEG_BIN = null }
 

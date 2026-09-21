@@ -42,6 +42,7 @@
  * the music_asset row was added; this module trusts the row.
  */
 import "server-only"
+import { createRequire } from "node:module"
 import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
@@ -66,10 +67,15 @@ export {
   type SidechainDuckSettings,
 } from "./music-filter-graph"
 
+// createRequire, NOT a bare `require(...)` (lane 77D, LANE_RULES "no bare
+// require"): package.json is "type":"module", so under an ESM execution
+// context (tsx proofs, the smoke drill) the bare identifier does not exist and
+// the load silently fell into the catch — FFMPEG_BIN null, every music mix
+// "skipped: ffmpeg-static unavailable" with no ffmpeg ever tried. Same shape
+// lib/providers/dispatch.ts moved to in wave 75.
 let FFMPEG_BIN: string | null = null
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const ffmpegStatic = require("ffmpeg-static")
+  const ffmpegStatic = createRequire(import.meta.url)("ffmpeg-static")
   FFMPEG_BIN = typeof ffmpegStatic === "string" ? ffmpegStatic : null
 } catch {
   FFMPEG_BIN = null
