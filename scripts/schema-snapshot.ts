@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-18
+ * generated: 2026-09-21
  * source: public.live_schema_json()
- * body-sha256: ffeb00297eb820bb80044c9b9e41a92414b0b524a28133b1b24f722211e381c6
+ * body-sha256: 6a279225770417f0e9703047df417875b807ac20266df9eed1d2545eba61307f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -528,7 +528,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   prohibited_phrases: ["brokerage_id", "category", "created_at", "id", "is_active", "notes", "phrase", "phrase_pattern", "severity", "suggested_alternative", "updated_at"],
   property_alert_delivery_log: ["alert_id", "batch_id", "brokerage_id", "channels_used", "contact_id", "created_at", "error_message", "id", "idx_api_called", "idx_response_time_ms", "properties_checked", "properties_matched", "properties_sent", "run_triggered_by"],
   property_alert_results: ["alert_id", "bathrooms", "bedrooms", "brokerage_id", "buyer_dismissed", "buyer_reaction", "buyer_saved", "buyer_viewed", "buyer_viewed_at", "city", "contact_id", "created_at", "days_on_market", "delivered_at", "delivery_batch_id", "delivery_channel", "id", "is_new_listing", "is_price_reduction", "list_price", "listed_at", "listing_id", "listing_url", "match_reasons", "match_score", "mls_number", "mls_status", "previous_price", "price_reduction_percent", "primary_photo_url", "property_address", "property_type", "sqft", "state", "zip"],
-  property_alerts: ["agent_user_id", "alert_name", "bathrooms_min", "bedrooms_min", "brokerage_id", "cities", "contact_id", "created_at", "delivery_channels", "frequency", "id", "idx_saved_search_id", "include_coming_soon", "include_price_reductions", "is_active", "keywords", "last_match_count", "last_run_at", "max_days_on_market", "max_price", "max_results_per_alert", "max_sqft", "min_price", "min_sqft", "mls_source", "must_have_features", "new_listings_only", "paused_by", "paused_reason", "price_reduction_min_percent", "property_types", "snoozed_until", "source", "total_alerts_sent", "updated_at", "year_built_min", "zip_codes"],
+  property_alerts: ["agent_user_id", "alert_name", "bathrooms_min", "bedrooms_min", "brokerage_id", "cities", "contact_id", "created_at", "delivery_channels", "frequency", "id", "idx_saved_search_id", "include_coming_soon", "include_price_reductions", "is_active", "keywords", "last_match_count", "last_run_at", "listing_type", "max_days_on_market", "max_price", "max_results_per_alert", "max_sqft", "min_price", "min_sqft", "mls_source", "must_have_features", "new_listings_only", "paused_by", "paused_reason", "price_reduction_min_percent", "property_types", "snoozed_until", "source", "total_alerts_sent", "updated_at", "year_built_min", "zip_codes"],
   property_consensus: ["avg_rating", "collaborative_search_id", "consensus_notes", "created_at", "id", "is_finalist", "metadata", "property_id", "updated_at", "vote_count"],
   property_family_ratings: ["collaborative_search_id", "cons", "created_at", "id", "member_email", "notes", "property_id", "pros", "rating", "updated_at", "vote"],
   property_feedback: ["brokerage_id", "contact_id", "created_at", "disliked_features", "feedback_type", "id", "interest_level", "liked_features", "listing_id", "notes", "property_id", "source"],

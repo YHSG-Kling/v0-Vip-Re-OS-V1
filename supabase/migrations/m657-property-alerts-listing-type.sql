@@ -1,6 +1,6 @@
 -- supabase/migrations/m657-property-alerts-listing-type.sql
 --
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-21 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- Lane 77C, blind spot (1) from the wave-76 open list: "rental alerts not
 -- enrolled — property_alerts has no listing-type column".
