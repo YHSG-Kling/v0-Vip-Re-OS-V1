@@ -54,7 +54,7 @@
     "lib/ai-isa/appointment-form.ts": 1,
     "lib/ai-isa/batchdata-isa-tools.ts": 7,
     "lib/ai-isa/callback-task.ts": 2,
-    "lib/ai-isa/capability-catalogue.ts": 4,
+    "lib/ai-isa/capability-catalogue.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
     "lib/ai-isa/customer-context-tools.ts": 6,
@@ -111,6 +111,7 @@
     "lib/crm/import-pull.ts": 3,
     "lib/data-guard/index.ts": 1,
     "lib/did/avatar-completion.ts": 2,
+    "lib/did/platform-live-agent.ts": 1,
     "lib/direct-mail/address-suppression.ts": 2,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
@@ -230,6 +231,7 @@
     "lib/kernel/launch-war-room.ts": 2,
     "lib/kernel/lead-intake-cockpit.ts": 4,
     "lib/kernel/lead-magnets.ts": 1,
+    "lib/kernel/lender-linkage.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 3,
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/lookalike-audience.ts": 1,
@@ -266,6 +268,7 @@
     "lib/kernel/standup-action.ts": 1,
     "lib/kernel/team-plays.ts": 2,
     "lib/kernel/team-query.ts": 2,
+    "lib/kernel/tenant-creation.ts": 3,
     "lib/kernel/title-closing-watchtower.ts": 3,
     "lib/kernel/tour-optimizer.ts": 5,
     "lib/kernel/vendor-coverage-forecast.ts": 2,
@@ -362,9 +365,12 @@
     "lib/platform/os-sentinel.ts": 3,
     "lib/platform/platform-controls.ts": 1,
     "lib/platform/platform-staff-roster.ts": 2,
+    "lib/platform/product-brand.ts": 1,
     "lib/platform/product-content.ts": 2,
+    "lib/platform/product-demo.ts": 2,
     "lib/platform/prospect-agent-tools.ts": 1,
     "lib/platform/prospect-capture.ts": 5,
+    "lib/platform/prospect-conversion.ts": 4,
     "lib/platform/prospect-sourcer.ts": 2,
     "lib/platform/provider-posture.ts": 1,
     "lib/platform/referral-payouts.ts": 1,
@@ -424,14 +430,16 @@
     "lib/vendors/vendor-scope.ts": 1,
     "lib/vendors/vendor-service-area.ts": 3,
     "lib/video/avatar-render-orchestrator.ts": 1,
+    "lib/video/caption-plan.ts": 1,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 2,
     "lib/video/format-learning.ts": 3,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
+    "lib/video/narration-window.ts": 1,
     "lib/video/promo-composition.ts": 1,
-    "lib/video/realism-profile.ts": 4,
+    "lib/video/realism-profile.ts": 5,
     "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
@@ -451,7 +459,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9699,
+  "census": 9735,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -942,7 +950,7 @@
     "app/actions/superadmin/platform-brand.ts": 6,
     "app/actions/superadmin/platform-content.ts": 5,
     "app/actions/superadmin/platform-controls.ts": 6,
-    "app/actions/superadmin/platform-growth.ts": 7,
+    "app/actions/superadmin/platform-growth.ts": 8,
     "app/actions/superadmin/platform-overview.ts": 3,
     "app/actions/superadmin/platform-providers.ts": 2,
     "app/actions/superadmin/platform-reception.ts": 2,
@@ -1365,6 +1373,7 @@
     "app/api/onboarding/training/progress/route.ts": 1,
     "app/api/open-house/attend/route.ts": 1,
     "app/api/open-house/convert-attendee/route.ts": 1,
+    "app/api/platform/live-agent/session/route.ts": 1,
     "app/api/platform/prospect-chat/route.ts": 1,
     "app/api/podcast/widget/route.ts": 1,
     "app/api/portal/[contactId]/calendar.ics/route.ts": 1,
@@ -2426,6 +2435,7 @@
     "app/embed/[publicId]/embed-widget.tsx": 1,
     "app/get-started/actions.ts": 1,
     "app/get-started/get-started-form.tsx": 1,
+    "app/get-started/platform-live-agent.tsx": 1,
     "app/get-started/prospect-chat.tsx": 1,
     "app/get-started/trial-funnel-form.tsx": 1,
     "app/home-value/[agentSlug]/home-value-client.tsx": 1,
@@ -2724,7 +2734,7 @@
     "lib/ai-isa/build-call-context.ts": 1,
     "lib/ai-isa/buyer-intent-router.ts": 1,
     "lib/ai-isa/callback-task.ts": 7,
-    "lib/ai-isa/capability-catalogue.ts": 9,
+    "lib/ai-isa/capability-catalogue.ts": 6,
     "lib/ai-isa/cold-contact-escalation.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 2,
     "lib/ai-isa/contact-reel-situation.ts": 9,
@@ -2774,6 +2784,8 @@
     "lib/ai-isa/stale-contact-detector.ts": 2,
     "lib/ai-isa/tools.ts": 1,
     "lib/ai-isa/transaction-propensity.ts": 2,
+    "lib/ai-isa/user-type-tool-policy.ts": 3,
+    "lib/ai-isa/user-type-tools.ts": 1,
     "lib/ai-isa/video-generator.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 6,
     "lib/analytics/ai-prediction-outcomes.ts": 3,
@@ -3062,6 +3074,7 @@
     "lib/did/gateway.ts": 2,
     "lib/did/index.ts": 1,
     "lib/did/live-session-metering.ts": 7,
+    "lib/did/platform-live-agent.ts": 6,
     "lib/did/result-url-rehost-sweep.ts": 1,
     "lib/did/webhook.ts": 3,
     "lib/direct-mail/address-suppression.ts": 4,
@@ -3470,7 +3483,7 @@
     "lib/kernel/lead-acquisition-handlers.ts": 7,
     "lib/kernel/lead-intake-cockpit.ts": 6,
     "lib/kernel/lead-magnets.ts": 8,
-    "lib/kernel/lender-linkage.ts": 7,
+    "lib/kernel/lender-linkage.ts": 8,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
     "lib/kernel/listing-archive.ts": 2,
@@ -3568,6 +3581,7 @@
     "lib/kernel/team-query.ts": 3,
     "lib/kernel/tenancy-principal.ts": 1,
     "lib/kernel/tenant-creation-rollback.ts": 1,
+    "lib/kernel/tenant-creation.ts": 5,
     "lib/kernel/tenant-guard.ts": 1,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
     "lib/kernel/tenant-scope.ts": 7,
@@ -3858,7 +3872,7 @@
     "lib/platform/coupons.ts": 8,
     "lib/platform/custom-domains.ts": 8,
     "lib/platform/deal-room-demo.ts": 13,
-    "lib/platform/demo-tenant.ts": 5,
+    "lib/platform/demo-tenant.ts": 6,
     "lib/platform/disposition-route.ts": 1,
     "lib/platform/distribution-engine.ts": 3,
     "lib/platform/engagement-risk.ts": 2,
@@ -3875,12 +3889,13 @@
     "lib/platform/platform-sentinel.ts": 6,
     "lib/platform/platform-social.ts": 11,
     "lib/platform/platform-staff-roster.ts": 11,
-    "lib/platform/product-brand.ts": 5,
+    "lib/platform/product-brand.ts": 6,
     "lib/platform/product-content-autopilot.ts": 3,
     "lib/platform/product-content.ts": 6,
+    "lib/platform/product-demo.ts": 4,
     "lib/platform/prospect-agent-tools.ts": 2,
-    "lib/platform/prospect-capture.ts": 10,
-    "lib/platform/prospect-conversion.ts": 1,
+    "lib/platform/prospect-capture.ts": 11,
+    "lib/platform/prospect-conversion.ts": 6,
     "lib/platform/prospect-followup.ts": 1,
     "lib/platform/prospect-sourcer.ts": 3,
     "lib/platform/provider-posture.ts": 7,
@@ -3950,7 +3965,7 @@
     "lib/property/resolve-property-facts.ts": 4,
     "lib/property-alerts/alert-cadence.ts": 1,
     "lib/property-alerts/alert-engine.ts": 2,
-    "lib/property-alerts/alert-matcher.ts": 1,
+    "lib/property-alerts/alert-matcher.ts": 2,
     "lib/property-alerts/alert-notifier.ts": 1,
     "lib/property-alerts/first-look-consent.ts": 1,
     "lib/property-alerts/idx-alert-search.ts": 1,
@@ -4205,7 +4220,7 @@
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
     "lib/video/broll-url.ts": 1,
-    "lib/video/caption-plan.ts": 5,
+    "lib/video/caption-plan.ts": 7,
     "lib/video/chapter-video-generator.ts": 1,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
@@ -4226,12 +4241,13 @@
     "lib/video/memory-video.ts": 2,
     "lib/video/module-voice.ts": 2,
     "lib/video/multilingual-reel.ts": 4,
+    "lib/video/narration-window.ts": 2,
     "lib/video/persona-overlay.ts": 1,
     "lib/video/persona-variant-post-pass.ts": 1,
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 20,
+    "lib/video/realism-profile.ts": 21,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -4367,8 +4383,10 @@
     "remotion/components/AvatarPIP.tsx": 1,
     "remotion/components/CaptionLayer.tsx": 1,
     "remotion/components/EqualHousingMark.tsx": 1,
+    "remotion/components/LowerThird.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 2,
     "remotion/components/SafeImg.tsx": 1,
+    "remotion/components/SceneFade.tsx": 1,
     "services/goHighLevelService.ts": 3,
     "services/supabase.ts": 3,
     "workflows/market-insight-workflow.ts": 1
@@ -7540,6 +7558,7 @@
       "requestPlatformDemoAction",
       "listPlatformProspectsAction",
       "confirmProspectDemoAction",
+      "convertProspectToSubscriberAction",
       "advanceProspectAction",
       "generateProspectProposalAction",
       "draftProspectOutreachAction"
@@ -9224,6 +9243,9 @@
       "POST"
     ],
     "app/api/open-house/convert-attendee/route.ts": [
+      "POST"
+    ],
+    "app/api/platform/live-agent/session/route.ts": [
       "POST"
     ],
     "app/api/platform/prospect-chat/route.ts": [
@@ -12499,6 +12521,9 @@
     "app/get-started/get-started-form.tsx": [
       "GetStartedForm"
     ],
+    "app/get-started/platform-live-agent.tsx": [
+      "PlatformLiveAgent"
+    ],
     "app/get-started/prospect-chat.tsx": [
       "ProspectChat"
     ],
@@ -13598,8 +13623,6 @@
       "loadEnabledCapabilities",
       "isCapabilityEnabled",
       "buildGetListingDetailsTool",
-      "buildRequestVendorReferralTool",
-      "buildCaptureReferralTool",
       "buildNewCatalogueTools"
     ],
     "lib/ai-isa/cold-contact-escalation.ts": [
@@ -13851,6 +13874,14 @@
     "lib/ai-isa/transaction-propensity.ts": [
       "computeTransactionPropensity",
       "rankContactsByPropensity"
+    ],
+    "lib/ai-isa/user-type-tool-policy.ts": [
+      "resolveUserTypeSeat",
+      "selectToolsForSeat",
+      "seatPromptBlock"
+    ],
+    "lib/ai-isa/user-type-tools.ts": [
+      "buildUserTypeSeatTools"
     ],
     "lib/ai-isa/video-generator.ts": [
       "embedVideoInEmail"
@@ -15399,6 +15430,14 @@
       "resolveOpenSimliSession",
       "sweepStaleLiveAgentSessions",
       "listLiveAgentSessionsForBrokerage"
+    ],
+    "lib/did/platform-live-agent.ts": [
+      "platformLiveSessionMarker",
+      "loadPlatformLiveAgentConfig",
+      "resolvePlatformLiveAgentBrokerageId",
+      "platformDidAgentCache",
+      "ensurePlatformDIDAgent",
+      "resolvePlatformLiveSession"
     ],
     "lib/did/result-url-rehost-sweep.ts": [
       "runDidResultUrlRehostSweep"
@@ -17458,6 +17497,7 @@
       "isLenderVendorCategory",
       "lenderFilterIds",
       "resolveLenderVendorForTransaction",
+      "vendorSeatsForUser",
       "lenderVendorForUser",
       "lenderVendorUserIds",
       "lenderVendorTransactionIds",
@@ -17979,6 +18019,13 @@
     ],
     "lib/kernel/tenant-creation-rollback.ts": [
       "rollbackTenantCreation"
+    ],
+    "lib/kernel/tenant-creation.ts": [
+      "isCanonicalTier",
+      "buildTenantSlug",
+      "platformMembershipFlags",
+      "buildSubscriptionRow",
+      "createTenantCore"
     ],
     "lib/kernel/tenant-guard.ts": [
       "logTenantFinding"
@@ -19490,6 +19537,7 @@
     ],
     "lib/platform/demo-tenant.ts": [
       "buildDemoSeedPlan",
+      "findDemoBrokerage",
       "ensureDemoTenant",
       "seedDemoData",
       "resetDemoTenant",
@@ -19602,6 +19650,7 @@
       "validateStaffInput"
     ],
     "lib/platform/product-brand.ts": [
+      "resolveProductLiveAgent",
       "resolveProductBrand",
       "brandCta",
       "loadProductBrand",
@@ -19621,6 +19670,12 @@
       "videoProofBeats",
       "composeProductVideoSpec"
     ],
+    "lib/platform/product-demo.ts": [
+      "isProductDemoTopic",
+      "demoClipToken",
+      "splitDemoClipToken",
+      "describeProductDemo"
+    ],
     "lib/platform/prospect-agent-tools.ts": [
       "platformExitMenuMatchesTools",
       "buildPlatformProspectTools"
@@ -19635,10 +19690,16 @@
       "markProspectDemoScheduled",
       "markProspectDemoConfirmed",
       "markProspectSignupLinkSent",
-      "markProspectHandoff"
+      "markProspectHandoff",
+      "markProspectConverted"
     ],
     "lib/platform/prospect-conversion.ts": [
-      "stampProspectConversion"
+      "stampProspectConversion",
+      "tierForProspect",
+      "splitPersonName",
+      "deriveProspectTenantFacts",
+      "conversionHumanReasons",
+      "convertProspectToSubscriber"
     ],
     "lib/platform/prospect-followup.ts": [
       "runProspectFollowupSweep"
@@ -19977,6 +20038,7 @@
       "runAllActiveAlerts"
     ],
     "lib/property-alerts/alert-matcher.ts": [
+      "alertListingType",
       "scorePropertyForAlert"
     ],
     "lib/property-alerts/alert-notifier.ts": [
@@ -21141,10 +21203,12 @@
     ],
     "lib/video/caption-plan.ts": [
       "buildCaptionPlan",
+      "evenWordFrames",
       "activeCueIndex",
       "shiftCaptionCues",
       "clipCaptionCuesFromFrame",
-      "clipCaptionCuesBeforeFrame"
+      "clipCaptionCuesBeforeFrame",
+      "activeWordIndex"
     ],
     "lib/video/chapter-video-generator.ts": [
       "generatePropertyChapterVideos"
@@ -21257,6 +21321,10 @@
       "translateReelScript",
       "commissionMultilingualReel"
     ],
+    "lib/video/narration-window.ts": [
+      "narrationWindowSeconds",
+      "narrationWindowBudget"
+    ],
     "lib/video/persona-overlay.ts": [
       "burnPersonaOverlay"
     ],
@@ -21297,7 +21365,8 @@
       "varyingSceneWeights",
       "handheldDriftOffset",
       "PAUSE_MARKUP_ALIGNMENT_FIXTURE",
-      "PLAIN_ALIGNMENT_FIXTURE"
+      "PLAIN_ALIGNMENT_FIXTURE",
+      "DID_SCALE_MONTHLY_STREAMING_MINUTES"
     ],
     "lib/video/reel-brand.ts": [
       "resolveReelBrand",
@@ -21890,12 +21959,18 @@
     "remotion/components/EqualHousingMark.tsx": [
       "EqualHousingMark"
     ],
+    "remotion/components/LowerThird.tsx": [
+      "LowerThird"
+    ],
     "remotion/components/QrOutroBadge.tsx": [
       "shouldRenderQrBadge",
       "QrOutroBadge"
     ],
     "remotion/components/SafeImg.tsx": [
       "SafeImg"
+    ],
+    "remotion/components/SceneFade.tsx": [
+      "SceneFade"
     ],
     "services/goHighLevelService.ts": [
       "syncContactToGHL",
