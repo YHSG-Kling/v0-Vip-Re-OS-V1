@@ -187,8 +187,11 @@ const NOT_A_LEAD_ROSTER: Array<{ file: string; snippet: string; why: string }> =
     why: "requireReassignAuthority — who may move a CONTACT between agents. It updates leads.agent_id as part of the move; it does not decide who SEES leads." },
   { file: "app/actions/privacy/data-subject-requests.ts", snippet: "[broker,broker_admin,admin,superadmin,compliance_officer]",
     why: "DSR handler roster (note compliance_officer, who is not on the lead desk). Erasure/export spans every table including leads." },
-  { file: "app/api/internal/ai-chat/route.ts", snippet: "[agent,broker,admin,tc,transaction_coordinator,lender,vendor,title,title_agent,compliance_officer,compliance_manager,superadmin,super_admin,isa,team_lead]",
-    why: "Assistant ROUTING vocabulary — every user_type including agent. Not a gate; it picks which assistant persona answers." },
+  // app/api/internal/ai-chat/route.ts's hand-typed routing/permission roster was
+  // RETIRED in wave 77 (lane 77A): COPILOT_ADMITTED_ROLES is DERIVED from
+  // TENANT_ADMIN_USER_TYPES in lib/ai-isa/user-type-tool-policy.ts, so the file
+  // names no roster of its own and there is nothing left to excuse — the same
+  // healthy end state the note above describes.
   { file: "app/dashboard/admin/page.tsx", snippet: "[admin,superadmin,broker,broker_admin]",
     why: "The admin DASHBOARD's own gate. Reaches `leads` for a KPI tile." },
   { file: "lib/kernel/manager-signals.ts", snippet: "[broker,admin]",

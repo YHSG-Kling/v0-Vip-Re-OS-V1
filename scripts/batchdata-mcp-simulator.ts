@@ -96,8 +96,14 @@ const read = (rel: string) => stripComments(readFileSync(join(root, rel), "utf8"
      "AI tools: does NOT import the version-mismatched @ai-sdk/mcp (ai@6 has no MCP export; not installed)")
 
   const wired = read("app/api/internal/ai-chat/route.ts")
-  ok(/batchDataMcpTools/.test(wired) && /\.\.\.batchDataTools/.test(wired),
-     "AI tools: wired into the in-app agent copilot's tool registry (app/api/internal/ai-chat)")
+  // Wave 77 (lane 77A): the copilot no longer spreads registries by hand — ONE
+  // selection, lib/ai-isa/user-type-tool-policy.ts::selectToolsForSeat, takes
+  // batchDataTools as a part and assigns it into the single tools object for
+  // staff seats only (partner seats never see property data).
+  const seatPolicy = read("lib/ai-isa/user-type-tool-policy.ts")
+  ok(/batchDataMcpTools/.test(wired) && /selectToolsForSeat\(seat,\s*\{[^}]*batchDataTools/.test(wired)
+     && /Object\.assign\(out,\s*parts\.batchDataTools\)/.test(seatPolicy),
+     "AI tools: wired into the in-app agent copilot's tool registry (app/api/internal/ai-chat) through the one seat selection")
 }
 
 // ─── 4. Pooled subscription plan — pools BY QUICKLIST, not by (market × quicklist) ─────

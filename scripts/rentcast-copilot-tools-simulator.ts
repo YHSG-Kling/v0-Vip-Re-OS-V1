@@ -116,10 +116,16 @@ const raw = (rel: string) => readFileSync(join(root, rel), "utf8")
      "AI tools: does NOT import the version-mismatched @ai-sdk/mcp (ai@6 has no MCP export; not installed)")
 
   const wired = read("app/api/internal/ai-chat/route.ts")
-  ok(/rentCastMcpTools/.test(wired) && /\.\.\.rentCastTools/.test(wired),
+  // Wave 77 (lane 77A): ONE selection (lib/ai-isa/user-type-tool-policy.ts::
+  // selectToolsForSeat) receives staffTools, batchDataTools and rentCastTools
+  // as parts and assigns them into a SINGLE `out` object — one registry, not a
+  // second stream; partner seats get none of the property data.
+  const seatPolicy = read("lib/ai-isa/user-type-tool-policy.ts")
+  ok(/rentCastMcpTools/.test(wired) && /selectToolsForSeat\(seat,\s*\{[^}]*rentCastTools/.test(wired),
      "AI tools: wired into the in-app agent copilot's tool registry (app/api/internal/ai-chat), beside batchDataTools")
-  ok(/\.\.\.agentTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools/.test(wired),
-     "AI tools: spread into the SAME tools object as batchDataTools — one tool registry, not a second stream")
+  ok(/selectToolsForSeat\(seat,\s*\{[^}]*staffTools:\s*agentTools[^}]*batchDataTools[^}]*rentCastTools/.test(wired)
+     && /Object\.assign\(out,\s*parts\.staffTools\)[\s\S]{0,200}Object\.assign\(out,\s*parts\.rentCastTools\)[\s\S]{0,200}Object\.assign\(out,\s*parts\.batchDataTools\)/.test(seatPolicy),
+     "AI tools: assigned into the SAME tools object as batchDataTools — one tool registry, not a second stream")
 }
 
 // ─── 4. RENTCAST_USD_PER_REQUEST is derived, documented, and used by BOTH REST + MCP ────

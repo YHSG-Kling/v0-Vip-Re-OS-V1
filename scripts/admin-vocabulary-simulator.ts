@@ -95,6 +95,14 @@ import { toCanonicalRole } from "../lib/security/types"
 // never retyped — see STORABLE_USER_TYPES below for what retyping it cost.
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { blankStrings } from "./strip-comments"
+// The SEAT vocabulary (lib/ai-isa/user-type-tool-policy.ts, wave 77 — "vendors
+// are not contact type, they are user type") deliberately reuses two role
+// spellings (team_lead, broker_admin) beside seats that are not roles at all
+// (staff, platform_staff). It answers "which AI-agent tools may this seat
+// reach", not "who may pass this gate", so the phantom sweep must recognise it
+// by DERIVATION from that module — never a retyped list here (§6).
+import { USER_TYPE_SEATS } from "../lib/ai-isa/user-type-tool-policy"
+const SEAT_VOCABULARY: ReadonlySet<string> = new Set(USER_TYPE_SEATS)
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -588,6 +596,10 @@ function sourceLayer() {
   console.log("\n[phantom roles · source — a gate may not name a role nobody can hold]")
   const phantoms: string[] = []
   let phantomScanned = 0
+  let seatArraysSkipped = 0
+  // A word that SOME role vocabulary admits is not a seat-only word; only the
+  // seats no vocabulary can hold (staff, platform_staff) mark a seat array.
+  const CANONICAL_OR_VOCAB_ROLE = (w: string): boolean => phantomRoles([w]).length === 0
   for (const file of walk(ROOT)) {
     const src = readFileSync(file, "utf8")
     const mask = stringMask(src)
@@ -612,6 +624,10 @@ function sourceLayer() {
       // perfectly good vocabulary as full of phantoms.
       const adminWords = words.filter((w) => TENANT_ADMIN.has(w)).length
       if (adminWords < 2) continue
+      // A SEAT array: every word is a UserTypeSeat and at least one is a seat
+      // that is not a role (staff / platform_staff) — a role gate can never look
+      // like this, because no gate admits a word nobody can hold as a role.
+      if (words.every((w) => SEAT_VOCABULARY.has(w)) && words.some((w) => SEAT_VOCABULARY.has(w) && !TENANT_ADMIN.has(w) && !CANONICAL_OR_VOCAB_ROLE(w))) { seatArraysSkipped++; continue }
       phantomScanned++
       const bad = phantomRoles(words)
       if (bad.length) phantoms.push(`${relative(ROOT, file)}:${lineOf(src, i)}  ${bad.join(",")}  in [${words.join(",")}]`)
@@ -619,6 +635,12 @@ function sourceLayer() {
   }
   check(`the phantom sweep is still reading role arrays (found ${phantomScanned}) — the count below is not vacuous`,
     phantomScanned > 20)
+  check(`the seat vocabulary is recognised by derivation, not by silence (seat arrays skipped: ${seatArraysSkipped}, must be > 0 while lib/ai-isa/user-type-tool-policy.ts declares USER_TYPE_SEATS)`,
+    seatArraysSkipped > 0)
+  // POSITIVE CONTROL: a role gate that smuggles a phantom beside two admin words is
+  // still caught — the seat allowance cannot hide it.
+  check("POSITIVE CONTROL: [broker_admin, team_lead, not_a_role_anywhere] is still a phantom hit",
+    phantomRoles(["broker_admin", "team_lead", "not_a_role_anywhere"]).length === 1)
   check(`no role array names a role that exists in no vocabulary (found ${phantoms.length})`,
     phantoms.length === 0)
   for (const h of phantoms) console.log(`      · ${h}`)
