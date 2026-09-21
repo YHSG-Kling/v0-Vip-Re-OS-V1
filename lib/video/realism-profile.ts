@@ -325,7 +325,25 @@ export const ELEVENLABS_TEXT_NORMALIZATION: "auto" = "auto"
 //     companion section further down this file for the finding (already
 //     wired elsewhere in this repo, not a fit for THIS config object).
 
-export type ElevenLabsLane = "avatar_narration" | "reel_narration" | "phone_realtime" | "voice_drop"
+export type ElevenLabsLane =
+  | "avatar_narration"
+  | "reel_narration"
+  | "phone_realtime"
+  | "voice_drop"
+  // LANE 77C — the legacy NON-VIDEO callers of lib/voice/elevenlabs-tts.ts
+  // (blind spot (4)): every one of these is a SCRIPTED, PRE-RENDERED read to a
+  // listener who cannot interrupt — the same register as the three narration
+  // lanes above — and each was silently riding the primitive's oldest
+  // `eleven_monolingual_v1` default because it named no model at all. They are
+  // separate lane names, not one "other" bucket, so a future language- or
+  // latency-conditional rule can land on the lane that needs it without a
+  // second selector at the call site (§6).
+  | "presentation_narration" // lib/listing-presentation/section-narration-orchestrator.ts
+  | "podcast_narration"      // lib/podcast/auto-producer.ts
+  | "brief_narration"        // app/actions/brief-audio.ts, standup-audio.ts, lib/kernel/week-in-review.ts, lib/intelligence/appointment-whisper.ts
+  | "letter_narration"       // lib/direct-mail/render-letter-audio.ts
+  | "voice_preview"          // app/actions/ai-identity.ts (the "hear this voice" sample)
+  | "api_voiceover"          // app/api/elevenlabs/tts/route.ts, lib/did/index.ts generateAudioOnly
 
 /** model_id for the three NARRATION lanes (avatar email-video, reel
  *  voiceover, and voice-drop voicemail) — v3, timestamped and plain.
@@ -1509,23 +1527,76 @@ export const COVER_CTA_CONTENT_BEAT_RULING =
 // and ElevenLabs per CHARACTER of synthesised text, so a flat number
 // undercounts any script longer than ~6 s and overcounts a two-line welcome.
 // §5 (CLAUDE.md): the usage ledger feeds meter_readings and the overage
-// projection — "a wrong number there is a wrong invoice". These are the
-// published list rates recorded in docs/avatar-provider-recommendation-2026-09.md
-// (D-ID ≈ $0.05/sec on the API plan; ElevenLabs Creator/Pro ≈ $0.10 per 1k
-// chars for multilingual_v2 and v3 alike). They are ESTIMATES: committed-tier
-// pricing differs per account, and the true amount is what the provider
-// invoices. Keep the rates here (one vocabulary) — never inline a second copy.
-const DID_USD_PER_VIDEO_SECOND = 0.05
+// projection — "a wrong number there is a wrong invoice". ElevenLabs
+// Creator/Pro ≈ $0.10 per 1k chars for multilingual_v2 and v3 alike
+// (docs/avatar-provider-recommendation-2026-09.md). They are ESTIMATES:
+// committed-tier pricing differs per account, and the true amount is what the
+// provider invoices. Keep the rates here (one vocabulary) — never inline a
+// second copy.
+//
+// THE D-ID RATE IS DERIVED, NOT QUOTED (lane 77C, blind spot (8) — "DID_USD_
+// PER_VIDEO_SECOND ~3× credit math"). This constant was a bare `0.05`, taken
+// from a third-party summary (heyfish.ai, 2026-03-24: "API $0.05/sec =
+// $3.00/min"). D-ID's OWN plan table — the official API pricing page the owner
+// supplied 2026-09-12 (https://www.d-id.com/pricing/api/, recorded verbatim
+// in the DID_SCALE_* block below and in docs/avatar-provider-recommendation-
+// 2026-09.md §76D) — says: Scale $297/mo = 1,200 credits, ONE CREDIT = 15 s of
+// offline (rendered) video, credits void monthly. That is
+//   $297 / (1,200 credits × 15 s) = $0.0165 per rendered second ≈ $0.99/min,
+// which is what §76D already recorded as "≈ $0.99/min at Scale" while this
+// constant still said 0.05 — three times the official credit math, on the
+// number the vendor ledger bills a tenant with. The lower tiers agree within
+// 15% (Build $18 / 64 credits = $0.01875/s; Launch $50 / 180 = $0.0185/s), so
+// the Scale rate is the floor and the tier spread is a documented under-
+// estimate for a small plan, not a different order of magnitude.
+//
+// VERIFIED 2026-09-21 (lane 77C, Exa web_fetch): https://www.d-id.com/pricing/
+// (page dated 2025-01-30) states the billing MECHANICS this derivation rests
+// on — "the duration is deducted from the total minutes available in your
+// plan. The length of the video is rounded up to the nearest 15-second
+// interval" and "unused minutes become void" — and that API usage "is
+// deducted from the same balance as your web version". The API plan page
+// (/pricing/api/) renders client-side and returned no plan table to the
+// fetch, so the dollar figures above are the owner-supplied 2026-09-12
+// reading, not re-fetched; re-verify them against that page before any
+// further change to DID_SCALE_MONTHLY_PLAN_USD / DID_SCALE_MONTHLY_CREDITS.
+// The 15-second rounding is applied in estimateAvatarRenderCostUsd below
+// through roundUpToNearest15Seconds (the streaming leg's existing rule) —
+// D-ID charges a 17-second clip as 30 seconds, and so must the estimate.
+//
+// The offline-second rate and the streaming-minute rate (DID_USD_PER_
+// STREAMING_MINUTE, further down) now come from the SAME three plan numbers —
+// one credit is 15 s offline or 30 s streaming — so the two legs can no longer
+// drift apart.
+export const DID_SCALE_MONTHLY_PLAN_USD = 297
+// The three plan facts below are module-private on purpose: every derived
+// rate a caller needs is exported (DID_USD_PER_STREAMING_MINUTE,
+// DID_SCALE_MONTHLY_STREAMING_MINUTES, estimateAvatarRenderCostUsd), and an
+// export nothing imports is the opposite-missing census's category 3.
+const DID_SCALE_MONTHLY_CREDITS = 1200
+/** Seconds of RENDERED (offline) video one D-ID credit buys — d-id.com/pricing/api, 2026-09-12. */
+const DID_OFFLINE_SECONDS_PER_CREDIT = 15
+/** Seconds of STREAMING (live agent) video one D-ID credit buys — half the offline rate, same source. */
+const DID_STREAMING_SECONDS_PER_CREDIT = 30
+const DID_USD_PER_VIDEO_SECOND =
+  Math.round((DID_SCALE_MONTHLY_PLAN_USD / (DID_SCALE_MONTHLY_CREDITS * DID_OFFLINE_SECONDS_PER_CREDIT)) * 10000) / 10000
 const ELEVENLABS_USD_PER_1K_CHARS = 0.1
 
 /**
  * Estimated USD for one avatar render of `script`: ElevenLabs characters +
- * D-ID seconds at WORDS_PER_MINUTE pace (script-structure.ts). Minimum 1 s of
- * video so an empty/whitespace script still records the fixed per-call floor.
+ * D-ID seconds at WORDS_PER_MINUTE pace (script-structure.ts), the D-ID leg
+ * rounded UP to the 15-second interval d-id.com/pricing states — through
+ * `roundUpToNearest15Seconds`, the ONE rounding rule the streaming leg
+ * already uses (§6; declared further down this file, hoisted). An
+ * empty/whitespace script still records the fixed per-call floor (one
+ * 15-second interval, i.e. one credit) — never $0 for a call that was billed.
  */
 export function estimateAvatarRenderCostUsd(script: string): number {
   const chars = script.length
-  const seconds = Math.max(1, estimateDurationSeconds(spokenWords(script).length))
+  const seconds = Math.max(
+    DID_OFFLINE_SECONDS_PER_CREDIT,
+    roundUpToNearest15Seconds(estimateDurationSeconds(spokenWords(script).length)),
+  )
   const usd = (chars / 1000) * ELEVENLABS_USD_PER_1K_CHARS + seconds * DID_USD_PER_VIDEO_SECOND
   return Math.round(usd * 10000) / 10000
 }
@@ -1555,8 +1626,10 @@ export function estimateAvatarRenderCostUsd(script: string): number {
 // safer wrong).
 // ONE constant (§6) — never re-guess this inline; the vocabulary of "what a
 // live D-ID minute costs" lives here, next to the render-second rate above.
-export const DID_SCALE_MONTHLY_PLAN_USD = 297
-export const DID_SCALE_MONTHLY_STREAMING_MINUTES = 600
+// DERIVED from the same plan numbers as the render leg (lane 77C): 1,200
+// credits × 30 streaming seconds = 36,000 s = 600 minutes per Scale month.
+export const DID_SCALE_MONTHLY_STREAMING_MINUTES =
+  (DID_SCALE_MONTHLY_CREDITS * DID_STREAMING_SECONDS_PER_CREDIT) / 60
 export const DID_USD_PER_STREAMING_MINUTE =
   Math.round((DID_SCALE_MONTHLY_PLAN_USD / DID_SCALE_MONTHLY_STREAMING_MINUTES) * 10000) / 10000
 

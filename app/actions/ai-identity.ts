@@ -313,9 +313,13 @@ export async function previewAssistantVoiceAction(voiceId: string): Promise<
   if (!voiceId || voiceId.length > 64) return { success: false, error: "Invalid voice" }
   try {
     const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
+    // The preview is rendered on the SAME model the briefs and narration
+    // lanes use (lane 77C) — a sample on a different model than the product
+    // would be a sample of nothing.
+    const { elevenLabsModelForLane } = await import("@/lib/video/realism-profile")
     const tts = await synthesizeSpeech({
       text: "Hi, this is your AI assistant. I answer your calls, brief your mornings, and present your numbers.",
-      voiceId, brokerageId: auth.brokerageId,
+      voiceId, modelId: elevenLabsModelForLane("voice_preview"), brokerageId: auth.brokerageId,
     })
     if (!tts.success || !tts.audioBuffer) return { success: false, error: tts.error ?? "Synthesis failed" }
     return { success: true, audioDataUrl: `data:audio/mpeg;base64,${tts.audioBuffer.toString("base64")}` }

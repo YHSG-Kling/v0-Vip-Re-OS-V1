@@ -256,9 +256,18 @@ async function resolveAvatarSource(
 async function generateAudioOnly(
   input: GenerateVideoInput
 ): Promise<GenerateVideoResult> {
+  // MODEL + PACING + TENANT through the same three the avatar path below
+  // uses (lane 77C): this leg named no model (so it rode the primitive's old
+  // monolingual_v1 default), applied no natural-pause markup, and passed no
+  // brokerageId — so its ElevenLabs characters were never metered to the
+  // tenant while the sibling avatar path's were.
+  const { elevenLabsModelForLane, withNaturalPauses } = await import("@/lib/video/realism-profile")
+  const audioModel = elevenLabsModelForLane("api_voiceover")
   const ttsResult = await synthesizeSpeech({
-    text: input.script,
+    text: withNaturalPauses(input.script, audioModel),
     voiceId: input.voiceId ?? null,
+    modelId: audioModel,
+    brokerageId: input.brokerageId,
   })
 
   if (!ttsResult.success || !ttsResult.audioBuffer) {

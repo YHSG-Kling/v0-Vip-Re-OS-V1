@@ -40,6 +40,7 @@ import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+import { elevenLabsModelForLane, withNaturalPauses } from "@/lib/video/realism-profile"
 import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
@@ -156,8 +157,17 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       isoWeek: input.isoWeek,
     })
 
-    // 5. ElevenLabs TTS → Supabase `media`.
-    const tts = await synthesizeSpeech({ text: script, voiceId })
+    // 5. ElevenLabs TTS → Supabase `media`. MODEL + PACING through the ONE
+    // selector (lane 77C): an episode is narration, not a phone turn — the
+    // v3 narration lane with sentence/paragraph pauses, and the tenant is
+    // passed so the per-character vendor spend is metered (it was not).
+    const podcastModel = elevenLabsModelForLane("podcast_narration")
+    const tts = await synthesizeSpeech({
+      text: withNaturalPauses(script, podcastModel),
+      voiceId,
+      modelId: podcastModel,
+      brokerageId: input.brokerageId,
+    })
     if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
     const audioUrl = await hostRenderedMedia(
       svc,

@@ -456,26 +456,43 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
       // 3. Enroll/create the existing listing-alert record so it keeps
       // sending — contact-only (property_alerts.contact_id is NOT NULL); a
       // lead-only thread still gets the listings above, just no standing
-      // alert until they convert. FOR-SALE only: property_alerts carries no
-      // rental/listing-type column (scripts/schema-snapshot.ts), so a rental
-      // criteria set would be re-run against for-sale matches — published as
-      // a blind spot rather than enrolled wrong.
+      // alert until they convert.
+      //
+      // RENTERS ARE ENROLLED TOO (lane 77C, blind spot closed). This used to
+      // skip a renter (`!forRent`) because property_alerts could not say which
+      // market a row meant, and lib/property-alerts/idx-alert-search.ts would
+      // have re-run a MONTHLY budget against for-sale list prices every sweep.
+      // m657 (supabase/migrations/m657-property-alerts-listing-type.sql —
+      // WRITTEN, NOT APPLIED until the integrator flips its header) adds
+      // property_alerts.listing_type (sale|rent, default sale), and the sweep
+      // now routes a 'rent' row to RentCast's rental endpoint only. The
+      // spelling comes from ONE constant (PROPERTY_ALERT_LISTING_TYPES,
+      // lib/property-alerts/alert-matcher.ts), never a second literal here.
+      //
+      // THE INSERT'S ERROR IS READ (§3). Until m657 is applied, naming
+      // `listing_type` on this insert is a PGRST204 — the WHOLE row is refused,
+      // not "most of it" — and supabase-js resolves that refusal. Dropping the
+      // error here would report `alertEnrolled: false` with no trace of why, so
+      // the refusal is logged with the column it names.
       let alertId: string | null = null
-      if (ctx.contactId && !forRent) {
-        const marker = `[AI_QUALIFICATION:${[args.city, args.state, args.zip, args.min_price, args.max_price, args.min_beds].join(":")}]`
+      if (ctx.contactId) {
+        const listingType = forRent ? "rent" : "sale"
+        const marker = `[AI_QUALIFICATION:${[listingType, args.city, args.state, args.zip, args.min_price, args.max_price, args.min_beds].join(":")}]`
         const { data: existing } = await svc.from("property_alerts").select("id")
           .eq("contact_id", ctx.contactId).ilike("alert_name", `%${marker}%`).limit(1).maybeSingle()
         if (existing) {
           alertId = existing.id
         } else {
-          const { data: created } = await svc.from("property_alerts").insert({
+          const { data: created, error: enrollError } = await svc.from("property_alerts").insert({
             brokerage_id: ctx.brokerageId,
             contact_id: ctx.contactId,
             agent_user_id: null,
-            alert_name: `AI-qualified criteria ${marker}`,
+            alert_name: `AI-qualified ${listingType === "rent" ? "rental" : "buyer"} criteria ${marker}`,
             // property_alerts.source CHECK vocabulary (scripts/check-vocabularies.ts):
             // the AI agent captured these criteria in a text conversation.
             source: "text_conversation",
+            // property_alerts.listing_type (m657) — PROPERTY_ALERT_LISTING_TYPES.
+            listing_type: listingType,
             is_active: true,
             min_price: args.min_price, max_price: args.max_price,
             bedrooms_min: args.min_beds, bathrooms_min: args.min_baths,
@@ -487,6 +504,9 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
             price_reduction_min_percent: 2, frequency: "daily",
             delivery_channels: ["email", "in_app"], max_results_per_alert: 10,
           }).select("id").maybeSingle()
+          if (enrollError) {
+            console.error(`[send_matching_listings] property_alerts enrollment refused for contact ${ctx.contactId} (brokerage ${ctx.brokerageId}, listing_type ${listingType}): ${enrollError.message}`)
+          }
           alertId = created?.id ?? null
         }
       }

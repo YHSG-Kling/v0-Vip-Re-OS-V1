@@ -44,7 +44,28 @@
 
 import "server-only"
 import { convertSpeech, convertSpeechWithTimestamps } from "@/lib/providers/elevenlabs/client"
-import { ELEVENLABS_REALISM_VOICE_SETTINGS, ELEVENLABS_TEXT_NORMALIZATION } from "@/lib/video/realism-profile"
+import {
+  ELEVENLABS_REALISM_VOICE_SETTINGS,
+  ELEVENLABS_TEXT_NORMALIZATION,
+  ELEVENLABS_NARRATION_MODEL_ID,
+  ELEVENLABS_PHONE_MODEL_ID,
+} from "@/lib/video/realism-profile"
+
+// THE DEFAULT MODEL IS NO LONGER THE OLDEST ONE (lane 77C, blind spot (4)).
+// All three primitives below fell back to a bare "eleven_monolingual_v1"
+// literal whenever a caller named no modelId — and nine non-video callers
+// (brief, standup, week-in-review, podcast, letter audio, presentation
+// narration, the voice preview, the /api/elevenlabs/tts route, lib/did's
+// audio-only path) named none, so every one of them spoke through the model
+// the realism research in lib/video/realism-profile.ts retired for narration.
+// Every caller now resolves its lane through elevenLabsModelForLane (the ONE
+// selector, §6); these fallbacks exist for the NEXT caller that forgets, and
+// they pick the register each primitive actually serves: the two BUFFERED
+// paths are scripted narration (v3), the STREAMING path is the real-time
+// register (Flash v2.5 — v3 is "not suitable for real-time" per ElevenLabs).
+// Never a monolingual_v1 literal again.
+const DEFAULT_BUFFERED_MODEL_ID = ELEVENLABS_NARRATION_MODEL_ID
+const DEFAULT_STREAMING_MODEL_ID = ELEVENLABS_PHONE_MODEL_ID
 
 // The streaming path (synthesizeSpeechStream) keeps its OWN literal
 // `https://api.elevenlabs.io/...` URL rather than sharing a base-URL
@@ -92,7 +113,7 @@ export interface SynthesizeSpeechInput {
   text: string
   voiceId?: string | null
   voiceSettings?: VoiceSettings
-  modelId?: string             // 'eleven_monolingual_v1' (default), 'eleven_multilingual_v2', etc.
+  modelId?: string             // resolve it via elevenLabsModelForLane(lane) — see DEFAULT_BUFFERED_MODEL_ID for what an omitted value means
   /**
    * BCP-47 language code for the multilingual model (e.g. 'es', 'pt', 'zh', 'fr').
    * Only honoured when modelId is 'eleven_multilingual_v2' (or any future multilingual
@@ -159,7 +180,7 @@ export async function synthesizeSpeech(
     // Buffered synthesis goes through the official server SDK adapter
     // (lib/providers/elevenlabs/client.ts) — same endpoint, same price, no
     // more hand-rolled request/response mapping.
-    const modelId = input.modelId ?? "eleven_monolingual_v1"
+    const modelId = input.modelId ?? DEFAULT_BUFFERED_MODEL_ID
     const langField = languageCodeField(modelId, input.languageCode)
     const res = await convertSpeech(apiKey, {
       voiceId,
@@ -273,7 +294,7 @@ export async function synthesizeSpeechWithTimestamps(
   try {
     // PLATFORM-owned — the with-timestamps leg goes through the same SDK
     // adapter as the buffered path (lib/providers/elevenlabs/client.ts).
-    const modelId = input.modelId ?? "eleven_monolingual_v1"
+    const modelId = input.modelId ?? DEFAULT_BUFFERED_MODEL_ID
     const langField = languageCodeField(modelId, input.languageCode)
     const res = await convertSpeechWithTimestamps(apiKey, {
       voiceId,
@@ -368,6 +389,7 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
     // scripts/elevenlabs-egress-guard.ts keeps counting exactly one raw
     // /stream fetch (its shape, not a URL object it cannot see).
     const outputFormatQuery = input.outputFormat ? `?output_format=${input.outputFormat}` : ""
+    const streamModelId = input.modelId ?? DEFAULT_STREAMING_MODEL_ID
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream${outputFormatQuery}`,
       {
@@ -383,12 +405,12 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
         },
         body: JSON.stringify({
           text: input.text,
-          model_id: input.modelId ?? "eleven_monolingual_v1",
+          model_id: streamModelId,
           voice_settings: settings,
         apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
           // language_code is sent ONLY to models ElevenLabs actually enforces it
           // on (see the file header's research finding) — never to multilingual_v2.
-          ...languageCodeField(input.modelId ?? "eleven_monolingual_v1", input.languageCode),
+          ...languageCodeField(streamModelId, input.languageCode),
         }),
       }
     )

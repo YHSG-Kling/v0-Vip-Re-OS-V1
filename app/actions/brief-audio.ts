@@ -17,6 +17,7 @@ import {
   audioBufferToDataUrl,
 } from "@/lib/voice/elevenlabs-tts"
 import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
+import { elevenLabsModelForLane, withNaturalPauses } from "@/lib/video/realism-profile"
 import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 
 export interface BriefAudioResult {
@@ -51,9 +52,15 @@ export async function generateBriefAudio(params: {
   }
   const resolved = await resolveSelfVoice(ctx.userId)
 
+  // MODEL + PACING through the ONE selector (lane 77C): a morning brief is a
+  // scripted read the listener cannot interrupt — the narration register
+  // (eleven_v3), paced at sentence boundaries like every other narration lane.
+  // Before this it named no model and rode the primitive's monolingual_v1 default.
+  const modelId = elevenLabsModelForLane("brief_narration")
   const result = await synthesizeSpeech({
-    text: script,
+    text: withNaturalPauses(script, modelId),
     voiceId: resolved.voiceId,
+    modelId,
     voiceSettings: { stability: 0.55, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true },
     brokerageId: ctx.brokerageId,
   })

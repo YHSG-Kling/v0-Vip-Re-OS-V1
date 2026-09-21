@@ -260,7 +260,17 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // sold-comp supplement pull (lib/cma/comp-supplement-cache.ts). Deliberate
 // bump, named per this guard's own instruction; drops back to 0 once the
 // integrator applies it and flips the header.
-const NOT_APPLIED_BASELINE = 0
+//
+// 0 → 1 (wave 77, lane 77C — rental alerts): m657-property-alerts-listing-type.sql,
+// WRITTEN NOT APPLIED — adds property_alerts.listing_type (CHECK sale|rent,
+// default sale) so lib/ai-isa/customer-context-tools.ts can enroll a renter's
+// standing alert and lib/property-alerts/idx-alert-search.ts can sweep it
+// against RentCast's RENTAL endpoint instead of for-sale list prices.
+// Deliberate bump, named per this guard's own instruction; drops back to 0
+// once the integrator applies it and flips the header. Wave-77 sibling lanes
+// (77A m655, 77B m656, 77D m658) each bump this line for their own file — the
+// integrator sums them when merging.
+const NOT_APPLIED_BASELINE = 1
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)
 check(`files claiming NOT APPLIED at or below ${NOT_APPLIED_BASELINE} (found ${notApplied.length})`,

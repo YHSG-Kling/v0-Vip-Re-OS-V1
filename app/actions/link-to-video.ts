@@ -3,7 +3,14 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCaller } from "@/lib/auth/require-caller"
 import { revalidatePath } from "next/cache"
-import { generateAIResponse } from "@/lib/ai"
+// THE ROUTED LANE (lane 77C, blind spot (3)). This file rode `generateAIResponse`
+// from the lib/ai barrel — the pre-routing entry whose model choice is the
+// caller's `request.model` cascade rather than AI_TASK_ROUTING, and whose
+// system+prompt shape every other video-script writer in this tree left for
+// generateTextRouted (app/actions/video/generate-script.ts, lib/video/
+// avatar-explainer.ts). Same feature key, same tenant from the SESSION, same
+// logAIUsage booking — one lane for one kind of call (§6).
+import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 // TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
 // was imported here and never called. The VIDEO provider for this lane is
@@ -124,8 +131,12 @@ export async function generateVideoScript(params: {
     // result below, same as every other narration writer.
     const { scanForAiTells, withSpokenScriptStandards } = await import("@/lib/video/realism-profile")
 
-    // Use AI to generate script from URL content
-    const response = await generateAIResponse({
+    // Use AI to generate script from URL content — the ROUTED lane, booked to
+    // the session's tenant (feature key from AI_TASK_ROUTING).
+    const response = await generateTextRouted({
+      feature: "video_script_generation",
+      userId: auth.userId,
+      brokerageId: auth.brokerageId,
       system: complianceBlocks.join("\n\n"),
       prompt: withSpokenScriptStandards(`Create a 75-word engaging voiceover script for a ${params.contentCategory} video based on this URL: ${params.url}
 
@@ -137,11 +148,6 @@ Requirements:
 - Make it compelling for social media
 
 Return ONLY the script text, no formatting or labels.`),
-      metadata: {
-        userId: auth.userId,
-        brokerageId: auth.brokerageId,
-        feature: "video_script_generation",
-      },
     })
 
     // Create video queue entry — stamp user_id + organization from session/verified params
@@ -261,8 +267,15 @@ export async function checkCompliance(videoQueueId: string) {
     const script = video.edited_script || video.ai_generated_script
     const complianceRules = video.brokerages?.compliance_rules || {}
 
-    // Use AI to check compliance
-    const complianceResponse = await generateAIResponse({
+    // Use AI to check compliance — ROUTED lane. Booked to the SESSION's
+    // brokerage, not `video.organization_id`: that column is a teams.id when
+    // organization_type='team', and verifyVideoAccess above already proved the
+    // video belongs to the caller's brokerage, so auth.brokerageId is the one
+    // tenant the ledger may bill (§4, §5 — a wrong number there is a wrong invoice).
+    const complianceResponse = await generateTextRouted({
+      feature: "video_script_generation",
+      userId: auth.userId,
+      brokerageId: auth.brokerageId,
       prompt: `Analyze this real estate video script for compliance violations:
 
 Script: "${script}"
@@ -279,11 +292,6 @@ Return JSON: {
   "flags": [{"severity": "warning"|"violation", "issue": string, "suggestion": string}],
   "score": number 0-100
 }`,
-      metadata: {
-        userId: auth.userId,
-        brokerageId: video.organization_id,
-        feature: "video_script_generation",
-      },
     })
 
     const complianceResult = JSON.parse(complianceResponse.text)
@@ -607,7 +615,10 @@ export async function generateSocialCaption(videoQueueId: string) {
 
     if (!video) throw new Error("Video not found")
 
-    const captionResponse = await generateAIResponse({
+    const captionResponse = await generateTextRouted({
+      feature: "video_script_generation",
+      userId: auth.userId,
+      brokerageId: auth.brokerageId,
       prompt: `Create an engaging social media caption for this video:
 
 Category: ${video.content_category}
@@ -621,11 +632,6 @@ Requirements:
 - Maximum 200 characters
 
 Return only the caption text.`,
-      metadata: {
-        userId: auth.userId,
-        brokerageId: auth.brokerageId,
-        feature: "video_script_generation",
-      },
     })
 
     await supabase.from("video_generation_queue").update({ social_caption: captionResponse.text }).eq("id", videoQueueId)

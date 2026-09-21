@@ -327,10 +327,39 @@ const EXTERNAL_PROVIDER_ID_COLLISION = new Set<string>([
   "tax_categories.provider_account_id",
 ])
 
+// ── COMPOSITE_KEY_NOT_A_PARENT_ID (orphan census round 22, lane 77C, 2026-09-21,
+//    the LAST OC1 wire-list entry, resolved per CLAUDE.md §1/§2) ──────────────
+//
+// `journey_states.user_id` was the one remaining OC1 finding: the oracle's
+// consensus vote for the column NAME `user_id` is → `users`, which is right
+// for every OTHER user_id in the schema. But this column does not hold a
+// users.id and never did. supabase/migrations/m610-two-text-user-id-columns-
+// become-keys.sql (APPLIED 2026-09-07) rules it in so many words: "journey_
+// states.user_id STAYS TEXT, ON PURPOSE. It is not a user id: the live
+// UNIQUE(user_id) plus lib/kernel/dual-intent-linker.ts key ONE row per
+// (contact, side) as `${contactId}:buyer` / `${contactId}:seller`". The value
+// is a COMPOSITE KEY the app mints (lib/kernel/dual-intent-linker.ts
+// journeyUserKey) — not uuid-shaped, so a FK to users(id) is not merely wrong
+// but impossible to declare (m608's own pre-step skipped the column for that
+// reason, and its header records the 77-of-80 read-back). Wiring `REFERENCES
+// users(id)` to move this number would be the wrong-parent schema defect §1
+// forbids, exactly like the EXTERNAL_PROVIDER_ID_COLLISION case above; the
+// real fix is the §6 rename m610 defers to "the next wave that touches both
+// writers", after which this declaration is dead weight the cache outranks.
+//
+// A SEPARATE set with its OWN verdict — not an entry in the external-provider
+// set — because the two are different ideas that happen to share a shape
+// (§6: one vocabulary per idea): that one's referent lives in ANOTHER
+// database; this one's referent is not an id of any table anywhere.
+const COMPOSITE_KEY_NOT_A_PARENT_ID = new Set<string>([
+  "journey_states.user_id",
+])
+
 const POLY_BASES_SEEN = new Set<string>()
 let oc1Views = 0
 let oc1CrossSchema = 0
 let oc1ExternalProviderId = 0
+let oc1CompositeKey = 0
 let oc1SelfRef = 0
 let oc1Poly = 0
 let oc1Protected = 0
@@ -354,7 +383,7 @@ let oc1Examined = 0
  * the same function, there is no second spelling to drift (§6).
  */
 export type Oc1Verdict =
-  | "protected" | "cross_schema_fk" | "external_provider_id_collision" | "self_ref" | "polymorphic" | "view" | "unprotected"
+  | "protected" | "cross_schema_fk" | "external_provider_id_collision" | "composite_key_not_a_parent" | "self_ref" | "polymorphic" | "view" | "unprotected"
 export function oc1Verdict(
   table: string,
   col: string,
@@ -367,6 +396,8 @@ export function oc1Verdict(
   crossSchema: Set<string> = CROSS_SCHEMA_FK,
   /** EXTERNAL_PROVIDER_ID_COLLISION by default; a parameter for the same reason. */
   externalProviderIdCollision: Set<string> = EXTERNAL_PROVIDER_ID_COLLISION,
+  /** COMPOSITE_KEY_NOT_A_PARENT_ID by default; a parameter for the same reason. */
+  compositeKeyNotAParentId: Set<string> = COMPOSITE_KEY_NOT_A_PARENT_ID,
 ): Oc1Verdict | null {
   if (!consensusParent) return null
   if (fks[col]) return "protected"
@@ -388,6 +419,11 @@ export function oc1Verdict(
   // self_ref/polymorphic/view because it is a per-column override of the vote,
   // not a structural shape test.
   if (externalProviderIdCollision.has(`${table}.${col}`)) return "external_provider_id_collision"
+  // NOT AN ID OF ANY TABLE — the column holds an app-minted composite key
+  // (m610 ruling; see COMPOSITE_KEY_NOT_A_PARENT_ID). Same per-column override
+  // discipline as the line above, ordered the same way, and the cache still
+  // wins: a real FK on it (after the §6 rename) reads as "protected" above.
+  if (compositeKeyNotAParentId.has(`${table}.${col}`)) return "composite_key_not_a_parent"
   if (consensusParent === table) return "self_ref"
   if (colSet.has(`${col.replace(/_id$/, "")}_type`)) return "polymorphic"
   // A VIEW HOLDS NO ROWS. Ordered AFTER "protected" deliberately: if a relation
@@ -414,6 +450,7 @@ for (const table of snapshotTables) {
     if (verdict === "view") { oc1Views++; continue }
     if (verdict === "cross_schema_fk") { oc1CrossSchema++; continue }
     if (verdict === "external_provider_id_collision") { oc1ExternalProviderId++; continue }
+    if (verdict === "composite_key_not_a_parent") { oc1CompositeKey++; continue }
     add(
       "oc1",
       `${table}.${col}`,
@@ -750,6 +787,25 @@ for (const dir of appDirs) {
       { provider_account_id: "calendar_provider_accounts" }, "calendar_provider_accounts",
       new Set<string>(), new Set<string>(), new Set(["zz_synthetic_child.provider_account_id"])) === "protected")
 
+  // ── OC1, the COMPOSITE-KEY-NOT-A-PARENT-ID rule (census round 22, lane 77C).
+  //    Same three-arm discipline: negative on the real column, positive that the
+  //    rule is a rule (declared vs undeclared synthetic child), positive that it
+  //    matched a real column, negative that the cache still wins.
+  control("oc1 NEGATIVE: does NOT flag journey_states.user_id — an app-minted `${contactId}:buyer|seller`\n            composite key, not a users.id (m610: 'STAYS TEXT, ON PURPOSE. It is not a user id')",
+    !oc1Keys.has("journey_states.user_id"))
+  control("oc1 POSITIVE: the composite-key rule is a rule, not a blanket — the same synthetic child is\n            'unprotected' undeclared and 'composite_key_not_a_parent' declared",
+    oc1Verdict("zz_synthetic_child", "user_id", new Set(["id", "user_id"]), {}, "users",
+      new Set<string>(), new Set<string>(), new Set<string>(), new Set<string>()) === "unprotected"
+      && oc1Verdict("zz_synthetic_child", "user_id", new Set(["id", "user_id"]), {}, "users",
+        new Set<string>(), new Set<string>(), new Set<string>(), new Set(["zz_synthetic_child.user_id"])) === "composite_key_not_a_parent")
+  control("oc1 POSITIVE: the composite-key exclusion matched a real column",
+    oc1CompositeKey > 0, `${oc1CompositeKey} composite-key column(s) excluded`)
+  control("oc1 NEGATIVE: a declared composite-key column whose FK exists reads as 'protected' —\n            the cache outranks this declaration too (the §6 rename m610 defers to would land here)",
+    oc1Verdict("zz_synthetic_child", "user_id", new Set(["id", "user_id"]), { user_id: "users" }, "users",
+      new Set<string>(), new Set<string>(), new Set<string>(), new Set(["zz_synthetic_child.user_id"])) === "protected")
+  control("oc1 CONTROL: the composite-key declaration names a column the live cache still carries\n            (a dropped or renamed column would leave a stale declaration reading as enforced)",
+    [...COMPOSITE_KEY_NOT_A_PARENT_ID].every((k) => { const [t, c] = k.split("."); return (SCHEMA_SNAPSHOT[t] ?? []).includes(c) }))
+
   // ── OC3, both arms ────────────────────────────────────────────────────────
   control("oc3 POSITIVE: the dual-keyed finder still sees the tables it counts",
     DUAL_KEYED.length >= 25 && DUAL_KEYED.includes("motivated_seller_signals"),
@@ -819,6 +875,8 @@ console.log(`      · ${oc1CrossSchema} column(s) FK'd to a NON-public parent (a
 console.log(`        constraint the public-schema FK cache cannot see. ${CROSS_SCHEMA_FK.size} declared, measured live 2026-08-23.`)
 console.log(`      · ${oc1ExternalProviderId} column(s) excluded as an EXTERNAL-PROVIDER-ID name collision (the consensus-voted`)
 console.log(`        parent is provably wrong for that specific column — see EXTERNAL_PROVIDER_ID_COLLISION, lane 74C 2026-09-18)`)
+console.log(`      · ${oc1CompositeKey} column(s) excluded as a COMPOSITE KEY, NOT A PARENT ID (an app-minted \`\${contactId}:side\``)
+console.log(`        key m610 rules is not a users.id — see COMPOSITE_KEY_NOT_A_PARENT_ID, lane 77C 2026-09-21)`)
 console.log(`      · PUBLIC_VIEWS declares ${PUBLIC_VIEWS.size} view(s), measured live 2026-08-23 (relkind is in NO schema cache —`)
 console.log(`        the same gap OC2 records for confdeltype). BLIND SPOT: a view created since is not in it and WILL be accused.`)
 console.log(`      · ${CONSENSUS.size} column names have a consensus parent (≥${MIN_VOTES} votes, ≥${CONSENSUS_RATIO * 100}% agreement)`)

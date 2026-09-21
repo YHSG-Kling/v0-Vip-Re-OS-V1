@@ -14,8 +14,10 @@
 -- Burn-down lane against scripts/orphaned-child-baseline.json category OC1 —
 -- "no FK to <parent>, the schema's own graph agrees on that parent" — from the
 -- 2026-09-05 baseline (98 entries). Per CLAUDE.md §7/§3: lanes WRITE migrations,
--- only the integrator APPLIES them and regenerates the schema caches. Nothing in
--- this file has been run against hrvaqgvukzxfskkcrwbt.
+-- only the integrator APPLIES them and regenerates the schema caches. (The lane
+-- wrote "nothing in this file has been run" here at writing time; the header
+-- above records the 2026-09-07 application, and lane 77C reconciled this
+-- sentence with it on 2026-09-21 — the two had disagreed for two weeks.)
 --
 -- ── SCOPE: 80 OF THE 98 OC1 ENTRIES ────────────────────────────────────────
 -- 98 baseline entries, minus:
@@ -513,14 +515,25 @@ $$;
 -- and video_generation_queue.user_id already carry a live FK to users (the
 -- saved_properties one from m610 itself), so this block is a no-op for those
 -- three (skipped by the "already has a foreign key" check) and only
--- journey_states was ever live work here. Left in as written, this block's
--- own pre-step would refuse to retype journey_states.user_id (non-null rows
--- once any dual-intent journey exists) and the ADD CONSTRAINT below would
--- then try a uuid FK on a text column — a type-mismatch error that aborts
--- the whole file's single implicit transaction, which is the likely reason
--- this migration is still WRITTEN, NOT APPLIED. Dropping journey_states here
--- makes the block match live reality (3 tables, all now no-ops) without
--- touching the file's provenance header above.
+-- journey_states was ever live work here. Dropping journey_states here makes
+-- the block match live reality (3 tables, all now no-ops) without touching
+-- the file's provenance header above.
+--
+-- RECONCILED (lane 77C, 2026-09-21, blind spot (5) "OC1 journey_states.user_id
+-- / m608"): the round-11 note above used to end by calling this migration
+-- "still WRITTEN, NOT APPLIED", which contradicted this file's own header
+-- (APPLIED 2026-09-07, 77 of 80 constraints read back) and m610's header
+-- ("m608 could not retype saved_properties.user_id … SQLSTATE 0A000" — a
+-- refusal that can only be observed by RUNNING it). The live column agrees
+-- with both headers: scripts/schema-snapshot.ts (generated 2026-09-20) lists
+-- journey_states.user_id and scripts/schema-fk-map.ts lists journey_states'
+-- FKs as brokerage_id/contact_id/deal_id/listing_id only — the column is
+-- live, text, and deliberately un-keyed per m610. The pre-step's own skip
+-- rule ("text with N non-null rows — NOT retyped") is what let the 2026-09-07
+-- run complete without the abort the round-11 note feared. Nothing here is
+-- open: the OC1 entry for journey_states.user_id is a WRONG-PARENT finding
+-- (the column is a `${contactId}:buyer|seller` key, not a users.id), the same
+-- class this file already records for tax_categories.provider_account_id.
 DO $$
 DECLARE
   t text;

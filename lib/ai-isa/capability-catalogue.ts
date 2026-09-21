@@ -615,7 +615,9 @@ export function buildGetListingDetailsTool(ctx: CustomerCapabilityContext) {
 // type — CLAUDE.md §4), and the follow-up writer/notifier every other
 // follow-up tool uses. Returns business contact details only (name, phone,
 // website, rating) — never a vendor's financials or another client's data.
-export function buildRequestVendorReferralTool(ctx: CustomerCapabilityContext) {
+// Module-private (lane 77C, orphan census round 22): reached only through
+// NEW_CAPABILITY_BUILDERS below — no importer and no proof names it.
+function buildRequestVendorReferralTool(ctx: CustomerCapabilityContext) {
   return tool({
     description: "Offer an intro to a trusted vendor from the brokerage's own bench — a LENDER when a buyer still needs pre-approval or a past client asks about refinancing, or a contractor / inspector / mover / plumber / cleaner etc. when they need one. Use only when THEY ask or accept the offer; returns up to 3 vetted names and tells the agent to make the intro.",
     inputSchema: z.object({
@@ -688,7 +690,11 @@ export function buildRequestVendorReferralTool(ctx: CustomerCapabilityContext) {
 // referrer is LOCKED to ctx: contacts.id → referrer_contact_id; a lead-only
 // referrer lands in the free-text referred_by column (never in a contacts
 // slot — a leads.id is not a contacts.id).
-export function buildCaptureReferralTool(ctx: CustomerCapabilityContext) {
+// Module-private (lane 77C, orphan census round 22): reached only through
+// NEW_CAPABILITY_BUILDERS below — no importer and no proof names it (the two
+// mentions in app/actions/referrals/referral-actions.ts and
+// lib/referrals/referral-record.ts are prose naming this survivor).
+function buildCaptureReferralTool(ctx: CustomerCapabilityContext) {
   return tool({
     description: "Capture a referral when the person mentions someone ELSE who is thinking of buying, selling or renting. Only with their permission to pass the name along. Needs the referred person's name and at least a phone or email; the agent follows up.",
     inputSchema: z.object({

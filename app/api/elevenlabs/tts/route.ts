@@ -13,8 +13,16 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+import { elevenLabsModelForLane } from "@/lib/video/realism-profile"
 
-const DEFAULT_MODEL = "eleven_turbo_v2_5"
+// THE DEFAULT COMES FROM THE ONE SELECTOR (lane 77C). This was a bare
+// `"eleven_turbo_v2_5"` literal — the deprecated Turbo synonym
+// lib/video/realism-profile.ts documents as NEVER returned by the selector —
+// so a caller that omitted model_id got the model the realism research
+// retired. A caller MAY still name model_id explicitly (the route's contract),
+// but the default is the narration register this route exists to serve
+// ("voice input for D-ID avatar videos and listing voiceovers").
+const DEFAULT_MODEL = elevenLabsModelForLane("api_voiceover")
 
 export async function POST(request: NextRequest) {
   try {

@@ -74,8 +74,8 @@ import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveRentcastEligibility } from "@/lib/property/rentcast-eligibility"
 import { resolveListingSource, type ListingSource } from "@/lib/property/listing-source"
-import { searchRentcastSaleListings, type RentcastListing } from "@/lib/property/rentcast"
-import type { AlertProperty, AlertCriteria } from "./alert-matcher"
+import { searchRentcastSaleListings, searchRentcastRentalListings, type RentcastListing } from "@/lib/property/rentcast"
+import { alertListingType, type AlertProperty, type AlertCriteria } from "./alert-matcher"
 
 /**
  * The vendor-ledger lane a RentCast alert sweep spends under.
@@ -182,6 +182,24 @@ export async function searchIDXForAlert(
 ): Promise<AlertListingSearchResult> {
   const startMs = Date.now()
   const brokerageId = ctx.brokerageId
+
+  // ── A RENTAL SEARCH HAS ONE SOURCE (m657, lane 77C) ───────────────────────
+  // property_alerts.listing_type = 'rent' means min/max_price are a MONTHLY
+  // budget. Neither for-sale board can answer it: the tenant's IDX feed and
+  // the platform IDX floor are sale listings, and the brokerage's own
+  // `listings` table carries no rental spelling in its status / lifecycle
+  // vocabularies (scripts/check-vocabularies.ts). Before m657 the alert row
+  // could not say which market it meant, so lib/ai-isa/customer-context-
+  // tools.ts refused to enroll a renter at all rather than re-run a monthly
+  // budget against list prices every sweep. Now the row says it, and the
+  // sweep goes straight to RentCast's RENTAL endpoint — the same gate, the
+  // same metering, the same area derivation and the same refusal contract as
+  // the sale path below. It does NOT fall through to a sale source on an
+  // empty rental page: "no rentals matched" and "we showed a renter houses
+  // for sale" are opposite facts.
+  if (alertListingType(criteria) === "rent") {
+    return searchRentalsForAlert(alertId, criteria, ctx, startMs)
+  }
 
   // ── WHICH SOURCE ANSWERS THIS TENANT ──────────────────────────────────────
   // ONE gate, asked at the FULLEST scope the caller holds (agent → team →
@@ -467,6 +485,111 @@ export async function searchIDXForAlert(
     api_called,
     response_time_ms: Date.now() - startMs,
     error: degradedNote,
+    areasNotSearched,
+  }
+}
+
+// ─── The rental sweep (m657) ────────────────────────────────────────────────
+
+/**
+ * RentCast's rental endpoint, for a saved search whose listing_type is 'rent'.
+ *
+ * Mirrors the sale branch of searchIDXForAlert step for step — eligibility
+ * gate (asked at the fullest scope the caller holds), area derivation, the
+ * per-alert area cap, per-area error reading, and the "every area failed" vs
+ * "partial" distinction — with three deliberate differences:
+ *   · the IDX tiers are never consulted (a listing board is for-sale inventory);
+ *   · the brokerage's own `listings` table is not merged in (same reason);
+ *   · `source` is still `resolveListingSource`'s own vocabulary — "rentcast" or
+ *     "none" — because the ledger and the cron summary count sources by that
+ *     spelling and a fourth value would be a second vocabulary (§6).
+ * A REFUSAL IS NEVER AN EMPTY RESULT SET, exactly as for the sale path.
+ */
+async function searchRentalsForAlert(
+  alertId: string,
+  criteria: AlertCriteria,
+  ctx: AlertSearchContext,
+  startMs: number,
+): Promise<AlertListingSearchResult> {
+  const brokerageId = ctx.brokerageId
+  const eligibility = await resolveRentcastEligibility({
+    brokerageId,
+    agentUserId: ctx.agentUserId ?? null,
+    teamId: ctx.teamId ?? null,
+  })
+  if (eligibility.idx.status === "unreadable") {
+    console.warn(`[alert-search] rental alert ${alertId} (brokerage ${brokerageId}) refused — ${eligibility.detail}`)
+    return { results: [], source: "none", api_called: false, response_time_ms: Date.now() - startMs, refusal: "source_check_unreadable", error: eligibility.detail }
+  }
+  if (!eligibility.eligible) {
+    const detail = `No rental listing source can answer this saved search: ${eligibility.detail} A rental search is served by RentCast only — an IDX board is for-sale inventory. Nothing was searched — this is NOT a report that no rentals matched.`
+    console.warn(`[alert-search] rental alert ${alertId} (brokerage ${brokerageId}) refused — ${detail}`)
+    return { results: [], source: "none", api_called: false, response_time_ms: Date.now() - startMs, refusal: "no_listing_source", error: detail }
+  }
+
+  const areas = buildRentcastAreas(criteria, ctx.state ?? null)
+  if (areas.length === 0) {
+    const detail =
+      "RentCast searches one ZIP, or one city with its state, at a time, and this rental search names neither a ZIP code nor a city we could pair with a state. Nothing was searched — this is not a report that no rentals matched. Add a ZIP code or a city to the search."
+    console.warn(`[alert-search] rental alert ${alertId} (brokerage ${brokerageId}) refused — ${detail}`)
+    return { results: [], source: "rentcast", api_called: false, response_time_ms: Date.now() - startMs, refusal: "no_search_area", error: detail }
+  }
+
+  const searched = areas.slice(0, RENTCAST_AREAS_PER_ALERT)
+  const skipped = areas.slice(RENTCAST_AREAS_PER_ALERT)
+  const areasNotSearched = skipped.length ? skipped.map((a) => a.label) : undefined
+  if (areasNotSearched) {
+    console.warn(`[alert-search] rental alert ${alertId} (brokerage ${brokerageId}): ${areas.length} areas named, searching ${searched.length} (cap ${RENTCAST_AREAS_PER_ALERT}); not searched this run: ${areasNotSearched.join(", ")}`)
+  }
+
+  const results: AlertProperty[] = []
+  const areaErrors: string[] = []
+  const seen = new Set<string>()
+  let api_called = false
+  for (const area of searched) {
+    const rc = await searchRentcastRentalListings({
+      brokerageId,
+      agentUserId: ctx.agentUserId ?? null,
+      teamId: ctx.teamId ?? null,
+      systemSource: ALERT_SEARCH_SYSTEM_SOURCE,
+      contactId: ctx.contactId ?? null,
+      filters: {
+        city: area.city,
+        state: area.state,
+        zipCode: area.zipCode,
+        bedroomsMin: criteria.bedrooms_min ?? undefined,
+        bathroomsMin: criteria.bathrooms_min ?? undefined,
+        // min/max_price on a 'rent' row ARE the monthly budget (m657).
+        priceMin: criteria.min_price ?? undefined,
+        priceMax: criteria.max_price ?? undefined,
+        limit: RENTCAST_LIMIT_PER_AREA,
+      },
+    })
+    api_called = true
+    if (!rc.success) {
+      areaErrors.push(`${area.label}: ${rc.error ?? "the RentCast rental lookup did not complete"}`)
+      continue
+    }
+    for (const row of rc.listings) {
+      const mapped = rentcastToAlertProperty(row)
+      if (!mapped || seen.has(mapped.mls_number)) continue
+      seen.add(mapped.mls_number)
+      results.push(mapped)
+    }
+  }
+
+  if (areaErrors.length === searched.length) {
+    const detail = `RentCast rentals could not be searched for this saved search: ${areaErrors.join("; ")}. Nothing was searched, so no conclusion about the rental market can be drawn from this run.`
+    console.error(`[alert-search] rental alert ${alertId} (brokerage ${brokerageId}) refused — ${detail}`)
+    return { results: [], source: "rentcast", api_called, response_time_ms: Date.now() - startMs, refusal: "provider_error", error: detail, areasNotSearched }
+  }
+
+  return {
+    results,
+    source: "rentcast",
+    api_called,
+    response_time_ms: Date.now() - startMs,
+    error: areaErrors.length ? `partial RentCast rental search — ${areaErrors.join("; ")}` : undefined,
     areasNotSearched,
   }
 }

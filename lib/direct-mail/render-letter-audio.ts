@@ -27,6 +27,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+import { elevenLabsModelForLane, withNaturalPauses } from "@/lib/video/realism-profile"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 
 export interface RenderLetterAudioArgs {
@@ -88,9 +89,14 @@ export async function renderLetterAudio(
   // Synthesize. The letter's copy_text already has the variable
   // interpolation baked in (orchestrate-send.ts ran the interpolator
   // before storing). No second pass needed.
+  // MODEL + PACING through the ONE selector (lane 77C): a read-aloud letter
+  // is scripted narration — the v3 lane, paced at sentence and paragraph
+  // boundaries — never the primitive's old monolingual_v1 default.
+  const letterModel = elevenLabsModelForLane("letter_narration")
   const synth = await synthesizeSpeech({
-    text:        c.copy_text,
+    text:        withNaturalPauses(c.copy_text, letterModel),
     voiceId,
+    modelId:     letterModel,
     brokerageId: c.brokerage_id,
     voiceSettings: {
       // Letters are read-aloud-as-personal-correspondence — lean toward

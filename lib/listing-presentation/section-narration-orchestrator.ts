@@ -255,7 +255,12 @@ export async function narratePresentationSections(
     if (synthesizeVoiceover && voiceId) {
       try {
         const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
-        const tts = await synthesizeSpeech({ text: script, voiceId, brokerageId: pres.brokerage_id })
+        // MODEL + PACING through the ONE selector (lane 77C): a presentation
+        // section is spoken narration — the v3 lane — never the primitive's
+        // old monolingual_v1 default.
+        const { elevenLabsModelForLane, withNaturalPauses } = await import("@/lib/video/realism-profile")
+        const sectionModel = elevenLabsModelForLane("presentation_narration")
+        const tts = await synthesizeSpeech({ text: withNaturalPauses(script, sectionModel), voiceId, modelId: sectionModel, brokerageId: pres.brokerage_id })
         if (tts.success && tts.audioBuffer) {
           // Was @vercel/blob's put(). Survivor:
           // lib/remotion/media-host.ts#hostRenderedMedia → `video-assets`, the

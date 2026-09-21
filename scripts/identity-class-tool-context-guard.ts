@@ -159,7 +159,74 @@ const RULES: Rule[] = [
       return out
     },
   },
+  // ── THE SECOND RULE FAMILY — DATA FLOW, NOT NAMES (lane 77C, blind spot (7)) ──
+  // R1-R6 judge a slot by the NAME of the value in it (`lead.id`, `leadId`).
+  // A binding named `row`, `data`, `hit` or `r` that was READ FROM THE LEADS
+  // TABLE and then written into a contactId slot passes every one of them,
+  // and that is exactly the shape a refactor produces (`const { data: row }
+  // = await svc.from("leads")…; … contactId: row.id`). R7/R8 follow the value
+  // from the table it was read from to the slot it lands in, WITHIN THE SAME
+  // FUNCTION BODY, whatever the binding is called. Scope is the enclosing
+  // function: from the read to the next top-level function boundary (a
+  // column-0 `function` / `export function` / `export const x = (` line) or
+  // EOF — so a same-named binding in the NEXT function is never blamed for
+  // this one's read (the negative control below proves the boundary holds).
+  // BLIND SPOTS, published: a read whose query is built in one statement and
+  // awaited in another (`const q = svc.from("leads")…; const { data } = await
+  // q`), a re-binding (`const lead = row`), and a value that leaves the
+  // function through a return are NOT followed — none is guessed at.
+  ...tableFlowRules(),
 ]
+
+/** The declaration shapes a supabase read lands in, capturing the binding:
+ *  `const { data: X } = await …from("T")`, `const { data: X, error } = …`,
+ *  `const X = await …from("T")…`. Non-greedy to the `.from("T")` on the same
+ *  statement (no `;`), so a later statement's `.from` is never attributed. */
+function tableReads(src: string, table: string): Array<{ binding: string; at: number }> {
+  const out: Array<{ binding: string; at: number }> = []
+  const re = new RegExp(
+    String.raw`\b(?:const|let)\s+(?:\{\s*data\s*:\s*([A-Za-z_$][\w$]*)\s*[,}]|([A-Za-z_$][\w$]*)\s*=)[^;]*?\.from\(\s*["']${table}["']\s*\)`,
+    "g",
+  )
+  for (const m of src.matchAll(re)) {
+    const binding = m[1] ?? m[2]
+    if (binding) out.push({ binding, at: m.index ?? 0 })
+  }
+  return out
+}
+
+/** End of the function body a read at `at` belongs to — the next column-0
+ *  function boundary after it, else EOF. */
+function scopeEnd(src: string, at: number): number {
+  const boundary = /\n(?:export\s+)?(?:async\s+)?function\b|\n(?:export\s+)?const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\(/g
+  boundary.lastIndex = at
+  const m = boundary.exec(src)
+  return m ? m.index : src.length
+}
+
+function tableFlowRules(): Rule[] {
+  const flow = (table: string, slotKeys: string[]) => (src: string): string[] => {
+    const out: string[] = []
+    for (const { binding, at } of tableReads(src, table)) {
+      const body = src.slice(at, scopeEnd(src, at))
+      const b = binding.replace(/[$]/g, "\\$")
+      // `contactId: row.id` · `contact_id: row?.id` · `contactId: rows[0].id`
+      const slot = new RegExp(String.raw`\b(${slotKeys.join("|")})\s*:\s*${b}(?:\[\d+\])?\??\.id\b`, "g")
+      for (const s of body.matchAll(slot)) out.push(`${s[1]}: ${binding}.id (read from .from("${table}"))`)
+    }
+    return out
+  }
+  return [
+    {
+      id: "R7", what: "a value read from .from(\"leads\") written into a contactId/contact_id slot (data flow, name-agnostic)",
+      find: flow("leads", ["contactId", "contact_id", "referrerContactId", "referredContactId", "resulting_contact_id"]),
+    },
+    {
+      id: "R8", what: "a value read from .from(\"contacts\") written into a leadId/lead_id slot (data flow, name-agnostic)",
+      find: flow("contacts", ["leadId", "lead_id", "referredLeadId"]),
+    },
+  ]
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 0 · strip-comments positive control]")
@@ -178,6 +245,9 @@ const FIXTURES: Record<string, string> = {
   R4: `const ctx = { brokerageId, agentId: ctx.agentUserId, contactId }\nawait writeFollowUpActivity({ agent_id: user.id })`,
   R5: `const { data } = await svc.from("contacts").select("id").eq("contact_id", ctx.contactId).maybeSingle()`,
   R6: `await evaluateOutbound({ actorContext: { userId: lead.brokerage_id, role: 'isa', brokerageId: lead.brokerage_id } })`,
+  // Name-agnostic binding (`row`) — R1 cannot see this; R7 must.
+  R7: `async function a(svc, leadId) {\n  const { data: row } = await svc.from("leads").select("id, brokerage_id").eq("id", leadId).maybeSingle()\n  await createCallbackTask(svc, { brokerageId: row.brokerage_id, contactId: row.id })\n}`,
+  R8: `export async function b(svc, id) {\n  const hit = await svc.from("contacts").select("id").eq("id", id).maybeSingle()\n  await publishQualificationSignal({ leadId: hit?.id, contactId: null })\n}`,
 }
 const CLEAN_FIXTURES: Record<string, string> = {
   R1: `await createCallbackTask(svc, { contactId: lead.contact_id, leadId: lead.id })`,
@@ -186,6 +256,10 @@ const CLEAN_FIXTURES: Record<string, string> = {
   R4: `const ctx = { agentId: (call as any).agent_id ?? null }\nconst a = { agentId: agentRow.id }`,
   R5: `await svc.from("contacts").select("id").eq("id", ctx.contactId)\nawait svc.from("activities").select("id").eq("contact_id", ctx.contactId)`,
   R6: `await evaluateOutbound({ actorContext: { userId: actorUserId, role: 'isa', brokerageId: lead.brokerage_id } })`,
+  // The class-correct slot (leadId ← leads read), AND the scope boundary: the
+  // NEXT function's `row` is a contacts read whose id may go in contactId.
+  R7: `async function a(svc, leadId) {\n  const { data: row } = await svc.from("leads").select("id").eq("id", leadId).maybeSingle()\n  await createCallbackTask(svc, { leadId: row.id, contactId: null })\n}\n\nexport async function c(svc, id) {\n  const { data: row } = await svc.from("contacts").select("id").eq("id", id).maybeSingle()\n  await createCallbackTask(svc, { contactId: row.id })\n}`,
+  R8: `export async function b(svc, id) {\n  const hit = await svc.from("contacts").select("id").eq("id", id).maybeSingle()\n  await publishQualificationSignal({ contactId: hit?.id, leadId: null })\n}`,
 }
 for (const r of RULES) {
   const hits = r.find(FIXTURES[r.id])
@@ -322,5 +396,5 @@ if (failed > 0) {
   console.log("\n❌ IDENTITY_CLASS_TOOL_CONTEXT — see failures above")
   process.exit(1)
 } else {
-  console.log(" ✅ IDENTITY_CLASS_TOOL_CONTEXT — no leads.id in a contacts.id slot, no users.id in an agents.id slot, no lead-shaped compliance contact, every promised tool name registered, no user type in the persona vocabulary")
+  console.log(" ✅ IDENTITY_CLASS_TOOL_CONTEXT — no leads.id in a contacts.id slot (by name R1/R2 AND by data flow R7/R8), no users.id in an agents.id slot, no lead-shaped compliance contact, every promised tool name registered")
 }

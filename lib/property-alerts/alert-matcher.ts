@@ -35,7 +35,29 @@ export interface AlertProperty {
   listed_at?: string
 }
 
+/**
+ * property_alerts.listing_type — the CHECK vocabulary m657 declares
+ * (supabase/migrations/m657-property-alerts-listing-type.sql: sale|rent,
+ * default sale). ONE spelling for the code side (§6): the AI qualification
+ * writer (lib/ai-isa/customer-context-tools.ts) and the sweep's source router
+ * (lib/property-alerts/idx-alert-search.ts) both read it from here, and the
+ * integrator's regenerated scripts/check-vocabularies.ts must list exactly
+ * these two values under property_alerts.listing_type (sorted, as the
+ * generator writes them) once m657 is applied.
+ */
+export const PROPERTY_ALERT_LISTING_TYPES = ["rent", "sale"] as const
+type PropertyAlertListingType = (typeof PROPERTY_ALERT_LISTING_TYPES)[number]
+
+/** A saved search's market. Anything not spelled 'rent' — including a row
+ *  written before m657 — is a FOR-SALE search: the column defaults to 'sale'. */
+export function alertListingType(criteria: Pick<AlertCriteria, "listing_type">): PropertyAlertListingType {
+  return criteria.listing_type === "rent" ? "rent" : "sale"
+}
+
 export interface AlertCriteria {
+  /** m657 — 'rent' means min/max_price are a MONTHLY budget and only the
+   *  rental listing source is swept. Absent/'sale' = the for-sale market. */
+  listing_type?: PropertyAlertListingType | string | null
   min_price?: number | null
   max_price?: number | null
   bedrooms_min?: number | null

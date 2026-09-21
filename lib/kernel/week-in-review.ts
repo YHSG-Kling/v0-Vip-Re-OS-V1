@@ -186,7 +186,12 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
       if (process.env.ELEVENLABS_API_KEY) {
         try {
           const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
-          const tts = await synthesizeSpeech({ text: script, brokerageId: a.brokerage_id })
+          // MODEL + PACING through the ONE selector (lane 77C): a week-in-
+          // review is a scripted brief — the narration lane, never the
+          // primitive's old monolingual_v1 default.
+          const { elevenLabsModelForLane, withNaturalPauses } = await import("@/lib/video/realism-profile")
+          const reviewModel = elevenLabsModelForLane("brief_narration")
+          const tts = await synthesizeSpeech({ text: withNaturalPauses(script, reviewModel), modelId: reviewModel, brokerageId: a.brokerage_id })
           if (tts.success && tts.audioBuffer) {
             const path = `tts/${a.brokerage_id}/week-review-${a.id}-${isoWeek}.mp3`
             const { error: upErr } = await svc.storage.from("video-assets")

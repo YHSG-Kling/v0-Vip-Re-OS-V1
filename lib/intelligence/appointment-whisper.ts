@@ -81,9 +81,24 @@ export type WhisperSynthesizer = (script: string, voiceId: string) => Promise<st
  *  identical `realSynthesizer`/`defaultSynthesizer` const. */
 export const realSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
   try {
-    const { synthesizeSpeechStream } = await import("@/lib/voice/elevenlabs-tts")
-    const res = await synthesizeSpeechStream({ text: script, voiceId })
-    return (res as { audioUrl?: string | null })?.audioUrl ?? null
+    // BUILT (lane 77C, orphan census round 22 — a reader with no writer).
+    // This called synthesizeSpeechStream and then read `res.audioUrl` — a
+    // field the streaming primitive has NEVER returned (it hands back the raw
+    // fetch Response for piping), so every whisper resolved to null audio and
+    // the "audio on every tier" promise below was a text fallback on every
+    // tier. The whisper is a scripted 25-40-minute-ahead brief, not a live
+    // turn: it is rendered on the BUFFERED primitive, on the narration lane
+    // through the ONE selector, paced, and hosted where the other narration
+    // clips live (lib/remotion/media-host.ts → the public `video-assets`
+    // bucket) so the notification's audio link is a URL that exists.
+    const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
+    const { elevenLabsModelForLane, withNaturalPauses } = await import("@/lib/video/realism-profile")
+    const whisperModel = elevenLabsModelForLane("brief_narration")
+    const res = await synthesizeSpeech({ text: withNaturalPauses(script, whisperModel), voiceId, modelId: whisperModel })
+    if (!res.success || !res.audioBuffer) return null
+    const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+    const slug = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    return await hostRenderedMedia(createServiceClient(), `whispers/${slug}.mp3`, res.audioBuffer, "audio/mpeg")
   } catch { return null }
 }
 
