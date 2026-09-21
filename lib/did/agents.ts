@@ -86,8 +86,32 @@ import { SPOKEN_REALISM_DIRECTIVE, scanForAiTells } from "@/lib/video/realism-pr
 export { presenterTypeForTwin } from "./agent-presenter"
 export type { DidPresenterType } from "./agent-presenter"
 
+/**
+ * WHICH DEPLOYMENT a D-ID Agent record serves (lane 77B, owner verbatim:
+ * "the platform should also offer the same ai agents like the live agent
+ * using d-id because the platform can use those ai agents as a demo'd
+ * product"). ONE builder, ONE create/patch path, ONE custom-LLM URL — the
+ * deployment only changes the BASELINE instructions D-ID's own bundled LLM
+ * sees on the turns our endpoint is bypassed for (greetings/starters):
+ *   tenant   — an agent's twin speaking to that agent's clients (default)
+ *   platform — the platform's own live agent on /get-started and /demo,
+ *              demoing the product; it IS an AI and says so when asked
+ */
+export type DIDAgentDeployment = "tenant" | "platform"
+
+/** Where a D-ID Agent id is cached. The tenant deployment caches on the twin
+ *  row (agent_avatar_assets) or the legacy per-agent profile; the platform
+ *  deployment (lib/did/platform-live-agent.ts) caches on platform_settings.
+ *  product_brand.liveAgent — NEVER on a tenant's row. */
+export interface DIDAgentCache {
+  read(): Promise<string | null>
+  write(didAgentId: string): Promise<void>
+}
+
 export interface EnsureDIDAgentParams {
-  agentId: string         // agents.id (NOT users.id)
+  /** agents.id (NOT users.id). Optional ONLY when `cache` is supplied (the
+   *  platform deployment has no agents row). */
+  agentId?: string | null
   presenterId: string     // trained D-ID presenter (did_avatar_id) for this twin
   elevenLabsVoiceId?: string | null
   /** Display name shown in the D-ID dashboard. */
@@ -102,6 +126,11 @@ export interface EnsureDIDAgentParams {
   /** The twin's own opening line — scanned (advisory) for AI-tells before
    *  it ever reaches a real conversation; see the realism note below. */
   greeting?: string | null
+  /** Defaults to "tenant". */
+  deployment?: DIDAgentDeployment
+  /** An explicit cache (the platform deployment) — replaces the twin/agent
+   *  cache lookup and write. */
+  cache?: DIDAgentCache
 }
 
 export interface EnsureDIDAgentResult {
@@ -148,8 +177,23 @@ const LIVE_REALISM_INSTRUCTIONS = SPOKEN_REALISM_DIRECTIVE
   ])
   .join(" ")
 
+/**
+ * The PLATFORM deployment's baseline (lane 77B). It borrows the spoken-
+ * delivery half of the realism directive (contractions, short natural
+ * sentences, no stock openers) and DROPS the "never say you are an AI" line
+ * on purpose: this agent is the product being demoed, the platform prompt
+ * (lib/voice/platform-reception.ts) tells it to confirm it is an AI when
+ * asked, and an honest answer there IS the demo.
+ */
+const PLATFORM_LIVE_INSTRUCTIONS = [
+  "Speak in short, natural sentences a real person would say out loud — contractions always, no stiff written-register phrasing.",
+  "You are the platform's own live AI agent, demonstrating the same live agent every subscriber's website gets. If asked whether you're an AI, say yes — you are the product.",
+  "No stock openers — the visitor already knows where they are; get straight to helping them.",
+].join(" ")
+
 /** PURE: the body shared by CREATE (POST) and UPDATE (PATCH) — one builder so
- *  the two calls can never drift (§6). */
+ *  the two calls can never drift (§6). `deployment` only chooses the baseline
+ *  instructions; presenter, voice and the custom-LLM URL are the same. */
 function buildAgentBody(params: {
   agentName: string
   presenterId: string
@@ -157,6 +201,7 @@ function buildAgentBody(params: {
   personality?: string | null
   appUrl: string
   customLlmKey: string
+  deployment?: DIDAgentDeployment
 }) {
   const voice = params.elevenLabsVoiceId
     ? {
@@ -165,6 +210,8 @@ function buildAgentBody(params: {
         voice_config: { stability: 0.5, similarity_boost: 0.75 },
       }
     : { type: "microsoft" as const, voice_id: "en-US-JennyMultilingualV2Neural" }
+
+  const platform = (params.deployment ?? "tenant") === "platform"
 
   return {
     preview_name: params.agentName.slice(0, 40),
@@ -181,12 +228,18 @@ function buildAgentBody(params: {
       // context are injected by /api/did/custom-llm on every request — this
       // stays a baseline identity + the realism directive, so a fallback D-ID
       // greeting or starter (rendered before our endpoint is ever called)
-      // still sounds like a person and never claims to be AI.
+      // still sounds like a person and never claims to be AI. The PLATFORM
+      // deployment (lane 77B) swaps in its own honest baseline — see
+      // PLATFORM_LIVE_INSTRUCTIONS.
       instructions: [
-        "You are the real-estate-agent's AI assistant speaking with one of their clients.",
-        "Defer to the system context provided on each message — it carries the contact's name, journey stage, and the agent's brand voice.",
+        platform
+          ? `You are ${params.agentName.slice(0, 40)}, the live AI agent on the platform's own website, talking with a prospect evaluating the product.`
+          : "You are the real-estate-agent's AI assistant speaking with one of their clients.",
+        platform
+          ? "Defer to the system context provided on each message — it carries the product brand, the live plans and the prospect funnel."
+          : "Defer to the system context provided on each message — it carries the contact's name, journey stage, and the agent's brand voice.",
         "Keep replies short, warm, and natural for a face-to-face conversation.",
-        LIVE_REALISM_INSTRUCTIONS,
+        platform ? PLATFORM_LIVE_INSTRUCTIONS : LIVE_REALISM_INSTRUCTIONS,
         params.personality ? `Personality: ${params.personality}` : null,
       ].filter(Boolean).join(" "),
     },
@@ -215,8 +268,17 @@ export async function ensureDIDAgent(
   // gets flagged back to the caller so Twin Studio can surface it for a redraft.
   const realismWarnings = params.greeting ? scanForAiTells(params.greeting) : []
 
-  // ── 1. Cache hit — per twin first, then per agent ─────────────────────
-  if (params.twinId) {
+  // ── 1. Cache hit — explicit cache (platform), else per twin, else per agent ──
+  if (params.cache) {
+    const cached = await params.cache.read()
+    if (cached) {
+      return {
+        ok: true, didAgentId: cached, created: false,
+        presenterType: presenterTypeForTwin(params.presenterId),
+        realismWarnings,
+      }
+    }
+  } else if (params.twinId) {
     const { data: twin } = await supabase
       .from("agent_avatar_assets")
       .select("did_agent_id")
@@ -230,6 +292,7 @@ export async function ensureDIDAgent(
       }
     }
   } else {
+    if (!params.agentId) return { ok: false, error: "agentId is required for a tenant D-ID Agent without a twinId or an explicit cache" }
     const { data: profile } = await supabase
       .from("agent_voice_profiles")
       .select("did_agent_id")
@@ -251,6 +314,7 @@ export async function ensureDIDAgent(
     elevenLabsVoiceId: params.elevenLabsVoiceId,
     personality: params.personality,
     appUrl, customLlmKey,
+    deployment: params.deployment,
   })
 
   const res = await didRequest<{ id?: string }>("/agents", { method: "POST", body })
@@ -262,9 +326,12 @@ export async function ensureDIDAgent(
   const didAgentId = res.data.id
 
   // ── 3. Cache the id ────────────────────────────────────────────────────
+  // Platform: the explicit cache (platform_settings.product_brand.liveAgent).
   // Twin Studio: cache on the twin row so each twin has its own D-ID Agent.
   // Legacy: cache on agent_voice_profiles for callers without a twinId.
-  if (params.twinId) {
+  if (params.cache) {
+    await params.cache.write(didAgentId)
+  } else if (params.twinId) {
     await supabase
       .from("agent_avatar_assets")
       .update({ did_agent_id: didAgentId, updated_at: new Date().toISOString() })
@@ -291,6 +358,8 @@ export interface SyncDIDAgentParams {
   elevenLabsVoiceId?: string | null
   agentName: string
   personality?: string | null
+  /** Defaults to "tenant" — the platform's own agent passes "platform". */
+  deployment?: DIDAgentDeployment
 }
 
 export interface SyncDIDAgentResult {
@@ -327,6 +396,7 @@ export async function syncDIDAgent(params: SyncDIDAgentParams): Promise<SyncDIDA
     elevenLabsVoiceId: params.elevenLabsVoiceId,
     personality: params.personality,
     appUrl, customLlmKey,
+    deployment: params.deployment,
   })
 
   const res = await didRequest(`/agents/${encodeURIComponent(params.didAgentId)}`, { method: "PATCH", body })

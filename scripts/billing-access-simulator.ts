@@ -81,12 +81,19 @@ async function main() {
   check("…so the reconciled value is what decides: a past tenant trial_ends_at BLOCKS",
     (() => { const a = resolveBillingAccess({ status: "trialing", trial_end: past }, now); return a.blocked && a.state === "expired" })())
 
+  // RE-ANCHORED (lane 77B): the trial row is written by the ONE tenant-creation
+  // core (lib/kernel/tenant-creation.ts — buildSubscriptionRow + the counted
+  // insert), which the self-serve signup delegates to. The RULE is unchanged:
+  // the trial row carries trial_end, and the insert error is READ.
+  const coreSrc = readFileSync(join(process.cwd(), "lib/kernel/tenant-creation.ts"), "utf8")
   const signupSrc = readFileSync(join(process.cwd(), "app/actions/auth/signup-brokerage.ts"), "utf8")
-  check("signup WRITES subscriptions.trial_end on the trial row (the missing writer)",
-    /from\("subscriptions"\)\s*\.insert\(\{[\s\S]{0,600}?trial_end:/.test(signupSrc),
-    "signup inserted status='trialing' with trial_end NULL — the paywall reads that column")
-  check("signup READS the trial-subscription insert error (§3 — supabase-js resolves refusals)",
-    /const \{ error: trialSubError \}[\s\S]{0,800}?if \(trialSubError\)/.test(signupSrc))
+  check("the tenant-creation core WRITES subscriptions.trial_end on the trial row (the missing writer)",
+    /trial_end:\s*end,/.test(coreSrc) && /from\("subscriptions"\)\.insert\(subscriptionRow\)/.test(coreSrc),
+    "the core inserted status='trialing' with trial_end NULL — the paywall reads that column")
+  check("the core READS the subscription insert error (§3 — supabase-js resolves refusals)",
+    /const \{ data: subscription, error: subErr \}[\s\S]{0,400}?if \(subErr \|\| !subscription\)/.test(coreSrc))
+  check("self-serve signup reaches that writer through the core (createTenantCore with billing mode 'trial')",
+    /createTenantCore\(service, \{[\s\S]{0,800}?billing: \{ mode: "trial"/.test(signupSrc))
 
   const accessSrc = readFileSync(join(process.cwd(), "lib/billing/billing-access.ts"), "utf8")
   check("loadBillingAccess reconciles trial_end against brokerages.trial_ends_at (same rule as subscription-oversight.ts:155)",
@@ -95,8 +102,8 @@ async function main() {
     /brkRes\?\.error[\s\S]{0,120}?\? null/.test(accessSrc))
   // POSITIVE CONTROL — the three source greps above must be able to go RED.
   check("↺ control: the source scan can tell a written trial_end from an absent one",
-    !/from\("subscriptions"\)\s*\.insert\(\{[\s\S]{0,600}?trial_end:/.test(
-      `await service.from("subscriptions").insert({ brokerage_id: b, status: "trialing", current_period_end: x })`),
+    !/trial_end:\s*end,/.test(
+      `return { brokerage_id: b, status: "trialing", current_period_end: end, created_at: nowIso }`),
     "the regex matched a row that has NO trial_end — it proves nothing")
 
   console.log("\n[Layer 2 · gate + de-hardcoded pricing wiring]")

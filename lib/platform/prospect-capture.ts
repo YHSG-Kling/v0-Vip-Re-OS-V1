@@ -312,3 +312,46 @@ export async function markProspectHandoff(svc: any, input: {
     details: { ...(row.details ?? {}), human_handoff: stamp },
   })
 }
+
+/** details.conversion shape (lane 77B) — the moment a prospect became a
+ *  subscriber, as the growth board reads it. status + converted_brokerage_id
+ *  themselves are written by lib/platform/prospect-conversion.ts::
+ *  stampProspectConversion (called by the tenant-creation core); this is the
+ *  narrative half beside it. */
+export interface ProspectConversionStamp {
+  converted_at: string
+  brokerage_id: string
+  /** "staff:<email>" or "self:<channel>" — who said yes / who clicked. */
+  actor: string
+  billing_mode: "trial" | "active"
+  tier: string
+  human_reasons: string[]
+  staff_notified: number
+  demo: "none" | "hold_released" | "hold_release_failed" | "kept_as_onboarding"
+}
+
+/** The prospect became a subscriber → details.conversion, an OPEN human
+ *  handoff is closed (a person is now on the tenant, not the prospect), and
+ *  the demo stamp records what happened to the hold. Status is NOT touched
+ *  here — stampProspectConversion owns it. */
+export async function markProspectConverted(svc: any, input: {
+  prospectId: string; brokerageId: string; actorLabel: string
+  billingMode: "trial" | "active"; tier: string
+  humanReasons: string[]; staffNotified: number
+  demoDisposition: ProspectConversionStamp["demo"]
+}): Promise<boolean> {
+  const row = await readProspectForStamp(svc, input.prospectId)
+  if (!row) return false
+  const details: Record<string, unknown> = { ...(row.details ?? {}) }
+  const conversion: ProspectConversionStamp = {
+    converted_at: new Date().toISOString(), brokerage_id: input.brokerageId, actor: input.actorLabel,
+    billing_mode: input.billingMode, tier: input.tier, human_reasons: input.humanReasons,
+    staff_notified: input.staffNotified, demo: input.demoDisposition,
+  }
+  details.conversion = conversion
+  const handoff = details.human_handoff as ProspectHandoffStamp | undefined
+  if (handoff && handoff.status === "open") details.human_handoff = { ...handoff, status: "done" }
+  const demo = details.demo_appointment as ProspectDemoStamp | undefined
+  if (demo && input.demoDisposition === "hold_released") details.demo_appointment = { ...demo, status: "cancelled" }
+  return stampProspect(svc, input.prospectId, { details })
+}

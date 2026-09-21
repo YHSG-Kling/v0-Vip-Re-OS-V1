@@ -270,7 +270,10 @@ console.log("\n[Layer 9 · playbook wording for the platform matches the registe
 const { PLATFORM_PROSPECT_TOOL_NAMES, platformExitMenuMatchesTools, PLATFORM_PROSPECT_TOOL_GUIDANCE } = await import("../lib/platform/prospect-agent-tools")
 const { PLATFORM_EXIT_MENU, PLATFORM_QUALIFICATION_GOALS, buildQualificationPrompt } = await import("../lib/ai-isa/qualification-playbook")
 check("every PLATFORM_EXIT_MENU tool is a registered PLATFORM_PROSPECT_TOOL_NAMES entry", platformExitMenuMatchesTools())
-check("the three exits are exactly demo / signup link / human", PLATFORM_EXIT_MENU.map((o) => o.tool).sort().join(",") === ["book_demo_appointment", "request_human_handoff", "send_signup_link"].join(","))
+// RE-ANCHORED (lane 77B): a FOURTH exit — start_subscription (the prospect
+// says yes and becomes a subscriber on the spot; scripts/subscriber-
+// conversion-simulator.ts owns it). The three original exits are unchanged.
+check("the exits are exactly demo / signup link / start subscription / human", PLATFORM_EXIT_MENU.map((o) => o.tool).sort().join(",") === ["book_demo_appointment", "request_human_handoff", "send_signup_link", "start_subscription"].join(","))
 for (const name of PLATFORM_PROSPECT_TOOL_NAMES) check(`tool '${name}' is actually registered in buildPlatformProspectTools`, new RegExp(`\\b${name}:\\s*tool\\(\\{`).test(toolsSrc))
 check("POSITIVE CONTROL: a tool name NOT in the bundle is reported unregistered", !/\bbook_showing:\s*tool\(\{/.test(toolsSrc))
 const platformPrompt = buildQualificationPrompt({ surface: "platform_reception" })

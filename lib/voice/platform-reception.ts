@@ -106,8 +106,12 @@ export function buildPlatformReceptionPrompt(id: {
   voicePitch?: string; receptionGreeting?: string
   brand?: BrandPlaybookContext | null
   /** Lane 76B — the SAME brain answers the website prospect chat; only the
-   *  medium-specific lines differ. Defaults to the phone line. */
-  channel?: "voice" | "chat"
+   *  medium-specific lines differ. Defaults to the phone line. Lane 77B —
+   *  "live" is the platform's own D-ID live agent (face-to-face video on
+   *  /get-started and /demo): the same brain, spoken aloud, and it DEMOS the
+   *  product it is (the platform offers the same live agent every subscriber
+   *  gets, so the prospect is already looking at it). */
+  channel?: "voice" | "chat" | "live"
 }): { firstMessage: string; systemPrompt: string } {
   // NO HARDCODED COPY (owner rule): the greeting question + product pitch are
   // SETTINGS (product_brand.receptionGreeting / .voicePitch — resolved with
@@ -122,10 +126,17 @@ export function buildPlatformReceptionPrompt(id: {
   const systemPrompt = [
     channel === "voice"
       ? `You are the AI reception assistant answering the main phone line for ${id.brandName} — ${id.tagline}. This is the PLATFORM's own line: callers are either prospects curious about the product or existing customers who need support.`
-      : `You are the AI assistant on the public website of ${id.brandName} — ${id.tagline}. This is the PLATFORM's own site: visitors are prospects curious about the product (a brokerage, team, or agent evaluating it) or existing customers who need support. You are an AI and say so if asked.`,
+      : channel === "live"
+        ? `You are the live AI agent — on camera, face to face — on the public website of ${id.brandName} — ${id.tagline}. This is the PLATFORM's own site: visitors are prospects curious about the product (a brokerage, team, or agent evaluating it) or existing customers who need support. You are an AI and say so if asked — you are the SAME live agent every subscriber's website, widget and client portal gets, so the visitor is already looking at the product.`
+        : `You are the AI assistant on the public website of ${id.brandName} — ${id.tagline}. This is the PLATFORM's own site: visitors are prospects curious about the product (a brokerage, team, or agent evaluating it) or existing customers who need support. You are an AI and say so if asked.`,
     channel === "voice"
       ? "Tone: warm, professional, concise. Keep answers short — this is a phone call, not an essay."
-      : "Tone: warm, professional, concise. Keep answers short — two or three sentences per message, one question at a time.",
+      : channel === "live"
+        ? "Tone: warm, professional, concise. This is a face-to-face video conversation, not a chat window — two or three short spoken sentences, one question at a time, contractions always."
+        : "Tone: warm, professional, concise. Keep answers short — two or three sentences per message, one question at a time.",
+    channel === "live"
+      ? "YOU ARE ALSO THE DEMO: when they ask what the product does or want to see it, call show_product_demo with the closest topic and walk them through it in your own words, one beat at a time — and point out that what they're experiencing right now (a live agent that qualifies, books a real calendar slot, and hands off to a person) is exactly what their own website visitors would get. Never claim a video is playing unless the tool gave you a clipToken to append."
+      : "",
     `WHAT THE PRODUCT IS: ${(id.voicePitch ?? "").trim() || `${id.brandName} — ${id.tagline}`}.`,
     `CURRENT PLANS (the ONLY pricing you may state — read from the live plan catalog):\n${id.tierLines.map((l) => `- ${l}`).join("\n")}`,
     // "this goes for the platform ai agents" (wave 74) — the shared
@@ -137,7 +148,7 @@ export function buildPlatformReceptionPrompt(id: {
     channel === "voice"
       ? "FOR PROSPECTS: learn who they are and what they run, answer honestly from what you know above, save what you learn with save_prospect as you go, and when they're ready offer ONE of the three exits (a live demo, the signup link, or a person). Their phone number is already captured from caller ID. If you have no tools on this turn, use the 'prospect' action once they've shared a name or email so they are never lost."
       : "FOR PROSPECTS: learn who they are and what they run, answer honestly from what you know above, save what you learn with save_prospect as you go (ask for a work email early — it is how we follow up), and when they're ready offer ONE of the three exits (a live demo, the signup link, or a person).",
-    id.hasTransfer
+    id.hasTransfer && channel === "voice"
       ? "FOR EXISTING CUSTOMERS NEEDING SUPPORT: offer to connect them to the team right away (action 'transfer')."
       : channel === "voice"
         ? "FOR EXISTING CUSTOMERS NEEDING SUPPORT: no live transfer is available on this line — take their name, company, and a short description of the issue, tell them the team will follow up quickly, then close. Never claim you can transfer."

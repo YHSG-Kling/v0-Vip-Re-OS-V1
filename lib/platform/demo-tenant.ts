@@ -270,8 +270,11 @@ export function buildDemoSeedPlan(
 type Service = ReturnType<typeof createServiceClient>
 
 /** THE single source of truth for "which brokerage is the demo tenant":
- *  the row flagged is_demo = true. */
-async function findDemoBrokerage(svc: Service): Promise<DemoTenantRef | null> {
+ *  the row flagged is_demo = true. Exported (lane 77B) because the platform's
+ *  OWN live agent meters its D-ID minutes under this platform-owned, never-
+ *  billed tenant (lib/did/platform-live-agent.ts) — the only brokerage row the
+ *  platform holds — rather than under a real tenant's ledger. */
+export async function findDemoBrokerage(svc: Service): Promise<DemoTenantRef | null> {
   const { data } = await svc
     .from("brokerages")
     .select("id, name, slug, status, created_at")

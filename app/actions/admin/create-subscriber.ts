@@ -2,11 +2,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { auditStaffAction, gateStaffAction } from "@/lib/platform/staff-action-gate"
-import { provisionTenantOwner } from "@/lib/kernel/users"
-import { rollbackTenantCreation } from "@/lib/kernel/tenant-creation-rollback"
+import { createTenantCore } from "@/lib/kernel/tenant-creation"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
-import { snapshotForTier } from "@/lib/platform/trial-funnel"
 import { stripe } from "@/lib/stripe"
 
 export interface CreateSubscriberParams {
@@ -32,6 +29,21 @@ export interface CreateSubscriberParams {
   snapshotId?: string
 }
 
+/**
+ * Staff-provisioned subscriber (an ACTIVE subscription, not a trial).
+ *
+ * TOMBSTONE (lane 77B): the brokerages insert, provisionTenantOwner + rollback,
+ * subscription row, snapshot apply and prospect conversion stamp that stood
+ * here were the SECOND spelling of tenant creation (the first:
+ * app/actions/auth/signup-brokerage.ts). SURVIVOR:
+ * lib/kernel/tenant-creation.ts::createTenantCore. What stays here is this
+ * door's own: the platform-staff gate, the Stripe customer on the PLATFORM
+ * account (the platform is the merchant for a tenant's subscription —
+ * lib/billing/stripe-account-scope.ts) and the audited activity line.
+ * Delegating also gave this door what only the self-serve one had: the
+ * duplicate-owner guard, the tenant's AI-ISA actor, the starter assistant,
+ * the SUBSCRIPTION_CREATED lifecycle event and the onboarding library.
+ */
 export async function createSubscriber(params: CreateSubscriberParams): Promise<{
   success: boolean
   brokerageId?: string
@@ -59,72 +71,40 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   const service = createServiceClient()
 
   try {
-    // Step 1: Create brokerage — set plan_tier so fair-use enforcement
-    // (lib/ai/fair-use.ts via brokerages.plan_tier → plan_limits) immediately
-    // applies the correct monthly AI token ceiling. Without this the new
-    // brokerage falls back to NULL → solo_agent default, which silently
-    // under-caps team / brokerage / multi_location tiers.
-    const { data: brokerage, error: bErr } = await service
-      .from("brokerages")
-      .insert({
-        name: params.brokerageName,
-        email: params.brokerageEmail,
-        phone: params.brokeragePhone || null,
-        city: params.brokerageCity || null,
-        state: params.brokerageState || null,
-        plan_tier: params.tierName,
-        signup_source: "superadmin",
-        onboarding_status: "pending",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (bErr || !brokerage) {
-      return { success: false, error: `Brokerage creation failed: ${bErr?.message}` }
-    }
-
-    const brokerageId = brokerage.id
-
-    // Step 2: Provision the tenant OWNER through the canonical identity path —
-    // creates the auth user FIRST (so public.users.id === auth.users.id, the
-    // invariant every read path + RLS policy depends on), pins/enriches the users
-    // row, creates the teams row for a team tenant, and — tier-aware — gives a
-    // solo/team owner their agents row (+ commission + onboarding + role
-    // assignment). Sends the magic-link invite. Replaces the old pre-insert that
-    // collided with the on_auth_user_created trigger and orphaned the profile.
-    const owner = await provisionTenantOwner({
-      email:         params.adminEmail,
-      firstName:     params.adminFirstName,
-      lastName:      params.adminLastName,
-      brokerageId,
+    // THE ONE CORE — brokerage (plan_tier set so fair-use applies on day one),
+    // owner (invite-first, id pinned, tier-aware, counted rollback), the ACTIVE
+    // subscription row for the chosen cycle, the staff-picked snapshot or the
+    // tier default, and the prospect link-back by admin + brokerage email and
+    // the brokerage phone (the reception's caller-ID key) with outcome
+    // 'converted' — an active subscription is a paying tenant.
+    const created = await createTenantCore(service, {
       brokerageName: params.brokerageName,
-      tier:          params.tierName,
-      redirectTo:    `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
-      callerUserId:  callerUser.id,
+      adminEmail: params.adminEmail,
+      adminFirstName: params.adminFirstName,
+      adminLastName: params.adminLastName,
+      tier: params.tierName,
+      tierId: params.tierId,
+      brokerageEmail: params.brokerageEmail,
+      brokeragePhone: params.brokeragePhone ?? null,
+      city: params.brokerageCity ?? null,
+      state: params.brokerageState ?? null,
+      signupSource: "superadmin",
+      billing: { mode: "active", billingCycle: params.billingCycle, stripeCustomerId: params.stripeCustomerId ?? null },
+      snapshotId: params.snapshotId ?? null,
+      callerUserId: callerUser.id,
     })
-    if (!owner.success || !owner.userId) {
-      // ROLL BACK THE HALF-BUILT TENANT — children first, and READ the answer.
-      // The bare `.delete()` this replaces did neither: `users.brokerage_id` is
-      // ON DELETE SET NULL, so it left a live user belonging to no tenant, and
-      // supabase-js RESOLVES a refused delete (CLAUDE.md §3), so a blocked
-      // rollback reported only the provisioning failure. See
-      // lib/kernel/tenant-creation-rollback.ts for the measured delete-rule
-      // census behind this.
-      const rollback = await rollbackTenantCreation(service, brokerageId)
-      if (!rollback.ok) {
-        console.error("[createSubscriber] tenant rollback incomplete:", rollback.error)
-        return {
-          success: false,
-          error: `Owner provisioning failed: ${owner.error}. ${rollback.error}`,
-        }
-      }
-      return { success: false, error: `Owner provisioning failed: ${owner.error}` }
+    if (!created.ok || !created.brokerageId || !created.userId) {
+      return { success: false, error: created.error ?? "Tenant creation failed" }
     }
-    const userId = owner.userId
+    const brokerageId = created.brokerageId
+    const userId = created.userId
+    const subscriptionId = created.subscriptionId ?? null
 
-    // Step 3: Create Stripe customer
+    // Stripe customer — the platform is the payee for a tenant's subscription
+    // (lib/billing/stripe-account-scope.ts roster: platform_payee). Created
+    // AFTER the tenant exists so its metadata carries the real brokerage_id,
+    // then written onto the subscription row (counted — a row that did not
+    // match is reported, never assumed).
     let stripeCustomerId = params.stripeCustomerId || null
     if (!stripeCustomerId) {
       try {
@@ -139,98 +119,21 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
           },
         })
         stripeCustomerId = customer.id
+        if (subscriptionId) {
+          const { data: linked, error: linkErr } = await service
+            .from("subscriptions")
+            .update({ stripe_customer_id: stripeCustomerId, updated_at: new Date().toISOString() })
+            .eq("id", subscriptionId)
+            .select("id")
+          if (linkErr) console.warn("[createSubscriber] stripe_customer_id write refused:", linkErr.message)
+          else if ((linked ?? []).length !== 1) console.warn("[createSubscriber] stripe_customer_id matched no subscription row:", subscriptionId)
+        }
       } catch (stripeErr: any) {
         console.warn("[createSubscriber] Stripe customer creation failed:", stripeErr.message)
       }
     }
 
-    // Step 4: Create subscription record — no billing_cycle column in schema
-    const periodEnd =
-      params.billingCycle === "annual"
-        ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
-        : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-
-    const { data: subscription, error: sErr } = await service
-      .from("subscriptions")
-      .insert({
-        brokerage_id: brokerageId,
-        tier_id: params.tierId,
-        status: "active",
-        stripe_customer_id: stripeCustomerId,
-        current_period_start: new Date().toISOString(),
-        current_period_end: periodEnd,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (sErr || !subscription) {
-      return { success: false, error: `Subscription creation failed: ${sErr?.message}` }
-    }
-
-    // CONFIG SNAPSHOT AT CREATION (owner ruling: a converted prospect's account
-    // is created WITH a snapshot). ONE apply path for every creation rail:
-    // applySnapshotPayload (allow-listed layers only — never name/slug/email/
-    // status/tier/billing). The snapshot is the staff-picked params.snapshotId
-    // when given, else the tier's live funnel snapshot (snapshotForTier — the
-    // SAME server-side resolver the self-serve signup uses, so the two
-    // provisioning doors cannot drift). Best-effort: a branding problem must
-    // never cost the tenant — the outcome is reported per-part instead.
-    let snapshotApplied: string[] | undefined
-    let snapshotName: string | undefined
-    let snapshotError: string | undefined
-    try {
-      let payload: SnapshotPayload | null = null
-      if (params.snapshotId) {
-        const { data: snap, error: snapErr } = await service
-          .from("platform_config_snapshots")
-          .select("name, payload")
-          .eq("id", params.snapshotId)
-          .maybeSingle()
-        if (snapErr) snapshotError = `Snapshot read failed: ${snapErr.message}`
-        else if (!snap) snapshotError = "Config snapshot not found — tenant provisioned from platform defaults."
-        else {
-          snapshotName = (snap as any).name
-          payload = ((snap as any).payload ?? {}) as SnapshotPayload
-        }
-      } else {
-        const snap = await snapshotForTier(params.tierName, service)
-        if (snap) { snapshotName = snap.name; payload = snap.payload }
-        // No live snapshot for the tier is not an error — the tenant starts
-        // from platform defaults, exactly like the self-serve funnel.
-      }
-      if (payload) {
-        const { applied } = await applySnapshotPayload(payload, brokerageId, callerUser.id, service)
-        snapshotApplied = applied
-      }
-    } catch (err) {
-      snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
-      console.warn("[createSubscriber] snapshot apply failed (non-fatal):", err)
-    }
-
-    // PROSPECT CONVERSION STAMP — if this subscriber was a platform_prospect
-    // (any capture channel: web hand-raise, /demo, phone reception, referral,
-    // OS-intent sourcing), record the conversion moment: converted_brokerage_id
-    // + status 'converted' (this path creates an ACTIVE subscription — a paying
-    // tenant, unlike the self-serve trial). Matches by admin + brokerage email
-    // and by the brokerage phone (the reception's caller-ID key). Counted +
-    // idempotent (lib/platform/prospect-conversion.ts); best-effort — a
-    // stamping problem must never cost the provisioning, but the loss is logged.
-    try {
-      const { stampProspectConversion } = await import("@/lib/platform/prospect-conversion")
-      const stamp = await stampProspectConversion(service, {
-        brokerageId,
-        emails: [params.adminEmail, params.brokerageEmail],
-        phone: params.brokeragePhone ?? null,
-        outcome: "converted",
-      })
-      if (stamp.errors.length > 0) {
-        console.warn("[createSubscriber] prospect conversion stamp incomplete:", stamp.errors.join("; "), { matched: stamp.matched, linked: stamp.linked })
-      }
-    } catch (err) { console.warn("[createSubscriber] prospect conversion stamp failed (non-fatal):", (err as any)?.message) }
-
-    // Step 5: Audit log — activities has no metadata column; use notes as JSON string
+    // Audit log — activities has no metadata column; use notes as JSON string
     //
     // IDENTITY CLASS. activities.agent_id FKs agents(id); callerUser.id is a
     // users id, so this insert was rejected by the foreign key — and the catch
@@ -253,13 +156,17 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
             admin_email: params.adminEmail,
             tier: params.tierName,
             billing_cycle: params.billingCycle,
-            subscription_id: subscription.id,
+            subscription_id: subscriptionId,
+            subscription_error: created.subscriptionError ?? null,
+            stripe_customer_id: stripeCustomerId,
             notes: params.notes || "",
             // Config-snapshot-at-creation outcome — honest either way.
             snapshot_id: params.snapshotId ?? null,
-            snapshot_name: snapshotName ?? null,
-            snapshot_applied: snapshotApplied ?? null,
-            snapshot_error: snapshotError ?? null,
+            snapshot_name: created.snapshotName ?? null,
+            snapshot_applied: created.snapshotApplied ?? null,
+            snapshot_error: created.snapshotError ?? null,
+            prospect_linked: created.prospectStamp?.linked ?? 0,
+            extras_skipped: created.extrasSkipped,
             timestamp: new Date().toISOString(),
           }),
           created_at: new Date().toISOString(),
@@ -270,17 +177,17 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       // Non-fatal: audit log failures don't block subscriber creation
     }
 
-    // (The magic-link invite was sent by provisionTenantOwner in Step 2.)
+    // (The magic-link invite was sent by provisionTenantOwner inside the core.)
     return {
       success: true,
       brokerageId,
       userId,
-      subscriptionId: subscription.id,
-      inviteSent: owner.inviteSent,
-      inviteError: owner.inviteError,
-      snapshotApplied,
-      snapshotName,
-      snapshotError,
+      subscriptionId: subscriptionId ?? undefined,
+      inviteSent: created.inviteSent,
+      inviteError: created.inviteError,
+      snapshotApplied: created.snapshotApplied,
+      snapshotName: created.snapshotName ?? undefined,
+      snapshotError: created.snapshotError,
     }
   } catch (err: any) {
     console.error("[createSubscriber] Error:", err)

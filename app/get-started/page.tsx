@@ -1,9 +1,11 @@
 import Link from "next/link"
 import { GetStartedForm } from "./get-started-form"
 import { ProspectChat } from "./prospect-chat"
+import { PlatformLiveAgent } from "./platform-live-agent"
 import { TrialFunnelForm, type FunnelSnapshotMap } from "./trial-funnel-form"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadProductBrand } from "@/lib/platform/product-brand"
+import { resolvePlatformLiveAgentBrokerageId } from "@/lib/did/platform-live-agent"
 import { loadPublicTiers } from "@/lib/platform/public-tiers"
 import { liveFunnelSnapshots } from "@/lib/platform/trial-funnel"
 import { redirect } from "next/navigation"
@@ -39,11 +41,15 @@ export default async function GetStartedPage({ searchParams }: { searchParams: P
   }
 
   const svc = createServiceClient()
-  const [brand, tiers, snapshotsByTier] = await Promise.all([
+  const [brand, tiers, snapshotsByTier, platformBrokerageId] = await Promise.all([
     loadProductBrand(svc),
     loadPublicTiers(svc),
     liveFunnelSnapshots(svc),
+    // Lane 77B — the live agent is offered only when it can mint: a presenter
+    // on the brand kit AND the platform-owned showcase tenant it meters under.
+    resolvePlatformLiveAgentBrokerageId(svc).catch(() => null),
   ])
+  const liveAgentAvailable = !!brand.liveAgent.presenterId && !!platformBrokerageId
   // Only id + name cross to the client — snapshot payloads never ship to a public page.
   const funnelSnapshots: FunnelSnapshotMap = Object.fromEntries(
     Object.entries(snapshotsByTier).map(([tier, s]) => [tier, { id: s.id, name: s.name }]),
@@ -85,6 +91,9 @@ export default async function GetStartedPage({ searchParams }: { searchParams: P
             </p>
           </div>
           <GetStartedForm source={source} />
+          {/* Lane 77B — the platform's OWN D-ID live agent: the same live agent
+              every subscriber gets, demoing itself (one widget, deployment="platform"). */}
+          <div className="mt-8"><PlatformLiveAgent brandName={brand.name} agentName={brand.liveAgent.name} greeting={brand.liveAgent.greeting} available={liveAgentAvailable} primaryColor={brand.primaryColor} /></div>
           {/* Lane 76B — the platform's AI assistant on its own site: the same
               brain as the phone line (demo / signup link / human). */}
           <div className="mt-8"><ProspectChat brandName={brand.name} /></div>

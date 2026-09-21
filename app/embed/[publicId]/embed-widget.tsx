@@ -23,6 +23,8 @@ import {
 } from "@/lib/embed/widget-modes"
 import type { DidPresenterType } from "@/lib/did/agent-presenter"
 import { SimliFaceSession } from "@/app/components/features/ai-avatar-chat/SimliFaceSession"
+import { ProspectChat } from "@/app/get-started/prospect-chat"
+import { splitDemoClipToken } from "@/lib/platform/product-demo"
 
 /** The brokerage-slug/agent handle app/api/embed/session returns on every
  *  response (success AND failure) — everything /api/widget/session needs to
@@ -33,6 +35,23 @@ interface FailoverHandle {
   brokerageSlug: string | null
   agentId: string | null
 }
+
+/**
+ * WHICH DEPLOYMENT this widget serves (lane 77B — "the platform should also
+ * offer the same ai agents like the live agent using d-id"). ONE component,
+ * ONE D-ID SDK plumbing (createAgentManager / mic / mode switch / metering
+ * beacons), two doors:
+ *   tenant   — /embed/[publicId] in an iframe: mints through /api/embed/session,
+ *              prefixes the embedSessionId + contactId markers, runs the
+ *              broker's lead-capture form, fails over to the tenant text widget.
+ *   platform — mounted INLINE on /get-started and /demo: mints through
+ *              /api/platform/live-agent/session, prefixes the
+ *              platformLiveSessionId marker, has NO capture form (the agent's
+ *              own save_prospect tool captures), and fails over to the platform
+ *              text prospect chat (the same brain in text). The heartbeat/end
+ *              beacons are the SAME id-keyed routes for both.
+ */
+export type EmbedDeployment = "tenant" | "platform"
 
 interface Props {
   publicId: string
@@ -46,6 +65,10 @@ interface Props {
   leadCaptureFields: string[]
   label: string
   style: Record<string, any>
+  /** Defaults to "tenant". */
+  deployment?: EmbedDeployment
+  /** Inline (platform) mount: called on the close button instead of postMessage. */
+  onClose?: () => void
 }
 
 interface DisplayMessage {
@@ -53,13 +76,19 @@ interface DisplayMessage {
   text: string
 }
 
-const CTX_PREFIX_RE = /\[\[CTX:contactId=[0-9a-f-]{36}\]\]\s*/i
+const CTX_PREFIX_RE = /\[\[CTX:(contactId|embedSessionId|platformLiveSessionId)=[0-9a-f-]{36}\]\]\s*/gi
 
 export function EmbedWidget(props: Props) {
   const {
     publicId, visitorId, origin, referrer, pageUrl, welcomeMessage,
     enabledModes, leadCaptureMode, leadCaptureFields, label,
   } = props
+  const deployment: EmbedDeployment = props.deployment ?? "tenant"
+  const isPlatform = deployment === "platform"
+  // A pre-rendered sample clip the PLATFORM agent asked to play (the
+  // [[CLIP:url]] token from show_product_demo — lib/platform/product-demo.ts).
+  // Never rendered per conversation; a URL the platform already paid for once.
+  const [demoClipUrl, setDemoClipUrl] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const managerRef = useRef<didSdk.AgentManager | null>(null)
@@ -123,10 +152,10 @@ export function EmbedWidget(props: Props) {
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch("/api/embed/session", {
+        const res = await fetch(isPlatform ? "/api/platform/live-agent/session" : "/api/embed/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ publicId, visitorId, origin, referrer, pageUrl }),
+          body: JSON.stringify(isPlatform ? { visitorId, origin, pageUrl } : { publicId, visitorId, origin, referrer, pageUrl }),
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({})) as { error?: string; fallback?: FailoverHandle }
@@ -207,10 +236,13 @@ export function EmbedWidget(props: Props) {
             onNewMessage: (msgs) => {
               const display: DisplayMessage[] = msgs
                 .filter((m) => m.role === "user" || m.role === "assistant")
-                .map((m): DisplayMessage => ({
-                  role: m.role === "user" ? "user" : "agent",
-                  text: stripContext(extractText(m)),
-                }))
+                .map((m): DisplayMessage => {
+                  const raw = stripContext(extractText(m))
+                  if (!isPlatform || m.role !== "assistant") return { role: m.role === "user" ? "user" : "agent", text: raw }
+                  const { text, clipUrl } = splitDemoClipToken(raw)
+                  if (clipUrl) setDemoClipUrl(clipUrl)
+                  return { role: "agent", text }
+                })
                 .filter((m) => m.text.length > 0)
               if (welcomeMessage && display.length === 0) {
                 setMessages([{ role: "agent", text: welcomeMessage }])
@@ -229,8 +261,10 @@ export function EmbedWidget(props: Props) {
         await manager.connect()
         setPhase("ready")
 
-        // Immediate-capture mode opens the form right after connect.
-        if (leadCaptureMode === "immediate") setPhase("capturing")
+        // Immediate-capture mode opens the form right after connect. The
+        // PLATFORM deployment never runs the capture form — the agent's own
+        // save_prospect tool captures, in conversation.
+        if (leadCaptureMode === "immediate" && !isPlatform) setPhase("capturing")
       } catch (e) {
         console.error(e)
         setBootError("Couldn't start the chat")
@@ -245,7 +279,7 @@ export function EmbedWidget(props: Props) {
       managerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [publicId, visitorId, origin, referrer, pageUrl, welcomeMessage, leadCaptureMode])
+  }, [publicId, visitorId, origin, referrer, pageUrl, welcomeMessage, leadCaptureMode, deployment])
 
   // Flush the live-minute report if the tab/iframe closes mid-session — the
   // SAME pattern AgentsWidget.tsx uses for the portal door.
@@ -379,15 +413,19 @@ export function EmbedWidget(props: Props) {
     setInput("")
     // After-first-message capture mode triggers on the visitor's first message.
     const willCaptureAfterFirst =
-      leadCaptureMode === "after_first_message" && !contactId
+      leadCaptureMode === "after_first_message" && !contactId && !isPlatform
     // Markers are sent ONCE each, then ride along in D-ID's own message
-    // history — never resent, never dropped.
+    // history — never resent, never dropped. The PLATFORM deployment sends
+    // ONLY its own marker (the platform metering row id) — never a contact
+    // or embed marker, which /api/did/custom-llm would refuse as conflicting.
     const markers: string[] = []
     if (!sessionMarkerSentRef.current && sessionIdRef.current) {
-      markers.push(`[[CTX:embedSessionId=${sessionIdRef.current}]]`)
+      markers.push(isPlatform
+        ? `[[CTX:platformLiveSessionId=${sessionIdRef.current}]]`
+        : `[[CTX:embedSessionId=${sessionIdRef.current}]]`)
       sessionMarkerSentRef.current = true
     }
-    if (contactId && !ctxMarkerSentRef.current) {
+    if (contactId && !ctxMarkerSentRef.current && !isPlatform) {
       markers.push(`[[CTX:contactId=${contactId}]]`)
       ctxMarkerSentRef.current = true
     }
@@ -438,12 +476,36 @@ export function EmbedWidget(props: Props) {
   // ── Close the iframe ─────────────────────────────────────────────────────
   function close() {
     setPhase("closed")
+    // Inline (platform) mount: the parent component owns the open/closed
+    // state; the tenant iframe tells its loader script instead.
+    if (props.onClose) { props.onClose(); return }
     window.parent.postMessage({ type: "vipagent.close" }, "*")
   }
 
   // ── UI ───────────────────────────────────────────────────────────────────
   const colorBg = props.style?.bubble_color ?? "#0066ff"
   const colorFg = props.style?.text_color ?? "#ffffff"
+  // The tenant widget fills its iframe; the platform mount is an inline card.
+  const frameClass = isPlatform ? "flex flex-col h-[560px] rounded-lg border overflow-hidden bg-white" : "flex flex-col h-screen bg-white"
+
+  // ── PLATFORM FAILOVER — the SAME brain in text (never a dead button) ─────
+  // The D-ID leg never came up (or dropped): mount the EXISTING platform text
+  // prospect chat (app/get-started/prospect-chat.tsx → /api/platform/prospect-
+  // chat) in place of the avatar, with a one-line notice. The tenant fail-over
+  // (EmbedTextFallback below) needs a brokerage slug; the platform has none —
+  // its text door is the prospect chat itself.
+  if (bootError && isPlatform) {
+    return (
+      <div className={frameClass}>
+        <div className="flex items-center justify-between px-4 py-3" style={{ background: colorBg, color: colorFg }}>
+          <div className="font-semibold text-sm truncate">{label}</div>
+          <button onClick={close} aria-label="Close" className="hover:opacity-80"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800">{bootError} — you can still chat with the assistant here.</div>
+        <div className="p-3 overflow-y-auto"><ProspectChat brandName={label} /></div>
+      </div>
+    )
+  }
 
   // The mic status, in the visitor's words. Each state has a DIFFERENT fix and
   // one shared "microphone problem" message would send them to the wrong place.
@@ -511,7 +573,7 @@ export function EmbedWidget(props: Props) {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-white">
+    <div className={frameClass}>
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-3"
@@ -587,6 +649,14 @@ export function EmbedWidget(props: Props) {
           </div>
         )}
       </div>
+
+      {/* Sample clip the PLATFORM agent asked to play (show_product_demo) */}
+      {isPlatform && demoClipUrl && (
+        <div className="border-t bg-black">
+          <video src={demoClipUrl} controls autoPlay playsInline className="w-full max-h-48 object-contain" />
+          <button type="button" onClick={() => setDemoClipUrl(null)} className="w-full text-[11px] text-white/80 py-1 hover:text-white">hide sample</button>
+        </div>
+      )}
 
       {/* Transcript */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">

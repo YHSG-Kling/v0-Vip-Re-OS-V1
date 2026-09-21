@@ -132,6 +132,56 @@ export async function confirmProspectDemoAction(input: { prospectId: string }): 
   return { ok: true, icsSentToProspect: r.icsSentToProspect, icsSentToRep: r.icsSentToRep }
 }
 
+/**
+ * Lane 77B — "Convert to subscriber" from the growth board. Marketing/sales
+ * platform_role staff (the SAME capability that gates this board), audited by
+ * name. The prospect id is the ONLY id the request carries: the tenant facts
+ * come off the prospect row (lib/platform/prospect-conversion.ts::
+ * deriveProspectTenantFacts), the new brokerage id comes back from the ONE
+ * tenant-creation core (lib/kernel/tenant-creation.ts), never from the body.
+ * A trial needs no card; an ACTIVE subscription is provisioned without a
+ * Stripe customer up front — the tenant admin's first in-app checkout
+ * (app/actions/billing.ts::startSubscriptionCheckout, the one checkout
+ * survivor) creates it. The white-glove staff task is raised ONLY when
+ * warranted (enterprise size / custom pricing / CRM migration).
+ */
+export async function convertProspectToSubscriberAction(input: {
+  prospectId: string
+  tier?: string | null
+  billing: { mode: "trial" } | { mode: "active"; billingCycle: "monthly" | "annual" }
+  customPricingRequested?: boolean
+}): Promise<
+  | { ok: true; brokerageId: string; alreadyConverted: boolean; tier?: string; inviteSent?: boolean; inviteError?: string | null; humanReasons?: string[]; staffNotified?: number; demoDisposition?: string }
+  | { ok: false; error: string }
+> {
+  const auth = await requireMarketingStaff()
+  if (!auth.ok) return auth
+  if (!input?.prospectId) return { ok: false, error: "prospectId is required" }
+  const billing = input.billing?.mode === "active"
+    ? { mode: "active" as const, billingCycle: input.billing.billingCycle === "annual" ? "annual" as const : "monthly" as const }
+    : { mode: "trial" as const }
+  const svc = createServiceClient()
+  const { convertProspectToSubscriber } = await import("@/lib/platform/prospect-conversion")
+  const r = await convertProspectToSubscriber(svc, {
+    prospectId: input.prospectId,
+    actor: { kind: "platform_staff", userId: auth.userId, email: auth.email },
+    tier: input.tier ?? null, billing,
+    customPricingRequested: input.customPricingRequested === true,
+  })
+  if (!r.ok) return { ok: false, error: r.error }
+  await audit(auth.userId, auth.email, "platform_prospect.convert_to_subscriber_clicked", input.prospectId, {
+    brokerage_id: r.brokerageId, already_converted: r.alreadyConverted, billing_mode: billing.mode,
+    tier: r.alreadyConverted ? null : r.tier, human_reasons: r.alreadyConverted ? [] : r.humanReasons,
+  })
+  revalidatePath("/dashboard/superadmin/growth")
+  if (r.alreadyConverted) return { ok: true, brokerageId: r.brokerageId, alreadyConverted: true }
+  return {
+    ok: true, brokerageId: r.brokerageId, alreadyConverted: false, tier: r.tier,
+    inviteSent: r.inviteSent, inviteError: r.inviteError ?? null,
+    humanReasons: r.humanReasons, staffNotified: r.staffNotified, demoDisposition: r.demoDisposition,
+  }
+}
+
 export async function advanceProspectAction(input: { id: string; status: string }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireMarketingStaff()
   if (!auth.ok) return auth

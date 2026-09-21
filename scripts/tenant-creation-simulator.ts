@@ -88,11 +88,19 @@ function sourceLayer() {
     /repairIncompleteAccountSetup[\s\S]*plan_tier[\s\S]*tier,/.test(kernel))
 
   console.log("\n[wiring — both creation entrypoints converge; no pre-insert]")
+  // RE-ANCHORED (lane 77B): the two doors no longer call provisionTenantOwner
+  // themselves — they delegate to the ONE tenant-creation core
+  // (lib/kernel/tenant-creation.ts::createTenantCore), which is where the
+  // invite-first, id-pinned owner provisioning now happens ONCE. The RULE is
+  // unchanged: every creation door reaches provisionTenantOwner, through the core.
+  const core = src("lib/kernel/tenant-creation.ts")
+  check("the ONE tenant-creation core calls provisionTenantOwner", /provisionTenantOwner\(\{/.test(core))
+  check("the core NO LONGER pre-inserts a users row before inviting", !/\.from\("users"\)\s*\.insert\(/.test(core))
   const signup = src("app/actions/auth/signup-brokerage.ts")
-  check("self-serve signup calls provisionTenantOwner", /provisionTenantOwner\(\{/.test(signup))
+  check("self-serve signup delegates to createTenantCore (and does not spell its own owner provisioning)", /createTenantCore\(service, \{/.test(signup) && !/provisionTenantOwner\(\{/.test(signup))
   check("self-serve signup NO LONGER pre-inserts a users row before inviting", !/\.from\("users"\)\s*\.insert\(/.test(signup))
   const sub = src("app/actions/admin/create-subscriber.ts")
-  check("superadmin create-subscriber calls provisionTenantOwner", /provisionTenantOwner\(\{/.test(sub))
+  check("superadmin create-subscriber delegates to createTenantCore (and does not spell its own owner provisioning)", /createTenantCore\(service, \{/.test(sub) && !/provisionTenantOwner\(\{/.test(sub))
   check("create-subscriber NO LONGER pre-inserts a users row before inviting", !/\.from\("users"\)\s*\.insert\(/.test(sub))
 
   console.log("\n[the shared spec is single-sourced (no drift)]")

@@ -255,8 +255,11 @@ console.log("\n[9 · THE DEAL ROOM — under-contract clients see their deal on 
 
 console.log("\n[10 · DAY-ONE ASSISTANT — Aria exists before anyone opens settings]")
 {
-  check("signup seeds the starter identity (name + generated headshot + narration voice), never overwriting",
-    src("app/actions/auth/signup-brokerage.ts").includes("seedStarterAssistant")
+  // RE-ANCHORED (lane 77B): the seed lives in the ONE tenant-creation core
+  // (lib/kernel/tenant-creation.ts) the self-serve signup delegates to.
+  check("tenant creation seeds the starter identity (name + generated headshot + narration voice), never overwriting",
+    src("lib/kernel/tenant-creation.ts").includes("seedStarterAssistant")
+    && src("app/actions/auth/signup-brokerage.ts").includes("createTenantCore(")
     && src("lib/kernel/assistant-starter.ts").includes("profile exists — tenant identity is theirs"))
   check("the daily tenant-safety-scan backfills existing tenants (idempotent sweep)",
     src("app/api/cron/tenant-safety-scan/route.ts").includes("seedStarterAssistant"))

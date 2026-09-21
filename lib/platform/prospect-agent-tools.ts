@@ -20,6 +20,22 @@
 //   request_human_handoff    → lib/notifications/platform-staff.ts::notifyPlatformStaff
 //                              (platform_role staff — never user_type='superadmin')
 //                              + details.human_handoff on the prospect row
+//   start_subscription       → lib/platform/prospect-conversion.ts::
+//                              convertProspectToSubscriber (lane 77B) — the
+//                              prospect says YES on the call/chat and becomes a
+//                              subscriber before the conversation ends: the ONE
+//                              tenant-creation core (lib/kernel/tenant-creation.ts),
+//                              a 14-day trial, no card, sign-in link in their
+//                              inbox. Refuses (and says why) when a PERSON is
+//                              warranted — enterprise size, custom pricing, a
+//                              CRM migration — so the agent hands off instead.
+//   show_product_demo        → lib/platform/product-demo.ts (lane 77B) — the
+//                              scripted walkthrough of a capability, grounded in
+//                              the customer-care catalogue and the LIVE plan
+//                              bullets, plus the pre-rendered sample clip token
+//                              on a visual surface. Never renders, never a model
+//                              call (cost posture: docs/avatar-provider-
+//                              recommendation-2026-09.md).
 //
 // IDENTITY DISCIPLINE. Every id here is server-resolved (the caller-ID phone,
 // platform_reception_calls.prospect_id) or re-resolved through the ONE writer
@@ -46,6 +62,8 @@ export const PLATFORM_PROSPECT_TOOL_NAMES = [
   "book_demo_appointment",
   "send_signup_link",
   "request_human_handoff",
+  "start_subscription",
+  "show_product_demo",
 ] as const
 // Module-private: nothing imports the name type yet (opposite-missing census
 // class 3); export it when a real importer needs it.
@@ -59,8 +77,10 @@ export function platformExitMenuMatchesTools(): boolean {
 }
 
 export interface PlatformProspectToolContext {
-  /** Channel attribution written to platform_prospects.source on first touch. */
-  source: "phone:reception" | "web:prospect_chat"
+  /** Channel attribution written to platform_prospects.source on first touch.
+   *  'web:live_agent' (lane 77B) is the platform's own D-ID live agent on
+   *  /get-started and /demo — the same bundle, a third door. */
+  source: "phone:reception" | "web:prospect_chat" | "web:live_agent"
   /** Caller ID (voice) — server-resolved from Twilio's From, never a body value. Null on chat. */
   phone: string | null
   /** A prospect the SERVER already linked (platform_reception_calls.prospect_id). Mutated by save_prospect. */
@@ -78,6 +98,8 @@ export const PLATFORM_PROSPECT_TOOL_GUIDANCE = [
   "You have free tools for the prospect funnel: save_prospect (call it as SOON as you learn a name, email, company, size, role, tools, pain, timeline, or territory — safe to call more than once), find_demo_slots + book_demo_appointment (a live demo on a sales rep's real calendar — always find slots first, offer 2-3, then book the one they pick; the rep confirms and calendar invites go out), send_signup_link (texts or emails the online signup link), and request_human_handoff (a real person follows up).",
   "Never invent a demo time — only offer times find_demo_slots returned. If it reports no calendar is connected, offer the human handoff instead.",
   "book_demo_appointment needs their email for the calendar invite — ask for it if you don't have it yet.",
+  "When they say YES and want to start now, call start_subscription (their work email, name and business name are required; pick the plan that fits their size unless they chose one). It creates the account on the spot — a 14-day trial, no card, the sign-in link goes to their email and billing is set up inside the app. If it answers needsHuman, do NOT retry — say a person will take it from here and call request_human_handoff.",
+  "When they ask what the product does or want to SEE it, call show_product_demo with the closest topic and walk them through it in your own words, one beat at a time. If it returns a clipToken, put that token verbatim at the END of your reply so the sample plays; never claim a video is playing when there is no token.",
 ].join("\n")
 
 const WINDOWS = ["morning", "afternoon", "evening"] as const
@@ -242,6 +264,63 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
         })
         await markProspectHandoff(svc, { prospectId: prospect.id, reason: a.reason, bestTime: a.best_time, channel: ctx.source, staffNotified })
         return { success: true, staffNotified, liveTransferAvailable: ctx.hasLiveTransfer }
+      },
+    }),
+
+    // ── Lane 77B — the prospect says YES: subscriber before the conversation ends ──
+    start_subscription: tool({
+      description: "Create the prospect's account RIGHT NOW because they said yes — a 14-day trial (no card; billing is set up inside the app after sign-in). Requires their work email, name and business name. Pick the plan that fits their size unless they chose one. Answers needsHuman:true when a person must take it (enterprise size, custom pricing, CRM migration) — then hand off instead of retrying.",
+      inputSchema: z.object({
+        email: z.string().describe("Their work email — the sign-in link goes here"),
+        name: z.string().describe("Their full name"),
+        company: z.string().nullable().describe("Brokerage / team / business name, or null to use what's on file"),
+        plan: z.enum(["solo_agent", "team", "brokerage", "multi_location"]).nullable().describe("The plan they chose, or null to fit it to their size"),
+        wants_custom_pricing: z.boolean().describe("True if they asked for a discount, a custom price, or a contract"),
+      }),
+      execute: async (a: { email: string; name: string; company: string | null; plan: "solo_agent" | "team" | "brokerage" | "multi_location" | null; wants_custom_pricing: boolean }) => {
+        const prospect = await resolveProspect({ email: a.email, name: a.name, company: a.company })
+        if (!prospect) return { success: false, error: "Could not save the prospect — ask for a valid work email first." }
+        if (!prospect.email) return { success: false, error: "A valid work email is required — the sign-in link goes there." }
+        const { convertProspectToSubscriber } = await import("@/lib/platform/prospect-conversion")
+        const r = await convertProspectToSubscriber(svc, {
+          prospectId: prospect.id,
+          actor: { kind: "prospect_self", channel: ctx.source },
+          tier: a.plan, billing: { mode: "trial" },
+          email: a.email, name: a.name, company: a.company,
+          customPricingRequested: a.wants_custom_pricing,
+        })
+        if (!r.ok) {
+          if (r.needsHuman?.length) return { success: false, needsHuman: true, reasons: r.needsHuman, error: r.error }
+          return { success: false, error: r.error }
+        }
+        if (r.alreadyConverted) return { success: true, alreadyConverted: true, message: "They already have an account — tell them to check their email for the sign-in link or use request_human_handoff if they can't find it." }
+        return {
+          success: true, trial: true, plan: r.tier, trialEndsAt: r.trialEndsAt,
+          signInLinkSentTo: prospect.email, inviteSent: r.inviteSent, inviteError: r.inviteError ?? null,
+          nextStep: "Tell them the sign-in link is in their inbox, the trial is 14 days with no card, and billing is set up inside the app whenever they're ready.",
+        }
+      },
+    }),
+
+    // ── Lane 77B — the demo the live agent IS ──────────────────────────────────
+    show_product_demo: tool({
+      description: "Walk the prospect through what the product does for one topic (overview, reception_isa, live_agent, video_marketing, deals_portal, recruiting_ops), grounded in the real capability catalogue and the live plans. Returns the beats to say in your own words and, on a visual surface with a sample clip configured, a clipToken to append verbatim so the clip plays. Free — never renders anything.",
+      inputSchema: z.object({
+        topic: z.enum(["overview", "reception_isa", "live_agent", "video_marketing", "deals_portal", "recruiting_ops"]).describe("The closest topic to what they asked about"),
+      }),
+      execute: async ({ topic }: { topic: string }) => {
+        const { describeProductDemo } = await import("@/lib/platform/product-demo")
+        const { CAPABILITY_CATALOGUE } = await import("@/lib/ai-isa/capability-catalogue")
+        const { loadPublicTiers } = await import("@/lib/platform/public-tiers")
+        const tiers = await loadPublicTiers(svc).catch(() => [])
+        const featured = tiers.find((t) => t.featured) ?? tiers[0]
+        const demo = describeProductDemo(topic, {
+          brandName: ctx.brand.name,
+          tierBullets: featured?.bullets ?? [],
+          clipUrl: ctx.brand.liveAgent.demoClipUrl,
+          surfaceCanShowClip: ctx.source !== "phone:reception",
+        }, CAPABILITY_CATALOGUE)
+        return { success: true, ...demo }
       },
     }),
   }

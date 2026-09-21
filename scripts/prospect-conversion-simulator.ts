@@ -146,17 +146,26 @@ async function main() {
   check("helper: audits the moment to superadmin_audit_log as system:tenant_creation",
     /superadmin_audit_log/.test(helper) && /system:tenant_creation/.test(helper) && /platform_prospect\.converted/.test(helper))
 
+  // RE-ANCHORED (lane 77B): the stamp moved into the ONE tenant-creation core
+  // (lib/kernel/tenant-creation.ts) that BOTH doors — and the prospect →
+  // subscriber conversion — delegate to. The RULE is unchanged: a self-serve
+  // trial stamps 'trial', a provisioned active subscription stamps
+  // 'converted', both emails + the brokerage phone are matched, best-effort.
+  const core = src("lib/kernel/tenant-creation.ts")
+  check("the tenant-creation core stamps the conversion with the outcome DERIVED from the billing mode ('trial' for a trial, 'converted' for an active subscription)",
+    stampCallRe.test(core) && /outcome: input\.billing\.mode === "trial" \? "trial" : "converted"/.test(core))
+  check("the core's stamp is best-effort (inside try/catch, after the tenant is committed)",
+    /try \{[\s\S]{0,400}stampProspectConversion/.test(core))
+  check("the core matches by the admin email, the brokerage email, the brokerage phone (the reception's caller-ID key) and any prospect ids the caller holds",
+    /emails: \[adminEmail, input\.brokerageEmail, \.\.\.\(input\.prospect\?\.emails \?\? \[\]\)\]/.test(core) &&
+    /phone: input\.brokeragePhone \?\? input\.prospect\?\.phone \?\? null/.test(core) &&
+    /prospectIds: input\.prospect\?\.prospectIds \?\? \[\]/.test(core))
   const signup = src("app/actions/auth/signup-brokerage.ts")
-  check("self-serve signup stamps the conversion with outcome 'trial' (a trial, not yet paying)",
-    stampCallRe.test(signup) && /outcome: "trial"/.test(signup))
-  check("self-serve signup stamp is best-effort (inside try/catch, after the tenant is committed)",
-    /try \{[\s\S]{0,400}stampProspectConversion/.test(signup))
-
+  check("self-serve signup reaches the stamp through the core with billing mode 'trial' (a trial, not yet paying)",
+    /createTenantCore\(service, \{[\s\S]{0,800}billing: \{ mode: "trial"/.test(signup) && !stampCallRe.test(signup))
   const sub = src("app/actions/admin/create-subscriber.ts")
-  check("superadmin create-subscriber stamps with outcome 'converted' (active subscription = paying)",
-    stampCallRe.test(sub) && /outcome: "converted"/.test(sub))
-  check("create-subscriber matches by BOTH emails and the brokerage phone (the reception's caller-ID key)",
-    /emails: \[params\.adminEmail, params\.brokerageEmail\]/.test(sub) && /phone: params\.brokeragePhone/.test(sub))
+  check("superadmin create-subscriber reaches the stamp through the core with billing mode 'active' (= 'converted') and passes brokerageEmail + brokeragePhone",
+    /createTenantCore\(service, \{[\s\S]{0,800}billing: \{ mode: "active"/.test(sub) && /brokerageEmail: params\.brokerageEmail/.test(sub) && /brokeragePhone: params\.brokeragePhone/.test(sub) && !stampCallRe.test(sub))
 
   // The manual link action survives — it is the correction/override path, not a duplicate:
   // it links ANY prospect to ANY tenant after the fact (billing-gated), which the

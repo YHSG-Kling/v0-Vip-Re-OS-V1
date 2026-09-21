@@ -48,6 +48,24 @@
  * folded into the system prompt on every turn (compliance-first, not a
  * post-hoc scan — §5's own ruling for compliance applies equally to realism).
  *
+ * PLATFORM DEPLOYMENT (lane 77B, owner: "the platform should also offer the
+ * same ai agents like the live agent using d-id because the platform can use
+ * those ai agents as a demo'd product"). A THIRD marker,
+ *   `[[CTX:platformLiveSessionId=<uuid>]]` — the platform's own live-agent
+ *                                            metering row (live_agent_sessions,
+ *                                            minted by /api/platform/live-agent/
+ *                                            session under the platform-owned
+ *                                            showcase tenant)
+ * routes the turn to handlePlatformTurn: the SAME brain the platform phone
+ * line and the website prospect chat already run — buildPlatformReceptionPrompt
+ * (channel "live") + platformReceptionTools (the prospect funnel bundle:
+ * save / demo slots / book demo / signup link / human / start_subscription /
+ * show_product_demo) + the platform playbook branch — on the platform's OWN
+ * brand (loadBrandPlaybookContext({brokerageId: null})), never a tenant's.
+ * No contact, no embed session, no tenant brand voice, no property tools;
+ * brokerageId is null on the model call exactly as the prospect chat books
+ * it. A marker that does not resolve to an ACTIVE platform row is refused.
+ *
  * Response: OpenAI-format SSE stream piped straight back to D-ID.
  */
 
@@ -64,6 +82,9 @@ import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { buildCustomerFreeTools } from "@/lib/ai-isa/customer-context-tools"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
 import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
+import { PLATFORM_LIVE_CTX_RE, resolvePlatformLiveSession } from "@/lib/did/platform-live-agent"
+import { resolvePlatformReceptionContext, buildPlatformReceptionPrompt, platformReceptionTools } from "@/lib/voice/platform-reception"
+import { PLATFORM_PROSPECT_TOOL_GUIDANCE } from "@/lib/platform/prospect-agent-tools"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -98,9 +119,10 @@ function checkAuth(request: NextRequest): boolean {
 const CONTACT_CTX_RE = /\[\[CTX:contactId=([0-9a-f-]{36})\]\]\s*/gi
 const EMBED_CTX_RE = /\[\[CTX:embedSessionId=([0-9a-f-]{36})\]\]\s*/gi
 
-function extractMarkers(messages: any[]): { contactId: string | null; embedSessionId: string | null; cleaned: any[] } {
+function extractMarkers(messages: any[]): { contactId: string | null; embedSessionId: string | null; platformLiveSessionId: string | null; cleaned: any[] } {
   let contactId: string | null = null
   let embedSessionId: string | null = null
+  let platformLiveSessionId: string | null = null
   const cleaned = messages.map((m) => {
     if (typeof m?.content !== "string") return m
     let content = m.content
@@ -110,10 +132,59 @@ function extractMarkers(messages: any[]): { contactId: string | null; embedSessi
     const eMatch = EMBED_CTX_RE.exec(content)
     EMBED_CTX_RE.lastIndex = 0
     if (eMatch) embedSessionId = embedSessionId ?? eMatch[1]
-    content = content.replace(CONTACT_CTX_RE, "").replace(EMBED_CTX_RE, "").trim() || "(continue)"
+    const pMatch = PLATFORM_LIVE_CTX_RE.exec(content)
+    PLATFORM_LIVE_CTX_RE.lastIndex = 0
+    if (pMatch) platformLiveSessionId = platformLiveSessionId ?? pMatch[1]
+    content = content.replace(CONTACT_CTX_RE, "").replace(EMBED_CTX_RE, "").replace(PLATFORM_LIVE_CTX_RE, "").trim() || "(continue)"
     return { ...m, content }
   })
-  return { contactId, embedSessionId, cleaned }
+  return { contactId, embedSessionId, platformLiveSessionId, cleaned }
+}
+
+// ─── OpenAI-format SSE wrap — ONE writer for both deployments ─────────────────
+
+function streamAsOpenAiSse(result: Awaited<ReturnType<typeof streamTextRouted>>, modelLabel: string): Response {
+  const encoder = new TextEncoder()
+  const chunkId = `chatcmpl-${Date.now().toString(36)}`
+  const created = Math.floor(Date.now() / 1000)
+  const out = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const delta of result.textStream) {
+          const chunk = {
+            id: chunkId,
+            object: "chat.completion.chunk",
+            created,
+            model: modelLabel,
+            choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+          }
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+        }
+        const finalChunk = {
+          id: chunkId,
+          object: "chat.completion.chunk",
+          created,
+          model: modelLabel,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        }
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`))
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+      } catch (e) {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ error: String(e) })}\n\n`),
+        )
+      } finally {
+        controller.close()
+      }
+    },
+  })
+  return new Response(out, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  })
 }
 
 // ─── Escalation ─────────────────────────────────────────────────────────────
@@ -369,7 +440,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "messages required" }, { status: 400 })
   }
 
-  const { contactId: markerContactId, embedSessionId, cleaned } = extractMarkers(body.messages)
+  const { contactId: markerContactId, embedSessionId, platformLiveSessionId, cleaned } = extractMarkers(body.messages)
+
+  // PLATFORM deployment (lane 77B) — its own marker, and ONLY its own: a
+  // payload that mixes a platform marker with a tenant marker is refused
+  // rather than guessed at.
+  if (platformLiveSessionId) {
+    if (markerContactId || embedSessionId) {
+      return NextResponse.json({ error: "conflicting context markers" }, { status: 400 })
+    }
+    return handlePlatformTurn({ liveSessionId: platformLiveSessionId, cleaned, modelLabel: body.model })
+  }
 
   // FAIL CLOSED (#187): a turn carrying NEITHER marker is refused, never
   // served uncapped. D-ID sends no metadata of its own — a CTX marker our
@@ -515,48 +596,72 @@ export async function POST(request: NextRequest) {
   }
 
   // ── Wrap AI SDK text deltas in OpenAI chat-completion SSE format ────────
-  const encoder = new TextEncoder()
-  const chunkId = `chatcmpl-${Date.now().toString(36)}`
-  const created = Math.floor(Date.now() / 1000)
-  const modelLabel = body.model ?? routedModel
+  return streamAsOpenAiSse(result, body.model ?? routedModel)
+}
 
-  const out = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const delta of result.textStream) {
-          const chunk = {
-            id: chunkId,
-            object: "chat.completion.chunk",
-            created,
-            model: modelLabel,
-            choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-          }
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
-        }
-        const finalChunk = {
-          id: chunkId,
-          object: "chat.completion.chunk",
-          created,
-          model: modelLabel,
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-        }
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`))
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
-      } catch (e) {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ error: String(e) })}\n\n`),
-        )
-      } finally {
-        controller.close()
-      }
-    },
+// ─── PLATFORM deployment (lane 77B) ─────────────────────────────────────────
+// Declared AFTER the tenant handler on purpose: scripts/stream-routing-
+// simulator.ts anchors the tenant deployment's fail-closed gates on the FIRST
+// streamTextRouted( call in this file, and the platform branch has its own
+// gate (an unresolvable platform session is refused 403 before its stream —
+// scripts/platform-live-agent-guard.ts). Function declarations hoist; the
+// derived constant below is only read at call time.
+
+/** The spoken-delivery rules, DERIVED from the one realism directive
+ *  (lib/video/realism-profile.ts) minus its rule 3 — "never refer to yourself
+ *  as an AI" — because the platform agent is the AI product being demoed and
+ *  the platform prompt requires it to say so when asked. Never a second
+ *  restatement of the delivery rules (CLAUDE.md §6). */
+const PLATFORM_SPOKEN_DELIVERY = SPOKEN_REALISM_DIRECTIVE
+  .split("\n")
+  .filter((line) => !/^3\./.test(line))
+  .join("\n")
+
+async function handlePlatformTurn(params: { liveSessionId: string; cleaned: any[]; modelLabel: string | undefined }): Promise<Response> {
+  const supabase = createServiceClient()
+  // FAIL CLOSED — an ACTIVE platform metering row, under the platform's own
+  // brokerage; a tenant's embed row or an ended session never resolves here.
+  const session = await resolvePlatformLiveSession(supabase, params.liveSessionId)
+  if (!session) return NextResponse.json({ error: "unresolvable platform session" }, { status: 403 })
+
+  const ctx = await resolvePlatformReceptionContext(supabase, { requireTwilio: false })
+  if (!ctx) return NextResponse.json({ error: "platform assistant unavailable" }, { status: 503 })
+
+  const { systemPrompt } = buildPlatformReceptionPrompt({
+    brandName: ctx.brandName, tagline: ctx.tagline, tierLines: ctx.tierLines, hasTransfer: false,
+    voicePitch: ctx.voicePitch, receptionGreeting: ctx.receptionGreeting, brand: ctx.brand, channel: "live",
+  })
+  // THE ONE prospect tool bundle — FAQ lookup + save / demo slots / book demo /
+  // signup link / human / start_subscription / show_product_demo. Identity is
+  // whatever email the prospect gives, resolved through the ONE writer; no
+  // phone (no caller ID on a web session), no prospect id from the payload.
+  const tools = await platformReceptionTools({
+    source: "web:live_agent", phone: null, prospectId: null, callId: null,
+    brand: ctx.productBrand, hasLiveTransfer: false,
   })
 
-  return new Response(out, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-    },
-  })
+  const { model: routedModel } = selectModelForTask("live_avatar_conversation")
+  let result: Awaited<ReturnType<typeof streamTextRouted>>
+  try {
+    result = await streamTextRouted({
+      feature: "live_avatar_conversation",
+      system: `${systemPrompt}\n\n${PLATFORM_PROSPECT_TOOL_GUIDANCE}\n\n${PLATFORM_SPOKEN_DELIVERY}\n(The honesty rule above wins over any line here: you ARE an AI and say so when asked.)`,
+      messages: params.cleaned
+        .filter((m) => m.role !== "system")
+        .map((m) => ({ role: m.role, content: String(m.content ?? "") })),
+      temperature: 0.6,
+      tools,
+      maxSteps: 5,
+      // No tenant: uncapped platform traffic booked under the data_steward
+      // manager on ai_tool_usage — the SAME posture the prospect chat takes.
+      userId: null,
+      brokerageId: null,
+      agentId: null,
+      manager: "data_steward",
+    })
+  } catch (err) {
+    if (err instanceof AIFairUseError) return NextResponse.json({ error: err.message }, { status: 429 })
+    throw err
+  }
+  return streamAsOpenAiSse(result, params.modelLabel ?? routedModel)
 }

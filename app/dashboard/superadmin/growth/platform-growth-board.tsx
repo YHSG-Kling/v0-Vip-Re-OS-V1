@@ -5,10 +5,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Loader2, Sparkles, FileText, Copy, CalendarCheck } from 'lucide-react'
+import { Loader2, Sparkles, FileText, Copy, CalendarCheck, UserPlus } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
-import { advanceProspectAction, confirmProspectDemoAction, draftProspectOutreachAction, generateProspectProposalAction, listPlatformProspectsAction } from '@/app/actions/superadmin/platform-growth'
+import { advanceProspectAction, confirmProspectDemoAction, convertProspectToSubscriberAction, draftProspectOutreachAction, generateProspectProposalAction, listPlatformProspectsAction } from '@/app/actions/superadmin/platform-growth'
 import { PROPOSAL_SECTIONS, PROSPECT_STATUSES, describeProspectNextTouch, proposalPricingLine, proposalToClipboardText, type ProspectProposal } from '@/lib/platform/growth-funnel'
+
+// Lane 77B — the plans a staffer can convert a prospect onto (the SAME
+// canonical tier vocabulary brokerages.plan_tier carries); 'fit' lets
+// lib/platform/prospect-conversion.ts pick the band from their seat count.
+const CONVERT_TIERS = ['fit', 'solo_agent', 'team', 'brokerage', 'multi_location'] as const
+interface ConvertForm { tier: (typeof CONVERT_TIERS)[number]; mode: 'trial' | 'active'; cycle: 'monthly' | 'annual'; customPricing: boolean }
 
 // ONE status list — the funnel vocabulary (lane 76B: 'demo_scheduled', m654).
 const STATUSES: readonly string[] = PROSPECT_STATUSES
@@ -22,7 +28,7 @@ interface Prospect {
   // email — l32-s01 made the column nullable); phone is the reachable channel then.
   id: string; name: string | null; email: string | null; phone?: string | null; company: string | null; role_interest: string; source: string; status: string
   followup_count?: number | null; last_followup_at?: string | null; created_at?: string | null
-  details?: { proposal?: ProspectProposal; qualification?: Record<string, unknown> } & Record<string, unknown> | null
+  details?: { proposal?: ProspectProposal; qualification?: Record<string, unknown>; conversion?: { brokerage_id: string; billing_mode: string; tier: string; human_reasons: string[]; converted_at: string } } & Record<string, unknown> | null
 }
 interface Funnel { total: number; byStatus: Record<string, number>; conversionRate: number; activationRate: number }
 
@@ -31,8 +37,33 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
   const [funnel, setFunnel] = useState<Funnel>(initialFunnel)
   const [draft, setDraft] = useState<{ subject: string; body: string } | null>(null)
   const [proposalView, setProposalView] = useState<{ prospect: Prospect; proposal: ProspectProposal } | null>(null)
+  const [convertView, setConvertView] = useState<{ prospect: Prospect; form: ConvertForm } | null>(null)
   const [pending, startTransition] = useTransition()
   const { toast } = useToast()
+
+  // Lane 77B — convert a prospect into a tenant through the ONE tenant-creation
+  // core; the action derives the facts from the prospect row and returns the
+  // new brokerage id. Honest toast: invite sent or not, and whether a person
+  // was pulled in (enterprise / custom pricing / CRM migration).
+  function convert() {
+    if (!convertView) return
+    const { prospect, form } = convertView
+    startTransition(async () => {
+      const r = await convertProspectToSubscriberAction({
+        prospectId: prospect.id,
+        tier: form.tier === 'fit' ? null : form.tier,
+        billing: form.mode === 'active' ? { mode: 'active', billingCycle: form.cycle } : { mode: 'trial' },
+        customPricingRequested: form.customPricing,
+      })
+      if (!r.ok) { toast({ title: 'Could not convert', description: r.error, variant: 'destructive' }); return }
+      if (r.alreadyConverted) toast({ title: 'Already a subscriber', description: `This prospect is linked to tenant ${r.brokerageId}.` })
+      else toast({
+        title: `Converted — ${(r.tier ?? '').replace(/_/g, ' ')} ${form.mode === 'trial' ? 'trial' : 'subscription'}`,
+        description: `Sign-in link ${r.inviteSent ? 'sent' : `NOT sent${r.inviteError ? ` (${r.inviteError})` : ''}`}.${(r.humanReasons?.length ?? 0) > 0 ? ` White-glove task raised (${r.humanReasons!.join(', ')}) — ${r.staffNotified} staff notified.` : ' Fully autonomous — no human task needed.'}${r.demoDisposition === 'hold_released' ? ' Pending demo hold released.' : r.demoDisposition === 'kept_as_onboarding' ? ' Confirmed demo kept as the onboarding session.' : ''}`,
+      })
+      setConvertView(null); reload()
+    })
+  }
 
   function reload() { listPlatformProspectsAction().then((r) => { if (r.ok) { setProspects(r.prospects as Prospect[]); setFunnel(r.funnel as Funnel) } }) }
   function advance(id: string, status: string) {
@@ -137,6 +168,51 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
         </DialogContent>
       </Dialog>
 
+      {/* Lane 77B — Convert to subscriber: plan + trial/active, then the ONE tenant-creation core */}
+      <Dialog open={!!convertView} onOpenChange={(o) => { if (!o) setConvertView(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><UserPlus className="h-4 w-4 text-primary" />Convert to subscriber — {convertView?.prospect.name || convertView?.prospect.email}</DialogTitle>
+          </DialogHeader>
+          {convertView && (
+            <div className="space-y-3 text-sm">
+              <p className="text-xs text-muted-foreground">
+                Creates the tenant from what the assistant already learned ({convertView.prospect.company || 'company on file'}{qualLine(convertView.prospect) ? ` · ${qualLine(convertView.prospect)}` : ''}), invites {convertView.prospect.email ?? 'their email'} as the owner, stamps this prospect, releases a pending demo hold and kicks off onboarding. A person is pulled in only for enterprise size, custom pricing or a CRM migration.
+              </p>
+              {!convertView.prospect.email && <p className="text-xs text-red-600">This prospect has no email on file — the sign-in link has nowhere to go. Add one first (phone-only capture).</p>}
+              <label className="block text-xs">Plan
+                <select className="mt-1 w-full rounded border p-1 text-xs" value={convertView.form.tier} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, tier: e.target.value as ConvertForm['tier'] } })}>
+                  {CONVERT_TIERS.map((t) => <option key={t} value={t}>{t === 'fit' ? 'Fit to their size (recommended)' : t.replace(/_/g, ' ')}</option>)}
+                </select>
+              </label>
+              <label className="block text-xs">Billing
+                <select className="mt-1 w-full rounded border p-1 text-xs" value={convertView.form.mode} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, mode: e.target.value as ConvertForm['mode'] } })}>
+                  <option value="trial">14-day trial — no card, they add billing in-app</option>
+                  <option value="active">Active subscription — card collected at their first in-app checkout</option>
+                </select>
+              </label>
+              {convertView.form.mode === 'active' && (
+                <label className="block text-xs">Cycle
+                  <select className="mt-1 w-full rounded border p-1 text-xs" value={convertView.form.cycle} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, cycle: e.target.value as ConvertForm['cycle'] } })}>
+                    <option value="monthly">monthly</option><option value="annual">annual</option>
+                  </select>
+                </label>
+              )}
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={convertView.form.customPricing} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, customPricing: e.target.checked } })} />
+                They asked for custom pricing / a contract (raises the white-glove task)
+              </label>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="outline" onClick={() => setConvertView(null)}>Cancel</Button>
+                <Button size="sm" disabled={pending || !convertView.prospect.email} onClick={convert}>
+                  {pending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5 mr-1.5" />}Convert
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">Prospects ({prospects.length})</CardTitle></CardHeader>
         <CardContent className="p-0 overflow-x-auto">
@@ -157,6 +233,9 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
                   <td className="px-4 py-2 text-xs">
                     <span className={next.handoffOpen ? 'text-amber-700' : ''}>{next.label}</span>
                     {next.at && <span className="block text-muted-foreground">{new Date(next.at).toLocaleString()}</span>}
+                    {p.details?.conversion && (
+                      <span className="block text-emerald-700">Subscriber since {new Date(p.details.conversion.converted_at).toLocaleDateString()} · {p.details.conversion.tier.replace(/_/g, ' ')} {p.details.conversion.billing_mode}{p.details.conversion.human_reasons.length > 0 ? ' · white-glove' : ''}</span>
+                    )}
                     {next.demoState === 'pending_rep_confirmation' && (
                       <Button size="sm" variant="outline" className="mt-1 h-7 text-[11px]" disabled={pending} onClick={() => confirmDemo(p.id)}>
                         <CalendarCheck className="h-3 w-3 mr-1" />Confirm demo
@@ -175,6 +254,12 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
                         title={p.details?.proposal ? 'View proposal' : 'Generate proposal'}>
                         {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className={'h-3.5 w-3.5 ' + (p.details?.proposal ? 'text-primary' : '')} />}
                       </Button>
+                      {!p.details?.conversion && p.status !== 'converted' && p.status !== 'lost' && (
+                        <Button size="sm" variant="ghost" disabled={pending} title="Convert to subscriber"
+                          onClick={() => setConvertView({ prospect: p, form: { tier: 'fit', mode: 'trial', cycle: 'monthly', customPricing: false } })}>
+                          <UserPlus className="h-3.5 w-3.5 text-emerald-700" />
+                        </Button>
+                      )}
                     </div>
                   </td>
                 </tr>

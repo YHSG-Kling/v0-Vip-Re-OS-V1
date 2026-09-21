@@ -2,8 +2,10 @@ import Link from "next/link"
 import type { Metadata } from "next"
 import { DemoRequestForm } from "./demo-request-form"
 import { ProspectChat } from "@/app/get-started/prospect-chat"
+import { PlatformLiveAgent } from "@/app/get-started/platform-live-agent"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadProductBrand } from "@/lib/platform/product-brand"
+import { resolvePlatformLiveAgentBrokerageId } from "@/lib/did/platform-live-agent"
 
 export const dynamic = "force-dynamic"
 
@@ -20,7 +22,12 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function DemoPage() {
-  const brand = await loadProductBrand(createServiceClient())
+  const svc = createServiceClient()
+  const [brand, platformBrokerageId] = await Promise.all([
+    loadProductBrand(svc),
+    resolvePlatformLiveAgentBrokerageId(svc).catch(() => null),
+  ])
+  const liveAgentAvailable = !!brand.liveAgent.presenterId && !!platformBrokerageId
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
       <div className="max-w-2xl mx-auto px-6 py-14">
@@ -38,6 +45,9 @@ export default async function DemoPage() {
           </p>
         </div>
         <DemoRequestForm />
+        {/* Lane 77B — or meet the live agent itself: the same D-ID live agent
+            every subscriber gets, demoing the product (one widget, deployment="platform"). */}
+        <div className="mt-8"><PlatformLiveAgent brandName={brand.name} agentName={brand.liveAgent.name} greeting={brand.liveAgent.greeting} available={liveAgentAvailable} primaryColor={brand.primaryColor} /></div>
         {/* Lane 76B — or book it live in conversation: the assistant finds real
             times on a sales rep's calendar (a rep confirms, invites go out). */}
         <div className="mt-8"><ProspectChat brandName={brand.name} /></div>

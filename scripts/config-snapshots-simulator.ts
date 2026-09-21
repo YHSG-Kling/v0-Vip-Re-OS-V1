@@ -89,7 +89,10 @@ function creationPathLayer() {
   // new creation path that forgets its snapshot goes red the day it lands.
   const insertRe = /from\("brokerages"\)\s*\.\s*insert/
   const snapshotRe = /applySnapshotPayload|snapshotForTier/
-  const delegateRe = /createSubscriber\(/
+  // Lane 77B: the ONE tenant-creation core (lib/kernel/tenant-creation.ts)
+  // is the survivor every door delegates to; createSubscriber itself now
+  // delegates there as well.
+  const delegateRe = /createSubscriber\(|createTenantCore\(/
 
   // POSITIVE CONTROLS — a broken finder and a compliant tree both report zero.
   check("control: the insert finder sees the multiline .from(\"brokerages\")\\n.insert idiom",
@@ -109,8 +112,10 @@ function creationPathLayer() {
   }
   console.log(`    denominator: ${rootsToScan.length} .ts/.tsx files under app/ + lib/ (node_modules/.next excluded by the walker)`)
   console.log(`    creation paths found: ${creationPaths.length} — ${creationPaths.join(" · ") || "none"}`)
+  // RE-ANCHORED (lane 77B): the two actions no longer insert brokerages —
+  // the ONE core does; the self-heal (ensure-agent-brokerage) still does.
   check("the census finds the known creation paths (the finder is not blind)",
-    creationPaths.some((p) => p.includes("signup-brokerage")) && creationPaths.some((p) => p.includes("create-subscriber")))
+    creationPaths.some((p) => p.includes("lib/kernel/tenant-creation")) && creationPaths.some((p) => p.includes("ensure-agent-brokerage")))
 
   const unsnapshotted = creationPaths.filter((rel) => {
     const stripped = stripComments(readFileSync(join(process.cwd(), rel), "utf8"))
@@ -119,21 +124,26 @@ function creationPathLayer() {
   check(`every derived creation path snapshots at creation or delegates to one that does (unsnapshotted: ${unsnapshotted.length}${unsnapshotted.length ? " → " + unsnapshotted.join(", ") : ""})`,
     unsnapshotted.length === 0)
 
-  // The three direct-insert paths, asserted individually so a regression names its file:
+  // The direct-insert paths, asserted individually so a regression names its file.
+  // RE-ANCHORED (lane 77B): the ONE tenant-creation core carries the snapshot
+  // logic both doors used to spell; each door threads its own choice through.
+  const core = code("lib/kernel/tenant-creation.ts")
+  check("the tenant-creation core resolves the snapshot SERVER-SIDE from the tier (snapshotForTier) unless a staff-picked id is given, applies it through applySnapshotPayload, and reports the outcome",
+    /snapshotForTier\(input\.tier/.test(core) && /applySnapshotPayload\(/.test(core) && /input\.snapshotId/.test(core) && /snapshotError/.test(core))
   const signup = code("app/actions/auth/signup-brokerage.ts")
-  check("self-serve signup resolves the snapshot SERVER-SIDE from the tier (snapshotForTier — never the request's snapshotId)",
-    /snapshotForTier\(input\.tier/.test(signup) && /applySnapshotPayload\(/.test(signup))
+  check("self-serve signup delegates to the core and never passes the request's snapshotId in (the tier decides)",
+    /createTenantCore\(/.test(signup) && !/snapshotId: input\.snapshotId/.test(signup))
   const sub = code("app/actions/admin/create-subscriber.ts")
-  check("createSubscriber applies the staff-picked snapshot OR the tier default, best-effort, and reports the outcome",
-    /params\.snapshotId/.test(sub) && /snapshotForTier\(params\.tierName/.test(sub) && /applySnapshotPayload\(/.test(sub) && /snapshotError/.test(sub))
+  check("createSubscriber delegates to the core with the staff-picked snapshot (params.snapshotId) and reports the outcome",
+    /createTenantCore\(/.test(sub) && /snapshotId: params\.snapshotId/.test(sub) && /snapshotError/.test(sub))
   const heal = code("app/actions/onboarding/ensure-agent-brokerage.ts")
   check("the brokerage-of-one self-heal applies the solo_agent funnel snapshot, best-effort",
     /snapshotForTier\("solo_agent"/.test(heal) && /applySnapshotPayload\(/.test(heal))
 
-  // MUTATION CONTROL: strip the snapshot calls out of a real path's source and
+  // MUTATION CONTROL: strip the snapshot calls out of the core's source and
   // the detector must flag it — proof the assertion can actually fail.
-  const mutated = sub.replace(/applySnapshotPayload/g, "").replace(/snapshotForTier/g, "").replace(/createSubscriber\(/g, "renamed(")
-  check("mutation control: create-subscriber with its snapshot calls removed WOULD be flagged",
+  const mutated = core.replace(/applySnapshotPayload/g, "").replace(/snapshotForTier/g, "").replace(/createTenantCore\(/g, "renamed(")
+  check("mutation control: the core with its snapshot calls removed WOULD be flagged",
     insertRe.test(mutated) && !snapshotRe.test(mutated) && !delegateRe.test(mutated))
 }
 

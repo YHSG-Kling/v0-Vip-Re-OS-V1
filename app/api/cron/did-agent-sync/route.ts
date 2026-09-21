@@ -123,10 +123,32 @@ export async function GET(request: Request) {
       refusals.push({ id: row.agent_id, error: result.error ?? "unknown" })
     }
 
+    // ── The PLATFORM's own live agent (lane 77B) ─────────────────────────────
+    // Same PATCH, deployment "platform", cached on the brand kit
+    // (platform_settings.product_brand.liveAgent.didAgentId) — never a tenant
+    // row. A 404 clears the cache the same way, through the same cache seam.
+    let platformSynced = 0
+    {
+      const { loadPlatformLiveAgentConfig, platformDidAgentCache } = await import("@/lib/did/platform-live-agent")
+      const agent = await loadPlatformLiveAgentConfig(svc)
+      if (agent?.didAgentId && agent.presenterId) {
+        const result = await syncDIDAgent({
+          didAgentId: agent.didAgentId, presenterId: agent.presenterId,
+          elevenLabsVoiceId: agent.voiceId, personality: agent.personality,
+          agentName: agent.name, deployment: "platform",
+        })
+        if (result.ok) { synced++; platformSynced++ }
+        else if (result.error === "NOT_FOUND") { notFoundCleared++; await platformDidAgentCache(svc).write("").catch(() => {}) }
+        else { failed++; refusals.push({ id: "platform", error: result.error ?? "unknown" }) }
+      } else {
+        skipped++
+      }
+    }
+
     const payload = {
-      scanned: (twins?.length ?? 0) + (profiles?.length ?? 0),
+      scanned: (twins?.length ?? 0) + (profiles?.length ?? 0) + 1,
       batch_cap: BATCH,
-      synced, failed, notFoundCleared, skipped,
+      synced, failed, notFoundCleared, skipped, platformSynced,
       refusals: refusals.slice(0, 20),
     }
     await recordCronSuccessAction({

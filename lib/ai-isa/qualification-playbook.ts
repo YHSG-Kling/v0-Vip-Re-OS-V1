@@ -389,11 +389,13 @@ export const PLATFORM_QUALIFICATION_GOALS: readonly QualificationGoal[] = [
   { key: "territory", label: "Territory", detail: "the markets / metro areas they work" },
 ] as const
 
-/** THE THREE EXITS every platform surface offers once a prospect is engaged —
- *  a live demo on a rep's calendar, the online signup link, or a human. */
+/** THE EXITS every platform surface offers once a prospect is engaged — a
+ *  live demo on a rep's calendar, the online signup link, a human, or (lane
+ *  77B) the subscription started right there when they say yes. */
 export const PLATFORM_EXIT_MENU: readonly FollowUpOption[] = [
   { tool: "book_demo_appointment", label: "Book a live demo", when: "they want to see it working — call find_demo_slots first, offer 2-3 real times, then book the one they pick (a rep confirms it and calendar invites go out)" },
-  { tool: "send_signup_link", label: "Send the online signup link", when: "they'd rather start the free trial themselves — text or email them the signup link" },
+  { tool: "send_signup_link", label: "Send the online signup link", when: "they'd rather start the free trial themselves later — text or email them the signup link" },
+  { tool: "start_subscription", label: "Start their subscription now", when: "they say YES and want to start right now — confirm their work email, name and business name, fit the plan to their size unless they chose one, and create the account on the spot (a 14-day trial, no card; the sign-in link goes to their email). If the tool says a person is needed — enterprise size, custom pricing, a CRM migration — hand off instead" },
   { tool: "request_human_handoff", label: "Hand off to a person", when: "they want to talk pricing, contracts, migration, or anything you can't answer — a real person follows up (on a call, offer the live transfer first when one is available)" },
 ] as const
 
@@ -404,7 +406,7 @@ function platformGoalsBlock(): string {
 }
 
 function platformExitMenuBlock(): string {
-  const lines = ["THREE EXITS — once you understand what they want, offer the ONE that fits (never all three, never forced):"]
+  const lines = ["THE EXITS — once you understand what they want, offer the ONE that fits (never several at once, never forced):"]
   for (const f of PLATFORM_EXIT_MENU) lines.push(`- ${f.label} (${f.tool}): ${f.when}`)
   return lines.join("\n")
 }
