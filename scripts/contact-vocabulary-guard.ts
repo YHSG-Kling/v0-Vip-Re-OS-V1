@@ -400,18 +400,24 @@ check("isCanonicalTier accepts all four and refuses anything else",
   TIER_ORDER.every(isCanonicalTier)
   && !isCanonicalTier("free") && !isCanonicalTier("enterprise") && !isCanonicalTier(null))
 
-// OWNER: solo_agent 2 · team 5 · brokerage 50 · multi_location unlimited.
+// OWNER (wave 78A, 2026-09-22): solo_agent 2 · team 5 · brokerage unlimited · multi_location unlimited.
 const SEAT_LADDER: Record<string, number | null> = {
-  solo_agent: 2, team: 5, brokerage: 50, multi_location: null,
+  solo_agent: 2, team: 5, brokerage: null, multi_location: null,
 }
-check("the seat ladder is 2 / 5 / 50 / unlimited, exactly",
+check("the seat ladder is 2 / 5 / unlimited / unlimited, exactly",
   TIER_ORDER.every((t) => TIER_SEAT_LIMITS[t] === SEAT_LADDER[t]),
   TIER_ORDER.filter((t) => TIER_SEAT_LIMITS[t] !== SEAT_LADDER[t]).map((t) => `${t}=${TIER_SEAT_LIMITS[t]}`).join(",") || "—")
-check("the seat cap is STRICTLY ascending, and only the top tier is unlimited",
-  TIER_ORDER.slice(0, -1).every((t, i) => {
-    const a = TIER_SEAT_LIMITS[t], b = TIER_SEAT_LIMITS[TIER_ORDER[i + 1]]
-    return a !== null && (b === null || b > a)
-  }) && TIER_SEAT_LIMITS[TIER_ORDER[TIER_ORDER.length - 1]] === null)
+check("the capped tiers ascend strictly, and once a tier is unlimited every tier above it is too",
+  (() => {
+    let prev = 0, unlimited = false
+    for (const t of TIER_ORDER) {
+      const v = TIER_SEAT_LIMITS[t]
+      if (v === null) { unlimited = true; continue }
+      if (unlimited || v <= prev) return false
+      prev = v
+    }
+    return unlimited
+  })())
 check("ALL FOUR tiers are PAYING — there is no free tier in the vocabulary",
   !TIER_ORDER.some((t) => /free|trial|starter_free/i.test(t))
   && TIER_ORDER.every((t) => (TIER_LABELS[t] ?? "").trim().length > 0),

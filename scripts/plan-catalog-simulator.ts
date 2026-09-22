@@ -21,7 +21,7 @@
  *
  * Run: npx tsx scripts/plan-catalog-simulator.ts   (npm run test:plan-catalog)
  */
-import { validatePlanTierInput, CANONICAL_TIERS } from "../lib/billing/plan-catalog"
+import { validatePlanTierInput, CANONICAL_TIERS, TIER_SEAT_BANDS, tierForSeatCount } from "../lib/billing/plan-catalog"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
@@ -56,6 +56,17 @@ async function main() {
   check("empty display_name → error", !validatePlanTierInput({ tierName: "team", displayName: "", monthlyPriceCents: 1 }).ok)
   check("negative price → error", !validatePlanTierInput({ tierName: "team", displayName: "X", monthlyPriceCents: -5 }).ok)
   check("CANONICAL_TIERS is the 4 plan keys", CANONICAL_TIERS.length === 4 && CANONICAL_TIERS.includes("solo_agent"))
+  // Wave 78A — the catalogue module is also the ONE home of the seat bands.
+  check("TIER_SEAT_BANDS lives here: solo_agent 2 · team 5 · brokerage unlimited · multi_location unlimited",
+    TIER_SEAT_BANDS.solo_agent === 2 && TIER_SEAT_BANDS.team === 5 && TIER_SEAT_BANDS.brokerage === null && TIER_SEAT_BANDS.multi_location === null)
+  check("tierForSeatCount fits by the bands and never reaches multi_location by count",
+    tierForSeatCount(2) === "solo_agent" && tierForSeatCount(3) === "team" && tierForSeatCount(6) === "brokerage" && tierForSeatCount(9999) === "brokerage")
+  check("POSITIVE CONTROL — a seat count one past a band moves the tier", tierForSeatCount(5) === "team" && tierForSeatCount(6) !== "team")
+  check("a tier's maxAgents may be blank (unlimited) or a non-negative integer — the validator keeps both", (() => {
+    const a = validatePlanTierInput({ tierName: "brokerage", displayName: "B", monthlyPriceCents: 1, maxAgents: null })
+    const b = validatePlanTierInput({ tierName: "team", displayName: "T", monthlyPriceCents: 1, maxAgents: 5 })
+    return a.ok && a.value.maxAgents === null && b.ok && b.value.maxAgents === 5
+  })())
 
   console.log("\n[Layer 2 · CRUD wiring + DB-driven signup]")
   const actionSrc = readFileSync(join(process.cwd(), "app/actions/superadmin/plan-catalog.ts"), "utf8")

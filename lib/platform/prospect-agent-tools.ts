@@ -98,7 +98,7 @@ export const PLATFORM_PROSPECT_TOOL_GUIDANCE = [
   "You have free tools for the prospect funnel: save_prospect (call it as SOON as you learn a name, email, company, size, role, tools, pain, timeline, or territory — safe to call more than once), find_demo_slots + book_demo_appointment (a live demo on a sales rep's real calendar — always find slots first, offer 2-3, then book the one they pick; the rep confirms and calendar invites go out), send_signup_link (texts or emails the online signup link), and request_human_handoff (a real person follows up).",
   "Never invent a demo time — only offer times find_demo_slots returned. If it reports no calendar is connected, offer the human handoff instead.",
   "book_demo_appointment needs their email for the calendar invite — ask for it if you don't have it yet.",
-  "When they say YES and want to start now, call start_subscription (their work email, name and business name are required; pick the plan that fits their size unless they chose one). It creates the account on the spot — a 14-day trial, no card, the sign-in link goes to their email and billing is set up inside the app. If it answers needsHuman, do NOT retry — say a person will take it from here and call request_human_handoff.",
+  "When they say YES and want to start now, call start_subscription (their work email, name and business name are required; pick the plan that fits their size unless they chose one). Ask which way they want to start and pass it as activation: 'trial' (14 days free, no card, billing set up inside the app later) or 'paid' (activate now — they complete a secure checkout for the plan plus the plan's one-time setup fee, emailed to them; access opens when it clears). Quote the setup fee only as the plan pricing lists it — never invent an amount, never offer to waive it. Either way the account is created on the spot and the sign-in link goes to their email. If it answers needsHuman, do NOT retry — say a person will take it from here and call request_human_handoff.",
   "When they ask what the product does or want to SEE it, call show_product_demo with the closest topic and walk them through it in your own words, one beat at a time. If it returns a clipToken, put that token verbatim at the END of your reply so the sample plays; never claim a video is playing when there is no token.",
 ].join("\n")
 
@@ -269,23 +269,30 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
 
     // ── Lane 77B — the prospect says YES: subscriber before the conversation ends ──
     start_subscription: tool({
-      description: "Create the prospect's account RIGHT NOW because they said yes — a 14-day trial (no card; billing is set up inside the app after sign-in). Requires their work email, name and business name. Pick the plan that fits their size unless they chose one. Answers needsHuman:true when a person must take it (enterprise size, custom pricing, CRM migration) — then hand off instead of retrying.",
+      description: "Create the prospect's account RIGHT NOW because they said yes. activation 'trial' = a 14-day free trial (no card; billing is set up inside the app after sign-in). activation 'paid' = ACTIVATE NOW: a secure checkout for the plan plus the plan's one-time setup fee is emailed to them and their access opens when it clears (wave 78A — not everyone wants the trial). Requires their work email, name and business name. Pick the plan that fits their size unless they chose one. Never invent or waive the setup fee — the result tells you the exact amount to state. Answers needsHuman:true when a person must take it (enterprise size, custom pricing, CRM migration) — then hand off instead of retrying.",
       inputSchema: z.object({
-        email: z.string().describe("Their work email — the sign-in link goes here"),
+        email: z.string().describe("Their work email — the sign-in link (and the checkout, when activating) goes here"),
         name: z.string().describe("Their full name"),
         company: z.string().nullable().describe("Brokerage / team / business name, or null to use what's on file"),
         plan: z.enum(["solo_agent", "team", "brokerage", "multi_location"]).nullable().describe("The plan they chose, or null to fit it to their size"),
+        activation: z.enum(["trial", "paid"]).describe("'trial' = 14-day free trial, no card; 'paid' = activate now with checkout (plan + one-time setup fee)"),
+        billing_cycle: z.enum(["monthly", "annual"]).nullable().describe("For 'paid' only: monthly or annual; null = monthly"),
         wants_custom_pricing: z.boolean().describe("True if they asked for a discount, a custom price, or a contract"),
       }),
-      execute: async (a: { email: string; name: string; company: string | null; plan: "solo_agent" | "team" | "brokerage" | "multi_location" | null; wants_custom_pricing: boolean }) => {
+      execute: async (a: { email: string; name: string; company: string | null; plan: "solo_agent" | "team" | "brokerage" | "multi_location" | null; activation: "trial" | "paid"; billing_cycle: "monthly" | "annual" | null; wants_custom_pricing: boolean }) => {
         const prospect = await resolveProspect({ email: a.email, name: a.name, company: a.company })
         if (!prospect) return { success: false, error: "Could not save the prospect — ask for a valid work email first." }
         if (!prospect.email) return { success: false, error: "A valid work email is required — the sign-in link goes there." }
         const { convertProspectToSubscriber } = await import("@/lib/platform/prospect-conversion")
+        // THE PROSPECT'S STATED CHOICE drives trial vs paid. A chat/voice surface
+        // never takes a card and never waives a fee (the conversion refuses both).
+        const billing = a.activation === "paid"
+          ? { mode: "paid" as const, billingCycle: a.billing_cycle === "annual" ? "annual" as const : "monthly" as const }
+          : { mode: "trial" as const }
         const r = await convertProspectToSubscriber(svc, {
           prospectId: prospect.id,
           actor: { kind: "prospect_self", channel: ctx.source },
-          tier: a.plan, billing: { mode: "trial" },
+          tier: a.plan, billing,
           email: a.email, name: a.name, company: a.company,
           customPricingRequested: a.wants_custom_pricing,
         })
@@ -294,10 +301,45 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
           return { success: false, error: r.error }
         }
         if (r.alreadyConverted) return { success: true, alreadyConverted: true, message: "They already have an account — tell them to check their email for the sign-in link or use request_human_handoff if they can't find it." }
+        if (billing.mode === "trial") {
+          return {
+            success: true, activation: "trial", trial: true, plan: r.tier, trialEndsAt: r.trialEndsAt,
+            signInLinkSentTo: prospect.email, inviteSent: r.inviteSent, inviteError: r.inviteError ?? null,
+            nextStep: "Tell them the sign-in link is in their inbox, the trial is 14 days with no card, and billing is set up inside the app whenever they're ready.",
+          }
+        }
+        // PAID: send the hosted checkout through the ONE egress survivor. The
+        // sender identity is the platform rep, exactly as send_signup_link does.
+        const setupFeeText = r.setupFeeCents && r.setupFeeCents > 0 ? `$${(r.setupFeeCents / 100).toLocaleString("en-US")}` : null
+        let checkoutSent = false
+        let checkoutSendError: string | null = null
+        if (r.checkoutUrl) {
+          const { resolvePlatformSalesRep } = await import("@/lib/platform/sales-rep")
+          const rep = await resolvePlatformSalesRep(svc)
+          if (!rep) checkoutSendError = "The platform has no staff account to send from."
+          else {
+            const { dispatchEmail } = await import("@/lib/providers/dispatch")
+            const sent = await dispatchEmail({
+              to: prospect.email, brokerageId: rep.brokerageId, userId: rep.userId,
+              subject: `Activate your ${ctx.brand.name} ${String(r.tier).replace(/_/g, " ")} plan`,
+              html: `<p>Hi ${a.name},</p><p>Your ${ctx.brand.name} account is reserved. Complete your activation here — the ${billing.billingCycle} plan${setupFeeText ? ` plus a one-time ${setupFeeText} setup fee` : ""}: <a href="${r.checkoutUrl}">${r.checkoutUrl}</a></p><p>Your sign-in link arrives separately; your workspace opens the moment the checkout clears.</p>`,
+              text: `Complete your ${ctx.brand.name} activation (${billing.billingCycle} plan${setupFeeText ? ` + one-time ${setupFeeText} setup fee` : ""}): ${r.checkoutUrl}`,
+              channelPurpose: "transactional", systemSource: "platform_prospect_activation_checkout",
+            })
+            checkoutSent = sent.success
+            if (!sent.success) checkoutSendError = sent.error ?? "Checkout email could not be sent."
+          }
+        }
         return {
-          success: true, trial: true, plan: r.tier, trialEndsAt: r.trialEndsAt,
+          success: true, activation: "paid", trial: false, plan: r.tier, billingCycle: billing.billingCycle,
+          setupFeeCents: r.setupFeeCents ?? 0, setupFee: setupFeeText,
+          checkoutCreated: !!r.checkoutUrl, checkoutSent, checkoutSendError, checkoutError: r.checkoutError ?? null,
           signInLinkSentTo: prospect.email, inviteSent: r.inviteSent, inviteError: r.inviteError ?? null,
-          nextStep: "Tell them the sign-in link is in their inbox, the trial is 14 days with no card, and billing is set up inside the app whenever they're ready.",
+          nextStep: r.checkoutUrl
+            ? (checkoutSent
+              ? `Tell them the activation checkout is in their inbox — the ${billing.billingCycle} plan${setupFeeText ? ` plus a one-time ${setupFeeText} setup fee` : " (this plan lists no setup fee)"} — and their workspace opens the moment it clears; the sign-in link arrives separately.`
+              : "The checkout was created but could not be emailed — tell them a person will send the activation link shortly and call request_human_handoff.")
+            : "The account exists but the checkout could not be created right now — tell them they can activate from the billing page after signing in, or call request_human_handoff so a person sends the link.",
         }
       },
     }),

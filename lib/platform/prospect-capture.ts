@@ -323,7 +323,8 @@ export interface ProspectConversionStamp {
   brokerage_id: string
   /** "staff:<email>" or "self:<channel>" — who said yes / who clicked. */
   actor: string
-  billing_mode: "trial" | "active"
+  /** trial · paid (wave 78A — checkout with the setup fee, access on payment) · active (staff-invoiced) */
+  billing_mode: "trial" | "paid" | "active"
   tier: string
   human_reasons: string[]
   staff_notified: number
@@ -336,7 +337,9 @@ export interface ProspectConversionStamp {
  *  here — stampProspectConversion owns it. */
 export async function markProspectConverted(svc: any, input: {
   prospectId: string; brokerageId: string; actorLabel: string
-  billingMode: "trial" | "active"; tier: string
+  /** trial (no card) · paid (checkout with the setup fee, access on payment) ·
+   *  active (staff-provisioned, invoiced outside checkout) */
+  billingMode: "trial" | "paid" | "active"; tier: string
   humanReasons: string[]; staffNotified: number
   demoDisposition: ProspectConversionStamp["demo"]
 }): Promise<boolean> {

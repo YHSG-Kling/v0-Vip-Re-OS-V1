@@ -148,17 +148,30 @@ export async function confirmProspectDemoAction(input: { prospectId: string }): 
 export async function convertProspectToSubscriberAction(input: {
   prospectId: string
   tier?: string | null
-  billing: { mode: "trial" } | { mode: "active"; billingCycle: "monthly" | "annual" }
+  /** trial · paid (hosted checkout: plan + setup fee, access on payment; wave
+   *  78A) · active (invoiced outside checkout). A setup-fee waiver rides
+   *  `paid` only, needs a reason, and is audited by the core under this
+   *  staffer's id. */
+  billing:
+    | { mode: "trial" }
+    | { mode: "paid"; billingCycle: "monthly" | "annual"; setupFeeWaiverReason?: string | null }
+    | { mode: "active"; billingCycle: "monthly" | "annual" }
   customPricingRequested?: boolean
 }): Promise<
-  | { ok: true; brokerageId: string; alreadyConverted: boolean; tier?: string; inviteSent?: boolean; inviteError?: string | null; humanReasons?: string[]; staffNotified?: number; demoDisposition?: string }
+  | { ok: true; brokerageId: string; alreadyConverted: boolean; tier?: string; inviteSent?: boolean; inviteError?: string | null; humanReasons?: string[]; staffNotified?: number; demoDisposition?: string; checkoutUrl?: string | null; checkoutError?: string | null; setupFeeCents?: number | null; setupFeeWaived?: boolean }
   | { ok: false; error: string }
 > {
   const auth = await requireMarketingStaff()
   if (!auth.ok) return auth
   if (!input?.prospectId) return { ok: false, error: "prospectId is required" }
+  const cycleOf = (c: string | undefined) => (c === "annual" ? "annual" as const : "monthly" as const)
   const billing = input.billing?.mode === "active"
-    ? { mode: "active" as const, billingCycle: input.billing.billingCycle === "annual" ? "annual" as const : "monthly" as const }
+    ? { mode: "active" as const, billingCycle: cycleOf(input.billing.billingCycle) }
+    : input.billing?.mode === "paid"
+    ? {
+        mode: "paid" as const, billingCycle: cycleOf(input.billing.billingCycle),
+        setupFeeWaiver: (input.billing.setupFeeWaiverReason ?? "").trim() ? { reason: (input.billing.setupFeeWaiverReason ?? "").trim() } : null,
+      }
     : { mode: "trial" as const }
   const svc = createServiceClient()
   const { convertProspectToSubscriber } = await import("@/lib/platform/prospect-conversion")
@@ -172,6 +185,7 @@ export async function convertProspectToSubscriberAction(input: {
   await audit(auth.userId, auth.email, "platform_prospect.convert_to_subscriber_clicked", input.prospectId, {
     brokerage_id: r.brokerageId, already_converted: r.alreadyConverted, billing_mode: billing.mode,
     tier: r.alreadyConverted ? null : r.tier, human_reasons: r.alreadyConverted ? [] : r.humanReasons,
+    setup_fee_waived: billing.mode === "paid" && !!billing.setupFeeWaiver,
   })
   revalidatePath("/dashboard/superadmin/growth")
   if (r.alreadyConverted) return { ok: true, brokerageId: r.brokerageId, alreadyConverted: true }
@@ -179,6 +193,7 @@ export async function convertProspectToSubscriberAction(input: {
     ok: true, brokerageId: r.brokerageId, alreadyConverted: false, tier: r.tier,
     inviteSent: r.inviteSent, inviteError: r.inviteError ?? null,
     humanReasons: r.humanReasons, staffNotified: r.staffNotified, demoDisposition: r.demoDisposition,
+    checkoutUrl: r.checkoutUrl, checkoutError: r.checkoutError ?? null, setupFeeCents: r.setupFeeCents, setupFeeWaived: r.setupFeeWaived,
   }
 }
 

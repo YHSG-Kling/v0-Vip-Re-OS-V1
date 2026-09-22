@@ -65,10 +65,25 @@ export function isCanonicalTier(v: unknown): v is CanonicalTier {
  *  superadmin — no new spelling is minted (CLAUDE.md §6). */
 export type TenantSignupSource = "self_serve" | "superadmin"
 
+/** A platform-staff waiver of the tier's one-time setup fee. Audited by the
+ *  core (superadmin_audit_log + brokerages.billing_metadata.setup_fee_waiver)
+ *  and REFUSED without a staff caller — a prospect cannot waive their own fee. */
+export interface SetupFeeWaiver { reason: string }
+
 export type TenantBilling =
   /** Self-serve shape: no card, trial_end written, the paywall collects later. */
   | { mode: "trial"; trialDays?: number }
-  /** Staff-provisioned shape: an active subscription for the chosen cycle. */
+  /** PAID ACTIVATION (wave 78A — owner: "not all converts or tenant creations
+   *  are going to enroll in the trial. there is a setup fee."). The tenant is
+   *  created, a HOSTED checkout for the plan + the tier's setup fee is minted
+   *  (lib/billing/subscription-activation.ts::createActivationCheckout) and
+   *  returned as `checkoutUrl`; the subscription row is 'trialing' with
+   *  trial_end = now, so the paywall holds the door until the webhook's
+   *  checkout.session.completed flips it 'active'. No new status is invented —
+   *  subscriptions.status admits active|cancelled|past_due|paused|trialing. */
+  | { mode: "paid"; billingCycle: "monthly" | "annual"; setupFeeWaiver?: SetupFeeWaiver | null }
+  /** Staff-provisioned shape: an active subscription for the chosen cycle,
+   *  invoiced outside checkout (enterprise / contract). */
   | { mode: "active"; billingCycle: "monthly" | "annual"; stripeCustomerId?: string | null }
 
 export interface TenantCreationInput {
@@ -115,6 +130,13 @@ export interface TenantCreationResult {
   snapshotName?: string | null
   snapshotError?: string
   prospectStamp?: ProspectConversionResult
+  /** Paid activation only: the hosted checkout (plan + setup fee) to send or redirect to. */
+  checkoutUrl?: string | null
+  /** Paid activation only: READ and reported — the tenant exists even when Stripe refused. */
+  checkoutError?: string
+  /** Paid activation only: what the checkout will charge once, 0 when waived or the tier has none. */
+  setupFeeCents?: number
+  setupFeeWaived?: boolean
   /** Best-effort day-one extras that did not land, named — never swallowed. */
   extrasSkipped: string[]
 }
@@ -153,6 +175,19 @@ export function buildSubscriptionRow(input: { brokerageId: string; tierId: strin
       created_at: nowIso, updated_at: nowIso,
     }
   }
+  if (input.billing.mode === "paid") {
+    // ACTIVATION PENDING PAYMENT: 'trialing' with trial_end = now. lib/billing/
+    // billing-access.ts reads exactly this as "expired → blocked → paywall", so
+    // the door is held until checkout.session.completed links the Stripe
+    // subscription and writes 'active' (upsertBrokerageSubscription). The
+    // vocabulary has no pending state and none is minted (CLAUDE.md §6).
+    return {
+      brokerage_id: input.brokerageId, tier_id: input.tierId, status: "trialing",
+      current_period_start: nowIso, current_period_end: nowIso,
+      trial_end: nowIso,
+      created_at: nowIso, updated_at: nowIso,
+    }
+  }
   const days = input.billing.billingCycle === "annual" ? 365 : 30
   return {
     brokerage_id: input.brokerageId, tier_id: input.tierId, status: "active",
@@ -182,6 +217,12 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
   if (!firstName) return { ok: false, error: "Admin first name is required.", extrasSkipped }
   if (!isValidEmail(adminEmail)) return { ok: false, error: "Valid admin email required.", extrasSkipped }
   if (!isCanonicalTier(input.tier)) return { ok: false, error: "Invalid tier — choose Solo Agent, Team, Brokerage, or Multi-Location.", extrasSkipped }
+  // A setup-fee waiver is a PLATFORM STAFF decision (CLAUDE.md §4: gate first).
+  // Fail closed: no staff caller, no waiver — a self-serve signer or a prospect
+  // on a chat surface cannot waive their own fee by asking for it.
+  const waiver = input.billing.mode === "paid" ? (input.billing.setupFeeWaiver ?? null) : null
+  if (waiver && !input.callerUserId) return { ok: false, error: "A setup-fee waiver requires a platform staff actor — it cannot be self-granted.", extrasSkipped }
+  if (waiver && !(waiver.reason ?? "").trim()) return { ok: false, error: "A setup-fee waiver requires a reason — it is audited.", extrasSkipped }
 
   // 1. The tier row — the subscription links to a real subscription_tiers record
   //    (billing + v_platform_margin key on it).
@@ -260,6 +301,51 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
   }
   const subscriptionId = (subscription as { id: string } | null)?.id ?? null
 
+  // 5b. PAID ACTIVATION — the audited waiver, then the hosted checkout (plan +
+  //     setup fee) through the ONE activation survivor. The checkout is
+  //     best-effort AFTER the tenant exists: a Stripe refusal is reported as
+  //     checkoutError (the in-app paywall still collects after sign-in), never
+  //     swallowed and never a reason to roll the tenant back.
+  let checkoutUrl: string | null = null
+  let checkoutError: string | undefined
+  let setupFeeCents: number | undefined
+  let setupFeeWaived: boolean | undefined
+  if (input.billing.mode === "paid") {
+    if (waiver) {
+      const waiverRecord = { reason: waiver.reason.trim().slice(0, 500), waived_by_user_id: input.callerUserId, waived_at: nowIso }
+      const { data: bmRow, error: bmErr } = await service.from("brokerages").select("billing_metadata").eq("id", brokerageId).maybeSingle()
+      const bm = bmErr ? {} : (((bmRow as { billing_metadata?: unknown } | null)?.billing_metadata ?? {}) as Record<string, unknown>)
+      const { data: waived, error: wErr } = await service.from("brokerages")
+        .update({ billing_metadata: { ...(bm && typeof bm === "object" ? bm : {}), setup_fee_waiver: waiverRecord }, updated_at: nowIso })
+        .eq("id", brokerageId).select("id")
+      if (wErr || (waived ?? []).length !== 1) {
+        checkoutError = `Setup-fee waiver could not be recorded${wErr ? ` (${wErr.message})` : ""} — the fee was NOT waived.`
+      }
+      const { error: auditErr } = await service.from("superadmin_audit_log").insert({
+        actor_user_id: input.callerUserId, actor_email: null,
+        action: "subscription.setup_fee_waived", target_type: "brokerage", target_id: brokerageId,
+        details: { ...waiverRecord, tier: input.tier, billing_cycle: input.billing.billingCycle },
+      })
+      if (auditErr) console.warn("[tenant-creation] setup-fee waiver audit refused:", auditErr.message)
+    }
+    try {
+      const { createActivationCheckout } = await import("@/lib/billing/subscription-activation")
+      const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+      const checkout = await createActivationCheckout(service, {
+        brokerageId, tierId, billingCycle: input.billing.billingCycle,
+        customerEmail: adminEmail,
+        waiveSetupFee: !!waiver && !checkoutError,
+        successUrl: `${appUrl}/auth/login?activated=1`,
+        cancelUrl: `${appUrl}/auth/login?activation=cancelled`,
+      })
+      if (checkout.ok) { checkoutUrl = checkout.url; setupFeeCents = checkout.setupFeeCents; setupFeeWaived = checkout.setupFeeWaived }
+      else { checkoutError = [checkoutError, checkout.error].filter(Boolean).join(" "); console.error("[tenant-creation] activation checkout not created:", checkout.error, { brokerageId, tierId }) }
+    } catch (err) {
+      checkoutError = [checkoutError, (err as Error)?.message ?? "activation checkout failed"].filter(Boolean).join(" ")
+      console.error("[tenant-creation] activation checkout threw:", (err as Error)?.message, { brokerageId, tierId })
+    }
+  }
+
   // 6. Config snapshot at creation — ONE apply path for every door.
   let snapshotApplied: string[] | undefined
   let snapshotName: string | null = null
@@ -296,7 +382,11 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
       emails: [adminEmail, input.brokerageEmail, ...(input.prospect?.emails ?? [])],
       phone: input.brokeragePhone ?? input.prospect?.phone ?? null,
       prospectIds: input.prospect?.prospectIds ?? [],
-      outcome: input.billing.mode === "trial" ? "trial" : "converted",
+      // 'converted' means money moved or staff vouched for it (mode active). A
+      // trial AND a paid activation awaiting its checkout are both 'trial'; the
+      // webhook's checkout.session.completed advances the row to 'converted'
+      // the moment the first invoice is paid (app/api/billing/webhook/route.ts).
+      outcome: input.billing.mode === "active" ? "converted" : "trial",
     })
     if (prospectStamp.errors.length > 0) {
       console.warn("[tenant-creation] prospect conversion stamp incomplete:", prospectStamp.errors.join("; "), { matched: prospectStamp.matched, linked: prospectStamp.linked })
@@ -348,10 +438,13 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
       if (!error) assigned += 1
     }
     const planLabel = input.tier.replace(/_/g, " ")
+    const pendingPayment = input.billing.mode === "paid"
     await sentinelWrite(service, service.from("notifications").insert({
       user_id: userId, brokerage_id: brokerageId, type: "agent_onboarding",
-      title: "Welcome — meet your AI team",
-      body: assigned > 0
+      title: pendingPayment ? "Welcome — finish activating your plan" : "Welcome — meet your AI team",
+      body: pendingPayment
+        ? `Your ${planLabel} plan is reserved. Complete the checkout in your email (plan + one-time setup) and your eleven AI managers go on duty the moment it clears.`
+        : assigned > 0
         ? `Your ${planLabel} plan is live. Start with your ${assigned}-lesson onboarding path — your eleven AI managers are already on duty.`
         : `Your ${planLabel} plan is live — your eleven AI managers are already on duty. Your onboarding wizard is ready.`,
       priority: "high", is_read: false,
@@ -363,6 +456,8 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
     brokerageId, userId, subscriptionId, subscriptionError, slug, trialEndsAt,
     inviteSent: owner.inviteSent, inviteError: owner.inviteError,
     snapshotApplied, snapshotName, snapshotError,
-    prospectStamp, extrasSkipped,
+    prospectStamp,
+    checkoutUrl, checkoutError, setupFeeCents, setupFeeWaived,
+    extrasSkipped,
   }
 }

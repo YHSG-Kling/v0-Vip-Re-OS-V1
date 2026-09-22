@@ -14,7 +14,10 @@ import { PROPOSAL_SECTIONS, PROSPECT_STATUSES, describeProspectNextTouch, propos
 // canonical tier vocabulary brokerages.plan_tier carries); 'fit' lets
 // lib/platform/prospect-conversion.ts pick the band from their seat count.
 const CONVERT_TIERS = ['fit', 'solo_agent', 'team', 'brokerage', 'multi_location'] as const
-interface ConvertForm { tier: (typeof CONVERT_TIERS)[number]; mode: 'trial' | 'active'; cycle: 'monthly' | 'annual'; customPricing: boolean }
+// Wave 78A — 'paid' = activate now: a hosted checkout (plan + the tier's
+// one-time setup fee) is minted and returned; access opens when it clears. A
+// setup-fee waiver is a staff decision with a reason, audited by the core.
+interface ConvertForm { tier: (typeof CONVERT_TIERS)[number]; mode: 'trial' | 'paid' | 'active'; cycle: 'monthly' | 'annual'; customPricing: boolean; waiveSetupFee: boolean; waiverReason: string }
 
 // ONE status list — the funnel vocabulary (lane 76B: 'demo_scheduled', m654).
 const STATUSES: readonly string[] = PROSPECT_STATUSES
@@ -49,17 +52,24 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
     if (!convertView) return
     const { prospect, form } = convertView
     startTransition(async () => {
+      if (form.mode === 'paid' && form.waiveSetupFee && !form.waiverReason.trim()) {
+        toast({ title: 'A waiver needs a reason', description: 'The setup-fee waiver is audited under your name — say why.', variant: 'destructive' }); return
+      }
       const r = await convertProspectToSubscriberAction({
         prospectId: prospect.id,
         tier: form.tier === 'fit' ? null : form.tier,
-        billing: form.mode === 'active' ? { mode: 'active', billingCycle: form.cycle } : { mode: 'trial' },
+        billing: form.mode === 'active'
+          ? { mode: 'active', billingCycle: form.cycle }
+          : form.mode === 'paid'
+          ? { mode: 'paid', billingCycle: form.cycle, setupFeeWaiverReason: form.waiveSetupFee ? form.waiverReason : null }
+          : { mode: 'trial' },
         customPricingRequested: form.customPricing,
       })
       if (!r.ok) { toast({ title: 'Could not convert', description: r.error, variant: 'destructive' }); return }
       if (r.alreadyConverted) toast({ title: 'Already a subscriber', description: `This prospect is linked to tenant ${r.brokerageId}.` })
       else toast({
-        title: `Converted — ${(r.tier ?? '').replace(/_/g, ' ')} ${form.mode === 'trial' ? 'trial' : 'subscription'}`,
-        description: `Sign-in link ${r.inviteSent ? 'sent' : `NOT sent${r.inviteError ? ` (${r.inviteError})` : ''}`}.${(r.humanReasons?.length ?? 0) > 0 ? ` White-glove task raised (${r.humanReasons!.join(', ')}) — ${r.staffNotified} staff notified.` : ' Fully autonomous — no human task needed.'}${r.demoDisposition === 'hold_released' ? ' Pending demo hold released.' : r.demoDisposition === 'kept_as_onboarding' ? ' Confirmed demo kept as the onboarding session.' : ''}`,
+        title: `Converted — ${(r.tier ?? '').replace(/_/g, ' ')} ${form.mode === 'trial' ? 'trial' : form.mode === 'paid' ? 'paid activation' : 'subscription'}`,
+        description: `Sign-in link ${r.inviteSent ? 'sent' : `NOT sent${r.inviteError ? ` (${r.inviteError})` : ''}`}.${form.mode === 'paid' ? (r.checkoutUrl ? ` Activation checkout created (${r.setupFeeWaived ? 'setup fee WAIVED' : r.setupFeeCents ? `one-time setup $${(r.setupFeeCents / 100).toLocaleString('en-US')}` : 'no setup fee on this plan'}) — copy it from the tenant page or let the customer activate after sign-in: ${r.checkoutUrl}` : ` Checkout NOT created${r.checkoutError ? ` (${r.checkoutError})` : ''} — the customer can activate from the billing page after sign-in.`) : ''}${(r.humanReasons?.length ?? 0) > 0 ? ` White-glove task raised (${r.humanReasons!.join(', ')}) — ${r.staffNotified} staff notified.` : ' Fully autonomous — no human task needed.'}${r.demoDisposition === 'hold_released' ? ' Pending demo hold released.' : r.demoDisposition === 'kept_as_onboarding' ? ' Confirmed demo kept as the onboarding session.' : ''}`,
       })
       setConvertView(null); reload()
     })
@@ -188,15 +198,27 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
               <label className="block text-xs">Billing
                 <select className="mt-1 w-full rounded border p-1 text-xs" value={convertView.form.mode} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, mode: e.target.value as ConvertForm['mode'] } })}>
                   <option value="trial">14-day trial — no card, they add billing in-app</option>
-                  <option value="active">Active subscription — card collected at their first in-app checkout</option>
+                  <option value="paid">Activate now — checkout for the plan + the plan&apos;s one-time setup fee; access opens when it clears</option>
+                  <option value="active">Active subscription — invoiced outside checkout (enterprise / contract)</option>
                 </select>
               </label>
-              {convertView.form.mode === 'active' && (
+              {(convertView.form.mode === 'active' || convertView.form.mode === 'paid') && (
                 <label className="block text-xs">Cycle
                   <select className="mt-1 w-full rounded border p-1 text-xs" value={convertView.form.cycle} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, cycle: e.target.value as ConvertForm['cycle'] } })}>
                     <option value="monthly">monthly</option><option value="annual">annual</option>
                   </select>
                 </label>
+              )}
+              {convertView.form.mode === 'paid' && (
+                <div className="rounded border bg-muted/30 p-2 space-y-1.5">
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" checked={convertView.form.waiveSetupFee} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, waiveSetupFee: e.target.checked } })} />
+                    Waive the setup fee (audited under your name — the plan&apos;s fee is otherwise charged on the first invoice)
+                  </label>
+                  {convertView.form.waiveSetupFee && (
+                    <input className="w-full rounded border p-1 text-xs" placeholder="Reason for the waiver (required)" value={convertView.form.waiverReason} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, waiverReason: e.target.value } })} />
+                  )}
+                </div>
               )}
               <label className="flex items-center gap-2 text-xs">
                 <input type="checkbox" checked={convertView.form.customPricing} onChange={(e) => setConvertView({ ...convertView, form: { ...convertView.form, customPricing: e.target.checked } })} />
@@ -256,7 +278,7 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
                       </Button>
                       {!p.details?.conversion && p.status !== 'converted' && p.status !== 'lost' && (
                         <Button size="sm" variant="ghost" disabled={pending} title="Convert to subscriber"
-                          onClick={() => setConvertView({ prospect: p, form: { tier: 'fit', mode: 'trial', cycle: 'monthly', customPricing: false } })}>
+                          onClick={() => setConvertView({ prospect: p, form: { tier: 'fit', mode: 'trial', cycle: 'monthly', customPricing: false, waiveSetupFee: false, waiverReason: '' } })}>
                           <UserPlus className="h-3.5 w-3.5 text-emerald-700" />
                         </Button>
                       )}

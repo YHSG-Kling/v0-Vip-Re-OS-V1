@@ -59,6 +59,12 @@ async function main() {
     (buildCheckoutConfig(TIER, "annual").lineItems[0] as any).price_data.unit_amount === 99000 && (buildCheckoutConfig(TIER, "annual").lineItems[0] as any).price_data.recurring.interval === "year")
   check("a tier with NO setup fee adds no one-time item",
     buildCheckoutConfig({ ...TIER, setup_fee_cents: 0 }, "monthly").addInvoiceItems.length === 0)
+  // Wave 78A — a platform-staff WAIVER (audited by the core) removes the item; the plan is untouched.
+  check("a WAIVED setup fee adds no one-time item and leaves the recurring plan untouched",
+    buildCheckoutConfig(TIER, "monthly", { waiveSetupFee: true }).addInvoiceItems.length === 0
+    && (buildCheckoutConfig(TIER, "monthly", { waiveSetupFee: true }).lineItems[0] as any).price_data.unit_amount === 9900)
+  check("POSITIVE CONTROL — waiveSetupFee false is the unwaived checkout (the flag is read, not ignored)",
+    buildCheckoutConfig(TIER, "monthly", { waiveSetupFee: false }).addInvoiceItems.length === 1)
 
   const norm: NormalizedStripeSub = { stripeSubscriptionId: "sub_X", stripeCustomerId: "cus_X", tierId: "tier_X", status: "active", currentPeriodStart: 1_700_000_000, currentPeriodEnd: 1_702_000_000, trialEnd: null, cancelAt: null }
   const patch = buildSubscriptionPatch(norm)
@@ -78,6 +84,14 @@ async function main() {
     (hookSrc.match(/upsertBrokerageSubscription\(/g) ?? []).length >= 2 && !/onConflict:\s*"stripe_subscription_id"/.test(hookSrc))
   check("checkout.session.completed also runs the provisioning safety-repair",
     /repairIncompleteAccountSetup/.test(hookSrc))
+  // Wave 78A — the HOSTED activation checkout (paid signup / conversion) is the
+  // same line items + setup fee on the platform account, tenant in metadata.
+  const activationSrc = readFileSync(join(process.cwd(), "lib/billing/subscription-activation.ts"), "utf8")
+  check("createActivationCheckout is a hosted subscription-mode checkout built from buildCheckoutConfig (same items, same setup fee) with brokerage_id in metadata",
+    /export async function createActivationCheckout/.test(activationSrc) && /mode: "subscription"/.test(activationSrc)
+    && /buildCheckoutConfig\(tier as CheckoutTier, input\.billingCycle, \{ waiveSetupFee/.test(activationSrc) && /brokerage_id: input\.brokerageId/.test(activationSrc))
+  check("…and the webhook's checkout.session.completed advances linked prospects trial → converted (counted)",
+    /from\("platform_prospects"\)[\s\S]{0,300}status: "converted"[\s\S]{0,200}\.eq\("status", "trial"\)/.test(hookSrc))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)

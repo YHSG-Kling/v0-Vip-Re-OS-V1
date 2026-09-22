@@ -39,7 +39,7 @@
  *             slot; Stripe only through the existing survivors.
  *   Layer 5 — SURFACES: the growth-board action (marketing-gated, audited,
  *             prospectId is the only id in the request) and the
- *             start_subscription tool (prospect_self, trial only, hands off
+ *             start_subscription tool (prospect_self, trial or paid, hands off
  *             on needsHuman); the exit menu names it.
  *   Layer 6 — registration.
  *
@@ -76,18 +76,21 @@ const SELF_HEAL = "app/actions/onboarding/ensure-agent-brokerage.ts"
 console.log("\n[Layer 1 · PURE — facts, tier fit, humans when warranted, the subscription row]")
 const {
   tierForProspect, splitPersonName, deriveProspectTenantFacts, conversionHumanReasons,
-  ENTERPRISE_SEAT_FLOOR, TIER_SEAT_BANDS, stampProspectConversion, convertProspectToSubscriber,
+  ENTERPRISE_SEAT_FLOOR, stampProspectConversion, convertProspectToSubscriber,
 } = await import("../lib/platform/prospect-conversion")
+// Wave 78A — the bands live in the plan catalogue (ONE derivation); this file
+// used to import a private 1/15/75 table from prospect-conversion.
+const { TIER_SEAT_BANDS, CANONICAL_TIERS: BAND_TIERS } = await import("../lib/billing/plan-catalog")
 const { buildSubscriptionRow, platformMembershipFlags, buildTenantSlug, isCanonicalTier, CANONICAL_TIERS } = await import("../lib/kernel/tenant-creation")
 
-check("tier fit: a declared canonical role_interest wins; else the seat band (1 → solo, 8 → team, 40 → brokerage, 200 → multi_location)",
-  tierForProspect("brokerage", 2) === "brokerage" && tierForProspect("unknown", 1) === "solo_agent" && tierForProspect(null, 8) === "team" && tierForProspect("unknown", 40) === "brokerage" && tierForProspect(null, 200) === "multi_location" && tierForProspect(null, null) === "solo_agent")
-check("the seat bands are monotone and end open (the last band takes everything above)", TIER_SEAT_BANDS.every((b, i) => i === 0 || b.maxSeats > TIER_SEAT_BANDS[i - 1]!.maxSeats) && TIER_SEAT_BANDS[TIER_SEAT_BANDS.length - 1]!.maxSeats === Number.POSITIVE_INFINITY)
+check("tier fit: a declared canonical role_interest wins; else the seat band (2 → solo, 4 → team, 40 → brokerage, 200 → brokerage; multi_location only by declaration)",
+  tierForProspect("brokerage", 2) === "brokerage" && tierForProspect("unknown", 2) === "solo_agent" && tierForProspect(null, 4) === "team" && tierForProspect("unknown", 40) === "brokerage" && tierForProspect(null, 200) === "brokerage" && tierForProspect("multi_location", 3) === "multi_location" && tierForProspect(null, null) === "solo_agent")
+check("the seat bands (plan-catalog) are 2 / 5 / unlimited / unlimited — capped tiers ascend, then unlimited takes everything above", TIER_SEAT_BANDS.solo_agent === 2 && TIER_SEAT_BANDS.team === 5 && TIER_SEAT_BANDS.brokerage === null && TIER_SEAT_BANDS.multi_location === null && BAND_TIERS.length === 4)
 check("name split: 'Dana Lee Smith' → first Dana, last 'Lee Smith'; a single token has an empty last name", splitPersonName(" Dana Lee Smith ").first === "Dana" && splitPersonName("Dana Lee Smith").last === "Lee Smith" && splitPersonName("Dana").last === "")
 
 const row = {
   id: "p-1", name: "Dana Lee", email: "Dana@Acme.com", phone: "+15125550100", company: null, role_interest: "unknown", status: "contacted", converted_brokerage_id: null,
-  details: { qualification: { brokerage_name: "Acme Realty", size_seats: 8, territory: "Austin metro", current_tools: "Follow Up Boss" } },
+  details: { qualification: { brokerage_name: "Acme Realty", size_seats: 4, territory: "Austin metro", current_tools: "Follow Up Boss" } },
 }
 const facts = deriveProspectTenantFacts(row)
 check("facts derive from the row: company ← qualification.brokerage_name, email lowercased, tier ← seat band, territory + current tools carried",
@@ -169,7 +172,7 @@ function seamDeps() {
 
 {
   // (a) the prospect says YES on the chat — fully autonomous
-  const svc = fakeSvc({ prospects: [{ ...row, id: "p-a", details: { qualification: { brokerage_name: "Acme Realty", size_seats: 8 } } }] })
+  const svc = fakeSvc({ prospects: [{ ...row, id: "p-a", details: { qualification: { brokerage_name: "Acme Realty", size_seats: 4 } } }] })
   const s = seamDeps()
   const r = await convertProspectToSubscriber(svc, { prospectId: "p-a", actor: { kind: "prospect_self", channel: "web:live_agent" }, billing: { mode: "trial" } }, s.deps)
   const call = s.provisionCalls[0]
@@ -191,7 +194,17 @@ function seamDeps() {
   const svc = fakeSvc({ prospects: [{ ...row, id: "p-c", details: {} }] })
   const s = seamDeps()
   const r = await convertProspectToSubscriber(svc, { prospectId: "p-c", actor: { kind: "prospect_self", channel: "web:prospect_chat" }, billing: { mode: "active", billingCycle: "monthly" } }, s.deps)
-  check("self-conversion with billing 'active' → refused (no card on a chat surface; the in-app checkout survivor collects it), core never called", !r.ok && s.provisionCalls.length === 0)
+  check("self-conversion with billing 'active' → refused (an invoiced row is staff vouching; the in-app checkout survivor collects a card), core never called", !r.ok && s.provisionCalls.length === 0)
+}
+{
+  // (c2) wave 78A — a prospect CAN activate paid: the hosted checkout is minted by the core
+  const svc = fakeSvc({ prospects: [{ ...row, id: "p-c2", details: {} }] })
+  const s = seamDeps()
+  const r = await convertProspectToSubscriber(svc, { prospectId: "p-c2", actor: { kind: "prospect_self", channel: "web:prospect_chat" }, billing: { mode: "paid", billingCycle: "monthly" } }, s.deps)
+  check("self-conversion with billing 'paid' → the core is called with mode paid and NO waiver (the prospect's stated choice drives trial vs paid)", r.ok && s.provisionCalls.length === 1 && s.provisionCalls[0].billing.mode === "paid" && !s.provisionCalls[0].billing.setupFeeWaiver)
+  const s2 = seamDeps()
+  const r2 = await convertProspectToSubscriber(fakeSvc({ prospects: [{ ...row, id: "p-c3", details: {} }] }), { prospectId: "p-c3", actor: { kind: "prospect_self", channel: "web:prospect_chat" }, billing: { mode: "paid", billingCycle: "monthly", setupFeeWaiver: { reason: "asked nicely" } } }, s2.deps)
+  check("…but a prospect asking to waive their own setup fee is refused, core never called (control)", !r2.ok && s2.provisionCalls.length === 0)
 }
 {
   // (d) staff conversion of an enterprise prospect with a pending demo hold and an open handoff
@@ -254,8 +267,8 @@ const coreSrc = stripped(CORE)
 const signupSrc = stripped(SIGNUP)
 const staffSrc = stripped(STAFF_DOOR)
 const convSrc = stripped(CONVERSION)
-check("self-serve signup delegates to createTenantCore (signupSource self_serve, a 14-day trial) and no longer provisions the owner or inserts the subscription itself",
-  /createTenantCore\(service, \{[\s\S]{0,600}signupSource: "self_serve"[\s\S]{0,200}billing: \{ mode: "trial"/.test(signupSrc) && !signupSrc.includes("provisionTenantOwner(") && !/from\("subscriptions"\)\s*\.insert/.test(signupSrc))
+check("self-serve signup delegates to createTenantCore (signupSource self_serve, the signer's trial-or-paid choice with the 14-day trial as default) and no longer provisions the owner or inserts the subscription itself",
+  /createTenantCore\(service, \{[\s\S]{0,600}signupSource: "self_serve"[\s\S]{0,200}billing,/.test(signupSrc) && /\{ mode: "trial" as const, trialDays: TRIAL_DAYS \}/.test(signupSrc) && !signupSrc.includes("provisionTenantOwner(") && !/from\("subscriptions"\)\s*\.insert/.test(signupSrc))
 check("the staff door delegates to createTenantCore (signupSource superadmin, an ACTIVE subscription for the cycle, the staff-picked snapshot) and keeps only its gate, Stripe customer and audit",
   /createTenantCore\(service, \{[\s\S]{0,800}signupSource: "superadmin"[\s\S]{0,200}billing: \{ mode: "active", billingCycle: params\.billingCycle/.test(staffSrc) && staffSrc.includes("snapshotId: params.snapshotId") && !staffSrc.includes("provisionTenantOwner(") && staffSrc.includes("gateStaffAction(\"tenants\")") && staffSrc.includes("stripe.customers.create("))
 check("the conversion delegates to the SAME core (dynamic import — the @proofSeam is the only alternative)", /deps\.provisionTenant \?\? \(await import\("@\/lib\/kernel\/tenant-creation"\)\)\.createTenantCore/.test(convSrc))
@@ -267,7 +280,7 @@ check("the core: tier row → duplicate-owner guard → brokerage → provisionT
     return idx.every((i) => i >= 0) && idx.every((i, k) => k === 0 || i > idx[k - 1]!)
   })())
 check("the core writes trial_end on the trial row and READS the subscription insert error (§3)", coreSrc.includes("trial_end: end") && /const \{ data: subscription, error: subErr \}/.test(coreSrc) && /if \(subErr \|\| !subscription\)/.test(coreSrc))
-check("the core derives the stamp outcome from the billing mode (trial → 'trial', active → 'converted') — one rule, not two spellings", coreSrc.includes('outcome: input.billing.mode === "trial" ? "trial" : "converted"'))
+check("the core derives the stamp outcome from the billing mode (active → 'converted'; trial AND paid-pending → 'trial' until the webhook sees money) — one rule, not two spellings", coreSrc.includes('outcome: input.billing.mode === "active" ? "converted" : "trial"'))
 check("DIRECT PATH LINK-BACK: the core's stamp always includes the admin email (the same key upsertPlatformProspect uses), so a signer who was never a prospect is a clean zero and a prospect is linked", /emails: \[adminEmail, input\.brokerageEmail, \.\.\.\(input\.prospect\?\.emails \?\? \[\]\)\]/.test(coreSrc) && /prospectIds: input\.prospect\?\.prospectIds \?\? \[\]/.test(coreSrc))
 check("the core mints the brokerage id and returns it — no door passes a brokerage id in (CLAUDE.md §4)",
   (() => { const body = coreSrc.slice(coreSrc.indexOf("export async function createTenantCore(")); return !/input\.brokerageId/.test(body) && /brokerageId = \(brokerage as \{ id: string \}\)\.id/.test(body) && !/brokerageId\??:/.test(coreSrc.slice(coreSrc.indexOf("export interface TenantCreationInput"), coreSrc.indexOf("export interface TenantCreationResult"))) })())
@@ -301,8 +314,9 @@ check("convertProspectToSubscriberAction is marketing/sales platform_role-gated,
 check("the action's request carries the prospect id only — never a brokerage id (the tenant comes back from the core)", /prospectId: input\.prospectId/.test(growthSrc) && !/input\.brokerageId/.test(growthSrc))
 check("the board mounts the Convert to subscriber dialog on convertProspectToSubscriberAction", stripped(BOARD).includes("convertProspectToSubscriberAction(") && stripped(BOARD).includes("Convert to subscriber"))
 const toolsSrc = stripped(TOOLS)
-check("start_subscription: prospect_self actor, TRIAL only, resolves the prospect through the ONE writer first, hands off on needsHuman",
-  /start_subscription:\s*tool\(\{[\s\S]{0,2500}resolveProspect\(\{ email: a\.email[\s\S]{0,1500}actor: \{ kind: "prospect_self", channel: ctx\.source \}[\s\S]{0,200}billing: \{ mode: "trial" \}[\s\S]{0,600}needsHuman: true/.test(toolsSrc))
+check("start_subscription: prospect_self actor, the prospect's choice (trial | paid — wave 78A), resolves the prospect through the ONE writer first, hands off on needsHuman",
+  /start_subscription:\s*tool\(\{[\s\S]{0,3000}resolveProspect\(\{ email: a\.email[\s\S]{0,2000}actor: \{ kind: "prospect_self", channel: ctx\.source \}[\s\S]{0,200}tier: a\.plan, billing,[\s\S]{0,600}needsHuman: true/.test(toolsSrc)
+  && /a\.activation === "paid"\s*\?\s*\{ mode: "paid" as const/.test(toolsSrc) && /: \{ mode: "trial" as const \}/.test(toolsSrc))
 const { PLATFORM_EXIT_MENU } = await import("../lib/ai-isa/qualification-playbook")
 const { PLATFORM_PROSPECT_TOOL_NAMES, platformExitMenuMatchesTools } = await import("../lib/platform/prospect-agent-tools")
 check("the playbook's exit menu names start_subscription and every exit is a registered tool", PLATFORM_EXIT_MENU.some((o) => o.tool === "start_subscription") && platformExitMenuMatchesTools() && (PLATFORM_PROSPECT_TOOL_NAMES as readonly string[]).includes("start_subscription"))

@@ -79,6 +79,12 @@ export interface SignupBrokerageInput {
    *  billing_metadata.signup_intent for the onboarding market-setup prefill —
    *  a market/claim is NEVER auto-created from it. Best-effort. */
   territoryZip?:   string
+  /** Wave 78A — the signer's choice: the 14-day trial (default) or ACTIVATE
+   *  NOW, which mints a hosted checkout for the plan + the tier's one-time
+   *  setup fee and returns it as `checkoutUrl`; access opens when it clears.
+   *  A self-serve signer can never waive the fee (no waiver field here). */
+  activation?:     "trial" | "paid"
+  billingCycle?:   "monthly" | "annual"
 }
 
 export interface SignupBrokerageResult {
@@ -86,6 +92,11 @@ export interface SignupBrokerageResult {
   error?:       string
   brokerageId?: string
   trialEndsAt?: string
+  /** Which door was taken; `checkoutUrl` is set only for a paid activation whose checkout was minted. */
+  activation?:  "trial" | "paid"
+  checkoutUrl?: string | null
+  checkoutError?: string
+  setupFeeCents?: number
   /** Snapshot outcome — honest per-part reporting (only set when snapshotId was given). */
   snapshotApplied?: string[]
   snapshotError?:   string
@@ -130,6 +141,14 @@ export async function signupBrokerageAction(
 
   const service = createServiceClient()
 
+  // The signer's stated choice (wave 78A): trial by default; 'paid' mints the
+  // activation checkout inside the core. No waiver can arrive on this public
+  // door — TenantBilling's setupFeeWaiver is simply never set here.
+  const activation: "trial" | "paid" = input.activation === "paid" ? "paid" : "trial"
+  const billing = activation === "paid"
+    ? { mode: "paid" as const, billingCycle: input.billingCycle === "annual" ? "annual" as const : "monthly" as const }
+    : { mode: "trial" as const, trialDays: TRIAL_DAYS }
+
   // THE ONE CORE — brokerage + owner (invite-first, id pinned, tier-aware) +
   // trial subscription (trial_end written) + tier snapshot + prospect
   // link-back + ISA actor + starter assistant + SUBSCRIPTION_CREATED +
@@ -144,7 +163,7 @@ export async function signupBrokerageAction(
     city: input.brokerageCity ?? null,
     state: input.brokerageState ?? null,
     signupSource: "self_serve",
-    billing: { mode: "trial", trialDays: TRIAL_DAYS },
+    billing,
     brokerageOnPlatform: input.brokerageOnPlatform,
     teamOnPlatform: input.teamOnPlatform,
     callerUserId: null,
@@ -308,6 +327,10 @@ export async function signupBrokerageAction(
         snapshot_applied: snapshotApplied ?? null,
         snapshot_error:   snapshotError ?? null,
         subscription_error: created.subscriptionError ?? null,
+        activation,
+        checkout_created: activation === "paid" ? !!created.checkoutUrl : null,
+        checkout_error:   created.checkoutError ?? null,
+        setup_fee_cents:  created.setupFeeCents ?? null,
         prospect_linked:  created.prospectStamp?.linked ?? 0,
         extras_skipped:   created.extrasSkipped,
         territory_zip:    input.territoryZip?.trim() || null,
@@ -333,6 +356,10 @@ export async function signupBrokerageAction(
     ok:          true,
     brokerageId: brokerage.id,
     trialEndsAt: trialEndsAt.toISOString(),
+    activation,
+    checkoutUrl: activation === "paid" ? (created.checkoutUrl ?? null) : undefined,
+    checkoutError: created.checkoutError,
+    setupFeeCents: created.setupFeeCents,
     snapshotApplied,
     snapshotError,
     couponApplied,

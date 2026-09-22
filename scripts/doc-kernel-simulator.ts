@@ -2539,11 +2539,11 @@ async function main() {
         && (["solo_agent", "team", "brokerage", "multi_location"] as const).every((t) =>
           TIER_INVITABLE_ROLES[t].slice().sort().join(",") ===
           TIER_INVITABLE_ROLES.brokerage.slice().sort().join(","))
-        // SEATS are the whole of the tier's say — 2 / 5 / 50 / unlimited.
-        // brokerage moved null → 50 (owner: "a brokerage should be changed to 50
-        // seats"), matching the live catalogue m529 already set.
+        // SEATS are the whole of the tier's say — 2 / 5 / unlimited / unlimited.
+        // brokerage moved 50 → unlimited in wave 78A (owner, 2026-09-22:
+        // "brokerage is unlimited"), m655; the literal is the plan-catalog table.
         && TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
-        && TIER_SEAT_LIMITS.brokerage === 50 && TIER_SEAT_LIMITS.multi_location === null
+        && TIER_SEAT_LIMITS.brokerage === null && TIER_SEAT_LIMITS.multi_location === null
         && PARTNER_ROLES.join(",") === "vendor"
         && src("app/actions/admin/invite-user.ts").includes("tierAllowsRole")
         && src("app/actions/superadmin/tenant-users.ts").includes("tier_matrix_override")

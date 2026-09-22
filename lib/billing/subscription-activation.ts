@@ -29,8 +29,15 @@ export interface CheckoutConfig {
 }
 
 /** Build the Stripe Checkout config: the recurring plan line item + a one-time
- *  setup-fee add-invoice-item (only when the tier carries a setup fee). */
-export function buildCheckoutConfig(tier: CheckoutTier, billingCycle: "monthly" | "annual"): CheckoutConfig {
+ *  setup-fee add-invoice-item (only when the tier carries a setup fee, and only
+ *  when it has not been WAIVED — a waiver is a platform-staff decision recorded
+ *  and audited by the caller, lib/kernel/tenant-creation.ts; this builder only
+ *  honours the flag it is handed). */
+export function buildCheckoutConfig(
+  tier: CheckoutTier,
+  billingCycle: "monthly" | "annual",
+  opts: { waiveSetupFee?: boolean } = {},
+): CheckoutConfig {
   const priceInCents = billingCycle === "annual" ? tier.annual_price_cents : tier.monthly_price_cents
   const lineItems = [{
     price_data: {
@@ -42,7 +49,7 @@ export function buildCheckoutConfig(tier: CheckoutTier, billingCycle: "monthly" 
     quantity: 1,
   }]
 
-  const setup = tier.setup_fee_cents ?? 0
+  const setup = opts.waiveSetupFee === true ? 0 : (tier.setup_fee_cents ?? 0)
   const addInvoiceItems = setup > 0
     ? [{
         price_data: {
@@ -67,6 +74,112 @@ export function buildCheckoutTaxConfig(collectTax: boolean): Record<string, unkn
     automatic_tax: { enabled: true },
     customer_update: { address: "auto", name: "auto" },
     tax_id_collection: { enabled: true },
+  }
+}
+
+// ── IMPURE: the HOSTED activation checkout (wave 78A) ─────────────────────────
+//
+// Owner, 2026-09-22: "not all converts or tenant creations are going to enroll
+// in the trial. there is a setup fee." The in-app checkout survivor
+// (app/actions/billing.ts::startSubscriptionCheckout) is EMBEDDED and
+// session-gated — it needs a signed-in tenant admin, which a prospect saying
+// "activate me now" on the phone, in the chat, or on /get-started does not yet
+// have. This is the same checkout (the SAME buildCheckoutConfig line items,
+// the SAME add_invoice_items setup fee, the SAME tax flag, the SAME
+// metadata the webhook's checkout.session.completed branch resolves the
+// tenant from) as a HOSTED session with a URL that can be sent by email/SMS or
+// redirected to. It is not a second Stripe client: it rides
+// lib/stripe.ts::getPlatformStripe, the platform's account, because a tenant
+// paying the platform for its plan is the platform's money
+// (lib/billing/stripe-account-scope.ts STRIPE_MONEY_PATHS
+// tenant_saas_subscription — this file is already named in its livesIn).
+//
+// WHAT IT RECORDS: the setup fee is a line on the FIRST Stripe invoice, so the
+// ledger the OS already keeps (billing_invoices, written by the webhook's
+// invoice.paid branch from amount_paid) carries it without a new table. The
+// session and subscription metadata also carry setup_fee_cents and
+// setup_fee_waived so the invoice can be read back against what was quoted.
+
+export interface ActivationCheckoutInput {
+  brokerageId: string
+  tierId: string
+  billingCycle: "monthly" | "annual"
+  /** Where Stripe sends the payer afterwards. */
+  successUrl: string
+  cancelUrl: string
+  /** Pre-fills the hosted page; ignored when the brokerage already has a Stripe customer. */
+  customerEmail?: string | null
+  /** A platform-staff waiver the caller has ALREADY audited (tenant-creation.ts). */
+  waiveSetupFee?: boolean
+}
+
+export type ActivationCheckoutResult =
+  | { ok: true; url: string; sessionId: string; setupFeeCents: number; setupFeeWaived: boolean; recurringCents: number }
+  | { ok: false; error: string; notConfigured?: boolean }
+
+export async function createActivationCheckout(svc: any, input: ActivationCheckoutInput): Promise<ActivationCheckoutResult> {
+  const { data: tier, error: tierErr } = await svc
+    .from("subscription_tiers")
+    .select("id, tier_name, display_name, monthly_price_cents, annual_price_cents, setup_fee_cents, is_active")
+    .eq("id", input.tierId)
+    .maybeSingle()
+  if (tierErr) return { ok: false, error: `Plan tier read refused: ${tierErr.message}` }
+  if (!tier) return { ok: false, error: "Plan tier not found — the activation checkout has no price to charge." }
+
+  const { data: brokerage, error: bErr } = await svc
+    .from("brokerages").select("name, email").eq("id", input.brokerageId).maybeSingle()
+  if (bErr) return { ok: false, error: `Brokerage read refused: ${bErr.message}` }
+  if (!brokerage) return { ok: false, error: "Brokerage not found — nothing to activate." }
+
+  // Reuse an existing Stripe customer (the staff door may have minted one).
+  const { data: existingSub, error: subErr } = await svc
+    .from("subscriptions").select("stripe_customer_id").eq("brokerage_id", input.brokerageId)
+    .not("stripe_customer_id", "is", null).limit(1).maybeSingle()
+  if (subErr) return { ok: false, error: `Subscription read refused: ${subErr.message}` }
+  const customerId = (existingSub as { stripe_customer_id?: string | null } | null)?.stripe_customer_id ?? null
+
+  const { lineItems, addInvoiceItems } = buildCheckoutConfig(tier as CheckoutTier, input.billingCycle, { waiveSetupFee: input.waiveSetupFee === true })
+  const { data: platformRow } = await svc.from("platform_settings").select("collect_tax").limit(1).maybeSingle()
+  const taxConfig = buildCheckoutTaxConfig((platformRow as { collect_tax?: boolean } | null)?.collect_tax === true)
+
+  const setupFeeCents = input.waiveSetupFee === true ? 0 : Number((tier as { setup_fee_cents?: number | null }).setup_fee_cents ?? 0)
+  const recurringCents = input.billingCycle === "annual"
+    ? Number((tier as { annual_price_cents?: number | null }).annual_price_cents ?? 0)
+    : Number((tier as { monthly_price_cents?: number | null }).monthly_price_cents ?? 0)
+  const metadata = {
+    brokerage_id: input.brokerageId,
+    tier_id: input.tierId,
+    tier_name: String((tier as { tier_name: string }).tier_name),
+    billing_cycle: input.billingCycle,
+    setup_fee_cents: String(setupFeeCents),
+    setup_fee_waived: input.waiveSetupFee === true ? "true" : "false",
+    activation: "hosted_checkout",
+  }
+
+  try {
+    const { getPlatformStripe } = await import("@/lib/stripe")
+    const stripe = await getPlatformStripe()
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      ...(customerId ? { customer: customerId } : { customer_email: (input.customerEmail ?? (brokerage as { email?: string | null }).email ?? undefined) || undefined }),
+      ...(taxConfig as Record<string, never>),
+      line_items: lineItems as never,
+      subscription_data: {
+        ...(addInvoiceItems.length > 0 ? { add_invoice_items: addInvoiceItems as never } : {}),
+        metadata,
+      },
+      metadata,
+      success_url: input.successUrl,
+      cancel_url: input.cancelUrl,
+    })
+    if (!session.url) return { ok: false, error: "Stripe returned no hosted checkout URL" }
+    return { ok: true, url: session.url, sessionId: session.id, setupFeeCents, setupFeeWaived: input.waiveSetupFee === true, recurringCents }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // No platform Stripe credential is an honest "not configured", not a bug —
+    // the tenant still exists and the in-app paywall collects when keys land.
+    const notConfigured = /STRIPE_SECRET_KEY|no stripe|not configured|credential/i.test(msg)
+    return { ok: false, error: `Activation checkout could not be created: ${msg}`, notConfigured }
   }
 }
 

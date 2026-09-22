@@ -52,8 +52,12 @@ export interface PlatformReceptionContext {
 }
 
 /** PURE: subscription_tiers rows → spoken pricing lines. Cents → dollars; only
- *  active tiers; no tiers configured → an honest "team will follow up" line. */
-export function composeTierLines(rows: Array<{ display_name?: string | null; monthly_price_cents?: number | null; max_agents?: number | null; is_active?: boolean | null }>): string[] {
+ *  active tiers; no tiers configured → an honest "team will follow up" line.
+ *  The one-time SETUP FEE (wave 78A) is spoken from the row when the tier
+ *  carries one — this is the ONLY place the assistant learns the amount, so
+ *  it can never invent it. "agents" is the right word since a seat is a
+ *  producer (lib/kernel/tier-role-matrix.ts); staff are free. */
+export function composeTierLines(rows: Array<{ display_name?: string | null; monthly_price_cents?: number | null; max_agents?: number | null; is_active?: boolean | null; setup_fee_cents?: number | null }>): string[] {
   const active = (rows ?? []).filter((r) => r?.is_active !== false && (r?.display_name ?? "").trim())
   if (active.length === 0) return ["Pricing is being finalized — offer to have the team follow up with current plan details. Never invent a price."]
   return active.map((r) => {
@@ -61,7 +65,10 @@ export function composeTierLines(rows: Array<{ display_name?: string | null; mon
       ? `$${(r.monthly_price_cents / 100).toLocaleString("en-US")} per month`
       : "pricing on request"
     const seats = typeof r.max_agents === "number" && r.max_agents > 0 ? `, up to ${r.max_agents} agents` : ""
-    return `${(r.display_name ?? "").trim()}: ${price}${seats}`
+    const setup = typeof r.setup_fee_cents === "number" && r.setup_fee_cents > 0
+      ? `, plus a one-time $${(r.setup_fee_cents / 100).toLocaleString("en-US")} setup fee when activating (the free trial has no setup fee until they activate)`
+      : ""
+    return `${(r.display_name ?? "").trim()}: ${price}${seats}${setup}`
   })
 }
 
@@ -81,7 +88,7 @@ export async function resolvePlatformReceptionContext(
   const [brand, tiers, playbookBrand] = await Promise.all([
     loadProductBrand(svc),
     svc.from("subscription_tiers")
-      .select("display_name, monthly_price_cents, max_agents, is_active")
+      .select("display_name, monthly_price_cents, max_agents, is_active, setup_fee_cents")
       .eq("is_active", true).order("monthly_price_cents", { ascending: true })
       .then((r: any) => r.data ?? [], () => []),
     loadBrandPlaybookContext({ brokerageId: null }).catch(() => null),

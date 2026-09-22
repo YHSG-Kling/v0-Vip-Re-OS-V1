@@ -48,6 +48,58 @@
 export const AI_OVERAGE_METRIC = "ai_tokens_monthly" as const
 
 export const CANONICAL_TIERS = ["solo_agent", "team", "brokerage", "multi_location"] as const
+export type CanonicalTierName = (typeof CANONICAL_TIERS)[number]
+
+// ── THE SEAT BANDS — ONE DERIVATION (wave 78A, owner verbatim 2026-09-22) ─────
+//
+//   "the tier seat bands are solo agent maxseats 2 team is 5 brokerage is
+//    unlimited and same to multiple locations is unlimited. … staff should not
+//    take up seats. … these seat numbers have already been coded."
+//
+// They HAD been coded — in three places that disagreed: lib/kernel/tier-role-
+// matrix.ts said 2/5/50/null (brokerage 50 per the superseded 2026-08-22
+// ruling), lib/platform/prospect-conversion.ts said 1/15/75/∞ (a tier-fit
+// table nobody reconciled), and the live catalogue (subscription_tiers.
+// max_agents, plan_limits.active_users) said 2/5/50. CLAUDE.md §6: two
+// spellings of one number is a defect. This is the ONE product statement of
+// the bands; every other seat surface DERIVES from it:
+//
+//   · lib/kernel/tier-role-matrix.ts  TIER_SEAT_LIMITS  ≡ this object (the
+//     gate's fallback when the catalogue cannot be read)
+//   · lib/platform/prospect-conversion.ts tierForProspect → tierForSeatCount
+//   · supabase/migrations/m655-…sql moves the live catalogue onto it; the
+//     seat gate reads the catalogue FIRST (resolveCatalogSeatLimits) and
+//     scripts/seat-bands-guard.ts pins the migration's numbers to this table.
+//
+// `null` = unlimited. multi_location is unlimited too — it is chosen by SHAPE
+// (several offices), never by a seat count, which is why tierForSeatCount can
+// never return it.
+//
+// WHAT A SEAT IS (the second half of the ruling) lives beside the count that
+// enforces it: lib/kernel/tier-role-matrix.ts PRODUCER_SEAT_ROLES /
+// SEAT_BY_PRODUCTION_ROLES / FREE_STAFF_ROLES and roleConsumesSeat. Short
+// form: a seat is a LICENSED PRODUCER; staff never consume one.
+export const TIER_SEAT_BANDS: Readonly<Record<CanonicalTierName, number | null>> = Object.freeze({
+  solo_agent:     2,
+  team:           5,
+  brokerage:      null,
+  multi_location: null,
+})
+
+/** PURE: the cheapest tier whose band fits this many producer seats, walking
+ *  CANONICAL_TIERS in order. 0/NaN/negative reads as one seat (the person
+ *  asking). Never returns a tier by mistake of arithmetic — the first
+ *  unlimited band takes everything above the capped ones. */
+export function tierForSeatCount(seats: number | null | undefined): CanonicalTierName {
+  const n = typeof seats === "number" && Number.isFinite(seats) && seats > 0 ? Math.round(seats) : 1
+  for (const tier of CANONICAL_TIERS) {
+    const band = TIER_SEAT_BANDS[tier]
+    if (band === null || n <= band) return tier
+  }
+  // Unreachable while any band is unlimited; kept so a future all-capped table
+  // still answers with the largest tier rather than undefined.
+  return CANONICAL_TIERS[CANONICAL_TIERS.length - 1]
+}
 
 export interface PlanTierInput {
   tierName: string

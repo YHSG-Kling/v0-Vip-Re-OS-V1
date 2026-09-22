@@ -19,10 +19,18 @@
 // So: a user consumes ONE seat if they are not suspended and ANY of their roles
 // (primary or assigned) is seat-consuming. Distinct users, never role rows —
 // giving a user a second role must never charge them twice.
+//
+// AND A SEAT IS A PRODUCER (wave 78A, owner: "staff should not take up seats").
+// The third read below is the `agents` table: a broker, broker_owner or admin
+// counts only while they hold an ACTIVE agents record (they produce — the
+// solo/team owner is exactly this), an agent or team_lead counts by type, and
+// free staff (broker_admin, tc, isa, compliance_officer) never count even when
+// the desk seeded them an agents row. The predicate is lib/kernel/
+// tier-role-matrix.ts roleConsumesSeat — this file supplies the FACT it needs.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
-  SEAT_ROLES, isCanonicalTier, roleConsumesSeat,
+  isCanonicalTier, roleConsumesSeat, roleProducesOnTier, WORKSPACE_STAFF_ROLES,
   seatDecision, seatDecisionMessage, parseSeatOverride,
   normalizeCatalogSeatLimit,
   type CatalogSeatLimits, type SeatDecision,
@@ -40,12 +48,16 @@ export interface SeatUsage {
    * must REFUSE on `ok: false`.
    */
   ok: boolean
-  /** Distinct non-suspended users holding at least one seat-consuming role. */
+  /** Distinct non-suspended PRODUCERS (roleConsumesSeat with the agents-record fact). */
   seatCount: number
   /** Their user ids — so a surface can show WHO, not just how many. */
   seatHolderIds: string[]
   /** Everyone in the workspace, seat-holding or not (partners, contacts, system). */
   peopleCount: number
+  /** Non-suspended working staff who hold NO seat (admin, tc, isa, compliance,
+   *  broker_admin, a non-producing broker) — shown beside the seat count so a
+   *  tenant sees that staff are free rather than uncounted. */
+  freeStaffCount: number
   /**
    * Every DISTINCT role in use by a non-suspended seat holder, from BOTH sources.
    *
@@ -63,44 +75,58 @@ export interface SeatUsage {
  * rather than a misleading number, and the caller renders an honest empty state.
  */
 export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<SeatUsage> {
-  const seatRoles = new Set<string>(SEAT_ROLES as readonly string[])
-
-  const [usersRes, rolesRes] = await Promise.all([
+  const [usersRes, rolesRes, agentsRes] = await Promise.all([
     svc.from("users").select("id, user_type, status").eq("brokerage_id", brokerageId),
     svc.from("user_role_assignments").select("user_id, role").eq("brokerage_id", brokerageId),
+    // The PRODUCTION fact — an active agents record is what makes a broker,
+    // broker_owner or admin a seat. agents.user_id → users.id (the two id
+    // classes are disjoint, CLAUDE.md §3; this is the documented crossing).
+    svc.from("agents").select("user_id, is_active").eq("brokerage_id", brokerageId),
   ])
 
-  // BOTH reads must have succeeded for the number to mean anything: the seat
-  // count is a UNION over users.user_type and user_role_assignments, so a
-  // refusal on either half silently under-counts, which on a gate is an admit.
-  const ok = !usersRes.error && !rolesRes.error
+  // ALL THREE reads must have succeeded for the number to mean anything: the
+  // seat count is a UNION over users.user_type and user_role_assignments,
+  // qualified by the agents table, so a refusal on any part silently
+  // under-counts, which on a gate is an admit.
+  const ok = !usersRes.error && !rolesRes.error && !agentsRes.error
 
   const users = (usersRes.data ?? []) as Array<{ id: string; user_type: string | null; status: string | null }>
   const assignments = (rolesRes.data ?? []) as Array<{ user_id: string | null; role: string | null }>
+  const agentRows = (agentsRes.data ?? []) as Array<{ user_id: string | null; is_active: boolean | null }>
 
-  // user_id → every seat-consuming role they hold by ASSIGNMENT
-  const assignedSeatRole = new Set<string>()
+  // user_id → who produces (an agents row that is not switched off). A row
+  // with is_active NULL is treated as active — the column defaults true and a
+  // NULL is an unbackfilled row, not a deactivated agent.
+  const producing = new Set<string>()
+  for (const a of agentRows) if (a.user_id && a.is_active !== false) producing.add(a.user_id)
+
+  // user_id → every role they hold by ASSIGNMENT
+  const assignedRoles = new Map<string, string[]>()
   for (const a of assignments) {
-    if (a.user_id && a.role && seatRoles.has(a.role)) assignedSeatRole.add(a.user_id)
+    if (a.user_id && a.role) assignedRoles.set(a.user_id, [...(assignedRoles.get(a.user_id) ?? []), a.role])
   }
 
-  const holders = users.filter(
-    (u) =>
-      u.status !== "suspended" &&
-      (seatRoles.has(u.user_type ?? "") || assignedSeatRole.has(u.id)),
+  const rolesOf = (u: { id: string; user_type: string | null }): string[] =>
+    [u.user_type ?? "", ...(assignedRoles.get(u.id) ?? [])].filter(Boolean)
+
+  const working = users.filter((u) => u.status !== "suspended")
+  const holders = working.filter((u) =>
+    rolesOf(u).some((r) => roleConsumesSeat(r, { produces: producing.has(u.id) })),
   )
+  const holderIds = new Set(holders.map((u) => u.id))
+  // Free staff: working people who hold a WORKSPACE role but no seat.
+  const staffRoles = new Set<string>(WORKSPACE_STAFF_ROLES as readonly string[])
+  const freeStaff = working.filter((u) => !holderIds.has(u.id) && rolesOf(u).some((r) => staffRoles.has(r)))
 
   // Roles actually in use across both sources, restricted to seat holders — a
-  // suspended user's role is not "in use", and a partner's never was.
-  const holderIds = new Set(holders.map((u) => u.id))
+  // suspended user's role is not "in use", and a partner's never was. A holder
+  // who produces is reported as holding the agent role too: the agent-role
+  // advisory asks "does anyone here carry a book of business", and an admin
+  // owner wearing an agents row does.
   const rolesInUse = new Set<string>()
   for (const u of holders) {
-    if (u.user_type && seatRoles.has(u.user_type)) rolesInUse.add(u.user_type)
-  }
-  for (const a of assignments) {
-    if (a.user_id && a.role && seatRoles.has(a.role) && holderIds.has(a.user_id)) {
-      rolesInUse.add(a.role)
-    }
+    for (const r of rolesOf(u)) if (staffRoles.has(r)) rolesInUse.add(r)
+    if (producing.has(u.id)) rolesInUse.add("agent")
   }
 
   return {
@@ -108,6 +134,7 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
     seatCount: holders.length,
     seatHolderIds: holders.map((u) => u.id),
     peopleCount: users.length,
+    freeStaffCount: freeStaff.length,
     rolesInUse: [...rolesInUse].sort(),
   }
 }
@@ -121,15 +148,13 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
 // as `maxAgents`), and the same column the tenant's own billing page and the
 // platform voice receptionist quote to a caller.
 //
-// THE COLUMN NAME IS WRONG AND IS NOT RENAMED HERE. A seat is any working staff
-// user (SEAT_ROLES: admin, broker, broker_owner, team_lead, agent, tc, isa,
-// compliance_officer), not only an `agent`. Renaming it to max_seats is a
-// migration this lane may not apply (CLAUDE.md §3), and code that read a column
-// the live database does not have yet would fail every read (PGRST204 shape) —
-// so the SURVIVING column is max_agents, its meaning is stated in a COMMENT ON
-// COLUMN in the migration, and the rename is reported as a follow-up rather than
-// smuggled in. What the migration DOES fix is the number: live it said solo=1 /
-// team=10, contradicting the owner's 2 / 5 on the surface a prospect reads.
+// THE COLUMN NAME IS RIGHT AGAIN. m523 recorded that `max_agents` was misnamed
+// because a seat was then "any working staff user"; wave 78A's ruling ("staff
+// should not take up seats") made a seat a PRODUCER — an agent, a team lead, or
+// a broker/owner/admin who holds an agents record — so the column now counts
+// exactly what its name says, and the rename m523 reported as a follow-up is
+// withdrawn (m655 states this in a COMMENT ON COLUMN). What m655 DOES move is
+// the number: brokerage 50 → unlimited (NULL), matching TIER_SEAT_BANDS.
 //
 // UNLIMITED has two spellings in the catalogue — NULL and -1 (the upgrade modal
 // renders -1 as "Unlimited") — and both normalise to null here, because a raw -1
@@ -219,12 +244,21 @@ export async function seatGate(
   svc: Svc,
   brokerageId: string,
   role: UserDomainRole | string,
-  opts?: { seatsRequested?: number; subjectUserId?: string | null },
+  opts?: {
+    seatsRequested?: number
+    subjectUserId?: string | null
+    /** Will this person PRODUCE (hold an agents record)? Only consulted for a
+     *  seat-by-production role (broker / broker_owner / admin). Omitted → the
+     *  provisioning spec answers for the tenant's tier (roleProducesOnTier). */
+    produces?: boolean
+  },
 ): Promise<SeatGateVerdict> {
-  if (!roleConsumesSeat(role as UserDomainRole)) {
-    // Contacts, lenders, vendors and the AI-ISA system actor are tenant-scoped
-    // people who are NOT staff. They must never eat a subscription seat — a
-    // brokerage's contact list would swallow the plan on its first import.
+  // Roles that are never a seat, whatever the tenant looks like: free staff,
+  // partners, contacts, lenders, the AI-ISA system actor. They must never eat
+  // a subscription seat — a brokerage's contact list would swallow the plan on
+  // its first import, and (wave 78A) a TC or ISA hired by a solo agent would
+  // have taken the seat the plan sold for a second producer.
+  if (!roleConsumesSeat(role, { produces: true })) {
     return { allowed: true, reason: "not_a_seat", decision: null, message: null, seatCount: null, tier: null }
   }
 
@@ -245,6 +279,14 @@ export async function seatGate(
   }
 
   const tier = (tenant as { plan_tier?: string | null }).plan_tier ?? null
+
+  // A seat-by-production role is a seat only if this person will produce. The
+  // tier had to be read first (the solo/team owner produces, a brokerage-tier
+  // admin does not), which is why this check sits after the tenant read.
+  const produces = opts?.produces ?? roleProducesOnTier(role, tier)
+  if (!roleConsumesSeat(role, { produces })) {
+    return { allowed: true, reason: "not_a_seat", decision: null, message: null, seatCount: null, tier }
+  }
 
   const usage = await resolveSeatUsage(svc, brokerageId)
   if (!usage.ok) {

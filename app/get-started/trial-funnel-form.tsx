@@ -45,6 +45,13 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
     ? initialTier
     : (tiers.find((t) => t.featured)?.tierName ?? tiers[0]?.tierName ?? "team")) as CanonicalTier
   const [tier, setTier] = useState<CanonicalTier>(defaultTier)
+  // Wave 78A — not everyone wants the trial. 'paid' = activate now: the server
+  // mints a hosted checkout (plan + the tier's one-time setup fee) and we send
+  // the signer there; access opens when it clears. The fee shown is the
+  // tier row's own setup_fee_cents — never a number this form knows.
+  const [activation, setActivation] = useState<"trial" | "paid">("trial")
+  const [billingCycle, setBillingCycle] = useState<"monthly" | "annual">("monthly")
+  const selectedTier = tiers.find((t) => t.tierName === tier) ?? null
 
   const [couponInput, setCouponInput] = useState("")
   const [coupon, setCoupon] = useState<CouponState>({ status: "idle" })
@@ -99,22 +106,41 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
         couponCode: coupon.status === "valid" ? coupon.code : (couponInput.trim() || undefined),
         // Territory carry from /pricing (merged in from the retired /signup form).
         territoryZip: initialZip ?? undefined,
+        activation,
+        billingCycle: activation === "paid" ? billingCycle : undefined,
       })
       if (!r.ok) { setError(r.error ?? "Sign-up failed."); return }
       setSuccess(r)
+      // Paid activation: straight to the hosted checkout. The success card
+      // below still renders behind it (and stays if the redirect is blocked).
+      if (r.activation === "paid" && r.checkoutUrl) window.location.assign(r.checkoutUrl)
     })
   }
 
   if (success) {
+    const paid = success.activation === "paid"
     return (
       <Card>
         <CardContent className="p-8 space-y-3">
           <div className="text-center">
             <CheckCircle2 className="h-10 w-10 mx-auto mb-3 text-emerald-600" />
             <p className="font-medium">You&apos;re in — check {email} for your invite link.</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              Your free trial ends {success.trialEndsAt ? new Date(success.trialEndsAt).toLocaleDateString() : "in 14 days"}. No card on file until you add billing.
-            </p>
+            {paid ? (
+              success.checkoutUrl ? (
+                <p className="text-sm text-muted-foreground mt-1">
+                  Taking you to the secure checkout to activate your plan{success.setupFeeCents && success.setupFeeCents > 0 ? ` (plus a one-time ${formatTierPrice(success.setupFeeCents)} setup fee)` : ""}.
+                  If nothing happens, <a className="underline" href={success.checkoutUrl}>open the checkout</a>. Your workspace opens the moment it clears.
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground mt-1">
+                  Your account is reserved, but the checkout couldn&apos;t be created right now{success.checkoutError ? ` (${success.checkoutError})` : ""}. Sign in with your invite link and activate from the billing page.
+                </p>
+              )
+            ) : (
+              <p className="text-sm text-muted-foreground mt-1">
+                Your free trial ends {success.trialEndsAt ? new Date(success.trialEndsAt).toLocaleDateString() : "in 14 days"}. No card on file until you add billing.
+              </p>
+            )}
           </div>
           <div className="text-sm space-y-1.5 max-w-md mx-auto">
             {success.snapshotApplied && success.snapshotApplied.length > 0 && (
@@ -194,6 +220,36 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
           </div>
         )}
       </div>
+
+      {/* 1b — Trial or activate now (wave 78A). The setup fee is the tier row's own number. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">How do you want to start?</div>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <label className="flex items-start gap-2 text-sm">
+            <input type="radio" name="gs-activation" className="mt-1" checked={activation === "trial"} onChange={() => setActivation("trial")} />
+            <span><span className="font-medium">Free 14-day trial</span> — no card now; add billing inside the app when you&apos;re ready.</span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="radio" name="gs-activation" className="mt-1" checked={activation === "paid"} onChange={() => setActivation("paid")} />
+            <span>
+              <span className="font-medium">Activate now</span> — skip the trial and go straight to a secure checkout for the {selectedTier?.displayName ?? "plan"}
+              {selectedTier && selectedTier.setupCents > 0
+                ? <> plus a one-time <span className="font-medium">{formatTierPrice(selectedTier.setupCents)} setup fee</span> (onboarding, data import, your AI twin and voice setup).</>
+                : <>. This plan lists no setup fee.</>}
+              {" "}Your workspace opens the moment it clears.
+            </span>
+          </label>
+          {activation === "paid" && (
+            <div className="flex items-center gap-3 pl-6 text-xs">
+              <span className="text-muted-foreground">Bill me</span>
+              <label className="flex items-center gap-1"><input type="radio" name="gs-cycle" checked={billingCycle === "monthly"} onChange={() => setBillingCycle("monthly")} /> monthly {selectedTier ? `(${formatTierPrice(selectedTier.monthlyCents)}/mo)` : ""}</label>
+              <label className="flex items-center gap-1"><input type="radio" name="gs-cycle" checked={billingCycle === "annual"} onChange={() => setBillingCycle("annual")} /> annually {selectedTier && selectedTier.annualCents > 0 ? `(${formatTierPrice(selectedTier.annualCents)}/yr)` : ""}</label>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* 2 — Optional coupon with live validation (validated now, redeemed at signup, billed at checkout) */}
       <Card>
@@ -309,10 +365,14 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
           I agree to the Terms of Service and Privacy Policy (acceptance is recorded with the current terms version).
         </label>
         <Button type="submit" size="lg" disabled={isPending || !tosAccepted}>
-          {isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Provisioning…</> : "Start free trial"}
+          {isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Provisioning…</> : activation === "paid" ? "Activate now" : "Start free trial"}
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground text-center">No charge for 14 days. Cancel any time from your billing page.</p>
+      <p className="text-xs text-muted-foreground text-center">
+        {activation === "paid"
+          ? "You'll complete payment on the next screen. Cancel any time from your billing page."
+          : "No charge for 14 days. Cancel any time from your billing page."}
+      </p>
     </form>
   )
 }

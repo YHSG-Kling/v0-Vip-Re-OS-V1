@@ -12,8 +12,9 @@
 // independent things. Naming them, in the owner's own terms:
 //
 //   1. SUBSCRIPTION TIER   what the tenant BUYS. Decides SEATS. Nothing else.
-//   2. SEATS               2 / 5 / 50 / unlimited. The ONLY tier-imposed limit.
-//   3. USER TYPE           what a person IS. One per user. Costs ONE seat.
+//   2. SEATS               2 / 5 / unlimited / unlimited. The ONLY tier-imposed limit.
+//   3. USER TYPE           what a person IS. One per user. Costs ONE seat when
+//                          it is a PRODUCER (roleConsumesSeat); staff cost none.
 //   4. PERMISSION ROLES    grants layered ON TOP of a user type
 //                          (user_role_assignments). Never a seat of their own.
 //
@@ -67,9 +68,13 @@
 // scripts/lead-visibility-roster-simulator.ts, which pins the team lead's desk
 // independently of anything here.
 //
-//   • SEATS: solo_agent = 2 · team = 5 · brokerage = 50 · multi_location =
-//     unlimited. A "seat" is a working staff user (SEAT_ROLES). Partner
-//     users, contacts, lenders and the AI-ISA system actor do NOT consume seats.
+//   • SEATS: solo_agent = 2 · team = 5 · brokerage = unlimited · multi_location =
+//     unlimited (lib/billing/plan-catalog.ts TIER_SEAT_BANDS — the ONE
+//     derivation; wave 78A, owner 2026-09-22: "brokerage is unlimited and same
+//     to multiple locations is unlimited", superseding "a brokerage should be
+//     changed to 50 seats"). A "seat" is a LICENSED PRODUCER (see the three
+//     rosters below); staff, partner users, contacts, lenders and the AI-ISA
+//     system actor do NOT consume seats.
 //   • OVER THE LIMIT IS AN UPGRADE, NOT A PAID EXTRA SEAT — OWNER, VERBATIM,
 //     SUPERSEDING THE EARLIER HALF OF THIS RULE:
 //
@@ -119,36 +124,77 @@
 // path (see app/actions/superadmin/tenant-users.ts).
 
 import type { UserDomainRole, CanonicalTier } from "./users"
+import { TIER_SEAT_BANDS } from "@/lib/billing/plan-catalog"
+import { requiresAgentRow } from "./tenant-provisioning-spec"
 
 /** Partner roles every tier may invite (never seat-consuming). Vendor ONLY —
  *  lenders are a vendor category, not a role. */
 export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 
+// ─── WHAT A SEAT IS (wave 78A, owner verbatim 2026-09-22) ────────────────────
+//
+//   "staff should not take up seats. need your expertise to confirm that."
+//
+// Confirmed, and this is the industry norm the OS now follows: a seat is a
+// LICENSED PRODUCER — the person whose book of business the subscription
+// exists to run. Follow Up Boss, Lofty, Sierra and BoldTrail all price the
+// producing user; admins, transaction coordinators, ISAs, marketing and
+// compliance staff are either free or on a separate allowance, never the
+// thing the plan counts. The previous roster (`SEAT_ROLES`, retired below)
+// charged a seat for every working user type, so a solo agent who hired a TC
+// was at 2 of 2 and could not add a second agent — the plan was measuring the
+// wrong thing.
+//
+// THREE ROSTERS, ONE PREDICATE (`roleConsumesSeat`):
+//
+//   PRODUCER_SEAT_ROLES        a seat by TYPE. agent and team_lead always carry
+//                              a book of business (AGENT_ROLES in
+//                              tenant-provisioning-spec.ts) and always count.
+//
+//   SEAT_BY_PRODUCTION_ROLES   a seat ONLY WHILE THEY PRODUCE. broker and
+//                              broker_owner are licensed but many run the shop
+//                              and never sell; admin is staff — EXCEPT that the
+//                              solo/team tenant OWNER is provisioned as `admin`
+//                              wearing an agents row (provisionTenantOwner +
+//                              requiresAgentRow), and that owner IS the
+//                              producing agent the plan is sold to. So these
+//                              count exactly when they hold an active `agents`
+//                              record. "Brokers count only if they produce."
+//
+//   FREE_STAFF_ROLES           never a seat, even when the desk gave them an
+//                              agents record for operational reasons (the ISA
+//                              holds contacts, so AGENT_ROLES seeds one; that
+//                              is a desk, not a licence).
+//
+// The solo owner is therefore still seat 1 of 2 (they produce), a TC or ISA
+// they hire is free, and their second seat is a second producer. Positive
+// controls in scripts/seat-cap-simulator.ts and scripts/seat-bands-guard.ts
+// pin all three directions: a staff add never moves the count, the 6th team
+// producer is refused, a brokerage is never refused.
+export const PRODUCER_SEAT_ROLES: readonly UserDomainRole[] = ["agent", "team_lead"]
+export const SEAT_BY_PRODUCTION_ROLES: readonly UserDomainRole[] = ["broker", "broker_owner", "admin"]
+export const FREE_STAFF_ROLES: readonly UserDomainRole[] = ["broker_admin", "tc", "isa", "compliance_officer"]
+
 /**
- * Seat-consuming USER TYPES — the full staff roster of the OS. Every one of
- * these costs exactly ONE seat, on every tier.
+ * The full WORKING roster of the OS — every user type a tenant may seat at a
+ * desk, seat-consuming or not. This is the INVITE MENU (with PARTNER_ROLES),
+ * not the seat count: `roleConsumesSeat` below decides who is billed.
  *
- * `broker_admin` is in this list on the owner's ruling ("a broker admin is a user
- * type with differnt permission roles") and on CLAUDE.md §4, whose tenant roster
- * is broker / broker_admin / broker_owner / team_lead / admin.
+ * TOMBSTONE — `SEAT_ROLES` (this same nine-name list) was retired in wave 78A
+ * because its name asserted that every entry consumed a seat, and the owner
+ * ruled that staff do not. Nothing merged: the roster is unchanged, only its
+ * meaning split into "may be seated" (here) and "is billed" (the three lists
+ * above). Survivor for the billing question: `roleConsumesSeat`,
+ * this file; for the count: lib/kernel/seat-usage.ts resolveSeatUsage.
  *
- * ── broker_admin IS NOT STORABLE YET, AND THAT IS TRACKED, NOT HIDDEN ────────
- *
- * MEASURED LIVE 2026-08-22: users_user_type_check admits fourteen values and
- * `broker_admin` is NOT one of them, which is why m308 and m518 deliberately
- * REMOVED it from the RLS predicates ("the column cannot hold it"). Listing it
- * here is the PRODUCT truth; the DATABASE truth catches up in
- * supabase/migrations/m530-broker-admin-is-a-user-type-the-column-cannot-hold.sql
- * (WRITTEN, NOT APPLIED — CLAUDE.md §3).
- *
- * Nothing silently breaks in the meantime, because the invite menu is INTERSECTED
- * with the storable vocabulary — see `seatableUserTypes` below. Until m530 is
- * applied and the vocabulary cache regenerated, broker_admin is simply not
- * offered; the day it is, it appears with no further code change.
- * scripts/seat-cap-simulator.ts asserts that coupling in both directions.
+ * `broker_admin` is here on the owner's ruling ("a broker admin is a user type
+ * with differnt permission roles") and CLAUDE.md §4's tenant roster; m530 made
+ * it storable and the live vocabulary now admits it. The invite menu is still
+ * INTERSECTED with the storable vocabulary (`seatableUserTypes`), so a future
+ * product-only user type is never offered before its migration lands.
  */
-export const SEAT_ROLES: readonly UserDomainRole[] = [
-  "admin", "broker", "broker_admin", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer",
+export const WORKSPACE_STAFF_ROLES: readonly UserDomainRole[] = [
+  ...PRODUCER_SEAT_ROLES, ...SEAT_BY_PRODUCTION_ROLES, ...FREE_STAFF_ROLES,
 ]
 
 /**
@@ -168,7 +214,7 @@ export const SEAT_ROLES: readonly UserDomainRole[] = [
  * every call site already asks the question tier-first. What is gone is the
  * ANSWER differing by tier.
  */
-const ALL_SEATABLE_ROLES: readonly UserDomainRole[] = [...SEAT_ROLES, ...PARTNER_ROLES]
+const ALL_SEATABLE_ROLES: readonly UserDomainRole[] = [...WORKSPACE_STAFF_ROLES, ...PARTNER_ROLES]
 
 export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole[]> = {
   solo_agent:     ALL_SEATABLE_ROLES,
@@ -178,31 +224,26 @@ export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole
 }
 
 /**
- * Canonical tier → seat limit (null = unlimited). Seats count SEAT_ROLES users only.
+ * Canonical tier → seat limit (null = unlimited). Seats count PRODUCERS only
+ * (roleConsumesSeat).
  *
- * ── brokerage MOVED null → 50, TO CATCH UP WITH THE CATALOGUE ───────────────
+ * ── NOT A SECOND TABLE: THE SAME OBJECT AS TIER_SEAT_BANDS ──────────────────
  *
- * OWNER: "a brokerage should be changed to 50 seats". The live catalogue already
- * says so — MEASURED 2026-08-22, `subscription_tiers.max_agents` is
- * solo 2 / team 5 / brokerage 50 / multi NULL, and `plan_limits.active_users`
- * agrees (2 / 5 / 50 / -1). Both were moved live by m529.
+ * This used to be a literal — 2 / 5 / 50 / null — kept "in agreement with the
+ * catalogue by a migration". It drifted anyway: the owner's 2026-09-22 ruling
+ * made brokerage unlimited, and three files held three numbers. The fallback
+ * the gate uses when the catalogue cannot be read is now BY IDENTITY the one
+ * product statement in lib/billing/plan-catalog.ts (`TIER_SEAT_LIMITS ===
+ * TIER_SEAT_BANDS`, asserted by scripts/seat-bands-guard.ts), so there is
+ * nothing left to keep in agreement. The name survives because thirty-odd
+ * call sites and proofs read it and it says exactly what it is here: the
+ * limit a tier imposes.
  *
- * This literal still said `null`, i.e. UNLIMITED. It is the fallback used
- * whenever the catalogue cannot be read — a client bundle, or a refused read on a
- * display surface — so the one moment it speaks is the moment the real number is
- * unavailable, and it was answering "unlimited" for a 50-seat plan. That is a
- * fail-OPEN fallback on the seat axis, which CLAUDE.md §4 forbids. Now the two
- * agree, and scripts/seat-cap-simulator.ts pins this map against the live
- * catalogue so they cannot drift apart again.
- *
- * multi_location stays null: unlimited is the product, not a missing number.
+ * It still fails CLOSED where it must: an unknown tier resolves to the floor
+ * (seatLimitForTier), and the GATE refuses outright when the catalogue read
+ * is refused (lib/kernel/seat-usage.ts) rather than falling to this.
  */
-export const TIER_SEAT_LIMITS: Record<CanonicalTier, number | null> = {
-  solo_agent:     2,
-  team:           5,
-  brokerage:      50,
-  multi_location: null,
-}
+export const TIER_SEAT_LIMITS: Readonly<Record<CanonicalTier, number | null>> = TIER_SEAT_BANDS
 
 /**
  * UNLIMITED HAS TWO SPELLINGS IN THE CATALOGUE. This is the ONE place that
@@ -371,9 +412,40 @@ export function tierAllowsRole(tier: string | null | undefined, role: UserDomain
   return invitableRolesForTier(tier).includes(role)
 }
 
-/** Does this role consume a seat? Partners never do. */
-export function roleConsumesSeat(role: UserDomainRole): boolean {
-  return (SEAT_ROLES as readonly string[]).includes(role)
+/**
+ * Does this role consume a seat? THE predicate — the count (resolveSeatUsage)
+ * and the gate (seatGate) both ask it, so the meter and the refusal cannot
+ * disagree about who is billed.
+ *
+ *   producer by type          → true
+ *   seat-by-production role   → `produces` (holds / will hold an active agents
+ *                               record). Absent that fact the answer is FALSE:
+ *                               a broker or admin is staff until they sell.
+ *   free staff / partner /
+ *   contact / system / platform → false, whatever else is true
+ *
+ * `produces` is a FACT the caller supplies — the resolver reads the agents
+ * table; the gate derives it from requiresAgentRow(role, tier) for an invite
+ * or takes the caller's explicit statement. It is never inferred here from the
+ * role alone, because that is the inference the retired SEAT_ROLES made.
+ */
+export function roleConsumesSeat(role: UserDomainRole | string, opts?: { produces?: boolean }): boolean {
+  if ((PRODUCER_SEAT_ROLES as readonly string[]).includes(role)) return true
+  if ((SEAT_BY_PRODUCTION_ROLES as readonly string[]).includes(role)) return opts?.produces === true
+  return false
+}
+
+/**
+ * PURE: will a person invited as `role` onto a tenant on `tier` produce?
+ * The provisioning spec already answers "does this (role, tier) get an agents
+ * row" — that IS production for a seat-by-production role (the solo/team
+ * owner is an admin wearing an agents row; a brokerage-tier admin is not).
+ * FREE_STAFF_ROLES are excluded before the spec is consulted so the ISA's
+ * operational agents row never reads as a licence.
+ */
+export function roleProducesOnTier(role: UserDomainRole | string, tier: string | null | undefined): boolean {
+  if ((FREE_STAFF_ROLES as readonly string[]).includes(role)) return false
+  return requiresAgentRow(role, tier ?? null)
 }
 
 /**

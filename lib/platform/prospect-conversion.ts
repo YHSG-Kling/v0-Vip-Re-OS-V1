@@ -57,13 +57,18 @@
 //     created by the staff door (app/actions/admin/create-subscriber.ts) and a
 //     card is collected in-app by the tenant admin through the ONE checkout
 //     survivor (app/actions/billing.ts::startSubscriptionCheckout, session-
-//     gated). A public chat/voice surface never mints a Stripe checkout.
+//     gated) — or, for a PAID ACTIVATION (wave 78A), through the HOSTED twin
+//     of that checkout minted by the core (lib/billing/subscription-
+//     activation.ts::createActivationCheckout: plan + the tier's setup fee,
+//     access when it clears). This module only carries the URL back. A public
+//     chat/voice surface still never takes a card itself.
 //
 //     IDENTITY (CLAUDE.md §4): the new brokerage id comes back from the core,
 //     never from a request body; a platform_prospects.id is never passed as a
 //     contactId/leadId anywhere in this module.
 
-import type { TenantCreationInput, TenantCreationResult, CanonicalTier } from "@/lib/kernel/tenant-creation"
+import type { TenantCreationInput, TenantCreationResult, CanonicalTier, SetupFeeWaiver } from "@/lib/kernel/tenant-creation"
+import { CANONICAL_TIERS, tierForSeatCount } from "@/lib/billing/plan-catalog"
 
 export type ConversionOutcome = "trial" | "converted"
 
@@ -226,24 +231,22 @@ export interface ProspectTenantFacts {
 /**
  * PURE: the plan a prospect's SHAPE fits, when they did not name one. A
  * declared role_interest that is already a canonical tier wins; otherwise the
- * seat count they gave picks the band. The bands are the SaaS operator's
- * default — a rep or the prospect overrides the tier explicitly, this only
- * decides what to propose.
+ * seat count they gave picks the band.
+ *
+ * TOMBSTONE (wave 78A): this file carried its OWN band table —
+ * `TIER_SEAT_BANDS = solo ≤1 / team ≤15 / brokerage ≤75 / multi ∞` — which
+ * contradicted the seat caps the gate enforces (2 / 5 / ∞ / ∞) and so quoted a
+ * prospect with 3 agents the Team plan while the plan they were sold seats 5.
+ * DELETED; survivor: lib/billing/plan-catalog.ts TIER_SEAT_BANDS +
+ * tierForSeatCount (the ONE derivation). multi_location is a SHAPE (several
+ * offices), never a seat count, so it is reached only by declaration.
  */
-export const TIER_SEAT_BANDS: ReadonlyArray<{ tier: CanonicalTier; maxSeats: number }> = [
-  { tier: "solo_agent", maxSeats: 1 },
-  { tier: "team", maxSeats: 15 },
-  { tier: "brokerage", maxSeats: 75 },
-  { tier: "multi_location", maxSeats: Number.POSITIVE_INFINITY },
-]
-
-const CANONICAL_TIER_SET: ReadonlySet<string> = new Set(["solo_agent", "team", "brokerage", "multi_location"])
+const CANONICAL_TIER_SET: ReadonlySet<string> = new Set(CANONICAL_TIERS)
 
 export function tierForProspect(roleInterest: string | null | undefined, sizeSeats: number | null | undefined): CanonicalTier {
   const declared = (roleInterest ?? "").trim()
   if (CANONICAL_TIER_SET.has(declared)) return declared as CanonicalTier
-  const seats = typeof sizeSeats === "number" && Number.isFinite(sizeSeats) && sizeSeats > 0 ? Math.round(sizeSeats) : 1
-  return (TIER_SEAT_BANDS.find((b) => seats <= b.maxSeats) ?? TIER_SEAT_BANDS[TIER_SEAT_BANDS.length - 1]!).tier
+  return tierForSeatCount(sizeSeats)
 }
 
 /** PURE: "Dana Lee" → { first: "Dana", last: "Lee" }; a single token has an empty last name. */
@@ -344,7 +347,19 @@ export type ConversionActor =
   /** The prospect saying yes on a platform AI surface (chat / voice / live agent). */
   | { kind: "prospect_self"; channel: string }
 
-export type ConversionBilling = { mode: "trial"; trialDays?: number } | { mode: "active"; billingCycle: "monthly" | "annual" }
+/**
+ * trial  — 14 days, no card (the prospect's choice, or the default)
+ * paid   — ACTIVATE NOW (wave 78A): the tenant is created and a hosted checkout
+ *          for the plan + the tier's one-time setup fee is minted and returned;
+ *          access opens when it clears. The prospect's stated choice drives
+ *          trial vs paid. A setup-fee waiver rides only a platform_staff actor
+ *          and is audited by the core.
+ * active — staff-provisioned, invoiced outside checkout (enterprise/contract).
+ */
+export type ConversionBilling =
+  | { mode: "trial"; trialDays?: number }
+  | { mode: "paid"; billingCycle: "monthly" | "annual"; setupFeeWaiver?: SetupFeeWaiver | null }
+  | { mode: "active"; billingCycle: "monthly" | "annual" }
 
 export interface ConvertProspectInput {
   prospectId: string
@@ -369,6 +384,12 @@ export type ConvertProspectResult =
       brokerageId: string; userId: string; tier: CanonicalTier
       inviteSent: boolean; inviteError?: string
       trialEndsAt: string | null
+      /** Paid activation: the hosted checkout to send / open; null on a trial or when Stripe refused (see checkoutError). */
+      checkoutUrl: string | null
+      checkoutError?: string
+      /** Paid activation: the one-time setup fee the checkout carries (0 when waived or none on the tier). */
+      setupFeeCents: number | null
+      setupFeeWaived: boolean
       humanReasons: ConversionHumanReason[]; staffNotified: number
       demoDisposition: DemoDisposition
       prospectLinked: number
@@ -407,13 +428,19 @@ export async function convertProspectToSubscriber(svc: any, input: ConvertProspe
     customPricingRequested: input.customPricingRequested, handoffReason: handoff?.reason ?? null,
   })
 
-  // THE ACTOR RULE. A prospect converts THEMSELVES only into a trial (no card
-  // is collected on a chat/voice surface — billing is set up in-app through
-  // the session-gated checkout survivor), and only when nothing warrants a
-  // person. Staff convert either shape and carry the white-glove task.
+  // THE ACTOR RULE. A prospect converts THEMSELVES into a trial OR a paid
+  // activation — their stated choice (wave 78A: "not all converts … are going
+  // to enroll in the trial"). No card is ever taken on a chat/voice surface:
+  // the paid path mints a HOSTED checkout the prospect completes themselves.
+  // A prospect can never (a) self-provision an 'active' row — that is staff
+  // vouching for an invoice outside checkout — nor (b) waive their own setup
+  // fee. Staff convert any shape and carry the white-glove task.
   if (input.actor.kind === "prospect_self") {
-    if (input.billing.mode !== "trial") {
-      return { ok: false, error: "A prospect can start a trial on this surface; an active subscription is set up in-app after sign-in or by platform staff." }
+    if (input.billing.mode === "active") {
+      return { ok: false, error: "A prospect can start a trial or activate with the plan's checkout on this surface; an invoiced active subscription is provisioned by platform staff." }
+    }
+    if (input.billing.mode === "paid" && input.billing.setupFeeWaiver) {
+      return { ok: false, error: "The setup fee can be waived only by platform staff — it cannot be self-granted." }
     }
     if (humanReasons.length > 0) {
       return { ok: false, error: `This one needs a person: ${humanReasons.map((r) => HUMAN_REASON_LABEL[r]).join("; ")}. Use request_human_handoff.`, needsHuman: humanReasons }
@@ -488,7 +515,7 @@ export async function convertProspectToSubscriber(svc: any, input: ConvertProspe
     staffNotified = await notify(svc, {
       type: "platform_subscriber_white_glove",
       title: "New subscriber needs a person",
-      body: `${facts.brokerageName} (${facts.adminEmail}) just became a ${facts.tier.replace(/_/g, " ")} ${input.billing.mode === "trial" ? "trial" : "subscriber"}: ${humanReasons.map((r) => HUMAN_REASON_LABEL[r]).join("; ")}. See the tenant in the god console.`,
+      body: `${facts.brokerageName} (${facts.adminEmail}) just became a ${facts.tier.replace(/_/g, " ")} ${input.billing.mode === "trial" ? "trial" : input.billing.mode === "paid" ? "paid activation (checkout sent)" : "subscriber"}: ${humanReasons.map((r) => HUMAN_REASON_LABEL[r]).join("; ")}. See the tenant in the god console.`,
       entityType: "brokerage", entityId: brokerageId, priority: "high",
     }).catch((e: unknown) => { console.warn("[prospect-conversion] staff bell failed:", (e as Error)?.message); return 0 })
   }
@@ -508,7 +535,13 @@ export async function convertProspectToSubscriber(svc: any, input: ConvertProspe
     actor_user_id: input.actor.kind === "platform_staff" ? input.actor.userId : null,
     actor_email: input.actor.kind === "platform_staff" ? input.actor.email : `system:prospect_conversion:${input.actor.channel}`,
     action: "platform_prospect.converted_to_subscriber", target_type: "platform_prospect", target_id: row.id,
-    details: { brokerage_id: brokerageId, tier: facts.tier, billing_mode: input.billing.mode, human_reasons: humanReasons, staff_notified: staffNotified, demo: demoDisposition, prospect_linked: created.prospectStamp?.linked ?? 0 },
+    details: {
+      brokerage_id: brokerageId, tier: facts.tier, billing_mode: input.billing.mode, human_reasons: humanReasons, staff_notified: staffNotified, demo: demoDisposition, prospect_linked: created.prospectStamp?.linked ?? 0,
+      // The money facts of a paid activation, on the same audit line: what the
+      // checkout carries and whether staff waived the fee (the waiver itself
+      // is a separate audited row, subscription.setup_fee_waived, by the core).
+      ...(input.billing.mode === "paid" ? { checkout_created: !!created.checkoutUrl, checkout_error: created.checkoutError ?? null, setup_fee_cents: created.setupFeeCents ?? null, setup_fee_waived: created.setupFeeWaived === true } : {}),
+    },
   })
   if (auditErr) console.warn("[prospect-conversion] audit insert refused:", auditErr.message)
 
@@ -517,6 +550,8 @@ export async function convertProspectToSubscriber(svc: any, input: ConvertProspe
     brokerageId, userId: created.userId, tier: facts.tier,
     inviteSent: created.inviteSent === true, inviteError: created.inviteError,
     trialEndsAt: created.trialEndsAt ?? null,
+    checkoutUrl: created.checkoutUrl ?? null, checkoutError: created.checkoutError,
+    setupFeeCents: created.setupFeeCents ?? null, setupFeeWaived: created.setupFeeWaived === true,
     humanReasons, staffNotified, demoDisposition,
     prospectLinked: created.prospectStamp?.linked ?? 0,
   }

@@ -31,7 +31,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import {
   seatDecision, seatDecisionMessage, seatCheck, effectiveSeatLimit, seatLimitForTier,
-  roleConsumesSeat, TIER_SEAT_LIMITS, SEAT_ROLES, PARTNER_ROLES, TIER_LABELS,
+  roleConsumesSeat, TIER_SEAT_LIMITS, WORKSPACE_STAFF_ROLES, PRODUCER_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES, PARTNER_ROLES, TIER_LABELS,
   tierAllowsRole,
   type CatalogSeatLimits,
 } from "../lib/kernel/tier-role-matrix"
@@ -60,6 +60,8 @@ function fakeSvc(fx: Record<string, TableFixture>) {
       const thenable = {
         eq() { return thenable },
         in() { return thenable },
+        not() { return thenable },
+        limit() { return thenable },
         maybeSingle: async () => ({ data: Array.isArray(f.data) ? (f.data[0] ?? null) : f.data, error: f.error }),
         then(res: (v: any) => unknown) { return Promise.resolve({ data: f.data, error: f.error }).then(res) },
       }
@@ -81,83 +83,89 @@ const LIVE_SHAPED_CATALOG = catalog([
 ])
 const seatUsers = (n: number) =>
   users(Array.from({ length: n }, (_, i) => ({ id: `u${i}`, user_type: "agent" })))
+/** Wave 78A — a seat is a PRODUCER. The fact the count reads is an active agents
+ *  record; this fixture is passed as the `agents` table. */
+const agents = (userIds: string[]) => ({ data: userIds.map((user_id) => ({ user_id, is_active: true })), error: null })
 
 async function main() {
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[1 · THE CAPS — agent tier 2, team tier 5, brokerage above them]")
+  console.log("\n[1 · THE CAPS — agent tier 2, team tier 5, brokerage and multi-location unlimited]")
   check("solo_agent (the owner's 'agent tier subscription') caps at 2",
     TIER_SEAT_LIMITS.solo_agent === 2)
   check("team caps at 5", TIER_SEAT_LIMITS.team === 5)
-  // OWNER, 2026-08-22: "a brokerage should be changed to 50 seats … and then the
-  // same goes for multiple location brokerages but unlimited seats." The live
-  // catalogue was moved by m529 (subscription_tiers.max_agents = 50,
-  // plan_limits.active_users = 50); this literal — the FALLBACK when the
-  // catalogue cannot be read — still said unlimited, i.e. it failed OPEN on the
-  // seat axis exactly when the real number was unavailable.
-  check("brokerage caps at 50", TIER_SEAT_LIMITS.brokerage === 50)
-  check("multi_location alone is uncapped", TIER_SEAT_LIMITS.multi_location === null)
-  check("…so a brokerage's 50th seat is inside its plan and its 51st is not",
-    seatDecision("brokerage", 49).withinLimit && !seatDecision("brokerage", 50).withinLimit)
+  // OWNER, 2026-09-22 (wave 78A): "brokerage is unlimited and same to multiple
+  // locations is unlimited" — superseding the 2026-08-22 "50 seats". m655 moves
+  // the live catalogue; this literal is the plan-catalog table BY IDENTITY
+  // (scripts/seat-bands-guard.ts), so it cannot say anything else.
+  check("brokerage is UNLIMITED", TIER_SEAT_LIMITS.brokerage === null)
+  check("multi_location is unlimited too", TIER_SEAT_LIMITS.multi_location === null)
+  check("…so a brokerage is never refused — its 51st, its 5,000th",
+    seatDecision("brokerage", 50).withinLimit && seatDecision("brokerage", 4999).withinLimit)
   check("…while multi_location keeps hiring", seatDecision("multi_location", 4999).withinLimit)
   control("a brokerage capped at the team number would show as over",
     seatDecision("brokerage", 499, null, 1, { brokerage: 5 }).withinLimit)
-  control("a brokerage treated as UNLIMITED would not refuse its 51st seat — the defect this pins",
-    seatDecision("brokerage", 50, null, 1, { brokerage: null }).withinLimit === false)
+  control("the superseded 50-seat brokerage WOULD refuse its 51st — the number this moved",
+    seatDecision("brokerage", 50, null, 1, { brokerage: 50 }).withinLimit)
 
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[1b · THE OWNER'S FOUR WORKED EXAMPLES, VERBATIM]")
+  console.log("\n[1b · THE OWNER'S WORKED EXAMPLES, RE-READ UNDER 'STAFF SHOULD NOT TAKE UP SEATS']")
   //
-  // OWNER, 2026-08-22 — these four shapes ARE the specification, so they are
-  // asserted as written rather than paraphrased:
+  // OWNER, 2026-08-22, gave four rosters; OWNER, 2026-09-22 (wave 78A), ruled
+  // "staff should not take up seats". The rosters stand — every user type may
+  // still be SEATED on every tier — but what is BILLED is the producer: agent
+  // and team_lead by type; broker, broker_owner and admin only while they hold
+  // an agents record; broker_admin, tc, isa, compliance_officer never.
   //
-  //   solo (2)      : agent + admin                    = 2 of 2, 3rd refused
-  //   team (5)      : team_lead + agent + broker       = 3 of 5
-  //   brokerage (50): broker_admin + team_lead + agent = 3 of 50
+  //   solo (2)      : owner(admin, produces) + agent      = 2 of 2, a tc is free, a 3rd producer refused
+  //   team (5)      : team_lead + agent + broker(produces) = 3 of 5, admin + tc + isa free
+  //   brokerage (∞) : broker_admin + team_lead + agent     = 2 seats, never refused
   //   multi         : the same shapes, unlimited
-  //
-  // The load-bearing claim in each is that EVERY seated user costs exactly ONE
-  // seat WHATEVER THEIR USER TYPE — the tier caps the count, not the menu.
   {
-    /** Seats consumed by a roster of user types — the rule under test. */
-    const seatsFor = (roster: readonly string[]) =>
-      roster.filter((r) => roleConsumesSeat(r as never)).length
+    type Seated = { role: string; produces?: boolean }
+    /** Seats consumed by a roster — the rule under test. */
+    const seatsFor = (roster: readonly Seated[]) =>
+      roster.filter((r) => roleConsumesSeat(r.role, { produces: r.produces === true })).length
+    /** The RETIRED rule (every working user type is a seat) — the control in each example. */
+    const retiredSeatsFor = (roster: readonly Seated[]) =>
+      roster.filter((r) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(r.role)).length
 
-    // ── SOLO: agent + admin = 2 of 2 ────────────────────────────────────────
-    const solo = ["agent", "admin"]
-    check("SOLO · agent + admin both consume a seat → 2 of 2", seatsFor(solo) === 2)
+    // ── SOLO: owner (admin wearing an agents row) + agent = 2 of 2 ──────────
+    const solo: Seated[] = [{ role: "admin", produces: true }, { role: "agent" }]
+    check("SOLO · the producing owner (admin + agents row) and an agent both consume a seat → 2 of 2", seatsFor(solo) === 2)
+    check("SOLO · a TC hired by the solo agent is FREE — 2 of 2 stays 2 of 2", seatsFor([...solo, { role: "tc" }]) === 2)
     check("SOLO · the 2nd seat is still INSIDE the plan",
       seatDecision("solo_agent", 1).withinLimit)
-    check("SOLO · …and the 3rd is REFUSED, naming Team",
+    check("SOLO · …and the 3rd PRODUCER is REFUSED, naming Team",
       !seatDecision("solo_agent", 2).withinLimit
       && seatDecision("solo_agent", 2).upgradeTo === "team")
-    control("SOLO · a roster of 3 would NOT fit 2 seats",
-      seatsFor([...solo, "tc"]) <= (TIER_SEAT_LIMITS.solo_agent ?? 0))
+    control("SOLO · the retired rule charged the TC a seat (3 of 2) — if staff ever count again the two rules agree and this goes red",
+      retiredSeatsFor([...solo, { role: "tc" }]) === seatsFor([...solo, { role: "tc" }]))
 
-    // ── TEAM: team_lead + agent + broker = 3 of 5 ───────────────────────────
-    // THE SENTENCE THAT SUPERSEDED THE OLD MATRIX. A broker on TEAM tier.
-    const team = ["team_lead", "agent", "broker"]
-    check("TEAM · team_lead + agent + broker → 3 seats", seatsFor(team) === 3)
+    // ── TEAM: team_lead + agent + broker(produces) = 3 of 5 ─────────────────
+    const team: Seated[] = [{ role: "team_lead" }, { role: "agent" }, { role: "broker", produces: true }]
+    check("TEAM · team_lead + agent + a SELLING broker → 3 seats", seatsFor(team) === 3)
     check("TEAM · a BROKER may be seated on team tier (the ruling that moved this)",
       tierAllowsRole("team", "broker"))
+    check("TEAM · a broker who runs the shop and does not sell is FREE", seatsFor([{ role: "broker" }]) === 0)
+    check("TEAM · admin + tc + isa on top of them are FREE — still 3 of 5",
+      seatsFor([...team, { role: "admin" }, { role: "tc" }, { role: "isa" }]) === 3)
     check("TEAM · 3 of 5 is inside the plan, with 2 to spare",
       seatDecision("team", 3).withinLimit && seatDecision("team", 3).remaining === 2)
-    control("TEAM · the old matrix, which withheld broker, would refuse this example",
-      ["team_lead", "agent", "broker"].every((r) =>
-        (SEAT_ROLES.filter((x) => x !== "broker" && x !== "broker_owner") as readonly string[]).includes(r)))
+    control("TEAM · the retired rule billed the admin, tc and isa (6 of 5) — the two rules must disagree here",
+      retiredSeatsFor([...team, { role: "admin" }, { role: "tc" }, { role: "isa" }]) === seatsFor([...team, { role: "admin" }, { role: "tc" }, { role: "isa" }]))
 
-    // ── BROKERAGE: broker_admin + team_lead + agent = 3 of 50 ───────────────
-    const brokerage = ["broker_admin", "team_lead", "agent"]
-    check("BROKERAGE · broker_admin + team_lead + agent → 3 seats", seatsFor(brokerage) === 3)
-    check("BROKERAGE · broker_admin is a seat-consuming user type",
-      roleConsumesSeat("broker_admin" as never))
-    check("BROKERAGE · 3 of 50 is inside the plan, with 47 to spare",
-      seatDecision("brokerage", 3).withinLimit && seatDecision("brokerage", 3).remaining === 47)
-    control("BROKERAGE · if broker_admin consumed NO seat this example would count 2",
-      seatsFor(["team_lead", "agent"]) === 3)
+    // ── BROKERAGE: broker_admin + team_lead + agent = 2 seats, unlimited ────
+    const brokerage: Seated[] = [{ role: "broker_admin" }, { role: "team_lead" }, { role: "agent" }]
+    check("BROKERAGE · broker_admin is STAFF (free); team_lead + agent → 2 seats", seatsFor(brokerage) === 2)
+    check("BROKERAGE · broker_admin never consumes a seat", !roleConsumesSeat("broker_admin", { produces: true }))
+    check("BROKERAGE · unlimited — 2 seated, and remaining is null (not a number to run out of)",
+      seatDecision("brokerage", 2).withinLimit && seatDecision("brokerage", 2).remaining === null)
+    control("BROKERAGE · the retired rule counted broker_admin (3) — the two rules must disagree here",
+      retiredSeatsFor(brokerage) === seatsFor(brokerage))
 
     // ── MULTI-LOCATION: the same shapes, unlimited ──────────────────────────
-    check("MULTI · the same three shapes are all seatable",
-      [...solo, ...team, ...brokerage].every((r) => tierAllowsRole("multi_location", r as never)))
+    check("MULTI · the same shapes are all seatable",
+      [...solo, ...team, ...brokerage].every((r) => tierAllowsRole("multi_location", r.role as never)))
     check("MULTI · unlimited — no roster size is ever 'over'",
       seatDecision("multi_location", 3).withinLimit
       && seatDecision("multi_location", 50_000).withinLimit
@@ -166,14 +174,17 @@ async function main() {
       seatDecision("multi_location", 3, null, 1, { multi_location: 2 }).withinLimit)
 
     // ── THE RULE UNDERNEATH ALL FOUR ────────────────────────────────────────
-    check("EVERY seat user type costs exactly ONE seat — no type is cheaper or dearer",
-      SEAT_ROLES.every((r) => seatsFor([r]) === 1))
-    check("…and NON-seats cost none: contact, lender, vendor, system (the AI-ISA actor)",
-      seatsFor(["contact", "lender", "vendor", "system"]) === 0)
+    check("EVERY producer costs exactly ONE seat — by type or by production",
+      PRODUCER_SEAT_ROLES.every((r) => seatsFor([{ role: r }]) === 1)
+      && SEAT_BY_PRODUCTION_ROLES.every((r) => seatsFor([{ role: r, produces: true }]) === 1 && seatsFor([{ role: r }]) === 0))
+    check("…and FREE STAFF cost none, even 'producing' (the ISA's desk agents row is not a licence)",
+      FREE_STAFF_ROLES.every((r) => seatsFor([{ role: r, produces: true }]) === 0))
+    check("…and NON-staff cost none: contact, lender, vendor, system (the AI-ISA actor)",
+      seatsFor([{ role: "contact" }, { role: "lender" }, { role: "vendor" }, { role: "system" }]) === 0)
     control("a partner counted as a seat would break the contacts rule",
-      seatsFor(["vendor"]) === 0 && roleConsumesSeat("vendor" as never))
+      seatsFor([{ role: "vendor" }]) === 0 && roleConsumesSeat("vendor" as never, { produces: true }))
     check("…so a tenant's whole contact book never eats the plan",
-      seatsFor(Array(500).fill("contact")) === 0)
+      seatsFor(Array(500).fill({ role: "contact" })) === 0)
   }
 
   console.log("\n[2 · THE THIRD SEAT AND THE SIXTH — refused, naming the upgrade]")
@@ -189,7 +200,8 @@ async function main() {
   const teamAt5 = seatDecision("team", 5)
   check("team tier: the 6th seat is REFUSED", teamAt5.withinLimit === false)
   check("…and the refusal names BROKERAGE", teamAt5.upgradeTo === "brokerage")
-  check("…quoting the 50 seats brokerage gives them", teamAt5.upgradeSeats === 50)
+  check("…quoting UNLIMITED seats on brokerage", teamAt5.upgradeSeats === null
+    && /unlimited seats/.test(seatDecisionMessage(teamAt5) ?? ""))
   check("…in the sentence a person reads",
     (seatDecisionMessage(teamAt5) ?? "").includes(`Upgrade to ${TIER_LABELS.brokerage}`))
   control("the 5th seat on team tier is NOT refused (the cap is 5, not 4)",
@@ -212,18 +224,19 @@ async function main() {
     seatDecision("solo_agent", 3, 3).outcome === "paid_seat_only"
     && seatDecision("solo_agent", 3, 3).upgradeTo === null)
 
-  console.log("\n[3 · WHAT IS A SEAT — staff only; contacts, lenders, vendors are NOT]")
-  check("the seat roles are the working staff roles",
-    ["admin", "broker", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer"]
-      .every((r) => (SEAT_ROLES as readonly string[]).includes(r)))
-  for (const nonSeat of ["contact", "lender", "vendor", "system"]) {
-    check(`'${nonSeat}' consumes NO seat`, roleConsumesSeat(nonSeat as any) === false)
+  console.log("\n[3 · WHAT IS A SEAT — producers only; staff, contacts, lenders, vendors are NOT]")
+  check("the working roster is the nine staff user types (the invite menu), partitioned into producer / by-production / free",
+    ["admin", "broker", "broker_admin", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer"]
+      .every((r) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(r))
+    && WORKSPACE_STAFF_ROLES.length === PRODUCER_SEAT_ROLES.length + SEAT_BY_PRODUCTION_ROLES.length + FREE_STAFF_ROLES.length)
+  for (const nonSeat of ["contact", "lender", "vendor", "system", "tc", "isa", "compliance_officer", "broker_admin"]) {
+    check(`'${nonSeat}' consumes NO seat`, roleConsumesSeat(nonSeat as any, { produces: true }) === false)
   }
   check("vendor is the partner role and partners never consume a seat",
     (PARTNER_ROLES as readonly string[]).includes("vendor")
-    && !(PARTNER_ROLES as readonly string[]).some((r) => (SEAT_ROLES as readonly string[]).includes(r)))
+    && !(PARTNER_ROLES as readonly string[]).some((r) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(r)))
   control("a scan that called every role a seat would pass the wrong way",
-    ["contact", "lender", "vendor"].every((r) => (["contact", "lender", "vendor", ...SEAT_ROLES] as string[]).includes(r)) === false)
+    ["contact", "lender", "vendor"].every((r) => (["contact", "lender", "vendor", ...WORKSPACE_STAFF_ROLES] as string[]).includes(r)) === false)
 
   // The count itself must skip them — the fear is a brokerage's CONTACT LIST
   // eating the plan.
@@ -231,19 +244,21 @@ async function main() {
     const svc = fakeSvc({
       users: users([
         { id: "a", user_type: "agent" },
-        { id: "b", user_type: "admin" },
+        { id: "b", user_type: "admin" },   // the owner — produces (agents row below)
         { id: "c", user_type: "contact" },
         { id: "d", user_type: "lender" },
         { id: "e", user_type: "vendor" },
         { id: "f", user_type: "system" },
         { id: "g", user_type: "agent", status: "suspended" },
+        { id: "h", user_type: "tc" },      // free staff
       ]),
+      agents: agents(["b"]),
       user_role_assignments: { data: [], error: null },
     })
     const usage = await resolveSeatUsage(svc, "b1")
-    check("2 staff + 3 partners + 1 system + 1 suspended ⇒ 2 seats", usage.seatCount === 2)
-    check("…while the PEOPLE count still sees all 7", usage.peopleCount === 7)
-    control("counting people as seats would have said 7", usage.peopleCount === 2)
+    check("2 producers + 1 free staff + 3 partners/system + 1 suspended ⇒ 2 seats, 1 free staff", usage.seatCount === 2 && usage.freeStaffCount === 1)
+    check("…while the PEOPLE count still sees all 8", usage.peopleCount === 8)
+    control("counting people as seats would have said 8", usage.peopleCount === 2)
   }
   {
     // 60 contacts on a 2-seat plan is still 2 seats — the exact wrong answer to avoid.
@@ -254,24 +269,27 @@ async function main() {
         { id: "a", user_type: "agent" }, { id: "b", user_type: "admin" },
         ...Array.from({ length: 60 }, (_, i) => ({ id: `c${i}`, user_type: "contact" })),
       ]),
+      agents: agents(["b"]),
       user_role_assignments: { data: [], error: null },
     })
     const v = await seatGate(svc, "b1", "contact")
     check("adding a 61st CONTACT to a full 2-seat tenant is ALLOWED", v.allowed && v.reason === "not_a_seat")
     const v2 = await seatGate(svc, "b1", "agent")
     check("…while the 3rd AGENT on the same tenant is refused", !v2.allowed && v2.decision?.upgradeTo === "team")
+    const v3 = await seatGate(svc, "b1", "tc")
+    check("…and a TC on the same full tenant is ALLOWED — staff never take a seat (wave 78A)", v3.allowed && v3.reason === "not_a_seat")
   }
 
   console.log("\n[4 · A SEAT IS A PERSON, ACROSS BOTH ROLE SOURCES]")
   {
     const svc = fakeSvc({
-      users: users([{ id: "a", user_type: "contact" }, { id: "b", user_type: "agent" }]),
-      user_role_assignments: { data: [{ user_id: "a", role: "admin" }, { user_id: "b", role: "isa" }], error: null },
+      users: users([{ id: "a", user_type: "contact" }, { id: "b", user_type: "agent" }, { id: "c", user_type: "admin" }]),
+      user_role_assignments: { data: [{ user_id: "a", role: "agent" }, { user_id: "b", role: "team_lead" }, { user_id: "c", role: "tc" }], error: null },
     })
     const usage = await resolveSeatUsage(svc, "b1")
-    check("a 'contact' holding an ADMIN grant holds a seat (user_type alone under-counts)",
+    check("a 'contact' holding an AGENT grant holds a seat (user_type alone under-counts)",
       usage.seatCount === 2 && usage.seatHolderIds.includes("a"))
-    check("a user with TWO seat roles is still ONE seat", usage.seatHolderIds.length === 2)
+    check("a user with TWO producer roles is still ONE seat; an admin granted tc holds none", usage.seatHolderIds.length === 2 && !usage.seatHolderIds.includes("c"))
   }
 
   console.log("\n[5 · FAIL CLOSED — three ways the gate can fail to know, three refusals]")
@@ -356,6 +374,7 @@ async function main() {
     const svc = fakeSvc({ subscription_tiers: LIVE_SHAPED_CATALOG })
     const read = await resolveCatalogSeatLimits(svc)
     check("catalogue read: NULL ⇒ unlimited", read.ok && read.limits.brokerage === null)
+    check("…and the fallback agrees with the catalogue on brokerage (both unlimited)", seatLimitForTier("brokerage", read.limits) === null && seatLimitForTier("brokerage") === null)
     check("catalogue read: -1 ⇒ unlimited (not a cap of minus one)", read.limits.multi_location === null)
     check("catalogue read: the two capped tiers come through as numbers",
       read.limits.solo_agent === 2 && read.limits.team === 5)
@@ -371,7 +390,7 @@ async function main() {
 
   console.log("\n[7 · THE OVERRIDE STILL WINS, AND THE MATH IS UNCHANGED BY ANY OF THIS]")
   check("staff override raises a capped tier", effectiveSeatLimit("solo_agent", 12).limit === 12)
-  check("…and can cap an unlimited one", effectiveSeatLimit("brokerage", 25).limit === 25)
+  check("…and can cap an unlimited one (brokerage is unlimited by default)", effectiveSeatLimit("brokerage", 25).limit === 25 && effectiveSeatLimit("brokerage", null).limit === null)
   check("no override ⇒ the resolved tier number", effectiveSeatLimit("team", null).limit === 5)
   check("asking about the CURRENT state (0 requested) never invents an overage",
     seatDecision("solo_agent", 2, null, 0).withinLimit === true)
@@ -451,6 +470,8 @@ async function main() {
     check("…it sets team = 5", /max_agents = 5 WHERE tier_name = 'team'/.test(m))
     check("…and it VERIFIES rather than hoping (postcondition block)", /RAISE EXCEPTION 'm523/.test(m))
   }
+  const m655 = "supabase/migrations/m655-brokerage-seats-are-unlimited-and-a-seat-is-a-producer.sql"
+  check("m655 (brokerage → unlimited, a seat is a producer) exists — its numbers are pinned to TIER_SEAT_BANDS by scripts/seat-bands-guard.ts", existsSync(join(process.cwd(), m655)))
   const parity = "supabase/migrations/m524-the-mini-brokerage-tiers-were-locked-out-of-their-own-board-money-and-settings.sql"
   check("the mini-brokerage parity migration exists (written, NOT applied)", existsSync(join(process.cwd(), parity)))
 
@@ -470,14 +491,14 @@ async function main() {
       read.limits.solo_agent === 2)
     check(`live team cap is 5 (found ${String(read.limits.team)}) — RED until m523 is applied`,
       read.limits.team === 5)
-    check("live brokerage is unlimited", read.limits.brokerage === null)
+    check(`live brokerage is unlimited (found ${String(read.limits.brokerage)}) — RED until m655 is applied`, read.limits.brokerage === null)
   }
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ SEAT_CAP_FAIL"); process.exit(1) }
-  console.log(" ✅ SEAT_CAP_PASS — 2 seats on agent tier, 5 on team, every add path gated, unreadable refuses, and contacts never eat a seat")
+  console.log(" ✅ SEAT_CAP_PASS — 2 seats on agent tier, 5 on team, brokerage unlimited, every add path gated, unreadable refuses, and staff/contacts never eat a seat")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

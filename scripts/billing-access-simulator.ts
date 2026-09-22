@@ -93,7 +93,8 @@ async function main() {
   check("the core READS the subscription insert error (§3 — supabase-js resolves refusals)",
     /const \{ data: subscription, error: subErr \}[\s\S]{0,400}?if \(subErr \|\| !subscription\)/.test(coreSrc))
   check("self-serve signup reaches that writer through the core (createTenantCore with billing mode 'trial')",
-    /createTenantCore\(service, \{[\s\S]{0,800}?billing: \{ mode: "trial"/.test(signupSrc))
+    /createTenantCore\(service, \{[\s\S]{0,800}?billing,/.test(signupSrc)
+    && /\{ mode: "trial" as const, trialDays: TRIAL_DAYS \}/.test(signupSrc))
 
   const accessSrc = readFileSync(join(process.cwd(), "lib/billing/billing-access.ts"), "utf8")
   check("loadBillingAccess reconciles trial_end against brokerages.trial_ends_at (same rule as subscription-oversight.ts:155)",

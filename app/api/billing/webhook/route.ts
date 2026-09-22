@@ -123,6 +123,19 @@ export async function POST(request: NextRequest) {
           const patch = buildSubscriptionPatch(normalizeSub(sub))
           await upsertBrokerageSubscription(supabase, brokerageId, patch)
           await syncBrokeragePlanTier(brokerageId)
+          // THE TRIAL → CONVERTED MOMENT (wave 78A). The prospect row was
+          // stamped 'trial' when the tenant was created (a free trial or a paid
+          // activation awaiting this very event); money has now moved, so every
+          // prospect linked to this brokerage advances. COUNTED (§3) — a zero is
+          // the direct signer who was never a prospect, and is reported as zero.
+          {
+            const { data: advanced, error: advErr } = await supabase.from("platform_prospects")
+              .update({ status: "converted", updated_at: new Date().toISOString() })
+              .eq("converted_brokerage_id", brokerageId).eq("status", "trial")
+              .select("id")
+            if (advErr) console.error("[Billing Webhook] prospect trial→converted advance refused:", advErr.message)
+            else if ((advanced ?? []).length > 0) console.log(`[Billing Webhook] ${(advanced ?? []).length} prospect(s) advanced trial→converted for ${brokerageId}`)
+          }
           // Safety: ensure the paid account is fully provisioned (idempotent no-op
           // when signup already provisioned it).
           try {
