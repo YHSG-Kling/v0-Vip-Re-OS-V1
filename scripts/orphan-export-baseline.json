@@ -436,7 +436,7 @@
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 2,
-    "lib/video/duration-model.ts": 13,
+    "lib/video/duration-model.ts": 12,
     "lib/video/format-learning.ts": 3,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
@@ -462,7 +462,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9803,
+  "census": 9802,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4235,7 +4235,7 @@
     "lib/video/comps-animation-spec.ts": 1,
     "lib/video/director-content.ts": 16,
     "lib/video/director-eval-harness.ts": 5,
-    "lib/video/duration-model.ts": 21,
+    "lib/video/duration-model.ts": 20,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 9,
     "lib/video/intro-video-reactor.ts": 2,
@@ -21314,7 +21314,6 @@
       "runDirectorEval"
     ],
     "lib/video/duration-model.ts": [
-      "purposeRule",
       "hostWordsPerMinute",
       "wordsForSeconds",
       "spokenSecondsForWords",
@@ -22084,5 +22083,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }

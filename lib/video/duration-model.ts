@@ -241,9 +241,11 @@ export const PURPOSE_DURATION_RULES: Record<VideoPurpose, PurposeDurationRule> =
   },
 }
 
-export function purposeRule(purpose: VideoPurpose): PurposeDurationRule {
-  return PURPOSE_DURATION_RULES[purpose]
-}
+// TOMBSTONE (wave 78 integration, CLAUDE.md §1.3): `purposeRule(purpose)` was a
+// one-line accessor over PURPOSE_DURATION_RULES that nothing called — every
+// reader (this module, scripts/video-duration-model-guard.ts,
+// scripts/video-type-matrix-simulator.ts) indexes the table directly. The
+// survivor is PURPOSE_DURATION_RULES above; nothing was lost.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § PACE — words per minute by host kind, and the provider caps
