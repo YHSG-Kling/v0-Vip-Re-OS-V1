@@ -1,15 +1,13 @@
 {
-  "generated": "2026-09-18",
+  "generated": "2026-09-22",
   "counts": {
-    "oc1": 1,
+    "oc1": 0,
     "oc2": 0,
     "oc3": 0,
     "oc4": 0
   },
   "keys": {
-    "oc1": [
-      "journey_states.user_id"
-    ],
+    "oc1": [],
     "oc2": [],
     "oc3": [],
     "oc4": []

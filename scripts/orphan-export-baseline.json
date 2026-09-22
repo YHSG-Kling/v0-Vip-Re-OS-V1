@@ -78,6 +78,7 @@
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/application/listing-lifecycle.ts": 1,
+    "lib/assets/screenshot-capture.ts": 14,
     "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
@@ -128,7 +129,7 @@
     "lib/education/curriculum-author.ts": 3,
     "lib/education/dedup-guard.ts": 2,
     "lib/education/depth-reauthor.ts": 2,
-    "lib/education/onboarding-curriculum.ts": 2,
+    "lib/education/onboarding-curriculum.ts": 1,
     "lib/education/question-gap.ts": 1,
     "lib/education/regulatory-curriculum.ts": 2,
     "lib/education/seller-signal-education-context.ts": 1,
@@ -185,7 +186,7 @@
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/agent-coaching.ts": 1,
-    "lib/kernel/ai-search-citation-monitor.ts": 6,
+    "lib/kernel/ai-search-citation-monitor.ts": 5,
     "lib/kernel/ai-sentinel.ts": 1,
     "lib/kernel/anniversary-equity.ts": 5,
     "lib/kernel/appointment-noshow-autopilot.ts": 3,
@@ -367,7 +368,7 @@
     "lib/platform/platform-staff-roster.ts": 2,
     "lib/platform/product-brand.ts": 1,
     "lib/platform/product-content.ts": 2,
-    "lib/platform/product-demo.ts": 2,
+    "lib/platform/product-demo.ts": 1,
     "lib/platform/prospect-agent-tools.ts": 1,
     "lib/platform/prospect-capture.ts": 5,
     "lib/platform/prospect-conversion.ts": 4,
@@ -403,6 +404,7 @@
     "lib/recruiting/vendor-recruitment-scout.ts": 2,
     "lib/referrals/partner-agreement-watch.ts": 1,
     "lib/referrals/referral-reciprocity.ts": 1,
+    "lib/remotion/chromium-executable.ts": 2,
     "lib/remotion/code-revision.ts": 3,
     "lib/remotion/composition-cache.ts": 1,
     "lib/remotion/voiceover-mixer.ts": 1,
@@ -434,6 +436,7 @@
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 2,
+    "lib/video/duration-model.ts": 13,
     "lib/video/format-learning.ts": 3,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
@@ -459,7 +462,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9735,
+  "census": 9803,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -959,6 +962,7 @@
     "app/actions/superadmin/platform-staff.ts": 9,
     "app/actions/superadmin/portal-clients.ts": 2,
     "app/actions/superadmin/provider-posture.ts": 3,
+    "app/actions/superadmin/screenshot-capture.ts": 3,
     "app/actions/superadmin/subscriber-referrals.ts": 4,
     "app/actions/superadmin/subscription-contracts.ts": 6,
     "app/actions/superadmin/subscription-oversight.ts": 1,
@@ -1019,7 +1023,7 @@
     "app/actions/video/create-video-project.ts": 6,
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
-    "app/actions/video/memory-video.ts": 2,
+    "app/actions/video/memory-video.ts": 3,
     "app/actions/video-content.ts": 4,
     "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
@@ -2328,6 +2332,7 @@
     "app/dashboard/superadmin/contracts/subscription-contracts-manager.tsx": 1,
     "app/dashboard/superadmin/coupons/coupons-manager.tsx": 1,
     "app/dashboard/superadmin/demo-room/demo-room-client.tsx": 1,
+    "app/dashboard/superadmin/demo-room/demo-stills-card.tsx": 1,
     "app/dashboard/superadmin/env-providers/providers-client.tsx": 1,
     "app/dashboard/superadmin/growth/brand-topics-card.tsx": 1,
     "app/dashboard/superadmin/growth/company-channels-card.tsx": 1,
@@ -2769,7 +2774,7 @@
     "lib/ai-isa/post-call-outcome.ts": 3,
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
-    "lib/ai-isa/qualification-playbook.ts": 1,
+    "lib/ai-isa/qualification-playbook.ts": 2,
     "lib/ai-isa/qualification-signals.ts": 4,
     "lib/ai-isa/reengagement-policy.ts": 10,
     "lib/ai-isa/resolve-isa-settings.ts": 5,
@@ -2803,6 +2808,7 @@
     "lib/application/transactions.ts": 55,
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
+    "lib/assets/screenshot-capture.ts": 24,
     "lib/audiences/audience-sync.ts": 3,
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
@@ -2827,7 +2833,7 @@
     "lib/billing/dunning.ts": 5,
     "lib/billing/phone-plan-resolve.ts": 2,
     "lib/billing/phone-plan.ts": 3,
-    "lib/billing/plan-catalog.ts": 3,
+    "lib/billing/plan-catalog.ts": 4,
     "lib/billing/plan-tier.ts": 3,
     "lib/billing/resolve-stripe-account.ts": 3,
     "lib/billing/stripe-account-scope.ts": 4,
@@ -2835,7 +2841,7 @@
     "lib/billing/stripe-status.ts": 4,
     "lib/billing/stripe-subscription-ops.ts": 9,
     "lib/billing/stripe-webhook-secrets.ts": 2,
-    "lib/billing/subscription-activation.ts": 4,
+    "lib/billing/subscription-activation.ts": 5,
     "lib/billing/sync-plan-tier.ts": 1,
     "lib/blog/seo-optimizer.ts": 2,
     "lib/blog/wordpress-connection.ts": 2,
@@ -3585,7 +3591,7 @@
     "lib/kernel/tenant-guard.ts": 1,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
     "lib/kernel/tenant-scope.ts": 7,
-    "lib/kernel/tier-role-matrix.ts": 16,
+    "lib/kernel/tier-role-matrix.ts": 17,
     "lib/kernel/title-closing-watchtower.ts": 8,
     "lib/kernel/tour-optimizer.ts": 12,
     "lib/kernel/transactions.ts": 21,
@@ -3892,7 +3898,7 @@
     "lib/platform/product-brand.ts": 6,
     "lib/platform/product-content-autopilot.ts": 3,
     "lib/platform/product-content.ts": 6,
-    "lib/platform/product-demo.ts": 4,
+    "lib/platform/product-demo.ts": 5,
     "lib/platform/prospect-agent-tools.ts": 2,
     "lib/platform/prospect-capture.ts": 11,
     "lib/platform/prospect-conversion.ts": 6,
@@ -4037,6 +4043,7 @@
     "lib/referrals/referral-record.ts": 1,
     "lib/referrals/referral-status.ts": 4,
     "lib/remotion/bundle-cache.ts": 1,
+    "lib/remotion/chromium-executable.ts": 4,
     "lib/remotion/code-revision.ts": 4,
     "lib/remotion/composition-cache.ts": 9,
     "lib/remotion/composition-geometry.ts": 2,
@@ -4228,6 +4235,7 @@
     "lib/video/comps-animation-spec.ts": 1,
     "lib/video/director-content.ts": 16,
     "lib/video/director-eval-harness.ts": 5,
+    "lib/video/duration-model.ts": 21,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 9,
     "lib/video/intro-video-reactor.ts": 2,
@@ -4237,7 +4245,9 @@
     "lib/video/listing-promo-reactor.ts": 1,
     "lib/video/living-video-sweep.ts": 2,
     "lib/video/living-video.ts": 6,
+    "lib/video/memory-video-composition.ts": 6,
     "lib/video/memory-video-gate.ts": 4,
+    "lib/video/memory-video-render.ts": 1,
     "lib/video/memory-video.ts": 2,
     "lib/video/module-voice.ts": 2,
     "lib/video/multilingual-reel.ts": 4,
@@ -4360,6 +4370,7 @@
     "remotion/ListingPresentationSlide.tsx": 1,
     "remotion/ListingSectionReel.tsx": 1,
     "remotion/MarketUpdateReel.tsx": 1,
+    "remotion/MemoryVideoReel.tsx": 1,
     "remotion/NeighborhoodSpotlightReel.tsx": 1,
     "remotion/NewsletterDigestThumb.tsx": 1,
     "remotion/NewsletterDigestVideo.tsx": 1,
@@ -4382,6 +4393,7 @@
     "remotion/charts/PriceTrendLine.tsx": 1,
     "remotion/components/AvatarPIP.tsx": 1,
     "remotion/components/CaptionLayer.tsx": 1,
+    "remotion/components/EndCard.tsx": 1,
     "remotion/components/EqualHousingMark.tsx": 1,
     "remotion/components/LowerThird.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 2,
@@ -7609,6 +7621,11 @@
       "getFullProviderPostureAction",
       "getSendgridPostureAction"
     ],
+    "app/actions/superadmin/screenshot-capture.ts": [
+      "captureDemoStillAction",
+      "capturePublicPropertyStillAction",
+      "listDemoStillSurfacesAction"
+    ],
     "app/actions/superadmin/subscriber-referrals.ts": [
       "listSubscriberReferralsAction",
       "recordSubscriberReferralAction",
@@ -8080,7 +8097,8 @@
     ],
     "app/actions/video/memory-video.ts": [
       "offerMemoryVideoAction",
-      "saveMemoryVideoDictationAction"
+      "saveMemoryVideoDictationAction",
+      "renderMemoryVideoAction"
     ],
     "app/actions/video-content.ts": [
       "handleVideoGenerated",
@@ -12187,6 +12205,9 @@
     "app/dashboard/superadmin/demo-room/demo-room-client.tsx": [
       "DemoRoomClient"
     ],
+    "app/dashboard/superadmin/demo-room/demo-stills-card.tsx": [
+      "DemoStillsCard"
+    ],
     "app/dashboard/superadmin/env-providers/providers-client.tsx": [
       "ProvidersClient"
     ],
@@ -13812,6 +13833,7 @@
       "persistQualificationSignals"
     ],
     "lib/ai-isa/qualification-playbook.ts": [
+      "parseFollowUpPreference",
       "buildQualificationPrompt"
     ],
     "lib/ai-isa/qualification-signals.ts": [
@@ -14075,6 +14097,32 @@
       "getApprovalStats",
       "getPendingApprovals"
     ],
+    "lib/assets/screenshot-capture.ts": [
+      "demoStillSurface",
+      "screenshotCacheKey",
+      "isPublicPageHost",
+      "planScreenshotCapture",
+      "assertDemoTenantOnly",
+      "isRobotsAllowed",
+      "redactionCss",
+      "hostedScreenshotProvider",
+      "resolveScreenshotProvider",
+      "demoSessionCookies",
+      "screenshotAssetRow",
+      "captureScreenshot",
+      "capturePublicPropertyPage",
+      "enqueueStaleScreenshotStills",
+      "seedMissingDemoStill",
+      "recaptureScreenshotAsset",
+      "listDemoStills",
+      "stillUrlsForDemoTopic",
+      "stillUrlsForVideoAngle",
+      "demoStillImageUrls",
+      "demoStillForTopic",
+      "stillsAsBrollClips",
+      "figuresForEducationTopic",
+      "renderFigures"
+    ],
     "lib/audiences/audience-sync.ts": [
       "describeConsentChange",
       "onLeadConvertedForAudience",
@@ -14207,6 +14255,7 @@
       "evaluatePhoneMetering"
     ],
     "lib/billing/plan-catalog.ts": [
+      "tierForSeatCount",
       "comparePlanPriceToStripe",
       "validateAIOverageTermsInput",
       "validatePlanTierInput"
@@ -14254,6 +14303,7 @@
     "lib/billing/subscription-activation.ts": [
       "buildCheckoutConfig",
       "buildCheckoutTaxConfig",
+      "createActivationCheckout",
       "buildSubscriptionPatch",
       "upsertBrokerageSubscription"
     ],
@@ -18052,6 +18102,7 @@
       "seatableUserTypes",
       "tierAllowsRole",
       "roleConsumesSeat",
+      "roleProducesOnTier",
       "seatLimitForTier",
       "parseSeatOverride",
       "effectiveSeatLimit",
@@ -19672,8 +19723,9 @@
     ],
     "lib/platform/product-demo.ts": [
       "isProductDemoTopic",
-      "demoClipToken",
       "splitDemoClipToken",
+      "demoStillToken",
+      "splitDemoStillToken",
       "describeProductDemo"
     ],
     "lib/platform/prospect-agent-tools.ts": [
@@ -20372,6 +20424,12 @@
     ],
     "lib/remotion/bundle-cache.ts": [
       "getBundle"
+    ],
+    "lib/remotion/chromium-executable.ts": [
+      "isServerlessChromiumHost",
+      "findPlaywrightChromium",
+      "resolveChromiumExecutable",
+      "chromiumLaunchArgs"
     ],
     "lib/remotion/code-revision.ts": [
       "resolveCodeRevision",
@@ -21255,6 +21313,29 @@
       "evalLearningCannotRewardBlocked",
       "runDirectorEval"
     ],
+    "lib/video/duration-model.ts": [
+      "purposeRule",
+      "hostWordsPerMinute",
+      "wordsForSeconds",
+      "spokenSecondsForWords",
+      "providerMaxSpokenSeconds",
+      "compositionDurationSpec",
+      "compositionBookends",
+      "compositionPurposes",
+      "requiredCapFrames",
+      "movingCompositionIds",
+      "capBodySeconds",
+      "purposeWordWindow",
+      "purposeBudgetFor",
+      "bodySecondsForNarration",
+      "planCompositionDuration",
+      "spokenSecondsProps",
+      "narrationLengthFromProps",
+      "planDurationForProps",
+      "renderedCompositionSeconds",
+      "durationMetadata",
+      "narrationWindowFrames"
+    ],
     "lib/video/finish-spec.ts": [
       "finishForVideo"
     ],
@@ -21301,11 +21382,22 @@
       "describeFactChanges",
       "summarizeRefresh"
     ],
+    "lib/video/memory-video-composition.ts": [
+      "memoryVideoCoverFrames",
+      "chapterDurationFrames",
+      "estimatedChapterSeconds",
+      "memoryVideoChapterLayout",
+      "memoryVideoDurationFrames",
+      "splitForSynthesis"
+    ],
     "lib/video/memory-video-gate.ts": [
       "qualifiesForMemoryVideo",
       "assessMemoryVideoTenure",
       "assembleSellerDictatedScript",
       "isSellerAuthored"
+    ],
+    "lib/video/memory-video-render.ts": [
+      "stageMemoryVideoRender"
     ],
     "lib/video/memory-video.ts": [
       "offerMemoryVideo",
@@ -21885,6 +21977,9 @@
     "remotion/MarketUpdateReel.tsx": [
       "MarketUpdateReel"
     ],
+    "remotion/MemoryVideoReel.tsx": [
+      "MemoryVideoReel"
+    ],
     "remotion/NeighborhoodSpotlightReel.tsx": [
       "NeighborhoodSpotlightReel"
     ],
@@ -21956,6 +22051,9 @@
     "remotion/components/CaptionLayer.tsx": [
       "CaptionLayer"
     ],
+    "remotion/components/EndCard.tsx": [
+      "EndCard"
+    ],
     "remotion/components/EqualHousingMark.tsx": [
       "EqualHousingMark"
     ],
@@ -21986,5 +22084,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 1
 }

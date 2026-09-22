@@ -23,7 +23,6 @@
   "lib/kernel/self-heal-ledger.ts :: brokerageId": 1,
   "lib/kernel/write-sentinel.ts :: brokerageId": 1,
   "lib/lifetime-customer-npv/current.ts :: q.brokerageId": 1,
-  "lib/property-alerts/alert-engine.ts :: brokerageId": 1,
   "lib/remotion/render-cache.ts :: opts.brokerageId": 1,
   "lib/video/living-video-sweep.ts :: opts.brokerageId": 1,
   "lib/workflow/intelligence/proactive-checks.ts :: input.brokerageId": 1,
