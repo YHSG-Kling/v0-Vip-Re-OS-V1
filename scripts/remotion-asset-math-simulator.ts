@@ -38,6 +38,7 @@
  * underrun/misfire, proving the check can see the defect it exists to catch.
  */
 import { COMPOSITION_GEOMETRY, compositionSeconds, geometryFor } from "../lib/remotion/composition-geometry"
+import { compositionBookends, planCompositionDuration, purposeBudgetFor } from "../lib/video/duration-model"
 import {
   WORDS_PER_MINUTE,
   narrationBudget,
@@ -232,8 +233,10 @@ function avatarBoundsSection() {
   console.log("\n── §avatarBounds · single-window + AvatarPIP multi-window fade math across fixtures ──")
   const fps = 30
 
-  // AgentTalkingHeadReel — single window, BODY = 300 frames (10s).
-  const BODY = 10 * fps
+  // AgentTalkingHeadReel — single window. WAVE 78: the BODY is DERIVED from the
+  // narration (lib/video/duration-model.ts), so the window this sweep fades
+  // against is the one an ideal welcome script plans, not a typed 300.
+  const BODY = planCompositionDuration({ compositionId: "AgentTalkingHeadReel", wordCount: purposeBudgetFor("AgentTalkingHeadReel").idealWords }).bodyFrames
   for (const secs of FIXTURE_SECONDS) {
     // The D-ID clip's MEASURED duration, at WORDS_PER_MINUTE pace for this
     // fixture's word count — the same estimate the render pipeline itself
@@ -255,16 +258,19 @@ function avatarBoundsSection() {
   // MarketUpdateReel — AvatarPIP multi-window: COVER + STAT*3, ONE continuous
   // clip sliced across three absolute windows.
   const COVER = 2 * fps
+  // WAVE 78 — the three STAT windows split a body DERIVED from the narration
+  // (lib/video/duration-model.ts): COVER/CTA come from the ONE registry's
+  // bookends, the body from a planned render of an ideal market-update script,
+  // and STAT = floor(body / 3) with the third window absorbing the remainder —
+  // exactly what remotion/MarketUpdateReel.tsx computes from durationInFrames.
   const g = geometryFor("MarketUpdateReel")!
-  const STAT = (g.duration_frames - COVER - 2 * fps /* CTA, MarketUpdateReel: TOTAL - COVER - STAT*3 = CTA; solve STAT */) / 3
-  // Re-derive STAT precisely from the registered geometry rather than a
-  // hardcoded literal (§1 — one vocabulary, no second copy of the composition's
-  // own arithmetic): TOTAL = COVER + STAT*3 + CTA, and MarketUpdateReel.tsx's
-  // own CTA is 2s — checked directly against the registry below.
-  const CTA = 2 * fps
-  const statFrames = (g.duration_frames - COVER - CTA) / 3
-  check("MarketUpdateReel: COVER + STAT*3 + CTA reconstructs the registered duration_frames exactly (no drift)",
-    COVER + statFrames * 3 + CTA === g.duration_frames && Number.isInteger(statFrames))
+  const bookends = compositionBookends("MarketUpdateReel")
+  const CTA = bookends.outroFrames
+  const plannedMarket = planCompositionDuration({ compositionId: "MarketUpdateReel", wordCount: purposeBudgetFor("MarketUpdateReel").idealWords })
+  const statFrames = Math.floor(plannedMarket.bodyFrames / 3)
+  const stat3 = plannedMarket.bodyFrames - statFrames * 2
+  check(`MarketUpdateReel: COVER (${bookends.introFrames}) + STAT×2 (${statFrames}) + STAT3 (${stat3}) + CTA (${CTA}) reconstructs the PLANNED ${plannedMarket.durationInFrames} frames exactly, inside the ${g.duration_frames}-frame cap`,
+    COVER === bookends.introFrames && bookends.introFrames + statFrames * 2 + stat3 + CTA === plannedMarket.durationInFrames && plannedMarket.durationInFrames <= g.duration_frames)
 
   for (const secs of FIXTURE_SECONDS) {
     const measured = estimateDurationSeconds(spokenWords(FIXTURE_SCRIPTS[secs]).length)

@@ -273,6 +273,15 @@ export const CONTENT_CONTRACT: Record<string, CompositionContentContract> = {
     cosmetic: [...CHROME],
     why: "`marketBeat` quotes a month-over-month median move as fact.",
   },
+  // Lane 78D — the memory video. Every chapter is the seller's own words
+  // (lib/video/memory-video-gate.ts); a render with no chapters would be a
+  // title card claiming a family history that was never dictated, and a
+  // sample family name is a claim about a real household.
+  MemoryVideoReel: {
+    required: ["title", "familyName", "chapters"],
+    cosmetic: [...CHROME, "tenureLine"],
+    why: "`chapters` ARE the family's dictated history — an empty list is a keepsake with nobody's story in it; `familyName` names a real household.",
+  },
   NewsletterDigestThumb: {
     required: ["subject", "personaHook", "agentName"],
     cosmetic: [...CHROME],
@@ -483,6 +492,9 @@ export const VOICEOVER_CONSUMING_COMPOSITIONS: ReadonlySet<string> = new Set<str
   "JustListedReelSquare",
   "JustSoldReelSquare",
   "ListingSectionReel",
+  // Lane 78D — one <Audio src={chapter.voiceoverUrl}> per chapter Sequence; the
+  // narration is baked in-frame, never muxed by the coordinator.
+  "MemoryVideoReel",
   "NeighborhoodSpotlightReel",
   "NewsletterDigestVideo",
   "OpenHouseAnnounceReel",

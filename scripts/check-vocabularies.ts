@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 439 tables, 776 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-21
+ * generated: 2026-09-22
  * source: public.live_check_constraints_json()
- * body-sha256: 6e735214192a6465a6f9aa8dfad09c5eac04467c211726014d00d05910f4b60a
+ * body-sha256: 529761c96a1d4cf8acd3a6c5a5eda9d6e1a56edd74bd1c381fc5fab955a2125a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1313,7 +1313,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
   remotion_compositions: {
-    category: ["affordability", "agent_avatar", "coming_soon", "explainer", "lead_magnet", "listing", "market_update", "neighborhood", "newsletter", "open_house", "postcard", "presentation", "testimonial", "thumbnail"],
+    category: ["affordability", "agent_avatar", "coming_soon", "explainer", "lead_magnet", "listing", "market_update", "memory", "neighborhood", "newsletter", "open_house", "postcard", "presentation", "testimonial", "thumbnail"],
     orientation: ["horizontal", "postcard", "square", "static_card", "vertical"],
   },
   repurpose_pipelines: {

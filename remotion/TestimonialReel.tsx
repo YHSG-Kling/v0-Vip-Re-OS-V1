@@ -26,7 +26,9 @@
  */
 import React from "react"
 import { Audio, Video } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -83,11 +85,13 @@ export interface TestimonialReelProps {
 }
 
 const FPS    = 30
-const COVER  = 2 * FPS
-const QUOTE  = 7 * FPS
-const REACT  = 3 * FPS
-const CTA    = 2 * FPS
-const TOTAL  = COVER + QUOTE + REACT + CTA  // 420 frames = 14s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `QUOTE = 7 * FPS / REACT = 3 * FPS` stood here. Bookends come from the ONE
+// registry; the quote and the reaction split the computed body 7:3.
+const BOOKENDS = compositionBookends("TestimonialReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, accentColor }) => {
   const frame = useCurrentFrame()
@@ -118,6 +122,11 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
   const finalCta = ctaLabel ?? "Read more reviews"
   const cues     = contextCues ?? []
   const showStars = (stars ?? 0) > 0
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY  = timeline.body.durationInFrames
+  const QUOTE = Math.round(BODY * 7 / 10)
+  const REACT = BODY - QUOTE
 
   return (
     <AbsoluteFill style={{
@@ -249,7 +258,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
       </Sequence>
 
       {/* CTA — 12-14s. */}
-      <Sequence from={COVER + QUOTE + REACT} durationInFrames={CTA}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -276,19 +285,19 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
       {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
           the COVER tile is a silent 2s brand intro; clip before the CTA tile
-          at COVER + QUOTE + REACT. */}
+          at COVER + BODY. */}
       <CaptionLayer
         cues={captionsCues}
         script={captionScript}
         accentColor={brand.accentColor}
         visibleFromFrame={COVER}
-        hiddenFromFrame={COVER + QUOTE + REACT}
+        hiddenFromFrame={COVER + BODY}
       />
     </AbsoluteFill>
   )

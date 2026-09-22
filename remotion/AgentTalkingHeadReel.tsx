@@ -42,7 +42,7 @@
  */
 import React from "react"
 import { Audio, Video } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { BrollLayer } from "./_BrollLayer"
@@ -50,6 +50,8 @@ import { CaptionLayer } from "./components/CaptionLayer"
 import { LowerThird } from "./components/LowerThird"
 import { SceneFade } from "./components/SceneFade"
 import { avatarFadeOutFrame } from "../lib/video/script-structure"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentTalkingHeadReelProps {
@@ -116,10 +118,15 @@ export interface AgentTalkingHeadReelProps {
 }
 
 const FPS    = 30
-const TOTAL  = 14 * FPS
-const COVER  = 2  * FPS
-const BODY   = 10 * FPS
-const OUTRO  = 2  * FPS
+// THE BODY IS COMPUTED, NOT TYPED (wave 78 — owner: "the video needs to be long
+// enough to achieve the reason for making the video"). `const BODY = 10 * FPS`
+// stood here; the bookends are the composition's design chrome, read from the
+// ONE registry (lib/video/duration-model.ts COMPOSITION_DURATION_RULES), and
+// the BODY is whatever the render's durationInFrames leaves between them —
+// Root.tsx's calculateMetadata sizes that duration to the fitted narration.
+const BOOKENDS = compositionBookends("AgentTalkingHeadReel")
+const COVER  = BOOKENDS.introFrames
+const OUTRO  = BOOKENDS.outroFrames
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
@@ -127,6 +134,9 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   captionsCues, captionScript,
 }) => {
   const frame   = useCurrentFrame()
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })
+  const BODY = timeline.body.durationInFrames
   const showEho = brand.showEhoMark ?? true
   const hasBroll = (brollClips?.length ?? 0) > 0
   // REALISM (wave 55) — null when no measurement or the clip fills the
@@ -317,7 +327,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
       </Sequence>
 
       {/* Total duration sanity sentinel. */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

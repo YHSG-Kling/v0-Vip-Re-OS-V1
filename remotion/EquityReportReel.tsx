@@ -37,7 +37,9 @@
  * simulator can assert the prop contract without a render context.
  */
 import React from "react"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { horizontalBars } from "../lib/charts/geometry"
 import { ordinal } from "../lib/format/ordinal"
@@ -101,10 +103,12 @@ export interface EquityReportReelProps {
 }
 
 const FPS    = 30
-const COVER  = 2 * FPS
-const STAT   = 4 * FPS
-const OUTRO  = 4 * FPS
-const TOTAL  = COVER + STAT * 3 + OUTRO  // 540 frames = 18s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `STAT = 4 * FPS` stood here. Bookends come from the ONE registry; the three
+// stat windows split whatever body the render's durationInFrames leaves.
+const BOOKENDS = compositionBookends("EquityReportReel")
+const COVER  = BOOKENDS.introFrames
+const OUTRO  = BOOKENDS.outroFrames
 
 /** USD with no cents — the same Intl shape the play's copy uses. */
 export function fmtUsd(n: number): string {
@@ -251,6 +255,11 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
   const home      = address?.trim() ? address.trim() : "your home"
   const mode      = equityDisplayMode(estimatedEquity)
   const chip      = `${ordinal(yearsHeld)} HOME ANNIVERSARY · ESTIMATE`
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })
+  const BODY  = timeline.body.durationInFrames
+  const STAT  = Math.floor(BODY / 3)
+  const STAT3 = BODY - STAT * 2
 
   // AVATAR LEAD-IN FIX (wave 60 realism audit — see MarketUpdateReel's twin
   // comment on its own AvatarPIP calls). `start` is this stat window's frame
@@ -370,10 +379,12 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       </Sequence>
 
       {/* STAT 3 — equity OR the honest appreciation-only treatment. 10-14s */}
-      <Sequence from={COVER + STAT * 2} durationInFrames={STAT}>
+      <Sequence from={COVER + STAT * 2} durationInFrames={STAT3}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
-          <AvatarPIP {...pipFor(STAT * 2)} />
+          {/* The third window absorbs the body's rounding remainder (STAT3 ≥ STAT),
+              so its end is the body's end — overriding the helper's + STAT. */}
+          <AvatarPIP {...pipFor(STAT * 2)} endFrame={BODY} />
           {mode === "value_minus_balance" && estimatedEquity != null ? (
             <StatCard
               label="ESTIMATED EQUITY"
@@ -395,7 +406,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       </Sequence>
 
       {/* OUTRO — agent + EHO + tracked QR. 14-18s */}
-      <Sequence from={COVER + STAT * 3} durationInFrames={OUTRO}>
+      <Sequence from={COVER + BODY} durationInFrames={OUTRO}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brandColors.primaryColor, color: "#fff",
@@ -421,7 +432,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       </Sequence>
 
       {/* Duration anchor — guarantees the renderer knows the full length. */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
@@ -433,7 +444,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
           — hiddenFromFrame clips the tail before the OUTRO tile's CTA copy,
           agent name, EHO mark and tracked QR. */}
       <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brandColors.accentColor}
-        visibleFromFrame={COVER} hiddenFromFrame={COVER + STAT * 3} />
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + BODY} />
     </AbsoluteFill>
   )
 }

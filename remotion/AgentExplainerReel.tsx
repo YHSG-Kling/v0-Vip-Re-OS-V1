@@ -36,7 +36,9 @@
  * before the render queued.
  */
 import React from "react"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -89,12 +91,12 @@ export interface AgentExplainerReelProps {
 }
 
 const FPS    = 30
-const COVER  = 3  * FPS
-const B1     = 3  * FPS  // 3-6
-const B2     = 4  * FPS  // 6-10
-const B3     = 5  * FPS  // 10-15
-const CTA    = 3  * FPS  // 15-18
-const TOTAL  = COVER + B1 + B2 + B3 + CTA
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `B1/B2/B3 = 3/4/5 s` stood here. Bookends come from the ONE registry; the
+// three bullet windows split the computed body in the same 3:4:5 proportion.
+const BOOKENDS = compositionBookends("AgentExplainerReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
 
 // TOMBSTONE (§6 same-body census, wave 56): a private `AvatarPIP` (360×360,
 // top-left ring, avatar video / photo / monogram fallback) lived here,
@@ -143,6 +145,12 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY = timeline.body.durationInFrames
+  const B1   = Math.round(BODY * 3 / 12)
+  const B2   = Math.round(BODY * 4 / 12)
+  const B3   = BODY - B1 - B2
   return (
     <AbsoluteFill style={{
       backgroundColor: brand.primaryColor,
@@ -219,7 +227,7 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
       </Sequence>
 
       {/* CTA — 15-18s */}
-      <Sequence from={COVER + B1 + B2 + B3} durationInFrames={CTA}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -239,7 +247,7 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
@@ -247,7 +255,7 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
           NO CAPTION OVER SILENCE (wave 59) — the avatar's baked-in audio
           starts at COVER, not frame 0; see CaptionLayer.visibleFromFrame. */}
       <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
-        visibleFromFrame={COVER} hiddenFromFrame={COVER + B1 + B2 + B3} />
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + BODY} />
     </AbsoluteFill>
   )
 }

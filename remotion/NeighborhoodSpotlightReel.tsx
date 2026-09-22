@@ -27,7 +27,9 @@
  */
 import React from "react"
 import { Audio, Video } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { CaptionLayer } from "./components/CaptionLayer"
@@ -87,10 +89,13 @@ export interface NeighborhoodSpotlightReelProps {
 }
 
 const FPS    = 30
-const COVER  = 3  * FPS
-const BODY   = 11 * FPS
-const CTA    = 2  * FPS
-const TOTAL  = COVER + BODY + CTA  // 480 frames = 16s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = 11 * FPS` stood here. Bookends come from the ONE registry; the body
+// is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("NeighborhoodSpotlightReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps> = ({
   neighborhood, tagline, highlights, brollClips, ctaLabel,
@@ -102,6 +107,9 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
   const finalCta = ctaLabel ?? "Want a private tour?"
   const cues     = contextCues ?? []
   const overlay  = `${brand.primaryColor}A6`  // ~65% alpha — clips still readable
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
 
   return (
     <AbsoluteFill style={{
@@ -114,7 +122,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           When no clips are passed, the layer returns null and the
           brand background carries through. */}
       {brollClips.length > 0 && (
-        <BrollLayer clips={brollClips} totalFrames={TOTAL} overlayColor={overlay} loop filmGrain handheldDrift />
+        <BrollLayer clips={brollClips} totalFrames={durationInFrames} overlayColor={overlay} loop filmGrain handheldDrift />
       )}
 
       {/* COVER — 0-3s. Neighborhood name + tagline. */}
@@ -249,7 +257,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

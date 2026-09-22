@@ -27,10 +27,12 @@
  */
 import React from "react"
 import { Video } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
-import { QrOutroBadge } from "./components/QrOutroBadge"
+import { EndCard } from "./components/EndCard"
 import { LowerThird } from "./components/LowerThird"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -65,10 +67,13 @@ export interface TeammateExplainerReelProps {
 }
 
 const FPS   = 30
-const INTRO = Math.round(2.5 * FPS) // 75
-const BODY  = Math.round(24.5 * FPS) // 735
-const OUTRO = 3 * FPS               // 90
-const TOTAL = INTRO + BODY + OUTRO  // 900
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = Math.round(24.5 * FPS)` stood here. Bookends come from the ONE
+// registry; the avatar body is whatever the render's durationInFrames leaves.
+const BOOKENDS = compositionBookends("TeammateExplainerReel")
+const INTRO = BOOKENDS.introFrames
+const OUTRO = BOOKENDS.outroFrames
+void FPS
 
 /** Branded intro card — logo, eyebrow chip, title. */
 const IntroCard: React.FC<{
@@ -177,7 +182,10 @@ const AvatarBody: React.FC<{
   )
 }
 
-/** Branded outro CTA card. */
+// TOMBSTONE (lane 78D, §1.1): the private `OutroCard` (CTA + agent name +
+// brokerage/EHO footer + QrOutroBadge with mlsClean) was MERGED onto
+// remotion/components/EndCard.tsx — the ONE end card the four outros in this
+// fleet now share. OUTRO stays 3 s; TOTAL stays 900.
 const OutroCard: React.FC<{
   ctaLabel: string
   agentName: string
@@ -185,55 +193,25 @@ const OutroCard: React.FC<{
   qrCodeDataUrl?: string | null
   qrCaption?: string
   mlsClean?: boolean
-}> = ({ ctaLabel, agentName, brand, qrCodeDataUrl, qrCaption, mlsClean }) => {
-  const frame = useCurrentFrame()
-  const showEho = brand.showEhoMark ?? true
-  return (
-    <AbsoluteFill
-      style={{
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-        padding: 72, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
-      }}
-    >
-      {brand.logoUrl && (
-        <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
-      )}
-      <div
-        style={{
-          fontSize: 76, fontWeight: 800, lineHeight: 1.05, marginBottom: 24, maxWidth: 900,
-          opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-          translate: `0 ${interpolate(frame, [4, 20], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
-        }}
-      >
-        {ctaLabel}
-      </div>
-      <div style={{ fontSize: 38, color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [12, 26], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}>
-        {agentName}
-      </div>
-      <div
-        style={{
-          position: "absolute", bottom: 26, left: 0, right: 0,
-          textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-        }}
-      >
-        {brand.brokerageName}
-        {showEho && " · Equal Housing Opportunity"}
-      </div>
-      <QrOutroBadge
-        qrCodeDataUrl={qrCodeDataUrl}
-        caption={qrCaption ?? "Scan to book a consult"}
-        primaryColor={brand.primaryColor}
-        accentColor={brand.accentColor}
-        mlsClean={mlsClean}
-      />
-    </AbsoluteFill>
-  )
-}
+}> = ({ ctaLabel, agentName, brand, qrCodeDataUrl, qrCaption, mlsClean }) => (
+  <EndCard
+    brand={brand}
+    headline={ctaLabel}
+    subline={agentName}
+    logoHeight={56}
+    qrCodeDataUrl={qrCodeDataUrl}
+    qrCaption={qrCaption ?? "Scan to book a consult"}
+    mlsClean={mlsClean}
+  />
+)
 
 export const TeammateExplainerReel: React.FC<TeammateExplainerReelProps> = ({
   eyebrow, title, ctaLabel, agentName, avatarVideoUrl, agentPhotoUrl,
   qrCodeDataUrl, qrCaption, mlsClean, brand, captionsCues, captionScript,
 }) => {
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: INTRO, outroFrames: OUTRO })
+  const BODY = timeline.body.durationInFrames
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       {/* INTRO — brand card */}
@@ -264,8 +242,8 @@ export const TeammateExplainerReel: React.FC<TeammateExplainerReelProps> = ({
         />
       </Sequence>
 
-      {/* Anchor frame keeps TOTAL authoritative for the registry (900). */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      {/* Anchor frame keeps the render's own durationInFrames authoritative. */}
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

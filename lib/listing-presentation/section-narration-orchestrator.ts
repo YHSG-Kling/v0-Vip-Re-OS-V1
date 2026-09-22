@@ -283,9 +283,16 @@ export async function narratePresentationSections(
           // even-distribution estimate stands, honestly labelled by the planner.
           const { geometryFor } = await import("@/lib/remotion/composition-geometry")
           const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
+          // THE SECTION IS AS LONG AS ITS NARRATION (wave 78, lib/video/
+          // duration-model.ts): the measured length rides the row so
+          // calculateMetadata sizes ListingSectionReel to it, and the cues are
+          // planned against that duration rather than the registered cap.
+          const { spokenSecondsProps, planDurationForProps } = await import("@/lib/video/duration-model")
+          const spoken = spokenSecondsProps({ measuredSeconds: voiceover.durationSeconds ?? null, narration: script, compositionId: r.composition_id })
           const geo = geometryFor(r.composition_id)
+          const planned = planDurationForProps(r.composition_id, { ...props, ...spoken, narrationScript: script })
           const cues = geo && voiceover.alignment
-            ? buildCaptionPlan(voiceover.alignment, geo.duration_frames, geo.fps, { maxWordsPerCue: 4 }).cues
+            ? buildCaptionPlan(voiceover.alignment, planned.durationInFrames, geo.fps, { maxWordsPerCue: 4 }).cues
             : []
           // narrationScript is written back as the script that was ACTUALLY
           // spoken. Leaving the pre-trim text beside the trimmed audio would
@@ -299,7 +306,7 @@ export async function narratePresentationSections(
           // anywhere saying so. The error is read and surfaced on the result.
           const { error: writeBackError } = await supabase.from("remotion_composition_renders")
             .update({
-              input_props: { ...props, narrationScript: script, voiceoverUrl, ...(cues.length > 0 ? { captionsCues: cues } : {}) },
+              input_props: { ...props, narrationScript: script, voiceoverUrl, ...spoken, ...(cues.length > 0 ? { captionsCues: cues } : {}) },
               used_voiceover: true,
             })
             .eq("id", r.id)

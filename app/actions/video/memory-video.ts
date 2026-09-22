@@ -29,6 +29,7 @@ import {
   type MemoryVideoCaptureResult,
 } from "@/lib/video/memory-video"
 import type { SellerDictatedSegment } from "@/lib/video/memory-video-gate"
+import { stageMemoryVideoRender, type MemoryVideoRenderResult } from "@/lib/video/memory-video-render"
 
 type Caller =
   | { ok: true; userId: string; brokerageId: string }
@@ -107,6 +108,29 @@ export async function saveMemoryVideoDictationAction(
     contactId,
     agentRecordId,
     segments,
+  })
+  if (result.ok) revalidatePath(`/crm/contacts/${contactId}`)
+  return result
+}
+
+/**
+ * MAKE THE FILM (lane 78D). Queues the chaptered MemoryVideoReel render of the
+ * saved capture: every clip is the seller's own saved words, narrated verbatim
+ * on the voiceover host, no avatar. The rail re-checks authorship and passes
+ * the render-hold gate server-side; a capture with chapters still unrecorded
+ * is refused with the chapters named. Tenant from the SESSION, as above.
+ */
+export async function renderMemoryVideoAction(
+  contactId: string,
+): Promise<MemoryVideoRenderResult> {
+  const caller = await requireCaller()
+  if (!caller.ok) return { ok: false, status: "failed", reason: caller.error }
+  if (!contactId) return { ok: false, status: "failed", reason: "contactId required" }
+
+  const result = await stageMemoryVideoRender({
+    brokerageId: caller.brokerageId,
+    contactId,
+    agentUserId: caller.userId,
   })
   if (result.ok) revalidatePath(`/crm/contacts/${contactId}`)
   return result

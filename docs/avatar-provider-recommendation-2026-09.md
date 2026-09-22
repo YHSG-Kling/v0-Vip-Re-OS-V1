@@ -278,7 +278,17 @@ provider-facing changes this wave are on the EXISTING stack (the last video
 lane moved onto the cached v3 primitive, the avatar word budget now sized to
 the window the D-ID track is cropped to).
 
-Unresolved (recorded, not guessed): D-ID Agent metering has two published
-readings (see table); Simli's pricing page is still uncrawlable so $0.009/min
+RESOLVED (lane 78D, 2026-09-22): D-ID Agent metering — the constant
+`DID_STREAMING_SECONDS_PER_CREDIT = 30` in lib/video/realism-profile.ts carries the
+DOCUMENTED reading, 0.5 credit per 15-second response (30 streaming seconds per
+credit), on which two official sources agree: d-id.com/faqs §"Payment and Credits"
+("Each credit is worth up to 15 seconds of video … For streaming customers using
+our API, the price of credits is halved", re-fetched 2026-09-22) and
+help.d-id.com/hc/en-us/articles/31262931985169-How-does-Agent-pricing-work
+(updated 2025-09-14: "Each message … of up to 15 seconds consumes 0.5 credits …
+each additional 15-second interval consumes 0.5 credits"). The Visual Agents
+marketing page's "0.5 credit for every 30 seconds" is the outlier and would halve
+every booked live minute; it is rejected until a D-ID invoice proves it (§5 —
+over-booking is the safer wrong). Still unresolved: Simli's pricing page is still uncrawlable so $0.009/min
 rests on two third-party write-ups and the home page's free-tier wording;
 Hedra's per-minute API rate is not on its pricing page.

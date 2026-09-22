@@ -215,6 +215,11 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
         })
         if (vo) {
           props.voiceover_url = vo.url
+          // THE DEAL ROOM IS AS LONG AS ITS NARRATION (wave 78, lib/video/
+          // duration-model.ts): the measured length is staged so
+          // calculateMetadata sizes the reel to it; captions plan against it.
+          const { spokenSecondsProps, planDurationForProps } = await import("@/lib/video/duration-model")
+          Object.assign(props, spokenSecondsProps({ measuredSeconds: vo.durationSeconds ?? null, narration: (props as any).narration, compositionId: DEAL_ROOM_COMPOSITION }))
           // WORD-SYNCED CAPTIONS (client-facing per the finish spec), TIMED
           // AGAINST THE COMPOSITION'S OWN GEOMETRY.
           //
@@ -236,9 +241,10 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
               + `captions REFUSED rather than timed against a hardcoded frame count. The video still ships.`,
             )
           } else {
+            const planned = planDurationForProps(DEAL_ROOM_COMPOSITION, props)
             const plan = buildCaptionPlan(
               vo.alignment ?? (props as any).narration,
-              geo.duration_frames, geo.fps,
+              planned.durationInFrames, geo.fps,
               { tailPaddingFrames: 45 },
             )
             if (plan.cues.length > 0) props.captionsCues = plan.cues

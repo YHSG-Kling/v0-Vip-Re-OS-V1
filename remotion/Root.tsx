@@ -57,6 +57,7 @@
  */
 import React from "react"
 import { Composition } from "remotion"
+import { durationMetadata } from "../lib/video/duration-model"
 import { JustListedReel } from "./JustListedReel"
 import { JustListedReelSquare } from "./JustListedReelSquare"
 import { PhotoWalkthroughReel } from "./PhotoWalkthroughReel"
@@ -90,11 +91,19 @@ import { PostcardBack4x6 } from "./PostcardBack4x6"
 import { PostcardFront6x9 } from "./PostcardFront6x9"
 import { PostcardBack6x9 } from "./PostcardBack6x9"
 import { PartnersMeetingReel } from "./PartnersMeetingReel"
+import { MemoryVideoReel } from "./MemoryVideoReel"
 
-// 25 seconds @ 30 fps = 750 frames. 1080×1920 = vertical 9:16 — the
-// canonical social-reel format (TikTok / IG Reels / YouTube Shorts /
-// Pinterest Idea Pins). Horizontal 16:9 variants can be added as separate
-// compositions when an agent requests a YouTube long-form version.
+// 1080×1920 = vertical 9:16 — the canonical social-reel format (TikTok / IG
+// Reels / YouTube Shorts / Pinterest Idea Pins). Horizontal 16:9 variants can
+// be added as separate compositions when an agent requests a YouTube long-form
+// version.
+//
+// DURATIONS (wave 78): every `durationInFrames` literal on a narration-driven
+// composition below is its CAP — bookends + the longest purpose max it serves
+// (lib/video/duration-model.ts requiredCapFrames) — and `calculateMetadata`
+// computes the render's real duration from the staged narration. The literal
+// stays because test:remotion-setup §3 and the render cache key on it, and
+// because the still/moving fork reads it.
 export const RemotionRoot: React.FC = () => {
   return (
     <>
@@ -107,7 +116,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustListedReel"
         component={JustListedReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={750}
+        durationInFrames={1500}
+        calculateMetadata={durationMetadata("JustListedReel")}
         fps={30}
         width={1080}
         height={1920}
@@ -135,7 +145,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustListedReelSquare"
         component={JustListedReelSquare as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1470}
+        calculateMetadata={durationMetadata("JustListedReelSquare")}
         fps={30}
         width={1080}
         height={1080}
@@ -172,7 +183,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="PhotoWalkthroughReel"
         component={PhotoWalkthroughReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={600}
+        durationInFrames={2850}
+        calculateMetadata={durationMetadata("PhotoWalkthroughReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -201,7 +213,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustSoldReelSquare"
         component={JustSoldReelSquare as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1470}
+        calculateMetadata={durationMetadata("JustSoldReelSquare")}
         fps={30}
         width={1080}
         height={1080}
@@ -231,7 +244,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="AgentTalkingHeadReel"
         component={AgentTalkingHeadReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={420}
+        durationInFrames={2820}
+        calculateMetadata={durationMetadata("AgentTalkingHeadReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -257,7 +271,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="AgentExplainerReel"
         component={AgentExplainerReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={540}
+        durationInFrames={2880}
+        calculateMetadata={durationMetadata("AgentExplainerReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -290,7 +305,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="TeammateExplainerReel"
         component={TeammateExplainerReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={900}
+        durationInFrames={2865}
+        calculateMetadata={durationMetadata("TeammateExplainerReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -321,7 +337,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="ExplainerAnimReel"
         component={ExplainerAnimReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={540}
+        durationInFrames={2880}
+        calculateMetadata={durationMetadata("ExplainerAnimReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -365,7 +382,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="MarketUpdateReel"
         component={MarketUpdateReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={480}
+        durationInFrames={2370}
+        calculateMetadata={durationMetadata("MarketUpdateReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -408,12 +426,15 @@ export const RemotionRoot: React.FC = () => {
           pins the PIP window to it (:396), and ListingSectionReel — the
           only thing that composes ListingPresentationSlide — takes its
           window from useVideoConfig(). `calculateMetadata` is
-          DELIBERATELY not used anywhere in this file: the script is
-          sized to fixed geometry (the "DURATION IS THE SCRIPT LENGTH"
-          note on ListingSectionReel below), the render cache keys on the
-          registered geometry, and test:remotion-setup §3 compares these
-          literals against remotion_compositions field-for-field — a
-          duration that moved per render would defeat all three.
+          DELIBERATELY not used on the two SLIDE compositions: they are
+          components a wrapper sizes, and the producers pin their PIP
+          windows to the registered frames. (Wave 78 — every NARRATION-
+          DRIVEN composition in this file now carries
+          `calculateMetadata={durationMetadata(id)}` from
+          lib/video/duration-model.ts: the registered literal is the CAP
+          the render cache keys on and test:remotion-setup §3 compares,
+          and the render's real duration is computed from the staged
+          narration inside it.)
 
           ── ADJUDICATION (§1, 2026-09-01): KEPT. THE MANUAL/AGENT PATH
              IS THE PRODUCER, AND IT IS THE ONLY ONE. ───────────────────
@@ -504,7 +525,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="ComingSoonReel"
         component={ComingSoonReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1500}
+        calculateMetadata={durationMetadata("ComingSoonReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -533,7 +555,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="OpenHouseAnnounceReel"
         component={OpenHouseAnnounceReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1500}
+        calculateMetadata={durationMetadata("OpenHouseAnnounceReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -561,7 +584,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="TestimonialReel"
         component={TestimonialReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={420}
+        durationInFrames={1920}
+        calculateMetadata={durationMetadata("TestimonialReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -589,7 +613,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="NeighborhoodSpotlightReel"
         component={NeighborhoodSpotlightReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={480}
+        durationInFrames={1950}
+        calculateMetadata={durationMetadata("NeighborhoodSpotlightReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -619,7 +644,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustListedReelHorizontal"
         component={JustListedReelHorizontal as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={600}
+        durationInFrames={1530}
+        calculateMetadata={durationMetadata("JustListedReelHorizontal")}
         fps={30}
         width={1920}
         height={1080}
@@ -651,8 +677,9 @@ export const RemotionRoot: React.FC = () => {
           (lib/buyer-consultation/consultation-render.ts:44,396) reads
           duration_frames from the geometry mirror and sizes the slide
           to it; nothing sets a per-slide duration, and calculateMetadata
-          is deliberately unused (see the ListingPresentationSlide note
-          above for why). */}
+          is deliberately unused on this slide (see the
+          ListingPresentationSlide note above for why — the narration-
+          driven reels DO use it). */}
       <Composition
         id="BuyerConsultationSlide"
         component={BuyerConsultationSlide as unknown as React.FC<Record<string, unknown>>}
@@ -784,7 +811,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="EquityReportReel"
         component={EquityReportReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={540}
+        durationInFrames={2430}
+        calculateMetadata={durationMetadata("EquityReportReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -814,19 +842,19 @@ export const RemotionRoot: React.FC = () => {
           closing). The CMA/market section uses CMAReel; every other dripped
           section uses this. Avatar PIP + ElevenLabs narration optional.
 
-          DURATION IS THE SCRIPT LENGTH. The narration is an <Audio> INSIDE this
-          composition, so lib/video/script-structure.ts sizes the script to
-          durationInFrames/fps (× 0.8 headroom at 150 wpm ⇒ 2 words per second).
-          At 300 frames that bought TWENTY words — one sentence — for the section
-          that has to sell the seller. m566 widened it to 900 (30s ⇒ 60 words):
-          over the 33–46 words the deterministic fallbacks run, and enough for the
-          4–5 sentence paragraph the AI brief asks for. Change this and
-          remotion_compositions.duration_frames together — test:remotion-setup §3
-          compares them field-for-field. */}
+          DURATION IS THE SCRIPT LENGTH — literally, since wave 78. The narration
+          is an <Audio> INSIDE this composition; the script is sized to the
+          listing_presentation_section PURPOSE (lib/video/duration-model.ts:
+          15/30/45 s at 150 wpm × 0.8 headroom) and calculateMetadata sizes the
+          render to the fitted narration. The literal below is the CAP (45 s of
+          body); m566's 900 was the whole fixed duration (30 s ⇒ 60 words). Change
+          this and remotion_compositions.duration_frames together —
+          test:remotion-setup §3 compares them field-for-field. */}
       <Composition
         id="ListingSectionReel"
         component={ListingSectionReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={900}
+        durationInFrames={1350}
+        calculateMetadata={durationMetadata("ListingSectionReel")}
         fps={30}
         width={1920}
         height={1080}
@@ -913,10 +941,40 @@ export const RemotionRoot: React.FC = () => {
           },
         }}
       />
+      {/* Lane 78D — THE MEMORY VIDEO (seller-dictated family history,
+          lib/video/memory-video-gate.ts). Horizontal 1920×1080 for the
+          living-room TV. durationInFrames here is the CAP (20 min @ 30 fps =
+          36000, mirrored in lib/remotion/composition-geometry.ts and the m659
+          registry row); the film's REAL length is computed by
+          calculateMetadata from the chapters' narration — cover + every clip +
+          outro (lib/video/memory-video-composition.ts) — so a family's story
+          is exactly as long as it is, never cropped to a body window. */}
+      <Composition
+        id="MemoryVideoReel"
+        component={MemoryVideoReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={36000}
+        fps={30}
+        width={1920}
+        height={1080}
+        calculateMetadata={durationMetadata("MemoryVideoReel")}
+        defaultProps={{
+          title:      "The story of 14 Elm Street",
+          familyName: "The Alvarez family",
+          tenureLine: "Home since 1979 · 46 years",
+          chapters:   [],
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
       <Composition
         id="NewsletterDigestVideo"
         component={NewsletterDigestVideo as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={600}
+        durationInFrames={1950}
+        calculateMetadata={durationMetadata("NewsletterDigestVideo")}
         fps={30}
         width={1080}
         height={1920}
@@ -1183,7 +1241,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="PartnersMeetingReel"
         component={PartnersMeetingReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={900}
+        durationInFrames={3720}
+        calculateMetadata={durationMetadata("PartnersMeetingReel")}
         fps={30}
         width={1920}
         height={1080}
@@ -1218,7 +1277,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="ProductPromoReel"
         component={ProductPromoReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={450}
+        durationInFrames={3720}
+        calculateMetadata={durationMetadata("ProductPromoReel")}
         fps={30}
         width={1080}
         height={1920}

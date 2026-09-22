@@ -27,7 +27,9 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
@@ -74,10 +76,13 @@ export interface JustListedReelSquareProps {
 }
 
 const FPS    = 30
-const TOTAL  = 12 * FPS                          // 360 frames
-const COVER  = 2  * FPS                          // 0-2s
-const PHOTOS = 8  * FPS                          // 2-10s
-const CTA    = 2  * FPS                          // 10-12s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `PHOTOS = 8 * FPS` stood here. Bookends come from the ONE registry; the
+// photo window is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("JustListedReelSquare")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 /** Ken-Burns zoom factor — slow 1.0 → 1.08 over the photo's visible
  *  window. Subtle enough that the photo still reads as a single
@@ -93,6 +98,9 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   captionsCues, captionScript,
 }) => {
   const frame      = useCurrentFrame()
+  const { durationInFrames } = useVideoConfig()
+  const timeline   = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const PHOTOS     = timeline.body.durationInFrames
   const images     = imageUrls.slice(0, 4)
   const perPhoto   = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho    = brand.showEhoMark ?? true
@@ -217,7 +225,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
       {/* Total duration sanity check — this guarantees the
           renderer always knows the length even if a Sequence is
           missing its photos. */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

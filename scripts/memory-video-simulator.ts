@@ -375,8 +375,20 @@ function layer7_tenancy() {
   check("a session that cannot be read, or a user with no brokerage, REFUSES",
     /return \{ ok: false, error: "Unauthorized" \}/.test(action)
     && /No brokerage on this account/.test(action))
-  check("...and every action returns that refusal rather than proceeding",
-    (action.match(/if \(!caller\.ok\) return/g) ?? []).length === 2)
+  // ASSERT THE RULE, DERIVE THE NUMBER (§2): every exported action gates on the
+  // same caller — as many refusals as there are exported actions (offer,
+  // save, and lane 78D's render).
+  const exportedActions = (action.match(/^export async function \w+Action\(/gm) ?? []).length
+  check(`...and every action returns that refusal rather than proceeding (${exportedActions} exported actions, ${exportedActions} gates)`,
+    exportedActions >= 3 && (action.match(/if \(!caller\.ok\) return/g) ?? []).length === exportedActions)
+  // Lane 78D — the film. The render action forwards to lib/video/memory-video-
+  // render.ts, which reads the chapters off the capture row, re-runs
+  // isSellerAuthored and the render-hold gate, and calls no model
+  // (scripts/video-type-matrix-simulator.ts §memory proves the stager itself).
+  check("the render action has a CALLER — the card imports renderMemoryVideoAction — and forwards to the stager",
+    /renderMemoryVideoAction/.test(card) && /export async function renderMemoryVideoAction/.test(action) && /stageMemoryVideoRender\(/.test(action))
+  check("the render stager calls no model (the seller's words are read VERBATIM by TTS, the gate's permitted arm)",
+    !/generateTextRouted|generateText\(|generateObject|@\/lib\/ai\/models|openai|anthropic/i.test(src("lib/video/memory-video-render.ts")))
   check("the browser never sends a brokerage id — the card calls the actions with the\n    contact id alone",
     !/brokerageId/.test(card))
 

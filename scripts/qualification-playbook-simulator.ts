@@ -365,6 +365,27 @@ check("TOMBSTONE (lane 77A): get_my_vendor_status is NOT a customer capability a
   const { QUALIFICATION_GOALS: goals, buildQualificationPrompt: buildPrompt } = await import("../lib/ai-isa/qualification-playbook")
   check("QUALIFICATION_GOALS carries the two lane-77A goals (representation, follow_up_preference)",
     goals.some((g) => g.key === "representation") && goals.some((g) => g.key === "follow_up_preference"))
+  // Lane 78D, blind spot (9): follow_up_preference lands on the EXISTING
+  // preferred_channel / preferred_contact_time columns (reused, not a new
+  // column); representation stays a summary line (no reader asks for it yet).
+  const { parseFollowUpPreference: parsePref } = await import("../lib/ai-isa/qualification-playbook")
+  check("parseFollowUpPreference maps 'text me in the evenings' → sms + evenings",
+    parsePref("Just text me in the evenings").channel === "sms" && parsePref("Just text me in the evenings").time === "evenings")
+  check("parseFollowUpPreference maps 'call after 6pm on weekdays' → phone + a time phrase",
+    parsePref("call me after 6pm on weekdays").channel === "phone" && !!parsePref("call me after 6pm on weekdays").time)
+  check("parseFollowUpPreference maps 'email is best' → email, no time", parsePref("email is best").channel === "email" && parsePref("email is best").time === null)
+  check("CONTROL: a sentence naming no channel writes NO channel (never a guessed default)", parsePref("whenever, I'm flexible").channel === null)
+  check("the preferred_channel values it emits are the contact-capture contract (phone|email|sms) and nothing else",
+    ["text me", "email me", "phone me", "carrier pigeon"].map((s) => parsePref(s).channel).every((c) => c === null || ["phone", "email", "sms"].includes(c)))
+  {
+    const tools = stripComments(readFileSync("lib/ai-isa/customer-context-tools.ts", "utf8"))
+    check("record_qualification writes preferred_channel and (contact-only) preferred_contact_time from the parsed preference",
+      /patch\.preferred_channel = pref\.channel/.test(tools) && /if \(pref\.time && ctx\.contactId\) patch\.preferred_contact_time = pref\.time/.test(tools))
+    check("...and both columns exist on the live snapshot (preferred_channel on contacts AND leads; preferred_contact_time on contacts)",
+      SCHEMA_SNAPSHOT.contacts.includes("preferred_channel") && SCHEMA_SNAPSHOT.leads.includes("preferred_channel") && SCHEMA_SNAPSHOT.contacts.includes("preferred_contact_time"))
+    check("representation is NOT written to a column that does not exist (summary line only — the decided vocabulary until a reader exists)",
+      !/patch\.(already_)?represented/.test(tools) && /already represented by an agent:/.test(tools))
+  }
   const sellerPrompt = buildPrompt({ surface: "widget", persona: "seller" as any })
   check("a real-estate surface prompt carries the HOT/WARM/COLD hand-off rule and the seller guide, and never a 'vendor' persona line",
     sellerPrompt.includes("WHEN TO HAND OFF") && sellerPrompt.includes("READY NOW") && sellerPrompt.includes("THIS PERSON LOOKS LIKE A SELLER") && !sellerPrompt.includes("LOOKS LIKE A VENDOR"))

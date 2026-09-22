@@ -34,7 +34,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { MEMORY_VIDEO_PROMPTS, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
-import { offerMemoryVideoAction, saveMemoryVideoDictationAction } from "@/app/actions/video/memory-video"
+import { offerMemoryVideoAction, saveMemoryVideoDictationAction, renderMemoryVideoAction } from "@/app/actions/video/memory-video"
 
 interface Props {
   contactId: string
@@ -93,6 +93,19 @@ export function MemoryVideoCard({
     })
   }
 
+  // THE FILM (lane 78D). Queues the chaptered MemoryVideoReel render of what
+  // was saved — every clip is the seller's saved words narrated verbatim; the
+  // server re-runs the authorship gate and refuses anything not provably
+  // seller-dictated. Nothing here composes a sentence.
+  function render() {
+    setError(null); setMessage(null)
+    startTransition(async () => {
+      const r = await renderMemoryVideoAction(contactId)
+      if (!r.ok) { setError(r.reason); return }
+      setMessage(r.reason)
+    })
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -135,6 +148,9 @@ export function MemoryVideoCard({
 
         <Button onClick={save} disabled={pending || dictatedCount === 0} size="sm" variant="secondary">
           Save what they dictated
+        </Button>
+        <Button onClick={render} disabled={pending || !projectId || dictatedCount < MEMORY_VIDEO_PROMPTS.length} size="sm" variant="outline">
+          Make the film from what was saved
         </Button>
 
         {message ? <p className="text-sm text-emerald-600">{message}</p> : null}

@@ -48,6 +48,7 @@ import { selectComposition, renderMedia } from "@remotion/renderer"
 import { runPersonaVariantPostPass } from "@/lib/video/persona-variant-post-pass"
 import { mintVideoQr } from "@/lib/video/video-qr"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import { compositionDurationSpec, purposeBudgetFor, spokenSecondsProps } from "@/lib/video/duration-model"
 // PURE — the companion-card gate and the hint cutter (see the staging comment
 // below the render for why this route needs both).
 import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, NEWSLETTER_DIGEST_THUMB } from "@/lib/geo/video-landing"
@@ -222,10 +223,17 @@ export async function POST(req: NextRequest) {
     // switched off here BY DESIGN and an overrun is simply cut. The 25-35 is an
     // editorial target and it happens to sit under the budget; the budget is the
     // enforceable ceiling, and it moves if the composition's geometry moves.
-    const narrationCap = narrationBudget(
-      NEWSLETTER_VIDEO_COMPOSITION,
-      compositionSeconds(geometryFor(NEWSLETTER_VIDEO_COMPOSITION) ?? { duration_frames: 0, fps: 30 }),
-    )
+    // WAVE 78 — the PURPOSE budget (newsletter: 20/35/60 s of body, lib/video/
+    // duration-model.ts), not the registered runtime: the registered frames
+    // are now the cap and calculateMetadata sizes the render to the fitted
+    // script (spokenSeconds is staged below). narrationBudget over the whole
+    // runtime remains the fallback for an id with no purpose row.
+    const narrationCap = compositionDurationSpec(NEWSLETTER_VIDEO_COMPOSITION)
+      ? purposeBudgetFor(NEWSLETTER_VIDEO_COMPOSITION)
+      : narrationBudget(
+        NEWSLETTER_VIDEO_COMPOSITION,
+        compositionSeconds(geometryFor(NEWSLETTER_VIDEO_COMPOSITION) ?? { duration_frames: 0, fps: 30 }),
+      )
     /**
      * THE AUTHORED NARRATION — what gets spoken when even a re-draft will not
      * fit NewsletterDigestVideo. Two short sentences built from the campaign's
@@ -384,6 +392,9 @@ Return ONLY the spoken text.`) + fix
         showEhoMark:   reelBrand.showEhoMark,
       },
       voiceoverUrl: voiceoverUrlStored,
+      // THE VIDEO IS AS LONG AS THE DIGEST (wave 78): the measured narration
+      // length calculateMetadata sizes NewsletterDigestVideo to.
+      ...spokenSecondsProps({ measuredSeconds: voiceover.durationSeconds ?? null, narration: script, compositionId: NEWSLETTER_VIDEO_COMPOSITION }),
       // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
       // compliance-gated `script` this route just synthesized into
       // voiceoverUrlStored above (never a second text, §6). The honest

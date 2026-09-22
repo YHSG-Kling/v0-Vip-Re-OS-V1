@@ -32,7 +32,7 @@ import { tool } from "ai"
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { QUALIFICATION_FOLLOW_UP_MENU, QUALIFICATION_GOALS } from "@/lib/ai-isa/qualification-playbook"
+import { QUALIFICATION_FOLLOW_UP_MENU, QUALIFICATION_GOALS, parseFollowUpPreference } from "@/lib/ai-isa/qualification-playbook"
 import {
   writeFollowUpActivity, scheduleFollowUp, notifyAssignedAgent, publishQualificationSignal,
 } from "@/lib/ai-isa/qualification-signals"
@@ -851,8 +851,31 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
       if (args.buyer_criteria?.pets) summaryBits.push(`pets: ${args.buyer_criteria.pets.slice(0, 60)}`)
       if (args.timeline) { patch.timeline = args.timeline; summaryBits.push(`timeline: ${args.timeline}`) }
       if (args.financing_status) { patch.lender_status = args.financing_status; summaryBits.push(`financing: ${args.financing_status}`) }
+      // REPRESENTATION (lane 78D, blind spot 9 — decided, not deferred): no live
+      // column on contacts/leads carries "already working with another agent"
+      // (scripts/schema-snapshot.ts), and no reader asks for one today — the
+      // outbound compliance gate (lib/kernel/communication-compliance.ts) and
+      // the lead-assignment rules key on OUR representation, consent and DNC,
+      // not on a rival agency. So the qualification_summary line
+      // `already represented by an agent: yes|no` IS the vocabulary for this
+      // fact until a reader exists (NAR Art. 16 solicitation suppression is the
+      // named candidate; that reader would justify a m66x column, and the
+      // column must land BEFORE this writer names it — PGRST204 refuses the
+      // whole patch otherwise, CLAUDE.md §3).
       if (args.already_represented === true || args.already_represented === false) summaryBits.push(`already represented by an agent: ${args.already_represented ? "yes" : "no"}`)
-      if (args.follow_up_preference) summaryBits.push(`follow-up preference: ${args.follow_up_preference.slice(0, 120)}`)
+      // FOLLOW-UP PREFERENCE (lane 78D, blind spot 9) — ALREADY EXISTED, REUSED:
+      // `preferred_channel` ('phone'|'email'|'sms', lib/contact-pipeline/
+      // contact-capture.ts's contract, on BOTH contacts and leads) and
+      // `preferred_contact_time` (contacts only; read by app/actions/
+      // ai-calendar-management.ts). The free-text answer is parsed onto those
+      // columns where it names a channel/time, and the verbatim line still
+      // lands in the summary so nothing the customer said is dropped.
+      if (args.follow_up_preference) {
+        summaryBits.push(`follow-up preference: ${args.follow_up_preference.slice(0, 120)}`)
+        const pref = parseFollowUpPreference(args.follow_up_preference)
+        if (pref.channel) patch.preferred_channel = pref.channel
+        if (pref.time && ctx.contactId) patch.preferred_contact_time = pref.time
+      }
 
       let wrote = false
       // Lane 76A — a summary-only learning (reason for the move, condition,

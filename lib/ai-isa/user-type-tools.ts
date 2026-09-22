@@ -61,11 +61,17 @@ type Svc = ReturnType<typeof createServiceClient>
  *  lib/ai-isa/capability-catalogue.ts). */
 function buildGetMyVendorStatusTool(ctx: UserTypeSeatContext & { vendorId: string }) {
   return tool({
-    description: "Look up YOUR OWN vendor account with this brokerage: open assignments/placements (type, status, scheduled/completed dates), your invoices (number, status, due date, paid date, total) and your payouts (status, amount, method, dates). Your own records only.",
+    description: "Look up YOUR OWN vendor account with this brokerage: open assignments/placements (type, status, scheduled/completed dates), your invoices (number, status, due date, paid date, total), your payouts (status, amount, method, dates) and your stored availability (typical turnaround in days — the one availability fact the OS keeps; there is no vendor calendar). Your own records only.",
     inputSchema: z.object({}),
     execute: async () => {
       const svc = createServiceClient()
-      const { data: vendor, error: vErr } = await svc.from("vendors").select("id, name, category, status, rating, preferred, verified_at").eq("id", ctx.vendorId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      // Lane 78D, blind spot (5) — vendor availability. The READ half of
+      // update_my_availability: `vendors.estimated_turnaround_days` is the only
+      // stored availability fact (no vendor calendar/availability table exists in
+      // scripts/schema-snapshot.ts; `vendor_bookings` holds the dates already
+      // booked, read by get_my_jobs_and_bookings). Exposed here, honestly labelled,
+      // rather than as a second tool that would imply a calendar.
+      const { data: vendor, error: vErr } = await svc.from("vendors").select("id, name, category, status, rating, preferred, verified_at, estimated_turnaround_days").eq("id", ctx.vendorId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
       if (vErr) return { success: false, error: vErr.message }
       if (!vendor) return { success: false, error: "Your vendor account is not on this brokerage's bench" }
       const [a, i, p] = await Promise.all([
@@ -79,6 +85,10 @@ function buildGetMyVendorStatusTool(ctx: UserTypeSeatContext & { vendorId: strin
       return {
         success: true,
         vendor: { name: vendor.name, category: vendor.category, status: vendor.status, rating: vendor.rating, preferred: vendor.preferred, verifiedAt: vendor.verified_at },
+        availability: {
+          estimatedTurnaroundDays: (vendor as { estimated_turnaround_days?: number | null }).estimated_turnaround_days ?? null,
+          note: "typical turnaround in days is the only availability the OS stores (set it with update_my_availability); booked dates are in get_my_jobs_and_bookings — no vendor calendar exists",
+        },
         assignments: a.data ?? [],
         invoices: i.data ?? [],
         payouts: p.data ?? [],
@@ -319,18 +329,33 @@ function buildFlagLoanIssueTool(ctx: UserTypeSeatContext & { vendorId: string })
 
 function buildListTransactionDocumentsTool(ctx: UserTypeSeatContext & { vendorId: string }) {
   return tool({
-    description: "List the documents on ONE of your own deals — label, type, status, signature status, upload date. Names and statuses only; downloads happen in the portal.",
+    description: "List the documents on ONE of your own deals — label, type, status, signature status, upload date — AND the agent's OUTSTANDING asks of you on that deal (status updates and documents requested, with who asked and when). Names and statuses only; downloads happen in the portal.",
     inputSchema: z.object({ transaction_id: z.string() }),
     execute: async ({ transaction_id }: { transaction_id: string }) => {
       const svc = createServiceClient()
       const ids = await lenderTransactionIds(svc, ctx)
       if (!ids.includes(transaction_id)) return { success: false, error: "That transaction is not one your lender company is assigned to" }
-      const { data, error } = await svc.from("transaction_documents")
-        .select("id, doc_label, doc_type, status, signature_status, uploaded_at, uploaded_by_type")
-        .eq("transaction_id", transaction_id).eq("brokerage_id", ctx.brokerageId)
-        .order("uploaded_at", { ascending: false }).limit(40)
-      if (error) return { success: false, error: error.message }
-      return { success: true, documents: data ?? [] }
+      // Lane 78D, blind spot (4): the OUTSTANDING ASKS — `document_requests`
+      // rows app/actions/lender-status-request.ts files (one per requested
+      // item, status 'pending' until the portal marks them 'submitted'). Read
+      // alongside what is already on the deal, so "what has the agent asked
+      // me for" has a reader on the lender seat.
+      const [docs, asks] = await Promise.all([
+        svc.from("transaction_documents")
+          .select("id, doc_label, doc_type, status, signature_status, uploaded_at, uploaded_by_type")
+          .eq("transaction_id", transaction_id).eq("brokerage_id", ctx.brokerageId)
+          .order("uploaded_at", { ascending: false }).limit(40),
+        svc.from("document_requests")
+          .select("id, document_name, document_type, status, due_date, created_at, fulfilled_at")
+          .eq("transaction_id", transaction_id).eq("brokerage_id", ctx.brokerageId)
+          .eq("status", "pending")
+          .order("created_at", { ascending: false }).limit(20),
+      ])
+      if (docs.error) return { success: false, error: docs.error.message }
+      // A refused asks read is REPORTED beside the documents, never rendered as
+      // "nothing outstanding" (§3: a refusal resolves with data: null).
+      if (asks.error) return { success: true, documents: docs.data ?? [], outstandingRequests: [], outstandingRequestsError: asks.error.message }
+      return { success: true, documents: docs.data ?? [], outstandingRequests: asks.data ?? [] }
     },
   })
 }

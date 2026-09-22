@@ -47,6 +47,8 @@ import type {
 } from "../lib/charts/explainer-diagram"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface ExplainerAnimReelProps {
@@ -85,10 +87,12 @@ export interface ExplainerAnimReelProps {
 }
 
 const FPS     = 30
-const COVER   = 3 * FPS    // 0-3
-const DIAGRAM = 12 * FPS   // 3-15
-const CTA     = 3 * FPS    // 15-18
-const TOTAL   = COVER + DIAGRAM + CTA  // 540
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `DIAGRAM = 12 * FPS` stood here. Bookends come from the ONE registry; the
+// diagram window is whatever body the render's durationInFrames leaves.
+const BOOKENDS = compositionBookends("ExplainerAnimReel")
+const COVER   = BOOKENDS.introFrames
+const CTA     = BOOKENDS.outroFrames
 
 const ENTER = Easing.bezier(0.16, 1, 0.3, 1)
 
@@ -327,6 +331,9 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const DIAGRAM = timeline.body.durationInFrames
   return (
     <AbsoluteFill style={{
       background: `radial-gradient(circle at 30% 0%, ${brand.primaryColor} 0%, #0b1220 85%)`,
@@ -425,7 +432,7 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

@@ -39,6 +39,7 @@
 import type { CharacterAlignment } from "@/lib/video/caption-plan"
 import { computeNarrationKey } from "@/lib/remotion/composition-cache"
 import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
+import { VOICEOVER_MAX_SCRIPT_CHARS } from "@/lib/video/duration-model"
 import { elevenLabsModelForLane, withNaturalPauses, stripNaturalPauseMarkup, alignmentWithoutPauseMarkup } from "@/lib/video/realism-profile"
 
 export interface ReelVoiceover {
@@ -73,8 +74,14 @@ function narrationDurationSeconds(
 
 /** The synthesis cap. Applied BEFORE hashing so the key names what is actually
  *  spoken, not what was asked for — two scripts differing only past the cap
- *  produce identical audio and must share one clip. */
-const MAX_SCRIPT_CHARS = 2400
+ *  produce identical audio and must share one clip.
+ *  TOMBSTONE (wave 78): the literal 2400 moved to lib/video/duration-model.ts
+ *  VOICEOVER_MAX_SCRIPT_CHARS so the purpose word budget can respect the same
+ *  cap the synthesis applies (§6 — one number, two readers). */
+// Exported (lane 78D): lib/video/memory-video-render.ts splits a chapter
+// longer than this on sentence boundaries into parts, each its own clip, so a
+// dictated history is never silently truncated at the cap.
+export const MAX_SCRIPT_CHARS = VOICEOVER_MAX_SCRIPT_CHARS
 
 export async function prepareReelVoiceover(
   p: {

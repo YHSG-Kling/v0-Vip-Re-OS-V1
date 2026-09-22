@@ -91,7 +91,17 @@ import {
   WORDS_PER_MINUTE, narrationBudget, fitNarrationToBudget, spokenWords, estimateDurationSeconds,
   avatarFadeOutFrame, avatarDurationOverrunSeconds,
 } from "../lib/video/script-structure"
-import { NARRATION_WINDOW_FRAMES, narrationWindowBudget, narrationWindowSeconds } from "../lib/video/narration-window"
+import { narrationWindowBudget, narrationWindowSeconds } from "../lib/video/narration-window"
+// WAVE 78 — the window is DERIVED (lib/video/duration-model.ts), not a table:
+// NARRATION_WINDOW_FRAMES is tombstoned in narration-window.ts; every check
+// that mirrored it now reads narrationWindowFrames / planCompositionDuration.
+import {
+  COMPOSITION_DURATION_RULES, PURPOSE_DURATION_RULES, narrationWindowFrames, planCompositionDuration, purposeBudgetFor,
+} from "../lib/video/duration-model"
+import {
+  MEMORY_VIDEO_COMPOSITION_ID, MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_MAX_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS, MEMORY_VIDEO_PURPOSE,
+  memoryVideoChapterLayout, memoryVideoDurationFrames, splitForSynthesis,
+} from "../lib/video/memory-video-composition"
 import {
   buildCaptionPlan, shiftCaptionCues, clipCaptionCuesFromFrame, clipCaptionCuesBeforeFrame,
   activeWordIndex, evenWordFrames, type CaptionCue, type CharacterAlignment,
@@ -148,7 +158,7 @@ const MATRIX: VideoType[] = [
   { ownerKey: "explainer", type: "education / explainer (agent + teammate)", producers: ["lib/video/avatar-explainer.ts", "lib/video/chapter-video-generator.ts"], compositions: ["AgentExplainerReel", "TeammateExplainerReel"], host: "avatar", brand: "tenant" },
   { type: "concept animation explainer", producers: ["lib/video/video-director.ts", "lib/video/director-content.ts"], compositions: ["ExplainerAnimReel"], host: "avatar", brand: "tenant" },
   { ownerKey: "product", type: "platform product video (self-marketing)", producers: ["lib/platform/product-content.ts"], compositions: ["ProductPromoReel"], host: "voiceover", brand: "platform" },
-  { ownerKey: "memory", type: "memory video (seller-dictated family history)", producers: ["lib/video/memory-video.ts", "lib/video/memory-video-gate.ts", "lib/video/video-render-hold.ts"], compositions: [], host: "avatar", brand: "tenant", note: "NO Remotion composition renders it (see §memory) — the seller-authored script ships through the D-ID studio path; a multi-minute dictation does not fit any registered body window (unresolved, geometry blocker)" },
+  { ownerKey: "memory", type: "memory video (seller-dictated family history)", producers: ["lib/video/memory-video.ts", "lib/video/memory-video-gate.ts", "lib/video/video-render-hold.ts", "lib/video/memory-video-render.ts"], compositions: ["MemoryVideoReel"], host: "voiceover", brand: "tenant", note: "lane 78D: chaptered voiceover host, no avatar; the length is COMPUTED from the narration (Root.tsx calculateMetadata → memoryVideoDurationFrames), the registered 36000 frames is the cap — see §memory" },
   { ownerKey: "partners_meeting", type: "partners-meeting show / board packet / listing pitch / deal room", producers: ["lib/intelligence/partners-meeting.ts", "lib/kernel/board-packet-reel.ts", "lib/video/listing-pitch-reel.ts", "lib/kernel/deal-room-reel.ts"], compositions: ["PartnersMeetingReel"], host: "voiceover", brand: "tenant" },
   { ownerKey: "lead_reel", type: "lead reel (1:1 intro, email-embedded)", producers: ["lib/ai-isa/lead-reel-brief.ts", "lib/video/video-director.ts"], compositions: ["AgentExplainerReel"], host: "avatar", brand: "tenant" },
   { ownerKey: "geo_reel", type: "geo reel (auto-published AI-search landing page)", producers: ["app/api/cron/geo-reel-autopublish/route.ts", "lib/geo/publish-video-landing.ts"], compositions: [], host: "surface", brand: "tenant", note: "a PUBLICATION surface over finished reels of any type, not a composition — its gate is proven in §surfaces" },
@@ -236,7 +246,7 @@ function resolveComposition(id: string): Resolved | null {
   const file = VIDEO_COMPOSITION_FILES[id]
   if (!geo || !file) return null
   const source = readStripped(file)
-  const scope = buildScope(source, geo)
+  const scope = buildScope(source, geo, id)
   let window = narrationWindow(source, scope, geo.duration_frames)
   if (id === "PhotoWalkthroughReel") {
     // Derived split: `outroStart` is a destructured runtime variable the
@@ -261,6 +271,25 @@ function checkSum(r: Resolved) {
     const s = r.scope
     check(`${label}: COVER + cardTotal + ASK + OUTRO === ${r.total} (nested ask Sequence, algebraic)`,
       ["COVER", "ASK", "OUTRO", "cardTotal"].every((k) => typeof s[k] === "number") && s.COVER + s.cardTotal + s.ASK + s.OUTRO === r.total)
+  } else if (r.id === "MemoryVideoReel") {
+    // Lane 78D — PROPS-DRIVEN timeline: the same pure helper the composition
+    // lays out with, exercised on synthetic chapters. The RULE: cover + every
+    // clip + outro tile the computed length exactly, and the computed length
+    // never exceeds the registered cap.
+    const fx = { chapters: [{ durationFrames: 900 }, { durationFrames: 1275 }, { durationFrames: 33 }] }
+    const slots = memoryVideoChapterLayout(fx, r.fps)
+    const total = memoryVideoDurationFrames(fx, r.fps)
+    const cover = Math.round(MEMORY_VIDEO_COVER_SECONDS * r.fps), outro = Math.round(MEMORY_VIDEO_OUTRO_SECONDS * r.fps)
+    const tiles = slots[0]?.from === cover && slots.every((s, i) => i === 0 || s.from === slots[i - 1].from + slots[i - 1].durationInFrames)
+      && slots[slots.length - 1].from + slots[slots.length - 1].durationInFrames + outro === total
+    check(`${label}: cover(${cover}) + Σ clips + outro(${outro}) === memoryVideoDurationFrames (${total}) — the film is exactly as long as the story`, tiles)
+    check(`${label}: the computed length never exceeds the registered cap (${r.total})`,
+      memoryVideoDurationFrames({ chapters: Array.from({ length: 200 }, () => ({ durationFrames: 9000 })) }, r.fps) === r.total && total < r.total)
+    check(`${label}: the composition lays its chapters out with memoryVideoChapterLayout and the outro at the computed end (no frame const of its own)`,
+      /memoryVideoChapterLayout\(/.test(r.source) && /memoryVideoDurationFrames\(/.test(r.source) && !/const\s+(COVER|BODY|OUTRO|TOTAL)\s*=/.test(r.source))
+    check(`${label}: Root.tsx mounts the ONE durationMetadata, whose rule hook (COMPOSITION_DURATION_RULES.MemoryVideoReel.durationFromProps) computes durationInFrames from the props via memoryVideoDurationFrames`,
+      /id="MemoryVideoReel"[\s\S]{0,600}calculateMetadata=\{durationMetadata\("MemoryVideoReel"\)\}/.test(readStripped("remotion/Root.tsx"))
+      && /MemoryVideoReel:[^\n]*durationFromProps:\s*\(props, fps\) => memoryVideoDurationFrames\(/.test(readStripped("lib/video/duration-model.ts")))
   } else {
     check(`${label}: single continuous body (no <Sequence> chain of its own)`, !/<Sequence[\s>]/.test(r.source))
   }
@@ -279,11 +308,20 @@ function checkWindow(r: Resolved, host: Host) {
   check(`${label}: narration window [${r.window.from}, ${r.window.to}) lies inside [0, ${r.total}) and is non-empty`,
     r.window.from >= 0 && r.window.to <= r.total && r.window.to > r.window.from)
   if (host === "avatar") {
-    const table = NARRATION_WINDOW_FRAMES[r.id]
     check(`${label}: an avatar host declares its window on <CaptionLayer visibleFromFrame/hiddenFromFrame> (the one place the composition says where real audio plays)`,
       r.window.declared && r.window.from > 0)
-    check(`${label}: NARRATION_WINDOW_FRAMES mirrors the composition's OWN window exactly ([${table?.from}, ${table?.to}) vs source [${r.window.from}, ${r.window.to}))`,
-      !!table && table.from === r.window.from && table.to === r.window.to)
+    // WAVE 78 — DERIVED, not mirrored: [intro, total − outro) from the ONE
+    // registry's bookends equals the composition's OWN window, at the cap AND
+    // at a planned duration (a table could only ever say it at the cap).
+    const derived = narrationWindowFrames(r.id, r.total)
+    check(`${label}: narrationWindowFrames(id, cap) derives the composition's OWN window exactly ([${derived.from}, ${derived.to}) vs source [${r.window.from}, ${r.window.to}))`,
+      derived.from === r.window.from && derived.to === r.window.to)
+    const planned = planCompositionDuration({ compositionId: r.id, wordCount: purposeBudgetFor(r.id).idealWords })
+    const plannedGeo = { ...geometryFor(r.id)!, duration_frames: planned.durationInFrames }
+    const atPlan = narrationWindow(r.source, buildScope(r.source, plannedGeo, r.id), planned.durationInFrames)
+    const derivedAtPlan = narrationWindowFrames(r.id, planned.durationInFrames)
+    check(`${label}: …and at the PLANNED ${planned.durationInFrames}-frame render (ideal ${planned.purpose} script) the source window [${atPlan.from}, ${atPlan.to}) still equals the derived [${derivedAtPlan.from}, ${derivedAtPlan.to})`,
+      atPlan.from === derivedAtPlan.from && atPlan.to === derivedAtPlan.to && planned.durationInFrames < r.total)
   }
 }
 
@@ -558,16 +596,37 @@ function surfacesSection() {
   const landing = readCode("lib/geo/publish-video-landing.ts")
   check("publishVideoProjectLanding re-checks isAutoPublishEligible per row (the gate is enforced twice, never trusted from the sweep)", /isAutoPublishEligible/.test(landing))
 
-  console.log("\n── §memory — the memory video is seller-authored, held otherwise, and has NO composition today ──")
+  console.log("\n── §memory — the memory video is seller-authored, held otherwise, and (lane 78D) has a composition sized by its narration ──")
   const hold = readStripped("lib/video/video-render-hold.ts")
   check("video-render-hold holds a memory_video whose script is not provably seller-authored (red flag, fail closed)",
     /isSellerAuthored\(row\.video_metadata\)/.test(hold) && /hold: true, state: "red_flag"/.test(hold))
   const gate = readCode("lib/video/memory-video-gate.ts")
   check("memory-video-gate publishes MODEL_MAY / MODEL_MAY_NOT (the authorship boundary is in the code)", /export const MODEL_MAY\b/.test(gate) && /export const MODEL_MAY_NOT\b/.test(gate))
   check("memory-video.ts calls NO routed model (the family's history is never generated)", !MODEL_CALL.test(readCode("lib/video/memory-video.ts")))
-  const stagers = Object.keys(VIDEO_COMPOSITION_FILES).filter((id) => readCode("lib/video/memory-video.ts").includes(id))
-  check(`memory video stages NO Remotion composition today (${stagers.length} ids named) — the longest avatar body window is ${Math.max(...Object.keys(NARRATION_WINDOW_FRAMES).map((id) => narrationWindowSeconds(id)))}s and a dictated history is minutes; recorded as UNRESOLVED (geometry blocker), not skipped`,
-    stagers.length === 0)
+  const render = readCode("lib/video/memory-video-render.ts")
+  check("memory-video-render.ts calls NO routed model either — TTS reads the seller's words VERBATIM, the gate's permitted arm", !MODEL_CALL.test(render))
+  check("CONTROL: the model-call finder still fires on the reactor that does draft through the gateway", MODEL_CALL.test(readCode("lib/video/intro-video-reactor.ts")))
+  const stagers = Object.keys(VIDEO_COMPOSITION_FILES).filter((id) => readStripped("lib/video/memory-video-render.ts").includes(id) || /MEMORY_VIDEO_COMPOSITION_ID/.test(render) && id === MEMORY_VIDEO_COMPOSITION_ID)
+  check(`memory video stages exactly ONE composition (${stagers.join(",") || "none"}) — ${MEMORY_VIDEO_COMPOSITION_ID}, on the voiceover host`,
+    stagers.length === 1 && stagers[0] === MEMORY_VIDEO_COMPOSITION_ID)
+  check(`...whose window (${MEMORY_VIDEO_MAX_SECONDS}s cap, real length from the narration) is a VOICEOVER body, not an avatar body window, and the purpose cap agrees with the composition's own constant (one number, two readers)`,
+    COMPOSITION_DURATION_RULES[MEMORY_VIDEO_COMPOSITION_ID]?.host === "voiceover" && COMPOSITION_DURATION_RULES[MEMORY_VIDEO_COMPOSITION_ID]?.purpose === "memory"
+    && PURPOSE_DURATION_RULES.memory.maxSeconds === MEMORY_VIDEO_MAX_SECONDS && narrationWindowSeconds(MEMORY_VIDEO_COMPOSITION_ID) === MEMORY_VIDEO_MAX_SECONDS)
+  check("the stager passes the render-hold gate (evaluateVideoRenderHold with the projectId) before anything is queued",
+    /evaluateVideoRenderHold\(\{[\s\S]{0,300}projectId: project\.id/.test(readStripped("lib/video/memory-video-render.ts")) && /if \(hold\.hold\) return/.test(readStripped("lib/video/memory-video-render.ts")))
+  check("the stager reads the chapters OFF THE CAPTURE ROW (video_metadata.dictation, last segment per prompt) and refuses when chapters are still unrecorded",
+    /latestWordsByChapter\(meta\.dictation/.test(readStripped("lib/video/memory-video-render.ts")) && /chapters still unrecorded/.test(readStripped("lib/video/memory-video-render.ts")))
+  check("every clip's frames come from the measured narration (prepareReelVoiceover durationSeconds → chapterDurationFrames), estimated at the fleet pace only when synthesis returned no length",
+    /chapterDurationFrames\(seconds, geo\.fps\)/.test(readStripped("lib/video/memory-video-render.ts")) && /vo\?\.durationSeconds \?\? estimatedChapterSeconds\(words\)/.test(readStripped("lib/video/memory-video-render.ts")))
+  check("a chapter longer than the synthesis cap is split on SENTENCE boundaries into its own clips (nothing past the cap is dropped)",
+    /splitForSynthesis\(ch\.words, MAX_SCRIPT_CHARS\)/.test(readStripped("lib/video/memory-video-render.ts")))
+  const split = splitForSynthesis("One. Two three four. Five six seven eight nine. Ten.", 20)
+  check("CONTROL: splitForSynthesis keeps every character and never cuts inside a sentence", split.join(" ") === "One. Two three four. Five six seven eight nine. Ten." && split.every((p) => p.length <= 20 || !p.includes(". ")))
+  check("purpose is the named constant, not a free string", MEMORY_VIDEO_PURPOSE === "memory" && /MEMORY_VIDEO_PURPOSE/.test(render))
+  check("the finish spec is a keepsake's: voiceover host, no avatar, no bookends, no QR, captions off (the words are on screen verbatim)",
+    (() => { const f = finishForVideo(MEMORY_VIDEO_COMPOSITION_ID); return f.presenter === "none" && !f.bookends && !f.qr && !f.captions && f.music })())
+  check("the action + card mount the render (renderMemoryVideoAction ← memory-video-card)",
+    /export async function renderMemoryVideoAction/.test(readStripped("app/actions/video/memory-video.ts")) && /renderMemoryVideoAction\(/.test(readStripped("app/crm/contacts/[contactId]/components/memory-video-card.tsx")))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -583,9 +642,16 @@ function hybridSection() {
     /trim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\}/.test(readStripped("lib/video/composite-attribution.ts")) && /MAX_BRAND_BOOKEND_SECONDS/.test(concat))
   check("the hybrid route's middle is the rendered JustListedReel (voiceover baked in-frame) and brand comes through resolveReelBrand",
     /resolveReelBrand\(/.test(route))
+  // WAVE 78 — the middle is COMPUTED from the promo narration (listing_promo
+  // purpose), so the complete length is derived from a planned render, never
+  // pinned to a remembered 30 (§2: assert the rule, derive the number).
   const g = geometryFor("JustListedReel")!
-  const complete = compositionSeconds(g) + 2 * MAX_BRAND_BOOKEND_SECONDS
-  check(`hybrid complete video = ${compositionSeconds(g)}s middle + 2×${MAX_BRAND_BOOKEND_SECONDS}s bookends = ${complete}s`, complete === 30)
+  const planned = planCompositionDuration({ compositionId: "JustListedReel", wordCount: purposeBudgetFor("JustListedReel").idealWords })
+  const middle = planned.durationInFrames / g.fps
+  const complete = middle + 2 * MAX_BRAND_BOOKEND_SECONDS
+  const rule = PURPOSE_DURATION_RULES.listing_promo
+  check(`hybrid complete video = ${middle}s planned middle (ideal listing_promo script, body ${planned.bodySeconds}s ∈ [${rule.minSeconds}, ${rule.maxSeconds}]) + 2×${MAX_BRAND_BOOKEND_SECONDS}s bookends = ${complete}s, under the ${compositionSeconds(g)}s cap + bookends`,
+    planned.bodySeconds >= rule.minSeconds && planned.bodySeconds <= rule.maxSeconds && complete < compositionSeconds(g) + 2 * MAX_BRAND_BOOKEND_SECONDS && complete > 2 * MAX_BRAND_BOOKEND_SECONDS)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -688,8 +754,8 @@ async function main() {
   const fakeWindow = narrationWindow("<CaptionLayer cues={c} visibleFromFrame={COVER} hiddenFromFrame={COVER + BODY} />", { COVER: 60, BODY: 300 }, 420)
   check("CONTROL: narrationWindow resolves visibleFromFrame/hiddenFromFrame through the scope ([60, 360))", fakeWindow.from === 60 && fakeWindow.to === 360 && fakeWindow.declared)
   const overBudget = narrationBudget("AgentTalkingHeadReel", compositionSeconds(geometryFor("AgentTalkingHeadReel")!))
-  check(`CONTROL: the PRE-FIX whole-composition budget for AgentTalkingHeadReel (${overBudget.budgetSeconds}s) DOES exceed its ${narrationWindowSeconds("AgentTalkingHeadReel")}s crop window — the defect §avatar exists to catch`,
-    overBudget.budgetSeconds > narrationWindowSeconds("AgentTalkingHeadReel"))
+  check(`CONTROL: the PRE-FIX whole-runtime budget for AgentTalkingHeadReel (${overBudget.budgetSeconds}s of the ${compositionSeconds(geometryFor("AgentTalkingHeadReel")!)}s cap) DOES exceed the purpose budget (${purposeBudgetFor("AgentTalkingHeadReel").budgetSeconds}s) — sizing to the whole runtime is the defect §avatar exists to catch`,
+    overBudget.budgetSeconds > purposeBudgetFor("AgentTalkingHeadReel").budgetSeconds)
   check("CONTROL: avatarDurationOverrunSeconds reports a clip 5s past budget", avatarDurationOverrunSeconds(overBudget.budgetSeconds + 5, overBudget.budgetSeconds) > 0)
   check("CONTROL: paddingSecondsFor pads a 10s overrun on a voiceover host", paddingSecondsFor(35, 25) === 10)
   const badFade = /afade=t=out:st=([0-9.]+):d=([0-9.]+)/.exec(buildMusicTrackFilter({ loop: true, volume: 0.12, videoSeconds: 2 }))

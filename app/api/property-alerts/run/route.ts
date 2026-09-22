@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { runAllActiveAlerts } from "@/lib/property-alerts/alert-engine"
+import { platformScope, tenantScope, isTenantScopeRefusal } from "@/lib/kernel/tenant-scope"
 
 export async function POST(req: NextRequest) {
   // Auth: Bearer [CRON_SECRET]
@@ -37,7 +38,20 @@ export async function POST(req: NextRequest) {
   if (url.searchParams.get("frequency"))   frequency   = url.searchParams.get("frequency")!
   if (url.searchParams.get("brokerageId")) brokerageId = url.searchParams.get("brokerageId")!
 
-  const stats = await runAllActiveAlerts(frequency, brokerageId)
+  // THE SCOPE IS DECLARED, NEVER INFERRED FROM AN ABSENT ID (lane 78D). The
+  // caller above proved CRON_SECRET, which is the platform authority a
+  // platform-wide sweep needs; a named brokerageId narrows that run to one
+  // tenant and a blank one REFUSES rather than widening (tenantScope throws).
+  let scope
+  try {
+    scope = brokerageId !== undefined
+      ? tenantScope(brokerageId, "property-alerts run (tenant named by the CRON_SECRET-verified caller)")
+      : platformScope("CRON_SECRET-verified sweep — every tenant's due property alerts, by design (lib/property-alerts/alert-engine.ts runAllActiveAlerts)")
+  } catch (err) {
+    if (isTenantScopeRefusal(err)) return NextResponse.json({ error: err.message }, { status: 400 })
+    throw err
+  }
+  const stats = await runAllActiveAlerts(frequency, scope)
 
   // WHICH SOURCE ANSWERED, AND HOW MANY ALERTS COULD NOT BE EVALUATED, are part
   // of the sweep's own record — `stats` carries `bySource`, `unevaluated` and

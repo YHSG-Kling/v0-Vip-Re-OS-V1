@@ -13,11 +13,16 @@
 //
 // ── THE TRUNCATION THIS FIXES (m313) ────────────────────────────────────────
 // This muxed with -shortest and amix duration=first, which means THE VIDEO
-// LENGTH WINS. Every composition has a FIXED duration_frames in the registry
-// and no composition uses Remotion's calculateMetadata to size itself to its
-// audio, while the narration script is capped at 2400 characters — several
-// minutes of speech. So any script longer than its composition ran off the end
-// and the agent was cut off MID-SENTENCE, silently, in a video sent to a client.
+// LENGTH WINS. At the time every composition had a FIXED duration_frames in the
+// registry and no composition used Remotion's calculateMetadata to size itself
+// to its audio, while the narration script is capped at 2400 characters —
+// several minutes of speech. So any script longer than its composition ran off
+// the end and the agent was cut off MID-SENTENCE, silently, in a video sent to
+// a client. (Wave 78: the narration-driven compositions now DO size themselves
+// to the staged narration — lib/video/duration-model.ts, Root.tsx
+// calculateMetadata — and the coordinator hands this mixer the PLANNED seconds;
+// the pad below stays as the backstop for a measured narration that still runs
+// past the plan, e.g. a stale row with no length staged.)
 //
 // The fix does not shorten the script: it EXTENDS the video, holding the final
 // frame (ffmpeg tpad) for exactly the overrun, so the sentence finishes. The

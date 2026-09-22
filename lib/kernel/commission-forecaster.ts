@@ -564,7 +564,7 @@ export async function runCommissionForecaster(
         const tier = mapUserTypeToTier(userType, userBrokerage, userTeam)
         if (whisperTierCapability(tier) === "audio") {
           const voiceId = await resolveAssistantVoiceId(supabase, agent.user_id)
-          if (voiceId) audioUrl = await synthesizer(summary.body, voiceId)
+          if (voiceId) audioUrl = await synthesizer(summary.body, voiceId, brokerageId)
         }
       }
 

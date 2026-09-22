@@ -152,6 +152,7 @@ import {
   WORDS_PER_MINUTE,
   type NarrationFit,
 } from "../lib/video/script-structure"
+import { compositionDurationSpec, purposeBudgetFor } from "../lib/video/duration-model"
 import { promoNarrationBudget } from "../lib/video/promo-composition"
 import { sectionNarrationBudget, SECTION_NARRATION_COMPOSITION } from "../lib/listing-presentation/section-narration"
 import { FINISH_PROP_KEYS } from "../lib/remotion/composition-cache"
@@ -458,20 +459,43 @@ console.log("\n═══ 4b. Each component's INTERNAL storyboard sums to its re
   // ── the assertion ──────────────────────────────────────────────────────────
   const mismatched: string[] = []
   const skipped: string[] = []
+  // WAVE 78 (lib/video/duration-model.ts): the fleet RULE is now the DERIVED
+  // storyboard — bookends from compositionBookends(id), body from
+  // useVideoConfig().durationInFrames — so a literal `const TOTAL` is the
+  // exception (the fixed-body chart reels), not the norm. A derived storyboard
+  // has nothing internal to sum against the registration (the registration is
+  // its CAP); it is proven instead by test:video-duration-model, which tiles it
+  // at the cap AND at a planned duration. Counted here as `derived` so the
+  // coverage assertion below is still "every moving composition is classified",
+  // never "16 literals" (§2: assert the rule, derive the number).
   let asserted = 0
+  let derived = 0
+  let fixed = 0
+  const unexplained: string[] = []
   for (const [id, g] of Object.entries(root)) {
     if (g.duration_frames <= 1) { skipped.push(`${id}: still card — no storyboard to sum`); continue }
     const file = importMap[componentOf[id] ?? ""]
     if (!file) { mismatched.push(`${id}: component file unresolvable`); continue }
-    const sb = deriveStoryboardTotal(readFileSync(file, "utf8"))
-    if (sb.total === null) { skipped.push(`${id}: ${sb.reason}`); continue }
+    const raw = readFileSync(file, "utf8")
+    const sb = deriveStoryboardTotal(raw)
+    if (sb.total === null) {
+      const code = blankStrings(stripComments(raw))
+      const rule = compositionDurationSpec(id)
+      if (rule?.bodyMode === "narration" && /useVideoConfig\(\)/.test(code) && /durationInFrames/.test(code)) {
+        derived++; skipped.push(`${id}: DERIVED storyboard (useVideoConfig + duration-model) — proven at cap and planned duration by test:video-duration-model`); continue
+      }
+      if (rule?.bodyMode === "fixed") { fixed++; skipped.push(`${id}: fixed-body by rule (${rule.note}) — ${sb.reason}`); continue }
+      unexplained.push(`${id}: ${sb.reason}`); skipped.push(`${id}: ${sb.reason}`); continue
+    }
     asserted++
     if (sb.total !== g.duration_frames) {
       mismatched.push(`${id}: storyboard (${sb.how}) sums to ${sb.total}, Root registers ${g.duration_frames}`)
     }
   }
   for (const s of skipped) console.log(`    ⏭  ${s}`)
-  ok(`the deriver found a real number of storyboards to assert (${asserted} asserted,\n    ${skipped.length} skipped with reasons above)`, asserted >= 16, `asserted=${asserted}`)
+  const movingCount = Object.values(root).filter((g) => g.duration_frames > 1).length
+  ok(`every moving composition is classified: ${asserted} literal storyboard(s) asserted + ${derived} derived + ${fixed} fixed-by-rule = ${movingCount} moving,\n    none unexplained (${skipped.length - derived - fixed} other skips with reasons above)`,
+    asserted + derived + fixed === movingCount && unexplained.length === 0 && derived >= 16, `asserted=${asserted} derived=${derived} fixed=${fixed} moving=${movingCount} unexplained=${unexplained.join(" | ")}`)
   ok("every derivable internal storyboard sums EXACTLY to the registered\n    durationInFrames — a drift freezes the last frame or cuts a beat, silently",
     mismatched.length === 0, mismatched.slice(0, 6).join(" | "))
 }
@@ -1503,7 +1527,12 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
     .match(/\bconst\s+NEWSLETTER_VIDEO_COMPOSITION\s*=\s*["']([A-Za-z0-9_]+)["']/)?.[1]
   ok(`the newsletter producer names its own composition (${newsletterComposition ?? "NOT FOUND"}) and it is registered`,
     !!newsletterComposition && !!REGISTRY[newsletterComposition])
-  const newsletterBudget = narrationBudget(newsletterComposition ?? "", compositionSeconds(REGISTRY[newsletterComposition ?? ""] ?? { duration_frames: 0, fps: 30 }))
+  // WAVE 78 — the route sizes through the PURPOSE budget (newsletter: 20/35/60 s
+  // of body) when the composition has a duration rule, exactly as the route
+  // itself does; the whole-runtime budget is the fallback for an id without one.
+  const newsletterBudget = compositionDurationSpec(newsletterComposition ?? "")
+    ? purposeBudgetFor(newsletterComposition ?? "")
+    : narrationBudget(newsletterComposition ?? "", compositionSeconds(REGISTRY[newsletterComposition ?? ""] ?? { duration_frames: 0, fps: 30 }))
   const sectionBudget = sectionNarrationBudget()
 
   // ── THE CENSUS, as a checked fact ─────────────────────────────────────────
@@ -1545,6 +1574,14 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
     NeighborhoodSpotlightReel: "the Director commissions it; the narration would have to come from a producer that does not exist yet",
     TestimonialReel:           "the Director commissions it; the CLIENT's own clip carries the audio, so no script is sized",
     JustListedReelHorizontal:  "the Director's 16:9 YouTube/Facebook cut; the organic promo path never routes here",
+    // MemoryVideoReel (lane 78D) is deliberately NOT here: its per-chapter
+    // `voiceoverUrl` is declared on lib/video/memory-video-composition.ts's
+    // MemoryVideoChapterProps, not in the composition file, so the camel-key
+    // declaration scan above does not roster it — a note for an un-rostered
+    // id reads as STALE. The seller's dictation is the script; lib/video/
+    // memory-video-render.ts stages one clip per chapter through
+    // prepareReelVoiceover, sized by the narration, never by narrationBudget
+    // (scripts/video-type-matrix-simulator.ts §memory proves it).
   }
 
   const compFiles: string[] = []
@@ -1649,8 +1686,13 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
       + `${compositionSeconds(REGISTRY[b.compositionId] ?? { duration_frames: 0, fps: 30 })}s`).join(" | "))
   ok("...and every one of them leaves real headroom — 150 wpm is an AVERAGE, not\n    a bound, so a budget that exactly filled the runtime would overrun on any\n    faster-than-average read",
     liveBudgets.every((b) => b.headroom === NARRATION_HEADROOM && b.budgetSeconds < b.compositionSeconds))
-  ok("...and each budget is DERIVED, not a literal: every composition gets its own\n    number, so the 12s square cuts are not handed the 25s reel's script length",
-    new Set(liveBudgets.map((b) => b.maxWords)).size >= 3)
+  // WAVE 78: the budget is derived from the composition's PURPOSE (lib/video/
+  // duration-model.ts purposeBudgetFor), so the four listing-promo cuts share
+  // ONE listing_promo window on purpose while the newsletter and the section
+  // reel get theirs — distinct per purpose, equal within one, never a literal.
+  ok("...and each budget is DERIVED from its purpose, not a literal: every produced\n    budget equals purposeBudgetFor(id) and the purposes differ across producers",
+    liveBudgets.every((b) => b.maxWords === purposeBudgetFor(b.compositionId).maxWords)
+    && new Set(liveBudgets.map((b) => purposeBudgetFor(b.compositionId).purpose)).size >= 2)
 
   // ── POSITIVE CONTROL (§2) — the OLD budgets must FAIL this same check ─────
   // A broken rule and a clean tree both report zero. These are the effective

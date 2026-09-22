@@ -29,7 +29,9 @@
  */
 import React from "react"
 import { Audio, Video } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -94,10 +96,13 @@ export interface ComingSoonReelProps {
 }
 
 const FPS    = 30
-const COVER  = 3  * FPS
-const BODY   = 7  * FPS
-const CTA    = 2  * FPS
-const TOTAL  = COVER + BODY + CTA  // 360 frames = 12s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = 7 * FPS` stood here. Bookends come from the ONE registry; the body
+// is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("ComingSoonReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   address, cityState, teaser, heroImageUrl, whenString, ctaLabel,
@@ -112,6 +117,9 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   const clips    = brollClips ?? []
   const hasBroll = clips.length > 0
   const overlay  = `${brand.primaryColor}B3`  // ~70% alpha tint
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
 
   return (
     <AbsoluteFill style={{
@@ -124,7 +132,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
       {hasBroll && (
         <BrollLayer
           clips={clips}
-          totalFrames={TOTAL}
+          totalFrames={durationInFrames}
           overlayColor={overlay}
           loop
           filmGrain
@@ -262,7 +270,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

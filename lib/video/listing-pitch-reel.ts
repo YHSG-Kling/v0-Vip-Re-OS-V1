@@ -165,6 +165,11 @@ export async function queueListingPitchReel(
   })
   if (vo) {
     props.voiceover_url = vo.url
+    // THE PITCH IS AS LONG AS ITS NARRATION (wave 78, lib/video/duration-model.ts):
+    // the measured length is staged so calculateMetadata sizes the reel to it,
+    // and the captions below are planned against THAT duration, not the cap.
+    const { spokenSecondsProps, planDurationForProps } = await import("@/lib/video/duration-model")
+    Object.assign(props, spokenSecondsProps({ measuredSeconds: vo.durationSeconds ?? null, narration: (props as any).narration, compositionId: LISTING_PITCH_COMPOSITION }))
     // WORD-SYNCED CAPTIONS (finish-spec: client-facing report shows carry
     // captions) — real alignment when the timestamped path succeeded, honest
     // even-distribution from the script otherwise.
@@ -184,9 +189,10 @@ export async function queueListingPitchReel(
         + `captions REFUSED rather than timed against a hardcoded frame count. The video still ships.`,
       )
     } else {
+      const planned = planDurationForProps(LISTING_PITCH_COMPOSITION, props)
       const plan = buildCaptionPlan(
         vo.alignment ?? (props as any).narration,
-        geo.duration_frames, geo.fps,
+        planned.durationInFrames, geo.fps,
         { tailPaddingFrames: 45 },
       )
       if (plan.cues.length > 0) props.captionsCues = plan.cues

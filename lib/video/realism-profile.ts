@@ -1576,7 +1576,32 @@ export const DID_SCALE_MONTHLY_PLAN_USD = 297
 const DID_SCALE_MONTHLY_CREDITS = 1200
 /** Seconds of RENDERED (offline) video one D-ID credit buys — d-id.com/pricing/api, 2026-09-12. */
 const DID_OFFLINE_SECONDS_PER_CREDIT = 15
-/** Seconds of STREAMING (live agent) video one D-ID credit buys — half the offline rate, same source. */
+/**
+ * Seconds of STREAMING (live agent) video one D-ID credit buys — half the
+ * offline rate.
+ *
+ * THE DOCUMENTED READING (lane 78D, blind spot 10 — closes the "two
+ * published readings" item lanes 76D/77D carried as unresolved). D-ID has
+ * stated the Agent meter two ways; the one this constant carries is the one
+ * D-ID's own FAQ and its API bundle allowances agree on:
+ *   · https://www.d-id.com/faqs/ §"Payment and Credits", re-fetched
+ *     2026-09-22: "Each credit is worth up to 15 seconds of video … For
+ *     streaming customers using our API, the price of credits is halved" —
+ *     i.e. 15 s × 2 = 30 streaming seconds per credit (0.5 credit per 15 s
+ *     response), and "Credits used for the API are taken from the same
+ *     balance as the studio".
+ *   · https://help.d-id.com/hc/en-us/articles/31262931985169-How-does-Agent-pricing-work
+ *     (updated 2025-09-14, fetched 2026-09-22): "Each message (generated
+ *     video) of up to 15 seconds consumes 0.5 credits … each additional
+ *     15-second interval consumes 0.5 credits" — the SAME reading, and the
+ *     API bundle allowances match it.
+ * The OTHER reading — "0.5 credit per 30 s" on the Visual Agents marketing
+ * page — would make a credit buy 60 streaming seconds and halve every
+ * booked D-ID live minute. It is REJECTED here, not split: it is the outlier
+ * of three sources, and under §5 ("a wrong number there is a wrong invoice")
+ * over-booking is the safer wrong until a D-ID invoice proves the cheaper
+ * rate. Re-verify against d-id.com/faqs before changing this number.
+ */
 const DID_STREAMING_SECONDS_PER_CREDIT = 30
 const DID_USD_PER_VIDEO_SECOND =
   Math.round((DID_SCALE_MONTHLY_PLAN_USD / (DID_SCALE_MONTHLY_CREDITS * DID_OFFLINE_SECONDS_PER_CREDIT)) * 10000) / 10000

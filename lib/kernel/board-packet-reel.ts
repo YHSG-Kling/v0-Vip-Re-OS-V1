@@ -136,6 +136,10 @@ export async function queueBoardPacketReel(
     languageCode: DEFAULT_LANGUAGE,
   })
   if (vo) props.voiceover_url = vo.url
+  // THE PACKET IS AS LONG AS ITS NARRATION (wave 78, lib/video/duration-model.ts):
+  // stage the measured length so calculateMetadata sizes the reel to it.
+  const { spokenSecondsProps } = await import("@/lib/video/duration-model")
+  Object.assign(props, spokenSecondsProps({ measuredSeconds: vo?.durationSeconds ?? null, narration: (props as { narration?: string }).narration ?? null, compositionId: BOARD_PACKET_REEL_COMPOSITION }))
   // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
   // producer omitted it, so a BOARD PACKET card printed the just-listed
   // composition's sample sentence as its summary line and as the hero image's

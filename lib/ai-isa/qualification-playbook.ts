@@ -204,6 +204,29 @@ export const QUALIFICATION_GOALS: readonly QualificationGoal[] = [
   { key: "follow_up_preference", label: "Follow-up preference", detail: "the best way and time for the agent to follow up — call, text or email, and roughly when" },
 ] as const
 
+/**
+ * PURE (lane 78D, blind spot 9): the customer's follow-up preference, in their
+ * words, mapped onto the EXISTING `preferred_channel` vocabulary
+ * ('phone'|'email'|'sms' — the contact-capture contract in
+ * lib/contact-pipeline/contact-capture.ts, a column on BOTH contacts and
+ * leads) and a short `preferred_contact_time` phrase (contacts only; read by
+ * app/actions/ai-calendar-management.ts). Lives beside the goal it serves so
+ * the writer (customer-context-tools.ts record_qualification) and the proof
+ * (scripts/qualification-playbook-simulator.ts) share one spelling. A sentence
+ * that names no channel yields NO channel — never a guessed default.
+ */
+export function parseFollowUpPreference(text: string): { channel: "phone" | "email" | "sms" | null; time: string | null } {
+  const t = text.toLowerCase()
+  const channel: "phone" | "email" | "sms" | null =
+    /\b(text|sms|message me)\b/.test(t) ? "sms"
+    : /\b(e-?mail)\b/.test(t) ? "email"
+    : /\b(call|phone|ring)\b/.test(t) ? "phone"
+    : null
+  const timeMatch = /\b(mornings?|afternoons?|evenings?|weekends?|weekdays?|after \d{1,2}(?::\d{2})?\s?(?:am|pm)?|before \d{1,2}(?::\d{2})?\s?(?:am|pm)?|lunch(?:time)?|(?:mon|tues|wednes|thurs|fri|satur|sun)days?)\b/
+  const time = timeMatch.exec(t)?.[1] ?? null
+  return { channel, time: time ? time.trim().slice(0, 60) : null }
+}
+
 export interface FollowUpOption {
   tool: string
   label: string

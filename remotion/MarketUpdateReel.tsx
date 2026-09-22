@@ -34,7 +34,9 @@
  * just renders.
  */
 import React from "react"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -101,10 +103,13 @@ export interface MarketUpdateReelProps {
 }
 
 const FPS    = 30
-const COVER  = 2 * FPS
-const STAT   = 4 * FPS
-const CTA    = 2 * FPS
-const TOTAL  = COVER + STAT * 3 + CTA  // 480 frames = 16s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `STAT = 4 * FPS` stood here. The bookends are read from the ONE registry;
+// the three stat windows split whatever body the render's durationInFrames
+// leaves between them (calculateMetadata sizes it to the fitted narration).
+const BOOKENDS = compositionBookends("MarketUpdateReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
 
 const DIR_TONE: Record<StatDirection, "good" | "bad" | "neutral"> = {
   up_good:    "good",
@@ -210,6 +215,11 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   const downColor = brand.downColor ?? "#EF4444"
   const showEho   = brand.showEhoMark ?? true
   const finalCta  = ctaLabel ?? "Want my take on your block?"
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY  = timeline.body.durationInFrames
+  const STAT  = Math.floor(BODY / 3)
+  const STAT3 = BODY - STAT * 2
 
   return (
     <AbsoluteFill style={{
@@ -296,20 +306,20 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
       </Sequence>
 
       {/* STAT 3 — 10-14s. See the AVATAR LEAD-IN FIX note on STAT 1 above. */}
-      <Sequence from={COVER + STAT * 2} durationInFrames={STAT}>
+      <Sequence from={COVER + STAT * 2} durationInFrames={STAT3}>
         <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
           <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
             avatarDurationSeconds, fps: FPS,
-            startFrame: STAT * 2, endFrame: STAT * 3 }} />
+            startFrame: STAT * 2, endFrame: BODY }} />
           <StatCard stat={stats[2]} index={3} accentColor={brand.accentColor}
             upColor={upColor} downColor={downColor} />
         </AbsoluteFill>
       </Sequence>
 
       {/* CTA — 14-16s */}
-      <Sequence from={COVER + STAT * 3} durationInFrames={CTA}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -332,7 +342,7 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
@@ -341,7 +351,7 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           NO CAPTION OVER SILENCE (wave 59): the avatar's own baked-in audio
           does not start until the COVER tile ends — see visibleFromFrame. */}
       <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
-        visibleFromFrame={COVER} hiddenFromFrame={COVER + STAT * 3} />
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + BODY} />
     </AbsoluteFill>
   )
 }

@@ -22,6 +22,7 @@ import { deliverAlertResults } from "./alert-notifier"
 import type { AlertProperty } from "./alert-matcher"
 import type { ListingSource } from "@/lib/property/listing-source"
 import { isSnoozed } from "./alert-cadence"
+import { applyTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 export interface RunAlertResult {
   success: boolean
@@ -321,9 +322,19 @@ async function resolveAlertSearchState(
 /** Alerts processed per run, per frequency. See the cap note below. */
 const RUN_BATCH_LIMIT = 50
 
+/**
+ * `scope` (lane 78D, blind spot 3): the sweep's tenant is a DECLARED
+ * TenantScope, never an optional id. `platformScope(reason)` is the
+ * CRON_SECRET-gated platform-wide run (app/api/property-alerts/run/route.ts
+ * writes the reason at the call site); `tenantScope(id, where)` REFUSES a
+ * blank id. The old `brokerageId?: string` + `if (brokerageId) query.eq(...)`
+ * was the conditional-tenant-predicate shape (scripts/conditional-tenant-
+ * predicate-guard.ts) — an absent id decayed into "every tenant" with nothing
+ * written down; it is gone, and the guard's CLASSIFICATION entry with it.
+ */
 export async function runAllActiveAlerts(
   frequency: string,
-  brokerageId?: string
+  scope: TenantScope,
 ): Promise<{
   total: number
   succeeded: number
@@ -350,13 +361,17 @@ export async function runAllActiveAlerts(
 }> {
   const supabase = createServiceClient()
 
+  // FAIL CLOSED BY KIND: a tenant scope pins the predicate, a platform scope
+  // carries its written reason; there is no third case and no silent widening.
   const query = supabase
     .from("property_alerts")
     .select("id, snoozed_until")
     .eq("frequency", frequency)
     .eq("is_active", true)
-
-  if (brokerageId) query.eq("brokerage_id", brokerageId)
+  // Mutates the builder in place (the lib/kernel/command-center.ts shape —
+  // the generic return form instantiates too deeply against this table's
+  // generated types).
+  applyTenantScope(query, scope)
 
   // THE ERROR IS READ (§3). A refused sweep read resolves with `data: null`,
   // which was byte-identical to "no alerts are due" — so a cron that could not

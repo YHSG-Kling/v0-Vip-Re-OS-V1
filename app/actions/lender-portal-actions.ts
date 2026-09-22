@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { revalidatePath } from "next/cache"
 import { requireLenderVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
@@ -402,6 +403,35 @@ export async function updateLenderLoanStatus(data: {
     .eq("transaction_id", data.transactionId)
 
   if (error) return { success: false, error: error.message }
+
+  // THE ASK IS ANSWERED (lane 78D, blind spot 4). app/actions/lender-status-
+  // request.ts files the agent's request as `document_requests` rows (status
+  // 'pending'); a loan-status update from the portal is the lender answering
+  // the `underwriting_status` ask, and a clear-to-close status answers the
+  // `clear_to_close_eta` ask too. Marked 'submitted' (the live CHECK value —
+  // scripts/check-vocabularies.ts document_requests.status) on the SERVICE
+  // client AFTER the gate above (§4: gate first, then the service client),
+  // scoped to the actor's brokerage + this transaction. Counted: an update
+  // matching nothing resolves too (§3), and zero answered asks is the ordinary
+  // case, not a failure.
+  try {
+    const answered = data.newStatus === "clear_to_close"
+      ? ["underwriting_status", "clear_to_close_eta"]
+      : ["underwriting_status"]
+    const svc = createServiceClient()
+    const { data: closed, error: askErr } = await svc
+      .from("document_requests")
+      .update({ status: "submitted", fulfilled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("brokerage_id", actor.brokerageId)
+      .eq("transaction_id", data.transactionId)
+      .eq("status", "pending")
+      .in("document_type", answered)
+      .select("id")
+    if (askErr) console.error("[updateLenderLoanStatus] document_requests fulfilment REFUSED — the status landed but the agent's ask stays 'pending':", askErr.message)
+    else if ((closed ?? []).length > 0) console.log(`[updateLenderLoanStatus] ${(closed ?? []).length} outstanding ask(s) marked submitted for ${data.transactionId}`)
+  } catch (err) {
+    console.error("[updateLenderLoanStatus] document_requests fulfilment failed (non-blocking)", err)
+  }
 
   // Fan-out via the transaction kernel so the agent dashboard, buyer +
   // seller portals, and title portal all see the loan-status change.

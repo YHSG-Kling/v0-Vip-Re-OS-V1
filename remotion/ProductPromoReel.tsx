@@ -17,6 +17,8 @@ import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoC
 import { loadFont } from "@remotion/google-fonts/Inter"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 // REPLACES the tombstone that used to sit where `base.fontFamily` is built
@@ -108,6 +110,12 @@ const HANDOFFS: Array<[string, string]> = [
 
 const CAPABILITIES = ["Leads", "Deals", "Video", "Social", "Recruiting", "Vendors", "Compliance", "Reporting"]
 
+// The CTA tile is the outro from the ONE registry (lib/video/duration-model.ts);
+// the hook shot's design length — the body's proof beats are derived around it.
+const BOOKENDS = compositionBookends("ProductPromoReel")
+const CTA = BOOKENDS.outroFrames
+const HOOK_TARGET = 90
+
 const CapabilityChip: React.FC<{ label: string; index: number; accent: string; width: number; height: number }> = ({ label, index, accent, width, height }) => {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
@@ -155,6 +163,17 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
   }
   const beats = (proofs ?? []).slice(0, 3)
   const grid = Math.round(width / 14)
+  // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts).
+  // Literal shot frames (0/90/170/250/330, CTA at 330 for 120) stood here.
+  // The CTA tile is the outro from the ONE registry; the narrated hook + three
+  // proof beats fill whatever body the render's durationInFrames leaves — the
+  // proofs split evenly and the hook absorbs the rounding so the three keyed
+  // beats stay an exact repeat.
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: 0, outroFrames: CTA })
+  const BODY  = timeline.body.durationInFrames
+  const PROOF = Math.floor(Math.max(0, BODY - HOOK_TARGET) / 3)
+  const HOOK  = BODY - PROOF * 3
   // Scene fills stay TRANSPARENT so the command-center grid + brand eyebrow show through.
   const scene: React.CSSProperties = { ...base, backgroundColor: "transparent" }
 
@@ -169,12 +188,15 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
         }}
       />
       {/* optional platform-screenshot slideshow (dimmed, Ken Burns) — one per scene */}
-      {(imageUrls ?? []).length > 0 && [0, 90, 170, 250, 330].map((from, idx) => (
-        <Sequence key={`shot-${idx}`} from={from} durationInFrames={idx === 4 ? 120 : idx === 0 ? 90 : 80}>
+      {(imageUrls ?? []).length > 0 && [
+        { from: 0, len: HOOK }, { from: HOOK, len: PROOF }, { from: HOOK + PROOF, len: PROOF },
+        { from: HOOK + PROOF * 2, len: PROOF }, { from: BODY, len: CTA },
+      ].map((shot, idx) => (
+        <Sequence key={`shot-${idx}`} from={shot.from} durationInFrames={Math.max(1, shot.len)}>
           <KenBurnsShot src={imageUrls![idx % imageUrls!.length]} primary={primary} />
         </Sequence>
       ))}
-      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, 450], [15, 85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}% 12%, ${accent}26, transparent 55%)` }} />
+      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, durationInFrames], [15, 85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}% 12%, ${accent}26, transparent 55%)` }} />
 
       {/* persistent brand eyebrow + live-status dot */}
       <div style={{ position: "absolute", top: pad, left: pad, right: pad, display: "flex", alignItems: "center", gap: 12 }}>
@@ -183,7 +205,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
         <span style={{ fontSize: width * 0.016, color: "#ffffff88", marginLeft: "auto" }}>COMMAND CENTER · LIVE</span>
       </div>
 
-      <Sequence from={0} durationInFrames={90}>
+      <Sequence from={0} durationInFrames={HOOK}>
         <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
           <WordReveal text={hook} size={width * 0.06} />
           <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
@@ -193,7 +215,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
       </Sequence>
 
       {beats.map((p, i) => (
-        <Sequence key={i} from={90 + i * 80} durationInFrames={80}>
+        <Sequence key={i} from={HOOK + i * PROOF} durationInFrames={PROOF}>
           <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
             <div style={{ fontSize: width * 0.026, color: accent, fontWeight: 800 }}>{`0${i + 1}`}</div>
             <div style={{ marginTop: 14 }}>
@@ -204,7 +226,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
         </Sequence>
       ))}
 
-      <Sequence from={330} durationInFrames={120}>
+      <Sequence from={BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
           <WordReveal text={cta} size={width * 0.052} />
           <div style={{ marginTop: 30, display: "inline-block", backgroundColor: accent, color: primary, fontWeight: 800, fontSize: width * 0.03, padding: "18px 36px", borderRadius: 14 }}>
@@ -220,12 +242,12 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
       </Sequence>
 
       {/* NO CAPTION OVER THE CTA/DOMAIN TILE (wave 61, mirrors JustListedReel.tsx) —
-          clip before the CTA scene at frame 330. */}
+          clip before the CTA scene at BODY. */}
       <CaptionLayer
         cues={captionsCues}
         script={captionScript}
         accentColor={accent}
-        hiddenFromFrame={330}
+        hiddenFromFrame={BODY}
       />
     </AbsoluteFill>
   )

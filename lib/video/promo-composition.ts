@@ -41,6 +41,7 @@
 import type { SituationKind } from "@/lib/video/video-director"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
 import { narrationBudget, type NarrationBudget } from "@/lib/video/script-structure"
+import { compositionDurationSpec, purposeBudgetFor } from "@/lib/video/duration-model"
 import { publicPriceEventLabel } from "@/lib/listings/price-improvement-label"
 
 // The full listing-promo event_type set (lib/kernel/lifecycle-promo-policy
@@ -136,6 +137,12 @@ export function compositionForPromoEvent(eventType: string): PromoCompositionCho
  */
 export function promoNarrationBudget(eventType: string): NarrationBudget {
   const { compositionId } = compositionForPromoEvent(eventType)
+  // WAVE 78 — the PURPOSE budget (listing_promo: 12/20/45 s of body at the
+  // voiceover pace), not the whole registered runtime: the registered frames
+  // are now the cap and the render is sized to the fitted script
+  // (lib/video/duration-model.ts). An id with no purpose row keeps the
+  // whole-composition budget, byte-for-byte the prior behaviour.
+  if (compositionDurationSpec(compositionId)) return purposeBudgetFor(compositionId)
   const geo = geometryFor(compositionId)
   return narrationBudget(compositionId, geo ? compositionSeconds(geo) : 0)
 }

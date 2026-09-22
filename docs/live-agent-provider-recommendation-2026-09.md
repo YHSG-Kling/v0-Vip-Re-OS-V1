@@ -101,10 +101,16 @@ identity is not.
 The owner supplied D-ID's official API pricing page (https://www.d-id.com/pricing/api/);
 it renders client-side, so the plan table above is taken from the
 2026-09-07 Spatius mirror of it and should be eyeballed once against the
-page. Two open items on that page: (1) the Agent meter is stated two ways
+page. Two items on that page: (1) the Agent meter was stated two ways
 (0.5 credit per 30 s on the Visual Agents page vs 0.5 credit per 15-second
 response in the Agent pricing help article — the API bundles match the
-second); (2) concurrency and endpoint rate limits per plan are not listed.
+second). RESOLVED lane 78D (2026-09-22): the constant carries the second,
+documented reading — see `DID_STREAMING_SECONDS_PER_CREDIT` in
+lib/video/realism-profile.ts, which cites d-id.com/faqs ("price of credits is
+halved" for streaming, i.e. 30 s/credit) and the help article
+(help.d-id.com/hc/en-us/articles/31262931985169, updated 2025-09-14); the
+Visual Agents page's cheaper reading is rejected as the outlier.
+(2) concurrency and endpoint rate limits per plan are not listed.
 The metering constant is the Scale-monthly full-utilization rate; unused
 credits expire, so real cost per minute is HIGHER at low utilization. No live session was
 run in this wave (no D-ID credentials in the session); latency claims are the

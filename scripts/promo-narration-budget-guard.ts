@@ -26,13 +26,14 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { compositionForPromoEvent, promoNarrationBudget } from "../lib/video/promo-composition"
 import { COMPOSITION_GEOMETRY, compositionSeconds, geometryFor } from "../lib/remotion/composition-geometry"
+import { compositionDurationSpec, purposeBudgetFor, wordsForSeconds } from "../lib/video/duration-model"
 import {
   NARRATION_HEADROOM,
   WORDS_PER_MINUTE,
   fitNarrationToBudget,
+  narrationBudget,
   narrationLengthDirective,
   narrationMaxTokens,
-  targetWordCount,
 } from "../lib/video/script-structure"
 import { blankStrings, stripComments } from "./strip-comments"
 
@@ -125,24 +126,41 @@ function main() {
   // ── 2. THE ARITHMETIC, DERIVED AND PRINTED ────────────────────────────────
   console.log("\n[2 — every event's budget, derived from the composition it renders on]")
   console.log(`   pace ${WORDS_PER_MINUTE} wpm · headroom ${NARRATION_HEADROOM} · ${Object.keys(COMPOSITION_GEOMETRY).length} registered compositions`)
+  // WAVE 78 (lib/video/duration-model.ts): the budget is the listing_promo
+  // PURPOSE's window (12/20/45 s of body at the voiceover pace, inside the
+  // registered cap) — the registered frames are the CAP the render may reach,
+  // and calculateMetadata sizes each promo to its fitted script.
+  //
+  // THE RUNTIMES THE TYPED CEILINGS SHIPPED AGAINST — historical facts about
+  // the defect this guard closed (25 s organic reel, 12 s square cuts), kept so
+  // the positive control below still compares each old ceiling to the video
+  // it was actually cut on, not to today's cap (§2: a control that compares
+  // against a moved number stops finding the defect it was written for).
+  const PRE_FIX_RUNTIME_SECONDS: Record<string, number> = {
+    JustListedReel: 25, JustListedReelSquare: 12, JustSoldReelSquare: 12, OpenHouseAnnounceReel: 12, ComingSoonReel: 12,
+  }
   let overCount = 0
   for (const e of EVENTS) {
     const { compositionId } = compositionForPromoEvent(e)
     const geo = geometryFor(compositionId)
     const budget = promoNarrationBudget(e)
     const secs = geo ? compositionSeconds(geo) : 0
-    const ratio = budget.maxWords > 0 ? PRE_FIX_CEILINGS[e] / budget.maxWords : Infinity
+    const thenBudget = narrationBudget(compositionId, PRE_FIX_RUNTIME_SECONDS[compositionId] ?? secs)
+    const ratio = thenBudget.maxWords > 0 ? PRE_FIX_CEILINGS[e] / thenBudget.maxWords : Infinity
     if (ratio > 1) overCount++
     console.log(
-      `   ${e.padEnd(20)} ${compositionId.padEnd(22)} ${String(secs).padStart(5)}s → ` +
-        `${String(budget.maxWords).padStart(3)} w   (typed ceiling was ${PRE_FIX_CEILINGS[e]}, ${ratio.toFixed(2)}×)`,
+      `   ${e.padEnd(20)} ${compositionId.padEnd(22)} cap ${String(secs).padStart(5)}s → purpose ${budget.compositionSeconds}s body → ` +
+        `${String(budget.minWords ?? 0).padStart(3)}-${String(budget.maxWords).padStart(3)} w   (typed ceiling was ${PRE_FIX_CEILINGS[e]} on a ${PRE_FIX_RUNTIME_SECONDS[compositionId]}s cut → ${ratio.toFixed(2)}×)`,
     )
-    check(`  ${e} — the budget is the composition's geometry, not a literal`,
-      geo !== null && budget.compositionId === compositionId && budget.compositionSeconds === secs
-      && budget.maxWords === targetWordCount(Number((secs * (1 - NARRATION_HEADROOM)).toFixed(3))))
+    const spec = compositionDurationSpec(compositionId)
+    check(`  ${e} — the budget is the composition's PURPOSE window inside its cap, not a literal`,
+      geo !== null && !!spec && budget.compositionId === compositionId && budget.compositionSeconds <= secs
+      && budget.maxWords === purposeBudgetFor(compositionId).maxWords
+      && budget.maxWords === wordsForSeconds(Number((budget.compositionSeconds * (1 - NARRATION_HEADROOM)).toFixed(3)), spec.host)
+      && (budget.minWords ?? 0) > 0)
   }
   console.log(`   ${overCount} of ${EVENTS.length} events were over budget before this closure`)
-  check("the finding was real — at least one typed ceiling exceeded its composition",
+  check("the finding was real — at least one typed ceiling exceeded the composition it shipped on",
     overCount > 0)
   check("…and every event now has a POSITIVE budget (no composition silently caps to zero)",
     EVENTS.every((e) => promoNarrationBudget(e).maxWords > 0))

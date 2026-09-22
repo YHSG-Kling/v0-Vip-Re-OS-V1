@@ -16,6 +16,7 @@ import { findSuggestedPriceLeaks } from "@/lib/cma/customer-facing-guard"
 import { detectFairHousingViolations, type FairHousingPattern } from "@/lib/compliance-rules/fair-housing-patterns"
 import { MARKETING_SYSTEM_FLOOR } from "@/lib/listing-presentation/marketing-system"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import { compositionDurationSpec, purposeBudgetFor } from "@/lib/video/duration-model"
 import {
   narrationBudget,
   narrationLengthDirective,
@@ -52,6 +53,12 @@ export const SECTION_NARRATION_COMPOSITION = "ListingSectionReel"
 export function sectionNarrationBudget(
   compositionId: string = SECTION_NARRATION_COMPOSITION,
 ): NarrationBudget {
+  // WAVE 78 — the PURPOSE budget (listing_presentation_section: 15/30/45 s of
+  // body, lib/video/duration-model.ts), not the registered runtime: the
+  // registered frames are now the cap and calculateMetadata sizes the section
+  // to the fitted narration the orchestrator stages. An id with no purpose row
+  // keeps the whole-composition budget, byte-for-byte the prior behaviour.
+  if (compositionDurationSpec(compositionId)) return purposeBudgetFor(compositionId)
   const geo = geometryFor(compositionId)
   return narrationBudget(compositionId, geo ? compositionSeconds(geo) : 0)
 }

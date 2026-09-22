@@ -55,6 +55,8 @@ import {
   targetWordCount,
 } from "../lib/video/script-structure"
 import { blankStrings, stripComments } from "./strip-comments"
+import { narrationWindowBudget } from "../lib/video/narration-window"
+import { wordsForSeconds } from "../lib/video/duration-model"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -106,8 +108,12 @@ function main() {
   const reactor = stripComments(reactorRaw)
   const introComp = "AgentTalkingHeadReel"
   const introGeo = geometryFor(introComp)
-  const introBudget = narrationBudget(introComp, introGeo ? compositionSeconds(introGeo) : 0)
-  console.log(`   ${introComp}: ${introGeo?.duration_frames}f @ ${introGeo?.fps}fps = ${introBudget.compositionSeconds}s → ${introBudget.budgetSeconds}s claimable → ${introBudget.maxWords} words`)
+  // WAVE 78 — the reactor's budget is the PURPOSE budget through the
+  // narrationWindowBudget adapter (lib/video/duration-model.ts purposeBudgetFor:
+  // welcome 20/35/60 s of body at the avatar pace), and the registered frames
+  // are the CAP the render may reach, not the length every render has.
+  const introBudget = narrationWindowBudget(introComp)
+  console.log(`   ${introComp}: cap ${introGeo?.duration_frames}f @ ${introGeo?.fps}fps · purpose ${introBudget.purpose} → ${introBudget.compositionSeconds}s max body → ${introBudget.budgetSeconds}s claimable → ${introBudget.minWords}-${introBudget.maxWords} words`)
   check("no hand-typed word range survives in live code", !RAW_RANGE.test(reactor))
   check("…while the RAW source keeps the retired '90-130 words' legible as the record",
     reactorRaw.includes("90-130 words"))
@@ -128,9 +134,9 @@ function main() {
       passIdx !== -1 && fitIdx > passIdx && verifyIdx > fitIdx
       && !reactor.slice(passIdx, fitIdx).includes("home_anniversary"))
   }
-  check(`the budget the reactor derives is the composition's, derived here too:\n    ${introBudget.maxWords} words from ${introBudget.compositionSeconds}s (nothing pinned)`,
-    introBudget.maxWords === targetWordCount(Number((introBudget.compositionSeconds * (1 - NARRATION_HEADROOM)).toFixed(3)))
-    && introBudget.maxWords > 0)
+  check(`the budget the reactor derives is the purpose's, derived here too:\n    ${introBudget.maxWords} words from ${introBudget.compositionSeconds}s of body at the avatar pace (nothing pinned)`,
+    introBudget.maxWords === wordsForSeconds(Number((introBudget.compositionSeconds * (1 - NARRATION_HEADROOM)).toFixed(3)), "avatar")
+    && introBudget.maxWords > 0 && (introBudget.minWords ?? 0) > 0)
   check("the directive the model reads quotes exactly that derived ceiling",
     narrationLengthDirective(introBudget).includes(`AT MOST ${introBudget.maxWords} words`))
   {
@@ -193,11 +199,12 @@ function main() {
   console.log("\n[4 — lib/video/avatar-explainer.ts (teammate/agent explainer)]")
   const explRaw = read("lib/video/avatar-explainer.ts")
   const expl = stripComments(explRaw)
-  const tGeo = geometryFor("TeammateExplainerReel")
-  const aGeo = geometryFor("AgentExplainerReel")
-  const tBudget = narrationBudget("TeammateExplainerReel", tGeo ? compositionSeconds(tGeo) : 0)
-  const aBudget = narrationBudget("AgentExplainerReel", aGeo ? compositionSeconds(aGeo) : 0)
-  console.log(`   TeammateExplainerReel ${tBudget.compositionSeconds}s → ${tBudget.maxWords} words · AgentExplainerReel ${aBudget.compositionSeconds}s → ${aBudget.maxWords} words`)
+  // WAVE 78 — both explainer compositions serve the SAME purpose (explainer:
+  // 30/60/90 s of body), so the writer's window is the purpose's whichever
+  // composition the commission picks; the registered frames are caps.
+  const tBudget = narrationWindowBudget("TeammateExplainerReel")
+  const aBudget = narrationWindowBudget("AgentExplainerReel")
+  console.log(`   TeammateExplainerReel ${tBudget.compositionSeconds}s body → ${tBudget.maxWords} words · AgentExplainerReel ${aBudget.compositionSeconds}s body → ${aBudget.maxWords} words (purpose ${aBudget.purpose})`)
   check("the retired '55-75 words' ask is gone from live code",
     !RAW_RANGE.test(expl))
   check("…while the RAW source keeps it legible as the record", explRaw.includes("55-75 words"))
@@ -221,8 +228,8 @@ function main() {
   check("the commission picks the composition BEFORE authoring, so the budget the\n    writer used and the frames the render uses are the same fact",
     expl.indexOf("await pickCompositionId()") !== -1
     && expl.indexOf("await pickCompositionId()") < expl.indexOf("await authorExplainerContent({"))
-  check("both live compositions carry a real, distinct budget (the fallback is the\n    SHORTER one — authoring against the wrong id would overrun it)",
-    tBudget.maxWords > 0 && aBudget.maxWords > 0 && aBudget.maxWords < tBudget.maxWords)
+  check("both live compositions carry a real budget, and it is the SAME explainer\n    window (one purpose, one word window — the composition is the cap, not the length)",
+    tBudget.maxWords > 0 && aBudget.maxWords > 0 && aBudget.maxWords === tBudget.maxWords && aBudget.purpose === "explainer" && tBudget.purpose === "explainer")
   const directorContent = stripComments(read("lib/video/director-content.ts"))
   check("the Director rail's call names its composition too",
     /authorExplainerContent\(\{[\s\S]{0,400}?compositionId,/.test(directorContent))

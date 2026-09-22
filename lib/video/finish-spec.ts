@@ -119,6 +119,15 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   ListingSectionReel: { ...CHART_REEL, broll: "none" },
   // ── Report shows (PartnersMeetingReel serves 4 uses; see REEL_USE_FINISH) ──
   PartnersMeetingReel: REPORT_INTERNAL,
+  // ── The memory video (lane 78D) — a KEEPSAKE, not marketing (memory-video-
+  // gate.ts: "the family keeps it"). Voiceover host, no avatar (nobody's face
+  // fronts somebody else's memory); no stock bookends and no QR (a family
+  // film does not open with a brokerage ad or end in a funnel); a soft music
+  // bed ducked under the narration; a share card so the agent can hand it
+  // over. captions:false, decided with the code: the seller's words are on
+  // screen VERBATIM for every clip (remotion/MemoryVideoReel.tsx ChapterScene),
+  // so a caption strip would cover the very text it repeats. ──
+  MemoryVideoReel: { presenter: "none", bookends: false, broll: "none", music: true, qr: false, thumbnail: true, captions: false },
   // ── Other ──
   NewsletterDigestVideo: { ...MARKETING, broll: "optional" },
   ProductPromoReel: { ...MARKETING, broll: "optional", qr: true },

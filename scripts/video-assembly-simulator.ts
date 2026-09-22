@@ -97,6 +97,9 @@ import {
   VIDEO_COMPOSITION_FILES, safeEval, buildScope, extractSegments, extractKeyedUnitDurations,
   gapExplainedByKeyedRepeat, tileSegments, type Segment,
 } from "./composition-segments"
+import {
+  MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS, memoryVideoChapterLayout, memoryVideoDurationFrames,
+} from "../lib/video/memory-video-composition"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const readStripped = (rel: string): string => stripComments(readFileSync(join(root, rel), "utf8"))
@@ -131,7 +134,9 @@ function sumsSection() {
     if (!geometry) continue
 
     const source = readStripped(file)
-    const scope = buildScope(source, geometry)
+    // `id` seeds the wave-78 derived-body idiom (BOOKENDS + timeline) at the
+    // registered cap — scripts/composition-segments.ts buildScope.
+    const scope = buildScope(source, geometry, id)
     const segments = extractSegments(source, scope)
 
     // The two single-segment slides: the body IS the whole duration (an
@@ -153,7 +158,9 @@ function sumsSection() {
     // it has no <Sequence> of its own, delegating the WHOLE duration to
     // <ListingPresentationSlide avatarStartFrame={0} avatarEndFrame={durationInFrames}>.
     // Checked below (delegates the full window, not a slice of it).
-    if (["ListingPresentationSlide", "BuyerConsultationSlide", "PhotoWalkthroughReel", "PartnersMeetingReel", "ListingSectionReel"].includes(id)) continue
+    // MemoryVideoReel (lane 78D): every slot is computed from props and the
+    // length from calculateMetadata — checked by its own rule below.
+    if (["ListingPresentationSlide", "BuyerConsultationSlide", "PhotoWalkthroughReel", "PartnersMeetingReel", "ListingSectionReel", "MemoryVideoReel"].includes(id)) continue
 
     let result = tileSegments(segments, geometry.duration_frames)
     let note = ""
@@ -183,13 +190,48 @@ function sumsSection() {
     const id = "PartnersMeetingReel"
     const geometry = COMPOSITION_GEOMETRY[id]
     const source = readStripped(VIDEO_COMPOSITION_FILES[id])
-    const scope = buildScope(source, geometry)
+    const scope = buildScope(source, geometry, id)
     const haveAll = ["COVER", "ASK", "OUTRO", "cardTotal"].every((k) => typeof scope[k] === "number")
     const floorNotEngaged = haveAll && scope.cardTotal === geometry.duration_frames - scope.COVER - scope.ASK - scope.OUTRO
     const sums = haveAll && scope.COVER + scope.cardTotal + scope.ASK + scope.OUTRO === geometry.duration_frames
     check(`${id}: COVER + cardTotal + ASK + OUTRO === durationInFrames (nested "ask" Sequence verified algebraically)`,
       haveAll && floorNotEngaged && sums,
       haveAll ? `COVER=${scope.COVER} cardTotal=${scope.cardTotal} ASK=${scope.ASK} OUTRO=${scope.OUTRO} duration=${geometry.duration_frames}` : `could not resolve COVER/ASK/OUTRO/cardTotal from source`)
+  }
+
+  // ── MemoryVideoReel (lane 78D) — a PROPS-DRIVEN timeline: cover + every
+  // chapter clip + outro, computed by the one pure helper the composition and
+  // Root.tsx's calculateMetadata share. The registered duration_frames is the
+  // CAP; the rule is that the layout tiles the COMPUTED length exactly and the
+  // computed length never exceeds the cap. ──
+  {
+    const id = "MemoryVideoReel"
+    const geometry = COMPOSITION_GEOMETRY[id]
+    const source = readStripped(VIDEO_COMPOSITION_FILES[id])
+    const fx = { chapters: [{ durationFrames: 812 }, { durationFrames: 1 }, { durationFrames: 2400 }] }
+    const slots = memoryVideoChapterLayout(fx, geometry.fps)
+    const total = memoryVideoDurationFrames(fx, geometry.fps)
+    const cover = Math.round(MEMORY_VIDEO_COVER_SECONDS * geometry.fps)
+    const outro = Math.round(MEMORY_VIDEO_OUTRO_SECONDS * geometry.fps)
+    const synthetic: Segment[] = [
+      { tag: "Sequence", from: 0, duration: cover, fromExpr: "0", durExpr: "cover" },
+      ...slots.map((s, i) => ({ tag: "Sequence", from: s.from, duration: s.durationInFrames, fromExpr: `slots[${i}].from`, durExpr: `slots[${i}].durationInFrames` })),
+      { tag: "Sequence", from: total - outro, duration: outro, fromExpr: "outroFrom", durExpr: "outroFrames" },
+    ]
+    const tiled = tileSegments(synthetic, total)
+    check(`${id}: cover(${cover}) + Σ chapter clips + outro(${outro}) tile [0, ${total}) exactly for the COMPUTED length (registered cap ${geometry.duration_frames})`,
+      tiled.ok && total <= geometry.duration_frames, tiled.reason)
+    check(`${id}: an empty capture still yields a well-formed film (cover + outro, no chapter)`,
+      memoryVideoDurationFrames({ chapters: [] }, geometry.fps) === cover + outro && memoryVideoChapterLayout({ chapters: [] }, geometry.fps).length === 0)
+    check(`${id}: the composition mounts its cover at 0, each chapter at its slot and the outro at the computed end (reads the SAME helpers)`,
+      /<Sequence from=\{0\} durationInFrames=\{cover\}>/.test(source)
+      && /from=\{slots\[i\]\.from\} durationInFrames=\{slots\[i\]\.durationInFrames\}/.test(source)
+      && /<Sequence from=\{outroFrom\} durationInFrames=\{outroFrames\}>/.test(source)
+      && /memoryVideoChapterLayout\(\{ chapters \}, fps\)/.test(source) && /memoryVideoDurationFrames\(\{ chapters \}, fps\)/.test(source))
+    check(`${id}: declares NO frame constant of its own (a hand table would re-open the crop the owner ruled against)`,
+      !/const\s+[A-Z_]{3,}\s*=\s*\d/.test(source))
+    check("CONTROL: the tiler still refuses a layout with a hole — dropping the outro is caught",
+      !tileSegments(synthetic.slice(0, -1), total).ok)
   }
 
   // ── The two single-segment slides — bounded avatar window, not a chain ──
@@ -544,10 +586,39 @@ const EHO_INHERITED = new Set(["ListingSectionReel"])
  */
 function rendersEhoMark(source: string): boolean {
   if (/Equal Housing Opportunity/.test(source)) return true
+  // Imported-and-rendered shared marks: EqualHousingMark (wave 50) and the ONE
+  // EndCard survivor (lane 78D — the four private outros merged onto
+  // remotion/components/EndCard.tsx, which renders the mark itself; §endCard
+  // below proves that, so this arm is inheritance, not absence).
   return (
-    /from\s+["'][^"']*EqualHousingMark["']/.test(source) &&
-    /<EqualHousingMark\b/.test(source)
+    (/from\s+["'][^"']*EqualHousingMark["']/.test(source) && /<EqualHousingMark\b/.test(source)) ||
+    (/from\s+["'][^"']*components\/EndCard["']/.test(source) && /<EndCard\b/.test(source))
   )
+}
+
+// §endCard — ONE end card (lane 78D). The four private outros merged onto
+// remotion/components/EndCard.tsx; this section is what lets rendersEhoMark
+// treat an imported-and-rendered <EndCard> as the mark, so the inheritance arm
+// above is proven rather than assumed.
+function endCardSection() {
+  console.log("\n── §endCard — one end card, four compositions (lane 78D consolidation) ──")
+  const endCard = readStripped("remotion/components/EndCard.tsx")
+  check("remotion/components/EndCard.tsx exports the ONE EndCard", /export const EndCard\b/.test(endCard))
+  check("EndCard renders the Equal Housing Opportunity mark on its footer line (the inheritance arm of rendersEhoMark rests on this)",
+    /Equal Housing Opportunity/.test(endCard) && rendersEhoMark(endCard))
+  const files = readdirSync(join(root, "remotion")).filter((f) => f.endsWith(".tsx")).map((f) => `remotion/${f}`)
+  const privateOutros = files.filter((f) => /\bconst\s+(OutroScene|OutroCta|OutroCTA|OutroCard)\b[^=]*=\s*\(?[^=]*=>\s*\{/.test(readStripped(f)))
+  check("no composition keeps a private outro BODY any more (a thin wrapper that mounts <EndCard> is fine; a second card is not)",
+    privateOutros.length === 0, privateOutros.join(", "))
+  const mounters = ["remotion/PartnersMeetingReel.tsx", "remotion/NewsletterDigestVideo.tsx", "remotion/PhotoWalkthroughReel.tsx", "remotion/TeammateExplainerReel.tsx", "remotion/MemoryVideoReel.tsx"]
+  for (const f of mounters) {
+    const s = readStripped(f)
+    check(`${f}: imports AND mounts <EndCard>`, /from\s+["']\.\/components\/EndCard["']/.test(s) && /<EndCard\b/.test(s))
+  }
+  check("CONTROL: the private-outro finder still recognises the retired shape",
+    /\bconst\s+(OutroScene|OutroCta|OutroCTA|OutroCard)\b[^=]*=\s*\(?[^=]*=>\s*\{/.test("const OutroCta: React.FC<P> = ({ brand }) => {\n  const frame = useCurrentFrame()"))
+  check("CONTROL: a composition that imports EndCard but never mounts it is NOT credited with the mark",
+    !rendersEhoMark('import { EndCard } from "./components/EndCard"\nconst unused = EndCard'))
 }
 
 function brandingSection() {
@@ -765,7 +836,7 @@ function avatarSection() {
   for (const { id, file } of pipCallers) {
     const geometry = COMPOSITION_GEOMETRY[id]
     const source = readStripped(file)
-    const scope = buildScope(source, geometry)
+    const scope = buildScope(source, geometry, id)
     const windows = resolveAvatarPipWindows(source, scope)
     let allOk = true
     let detail = ""
@@ -1209,6 +1280,7 @@ async function main() {
   brollSection()
   musicSection()
   brandingSection()
+  endCardSection()
   avatarSection()
   aiVideoRealismSection()
   console.log("\n──────────────────────────────────────────────────────────")

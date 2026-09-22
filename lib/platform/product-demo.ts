@@ -31,6 +31,9 @@ export const PRODUCT_DEMO_TOPICS = [
 ] as const
 export type ProductDemoTopic = (typeof PRODUCT_DEMO_TOPICS)[number]
 
+// Module-private since lane 78D (orphan census round 23, class B, §1): its
+// only caller is buildProductDemoScript below and no proof names it.
+// Exported: lib/platform/prospect-agent-tools.ts (lane 78B, show_product_demo) is its importer.
 export function isProductDemoTopic(v: unknown): v is ProductDemoTopic {
   return typeof v === "string" && (PRODUCT_DEMO_TOPICS as readonly string[]).includes(v)
 }
@@ -126,7 +129,10 @@ export const PRODUCT_DEMO_SCRIPTS: Record<ProductDemoTopic, ProductDemoScript> =
  *  never a new render per conversation. */
 export const DEMO_CLIP_TOKEN_RE = /\[\[CLIP:(https?:\/\/[^\]\s]+)\]\]/
 
-export function demoClipToken(url: string): string {
+// Module-private since lane 78D (orphan census round 23, class B, §1): its
+// only caller is buildProductDemoScript below; `splitDemoClipToken` is the
+// exported half every reader uses.
+function demoClipToken(url: string): string {
   return `[[CLIP:${url}]]`
 }
 

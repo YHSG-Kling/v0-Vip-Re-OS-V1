@@ -263,7 +263,7 @@ export async function runFireDrills(
     let audioUrl: string | null = null
     if (whisperTierCapability(tier) === "audio") {
       const voiceId = await resolveAssistantVoiceId(supabase, agentUserId)
-      if (voiceId) audioUrl = await synthesizer(composed.agentBrief, voiceId)
+      if (voiceId) audioUrl = await synthesizer(composed.agentBrief, voiceId, brokerageId)
     }
 
     const { error: notifErr } = await supabase.from("notifications").insert({

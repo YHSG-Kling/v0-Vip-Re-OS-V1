@@ -102,6 +102,8 @@ import {
   spokenWords,
 } from "../lib/video/script-structure"
 import { compositionSeconds, geometryFor } from "../lib/remotion/composition-geometry"
+import { narrationWindowBudget } from "../lib/video/narration-window"
+import { purposeBudgetFor } from "../lib/video/duration-model"
 import { computeEquityLine, equityNarrationFacts } from "../lib/kernel/anniversary-equity"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -823,10 +825,13 @@ function layer7_happyAnniversaryWithEquityReport() {
   const talkGeo = geometryFor(INTRO_VIDEO_COMPOSITION)
   check("both compositions' geometry is registered and readable",
     !!equityGeo && !!talkGeo)
-  const equityBudget = narrationBudget("EquityReportReel", compositionSeconds(equityGeo!))
-  const budget = narrationBudget(INTRO_VIDEO_COMPOSITION, compositionSeconds(talkGeo!))
-  console.log(`      EquityReportReel        ${equityGeo!.duration_frames}f @ ${equityGeo!.fps}fps = ${equityBudget.compositionSeconds}s → ${equityBudget.budgetSeconds}s claimable → ${equityBudget.maxWords} words`)
-  console.log(`      ${INTRO_VIDEO_COMPOSITION}    ${talkGeo!.duration_frames}f @ ${talkGeo!.fps}fps = ${budget.compositionSeconds}s → ${budget.budgetSeconds}s claimable → ${budget.maxWords} words`)
+  // WAVE 78 (lib/video/duration-model.ts): the reactor's budget is the PURPOSE
+  // window through the narrationWindowBudget adapter — the registered frames
+  // are the CAP, and calculateMetadata sizes the render to the fitted script.
+  const equityBudget = narrationWindowBudget("EquityReportReel")
+  const budget = narrationWindowBudget(INTRO_VIDEO_COMPOSITION)
+  console.log(`      EquityReportReel        cap ${equityGeo!.duration_frames}f @ ${equityGeo!.fps}fps · purpose ${equityBudget.purpose} ${equityBudget.compositionSeconds}s body → ${equityBudget.budgetSeconds}s claimable → ${equityBudget.minWords}-${equityBudget.maxWords} words`)
+  console.log(`      ${INTRO_VIDEO_COMPOSITION}    cap ${talkGeo!.duration_frames}f @ ${talkGeo!.fps}fps · purpose ${budget.purpose} ${budget.compositionSeconds}s body → ${budget.budgetSeconds}s claimable → ${budget.minWords}-${budget.maxWords} words`)
 
   // WHICH COMPOSITION SPEAKS THIS SCRIPT. The data reel is a different rail; the
   // reactor's own clip is the avatar-led personal piece, and its budget is the
@@ -835,9 +840,10 @@ function layer7_happyAnniversaryWithEquityReport() {
     buildIntroCompositionRequest({
       projectId: "p", script: GATED_SCRIPT, agentName: "Dana Reyes", trigger: "home_anniversary",
     })!.target_composition_id === budget.compositionId)
-  check("both budgets are DERIVED — halving the frames halves the words, so nothing\n    here is a literal anyone has to remember to update (§2)",
-    narrationBudget("X", compositionSeconds({ duration_frames: talkGeo!.duration_frames / 2, fps: talkGeo!.fps })).maxWords
-      === Math.round(budget.maxWords / 2))
+  check("both budgets are DERIVED — the reactor's is the welcome purpose's window (purposeBudgetFor),\n    and the whole-runtime arithmetic still halves with the frames, so nothing here is a literal (§2)",
+    budget.maxWords === purposeBudgetFor(INTRO_VIDEO_COMPOSITION).maxWords && budget.purpose === "welcome"
+    && narrationBudget("X", compositionSeconds({ duration_frames: talkGeo!.duration_frames / 2, fps: talkGeo!.fps })).maxWords
+      === Math.round(narrationBudget("X", compositionSeconds(talkGeo!)).maxWords / 2))
 
   // THE RETIRED LITERAL. "80-110 words" was 3-4x what the composition can speak.
   check(`the hand-written '80-110 words' ceiling is gone from live code (the real\n    ceiling is ${budget.maxWords} words, derived)`,
@@ -866,13 +872,19 @@ function layer7_happyAnniversaryWithEquityReport() {
   const DISCLAIMER_LAST =
     `${greeting} Your home is worth about $612,000 today, roughly $112,000 more than the $500,000 you paid five years ago. `
     + `All of these figures are estimates and not an appraisal.`
-  const trimmed = fitNarrationToBudget(DISCLAIMER_LAST, budget)
+  // The hazard is a property of the TRIM (it cuts from the end), not of any
+  // one budget's size: since wave 78 the welcome window holds this fixture
+  // whole, so the control runs it against a budget one word short of the
+  // draft — the smallest budget that forces a cut — to keep demonstrating it.
+  const oneWordShort = { ...budget, maxWords: spokenWords(DISCLAIMER_LAST).length - 1 }
+  const trimmed = fitNarrationToBudget(DISCLAIMER_LAST, oneWordShort)
   check("HAZARD: a script that parks its disclaimer in the LAST sentence loses it to\n    the trim — the qualifier is the first thing cut",
     trimmed.overran && !/not an appraisal/i.test(trimmed.script))
   check("...and the verifier CATCHES that, which is why it runs after the trim and not\n    before it",
     !verifyEquityClaims(trimmed.script, { hasLoanData: true }).ok)
   check("...and the same content written with the qualifier IN the figure's sentence\n    survives the same trim",
-    verifyEquityClaims(fitNarrationToBudget(GOOD, budget).script, { hasLoanData: true }).ok)
+    verifyEquityClaims(fitNarrationToBudget(GOOD, oneWordShort).script, { hasLoanData: true }).ok
+    && verifyEquityClaims(fitNarrationToBudget(GOOD, budget).script, { hasLoanData: true }).ok)
   check("...which is exactly what the writer is told to do, in the prompt",
     ANNIVERSARY_WRITING_DIRECTIVES.some((d) => /cut from the end/i.test(d)))
 

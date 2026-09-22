@@ -35,7 +35,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { compositionSeconds } from "./composition-geometry"
+import { renderedCompositionSeconds } from "@/lib/video/duration-model"
 import {
   getComposition,
   recordRenderCompleted,
@@ -156,6 +156,23 @@ export async function finalizeCoordinatedRender(
   let musicLoop: boolean | null = null
   let narrationAudioUrl: string | null = null
 
+  // THE LENGTH OF THE MAIN CUT THIS RENDER ACTUALLY HAS (wave 78, lib/video/
+  // duration-model.ts). The registry's duration_frames is now the CAP; the
+  // staged props (spokenSeconds / avatarDurationSeconds / captionsCues /
+  // captionScript) say how much of it Root.tsx's calculateMetadata used —
+  // the same pure plan the composition rendered from, so the narration pad
+  // and the music fade below are timed against the video in hand, not the
+  // cap. Read once, before the bookends, and reused by the voiceover mux.
+  let stagedProps: Record<string, unknown> | null = null
+  try {
+    const { data: renderRow } = await svc.from("remotion_composition_renders")
+      .select("input_props").eq("id", renderId).maybeSingle()
+    stagedProps = ((renderRow as any)?.input_props ?? null) as Record<string, unknown> | null
+  } catch (e) {
+    console.warn("[render-coordinator] could not read staged input_props; timing against the registered cap:", (e as Error).message)
+  }
+  const mainCutSeconds = renderedCompositionSeconds(composition, stagedProps)
+
   // ─── Bookends ───
   // shouldApplyBookends is the registry flag AND the still rule (a <=1-frame
   // composition never gets bookends) — one decision, shared with the cache
@@ -211,9 +228,6 @@ export async function finalizeCoordinatedRender(
   // snake-key finish mux below still flips it to true when it lands.
   let usedVoiceover = false
   try {
-    const { data: renderRow } = await svc.from("remotion_composition_renders")
-      .select("input_props").eq("id", renderId).maybeSingle()
-    const stagedProps = ((renderRow as any)?.input_props ?? null) as Record<string, unknown> | null
     usedVoiceover = stagesVoiceover(composition.composition_id, stagedProps)
     const voUrl = stagedProps?.voiceover_url
     if (typeof voUrl === "string" && voUrl.startsWith("http")) {
@@ -237,7 +251,8 @@ export async function finalizeCoordinatedRender(
       // THE ERROR ONLY EVER OVER-PADS: bookendSeconds is never negative, so this
       // has never cut anybody off mid-sentence — the frozen tail was simply too
       // long. Correcting it shortens that tail; it cannot shorten the narration.
-      const videoSeconds = compositionSeconds(composition) + bookendSeconds
+      // `mainCutSeconds` is the PLANNED main cut (see above), never the cap.
+      const videoSeconds = mainCutSeconds + bookendSeconds
 
       const { mixNarrationVoiceover } = await import("./voiceover-mixer")
       const narrated = await mixNarrationVoiceover({
@@ -274,7 +289,7 @@ export async function finalizeCoordinatedRender(
         // `working` (an applied intro/outro bookend). See
         // lib/remotion/music-mixer.ts buildMusicTrackFilter for why an unknown
         // length fades in only, never a fade-out timed against a guess.
-        const musicVideoSeconds = compositionSeconds(composition) + bookendSeconds
+        const musicVideoSeconds = mainCutSeconds + bookendSeconds
         const mixed = await mixBackgroundMusic({
           videoBuffer:        working,
           musicUrl:           musicRow.video_url,

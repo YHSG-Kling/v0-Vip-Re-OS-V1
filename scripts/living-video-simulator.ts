@@ -241,10 +241,12 @@ console.log("\n═══ 8. THE DELIVERY HALF — where the refresh nearly died 
 
 console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
 {
-  // Every composition has a FIXED duration_frames and none uses Remotion's
-  // calculateMetadata to size itself to its audio, while the script is capped at
-  // 2400 chars — minutes of speech. The mux used -shortest, so the agent was
-  // silently truncated in a video that went to a client.
+  // At the time every composition had a FIXED duration_frames and none used
+  // Remotion's calculateMetadata to size itself to its audio, while the script is
+  // capped at 2400 chars — minutes of speech. The mux used -shortest, so the agent
+  // was silently truncated in a video that went to a client. (Wave 78: the
+  // narration-driven compositions now size themselves to the staged narration —
+  // lib/video/duration-model.ts — and this pad is the backstop, not the rule.)
   ok("no padding when the video is already long enough",
     paddingSecondsFor(10, 14) === 0)
   ok("no padding for a sub-quarter-second encode boundary",
@@ -289,8 +291,14 @@ console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
   // the comparison length is derived FROM THE COMPOSITION being rendered, and
   // that derivation really is frames/fps, the second half checked by RUNNING it
   // rather than by matching its text.
-  ok("...and passes the composition's own length as the comparison",
-    /const videoSeconds\s*=\s*compositionSeconds\(\s*composition\s*\)/.test(coord)
+  // WAVE 78 (lib/video/duration-model.ts): the comparison is the render's
+  // PLANNED main cut — renderedCompositionSeconds(composition, stagedProps),
+  // the same pure plan Root.tsx's calculateMetadata rendered from — never the
+  // registered cap. The registry row is still the geometry it is planned
+  // against, so the derivation is still "from the composition being rendered".
+  ok("...and passes the render's PLANNED main-cut length as the comparison (renderedCompositionSeconds over the staged props), never the registered cap",
+    /const mainCutSeconds\s*=\s*renderedCompositionSeconds\(\s*composition,\s*stagedProps\s*\)/.test(coord)
+    && /const videoSeconds\s*=\s*mainCutSeconds\s*\+\s*bookendSeconds/.test(coord)
     && /videoSeconds\s*[,}]/.test(coord.slice(coord.indexOf("mixNarrationVoiceover"))))
   ok("...and that length really is duration_frames / fps (run, not matched)",
     compositionSeconds({ duration_frames: 600, fps: 30 }) === 20
@@ -313,7 +321,7 @@ console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
   // — with the arithmetic exercised through the real predicate rather than matched
   // as text.
   ok("...plus the seconds the bookends added, so the mixer is told how long the\n    video it is HANDED is, not how long the composition is",
-    /const videoSeconds\s*=\s*compositionSeconds\(\s*composition\s*\)\s*\+\s*bookendSeconds/.test(coord))
+    /const videoSeconds\s*=\s*mainCutSeconds\s*\+\s*bookendSeconds/.test(coord))
   ok("...and that addend is counted only when the concat APPLIED — a bookend whose\n    ffmpeg stitch failed did not lengthen the video",
     /if\s*\(concat\.overlayApplied[\s\S]{0,600}?bookendSeconds\s*=/.test(coord))
   ok("...and a stock clip with NO recorded duration contributes 0, which is exactly\n    the number this used to assume — the fix cannot regress an unmeasured library",

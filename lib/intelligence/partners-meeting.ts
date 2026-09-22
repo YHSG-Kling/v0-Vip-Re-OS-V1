@@ -416,6 +416,12 @@ export async function queuePartnersMeetingReel(
     languageCode: DEFAULT_LANGUAGE,
   })
   if (vo) props.voiceover_url = vo.url
+  // THE SHOW IS AS LONG AS THE RECAP (wave 78, lib/video/duration-model.ts):
+  // the measured narration length is staged so Root.tsx's calculateMetadata
+  // sizes PartnersMeetingReel to it (partners_meeting purpose: 30/60/120 s)
+  // instead of packing every week into the same fixed frame count.
+  const { spokenSecondsProps } = await import("@/lib/video/duration-model")
+  Object.assign(props, spokenSecondsProps({ measuredSeconds: vo?.durationSeconds ?? null, narration: req.inputProps.narration, compositionId: req.compositionId }))
   // THE COMPANION CARD. `seoHint` is REQUIRED by the content contract on
   // VideoCoverThumb and this producer omitted it, so the card printed the
   // just-listed composition's SAMPLE sentence as this show's summary line

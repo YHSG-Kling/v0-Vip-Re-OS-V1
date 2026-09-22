@@ -24,12 +24,13 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { EqualHousingMark } from "./components/EqualHousingMark"
-import { evenShotSlots } from "../lib/video/assembly-timeline"
+import { computeAssemblyTimeline, evenShotSlots } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelProps {
@@ -71,35 +72,40 @@ export interface JustListedReelProps {
   captionScript?: string | null
 }
 
-// 25 seconds @ 30 fps = 750 frames. Component breakdown in frames:
-const FRAMES = {
-  COVER_END:    60,    // 0–2s
-  IMAGES_START: 60,
-  IMAGES_END:   540,   // 16s of images (8 × 2s)
-  FACTS_START:  540,
-  FACTS_END:    660,   // 4s of facts
-  CTA_START:    660,
-  CTA_END:      750,   // 3s
-} as const
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts). A
+// FRAMES table (COVER_END 60 … CTA_END 750, "25 seconds") stood here. The
+// bookends are read from the ONE registry; the facts tile is a fixed design
+// beat INSIDE the body; the image tour is whatever the render's
+// durationInFrames leaves (calculateMetadata sizes it to the fitted narration).
+const FPS   = 30
+const BOOKENDS = compositionBookends("JustListedReel")
+const COVER = BOOKENDS.introFrames
+const FACTS = 4 * FPS
+const CTA   = BOOKENDS.outroFrames
 
 export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY = timeline.body.durationInFrames
+  const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
+  const IMAGES = BODY - FACTS_FRAMES
   return (
     <AbsoluteFill style={{ backgroundColor: "#111" }}>
       {props.voiceoverUrl && <Audio src={props.voiceoverUrl} />}
 
-      <Sequence from={0} durationInFrames={FRAMES.COVER_END}>
+      <Sequence from={0} durationInFrames={COVER}>
         <CoverFrame {...props} />
       </Sequence>
 
-      <Sequence from={FRAMES.IMAGES_START} durationInFrames={FRAMES.IMAGES_END - FRAMES.IMAGES_START}>
-        <PropertyImages images={props.imageUrls.slice(0, 8)} />
+      <Sequence from={COVER} durationInFrames={IMAGES}>
+        <PropertyImages images={props.imageUrls.slice(0, 8)} windowFrames={IMAGES} />
       </Sequence>
 
-      <Sequence from={FRAMES.FACTS_START} durationInFrames={FRAMES.FACTS_END - FRAMES.FACTS_START}>
+      <Sequence from={COVER + IMAGES} durationInFrames={FACTS_FRAMES}>
         <FactCards {...props} />
       </Sequence>
 
-      <Sequence from={FRAMES.CTA_START} durationInFrames={FRAMES.CTA_END - FRAMES.CTA_START}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <CTAFrame {...props} />
         <QrOutroBadge
           qrCodeDataUrl={props.qrCodeDataUrl}
@@ -116,7 +122,7 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
         cues={props.captionsCues}
         script={props.captionScript}
         accentColor={props.brand.accentColor}
-        hiddenFromFrame={FRAMES.CTA_START}
+        hiddenFromFrame={COVER + BODY}
       />
     </AbsoluteFill>
   )
@@ -143,7 +149,7 @@ const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, b
   )
 }
 
-const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
+const PropertyImages: React.FC<{ images: string[]; windowFrames: number }> = ({ images, windowFrames }) => {
   const frame = useCurrentFrame()
   // The window is divided across however many images actually arrived — the
   // same idiom as JustListedReelSquare/Horizontal's `perPhoto`, now the ONE
@@ -152,8 +158,8 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
   // fixed 60 frames (2s), sized for the full 8 images: with fewer, the last
   // slide's crossfade-out clamped opacity to 0 and the remaining seconds of the
   // 16s window rendered EMPTY (gradient over the #111 background) while the
-  // voiceover kept narrating.
-  const windowFrames = FRAMES.IMAGES_END - FRAMES.IMAGES_START
+  // voiceover kept narrating. `windowFrames` is the COMPUTED image window the
+  // parent derived from the render's own durationInFrames (wave 78).
   const slots = evenShotSlots(windowFrames, images.length)
   const idxFound = slots.findIndex((s) => frame < s.from + s.durationInFrames)
   const idx = idxFound >= 0 ? idxFound : Math.max(0, slots.length - 1)

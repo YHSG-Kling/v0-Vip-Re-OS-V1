@@ -21,6 +21,8 @@
  * tombstone naming `<Sequence from={X}>` must never read as a live segment.
  */
 import type { RegisteredGeometry } from "../lib/remotion/composition-geometry"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionDurationSpec } from "../lib/video/duration-model"
 
 /** Every registered VIDEO composition's remotion/ source file, by id. STILLS
  *  (duration_frames === 1) are out of scope — they have no timeline to tile. */
@@ -46,6 +48,9 @@ export const VIDEO_COMPOSITION_FILES: Record<string, string> = {
   NewsletterDigestVideo: "remotion/NewsletterDigestVideo.tsx",
   PartnersMeetingReel: "remotion/PartnersMeetingReel.tsx",
   ProductPromoReel: "remotion/ProductPromoReel.tsx",
+  // Lane 78D — props-driven timeline (memoryVideoChapterLayout); checked by
+  // its own rule in the callers, never by the const-chain tiler.
+  MemoryVideoReel: "remotion/MemoryVideoReel.tsx",
   // Single-segment slides — the WHOLE duration is one continuous body (an
   // avatar PIP rides over it via avatarStartFrame/avatarEndFrame, not a
   // Sequence chain). The callers check these by their own rule.
@@ -60,6 +65,9 @@ export const VIDEO_COMPOSITION_FILES: Record<string, string> = {
  *  is recorded where the rule lives (video-assembly-simulator §sums). */
 export const NON_CHAIN_COMPOSITIONS: ReadonlySet<string> = new Set([
   "ListingPresentationSlide", "BuyerConsultationSlide", "PhotoWalkthroughReel", "PartnersMeetingReel", "ListingSectionReel",
+  // Lane 78D: every slot is computed from props (lib/video/memory-video-
+  // composition.ts) and the length from calculateMetadata — no const chain.
+  "MemoryVideoReel",
 ])
 
 /** A tag using the from={…}/durationInFrames={…} contract — Sequence itself,
@@ -108,8 +116,27 @@ export function safeEval(expr: string, scope: Record<string, unknown>): number {
  *  scope built so far — evaluated in file order, skipping (not failing on) any
  *  declaration that is not simple arithmetic (strings, JSX, object literals,
  *  ternaries) because this checker only needs the numeric timeline consts. */
-export function buildScope(source: string, geometry: RegisteredGeometry): Record<string, number> {
+export function buildScope(source: string, geometry: RegisteredGeometry, compositionId?: string): Record<string, number> {
   const scope: Record<string, number> = { fps: geometry.fps, FPS: geometry.fps, durationInFrames: geometry.duration_frames }
+
+  // THE DERIVED-BODY IDIOM (wave 78, lib/video/duration-model.ts): a
+  // composition reads its bookends from the ONE registry —
+  //   const BOOKENDS = compositionBookends("X"); const COVER = BOOKENDS.introFrames
+  // — and its body from the duration it is rendering at —
+  //   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })
+  //   const BODY = timeline.body.durationInFrames
+  // Neither right-hand side is arithmetic this evaluator can run, so both are
+  // seeded here through the SAME two survivors the composition calls, at the
+  // `durationInFrames` the geometry hands in (the registered cap by default; a
+  // planned duration when a proof passes one). A hardcoded body reintroduced
+  // beside them no longer tiles at any other duration — which is the control.
+  const spec = compositionId ? compositionDurationSpec(compositionId) : null
+  if (spec) {
+    ;(scope as Record<string, unknown>).BOOKENDS = { introFrames: spec.introFrames, outroFrames: spec.outroFrames }
+    ;(scope as Record<string, unknown>).timeline = computeAssemblyTimeline({
+      durationInFrames: geometry.duration_frames, introFrames: spec.introFrames, outroFrames: spec.outroFrames,
+    })
+  }
 
   const framesMatch = FRAMES_OBJECT.exec(source)
   if (framesMatch) {

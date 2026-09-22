@@ -27,7 +27,8 @@
  *
  * Reads Root.tsx as text. No Remotion import, no bundling, no DB.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
+import { join } from "node:path"
 import { walkTs } from "./runtime-roots"
 import { LIVE_TABLES } from "./live-tables"
 import { blankComments, stripComments } from "./strip-comments"
@@ -819,14 +820,31 @@ console.log("\n═══ 15. ONE voiceover census — the set, the compositions,
     /usedVoiceover:\s*composition\.requires_voiceover/.test("usedVoiceover: composition.requires_voiceover,"))
 
   // ── THE MIRROR MIGRATION names exactly this set ───────────────────────────
-  const migPath = "supabase/migrations/m601-remotion-requires-voiceover-agrees-with-compositions.sql"
-  const mig = src(migPath)
-  const migIds = [...new Set([...mig.matchAll(/'([A-Za-z0-9]+)'/g)].map((m) => m[1]))].filter((id) => !!CONTENT_CONTRACT[id]).sort()
-  ok("m601 sets requires_voiceover from EXACTLY this set (the SQL's quoted ids, not its prose)",
+  // ASSERT THE RULE, DERIVE THE FILE (§2 — never a waypoint): the NEWEST
+  // migration that carries the whole-column `SET requires_voiceover =
+  // (composition_id IN (…))` rule is the mirror. m601 wrote it first; a later
+  // registry-row migration that adds a consumer restates it (m659, lane 78D,
+  // MemoryVideoReel) rather than editing applied history — pinning m601 by
+  // name would have made this line permanently red the day a consumer landed.
+  const RULE = /SET requires_voiceover = \(composition_id IN \(/
+  const mirrorMigs = readdirSync("supabase/migrations")
+    .filter((f) => /^m\d+.*\.sql$/.test(f) && RULE.test(readFileSync(join("supabase/migrations", f), "utf8")))
+    .sort((a, b) => Number(/^m(\d+)/.exec(a)![1]) - Number(/^m(\d+)/.exec(b)![1]))
+  const migPath = mirrorMigs.length > 0 ? `supabase/migrations/${mirrorMigs[mirrorMigs.length - 1]}` : ""
+  ok(`at least one mirror migration carries the whole-column rule (${mirrorMigs.length} found; newest ${mirrorMigs[mirrorMigs.length - 1] ?? "NONE"})`,
+    mirrorMigs.length >= 1 && mirrorMigs.includes("m601-remotion-requires-voiceover-agrees-with-compositions.sql"))
+  const mig = migPath ? src(migPath) : ""
+  // Only the ids inside the rule's own IN (…) list — a row insert elsewhere in
+  // the same file may quote a thumbnail id that is not a consumer.
+  const ruleBody = /SET requires_voiceover = \(composition_id IN \(([\s\S]*?)\)\)/.exec(mig)?.[1] ?? ""
+  const migIds = [...new Set([...ruleBody.matchAll(/'([A-Za-z0-9]+)'/g)].map((m) => m[1]))].filter((id) => !!CONTENT_CONTRACT[id]).sort()
+  ok(`${mirrorMigs[mirrorMigs.length - 1] ?? "the mirror"} sets requires_voiceover from EXACTLY this set (the SQL's quoted ids inside the rule, not its prose)`,
     JSON.stringify(migIds) === JSON.stringify(set),
     `sql-only: ${migIds.filter((i) => !set.includes(i)).join(", ") || "none"} | set-only: ${set.filter((i) => !migIds.includes(i)).join(", ") || "none"}`)
   ok("...as a whole-column RULE, re-runnable, not seventeen hand-typed rows",
-    /SET requires_voiceover = \(composition_id IN \(/.test(mig) && /IS DISTINCT FROM/.test(mig))
+    RULE.test(mig) && /IS DISTINCT FROM/.test(mig))
+  ok("CONTROL: the rule finder does not match a prose mention of the column",
+    !RULE.test("-- requires_voiceover is set from the composition set below"))
 
   // ── THE LIVE MIRROR, compared when it can be reached (§3b discipline) ─────
   // CI has no database. A gate that cannot run must SAY it skipped, never

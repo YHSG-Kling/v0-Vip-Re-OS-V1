@@ -25,7 +25,9 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
@@ -70,10 +72,13 @@ export interface JustSoldReelSquareProps {
 }
 
 const FPS    = 30
-const TOTAL  = 12 * FPS
-const COVER  = 2  * FPS
-const PHOTOS = 8  * FPS
-const CTA    = 2  * FPS
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `PHOTOS = 8 * FPS` stood here. Bookends come from the ONE registry; the
+// photo window is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("JustSoldReelSquare")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 /** Compute the "above asking" badge text when we have both prices.
  *  Returns null when prices aren't both present or numeric-parseable
@@ -97,6 +102,9 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const PHOTOS   = timeline.body.durationInFrames
   const images   = imageUrls.slice(0, 4)
   const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho  = brand.showEhoMark ?? true
@@ -244,7 +252,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

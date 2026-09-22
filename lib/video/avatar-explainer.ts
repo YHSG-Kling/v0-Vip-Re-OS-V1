@@ -264,10 +264,13 @@ export async function authorExplainerContent(args: {
   // LANE 77D — the avatar WINDOW, not the whole composition: AgentExplainerReel
   // mounts the D-ID track only across B1+B2+B3 (14 s of its 18 s) and
   // TeammateExplainerReel only in BODY, so a budget sized to the full runtime
-  // overran the crop at the average pace. narrationWindowBudget (lib/video/
-  // narration-window.ts, proven against each composition's own CaptionLayer
-  // window) applies the same headroom to the frames the viewer will hear; an id
-  // with no declared window falls back to the whole-composition budget.
+  // overran the crop at the average pace. WAVE 78: narrationWindowBudget is now
+  // a thin adapter over lib/video/duration-model.ts purposeBudgetFor — the
+  // EXPLAINER purpose's window (30/60/90 s of body at the avatar pace, floor
+  // and ceiling in the one directive), and the composition's registered frames
+  // are the CAP the render may reach: calculateMetadata sizes the render to
+  // the fitted narration. An id with no purpose row still falls back to the
+  // whole-composition budget.
   const budget = narrationWindowBudget(args.compositionId)
   if (budget.maxWords <= 0) {
     return {

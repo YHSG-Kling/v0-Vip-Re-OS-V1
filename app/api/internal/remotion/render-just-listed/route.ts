@@ -75,6 +75,7 @@ import {
   promoNarrationBudget,
   promoEventLabel,
 } from "@/lib/video/promo-composition"
+import { spokenSecondsProps } from "@/lib/video/duration-model"
 import {
   narrationLengthDirective,
   narrationMaxTokens,
@@ -239,7 +240,7 @@ export async function POST(req: NextRequest) {
     // 4. ElevenLabs voiceover → Supabase storage URL. The timestamped path also
     //    returns per-character alignment (when available) so captions are
     //    word-accurate; null alignment → the caption plan even-distributes.
-    const { url: voiceoverUrl, alignment: voiceoverAlignment } = await renderVoiceover({
+    const { url: voiceoverUrl, alignment: voiceoverAlignment, durationSeconds: voiceoverDurationSeconds } = await renderVoiceover({
       svc,
       brokerageId:   promo.brokerage_id,
       // agent_voice_profiles.agent_id is agents-class — the same class the promo
@@ -274,6 +275,7 @@ export async function POST(req: NextRequest) {
       qrCaption:     qrCaptionForEvent(promo.event_type),
       script,
       voiceoverAlignment,
+      voiceoverDurationSeconds,
     })
     const reelUrl = reel.url
 
@@ -684,7 +686,7 @@ async function renderVoiceover(args: {
   agentRecordId: string
   promoId: string
   script: string
-}): Promise<{ url: string; alignment: CharacterAlignment | null }> {
+}): Promise<{ url: string; alignment: CharacterAlignment | null; durationSeconds: number | null }> {
   const { data: profile } = await args.svc.from("agent_voice_profiles")
     .select("elevenlabs_voice_id")
     .eq("agent_id", args.agentRecordId)
@@ -721,7 +723,7 @@ async function renderVoiceover(args: {
     renderKey:   `listing-promo-${args.promoId}`,
   })
   if (!voiceover) throw new Error("Voiceover clip missing — prepareReelVoiceover returned no clip (budget gate, synthesis, or hosting)")
-  return { url: voiceover.url, alignment: voiceover.alignment }
+  return { url: voiceover.url, alignment: voiceover.alignment, durationSeconds: voiceover.durationSeconds ?? null }
 }
 
 /** Map a listing-promo event_type to a video-qr kind. just_sold maps to its
@@ -753,6 +755,9 @@ async function renderRemotionReel(args: {
   script: string
   /** Per-character alignment from the timestamped TTS path (null → estimate). */
   voiceoverAlignment: CharacterAlignment | null
+  /** The synthesized narration's MEASURED length (from the alignment); null →
+   *  the fitted script's word count at the composition's pace sizes the reel. */
+  voiceoverDurationSeconds: number | null
 }): Promise<{ url: string; compositionId: string; durationSeconds: number; fellBack: boolean; fallbackReason: string | null }> {
   // Bundle Remotion compositions once per cold start. The bundler reads
   // remotion/index.ts which registers RemotionRoot.
@@ -793,6 +798,13 @@ async function renderRemotionReel(args: {
   if (built.fellBack) {
     console.warn(`[render-just-listed] ${args.eventType}: ${built.fallbackReason}`)
   }
+  // THE REEL IS AS LONG AS ITS NARRATION (wave 78, lib/video/duration-model.ts):
+  // the measured voiceover length (or the fitted script at the voiceover pace)
+  // is staged so selectComposition's calculateMetadata sizes the composition
+  // to it — listing_promo 12/20/45 s of body — instead of the registered cap.
+  Object.assign(inputProps as Record<string, unknown>, spokenSecondsProps({
+    measuredSeconds: args.voiceoverDurationSeconds, narration: args.script, compositionId,
+  }))
 
   const composition = await selectComposition({
     serveUrl: bundleLocation,

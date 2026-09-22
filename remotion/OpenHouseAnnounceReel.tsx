@@ -19,7 +19,9 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -76,10 +78,13 @@ export interface OpenHouseAnnounceReelProps {
 }
 
 const FPS    = 30
-const COVER  = 3 * FPS
-const BODY   = 7 * FPS
-const CTA    = 2 * FPS
-const TOTAL  = COVER + BODY + CTA  // 360 frames = 12s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = 7 * FPS` stood here. Bookends come from the ONE registry; the body
+// is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("OpenHouseAnnounceReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   address, cityState, dateLabel, timeLabel, imageUrls, bodyLine,
@@ -91,6 +96,9 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   const finalCta = ctaLabel ?? "Save the date"
   const heroImg  = imageUrls[0] ?? null
   const restImgs = imageUrls.slice(1, 4)
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
   const perPhoto = restImgs.length > 0 ? BODY / restImgs.length : BODY
   const cues     = contextCues ?? []
 
@@ -227,7 +235,7 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 

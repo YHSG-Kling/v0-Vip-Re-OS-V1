@@ -160,6 +160,16 @@ export interface NarrationBudget {
   maxWords: number
   /** The headroom fraction this budget was derived with. */
   headroom: number
+  /**
+   * PURPOSE FLOOR (wave 78, lib/video/duration-model.ts purposeBudgetFor).
+   * Present only on a purpose-derived budget: the fewest words the video's
+   * purpose needs to be worth watching, and the count the writer should aim
+   * for. narrationLengthDirective speaks them when present; a whole-runtime
+   * budget from narrationBudget() carries neither and reads exactly as before.
+   */
+  minWords?: number
+  idealWords?: number
+  purpose?: string
 }
 
 /**
@@ -552,7 +562,19 @@ export function narrationMaxTokens(budget: NarrationBudget): number {
 }
 
 export function narrationLengthDirective(budget: NarrationBudget): string {
-  return `Hard length limit: AT MOST ${budget.maxWords} words total `
+  const ceiling = `Hard length limit: AT MOST ${budget.maxWords} words total `
     + `(this is spoken over a ${budget.compositionSeconds}-second video — anything longer is cut off). `
     + `Finish your final sentence within that budget.`
+  // THE FLOOR (wave 78 — owner: "the video needs to be long enough to achieve
+  // the reason for making the video"). A purpose-derived budget carries the
+  // fewest words its purpose needs; a script under it is extended by the
+  // WRITER, here, never by silence in the composition (lib/video/
+  // duration-model.ts planCompositionDuration never pads a body past its
+  // narration). A budget with no floor reads byte-for-byte as before.
+  if (typeof budget.minWords === "number" && budget.minWords > 0) {
+    const purpose = budget.purpose ? `This is a ${budget.purpose.replace(/_/g, " ")} video and it` : "This video"
+    return `${ceiling} ${purpose} needs AT LEAST ${budget.minWords} words to do its job — aim for about `
+      + `${budget.idealWords ?? budget.minWords} words. Do not pad with filler; add the specific fact or next step the viewer came for.`
+  }
+  return ceiling
 }

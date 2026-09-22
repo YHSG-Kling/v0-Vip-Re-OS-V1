@@ -19,8 +19,9 @@
 import React from "react"
 import { Video } from "@remotion/media"
 import { AbsoluteFill, Sequence, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
-import { QrOutroBadge } from "./components/QrOutroBadge"
+import { EndCard } from "./components/EndCard"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { avatarFadeOutFrame } from "../lib/video/script-structure"
 
@@ -85,6 +86,7 @@ const KIND_TAG: Record<ReelCardKind, string> = {
 }
 
 const EASE = Easing.bezier(0.16, 1, 0.3, 1)
+const BOOKENDS = compositionBookends("PartnersMeetingReel")
 const fadeUp = (frame: number, from: number, to: number) => ({
   opacity: interpolate(frame, [from, to], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE }),
   translate: `0 ${interpolate(frame, [from, to], [28, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE })}px`,
@@ -248,30 +250,10 @@ const AskScene: React.FC<{ brand: Brand; oneAsk: string }> = ({ brand, oneAsk })
   )
 }
 
-const OutroScene: React.FC<{ brand: Brand; showEho: boolean; qrCodeDataUrl?: string | null; qrCaption?: string }> = ({ brand, showEho, qrCodeDataUrl, qrCaption }) => {
-  const frame = useCurrentFrame()
-  return (
-    <AbsoluteFill>
-      <SceneBackground brand={brand} />
-      <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", color: "#fff", textAlign: "center" }}>
-        <div>
-          {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 30, ...fadeUp(frame, 0, 12) }} />}
-          <div style={{ fontSize: 44, fontWeight: 800, ...fadeUp(frame, 4, 18) }}>{brand.brokerageName}</div>
-          <div style={{ width: 90, height: 4, borderRadius: 2, backgroundColor: brand.accentColor, margin: "22px auto 0" }} />
-          <div style={{ fontSize: 23, opacity: 0.65, marginTop: 22 }}>
-            Presented by your AI management team{showEho && " · Equal Housing Opportunity"}
-          </div>
-        </div>
-      </AbsoluteFill>
-      <QrOutroBadge
-        qrCodeDataUrl={qrCodeDataUrl}
-        caption={qrCaption ?? "Scan to connect"}
-        primaryColor={brand.primaryColor}
-        accentColor={brand.accentColor}
-      />
-    </AbsoluteFill>
-  )
-}
+// TOMBSTONE (lane 78D, §1.1): the private `OutroScene` (brand + "Presented by
+// your AI management team" + EHO + QrOutroBadge over SceneBackground) was
+// MERGED onto remotion/components/EndCard.tsx — the ONE end card the four
+// outros in this fleet now share. The OUTRO Sequence below keeps its 1.5 s.
 
 export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
   weekLabel, cards, oneAsk, agentName, avatarVideoUrl, avatarDurationSeconds, agentPhotoUrl, brand, qrCodeDataUrl, qrCaption, captionsCues,
@@ -280,9 +262,12 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
   const frame = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
 
-  const COVER = 2.5 * fps
+  // The bookends come from the ONE registry (lib/video/duration-model.ts,
+  // wave 78) — the same numbers the planner and the proofs read — and the
+  // body (cards + the ask) is whatever this render's durationInFrames leaves.
+  const COVER = BOOKENDS.introFrames
   const ASK = 3 * fps
-  const OUTRO = 1.5 * fps
+  const OUTRO = BOOKENDS.outroFrames
   const cardTotal = Math.max(1, durationInFrames - COVER - ASK - OUTRO)
   const per = cards.length > 0 ? Math.floor(cardTotal / cards.length) : cardTotal
   // Wave 62 realism fix — see the "THE PRESENTER RIDES EVERY CARD" comment
@@ -359,7 +344,15 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
 
       {/* OUTRO */}
       <Sequence from={durationInFrames - OUTRO} durationInFrames={OUTRO}>
-        <OutroScene brand={brand} showEho={showEho} qrCodeDataUrl={qrCodeDataUrl} qrCaption={qrCaption} />
+        <EndCard
+          brand={{ ...brand, showEhoMark: showEho }}
+          headline={brand.brokerageName}
+          footer="Presented by your AI management team"
+          logoHeight={72}
+          background={<SceneBackground brand={brand} />}
+          qrCodeDataUrl={qrCodeDataUrl}
+          qrCaption={qrCaption ?? "Scan to connect"}
+        />
       </Sequence>
 
       {/* WORD-SYNCED CAPTIONS — whole-timeline overlay, muted-feed readable.

@@ -30,6 +30,7 @@
 import { buildDealRoomRunbook } from "@/lib/platform/deal-room-demo"
 import { getDealRoomDemoStatusAction } from "@/app/actions/superadmin/deal-room-demo"
 import { DemoRoomClient } from "./demo-room-client"
+import { DemoStillsCard } from "./demo-stills-card"
 
 export const dynamic = "force-dynamic"
 
@@ -53,5 +54,11 @@ export default async function DemoRoomPage() {
     leadId: status.leadId,
     contactId: status.contactId,
   })
-  return <DemoRoomClient status={status} runbook={runbook} />
+  return (
+    <div className="space-y-6">
+      <DemoRoomClient status={status} runbook={runbook} />
+      {/* Wave 78: the screenshot seam's human door (demo stills + public property pages). */}
+      <DemoStillsCard />
+    </div>
+  )
 }

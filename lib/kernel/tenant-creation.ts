@@ -451,6 +451,23 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
     }), { table: "notifications", flow: "tenant_creation_welcome", brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   } catch (err) { extrasSkipped.push("onboarding_education"); console.warn("[tenant-creation] onboarding education failed (non-fatal):", (err as Error)?.message) }
 
+  // 8e. THE TIER'S ONBOARDING CURRICULUM, KICKED OFF INLINE (lane 78D, blind
+  //     spot 7 — lane 77B recorded runOnboardingCurriculum as "not invoked
+  //     inline at conversion; the weekly cron authors any missing path").
+  //     Owner: autonomous onboarding kickoff. The curriculum is authored by a
+  //     model per topic (cost + latency), so it is fire-and-forget AFTER the
+  //     tenant exists — never awaited inside the caller's tool round — and it
+  //     is IDEMPOTENT on the `onboarding:<tier>:<topic>` gap tag, so the weekly
+  //     recruit-outreach cron (runOnboardingCurriculumAll) remains the net for
+  //     anything this kickoff could not finish. The promise is NOT dropped on
+  //     the floor: a refusal is logged with the tenant it belonged to.
+  try {
+    const { runOnboardingCurriculum } = await import("@/lib/education/onboarding-curriculum")
+    void runOnboardingCurriculum(service, { brokerageId, tier: input.tier })
+      .then((r) => { if (r.authored > 0) console.log(`[tenant-creation] onboarding curriculum kicked off for ${brokerageId}: ${r.authored}/${r.topics} modules authored`) })
+      .catch((err: unknown) => console.warn(`[tenant-creation] onboarding curriculum kickoff failed for ${brokerageId} (the weekly cron is the net):`, (err as Error)?.message))
+  } catch (err) { extrasSkipped.push("onboarding_curriculum"); console.warn("[tenant-creation] onboarding curriculum import failed (non-fatal):", (err as Error)?.message) }
+
   return {
     ok: true,
     brokerageId, userId, subscriptionId, subscriptionError, slug, trialEndsAt,

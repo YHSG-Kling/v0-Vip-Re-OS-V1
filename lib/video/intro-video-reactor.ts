@@ -126,12 +126,18 @@ function introNarrationBudget(): NarrationBudget {
   // LANE 77D — the WINDOW, not the whole composition. The header above says
   // "11.2 claimable seconds" and, three lines later, "BODY = 10s, so the agent
   // was simply cut off": a budget sized to 14 s of runtime still overran the
-  // 10 s crop by 1.2 s at the average pace. narrationWindowBudget applies the
-  // same NARRATION_HEADROOM to the frames the D-ID track is actually mounted
-  // in (lib/video/narration-window.ts — proven equal to the composition's own
-  // CaptionLayer window by test:video-type-matrix), so the ceiling is now 8 s /
-  // 20 words. An id with no declared window (never this one) falls back to the
-  // whole-composition budget, byte-for-byte the prior behaviour.
+  // 10 s crop by 1.2 s at the average pace.
+  //
+  // WAVE 78 — the PURPOSE, not the frames (owner: "the video needs to be long
+  // enough to achieve the reason for making the video"). narrationWindowBudget
+  // is now a thin adapter over lib/video/duration-model.ts purposeBudgetFor:
+  // the WELCOME purpose's window (20/35/60 s of body at the avatar pace, with
+  // the floor AND the ceiling in the one directive), and AgentTalkingHeadReel's
+  // registered frames are the CAP — Root.tsx's calculateMetadata sizes each
+  // render to the fitted narration (the D-ID measurement, avatarDurationSeconds,
+  // once the clip exists), so the BODY window is whatever the script needs
+  // inside the purpose's max, never a typed 10 s. An id with no purpose row
+  // still falls back to the whole-composition budget.
   return narrationWindowBudget(INTRO_VIDEO_COMPOSITION)
 }
 

@@ -135,10 +135,13 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "platform",
     why: "loadSelfHealRollup's action caller refuses first — app/actions/self-heal-rollup.ts returns 'No brokerage on user' before calling — and lib/kernel/week-in-review.ts passes the agent row's own brokerage_id. The null lane is the platform digest.",
   },
-  "lib/property-alerts/alert-engine.ts :: brokerageId": {
-    verdict: "platform",
-    why: "runAllActiveAlerts' only caller is app/api/property-alerts/run/route.ts, a CRON_SECRET-gated sweep. Omitting the id is the platform-wide run. THAT GATE WAS ITSELF FAIL-OPEN and was fixed in the same lane: it read `if (cronSecret && authHeader !== …)`, so an UNSET CRON_SECRET skipped the check entirely and an anonymous POST could sweep every tenant (or name one in the body). It now returns 404 on an unset secret, the rule already in force at app/api/webhooks/sendgrid-events/route.ts.",
-  },
+  // lib/property-alerts/alert-engine.ts :: brokerageId — GONE (lane 78D, blind
+  // spot 3): runAllActiveAlerts now takes a declared TenantScope
+  // (lib/kernel/tenant-scope.ts) and applies it through applyTenantScope; the
+  // CRON_SECRET-gated route writes platformScope(reason) for the sweep and
+  // tenantScope(id) for a named tenant. The entry was retired with the site so
+  // it cannot sit here reading as enforced (§2). Re-record the baseline with
+  // CONDITIONAL_TENANT_PREDICATE_BASELINE=1 npm run test:conditional-tenant-predicate.
   "lib/fatigue/fatigue-calculator.ts :: brokerageId": {
     verdict: "platform",
     why: "calculateAllBuyerFatigue's only caller is app/api/fatigue/calculate/route.ts, which refuses on a wrong x-cron-secret before reading the body. Omitting brokerageId is the platform sweep.",

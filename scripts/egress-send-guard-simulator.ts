@@ -43,7 +43,10 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   "lib/billing/dunning.ts":                     { cls: "b2b-transactional", why: "dunning email to the TENANT billing admin (the platform own customer, past-due recovery, not consumer marketing; SendGrid-gated, one step per episode via platform_dunning_events)" },
   "lib/platform/prospect-followup.ts":          { cls: "b2b-transactional", why: "the platform's own speed-to-lead to a B2B prospect who RAISED THEIR HAND (site form / phone reception / consented capture — never a cold consumer); platform suppression list enforced as a hard boundary; intro + exactly ONE day-3 nudge ('ignore this and we won't keep nudging'), then permanent silence; failed sends never fake a contacted stamp; every send audited to superadmin_audit_log" },
   "app/actions/superadmin/tenant-message.ts":   { cls: "b2b-transactional", why: "direct staff→tenant-admin message (round 31; support WRITE capability gated) — the platform emailing ITS OWN customer's broker/admin bench, never a consumer; platform suppression list checked before send; canonical sendEmail with success only on provider acceptance; audited to superadmin_audit_log (subject + target, never the body) and mirrored to in-app notifications" },
-  "app/actions/lender-status-request.ts":       { cls: "b2b-transactional", why: "transactional request to a lender (B2B, not consumer marketing)" },
+  // app/actions/lender-status-request.ts — RETIRED from this allowlist (lane
+  // 78D): it now sends through dispatchEmail/dispatchSms (the ONE governed
+  // egress) while persisting the ask on document_requests; the entry left
+  // would have sat here reading as a live importer (§2).
   "lib/transactions/deal-vendor-notify.ts":     { cls: "b2b-transactional", why: "Deal-Save Huddle B2B leg — notifies the loan officer / title-escrow officer of a deal issue (business counterparty on the file; deduped + audited)" },
   "lib/kernel/vendors.ts":                      { cls: "b2b-transactional", why: "vendor-facing email (B2B service coordination)" },
   "lib/showings/dispatchers.ts":                { cls: "b2b-transactional", why: "agent-to-agent showing coordination (listing agent's phone, no consumer contact) via the connector-gateway adapter" },

@@ -27,7 +27,9 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
@@ -68,11 +70,14 @@ export interface JustListedReelHorizontalProps {
 }
 
 const FPS    = 30
-const TOTAL  = 20 * FPS              // 600
-const COVER  = 3  * FPS               // 90
-const PHOTOS = 10 * FPS               // 300
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `PHOTOS = 10 * FPS` stood here. Bookends come from the ONE registry; the
+// agent-facts tile is a fixed design beat INSIDE the body; the photo window
+// is whatever the render's durationInFrames leaves.
+const BOOKENDS = compositionBookends("JustListedReelHorizontal")
+const COVER  = BOOKENDS.introFrames
 const FACTS  = 4  * FPS               // 120
-const CTA    = 3  * FPS               // 90
+const CTA    = BOOKENDS.outroFrames
 
 const BrandHeader: React.FC<{
   logoUrl?: string; brokerageName?: string
@@ -109,6 +114,11 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
   captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
+  const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
+  const PHOTOS   = BODY - FACTS_FRAMES
   const images   = imageUrls.slice(0, 2)
   const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho  = brand.showEhoMark ?? true
@@ -193,7 +203,7 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
       </Sequence>
 
       {/* SPLIT FACTS — 13-17s. Agent identity establishment. */}
-      <Sequence from={COVER + PHOTOS} durationInFrames={FACTS}>
+      <Sequence from={COVER + PHOTOS} durationInFrames={FACTS_FRAMES}>
         <AbsoluteFill style={{
           padding: 80, display: "flex", flexDirection: "column", justifyContent: "center",
           color: "#fff", backgroundColor: brand.primaryColor,
@@ -214,7 +224,7 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
       </Sequence>
 
       {/* OUTRO CTA — 17-20s. */}
-      <Sequence from={COVER + PHOTOS + FACTS} durationInFrames={CTA}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 80, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -241,17 +251,17 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
       {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
-          clip before the CTA tile at COVER + PHOTOS + FACTS. */}
+          clip before the CTA tile at COVER + BODY. */}
       <CaptionLayer
         cues={captionsCues}
         script={captionScript}
         accentColor={brand.accentColor}
-        hiddenFromFrame={COVER + PHOTOS + FACTS}
+        hiddenFromFrame={COVER + BODY}
       />
     </AbsoluteFill>
   )

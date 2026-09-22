@@ -40,8 +40,10 @@ import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { EqualHousingMark } from "./components/EqualHousingMark"
+import { EndCard } from "./components/EndCard"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface PhotoWalkthroughReelProps {
@@ -85,11 +87,13 @@ export interface PhotoWalkthroughReelProps {
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 
-// Bookend windows (frames @ 30fps). Cover = 2s, outro = 3s. The PHOTO TOUR
-// fills everything in between; its length is computed from the composition's
-// durationInFrames so the same component works at any registered duration.
-const COVER_FRAMES = 60
-const OUTRO_FRAMES = 90
+// Bookend windows, from the ONE registry (lib/video/duration-model.ts, wave
+// 78 — cover 2s, outro 3s). The PHOTO TOUR fills everything in between; its
+// length is computed from the composition's durationInFrames so the same
+// component works at any duration calculateMetadata sizes it to.
+const BOOKENDS = compositionBookends("PhotoWalkthroughReel")
+const COVER_FRAMES = BOOKENDS.introFrames
+const OUTRO_FRAMES = BOOKENDS.outroFrames
 
 export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props) => {
   const { durationInFrames, fps } = useVideoConfig()
@@ -339,33 +343,24 @@ const KenBurnsPhoto: React.FC<{ clip: KenBurnsClip; brand: PhotoWalkthroughReelP
 
 // ─── Outro ───────────────────────────────────────────────────────────────────
 
-const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel }) => {
-  const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  })
-  return (
-    <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
-      {brand.logoUrl && (
-        <SafeImg src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
-      )}
-      <h1 style={{ color: "white", fontSize: 76, margin: 0, fontWeight: 800, fontFamily: FONT }}>
-        {ctaLabel || "DM me to tour."}
-      </h1>
-      {brand.agentName && (
-        <p style={{ color: brand.accentColor, fontSize: 44, marginTop: 32, fontWeight: 600, fontFamily: FONT }}>
-          {brand.agentName}
-        </p>
-      )}
-      {brand.agentPhone && (
-        <p style={{ color: "white", fontSize: 38, opacity: 0.9, marginTop: 8, fontFamily: FONT }}>
-          {brand.agentPhone}
-        </p>
-      )}
-    </AbsoluteFill>
-  )
-}
+// TOMBSTONE (lane 78D, §1.1): the private `OutroCTA` (CTA + agent name +
+// phone, no QR — the EHO badge on this reel rides the cover via
+// <EqualHousingMark>) was MERGED onto remotion/components/EndCard.tsx — the
+// ONE end card the four outros in this fleet now share. The outro window is
+// still whatever computeAssemblyTimeline derives.
+const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel }) => (
+  <EndCard
+    brand={brand}
+    headline={ctaLabel || "DM me to tour."}
+    subline={brand.agentName ?? null}
+    detail={brand.agentPhone ?? null}
+    footer={null}
+    align="start"
+    logoHeight={56}
+    fontFamily={FONT}
+    showQr={false}
+  />
+)
 
 // ─── Fallback (no photos) ─────────────────────────────────────────────────────
 
