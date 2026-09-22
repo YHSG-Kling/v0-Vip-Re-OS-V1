@@ -101,7 +101,10 @@ export async function generateProductVideoDraftAction(input: { angle: string; fo
     topicText = (t as any)?.topic ?? null
     if (topicText) await svc.from("platform_content_topics").update({ status: "used", used_at: new Date().toISOString() }).eq("id", input.topicId)
   }
-  const spec = composeProductVideoSpec(input.angle, input.format ?? "vertical", brand, topicText)
+  // Lane 78B — the reel's image slot (imageUrls) is filled from the demo
+  // stills the screenshot seam keeps fresh (same source the autopilot uses).
+  const { demoStillImageUrls } = await import("@/lib/assets/screenshot-capture")
+  const spec = composeProductVideoSpec(input.angle, input.format ?? "vertical", brand, topicText, await demoStillImageUrls(svc, input.angle))
   const { data, error } = await svc.from("platform_social_drafts").insert({
     channel: spec.channel, angle: spec.angle, content: spec.caption,
     hashtags: null, status: "draft", created_by: auth.userId,

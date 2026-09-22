@@ -106,7 +106,13 @@ export async function queueProductVideoRender(
 
   const brand = await loadProductBrand(svc)
   const format: ProductVideoFormat = draft.format === "square" ? "square" : "vertical"
-  const spec = composeProductVideoSpec(draft.angle, format, brand, null)
+  // Lane 78B — the ProductPromoReel image slot (imageUrls, the Ken Burns
+  // platform-screenshot slideshow) is filled from the demo stills the
+  // screenshot seam keeps fresh, instead of a URL pasted by hand. Empty when
+  // no still exists yet: the composition keeps its text-motion fallback.
+  const { demoStillImageUrls } = await import("@/lib/assets/screenshot-capture")
+  const imageUrls = await demoStillImageUrls(svc, draft.angle)
+  const spec = composeProductVideoSpec(draft.angle, format, brand, null, imageUrls)
   const r = await recordRenderQueued({
     brokerageId: PLATFORM_HOUSE_BROKERAGE_ID,
     compositionId: spec.compositionId,

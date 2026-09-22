@@ -826,13 +826,11 @@ async function renderRemotionReel(args: {
   // a downloadable binary the @remotion/renderer uses via puppeteer-core
   // under the hood. Locally (where the user runs npm run dev) Remotion uses
   // a bundled Chromium and the executablePath is optional.
-  let executablePath: string | undefined
-  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    const chromium = (await import("@sparticuz/chromium-min")).default
-    executablePath = await chromium.executablePath(
-      process.env.CHROMIUM_PACK_URL || "https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.tar"
-    )
-  }
+  // TOMBSTONE (§1, lane 78B): the inline @sparticuz/chromium-min block that
+  // sat here moved to lib/remotion/chromium-executable.ts:1
+  // (resolveChromiumExecutable) — one pack URL, one serverless test.
+  const { resolveChromiumExecutable } = await import("@/lib/remotion/chromium-executable")
+  const executablePath: string | undefined = await resolveChromiumExecutable()
 
   const outPath = path.join(tmpdir(), `listing-promo-${args.promoId}.mp4`)
   await renderMedia({

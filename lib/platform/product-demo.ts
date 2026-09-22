@@ -137,12 +137,32 @@ export function splitDemoClipToken(text: string): { text: string; clipUrl: strin
   return { text: text.replace(DEMO_CLIP_TOKEN_RE, "").replace(/\s{2,}/g, " ").trim(), clipUrl: m[1] ?? null }
 }
 
+/** THE STILL VARIANT (lane 78B): a demo-tenant screenshot of the OS surface
+ *  the topic is about — lib/assets/screenshot-capture.ts::demoStillForTopic
+ *  (DEMO_STILL_SURFACES keyed by topic). Same token discipline as the clip:
+ *  the agent appends it verbatim, the widget shows the image, voice never
+ *  gets one. Stills are OS surfaces only — never a third-party page. */
+export const DEMO_STILL_TOKEN_RE = /\[\[STILL:(https?:\/\/[^\]\s]+)\]\]/
+
+export function demoStillToken(url: string): string {
+  return `[[STILL:${url}]]`
+}
+
+/** PURE: pull the still URL out of an agent reply and return the spoken text without it. */
+export function splitDemoStillToken(text: string): { text: string; stillUrl: string | null } {
+  const m = DEMO_STILL_TOKEN_RE.exec(text)
+  if (!m) return { text, stillUrl: null }
+  return { text: text.replace(DEMO_STILL_TOKEN_RE, "").replace(/\s{2,}/g, " ").trim(), stillUrl: m[1] ?? null }
+}
+
 export interface ProductDemoContext {
   brandName: string
   /** LIVE plan bullets (subscription_tiers.marketing_bullets), when loaded. */
   tierBullets?: string[]
   /** product_brand.liveAgent.demoClipUrl — a pre-rendered public mp4, or null. */
   clipUrl?: string | null
+  /** A demo-tenant still of this topic's OS surface (screenshot-capture), or null. */
+  stillUrl?: string | null
   /** Only a visual surface (the live agent / the web chat) can show a clip — voice cannot. */
   surfaceCanShowClip: boolean
 }
@@ -158,6 +178,10 @@ export interface ProductDemoResult {
   clipUrl: string | null
   /** The verbatim token to append to the reply when clipUrl is present. */
   clipToken: string | null
+  /** Present ONLY when a demo still exists and the surface can show it. */
+  stillUrl: string | null
+  /** The verbatim token to append to the reply when stillUrl is present. */
+  stillToken: string | null
   /** What to say when nothing can be shown — never a fabricated "here's a video". */
   ifNoClip: string
 }
@@ -180,6 +204,7 @@ export function describeProductDemo(
     .filter((c): c is { id: string; label: string; usefulFor: string } => !!c)
     .map((c) => ({ id: c.id, label: c.label, usefulFor: c.usefulFor }))
   const clipUrl = ctx.surfaceCanShowClip && ctx.clipUrl && /^https?:\/\//.test(ctx.clipUrl) ? ctx.clipUrl : null
+  const stillUrl = ctx.surfaceCanShowClip && ctx.stillUrl && /^https?:\/\//.test(ctx.stillUrl) ? ctx.stillUrl : null
   return {
     topic,
     label: script.label,
@@ -189,7 +214,9 @@ export function describeProductDemo(
     planHighlights: (ctx.tierBullets ?? []).slice(0, 6),
     clipUrl,
     clipToken: clipUrl ? demoClipToken(clipUrl) : null,
-    ifNoClip: clipUrl
+    stillUrl,
+    stillToken: stillUrl ? demoStillToken(stillUrl) : null,
+    ifNoClip: clipUrl || stillUrl
       ? ""
       : "No sample clip is configured on this surface — describe it from the walkthrough and offer the live demo on a rep's calendar (find_demo_slots) if they want to see it running on their own data.",
   }

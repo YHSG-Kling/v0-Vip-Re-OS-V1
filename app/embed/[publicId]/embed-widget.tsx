@@ -24,7 +24,7 @@ import {
 import type { DidPresenterType } from "@/lib/did/agent-presenter"
 import { SimliFaceSession } from "@/app/components/features/ai-avatar-chat/SimliFaceSession"
 import { ProspectChat } from "@/app/get-started/prospect-chat"
-import { splitDemoClipToken } from "@/lib/platform/product-demo"
+import { splitDemoClipToken, splitDemoStillToken } from "@/lib/platform/product-demo"
 
 /** The brokerage-slug/agent handle app/api/embed/session returns on every
  *  response (success AND failure) — everything /api/widget/session needs to
@@ -89,6 +89,8 @@ export function EmbedWidget(props: Props) {
   // [[CLIP:url]] token from show_product_demo — lib/platform/product-demo.ts).
   // Never rendered per conversation; a URL the platform already paid for once.
   const [demoClipUrl, setDemoClipUrl] = useState<string | null>(null)
+  // Lane 78B — a demo-tenant screenshot the platform agent asked to show ([[STILL:url]]).
+  const [demoStillUrl, setDemoStillUrl] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const managerRef = useRef<didSdk.AgentManager | null>(null)
@@ -239,8 +241,10 @@ export function EmbedWidget(props: Props) {
                 .map((m): DisplayMessage => {
                   const raw = stripContext(extractText(m))
                   if (!isPlatform || m.role !== "assistant") return { role: m.role === "user" ? "user" : "agent", text: raw }
-                  const { text, clipUrl } = splitDemoClipToken(raw)
+                  const { text: spoken, clipUrl } = splitDemoClipToken(raw)
                   if (clipUrl) setDemoClipUrl(clipUrl)
+                  const { text, stillUrl } = splitDemoStillToken(spoken)
+                  if (stillUrl) setDemoStillUrl(stillUrl)
                   return { role: "agent", text }
                 })
                 .filter((m) => m.text.length > 0)
@@ -655,6 +659,15 @@ export function EmbedWidget(props: Props) {
         <div className="border-t bg-black">
           <video src={demoClipUrl} controls autoPlay playsInline className="w-full max-h-48 object-contain" />
           <button type="button" onClick={() => setDemoClipUrl(null)} className="w-full text-[11px] text-white/80 py-1 hover:text-white">hide sample</button>
+        </div>
+      )}
+
+      {/* Demo still the PLATFORM agent asked to show (show_product_demo → [[STILL:url]]) — a screenshot of the demo tenant's own OS surface */}
+      {isPlatform && demoStillUrl && (
+        <div className="border-t bg-black">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={demoStillUrl} alt="A look at this part of the OS on the demo account" className="w-full max-h-48 object-contain" />
+          <button type="button" onClick={() => setDemoStillUrl(null)} className="w-full text-[11px] text-white/80 py-1 hover:text-white">hide screenshot</button>
         </div>
       )}
 

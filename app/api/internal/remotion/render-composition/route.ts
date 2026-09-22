@@ -587,12 +587,12 @@ async function resolveBrokerageTier(
   return (VALID_TIERS as string[]).includes(t) ? (t as CompositionTier) : "solo_agent"
 }
 
+// TOMBSTONE (§1, lane 78B): the inline @sparticuz/chromium-min resolution that
+// lived here (one of three identical copies) moved to
+// lib/remotion/chromium-executable.ts:1 — resolveChromiumExecutable() — so the
+// pack URL and the serverless test exist once. Same semantics: serverless →
+// the pack, elsewhere → undefined (Remotion-managed browser).
 async function resolveChromium(): Promise<string | undefined> {
-  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    const chromium = (await import("@sparticuz/chromium-min")).default
-    return await chromium.executablePath(
-      process.env.CHROMIUM_PACK_URL || "https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.tar",
-    )
-  }
-  return undefined
+  const { resolveChromiumExecutable } = await import("@/lib/remotion/chromium-executable")
+  return resolveChromiumExecutable()
 }

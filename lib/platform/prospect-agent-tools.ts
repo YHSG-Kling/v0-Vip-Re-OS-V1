@@ -304,20 +304,28 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
 
     // ── Lane 77B — the demo the live agent IS ──────────────────────────────────
     show_product_demo: tool({
-      description: "Walk the prospect through what the product does for one topic (overview, reception_isa, live_agent, video_marketing, deals_portal, recruiting_ops), grounded in the real capability catalogue and the live plans. Returns the beats to say in your own words and, on a visual surface with a sample clip configured, a clipToken to append verbatim so the clip plays. Free — never renders anything.",
+      description: "Walk the prospect through what the product does for one topic (overview, reception_isa, live_agent, video_marketing, deals_portal, recruiting_ops), grounded in the real capability catalogue and the live plans. Returns the beats to say in your own words and, on a visual surface, a clipToken (sample clip) and/or a stillToken (a screenshot of that part of the OS on the demo tenant) to append verbatim so the widget shows them. Free — never renders anything.",
       inputSchema: z.object({
         topic: z.enum(["overview", "reception_isa", "live_agent", "video_marketing", "deals_portal", "recruiting_ops"]).describe("The closest topic to what they asked about"),
       }),
       execute: async ({ topic }: { topic: string }) => {
-        const { describeProductDemo } = await import("@/lib/platform/product-demo")
+        const { describeProductDemo, isProductDemoTopic } = await import("@/lib/platform/product-demo")
         const { CAPABILITY_CATALOGUE } = await import("@/lib/ai-isa/capability-catalogue")
         const { loadPublicTiers } = await import("@/lib/platform/public-tiers")
-        const tiers = await loadPublicTiers(svc).catch(() => [])
+        // Lane 78B — the demo STILL: a pre-captured screenshot of the demo
+        // tenant's own surface for this topic (OS surfaces only — the lookup
+        // filters screenshot_kind='os_surface'; never a third-party page).
+        const { demoStillForTopic } = await import("@/lib/assets/screenshot-capture")
+        const [tiers, stillUrl] = await Promise.all([
+          loadPublicTiers(svc).catch(() => []),
+          isProductDemoTopic(topic) ? demoStillForTopic(svc, topic).catch(() => null) : Promise.resolve(null),
+        ])
         const featured = tiers.find((t) => t.featured) ?? tiers[0]
         const demo = describeProductDemo(topic, {
           brandName: ctx.brand.name,
           tierBullets: featured?.bullets ?? [],
           clipUrl: ctx.brand.liveAgent.demoClipUrl,
+          stillUrl,
           surfaceCanShowClip: ctx.source !== "phone:reception",
         }, CAPABILITY_CATALOGUE)
         return { success: true, ...demo }
