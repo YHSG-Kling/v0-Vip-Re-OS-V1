@@ -560,6 +560,8 @@ console.log("\n═══ C8 · the platform key moves no tenant money — DERIVE
       why: "Provisions a tenant's subscription customer on the platform's account. Correct account, legacy source." },
     "app/actions/billing.ts": { kind: "platform_payee",
       why: "tenant_saas_subscription — a brokerage's checkout for its own plan. The platform is the merchant." },
+    "lib/billing/subscription-activation.ts": { kind: "platform_payee",
+      why: "createActivationCheckout (wave 78A, owner: 'not all converts … are going to enroll in the trial. there is a setup fee') — a tenant's PAID activation checkout (plan + setup fee) on the platform's account; the same tenant_saas_subscription money path app/actions/billing.ts uses, reached from the prospect tool, the growth board and /get-started." },
     "lib/billing/stripe-portal.ts": { kind: "platform_payee",
       why: "The billing portal a tenant manages its PLATFORM subscription in — the portal belongs to the account that holds the customer." },
     "lib/billing/stripe-subscription-ops.ts": { kind: "platform_payee",
