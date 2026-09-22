@@ -144,10 +144,10 @@ mkdirSync(join(tmp, "chromium-1194", "chrome-linux"), { recursive: true }); writ
 mkdirSync(join(tmp, "ffmpeg-1011"), { recursive: true })
 check("findPlaywrightChromium picks the newest chromium-<build> binary and ignores ffmpeg", findPlaywrightChromium(tmp) === join(tmp, "chromium-1194", "chrome-linux", "chrome"))
 check("findPlaywrightChromium is null for a missing cache", findPlaywrightChromium(join(tmp, "nope")) === null && findPlaywrightChromium(undefined) === null)
-check("isServerlessChromiumHost reads VERCEL / AWS_LAMBDA_FUNCTION_NAME from the env it is given", isServerlessChromiumHost({ VERCEL: "1" } as NodeJS.ProcessEnv) && isServerlessChromiumHost({ AWS_LAMBDA_FUNCTION_NAME: "f" } as NodeJS.ProcessEnv) && !isServerlessChromiumHost({} as NodeJS.ProcessEnv))
-check("off-serverless without discovery → undefined (Remotion-managed browser, the routes' historical behaviour)", (await resolveChromiumExecutable({ env: {} as NodeJS.ProcessEnv })) === undefined)
-check("CHROMIUM_EXECUTABLE_PATH wins under discovery; else the Playwright cache", (await resolveChromiumExecutable({ localDiscovery: true, env: { CHROMIUM_EXECUTABLE_PATH: "/opt/x/chrome" } as NodeJS.ProcessEnv })) === "/opt/x/chrome"
-  && (await resolveChromiumExecutable({ localDiscovery: true, env: { PLAYWRIGHT_BROWSERS_PATH: tmp } as NodeJS.ProcessEnv })) === join(tmp, "chromium-1194", "chrome-linux", "chrome"))
+check("isServerlessChromiumHost reads VERCEL / AWS_LAMBDA_FUNCTION_NAME from the env it is given", isServerlessChromiumHost({ VERCEL: "1" } as unknown as NodeJS.ProcessEnv) && isServerlessChromiumHost({ AWS_LAMBDA_FUNCTION_NAME: "f" } as unknown as NodeJS.ProcessEnv) && !isServerlessChromiumHost({} as unknown as NodeJS.ProcessEnv))
+check("off-serverless without discovery → undefined (Remotion-managed browser, the routes' historical behaviour)", (await resolveChromiumExecutable({ env: {} as unknown as NodeJS.ProcessEnv })) === undefined)
+check("CHROMIUM_EXECUTABLE_PATH wins under discovery; else the Playwright cache", (await resolveChromiumExecutable({ localDiscovery: true, env: { CHROMIUM_EXECUTABLE_PATH: "/opt/x/chrome" } as unknown as NodeJS.ProcessEnv })) === "/opt/x/chrome"
+  && (await resolveChromiumExecutable({ localDiscovery: true, env: { PLAYWRIGHT_BROWSERS_PATH: tmp } as unknown as NodeJS.ProcessEnv })) === join(tmp, "chromium-1194", "chrome-linux", "chrome"))
 check("the pinned pack URL tracks the @sparticuz/chromium-min major in package.json", (() => {
   const pkg = JSON.parse(src("package.json")) as { dependencies: Record<string, string> }
   const major = /(\d+)/.exec(pkg.dependencies["@sparticuz/chromium-min"] ?? "")?.[1]
@@ -239,8 +239,8 @@ check("the seam's public_page row shape uses only live marketing_assets columns 
   const v = CHECK_VOCABULARIES.marketing_assets
   return Object.keys(row).every((k) => cols.has(k)) && v.approval_status.includes(row.approval_status as string) && v.visibility_scope.includes(row.visibility_scope as string) && v.asset_type.includes(row.asset_type as string)
 })())
-check("the hosted provider adapter is selectable by env and refuses unconfigured (never a silent no-op)", resolveScreenshotProvider({}).name === "puppeteer" && resolveScreenshotProvider({ SCREENSHOT_PROVIDER: "hosted" }).name === "hosted"
-  && await resolveScreenshotProvider({ SCREENSHOT_PROVIDER: "hosted" }).capture({ url: "https://x", viewport: { width: 1, height: 1 }, redactSelectors: [], userAgent: "u", timeoutMs: 1 }).then(() => false, (e: Error) => /not configured/.test(e.message)))
+check("the hosted provider adapter is selectable by env and refuses unconfigured (never a silent no-op)", resolveScreenshotProvider({} as unknown as NodeJS.ProcessEnv).name === "puppeteer" && resolveScreenshotProvider({ SCREENSHOT_PROVIDER: "hosted" } as unknown as NodeJS.ProcessEnv).name === "hosted"
+  && await resolveScreenshotProvider({ SCREENSHOT_PROVIDER: "hosted" } as unknown as NodeJS.ProcessEnv).capture({ url: "https://x", viewport: { width: 1, height: 1 }, redactSelectors: [], userAgent: "u", timeoutMs: 1 }).then(() => false, (e: Error) => /not configured/.test(e.message)))
 
 console.log("\n[6 · NO customer-facing tool imports the seam]")
 const customerFacingDirs = ["lib/ai-isa", "lib/voice", "lib/portal", "app/portal", "app/api/portal", "app/api/public", "app/api/widget", "lib/customer-portal"]
