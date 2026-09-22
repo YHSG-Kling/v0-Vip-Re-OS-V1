@@ -153,7 +153,10 @@ async function main() {
   // 'converted', both emails + the brokerage phone are matched, best-effort.
   const core = src("lib/kernel/tenant-creation.ts")
   check("the tenant-creation core stamps the conversion with the outcome DERIVED from the billing mode ('trial' for a trial, 'converted' for an active subscription)",
-    stampCallRe.test(core) && /outcome: input\.billing\.mode === "trial" \? "trial" : "converted"/.test(core))
+    // Wave 78A: a PAID activation is a 'trialing' row with trial_end = now until
+    // checkout.session.completed advances it, so only an ACTIVE subscription
+    // stamps 'converted' at creation; trial AND paid-pending stamp 'trial'.
+    stampCallRe.test(core) && /outcome: input\.billing\.mode === "active" \? "converted" : "trial"/.test(core))
   check("the core's stamp is best-effort (inside try/catch, after the tenant is committed)",
     /try \{[\s\S]{0,400}stampProspectConversion/.test(core))
   check("the core matches by the admin email, the brokerage email, the brokerage phone (the reception's caller-ID key) and any prospect ids the caller holds",
@@ -162,7 +165,9 @@ async function main() {
     /prospectIds: input\.prospect\?\.prospectIds \?\? \[\]/.test(core))
   const signup = src("app/actions/auth/signup-brokerage.ts")
   check("self-serve signup reaches the stamp through the core with billing mode 'trial' (a trial, not yet paying)",
-    /createTenantCore\(service, \{[\s\S]{0,800}billing: \{ mode: "trial"/.test(signup) && !stampCallRe.test(signup))
+    // Wave 78A: signup offers trial OR paid activation; the trial branch is
+    // still the self-serve default and both branches reach the core.
+    /createTenantCore\(service, \{/.test(signup) && /\{ mode: "trial" as const, trialDays: TRIAL_DAYS \}/.test(signup) && /\{ mode: "paid" as const/.test(signup) && !stampCallRe.test(signup))
   const sub = src("app/actions/admin/create-subscriber.ts")
   check("superadmin create-subscriber reaches the stamp through the core with billing mode 'active' (= 'converted') and passes brokerageEmail + brokeragePhone",
     /createTenantCore\(service, \{[\s\S]{0,800}billing: \{ mode: "active"/.test(sub) && /brokerageEmail: params\.brokerageEmail/.test(sub) && /brokeragePhone: params\.brokeragePhone/.test(sub) && !stampCallRe.test(sub))
