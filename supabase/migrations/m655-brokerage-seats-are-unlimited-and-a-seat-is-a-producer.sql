@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-22 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) — postcondition passed ──
 --
 -- m655 — BROKERAGE SEATS ARE UNLIMITED, AND A SEAT IS A PRODUCER.
 -- ─────────────────────────────────────────────────────────────────────────────
