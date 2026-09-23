@@ -184,6 +184,17 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
         const ten = toTenDigitsForScrub(input.phone)
         const [dncResult, tcpaResult]: [DncCheckLike, TcpaCheckLike] = ten
           ? await (async () => {
+              // THE ONE BATCHDATA GATE (wave 80 lane B): purpose "dnc" declared through
+              // lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess — never refused
+              // by a spend policy; a refusal (unknown purpose) reads as unverifiable below.
+              const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+              const access = await resolveBatchDataAccess({ brokerageId: input.brokerageId, purpose: "dnc" })
+              if (!access.allowed) {
+                return [
+                  { ok: false, dnc: null, unconfigured: false, error: access.reason },
+                  { ok: false, tcpaLitigator: null, unconfigured: false, error: access.reason },
+                ]
+              }
               const { checkDncStatus, checkTcpaStatus } = await import("@/lib/external/batchdata-mcp")
               return [await checkDncStatus(ten), await checkTcpaStatus(ten)]
             })()

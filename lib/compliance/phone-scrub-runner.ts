@@ -16,6 +16,11 @@ import "server-only"
 // One vocabulary (§6): the tool name and the tolerant-flag reader live in ONE place,
 // shared with the SEND-TIME scrub in lib/communication/tcpa-gate.ts.
 import { checkDncStatus, checkTcpaStatus } from "@/lib/external/batchdata-mcp"
+// THE ONE BATCHDATA GATE (wave 80 lane B): every BatchData reach declares its purpose
+// through lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess. "dnc" is never
+// refused by a spend policy (a compliance scrub blocked by a tool tier puts unscrubbed
+// numbers on the dialer); the provider-configured check stays in checkDncStatus.
+import { resolveBatchDataAccess } from "@/lib/ai-isa/property-lookup-rail"
 import {
   electScrubbedPhones, electionToColumnPatch, toTenDigits, dispositionOf,
   type ScrubCandidate, type PhoneElection, type PhoneDisposition,
@@ -43,6 +48,8 @@ export interface PhoneScrubResult {
 export async function scrubAndElectPhones(numbers: Array<string | null | undefined>): Promise<PhoneScrubResult> {
   const tens = numbers.map((n) => ({ raw: n, ten: toTenDigits(n) })).filter((x) => !!x.raw && !!x.ten) as Array<{ raw: string; ten: string }>
   if (tens.length === 0) return { deferred: false, election: null, scrubbed: 0, dispositions: [] }
+  const access = await resolveBatchDataAccess({ purpose: "dnc" })
+  if (!access.allowed) return { deferred: true, election: null, scrubbed: 0, dispositions: [] } // fail closed — defer, never fabricate
 
   const candidates: ScrubCandidate[] = []
   let scrubbed = 0

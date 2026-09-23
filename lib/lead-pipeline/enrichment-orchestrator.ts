@@ -889,7 +889,17 @@ export async function processEnrichmentQueue(
         // AFTER a successful person-match so a failed/no-match row (which retries or
         // terminates below) is never charged for a property lookup it may not need.
         // Best-effort: never overturns the person-enrichment result above.
-        if (isBatchDataOrigin(entity) && process.env.BATCHDATA_API_KEY) {
+        // THE ONE BATCHDATA GATE (wave 80 lane B): a billed per-tenant property pull is
+        // purpose "acquisition" — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess
+        // (tier ≠ off AND the platform-staff opt-in). Refused → this step is skipped with
+        // the reason logged; the person-enrichment result above stands.
+        const propertyAccess = isBatchDataOrigin(entity) && process.env.BATCHDATA_API_KEY
+          ? await (await import('@/lib/ai-isa/property-lookup-rail')).resolveBatchDataAccess({ brokerageId, purpose: 'acquisition' })
+          : null
+        if (propertyAccess && !propertyAccess.allowed) {
+          console.info('[enrichment-orchestrator] batchdata property-enrichment skipped:', propertyAccess.reason)
+        }
+        if (propertyAccess?.allowed) {
           try {
             const propertyAddress = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
             if (propertyAddress) {
@@ -937,7 +947,17 @@ export async function processEnrichmentQueue(
         // instead of always defaulting to "transient" — a BatchData token/provisioning
         // refusal here is the SAME config fault the top-level catch (~:1034) escalates.
         let batchDataFallbackErrorMessage: string | null = null
-        if (process.env.BATCHDATA_API_KEY && (entity.first_name || entity.address || entity.mailing_address)) {
+        // THE ONE BATCHDATA GATE (wave 80 lane B): purpose "skip_trace" through
+        // lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off — the
+        // platform-wide monthly cap; the tenant on-market opt-in does not apply to a skip
+        // trace). Refused → falls straight through to the Step 7 no-match handling below.
+        const skipTraceAccess = process.env.BATCHDATA_API_KEY && (entity.first_name || entity.address || entity.mailing_address)
+          ? await (await import('@/lib/ai-isa/property-lookup-rail')).resolveBatchDataAccess({ brokerageId, purpose: 'skip_trace' })
+          : null
+        if (skipTraceAccess && !skipTraceAccess.allowed) {
+          console.info('[enrichment-orchestrator] batchdata skip-trace fallback skipped:', skipTraceAccess.reason)
+        }
+        if (skipTraceAccess?.allowed) {
           try {
             const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
             const { matches, cost: btCost } = await skipTraceBatchDataV3Batch([{

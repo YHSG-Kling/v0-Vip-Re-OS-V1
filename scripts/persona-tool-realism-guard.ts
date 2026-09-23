@@ -198,7 +198,8 @@ type Rung = import("../lib/ai-isa/property-lookup-rail").PropertyLookupRung
 const facts = (source: Rung, extra: Partial<Facts> = {}): Facts => ({
   address: "123 Main St", city: "Austin", state: "TX", zip: "78701", beds: 3, baths: 2, sqft: 1800, yearBuilt: 1998, lotSize: null,
   propertyType: "single_family", listingStatus: null, listPrice: null, estimatedValue: 450000, taxAssessedValue: 390000,
-  mlsNumber: null, listingUrl: null, source, sourceNote: "fixture", ...extra,
+  // lat / lon / isEstimate: the listing_intake fields lane 80B merged onto the facts (enrichment-chain.ts → rail).
+  mlsNumber: null, listingUrl: null, lat: null, lon: null, isEstimate: false, source, sourceNote: "fixture", ...extra,
 })
 const calls: Rung[] = []
 const rungs = (hits: Partial<Record<Rung, boolean>>) => Object.fromEntries(PROPERTY_LOOKUP_RUNG_ORDER.map((r) => [r, async () => { calls.push(r); return hits[r] ? facts(r) : null }])) as Record<Rung, () => Promise<Facts | null>>

@@ -24,6 +24,7 @@ import {
   type BatchDataRecord,
 } from "@/lib/external/batchdata-client"
 import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+import { resolveBatchDataAccess } from "@/lib/ai-isa/property-lookup-rail"
 import { rankCandidatesWithBatchRank } from "@/lib/external/batchdata-batchrank"
 import { toInvestorFacingCandidates, type CandidateAudience } from "@/lib/buyer-search/investor-facing"
 
@@ -264,6 +265,14 @@ async function pullAndPersistBatchDataOffMarketCandidates(
 ): Promise<BatchDataOffMarketOutcome> {
   const out: BatchDataOffMarketOutcome = { persisted: 0, qualifiedNew: [] }
   if (!boxHasGeography(params.box)) return out
+  // THE ONE BATCHDATA GATE (wave 80 lane B): a billed per-tenant off-market pull is purpose
+  // "acquisition" — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off AND
+  // the platform-staff opt-in). Refused → no pull; the scraped-inventory match above stands.
+  const access = await resolveBatchDataAccess({ brokerageId: params.brokerageId, purpose: "acquisition" })
+  if (!access.allowed) {
+    console.info("[investor-offmarket-runner] batchdata off-market pull skipped:", access.reason)
+    return out
+  }
   const markets = await resolveTerritoryMarketsForBox(svc, params.brokerageId, params.box)
   if (markets.length === 0) return out
 

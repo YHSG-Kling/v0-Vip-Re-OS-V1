@@ -897,15 +897,17 @@ export async function enrichPropertyIntelligence(
     // anywhere in the repo. Its own header names its intended consumer as
     // "the lead pipeline['s] motivationScore" — lib/lead-pipeline/* is frozen
     // this wave, so it is wired HERE instead: a Street View image for the
-    // SAME address just enriched (lib/property/enrichment-chain.ts, not
-    // frozen) is a public, non-personal image of the property itself — no
+    // SAME address just enriched (lib/property/street-view.ts — the helper's
+    // home since wave 80 lane B deleted enrichment-chain.ts; the ladder
+    // itself lives in lib/ai-isa/property-lookup-rail.ts) is a public,
+    // non-personal image of the property itself — no
     // named-individual profiling, unlike scrapeExternalBehavior/
     // scrapeSocialSignalsWithZenRows above, which stay unwired for that
     // reason. A failed vision call degrades to no vision_* columns rather
     // than failing the whole enrichment (BatchData data is still useful with
     // no photo signal).
     try {
-      const { getStreetViewImageUrl } = await import("@/lib/property/enrichment-chain")
+      const { getStreetViewImageUrl } = await import("@/lib/property/street-view")
       const streetView = getStreetViewImageUrl({ address: `${propertyData.address}, ${propertyData.city}, ${propertyData.state}` })
       const imageUrl = streetView?.url ?? null
       if (imageUrl) {

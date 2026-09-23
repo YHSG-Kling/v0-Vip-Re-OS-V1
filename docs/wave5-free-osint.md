@@ -132,9 +132,9 @@ Two further honesty fixes in `osint-neighborhood.ts`:
   row with no shared resolver, so `createCachedGeocoder`'s per-batch spacing did
   not cover it. Getting the platform banned would take the whole free lane down.
 
-Still outstanding (recorded, not done — outside this agent's file boundary): a
-THIRD inline Nominatim copy lives in the `server-only`
-`lib/property/enrichment-chain.ts`. Survivor is the same `geocodeOne`.
+Resolved (wave 80 lane B): the THIRD inline Nominatim copy went with
+`lib/property/enrichment-chain.ts` itself — its listing-intake ladder merged onto
+`lib/ai-isa/property-lookup-rail.ts`, which geocodes through the same `geocodeOne`.
 
 ### 4. Orchestrator wiring (`lib/lead-pipeline/enrichment-orchestrator.ts`)
 
@@ -196,5 +196,6 @@ the parse layer is covered by the pre-existing pure `parseNominatimRow` tests.
 - [x] $0 pricing row + PeopleData key fix
 - [x] Posture registry unchanged / no decommissioned provider added
 - [x] Proof wired into the guard chain
-- [ ] Fold the third inline Nominatim copy out of `lib/property/enrichment-chain.ts`
-      (survivor `lib/external/nominatim-geocode.ts:geocodeOne`) — other agent's file
+- [x] Fold the third inline Nominatim copy out of `lib/property/enrichment-chain.ts`
+      (survivor `lib/external/nominatim-geocode.ts:geocodeOne`) — done in wave 80 lane B
+      by deleting the file (ladder → `lib/ai-isa/property-lookup-rail.ts`)

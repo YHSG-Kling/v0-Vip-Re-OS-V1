@@ -111,9 +111,6 @@
     "lib/listing-presentation/generate-ai-presentation.ts": [
       "shim:generateObject"
     ],
-    "lib/property/enrichment-chain.ts": [
-      "shim:generateObject"
-    ],
     "services/aiMappingService.ts": [
       "raw:generateText"
     ]

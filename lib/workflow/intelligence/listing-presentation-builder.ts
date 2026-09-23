@@ -128,9 +128,12 @@ export interface ListingPresentationResult {
   slideDeck:      SlideDeckSlide[]
   packetDocumentId: string | null
   // ── 3 appointment-prep additions ─────────────────────────────────────
-  /** Real property data pulled from OSINT/BatchData (or AI estimate when both miss). */
+  /** Real property facts from the ONE property rail (lib/ai-isa/property-lookup-rail.ts,
+   *  purpose listing_intake — cache → tenant IDX → RentCast → public records; never
+   *  BatchData), or its labelled AI estimate when every rung misses. `source` is the
+   *  rail's own vocabulary (§6) — the old "osint" spelling is gone with enrichment-chain.ts. */
   propertyEnrichment?: {
-    source:        "osint" | "batchdata" | "ai_estimate"
+    source:        import("@/lib/ai-isa/property-lookup-rail").PropertyLookupSource
     isEstimate:    boolean
     sourceNote:    string
     beds?:         number | null
@@ -313,8 +316,14 @@ export async function buildListingPresentation(
   try {
     const svc = createServiceClient()
 
-    // 0a. APPOINTMENT-PREP ADDITION: property enrichment chain.
-    //     OSINT (free) → BatchData (paid) → AI estimate (last resort).
+    // 0a. APPOINTMENT-PREP ADDITION: property facts through THE ONE property
+    //     rail (lib/ai-isa/property-lookup-rail.ts) with purpose "listing_intake":
+    //     own DB → tenant IDX → RentCast → public records, NEVER BatchData; the
+    //     free geocode fills lat/lon; a facts-only AI estimate (flagged
+    //     isEstimate) is the last resort. Replaces the deleted
+    //     lib/property/enrichment-chain.ts ladder (wave 80 lane B — survivor
+    //     named in the rail's header). Tenant from the caller's session context
+    //     (input.brokerageId), audience "staff" (the agent's own prep deck).
     //     Best-effort: if every source misses, we still proceed using
     //     whatever the agent passed in (bedrooms/bathrooms/sqft/yearBuilt).
     //     This does NOT replace manual entry at MLS go-live — that path
@@ -323,23 +332,32 @@ export async function buildListingPresentation(
     let lat: number | null = null
     let lon: number | null = null
     try {
-      const { enrichPropertyChain } = await import("@/lib/property/enrichment-chain")
-      const enriched = await enrichPropertyChain(input.propertyAddress)
-      propertyEnrichment = {
-        source:        enriched.source,
-        isEstimate:    enriched.isEstimate,
-        sourceNote:    enriched.sourceNote,
-        beds:          enriched.beds          ?? input.bedrooms  ?? null,
-        baths:         enriched.baths         ?? input.bathrooms ?? null,
-        sqft:          enriched.sqft          ?? input.sqft      ?? null,
-        yearBuilt:     enriched.yearBuilt     ?? input.yearBuilt ?? null,
-        lotSize:       enriched.lotSize       ?? null,
-        propertyType:  enriched.propertyType  ?? null,
-        lat:           enriched.lat ?? null,
-        lon:           enriched.lon ?? null,
+      const { lookupPropertyForConversation, splitOneLineAddress } = await import("@/lib/ai-isa/property-lookup-rail")
+      const r = await lookupPropertyForConversation({
+        brokerageId: input.brokerageId,
+        purpose: "listing_intake",
+        audience: "staff",
+        address: splitOneLineAddress(input.propertyAddress),
+        userId: input.agentUserId ?? null,
+      })
+      if (r.found && r.facts) {
+        const enriched = r.facts
+        propertyEnrichment = {
+          source:        enriched.source,
+          isEstimate:    enriched.isEstimate,
+          sourceNote:    enriched.sourceNote,
+          beds:          enriched.beds          ?? input.bedrooms  ?? null,
+          baths:         enriched.baths         ?? input.bathrooms ?? null,
+          sqft:          enriched.sqft          ?? input.sqft      ?? null,
+          yearBuilt:     enriched.yearBuilt     ?? input.yearBuilt ?? null,
+          lotSize:       enriched.lotSize       ?? null,
+          propertyType:  enriched.propertyType  ?? null,
+          lat:           enriched.lat ?? null,
+          lon:           enriched.lon ?? null,
+        }
+        lat = enriched.lat ?? null
+        lon = enriched.lon ?? null
       }
-      lat = enriched.lat ?? null
-      lon = enriched.lon ?? null
     } catch { /* enrichment is best-effort */ }
 
     // 0b. APPOINTMENT-PREP ADDITION: cover photo via Google Street View.
@@ -347,7 +365,7 @@ export async function buildListingPresentation(
     let coverPhotoUrl: string | null = null
     try {
       const { getStreetViewImageUrl, getStaticMapImageUrl } =
-        await import("@/lib/property/enrichment-chain")
+        await import("@/lib/property/street-view")
       const street = getStreetViewImageUrl({
         address: input.propertyAddress,
         lat:     lat ?? undefined,

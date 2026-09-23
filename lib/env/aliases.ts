@@ -69,7 +69,7 @@ export function apifyToken(): string | null {
 /**
  * The BROWSER Google Maps key (Maps JavaScript API, Static Maps from the
  * client). Server-side callers that hold a private GOOGLE_MAPS_API_KEY should
- * prefer it and fall back to this — see lib/property/enrichment-chain.ts.
+ * prefer it and fall back to this — see lib/property/street-view.ts.
  */
 export function googleMapsBrowserKey(): string | null {
   return pick("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY", process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY, "NEXT_PUBLIC_GOOGLE_MAPS_KEY", process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY)

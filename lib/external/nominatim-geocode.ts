@@ -2,7 +2,7 @@
 //
 // Canonical FREE geocoder — address → { lat, lng } via OpenStreetMap Nominatim,
 // routed through the connector-gateway (the one egress path to outside services), exactly
-// like lib/external/osint-neighborhood.ts and lib/property/enrichment-chain.ts already do.
+// like lib/external/osint-neighborhood.ts already does.
 // No API key, no cost. Returns null on any failure (never throws, never fabricates).
 //
 // Nominatim usage policy: max ~1 request/second and a valid User-Agent. Callers that
@@ -12,9 +12,9 @@
 //
 // This is the single shared helper so we stop re-inlining the same Nominatim call.
 // MERGED (wave 5): osint-neighborhood.ts's private `geocodeAddress` copy is GONE — that
-// module now calls geocodeOne here. The remaining inline copy lives in the `server-only`
-// lib/property/enrichment-chain.ts, which cannot be imported from a plain-tsx guard path;
-// folding it in is the next step, tracked in docs/wave5-free-osint.md.
+// module now calls geocodeOne here. FOLDED (wave 80 lane B): the third inline copy in
+// lib/property/enrichment-chain.ts went with that file — its listing-intake path now
+// lives in lib/ai-isa/property-lookup-rail.ts and geocodes through geocodeOne here.
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { gatewayProbe, notAttemptedProbe, unreachableProbe, type FreeProbe } from "./free-probe"

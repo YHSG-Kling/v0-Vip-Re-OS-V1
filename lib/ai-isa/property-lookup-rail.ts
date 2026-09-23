@@ -92,6 +92,56 @@
  *   lookup-tools.ts (the two persona tools). The DNC/TCPA/phone tools stay
  *   in batchdata-isa-tools.ts under the `dnc` purpose (sphere, outbound-
  *   eligible only).
+ *   lib/property/enrichment-chain.ts (DELETED, wave 80 lane B, owner verbatim
+ *   "resolve enrichment duplicate for listing intake") — its OSINT → BatchData
+ *   → ai_estimate ladder was a SECOND spelling of rungs 4/5 with its own
+ *   source vocabulary ("osint" | "batchdata" | "ai_estimate"), an inline
+ *   Nominatim copy, an unbooked model call (a `shim:generateObject` row in
+ *   scripts/ai-spend-booked-baseline.json) and a BatchData reach for a
+ *   listing-intake purpose. What it did that this rail lacked is merged
+ *   BELOW as the `listing_intake` path: (a) the free geocode — through the
+ *   canonical lib/external/nominatim-geocode.ts::geocodeOne, never a third
+ *   inline copy — filling `lat`/`lon` on the facts; (b) the AI ESTIMATE
+ *   fallback when every rung misses — FACTS ONLY (beds/baths/sqft/yearBuilt/
+ *   lotSize/propertyType), flagged `isEstimate: true`, source "ai_estimate",
+ *   booked to ai_tool_usage by generateObjectRouted with the tenant; never
+ *   a value/rent/walk score (the old chain fabricated all three — §5, the
+ *   "GPT-fabrication" its own header disowned). Its Zillow-page Zenrows
+ *   scrape (a private-field reach into OSINTClient, regex over markup) was
+ *   NOT carried: the facts it fished for are rung 4's job (public records),
+ *   and scraping is frozen. Its Street View / static-map helpers were not a
+ *   ladder and moved verbatim to lib/property/street-view.ts. Callers
+ *   repointed: lib/workflow/intelligence/listing-presentation-builder.ts
+ *   (purpose "listing_intake", audience "staff").
+ *
+ * ── ONE GATE FOR EVERY BATCHDATA REACH (wave 80 lane B) ─────────────────────
+ * The facts rung above is one BatchData shape (lookup_property). The platform's
+ * acquisition lanes reach BatchData in OTHER shapes — a skip trace returns
+ * phones, a DNC check returns a flag, an off-market pull returns a list — so
+ * they cannot ride `lookupPropertyForConversation`. They ride the SAME purpose
+ * gate instead: `resolveBatchDataAccess({ brokerageId, purpose })` reads the
+ * same two policy facts (readProductionPolicy) and applies the carve-out per
+ * purpose. Every production BatchData caller that is not the facts rung calls
+ * it first (lib/lead-pipeline/enrichment-orchestrator.ts, lib/buyer-search/
+ * investor-offmarket-runner.ts, lib/compliance/phone-scrub-runner.ts,
+ * lib/communication/tcpa-gate.ts) — scripts/enrichment-one-rail-guard.ts holds
+ * that list against the stripped source. Per purpose:
+ *   acquisition — tier ≠ off AND the platform-staff opt-in (79B's rule for a
+ *                 billed per-tenant pull, unchanged). A tenant nobody opted in
+ *                 gets NO billed off-market pull and NO property-dataset
+ *                 enrichment; scraped inventory still matches.
+ *   skip_trace  — tier ≠ off. The tier's monthly cap already sums EVERY
+ *                 vendor_usage_tracking row for batchdata (persona-tool-
+ *                 policy.ts::readPlatformBatchDataMonthlySpendCents), so it is
+ *                 the platform-wide kill switch; the opt-in is by name about
+ *                 on-market listing pulls, and the orchestrator keeps its own
+ *                 vendor budget gate. A tenant-less skip trace is refused (§4).
+ *   dnc         — never refused by a SPEND policy: a compliance scrub blocked
+ *                 by a tool tier puts unscrubbed numbers on the dialer. The
+ *                 provider-configured / balance check stays in the MCP wrapper
+ *                 (checkDncStatus → unconfigured → the runner DEFERS). The gate
+ *                 still declares the purpose, so the reach is auditable.
+ *   conversation / listing_intake — refused, always.
  */
 
 import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
@@ -115,6 +165,11 @@ export const BATCHDATA_ELIGIBLE_PURPOSES: ReadonlySet<PropertyLookupPurpose> = n
 export type PropertyLookupAudience = "customer" | "staff"
 
 export type PropertyLookupRung = "cache" | "tenant_idx" | "rentcast" | "public_records" | "batchdata"
+
+/** THE ONE SOURCE VOCABULARY (§6) for "where did these facts come from": every
+ *  rung, plus the listing-intake AI estimate — which is not a rung (it looks
+ *  nothing up) and never runs for any other purpose. */
+export type PropertyLookupSource = PropertyLookupRung | "ai_estimate"
 
 /** Cheapest first. The rail walks this order and stops at the first answer. */
 export const PROPERTY_LOOKUP_RUNG_ORDER: readonly PropertyLookupRung[] = [
@@ -159,7 +214,12 @@ export interface PropertyLookupFacts {
   taxAssessedValue: number | null
   mlsNumber: string | null
   listingUrl: string | null
-  source: PropertyLookupRung
+  /** Geocode (free, Nominatim survivor) — filled on the listing_intake path; null elsewhere. */
+  lat: number | null
+  lon: number | null
+  /** true ONLY for the listing-intake AI estimate — the UI shows "verify before publishing". */
+  isEstimate: boolean
+  source: PropertyLookupSource
   sourceNote: string
 }
 
@@ -219,17 +279,78 @@ export function formatFullAddress(a: PropertyLookupAddress): string {
   return [a.street, a.city, a.state, a.zip].map((v) => (v ?? "").trim()).filter(Boolean).join(", ")
 }
 
+/** PURE — the inverse for callers that hold ONE line ("123 Main St, Austin, TX 78701"):
+ *  street is everything before the first comma; a trailing "ST 12345" splits into
+ *  state + zip; the middle is the city. Anything unparsed stays on the street line
+ *  so the cache rung's ilike still matches. */
+export function splitOneLineAddress(line: string): PropertyLookupAddress {
+  const parts = line.split(",").map((p) => p.trim()).filter(Boolean)
+  if (parts.length === 0) return { street: line.trim() }
+  const street = parts[0]
+  let city: string | null = null, state: string | null = null, zip: string | null = null
+  const tail = parts.slice(1)
+  const last = tail[tail.length - 1] ?? ""
+  const m = last.match(/^([A-Za-z]{2})(?:\s+(\d{5}(?:-\d{4})?))?$/)
+  if (m) { state = m[1].toUpperCase(); zip = m[2] ?? null; tail.pop() }
+  else { const z = last.match(/^(\d{5}(?:-\d{4})?)$/); if (z) { zip = z[1]; tail.pop() } }
+  if (tail.length > 0) city = tail.join(", ")
+  return { street, city, state, zip }
+}
+
 const num = (v: unknown): number | null => {
   const n = typeof v === "string" ? Number(v.replace(/[$,]/g, "")) : Number(v)
   return Number.isFinite(n) && n > 0 ? n : null
 }
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
 
-function emptyFacts(source: PropertyLookupRung, sourceNote: string): PropertyLookupFacts {
+function emptyFacts(source: PropertyLookupSource, sourceNote: string): PropertyLookupFacts {
   return {
     address: null, city: null, state: null, zip: null, beds: null, baths: null, sqft: null, yearBuilt: null,
     lotSize: null, propertyType: null, listingStatus: null, listPrice: null, estimatedValue: null,
-    taxAssessedValue: null, mlsNumber: null, listingUrl: null, source, sourceNote,
+    taxAssessedValue: null, mlsNumber: null, listingUrl: null, lat: null, lon: null, isEstimate: false, source, sourceNote,
+  }
+}
+
+// ─── LISTING-INTAKE EXTRAS (merged from lib/property/enrichment-chain.ts) ───
+
+/** The fields the listing-intake AI estimate may fill. FACTS ONLY — no value,
+ *  no rent, no walk score: a model-guessed figure is not a home value (§5). */
+export const AI_ESTIMATE_FACT_FIELDS = ["beds", "baths", "sqft", "yearBuilt", "lotSize", "propertyType"] as const
+export type AiEstimateFacts = Pick<PropertyLookupFacts, (typeof AI_ESTIMATE_FACT_FIELDS)[number]>
+
+export type PropertyGeocodeFn = (address: PropertyLookupAddress) => Promise<{ lat: number; lon: number } | null>
+export type PropertyEstimateFn = (req: PropertyLookupRequest) => Promise<AiEstimateFacts | null>
+
+/** PURE — only an agent entering their own listing gets a labelled guess. */
+export function isAiEstimateAllowed(purpose: PropertyLookupPurpose, audience: PropertyLookupAudience): boolean {
+  return purpose === "listing_intake" && audience === "staff"
+}
+
+/** I/O — the canonical free geocoder (lib/external/nominatim-geocode.ts::geocodeOne). */
+async function productionGeocode(address: PropertyLookupAddress): Promise<{ lat: number; lon: number } | null> {
+  const { geocodeOne } = await import("@/lib/external/nominatim-geocode")
+  const p = await geocodeOne({ address: address.street, city: address.city, state: address.state, zip: address.zip })
+  return p ? { lat: p.lat, lon: p.lng } : null
+}
+
+/** I/O — the last-resort estimate, booked to ai_tool_usage under the tenant
+ *  by generateObjectRouted (the old chain's `generateObject` shim booked nothing). */
+async function productionEstimate(req: PropertyLookupRequest): Promise<AiEstimateFacts | null> {
+  const [{ generateObjectRouted }, { z }] = await Promise.all([import("@/lib/ai/models"), import("zod")])
+  const { object } = await generateObjectRouted({
+    feature: "listing_intake_property_estimate",
+    brokerageId: req.brokerageId,
+    userId: req.userId ?? null,
+    schema: z.object({
+      beds: z.number().nullable(), baths: z.number().nullable(), sqft: z.number().nullable(),
+      yearBuilt: z.number().nullable(), lotSize: z.number().nullable(),
+      propertyType: z.enum(["single_family", "condo", "townhouse", "multi_family", "land"]).nullable(),
+    }),
+    prompt: `You are a real estate data analyst. No public record was found for: ${formatFullAddress(req.address)}. Estimate ONLY the physical facts of a typical home at that address (beds, baths, square feet, year built, lot size in acres, property type). Return null for anything you cannot reasonably estimate. Do NOT estimate a value, a rent or a score.`,
+  })
+  return {
+    beds: num(object.beds), baths: num(object.baths), sqft: num(object.sqft), yearBuilt: num(object.yearBuilt),
+    lotSize: num(object.lotSize), propertyType: str(object.propertyType),
   }
 }
 
@@ -398,6 +519,55 @@ async function readProductionPolicy(brokerageId: string): Promise<PropertyLookup
 export interface PropertyLookupDeps {
   rungs?: Partial<PropertyLookupRungs>
   policy?: PropertyLookupPolicy
+  /** listing_intake only — injectable so the proof runs with zero network. */
+  geocode?: PropertyGeocodeFn
+  estimate?: PropertyEstimateFn
+}
+
+// ─── THE ONE BATCHDATA GATE (non-facts shapes: skip trace, DNC, list pulls) ──
+
+export interface BatchDataAccess {
+  allowed: boolean
+  purpose: PropertyLookupPurpose
+  reason: string
+}
+
+/** PURE — the per-purpose carve-out over the two policy facts (header: ONE GATE). */
+export function decideBatchDataAccess(
+  req: { brokerageId?: string | null; purpose: PropertyLookupPurpose },
+  policy: PropertyLookupPolicy,
+): BatchDataAccess {
+  const { purpose } = req
+  if (!isPropertyLookupPurpose(purpose)) {
+    return { allowed: false, purpose, reason: `purpose "${String(purpose)}" is not one of ${PROPERTY_LOOKUP_PURPOSES.join("/")} — refused, fail closed` }
+  }
+  if (!BATCHDATA_ELIGIBLE_PURPOSES.has(purpose)) {
+    return { allowed: false, purpose, reason: `purpose "${purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC)` }
+  }
+  if (purpose === "dnc") return { allowed: true, purpose, reason: "DNC/TCPA compliance scrub — never refused by a spend policy; the MCP wrapper reports unconfigured" }
+  if (!req.brokerageId) return { allowed: false, purpose, reason: "no tenant on the request — a tenant-less billed BatchData reach is refused (§4)" }
+  if (policy.batchDataTier === "off") return { allowed: false, purpose, reason: "BatchData tier is off (configured off, or the platform monthly cap is spent)" }
+  if (purpose === "acquisition" && policy.batchDataOptedIn !== true) {
+    return { allowed: false, purpose, reason: "tenant not opted into billed BatchData pulls by platform staff (batchdata_on_market)" }
+  }
+  return { allowed: true, purpose, reason: purpose === "acquisition" ? "acquisition under tier + platform-staff opt-in" : "skip trace under tier (platform-wide cap)" }
+}
+
+/**
+ * I/O — THE gate every non-facts BatchData caller passes first. Reads the same
+ * policy the facts rung reads (FAIL CLOSED on an unreadable policy) and applies
+ * decideBatchDataAccess. `deps.policy` lets a proof inject the policy.
+ */
+export async function resolveBatchDataAccess(
+  req: { brokerageId?: string | null; purpose: PropertyLookupPurpose },
+  deps: { policy?: PropertyLookupPolicy } = {},
+): Promise<BatchDataAccess> {
+  if (req.purpose === "dnc" || !BATCHDATA_ELIGIBLE_PURPOSES.has(req.purpose)) {
+    // No policy read needed: DNC is never spend-gated and an ineligible purpose is refused outright.
+    return decideBatchDataAccess(req, deps.policy ?? { batchDataTier: "off", batchDataOptedIn: false })
+  }
+  const policy = deps.policy ?? (await readProductionPolicy(req.brokerageId ?? ""))
+  return decideBatchDataAccess(req, policy)
 }
 
 /**
@@ -406,6 +576,12 @@ export interface PropertyLookupDeps {
  * recorded as skipped and the ladder continues — a dark vendor never fails
  * the lookup, it just costs the next rung. The batchdata rung is consulted
  * ONLY when isBatchDataRungAllowed(purpose, policy) holds.
+ *
+ * listing_intake (staff audience) adds two things AFTER the ladder: the free
+ * geocode fills lat/lon on whatever was found, and when every rung missed a
+ * FACTS-ONLY AI estimate is returned flagged isEstimate (never for any other
+ * purpose — a customer conversation gets "not found" and the value-review
+ * offer, never a guess).
  */
 export async function lookupPropertyForConversation(
   req: PropertyLookupRequest,
@@ -445,11 +621,37 @@ export async function lookupPropertyForConversation(
       if (facts) {
         result.found = true
         result.facts = redactFactsForAudience(facts, req.audience)
-        return result
+        break
       }
     } catch (e) {
       result.skipped.push({ rung, reason: `rung failed: ${e instanceof Error ? e.message : String(e)}` })
     }
+  }
+
+  if (!isAiEstimateAllowed(req.purpose, req.audience)) return result
+
+  // ── listing_intake extras (merged from enrichment-chain.ts) ──
+  if (!result.facts) {
+    try {
+      const est = await (deps.estimate ?? productionEstimate)(req)
+      if (est && (est.beds != null || est.sqft != null || est.yearBuilt != null)) {
+        result.found = true
+        result.facts = {
+          ...emptyFacts("ai_estimate", "AI estimate — verify before publishing. No property record was found for this address."),
+          address: req.address.street, city: req.address.city ?? null, state: req.address.state ?? null, zip: req.address.zip ?? null,
+          beds: est.beds, baths: est.baths, sqft: est.sqft, yearBuilt: est.yearBuilt, lotSize: est.lotSize, propertyType: est.propertyType,
+          isEstimate: true,
+        }
+      }
+    } catch (e) {
+      result.skipped.push({ rung: "public_records", reason: `ai estimate failed: ${e instanceof Error ? e.message : String(e)}` })
+    }
+  }
+  if (result.facts && (result.facts.lat == null || result.facts.lon == null)) {
+    try {
+      const g = await (deps.geocode ?? productionGeocode)(req.address)
+      if (g) result.facts = { ...result.facts, lat: g.lat, lon: g.lon }
+    } catch { /* a failed free geocode costs nothing and changes nothing */ }
   }
   return result
 }
