@@ -312,15 +312,25 @@ export type VendorGeoVerdict =
     }
   | { ok: false; reason: VendorGeoRefusal; message: string }
 
+/** The one sentence this module refuses to let drift: what UNKNOWN means. Spoken
+ *  verbatim by every UNKNOWN refusal below, so the rule and the message cannot
+ *  disagree. */
+export const VENDOR_COVERAGE_FAIL_CLOSED_RULE =
+  "Unknown coverage is NOT bookable everywhere — it is not bookable at all, and the refusal names the missing declaration."
+
 const REFUSAL_TEXT: Record<VendorGeoRefusal, string> = {
   read_refused:
     "Could not read this vendor's service areas just now — refusing rather than assuming coverage. Please retry.",
+  // The three UNKNOWN refusals carry the one fail-closed sentence verbatim, so
+  // what a human reads on the refusal is the rule the module declares below
+  // (lane 80E: VENDOR_COVERAGE_FAIL_CLOSED_RULE was exported for the proof and
+  // spoken by no refusal).
   job_state_unknown:
-    "This job has no state on it, so no coverage or licence check can be made. Add the property state.",
+    `This job has no state on it, so no coverage or licence check can be made. Add the property state. ${VENDOR_COVERAGE_FAIL_CLOSED_RULE}`,
   vendor_coverage_unknown:
-    "This vendor has not declared where it works, so it cannot be booked. Ask the vendor to add a service area.",
+    `This vendor has not declared where it works, so it cannot be booked. Ask the vendor to add a service area. ${VENDOR_COVERAGE_FAIL_CLOSED_RULE}`,
   tenant_service_area_unknown:
-    "Your brokerage has not declared where it works, so no vendor can be matched to it. Add a service area in settings.",
+    `Your brokerage has not declared where it works, so no vendor can be matched to it. Add a service area in settings. ${VENDOR_COVERAGE_FAIL_CLOSED_RULE}`,
   no_overlap:
     "This vendor does not cover where this job is.",
   coverage_not_active:
@@ -502,6 +512,7 @@ export function vendorGeoVerdict(facts: VendorGeoFacts, now: number = Date.now()
  *
  * NONE OF THIS IS PRICED HERE. It needs the owner's sign-off on price shape.
  */
+/** @ownerRuled "NONE OF THIS IS PRICED HERE. It needs the owner's sign-off on price shape" (above) — the four implications are a ledger for that decision, held by scripts/vendor-service-area-simulator.ts so they cannot silently vanish before the owner rules; no runtime reader until a price shape exists. */
 export const VENDOR_COVERAGE_PRICING_IMPLICATIONS = [
   "bill_by_declared_reach_not_by_tenant_count",
   "tenant_revenue_rides_on_bookings_not_on_bench_rows",
@@ -509,6 +520,6 @@ export const VENDOR_COVERAGE_PRICING_IMPLICATIONS = [
   "per_state_licence_verification_is_a_real_cost",
 ] as const
 
-/** The one sentence this module refuses to let drift: what UNKNOWN means. */
-export const VENDOR_COVERAGE_FAIL_CLOSED_RULE =
-  "Unknown coverage is NOT bookable everywhere — it is not bookable at all, and the refusal names the missing declaration."
+// VENDOR_COVERAGE_FAIL_CLOSED_RULE moved ABOVE the refusal table it is now spoken
+// through (lane 80E) — a `const` referenced by REFUSAL_TEXT at module evaluation
+// must be declared before it or the import throws in the temporal dead zone.

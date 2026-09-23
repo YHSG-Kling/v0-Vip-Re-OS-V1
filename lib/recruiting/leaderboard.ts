@@ -21,8 +21,11 @@
 // referrals credited to their referring agent. Nothing here is synthesised.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+// LEADERBOARD_METRICS is deliberately NOT imported as a value any more (lane 80E):
+// POPULATED_METRICS below is this populator's OWN literal roster, typed against
+// the vocabulary with `satisfies`, so the vocabulary reaches this file as a TYPE
+// and the proof — not an alias — holds the two equal.
 import {
-  LEADERBOARD_METRICS,
   periodWindows,
   ALL_TIME_PERIOD,
   type LeaderboardMetric,
@@ -119,12 +122,22 @@ async function gatherMetrics(svc: Svc, brokerageId: string): Promise<MetricRows[
     .filter((r) => r.referring_agent_id && r.created_at)
     .map((r) => ({ agent_id: r.referring_agent_id as string, points: 1, created_at: r.created_at as string }))
 
-  return [
-    { metric: "points", rows: points },
-    { metric: "transactions", rows: transactions },
-    { metric: "referrals", rows: referrals },
-  ]
+  // THE POPULATED ROSTER IS THE ITERATION SOURCE (lane 80E). POPULATED_METRICS used
+  // to be `= LEADERBOARD_METRICS` — an alias of the vocabulary, so the proof's
+  // "every metric the vocabulary admits is one the populator writes" compared the
+  // vocabulary to itself and could never go red. It is now the literal list of
+  // metrics THIS function gathers, `satisfies` the vocabulary type, and the return
+  // is built by walking it — so a metric added to the vocabulary but not gathered
+  // here fails the proof, and a metric gathered here but not in the vocabulary
+  // fails tsc.
+  const byMetric: Record<(typeof POPULATED_METRICS)[number], LedgerRow[]> = { points, transactions, referrals }
+  return POPULATED_METRICS.map((metric) => ({ metric, rows: byMetric[metric] }))
 }
+
+/** Every metric this populator writes — so a reader never offers a filter nothing fills.
+ *  Declared as what gatherMetrics ACTUALLY gathers (see its return), never as an
+ *  alias of the vocabulary; scripts/leaderboard-simulator.ts holds the two equal. */
+export const POPULATED_METRICS = ["points", "transactions", "referrals"] as const satisfies readonly LeaderboardMetric[]
 
 /**
  * Snapshot a brokerage's boards into leaderboard_rankings: every scope × metric × period the
@@ -216,6 +229,16 @@ export async function runLeaderboardSnapshot(
 /** Autonomous: snapshot every brokerage's boards (rides the weekly recruit-outreach cron). */
 export async function runLeaderboardSnapshotAll(svc: Svc, now?: Date): Promise<{ brokerages: number; rows: number }> {
   const out = { brokerages: 0, rows: 0 }
+  // FAIL CLOSED on a vocabulary drift (§4): if a "closed" state this populator
+  // filters on is no longer in the live transactions.status vocabulary, every
+  // board it writes is wrong in the flattering direction (closed deals silently
+  // uncounted). Refuse the whole run and say why, rather than publish rankings
+  // nobody can trust (lane 80E: CLOSED_STATES_ARE_REAL was computed for the
+  // proof and consulted by nothing at runtime).
+  if (!CLOSED_STATES_ARE_REAL) {
+    console.error(`[leaderboard] REFUSED: a CLOSED_TRANSACTION_STATUSES value is not in TRANSACTION_STATUSES — regenerate the vocabulary cache before snapshotting (${CLOSED_TRANSACTION_STATUSES.join(", ")})`)
+    return out
+  }
   const { data: rows, error } = await svc.from("brokerages").select("id").limit(1000)
   if (error) {
     console.error(`[leaderboard] brokerage list read refused: ${error.message}`)
@@ -228,8 +251,10 @@ export async function runLeaderboardSnapshotAll(svc: Svc, now?: Date): Promise<{
   return out
 }
 
-/** Every metric this populator writes — so a reader never offers a filter nothing fills. */
-export const POPULATED_METRICS: readonly LeaderboardMetric[] = LEADERBOARD_METRICS
+// TOMBSTONE (§2, lane 80E, 2026-09-23): `export const POPULATED_METRICS: readonly
+// LeaderboardMetric[] = LEADERBOARD_METRICS` stood here — a tautology the
+// leaderboard proof "held" against LEADERBOARD_METRICS. Survivor: the literal
+// roster beside gatherMetrics above, which the populator now iterates.
 
 /** Guard for the closed-state list above: every value must still be in the live status vocabulary. */
 export const CLOSED_STATES_ARE_REAL = CLOSED_TRANSACTION_STATUSES.every((s) =>

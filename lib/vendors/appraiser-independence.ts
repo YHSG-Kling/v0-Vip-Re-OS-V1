@@ -285,5 +285,6 @@ export const APPRAISER_REACH_ROUTES: readonly AppraiserReachRoute[] = [
  *  set that must be gated or explicitly ruled on. Derived, never hand-counted, so
  *  adding a route to the inventory cannot leave the number behind (CLAUDE.md §2:
  *  assert the rule and derive the number). */
+/** @proofSeam a DERIVED inventory of the routes that must be gated — the gates themselves run per route at runtime; the derivation exists so scripts/appraiser-bench-simulator.ts can assert every member is gated or explicitly ruled on (assert the rule, derive the number — §2). */
 export const MODEL_AUTHORED_VENDOR_FACING_ROUTES: readonly AppraiserReachRoute[] =
   APPRAISER_REACH_ROUTES.filter((r) => r.reachesVendor && r.authorship === "model_authored")

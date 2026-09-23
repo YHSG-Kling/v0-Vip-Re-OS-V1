@@ -220,10 +220,19 @@ export const ADS_ELIGIBLE_PERSONAS: readonly CampaignPersona[] = Object.freeze(
   CAMPAIGN_PERSONAS.filter((p) => personaAdsEligibility(p, "inclusion").eligible),
 )
 
-/** Every canonical persona an ad audience MAY NOT be targeted on. Computed at load. */
+/** Every canonical persona an ad audience MAY NOT be targeted on. Computed at load.
+ *  READ by every inclusion refusal below (PERSONA_BASIS_HINT), so the operator
+ *  who named nothing, or the wrong shape, is told which personas are OFF the
+ *  table as well as which are on it (lane 80E: this was exported for the
+ *  simulator and spoken by no refusal). */
 export const ADS_INELIGIBLE_PERSONAS: readonly CampaignPersona[] = Object.freeze(
   CAMPAIGN_PERSONAS.filter((p) => !personaAdsEligibility(p, "inclusion").eligible),
 )
+
+/** The one hint every inclusion refusal ends with — one spelling (§6). */
+const PERSONA_BASIS_HINT =
+  `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.` +
+  (ADS_INELIGIBLE_PERSONAS.length > 0 ? ` Not targetable: ${ADS_INELIGIBLE_PERSONAS.join(", ")}.` : "")
 
 /**
  * Every canonical persona that may not be the basis of an audience which REMOVES
@@ -346,7 +355,7 @@ export function resolveAudiencePersonaBasis(
         `declares a persona basis (${PERSONA_SEGMENT_TYPE}) but names no persona. ` +
         `An audience whose basis cannot be resolved must refuse, not populate: with no persona ` +
         `filter this audience uploads every consented contact in the brokerage. ` +
-        `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+        PERSONA_BASIS_HINT,
       refusalKind: "unresolvable",
     }
   }
@@ -355,7 +364,7 @@ export function resolveAudiencePersonaBasis(
       ok: false,
       refusal:
         `persona basis must be an ARRAY of canonical personas, got ${typeof declared}. ` +
-        `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+        PERSONA_BASIS_HINT,
       refusalKind: "unresolvable",
     }
   }
@@ -365,7 +374,7 @@ export function resolveAudiencePersonaBasis(
       refusal:
         `persona basis is an EMPTY list. A basis of nothing is not a basis — it would ` +
         `populate with every consented contact in the brokerage. ` +
-        `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+        PERSONA_BASIS_HINT,
       refusalKind: "unresolvable",
     }
   }
@@ -377,7 +386,7 @@ export function resolveAudiencePersonaBasis(
         ok: false,
         refusal:
           `persona basis contains a non-string entry (${typeof raw}). ` +
-          `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+          PERSONA_BASIS_HINT,
         refusalKind: "unresolvable",
       }
     }

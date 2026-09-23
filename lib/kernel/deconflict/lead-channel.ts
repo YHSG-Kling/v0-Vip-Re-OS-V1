@@ -100,4 +100,5 @@ export const TOUCH_SOURCE_TABLES = [
   "lifetime_customer_touchpoints",
 ] as const satisfies readonly TouchSourceTable[]
 
+/** @proofSeam the engine reads channels per touch row through CHANNEL_BY_TABLE / leadLogChannel and is typed by DeconflictChannel; the roster exists so scripts/deconflict-channel-simulator.ts can sweep every channel × every touch table (TOUCH_SOURCE_TABLES) and prove each spelling round-trips. */
 export const DECONFLICT_CHANNELS = ["email", "sms", "phone", "mail"] as const

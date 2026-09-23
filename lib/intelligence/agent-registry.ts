@@ -126,6 +126,7 @@ export function getAgentDisplayName(agentType: AgentType): string {
  *   human          — a human real-estate agent (handoff target)
  *   none           — unassigned
  */
+/** @proofSeam the CHECK roster (m178, three tables) held by scripts/agent-governance-simulator.ts; runtime writers reach these values through the router's typed handoffs and never enumerate the roster. Unresolved: a boundary normalizer for an externally supplied agent_type (the session-status shape) does not exist — no external source writes one today. */
 export const VALID_AGENT_TYPES = [
   'isa_agent', 'tc_agent', 'coaching_agent', 'content_agent', 'router', 'human', 'none',
 ] as const

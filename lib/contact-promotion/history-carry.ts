@@ -158,6 +158,7 @@ export const MOVED_HISTORY_TABLES = [
  * 039's lineage view, joined on `l.contact_id = c.id` — i.e. it is the thing the
  * LINK half of this file exists to populate, not something that needs carrying.
  */
+/** @proofSeam the carry enumerates REPOINTED_HISTORY_TABLES explicitly and never a "dual-keyed relations" set, so nothing at runtime needs to know a view is not a table; this list exists so scripts/orphaned-child-census.ts and scripts/auto-conversion-history-carry-simulator.ts can exclude the lineage VIEW from the child census (a view holds no rows) with the relkind evidence recorded above. */
 export const DUAL_KEYED_NON_TABLES = ["contact_lead_history"] as const
 
 export const CONVERSION_CARRY_OMISSIONS: Record<string, string> = {

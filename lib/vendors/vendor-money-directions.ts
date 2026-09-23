@@ -170,6 +170,7 @@ export const VENDOR_MONEY_PATHS = [VENDOR_PACKAGE, VENDOR_JOB_BILL, VENDOR_PLATF
  * names. Derived, never retyped — adding a fourth path with isPlatformUse:true
  * puts it under the rule automatically.
  */
+/** @proofSeam the one-live-platform-use rule is enforced LIVE by m549's trigger on vendor_subscriptions and vendor_invoices, not by app code; this derivation exists so scripts/vendor-platform-use-double-charge-simulator.ts can assert the trigger covers every isPlatformUse path (a fourth path lands under the rule automatically). */
 export const PLATFORM_USE_MONEY_PATHS = VENDOR_MONEY_PATHS.filter((p) => p.isPlatformUse)
 
 /**
@@ -193,6 +194,7 @@ export function isVendorPackageDirection(payer: MoneyParty, payee: MoneyParty): 
  * NOT what the code does. Deleting the wrong answer makes it easy to arrive at
  * again; naming it makes the regression checkable.
  */
+/** @proofSeam by its own words above: the WRONG answer, named so scripts/vendor-package-direction-simulator.ts can assert the code does NOT do it; a runtime reader of a retired inversion would be the regression. */
 export const RETIRED_INVERTED_VENDOR_PACKAGE = {
   id: "brokerage_subscribes_to_vendor_plan",
   payer: "brokerage",

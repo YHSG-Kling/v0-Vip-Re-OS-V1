@@ -33,6 +33,7 @@ export const INTEGRATION_STATUS_CONNECTED: IntegrationStatus = "connected"
 /** Never configured, or deliberately disconnected. */
 export const INTEGRATION_STATUS_NOT_CONFIGURED: IntegrationStatus = "not_configured"
 /** Configured but failing — credentials rejected, provider unreachable. */
+/** @proofSeam no writer stamps brokerage_integrations.status = 'error' today (re-verified 2026-09-23: the CRM sync and connectors report failures through their own results, never onto the row), so there is no write to import this from; scripts/integration-status-simulator.ts holds the three-value vocabulary complete. Unresolved: a health writer that marks a failing integration on the row itself. */
 export const INTEGRATION_STATUS_ERROR: IntegrationStatus = "error"
 
 /** PURE — is this integration usable right now? */

@@ -61,9 +61,17 @@ function pureLayer() {
   check("a display label is never a stored value", !isCanonicalPeriodLabel("This Month", NOW))
   // §2: these two invariants were computed and exported by the populator but asserted by
   // NOBODY — a proof nobody runs. This guard is their reader (wired 2026-08-31, lane M4).
+  // Lane 80E: POPULATED_METRICS was `= LEADERBOARD_METRICS`, so this compared the
+  // vocabulary to itself. It is now the literal list gatherMetrics walks, and the
+  // source check below proves the populator's return is BUILT from it (a hand-typed
+  // return list is the regression this exists to catch).
   check("every metric the vocabulary admits is one the populator writes (POPULATED_METRICS)",
-    LEADERBOARD_METRICS.every((m) => POPULATED_METRICS.includes(m)) &&
+    LEADERBOARD_METRICS.every((m) => (POPULATED_METRICS as readonly string[]).includes(m)) &&
     POPULATED_METRICS.every((m) => (LEADERBOARD_METRICS as readonly string[]).includes(m)))
+  check("POPULATED_METRICS is the populator's own roster, not an alias of the vocabulary, and gatherMetrics iterates it",
+    /export const POPULATED_METRICS = \[/.test(src("lib/recruiting/leaderboard.ts")) &&
+    /POPULATED_METRICS\.map\(\(metric\)/.test(src("lib/recruiting/leaderboard.ts")) &&
+    !/POPULATED_METRICS[^\n]*= LEADERBOARD_METRICS\b/.test(src("lib/recruiting/leaderboard.ts").replace(/\/\/[^\n]*/g, "")))
   check("CLOSED_STATES_ARE_REAL — every closed state is in the live transactions.status vocabulary",
     CLOSED_STATES_ARE_REAL === true)
 

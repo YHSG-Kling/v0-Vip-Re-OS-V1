@@ -33,13 +33,17 @@ import {
   MARKETING_SEQUENCE_TYPES,
   NURTURE_SEQUENCE_TYPES,
 } from "@/lib/campaigns/sequence-constants"
-import { STEP_PALETTE, storableValue, type StepFieldSpec } from "@/lib/workflow/step-palette"
+import { COMMON_STEP_FIELDS, STEP_PALETTE, storableValue, type StepFieldSpec } from "@/lib/workflow/step-palette"
 
-/** Every per-channel column the step palette declares — the save allow-list.
- *  scripts/step-palette-consolidation-simulator.ts proves each is a real column
- *  on campaign_sequence_steps, so this can never name one that does not exist. */
+/** Every column the step palette declares — the COMMON fields every step
+ *  carries (step_name / delay_days / delay_hours) plus every per-channel field —
+ *  the save allow-list. scripts/step-palette-consolidation-simulator.ts proves
+ *  each is a real column on campaign_sequence_steps, so this can never name one
+ *  that does not exist. (lane 80E: COMMON_STEP_FIELDS was exported for the proof
+ *  and read by no writer, so a "" delay coerced differently from a "" per-channel
+ *  number — one storableValue rule now covers both.) */
 const PALETTE_FIELD_SPECS: ReadonlyMap<string, StepFieldSpec> = new Map(
-  STEP_PALETTE.flatMap((s) => s.fields).map((f) => [f.name, f]),
+  [...COMMON_STEP_FIELDS, ...STEP_PALETTE.flatMap((s) => s.fields)].map((f) => [f.name, f]),
 )
 const PALETTE_STEP_FIELDS: readonly string[] = Array.from(PALETTE_FIELD_SPECS.keys())
 

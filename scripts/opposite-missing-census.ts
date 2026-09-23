@@ -2359,6 +2359,52 @@ function namedInReachableDeclaration(src: string, name: string, ownLine: number,
 
 const typeOrphans: ExportRef[] = []
 const typeProofOnly: ExportRef[] = []
+/**
+ * ── THE TWO ARMS orphan-export-guard ALREADY HAS AND THIS CENSUS DID NOT (lane 80E, 2026-09-23) ──
+ *
+ * The "named only by a proof" bucket was measured at 120 in round 24 and the
+ * lane that enumerated it found that most members were LIVE CODE: a constant
+ * exported for a simulator and ALSO read by a function body in its own file
+ * (`HORIZON_MAX_DAYS` in clampHorizon, `BATCHDATA_QUICKLISTS` in the slug
+ * validator, `MEETING_EVENT_TYPES` in a `.in()`, the fourteen CMA adjustment
+ * rates in the adjuster…). orphan-export-guard files exactly that shape as
+ * category B — "internal helper of a REACHED module — LIVE CODE", checked
+ * BEFORE the proof corpus, because "the proof mention of a live helper is a test
+ * seam, not an orphan" (its 2026-09-08 note). This census only asked "does
+ * another EXPORTED declaration name it", so a value read by a private function
+ * was accused of existing for a proof. Accusing live code is the §2 failure
+ * mode ("fewer = it was accusing live code"), and the fix is the same rule,
+ * here: `selfUses` counts the identifier in the file's OWN masked source beyond
+ * its declaration; in an addressable module, >0 means live.
+ *
+ * The second arm is orphan-export-guard's category D: an `@proofSeam` /
+ * `@ownerRuled` doc tag directly above the declaration, WITH reason text, takes
+ * the export off the wire list and onto its own published count. Read from RAW
+ * source on purpose — the tag IS a comment. A tag with no reason does not count
+ * (a bare `@proofSeam` is an excuse, not an adjudication) — and the positive
+ * control for exactly that case went RED on this arm's first run: `\s+\S` after
+ * the tag happily matched the ` *` of a bare `@proofSeam *\/`, so "no reason"
+ * counted as a reason. The regex now refuses a comment closer as the first
+ * token. orphan-export-guard carried the same regex and the same blind spot;
+ * fixed there too (scripts/orphan-export-guard.ts adjudicationTag).
+ */
+const typeLiveSeam: ExportRef[] = []
+const typeAdjudicated: Array<ExportRef & { tag: string }> = []
+function selfUses(e: ExportRef): number {
+  const src = maskOf.get(e.file) ?? ""
+  const hits = src.match(new RegExp(`\\b${e.name.replace(/\$/g, "\\$")}\\b`, "g")) ?? []
+  return Math.max(0, hits.length - 1)
+}
+const rawSourceOf = new Map<string, string>()
+function typeAdjudicationTag(e: ExportRef): string | null {
+  let raw = rawSourceOf.get(e.file)
+  if (raw === undefined) { try { raw = readFileSync(join(root, e.file), "utf8") } catch { raw = "" } rawSourceOf.set(e.file, raw) }
+  const decl = raw.search(new RegExp(`^export\\s+(?:declare\\s+)?(?:const|let|var|type|interface|enum|class|abstract\\s+class|default\\s+class|const\\s+enum)\\s+${e.name.replace(/\$/g, "\\$")}\\b`, "m"))
+  if (decl < 0) return null
+  const above = raw.slice(Math.max(0, decl - 600), decl)
+  const m = above.match(/@(proofSeam|ownerRuled)\s+(?!\*\/)\S[^*\n]*(?:[\s\S]{0,300})?$/)
+  return m ? m[1] : null
+}
 let typeStructurallyReachable = 0
 let typeInUnaddressedModule = 0
 for (const e of typeExports) {
@@ -2371,8 +2417,35 @@ for (const e of typeExports) {
   const addressable = moduleIsAddressable(e.file)
   if (!addressable) typeInUnaddressedModule++
   if (addressable && namedInReachableDeclaration(maskOf.get(e.file) ?? "", e.name, e.line)) { typeStructurallyReachable++; continue }
-  if (refIn(e.name, e.file, proofIndex)) { typeProofOnly.push(e); continue }
+  if (refIn(e.name, e.file, proofIndex)) {
+    // ORDER, as in orphan-export-guard: LIVE before PROOF. A value the module's
+    // own code reads is live whether or not a simulator also imports it.
+    if (addressable && selfUses(e) > 0) { typeLiveSeam.push(e); continue }
+    const tag = typeAdjudicationTag(e)
+    if (tag) { typeAdjudicated.push({ ...e, tag }); continue }
+    typeProofOnly.push(e)
+    continue
+  }
   typeOrphans.push(e)
+}
+{
+  // Positive controls for both arms — a clean tree and a blind arm both read 0.
+  const live = `export const RATE = 3\nexport function apply(x: number) { return x * RATE }\n`
+  const liveRef = scanTypeExports("<control>", maskStrings(blankComments(live)))[0]
+  control("C3 arm B sees a constant its OWN file's code reads (selfUses > 0 — live, not proof-only)",
+    !!liveRef && (() => { maskOf.set("<control>", maskStrings(blankComments(live))); const n = selfUses(liveRef); maskOf.delete("<control>"); return n === 1 })())
+  const dead = `export const RATE = 3\n/** RATE is documented here and in a string: "RATE" */\nexport function apply(x: number) { return x }\n`
+  const deadRef = scanTypeExports("<control>", maskStrings(blankComments(dead)))[0]
+  control("C3 arm B does NOT count a comment or a string literal as a self-use (masked source)",
+    !!deadRef && (() => { maskOf.set("<control>", maskStrings(blankComments(dead))); const n = selfUses(deadRef); maskOf.delete("<control>"); return n === 0 })())
+  // Arm D on the real tree: the tag regex must accept a reasoned tag and refuse a bare one.
+  const tagged = `/** @proofSeam kept exported for scripts/x-simulator.ts, which asserts the roster */\nexport const ROSTER = ["a"]\n`
+  const bare = `/** @proofSeam */\nexport const ROSTER = ["a"]\n`
+  const tagOf = (raw: string) => { const above = raw.slice(0, raw.search(/^export/m)); const m = above.match(/@(proofSeam|ownerRuled)\s+(?!\*\/)\S[^*\n]*(?:[\s\S]{0,300})?$/); return m ? m[1] : null }
+  control("C3 arm D accepts a @proofSeam tag WITH reason text", tagOf(tagged) === "proofSeam")
+  control("C3 arm D refuses a bare @proofSeam with no reason (an excuse is not an adjudication)", tagOf(bare) === null)
+  control("C3 arm D read at least one real adjudicated export from the tree, and each names a reason",
+    typeAdjudicated.length > 0 && typeAdjudicated.every((t) => t.tag === "proofSeam" || t.tag === "ownerRuled"), `${typeAdjudicated.length} adjudicated`)
 }
 
 stage("C3 exports")
@@ -4120,6 +4193,7 @@ console.log(`               · ${stillInvisible.length} of ${KNOWN_OFFLINE_INVIS
 console.log(`               · ${unresolvedEmbeds} unresolvable embeds · ${unresolvedFilterTerms} unresolvable filter terms · ${rpcTouched.size} tables in .rpc() files (excluded entirely)`)
 console.log(`  C2 imports   · ${importBindings.length} bindings across ${importStatements} statements (+${sideEffectImports} side-effect imports, not bindings)`)
 console.log(`  C3 exports   · ${typeExports.length} non-function exports · ${typeProofOnly.length} named only by a proof (reported, not failed)`)
+console.log(`               · ${typeLiveSeam.length} named by a proof AND read by their own module's code — LIVE internal seams (orphan-export-guard's category B; before lane 80E these were accused as proof-only) · ${typeAdjudicated.length} adjudicated by a reasoned @proofSeam / @ownerRuled tag (category D; the tag is read from RAW source because it IS a comment)`)
 console.log(`               · ${generatedExemptExports} orphan export(s) in ${generatedCorpusFiles.length} GENERATED file(s) under ${GENERATED_EXPORT_EXEMPT_PREFIX} exempt BY RULING (codegen scaffolding — hand-pruning a generated file is §3-wrong; self-reporting, red when the prefix matches nothing)`)
 console.log(`               · ${frameworkConsumedExemptExports} orphan type export(s) exempt BY NAME as FRAMEWORK-CONSUMED (${[...FRAMEWORK_CONSUMED_TYPE_EXPORTS.keys()].join(", ")} — imported only by Next's generated .next/types/** build output; self-reporting, red when the key names no live orphan)`)
 console.log(`               · ${typeStructurallyReachable} reachable through another declaration of the same module, private props interfaces included (a type in an exported signature needs no named import)`)
@@ -4157,6 +4231,14 @@ if (LIST) {
   if (typeProofOnly.length > 0) {
     console.log(`\n── C3 · non-function export named ONLY by a proof — reported, not failed (${typeProofOnly.length}) ──`)
     for (const e of [...typeProofOnly].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)) console.log(`   ${e.file}:${e.line}  ${e.name}`)
+  }
+  if (typeAdjudicated.length > 0) {
+    console.log(`\n── C3 · non-function export adjudicated by tag — off the wire list, reason kept beside it (${typeAdjudicated.length}) ──`)
+    for (const e of [...typeAdjudicated].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)) console.log(`   ${e.file}:${e.line}  ${e.name} [${e.tag}]`)
+  }
+  if (typeLiveSeam.length > 0) {
+    console.log(`\n── C3 · non-function export named by a proof AND read by its own module — LIVE, listed so the un-export tranche is exact (${typeLiveSeam.length}) ──`)
+    for (const e of [...typeLiveSeam].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)) console.log(`   ${e.file}:${e.line}  ${e.name}`)
   }
   console.log("\nNOT AN ASSERTION — this is the wire list, not a verdict. Build the missing")
   console.log("half; delete only against a NAMED duplicate at file:line.")

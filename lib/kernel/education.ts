@@ -34,6 +34,7 @@ export type AgeSegment = "18-30" | "30-50" | "50-65" | "65+"
  * open-coded inline at lib/portal/resolve-education-context.ts, which is the
  * duplicate this replaces.
  */
+/** @proofSeam every runtime decision resolves ONE band through ageSegmentFromAge / ageSegmentFromAgeRange and the DELIVERY_MATRIX is keyed by the AgeSegment type; the roster exists so scripts/compliance-scope-simulator.ts can sweep every band (matrix total, no raw age or birthday read) — an enumeration nothing at runtime needs to walk. */
 export const AGE_SEGMENTS: readonly AgeSegment[] = ["18-30", "30-50", "50-65", "65+"]
 
 /** PURE. Whole-years age → band. null in, null out — an unknown age must stay

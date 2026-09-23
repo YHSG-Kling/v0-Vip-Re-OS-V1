@@ -42,6 +42,7 @@ export type CriticalTier = "solo_agent" | "team" | "brokerage" | "multi_location
 export type CriticalRole =
   | "brokerage_admin" | "agent" | "team_lead" | "tc" | "compliance" | "vendor"
 
+/** @proofSeam runtime resolves ONE role per session through normalizeCriticalRole (app/actions/critical-setup.ts, app/dashboard/onboarding/page.tsx) and iterates CRITICAL_CATEGORIES, never the role roster; the roster exists so scripts/onboarding-readiness-simulator.ts can sweep every principal and prove each has a readiness verdict per category. */
 export const CRITICAL_ROLES: readonly CriticalRole[] = [
   "brokerage_admin", "agent", "team_lead", "tc", "compliance", "vendor",
 ]

@@ -646,17 +646,24 @@ export const USER_TYPE_SEAT_TOOL_BUILDERS: Readonly<Record<string, VendorBuilder
 export function buildUserTypeSeatTools(ctx: UserTypeSeatContext): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const name of USER_TYPE_TOOL_POLICY[ctx.seat].seatToolNames) {
-    if (name in VENDOR_KEYED_BUILDERS) {
-      if (!ctx.vendorId) continue // fail closed — no vendor identity, no vendor tool
-      out[name] = VENDOR_KEYED_BUILDERS[name]({ ...ctx, vendorId: ctx.vendorId })
-    } else if (name in TITLE_KEYED_BUILDERS) {
-      if (ctx.titleMemberships.length === 0) continue // fail closed
-      out[name] = TITLE_KEYED_BUILDERS[name](ctx)
-    } else if (name in STAFF_SIDE_BUILDERS) {
-      out[name] = STAFF_SIDE_BUILDERS[name](ctx)
-    }
+    // THE REGISTRY IS THE LOOKUP (lane 80E: USER_TYPE_SEAT_TOOL_BUILDERS was
+    // exported for the proof while this loop consulted the three sub-maps
+    // directly — a second spelling of "which builders exist", §6). The sub-maps
+    // now decide only WHICH IDENTITY the builder needs; the registry decides
+    // whether one exists at all.
+    const builder = USER_TYPE_SEAT_TOOL_BUILDERS[name]
     // A policy name with no builder is deliberately NOT mounted — the proof
     // catches it as a phantom promise rather than a live call discovering it.
+    if (!builder) continue
+    if (name in VENDOR_KEYED_BUILDERS) {
+      if (!ctx.vendorId) continue // fail closed — no vendor identity, no vendor tool
+      out[name] = (builder as VendorBuilder)({ ...ctx, vendorId: ctx.vendorId })
+    } else if (name in TITLE_KEYED_BUILDERS) {
+      if (ctx.titleMemberships.length === 0) continue // fail closed
+      out[name] = (builder as SeatBuilder)(ctx)
+    } else {
+      out[name] = (builder as SeatBuilder)(ctx)
+    }
   }
   return out
 }

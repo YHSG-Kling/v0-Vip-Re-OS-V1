@@ -299,7 +299,8 @@ export const OUTBOUND_CALL_GATES: readonly OutboundCallGate[] = [
   { key: "vendor_budget",       consumerProtection: false, run: runVendorBudgetGate },
 ]
 
-/** The declared order, for readiness surfaces and proofs. */
+/** The declared order, for readiness surfaces and proofs.
+ *  @proofSeam runOutboundCallGates iterates OUTBOUND_CALL_GATES itself; this key list is what scripts/outbound-call-gates-simulator.ts, conversion-finality-simulator.ts and voice-lane-simulator.ts assert (consumer-protection gates before spend, short-circuit order). Unresolved: no readiness surface renders the order yet. */
 export const OUTBOUND_CALL_GATE_ORDER: readonly OutboundCallGateKey[] =
   OUTBOUND_CALL_GATES.map((g) => g.key)
 

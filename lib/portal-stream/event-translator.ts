@@ -549,6 +549,7 @@ export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
  * Portal kinds no KernelEvent carries (§1: "unresolved", not guessed). Reachable only
  * by a dotted direct insert, which nothing writes today.
  */
+/** @proofSeam the "unresolved" ledger of portal kinds no KernelEvent carries (currently EMPTY — every kind found a kernel moment); read by scripts/portal-stream-vocabulary-guard.ts so a kind that loses its moment is recorded here rather than guessed. Nothing at runtime consults a list of moments that do not exist. */
 export const PORTAL_KINDS_WITHOUT_KERNEL_MOMENT: readonly string[] = [
   // portal.message_sent_by_agent is NOT here: CLIENT_PORTAL_MESSAGE_SENT now carries
   // metadata.direction (app/actions/portal-messages.ts sendPortalMessage) and

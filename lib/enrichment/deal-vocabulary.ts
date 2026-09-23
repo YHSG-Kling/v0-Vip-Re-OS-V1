@@ -75,7 +75,8 @@
  * would enrich a seller the day after they signed.
  */
 
-/** Pre-deal: the listing agreement is not signed. The owner's "just before". */
+/** Pre-deal: the listing agreement is not signed. The owner's "just before".
+ *  @proofSeam the classifiers below decide on the ACTIVE and AFTER sets only ("either signal saying live is enough; a terminal stage is decisive"); BEFORE is the named complement scripts/enrichment-suppression-simulator.ts sweeps to prove every pre-deal stage reads NOT live — it needs no runtime reader because "not active and not after" already means before. */
 export const LISTING_STAGES_BEFORE = [
   "LEAD",
   "LEAD_ASSIGNED",
@@ -154,7 +155,8 @@ export const LISTING_STAGES_AFTER = [
  * added to the CHECK cannot land in neither bucket and read as handled.
  */
 export const LISTING_STATUSES_ACTIVE = ["listing_signed", "coming_soon", "active", "pending"] as const
-/** 'draft' is pre-deal; the rest are terminal. */
+/** 'draft' is pre-deal; the rest are terminal.
+ *  @proofSeam the named complement of LISTING_STATUSES_ACTIVE — the classifier reads ACTIVE only; this list exists so scripts/listing-status-two-senses-guard.ts can assert ACTIVE ∪ INACTIVE partitions the live listings_status_check EXACTLY (a status added to the CHECK cannot land in neither bucket and read as handled). */
 export const LISTING_STATUSES_INACTIVE = [
   "draft",
   "withdrawn",
@@ -171,6 +173,7 @@ export const LISTING_STATUSES_INACTIVE = [
  * `stage` is nullable and only covers the under-contract half of the funnel,
  * while `status` spans lead → funded).
  */
+/** @proofSeam the pre-deal complement on the transaction side, same shape as LISTING_STAGES_BEFORE: isTransactionLive decides on ACTIVE and AFTER; scripts/enrichment-suppression-simulator.ts sweeps BEFORE to prove a lead/qualifying deal never suppresses enrichment. */
 export const TXN_STATUSES_BEFORE = ["lead", "qualifying"] as const
 export const TXN_STATUSES_ACTIVE = ["active", "under_contract", "pending", "clear_to_close"] as const
 /** 'funded' and 'archived' belong HERE — the omission that makes the existing

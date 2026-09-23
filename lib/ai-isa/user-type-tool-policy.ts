@@ -408,6 +408,7 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
 
 /** Every seat tool name the table promises, deduplicated — the proof holds
  *  this against user-type-tools.ts's builder registry (no phantom promise). */
+/** @proofSeam the union of every seat's promised tool names — runtime mounts per seat through selectToolsForSeat/buildUserTypeSeatTools and never needs the union; it exists so scripts/user-type-tool-surfaces-guard.ts can assert USER_TYPE_SEAT_TOOL_NAMES ⊆ Object.keys(USER_TYPE_SEAT_TOOL_BUILDERS) (no phantom promise). */
 export const USER_TYPE_SEAT_TOOL_NAMES: readonly string[] = [
   ...new Set(USER_TYPE_SEATS.flatMap((s) => USER_TYPE_TOOL_POLICY[s].seatToolNames)),
 ]
@@ -438,9 +439,16 @@ export interface SeatToolParts {
 export function selectToolsForSeat(seat: UserTypeSeat, parts: SeatToolParts): Record<string, unknown> {
   const policy = USER_TYPE_TOOL_POLICY[seat]
   const out: Record<string, unknown> = {}
-  if (policy.staffToolkit === "all") Object.assign(out, parts.staffTools)
-  if (policy.rentCast) Object.assign(out, parts.rentCastTools)
-  if (policy.batchData) Object.assign(out, parts.batchDataTools)
+  // PARTNER SEATS NEVER GET STAFF OR PROPERTY-DATA TOOLS, whatever a policy row
+  // says: the roster's own rule ("never a staff tool, never a property-data
+  // tool, own rows only") is enforced here as a second gate, so an edit to a
+  // partner row's flags cannot hand a vendor company's user the brokerage's
+  // toolkit (lane 80E: PARTNER_SEATS was exported for the proof and gated
+  // nothing at runtime).
+  const partner = PARTNER_SEATS.has(seat)
+  if (!partner && policy.staffToolkit === "all") Object.assign(out, parts.staffTools)
+  if (!partner && policy.rentCast) Object.assign(out, parts.rentCastTools)
+  if (!partner && policy.batchData) Object.assign(out, parts.batchDataTools)
   if (policy.customerPersonaToolsForContact) Object.assign(out, parts.customerTools)
   for (const name of policy.seatToolNames) {
     if (name in parts.seatTools) out[name] = parts.seatTools[name]

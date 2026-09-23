@@ -12,8 +12,15 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Scale } from "lucide-react"
-import type { ScopeQbReconciliation } from "@/lib/finance/qb-reconciliation"
+import { QB_RECONCILIATION_HEADER, type ScopeQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { usd } from "@/lib/format/money"
+
+// TOMBSTONE (§6, lane 80E, 2026-09-23): this card RE-SPELLED the honesty header in
+// its own JSX ("…not a live QuickBooks pull. Edits made inside QuickBooks itself
+// are not visible here.") while the module comment above claimed it rendered
+// QB_RECONCILIATION_HEADER — two spellings of the one statement every
+// reconciliation surface must make. Survivor: lib/finance/qb-reconciliation.ts:48
+// QB_RECONCILIATION_HEADER, rendered below verbatim with the ledger name prefixed.
 
 // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
@@ -40,8 +47,7 @@ export function QbReconciliationCard({ recon }: { recon: ScopeQbReconciliation }
         </CardTitle>
         {/* the standing honesty header (QB_RECONCILIATION_HEADER) — every surface states it */}
         <CardDescription>
-          Reconciles OS ledgers ({recon.ledger}) against OS-recorded export markers only — not a live
-          QuickBooks pull. Edits made inside QuickBooks itself are not visible here.
+          Ledger: {recon.ledger}. {QB_RECONCILIATION_HEADER}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

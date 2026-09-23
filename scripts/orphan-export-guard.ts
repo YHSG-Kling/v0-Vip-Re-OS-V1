@@ -544,7 +544,11 @@ function adjudicationTag(file: string, name: string): string | null {
   const decl = raw.search(new RegExp(`^export\\s+(?:async\\s+)?(?:function\\*?|const|let|class|type|interface|enum)\\s+${name.replace(/\$/g, "\\$")}\\b`, "m"))
   if (decl < 0) return null
   const above = raw.slice(Math.max(0, decl - 600), decl)
-  const m = above.match(/@(proofSeam|ownerRuled)\s+\S[^*\n]*(?:[\s\S]{0,300})?$/)
+  // `(?!\*\/)` — lane 80E, 2026-09-23: a bare `/** @proofSeam */` used to count,
+  // because `\s+\S` matched the closing ` */`. "A tag with no reason text does
+  // not count" (doc above) was therefore never enforced; the one-sided census's
+  // positive control for that case caught it on the same regex, copied.
+  const m = above.match(/@(proofSeam|ownerRuled)\s+(?!\*\/)\S[^*\n]*(?:[\s\S]{0,300})?$/)
   return m ? m[1] : null
 }
 const deadByFile: Record<string, number> = {}

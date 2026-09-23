@@ -50,7 +50,8 @@ export const WEALTH_STATUS_DEFAULT: WealthStatus = "open"
  */
 export const WEALTH_ACTIVE_STATUSES: readonly WealthStatus[] = ["open", "presented", "reviewed"]
 
-/** Terminal: the opportunity is history, not work. */
+/** Terminal: the opportunity is history, not work.
+ *  @proofSeam every runtime reader filters on WEALTH_ACTIVE_STATUSES (the scorer, the predictive surfaces, the wealth dashboard); the closed set is its named complement, kept so scripts/wealth-opportunity-lifecycle-simulator.ts can assert ACTIVE ∪ CLOSED partitions WEALTH_STATUSES exactly. */
 export const WEALTH_CLOSED_STATUSES: readonly WealthStatus[] = ["converted", "dismissed", "stale"]
 
 /** Written when the agent pushes the opportunity to the client's portal. */

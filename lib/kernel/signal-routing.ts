@@ -33,10 +33,20 @@
 // is reused for the "kind" field, same as the completed-video coordinator already does).
 
 import type { ManagerKey } from "./manager-registry"
-import { validSignalRoute as validSignalRouteImpl } from "./manager-signals"
+import { validSignalRoute } from "./manager-signals"
 
-/** Re-exported so callers need only import from this module — one vocabulary (§6). */
-export const validSignalRoute = validSignalRouteImpl
+// TOMBSTONE (§1.3, lane 80E, 2026-09-23): `export const validSignalRoute =
+// validSignalRouteImpl` — a RE-EXPORT of lib/kernel/manager-signals.ts:58
+// validSignalRoute — DELETED. Zero importers ever took it from here (every
+// runtime caller and all three proofs — manager-signals-simulator,
+// capability-ownership-simulator, manager-routing-simulator — import the
+// survivor directly), so the alias was a second spelling of one function (§6)
+// that the one-sided census filed as "named only by a proof". The header above
+// already names the survivor. The import STAYS, and is now READ: routeForEvent
+// below refuses a STATIC_ROUTES pair the bus would reject (self-talk / unknown
+// manager) instead of handing the reader a route publishManagerSignal will
+// throw on — which is what "this module imports it, one vocabulary" (header)
+// promised and never did.
 
 export interface SignalRoute {
   from: ManagerKey
@@ -357,6 +367,7 @@ export const STATIC_ROUTES: Record<string, { from: ManagerKey; to: ManagerKey }>
  * the simulator's coverage sweep expects a branch, not a STATIC_ROUTES entry, and can still
  * assert every branch destination is a real MANAGERS key and never equals the branch's FROM.
  */
+/** @proofSeam the branch for each of these events lives INLINE in lib/kernel/event-reactor.ts beside the DB lookup that picks the destination (see routeForEvent's doc: a DB-lookup branch is deliberately not hidden behind a generic ctx blob), so no runtime dispatcher reads this table by design; it exists so scripts/manager-routing-simulator.ts can assert every branch destination is a real MANAGERS key and never the FROM. */
 export const BRANCHING_EVENTS: Record<string, { from: ManagerKey; candidates: ManagerKey[]; reason: string }> = {
   isa_appointment_scheduled: { from: "ai_isa", candidates: ["shopping_agent", "listing_concierge"], reason: "branches on the contact's contact_type" },
   ai_isa_handoff_to_agent:   { from: "ai_isa", candidates: ["listing_concierge", "shopping_agent", "data_steward"], reason: "branches on the contact's contact_type; unresolved routes to data_steward (the field gap is its stewardship domain) rather than guessing or self-routing to ai_isa" },
@@ -401,6 +412,14 @@ export function routeForEvent(event: string, ctx?: VideoRouteCtx): SignalRoute |
   if (event === "video_generation_requested") return routeVideoGenerationRequested(ctx ?? {})
   if (event === "video_generation_completed") return routeVideoGenerationCompleted()
   const stat = STATIC_ROUTES[event]
-  if (stat) return { from: stat.from, to: stat.to, reason: "STATIC_ROUTES table entry" }
+  if (stat) {
+    // The ONE legality rule (manager-signals.ts:58), asked here so a table entry
+    // that drifts into self-talk or an unknown key is a refused publish with a
+    // reason, not a throw inside publishManagerSignal at the reader's call site.
+    if (!validSignalRoute(stat.from, stat.to)) {
+      return { from: stat.from, to: null, reason: `STATIC_ROUTES entry ${stat.from} -> ${stat.to} is not a legal route (self-talk or unknown manager) — refused, nothing published` }
+    }
+    return { from: stat.from, to: stat.to, reason: "STATIC_ROUTES table entry" }
+  }
   return null
 }

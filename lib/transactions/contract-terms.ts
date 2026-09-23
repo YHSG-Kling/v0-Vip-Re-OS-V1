@@ -48,6 +48,7 @@ export type ContractTermColumn = (typeof CONTRACT_TERM_COLUMNS)[number]
  * must never land in a deadline slot, which is the same class of bug as the
  * earnest DEPOSIT AMOUNT landing in the earnest DUE DATE (owner correction R28).
  */
+/** @proofSeam "Named here only so the disjointness from CONTRACT_TERM_COLUMNS is a checkable property" (above) — scripts/contract-terms-storage-orphan-simulator.ts asserts the two sets never overlap; the writer types its columns through CONTRACT_TERM_COLUMNS and never needs the deadline list. */
 export const CONTRACT_DEADLINE_COLUMNS = [
   "inspection_deadline",
   "appraisal_deadline",

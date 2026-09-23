@@ -62,7 +62,8 @@ export const SELLER_MILESTONE_LABELS: Record<string, string> = {
   closed: "Home Sold!",
 }
 
-/** Combined milestone label map - buyer labels take precedence */
+/** Combined milestone label map - buyer labels take precedence.
+ *  @proofSeam every runtime surface picks the SIDE-SPECIFIC map (app/portal/[contactId]/journey/page.tsx and seller-home.tsx choose BUYER_/SELLER_MILESTONE_LABELS by the portal view), so a combined map where one side shadows the other has no honest runtime reader; it exists so scripts/milestone-education-tie-simulator.ts can assert every milestone the education tie names carries a label on at least one side. */
 export const MILESTONE_LABEL_MAP: Record<string, string> = {
   ...SELLER_MILESTONE_LABELS,
   ...BUYER_MILESTONE_LABELS,

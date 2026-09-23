@@ -106,7 +106,8 @@ function classifySavedHomeNudgeUnruled(kind: string): SavedHomeNudge | null {
   }
 }
 
-/** The nudge kinds, for callers that enumerate. */
+/** The nudge kinds, enumerated.
+ *  @proofSeam no runtime caller enumerates the kinds — classifySavedHomeNudge branches per kind and the reactor calls it per event; this roster exists so scripts/saved-home-nudge-simulator.ts can sweep every kind through the classifier and prove each one yields a nudge (a kind added to the union but not the switch goes red). */
 export const SAVED_HOME_NUDGE_KINDS: SavedHomeNudgeKind[] = [
   "price_drop", "back_on_market", "under_contract", "new_match", "open_house", "coming_soon",
 ]

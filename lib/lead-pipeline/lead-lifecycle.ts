@@ -67,10 +67,18 @@ export const LEAD_HANDED_OFF_STATES: readonly LeadLifecycleState[] = [
   "representation",
 ]
 
-/** PURE — has this lead moved past the ISA? */
+/** PURE — the state a row REALLY holds: a NULL/empty lifecycle_state is the
+ *  column default (a lead that has only just landed), never "unknown". Named
+ *  once so every reader that meets a NULL resolves it the same way the
+ *  database would (lane 80E: LEAD_LIFECYCLE_DEFAULT was exported for the
+ *  suppression proof and read by nothing at runtime). */
+function effectiveLeadLifecycleState(lifecycleState: string | null | undefined): string {
+  return lifecycleState && lifecycleState.length > 0 ? lifecycleState : LEAD_LIFECYCLE_DEFAULT
+}
+
+/** PURE — has this lead moved past the ISA? A NULL state is the default ('raw'), which is still ISA territory. */
 export function isLeadHandedOff(lifecycleState: string | null | undefined): boolean {
-  if (!lifecycleState) return false
-  return (LEAD_HANDED_OFF_STATES as readonly string[]).includes(lifecycleState)
+  return (LEAD_HANDED_OFF_STATES as readonly string[]).includes(effectiveLeadLifecycleState(lifecycleState))
 }
 
 /**

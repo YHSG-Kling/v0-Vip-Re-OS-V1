@@ -105,6 +105,7 @@ export type VendorStatus = "pending" | "active" | "inactive" | "archived"
 /** The statuses a vendor may hold that make it eligible to be surfaced/auto-picked. Null (legacy rows) is
  *  treated as active for backward-compatibility; explicit pending/inactive/archived are NOT surfaced. */
 export const SURFACEABLE_STATUSES = new Set(["active"])
+/** @proofSeam the named COMPLEMENT of SURFACEABLE_STATUSES — runtime filters on the surfaceable set (runVendorApprovalQueue above reads it); this list exists so scripts/vendor-verification-simulator.ts can assert the two partition VendorStatus and that no non-surfaceable status is ever auto-picked. */
 export const NON_SURFACEABLE_STATUSES = ["pending", "inactive", "archived"]
 
 /** PURE: is this transition allowed? Only an admin path reaches 'active' (enforced by the action's role
@@ -144,7 +145,9 @@ export async function runVendorApprovalQueue(svc: Svc, params: { brokerageId: st
   if (pending.length === 0) return out
 
   // Score any that haven't been scored yet, and detect duplicates against active vendors.
-  const { data: activeRows } = await svc.from("vendors").select("name, category").eq("brokerage_id", params.brokerageId).eq("status", "active").limit(2000)
+  // The surfaceable roster IS the filter (lane 80E: SURFACEABLE_STATUSES was exported
+  // for the proof while this read spelled "active" itself — §6, one vocabulary).
+  const { data: activeRows } = await svc.from("vendors").select("name, category").eq("brokerage_id", params.brokerageId).in("status", [...SURFACEABLE_STATUSES]).limit(2000)
   const activeKeys = new Set(((activeRows ?? []) as any[]).map((v) => `${(v.name ?? "").trim().toLowerCase()}|${(v.category ?? "").trim().toLowerCase()}`))
   const scored: Array<{ id: string; name: string; score: number; rec: string }> = []
   for (const v of pending) {

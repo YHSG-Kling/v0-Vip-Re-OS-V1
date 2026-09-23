@@ -26,7 +26,10 @@ export const LENDER_VENDOR_CATEGORY = VENDOR_CATEGORY_LENDER
 
 export function isLenderVendorCategory(category: string | null | undefined): boolean {
   const c = (category ?? "").trim().toLowerCase()
-  return c === "lender" || c.includes("lender") || c.includes("mortgage") || c.includes("loan officer")
+  // The exact arm compares against THE category constant, not a second spelling
+  // of it (§6; lane 80E — LENDER_VENDOR_CATEGORY was exported for the
+  // vendor-category proof and read by nothing at runtime).
+  return c === LENDER_VENDOR_CATEGORY.toLowerCase() || c.includes("lender") || c.includes("mortgage") || c.includes("loan officer")
 }
 
 /**

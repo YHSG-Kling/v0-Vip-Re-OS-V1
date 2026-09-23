@@ -422,6 +422,14 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     }
     return { ...rawFallback, script: fit.script }
   })()
+  // Only a NARRATABLE section gets a model draft; anything else speaks the
+  // deterministic script and says so in its notes, so a caller passing a stray
+  // key reads WHY it got the fallback (lane 80E: NARRATABLE_SECTION_KEYS was
+  // exported for the proof and consulted by nothing at runtime).
+  if (!(NARRATABLE_SECTION_KEYS as readonly string[]).includes(input.sectionKey)) {
+    notes.push(`[section-narration] ${input.sectionKey} — not a narratable section (${NARRATABLE_SECTION_KEYS.join(", ")}); speaking the deterministic script`)
+    return { ...fallback, notes: [...notes] }
+  }
   const brief = SECTION_BRIEF[input.sectionKey]
   if (!brief) return notes.length > 0 ? { ...fallback, notes: [...notes] } : fallback
 

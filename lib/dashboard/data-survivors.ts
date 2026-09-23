@@ -57,6 +57,7 @@ export type DashboardDataType =
  * rather than handed an empty list — and anything the branch held that its
  * survivor lacked was merged onto the survivor BEFORE the delete.
  */
+/** @proofSeam this module IS the merge ledger of a deleted lane, kept as data so the verdict is checkable — its only reader by design is scripts/dashboard-data-layer-simulator.ts (every survivor must exist and declare the named function; see the header). No runtime surface consults a ledger of what was deleted. */
 export const DASHBOARD_DATA_SURVIVOR: Record<DashboardDataType, string> = {
   transactions:   "app/actions/transactions.ts:getTransactions",
   contacts:       "app/actions/contacts.ts:getContacts",
@@ -78,7 +79,8 @@ export const DASHBOARD_DATA_SURVIVOR: Record<DashboardDataType, string> = {
   communications: "app/actions/communications.ts:getRecentCommunications",
 }
 
-/** The two files the lane consisted of. They must not come back. */
+/** The two files the lane consisted of. They must not come back.
+ *  @proofSeam the deletion ledger's "must stay deleted" half — read only by scripts/dashboard-data-layer-simulator.ts, which fails if either path reappears; no runtime reader exists for a list of files that must not exist. */
 export const RETIRED_DASHBOARD_DATA_FILES: readonly string[] = [
   "hooks/use-dashboard-data.ts",
   "app/api/dashboard/data/route.ts",
@@ -94,6 +96,7 @@ export const RETIRED_DASHBOARD_DATA_FILES: readonly string[] = [
  * MERGE DEBT list wave 13 wrote, which is the argument for reading all eighteen
  * rather than trusting an enumeration someone made in passing.
  */
+/** @proofSeam the merge record that justified the delete (§1.1), kept as data so scripts/dashboard-data-layer-simulator.ts can hold it total over DashboardDataType; a record of what was merged has no runtime consumer by construction. */
 export const DASHBOARD_DATA_MERGE_RECORD: Record<DashboardDataType, string> = {
   transactions:
     "MERGED: tenant + agent scope were optional caller-supplied arguments applied by DEFAULT TO NOTHING — getTransactions() read every deal on the platform. Now session-derived; a caller-supplied agent id may only narrow, only for a broker/admin, only inside their own tenant. Also returned a bare [] for a rejected argument, indistinguishable from an empty pipeline; every exit is the discriminated shape now.",

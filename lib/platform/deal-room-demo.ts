@@ -639,7 +639,23 @@ export async function teardownDealRoomStory(svc: Svc, brokerageId: string): Prom
   if (contactIds.length > 0) add("contacts", (q) => B(q).in("id", contactIds), "id∈story")
   add("lead_scraping_markets", (q) => B(q).eq("id", DEAL_ROOM_IDS.market), "id=story")
 
-  for (const s of steps) await del(svc, report, s.table, s.apply, s.predicate)
+  // THE DECLARED ORDER IS THE ORDER RUN, not a comment beside the list (lane 80E:
+  // DEAL_ROOM_TEARDOWN_ORDER was exported for the simulator and read by nothing
+  // here, so the FK-critical orderings it "locks" were only ever locked in the
+  // proof). Steps are stable-sorted by their table's rank in the declaration;
+  // a step whose table the declaration never names is REFUSED before any row is
+  // deleted — deleting a parent ahead of an undeclared child is exactly the
+  // orphaning this order exists to prevent (§4: fail closed).
+  const rank = new Map<string, number>(DEAL_ROOM_TEARDOWN_ORDER.map((t, i) => [t, i]))
+  const undeclared = [...new Set(steps.map((s) => s.table).filter((t) => !rank.has(t)))]
+  if (undeclared.length > 0) {
+    report.error = `teardown REFUSED: table(s) not in DEAL_ROOM_TEARDOWN_ORDER — ${undeclared.join(", ")} (declare them, children before parents)`
+    report.errors.push(report.error)
+    return report
+  }
+  const ordered = steps.map((s, i) => ({ s, i })).sort((a, b) => (rank.get(a.s.table)! - rank.get(b.s.table)!) || (a.i - b.i)).map((x) => x.s)
+
+  for (const s of ordered) await del(svc, report, s.table, s.apply, s.predicate)
 
   // Revert the staged stall facts on the round-21 listing (the row itself stays).
   try {

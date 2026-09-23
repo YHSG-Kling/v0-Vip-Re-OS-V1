@@ -181,7 +181,9 @@ export function canManageVendorCharge(args: {
  *  row to feature, so a "team placement" would fake a scope the directory
  *  cannot represent. Agents/teams monetize their vendors through the general
  *  charge lane (issueVendorCharge) instead. */
+/** @ownerRuled a documented scope VERDICT (above): markPlacementPaid flips brokerage-wide flags and no team/agent placement surface exists to scope into, so nothing at runtime branches on the scope; the pair exists so scripts/vendor-scope-charging-simulator.ts (and doc-kernel) can hold the verdict against the code that writes the flags. */
 export const PREMIUM_PLACEMENT_SCOPE = "brokerage" as const
+/** @ownerRuled the verdict's own sentence — see PREMIUM_PLACEMENT_SCOPE. */
 export const PREMIUM_PLACEMENT_SCOPE_VERDICT =
   "Premium placement remains brokerage-level: it flips brokerage-wide vendor placement flags (preferred / display_priority / visible_in_portal) that the whole brokerage and the contact portal read — there is no team- or agent-scoped directory surface to feature into. Agents and teams charge their vendors through the general vendor-charge lane instead."
 

@@ -473,12 +473,15 @@ export async function assertVendorChargeableForPlatformUse(
  * ACCESS YET — the price shape needs the owner's sign-off, and no lane may make
  * a contact-access charge ride on the platform-use lanes that trigger guards.
  */
+/** @ownerRuled contact access is NOT priced until the owner signs off on the price shape (header above); these three strings RECORD where the shared surface, gate and verdict live so scripts/vendor-platform-use-double-charge-simulator.ts can hold them at those paths — a ruling ledger, not a runtime value. */
 export const SHARED_VENDOR_CONTACT_ACCESS_SURFACE =
   "app/actions/vendor-contact-access.ts :: assignVendorToContactAction"
 
+/** @ownerRuled same ledger as SHARED_VENDOR_CONTACT_ACCESS_SURFACE above — the gate's path, held by the double-charge proof. */
 export const SHARED_VENDOR_CONTACT_ACCESS_GATE =
   "lib/vendor/assignment-access.ts :: vendorContactAccessVerdict"
 
+/** @ownerRuled same ledger as SHARED_VENDOR_CONTACT_ACCESS_SURFACE above — the verdict's path, held by the double-charge proof. */
 export const SHARED_VENDOR_CONTACT_ACCESS_VERDICT =
   "A vendor already paying for platform use is not charged again for PLATFORM USE by a second brokerage, " +
   "team or agent. What the second tenant gets is ACCESS TO THEIR CONTACTS, granted through " +

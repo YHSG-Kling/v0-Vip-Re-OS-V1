@@ -14,6 +14,10 @@
 // brokerageId is now an IN-PROCESS CONTRACT: with the door closed, the server
 // caller that supplies it is the gate.
 import "server-only"
+// ONE spelling of "the document_type that means a staged offer packet" (§6):
+// the constant lives beside the detector that names it (lane 80E — it was
+// exported for the inbound-offer proof while this scan spelled "offer" itself).
+import { STAGED_PACKET_DOCUMENT_TYPE } from "@/lib/inbound-mail/offer-detect"
 
 /**
  * Scan a staged offer's packet for completeness, then surface any findings as
@@ -191,7 +195,7 @@ export async function scanOfferPacketCompleteness(params: {
   const { data: doc, error: docError } = await supabase
     .from("documents")
     .select("id, brokerage_id, contact_id, content, metadata, status")
-    .eq("document_type", "offer")
+    .eq("document_type", STAGED_PACKET_DOCUMENT_TYPE)
     .filter("metadata->>linked_offer_id", "eq", offerId)
     .order("created_at", { ascending: false })
     .limit(1)

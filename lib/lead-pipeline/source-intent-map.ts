@@ -826,6 +826,7 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
 // beacons; no vendor call, $0 marginal cost, never appears in vendor_usage_tracking.
 export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'zyte' | 'internal'
 
+/** @proofSeam the per-source vendor CONTRACT: each sourcer attributes its own vendor_usage_tracking rows at the call site (scraping code, FROZEN since wave 55 — lane 80E may not repoint them), so no runtime reader walks this map; it exists so the sourcer simulators (rental-graduation, expired-listing, lead-email-conversion) can assert a lane's declared vendor matches the rail it actually calls. Unresolved: a ledger-side reader that derives attribution from this map instead of per-sourcer literals — a scraping-lane change. */
 export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   zenrows_zillow:       'zenrows',
   zenrows_realtor:      'zenrows',

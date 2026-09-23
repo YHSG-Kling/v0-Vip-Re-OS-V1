@@ -43,6 +43,7 @@
 //
 // The half still missing is the GUARD: nothing holds this map and those pages in
 // agreement, so the next drift is silent again. See the lane K4 report.
+/** @ownerRuled orphan tranche 3 (tombstone below): this map STAYS as the documented mirror of the thin redirect pages that actually serve every alias; its GUARD is scripts/dangling-link-sweep.ts (imports it, fails when an alias is served by no page/config redirect or lands elsewhere) and scripts/orphan-route-sweep.ts. No runtime reader by that ruling — the pages are the runtime. */
 export const ROUTE_ALIASES: Record<string, string> = {
   '/calendar':                       '/dashboard/calendar',
   '/documents':                      '/dashboard/documents',

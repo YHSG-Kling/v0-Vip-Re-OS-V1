@@ -107,10 +107,15 @@ export const VOICE_PHRASES: Partial<Record<AppCapability, readonly string[]>> = 
   //   transaction_advance   changes a deal's legal stage
 }
 
-/** The full speakable surface, derived from the kernel registry. */
+/** The full speakable surface, derived from the kernel registry — MINUS the
+ *  withheld capabilities, enforced here as well as by the phrase table's
+ *  omission, so a phrase added for payment_transfer tomorrow still never
+ *  becomes speakable (defense in depth; lane 80E — VOICE_WITHHELD was named
+ *  "so the guard can hold them" and held nothing at runtime). */
 export function voiceCapabilities(): VoiceCapability[] {
+  const withheld = new Set<AppCapability>(VOICE_WITHHELD)
   return (Object.keys(VOICE_PHRASES) as AppCapability[])
-    .filter((c) => !!APP_CAPABILITY_REGISTRY[c])
+    .filter((c) => !!APP_CAPABILITY_REGISTRY[c] && !withheld.has(c))
     .map((c) => ({
       capability: c,
       def: APP_CAPABILITY_REGISTRY[c],

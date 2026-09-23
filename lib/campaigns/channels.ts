@@ -131,7 +131,8 @@ export function channelCarriesVideo(key: string): boolean {
 export const OUTREACH_CHANNELS: readonly CampaignChannelSpec[] =
   CAMPAIGN_CHANNELS.filter((c) => c.scope === "outreach")
 
-/** Broadcast/content channels — the marketing-campaign surface (campaign_orchestrator). */
+/** Broadcast/content channels — the marketing-campaign surface (campaign_orchestrator).
+ *  @proofSeam the outreach half (OUTREACH_CHANNELS) has live readers (EngagementFeed, sanitizeOutreachChannels); the broadcast half is held by scripts/campaign-channels-simulator.ts. DUPLICATE SPELLING RECORDED, NOT MERGED HERE: lib/video/repurpose-planner.ts:18 keeps a private `BROADCAST_CHANNELS` Set — that file is lane 80C's (lib/video/*), so the §1.1 merge onto this survivor is theirs (lane 80E notes, 2026-09-23). */
 export const BROADCAST_CHANNELS: readonly CampaignChannelSpec[] =
   CAMPAIGN_CHANNELS.filter((c) => c.scope === "broadcast")
 

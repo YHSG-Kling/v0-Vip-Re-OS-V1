@@ -69,6 +69,7 @@ export const FREE_OSINT_ANSWERS: readonly FreeOsintAnswer[] = [
  * FREE_OSINT_ANSWERS so the boundary is one readable pair, not folklore spread
  * across call sites.
  */
+/** @proofSeam the free lane selects its work by the FreeOsintAnswer TYPE (runFreeOsintLane's `answers`); the paid-only list is the other half of the boundary, kept as data so scripts/enrichment-suppression-simulator.ts can assert no free connector ever claims a person-keyed answer. A runtime planner that partitions questions between lanes does not exist yet — recorded, not papered over. */
 export const PAID_ONLY_ANSWERS = [
   "person_identity",
   "contact_points",

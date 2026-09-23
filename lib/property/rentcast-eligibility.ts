@@ -147,7 +147,8 @@ export type RentcastEligibilityReason =
   | "budget_exhausted"
 
 /** Precedence, in order. Exported so a proof can assert the vocabulary exists
- *  rather than assert a particular spelling appears in a particular branch. */
+ *  rather than assert a particular spelling appears in a particular branch.
+ *  @proofSeam by its own words above: the gate resolves ONE reason through its discriminated union at runtime; the ordered roster is what scripts/rentcast-eligibility-simulator.ts and scripts/rent-lane-simulator.ts sweep to prove every reason is reachable and the precedence holds. */
 export const RENTCAST_ELIGIBILITY_REASONS: readonly RentcastEligibilityReason[] = [
   "tenant_has_idx",
   "idx_check_unreadable",

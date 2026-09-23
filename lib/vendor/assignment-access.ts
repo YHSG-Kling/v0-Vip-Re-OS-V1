@@ -72,7 +72,8 @@ import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 
 export type VendorAccessScope = "pii_basic" | "pii_full" | "transaction_docs" | "financial"
 
-/** The live `vendors_access_level_check` list, verbatim. */
+/** The live `vendors_access_level_check` list, verbatim.
+ *  @proofSeam the verdict compares against ONE member (PAID_CONTACT_ACCESS_LEVEL) and no app code WRITES vendors.access_level today (re-verified 2026-09-23: zero writers under app/ + lib/), so there is no write to validate against the roster; it exists so scripts/vendor-service-area-simulator.ts can hold PAID_CONTACT_ACCESS_LEVEL inside the live CHECK. Unresolved: the action that flips the paid door is not built. */
 export const VENDOR_ACCESS_LEVELS = ["transaction_only", "team_full_access", "brokerage_full_access"] as const
 
 /** The access_level that IS the paid contact-access door. Named once so a
