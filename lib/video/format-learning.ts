@@ -849,3 +849,36 @@ export async function recommendPreferredAngleForKind(
 
   return pickPluralityAngle(situationKind, winsByAngle)
 }
+
+
+/**
+ * runBodyVisualRuleLearning — THE AUTONOMOUS LOOP (wave 80 integration; owner:
+ * "if there is any changes to the registry rule for the purpose allowable
+ * autonomous ai can learn"). Rides the daily brokerage-intelligence mine per
+ * tenant: scores the tenant's body-visual outcomes, asks the PURE recommender
+ * for every purpose, and appends any bounded proposal to the ledger (which
+ * refuses out-of-bounds or vetoed changes and tells the humans). Nothing here
+ * decides — the recommender's sample+margin gate and the ledger's bounds do.
+ */
+export async function runBodyVisualRuleLearning(
+  brokerageId: string,
+  client?: Svc,
+): Promise<{ purposesScanned: number; proposed: number; applied: number; refused: string[] }> {
+  const out = { purposesScanned: 0, proposed: 0, applied: 0, refused: [] as string[] }
+  if (!brokerageId) return out
+  const { PURPOSE_DURATION_RULES } = await import("@/lib/video/duration-model")
+  const { listBodyVisualRuleOverrides, applyBodyVisualRuleOverride } = await import("@/lib/video/body-visual-rule-ledger")
+  const scored = await loadBodyVisualOutcomes(brokerageId, client)
+  if (scored.maxMeanSignal <= 0) return out
+  const overrides = await listBodyVisualRuleOverrides(brokerageId, client)
+  for (const purpose of Object.keys(PURPOSE_DURATION_RULES) as VideoPurpose[]) {
+    out.purposesScanned++
+    const proposal = recommendBodyVisualRuleAdjustment(purpose, scored, overrides)
+    if (!proposal) continue
+    out.proposed++
+    const r = await applyBodyVisualRuleOverride(brokerageId, proposal, client)
+    if (r.ok) out.applied++
+    else out.refused.push(`${purpose}: ${r.reason}`)
+  }
+  return out
+}

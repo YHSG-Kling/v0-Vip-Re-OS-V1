@@ -119,6 +119,14 @@ const SCAN_DIRS = ["app", "lib", "services", "components", "hooks", "contexts", 
 type Verdict = "platform" | "anchored" | "unresolved"
 export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> = {
   // ── platform: only a platform-authorised caller can produce the null ────────
+  "lib/assets/screenshot-capture.ts :: opts.brokerageId": {
+    verdict: "anchored",
+    why: "lib/assets/screenshot-capture.ts (wave 80D): every branch PINS a visibility scope — a brokerageId anchors to visibility_scope=brokerage + brokerage_id, and its absence anchors to visibility_scope=platform (the platform's own demo stills). A missing tenant never decays into every tenant; the two callers are the tenant door (session tenant, app/actions/marketing/tenant-screenshots.ts) and the platform door (requireMarketing).",
+  },
+  "lib/assets/screenshot-capture.ts :: scope.brokerageId": {
+    verdict: "anchored",
+    why: "lib/assets/screenshot-capture.ts (wave 80D): every branch PINS a visibility scope — a brokerageId anchors to visibility_scope=brokerage + brokerage_id, and its absence anchors to visibility_scope=platform (the platform's own demo stills). A missing tenant never decays into every tenant; the two callers are the tenant door (session tenant, app/actions/marketing/tenant-screenshots.ts) and the platform door (requireMarketing).",
+  },
   "lib/analytics/prediction-accuracy.ts :: brokerageId": {
     verdict: "platform",
     why: "Every adapter is reached only through getPredictionAccuracyReport. Two callers: app/dashboard/superadmin/platform/page.tsx behind requireSuperadmin() passes no brokerageId (platform); app/dashboard/analytics/page.tsx calls it only inside `if (profile?.brokerage_id)`, so the tenant path can never pass a null.",

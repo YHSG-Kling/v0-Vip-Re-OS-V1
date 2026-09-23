@@ -32,6 +32,7 @@ import type { PlaybookScore } from "@/app/actions/creative-playbooks"
 import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
 import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
 import { EstimateStillsCard } from "./estimate-stills-card"
+import { LearnedVisualRulesCard } from "./learned-visual-rules-card"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -312,6 +313,7 @@ export function CampaignBundlesClient({
           </div>
           {/* Wave 80D — the Zestimate Challenge's still: tenant-picked source + address, pending approval. */}
           <EstimateStillsCard />
+          <LearnedVisualRulesCard />
         </section>
       )}
 

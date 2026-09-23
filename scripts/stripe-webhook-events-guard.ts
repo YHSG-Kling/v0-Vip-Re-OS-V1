@@ -131,24 +131,24 @@ const OURS = `${APP}${STRIPE_WEBHOOK_ROUTES.tenant_billing}`
 
   const s1 = fakeStripe([{ id: "we_v", url: `${APP}/api/webhooks/stripe/vendor`, enabled_events: ["*"] }])
   const absent = await syncStripeWebhookEvents({ apply: true, stripe: s1, appUrl: APP })
-  check("ENDPOINT ABSENT → endpoint_not_registered naming the expected URL and the others; no update, no CREATE", !absent.ok && absent.reason === "endpoint_not_registered" && absent.expectedUrl === OURS && absent.otherEndpointUrls?.length === 1 && s1.calls.every((c) => c.op === "webhookEndpoints.list"))
+  check("ENDPOINT ABSENT → endpoint_not_registered naming the expected URL and the others; no update, no CREATE", !absent.ok && absent.reason === "endpoint_not_registered" && absent.expectedUrl === OURS && absent.otherEndpointUrls?.length === 1 && s1.calls.every((c: { op: string; args?: unknown }) => c.op === "webhookEndpoints.list"))
 
   const s2 = fakeStripe([{ id: "we_1", url: `${OURS}/`, enabled_events: ["invoice.paid", "charge.refunded"] }, { id: "we_v", url: `${APP}/api/webhooks/stripe/vendor`, enabled_events: ["*"] }])
   const dry = await syncStripeWebhookEvents({ apply: false, stripe: s2, appUrl: APP })
   check("DRY RUN on a drifted endpoint (matched through the trailing slash) → ok, drift planned, applied:false, NO update call, before === after",
-    dry.ok && !dry.plan.inSync && dry.plan.missing.length === TENANT_BILLING_WEBHOOK_EVENTS.length - 1 && dry.plan.extra.join() === "charge.refunded" && dry.applied === false && dry.before.join() === dry.after.join() && !s2.calls.some((c) => c.op === "webhookEndpoints.update") && dry.otherEndpointUrls.length === 1)
+    dry.ok && !dry.plan.inSync && dry.plan.missing.length === TENANT_BILLING_WEBHOOK_EVENTS.length - 1 && dry.plan.extra.join() === "charge.refunded" && dry.applied === false && dry.before.join() === dry.after.join() && !s2.calls.some((c: { op: string; args?: unknown }) => c.op === "webhookEndpoints.update") && dry.otherEndpointUrls.length === 1)
   const applied = await syncStripeWebhookEvents({ apply: true, stripe: s2, appUrl: APP })
-  const upd = s2.calls.filter((c) => c.op === "webhookEndpoints.update")
+  const upd = s2.calls.filter((c: { op: string; args?: unknown }) => c.op === "webhookEndpoints.update")
   check("APPLY → exactly ONE webhookEndpoints.update on OUR endpoint id with the UNION (charge.refunded kept, every handled event added); before/after reported; applied:true",
     applied.ok && applied.applied && upd.length === 1 && (upd[0]!.args[0] as string) === "we_1"
     && [...(upd[0]!.args[1] as { enabled_events: string[] }).enabled_events].sort().join() === [...new Set(["invoice.paid", "charge.refunded", ...TENANT_BILLING_WEBHOOK_EVENTS])].sort().join()
     && applied.before.length === 2 && applied.after.length === TENANT_BILLING_WEBHOOK_EVENTS.length + 1)
-  check("NOTHING IS PUBLISHED — no endpoint, price or product create was ever called across every run", [s0, s1, s2].every((s) => !s.calls.some((c) => /create$/.test(c.op))))
+  check("NOTHING IS PUBLISHED — no endpoint, price or product create was ever called across every run", [s0, s1, s2].every((s) => !s.calls.some((c: { op: string; args?: unknown }) => /create$/.test(c.op))))
   const again = await syncStripeWebhookEvents({ apply: true, stripe: s2, appUrl: APP })
-  check("a second APPLY on the now-synced endpoint is idempotent: in sync, applied:false, no further update", again.ok && again.plan.inSync && !again.applied && s2.calls.filter((c) => c.op === "webhookEndpoints.update").length === 1)
+  check("a second APPLY on the now-synced endpoint is idempotent: in sync, applied:false, no further update", again.ok && again.plan.inSync && !again.applied && s2.calls.filter((c: { op: string; args?: unknown }) => c.op === "webhookEndpoints.update").length === 1)
   const s3 = fakeStripe([{ id: "we_1", url: OURS, enabled_events: ["*"] }])
   const wild = await syncStripeWebhookEvents({ apply: true, stripe: s3, appUrl: APP })
-  check("a wildcard endpoint is reported in sync and never rewritten", wild.ok && wild.plan.wildcard && !wild.applied && !s3.calls.some((c) => c.op === "webhookEndpoints.update"))
+  check("a wildcard endpoint is reported in sync and never rewritten", wild.ok && wild.plan.wildcard && !wild.applied && !s3.calls.some((c: { op: string; args?: unknown }) => c.op === "webhookEndpoints.update"))
   const s4 = fakeStripe([], { listThrows: "Invalid API Key provided" })
   const refusedList = await syncStripeWebhookEvents({ apply: true, stripe: s4, appUrl: APP })
   check("a Stripe refusal on list is reported with Stripe's own sentence (stripe_refused)", !refusedList.ok && refusedList.reason === "stripe_refused" && /Invalid API Key/.test(refusedList.error))

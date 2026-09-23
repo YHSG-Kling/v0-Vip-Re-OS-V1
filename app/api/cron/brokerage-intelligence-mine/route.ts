@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
   await recordCronStartAction({ context_id: contextId })
 
   const svc = createServiceClient()
-  const summary = { brokerages_processed: 0, insights_written: 0, followups_recorded: 0, errors: 0 }
+  const summary = { brokerages_processed: 0, insights_written: 0, followups_recorded: 0, errors: 0, body_visual_rules_applied: 0 }
 
   try {
     const { data: brokerages } = await svc
@@ -50,6 +50,11 @@ export async function GET(request: NextRequest) {
         const { written, followupsRecorded } = await runMiningForBrokerage(b.id)
         summary.insights_written += written
         summary.followups_recorded += followupsRecorded
+        // Wave 80C learning loop: learned body-visual rules ride the same daily
+        // mine (owner: "autonomous ai can learn"); bounded, ledgered, reversible.
+        const { runBodyVisualRuleLearning } = await import("@/lib/video/format-learning")
+        const learned = await runBodyVisualRuleLearning(b.id, svc)
+        summary.body_visual_rules_applied += learned.applied
       } catch (e) {
         console.error(`[brokerage-intelligence-mine] ${b.id}:`, e)
         summary.errors++

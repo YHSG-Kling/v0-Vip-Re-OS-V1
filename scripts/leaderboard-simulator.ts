@@ -11,6 +11,7 @@
  * SOURCE: addPoints writes agent_points_log; retention-radar gathers points_30d; the cron snapshots.
  * LIVE (creds-gated): seed ledger rows → runLeaderboardSnapshot writes ranked leaderboard_rankings → clean up.
  */
+import { stripComments } from "./strip-comments"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
@@ -71,7 +72,7 @@ function pureLayer() {
   check("POPULATED_METRICS is the populator's own roster, not an alias of the vocabulary, and gatherMetrics iterates it",
     /export const POPULATED_METRICS = \[/.test(src("lib/recruiting/leaderboard.ts")) &&
     /POPULATED_METRICS\.map\(\(metric\)/.test(src("lib/recruiting/leaderboard.ts")) &&
-    !/POPULATED_METRICS[^\n]*= LEADERBOARD_METRICS\b/.test(src("lib/recruiting/leaderboard.ts").replace(/\/\/[^\n]*/g, "")))
+    !/POPULATED_METRICS[^\n]*= LEADERBOARD_METRICS\b/.test(stripComments(src("lib/recruiting/leaderboard.ts"))))
   check("CLOSED_STATES_ARE_REAL — every closed state is in the live transactions.status vocabulary",
     CLOSED_STATES_ARE_REAL === true)
 

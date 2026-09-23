@@ -13,6 +13,8 @@
   "lib/analytics/assignment-outcomes.ts :: brokerageId": 3,
   "lib/analytics/prediction-accuracy.ts :: brokerageId": 13,
   "lib/application/transactions.ts :: brokerageId": 3,
+  "lib/assets/screenshot-capture.ts :: opts.brokerageId": 1,
+  "lib/assets/screenshot-capture.ts :: scope.brokerageId": 2,
   "lib/buyer-broker/gate.ts :: params.brokerageId": 1,
   "lib/contact-promotion/history-carry.ts :: brokerageId": 2,
   "lib/fatigue/fatigue-calculator.ts :: brokerageId": 1,

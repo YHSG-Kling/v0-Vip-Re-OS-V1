@@ -69,7 +69,7 @@
     "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
-    "lib/ai-isa/property-lookup-rail.ts": 4,
+    "lib/ai-isa/property-lookup-rail.ts": 6,
     "lib/ai-isa/property-lookup-tools.ts": 2,
     "lib/ai-isa/reengagement-policy.ts": 2,
     "lib/ai-isa/resolve-isa-settings.ts": 1,
@@ -84,6 +84,7 @@
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
     "lib/billing/dunning.ts": 3,
+    "lib/billing/stripe-webhook-registration.ts": 2,
     "lib/billing/stripe-webhook-secrets.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 1,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
@@ -338,6 +339,7 @@
     "lib/marketing/social-cadence.ts": 1,
     "lib/marketing/social-carousel.ts": 2,
     "lib/marketing/social-media-pairing.ts": 2,
+    "lib/marketing/tenant-screenshot-door.ts": 3,
     "lib/marketing/trigger-match.ts": 2,
     "lib/marketing/video-content-kit.ts": 2,
     "lib/net-sheet/net-sheet-reconciler.ts": 1,
@@ -434,20 +436,21 @@
     "lib/vendors/vendor-scope.ts": 1,
     "lib/vendors/vendor-service-area.ts": 3,
     "lib/video/avatar-render-orchestrator.ts": 1,
-    "lib/video/body-visual-model.ts": 4,
+    "lib/video/body-visual-model.ts": 5,
+    "lib/video/body-visual-rule-ledger.ts": 1,
     "lib/video/caption-plan.ts": 1,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 2,
-    "lib/video/duration-model.ts": 12,
-    "lib/video/format-learning.ts": 3,
+    "lib/video/duration-model.ts": 10,
+    "lib/video/format-learning.ts": 6,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
     "lib/video/narration-window.ts": 1,
     "lib/video/promo-composition.ts": 1,
     "lib/video/realism-profile.ts": 5,
     "lib/video/script-compliance.ts": 1,
-    "lib/video/video-director.ts": 6,
+    "lib/video/video-director.ts": 7,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
@@ -465,7 +468,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9858,
+  "census": 9913,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -583,7 +586,7 @@
     "app/actions/autonomy-halt.ts": 1,
     "app/actions/avatar-video.ts": 2,
     "app/actions/avatar-voice-catalog.ts": 3,
-    "app/actions/billing.ts": 12,
+    "app/actions/billing.ts": 13,
     "app/actions/blog-cadence-policy.ts": 2,
     "app/actions/blog.ts": 13,
     "app/actions/brand-template-registry.ts": 12,
@@ -786,6 +789,7 @@
     "app/actions/marketing/image-library.ts": 6,
     "app/actions/marketing/lead-magnet-copy.ts": 1,
     "app/actions/marketing/publish-guide-to-gbp.ts": 1,
+    "app/actions/marketing/tenant-screenshots.ts": 4,
     "app/actions/marketing-agent-resolutions.ts": 2,
     "app/actions/marketing-ai-approvals.ts": 3,
     "app/actions/marketing-cadence-policy.ts": 2,
@@ -966,6 +970,7 @@
     "app/actions/superadmin/portal-clients.ts": 2,
     "app/actions/superadmin/provider-posture.ts": 3,
     "app/actions/superadmin/screenshot-capture.ts": 5,
+    "app/actions/superadmin/stripe-webhook-events.ts": 2,
     "app/actions/superadmin/subscriber-referrals.ts": 4,
     "app/actions/superadmin/subscription-contracts.ts": 6,
     "app/actions/superadmin/subscription-oversight.ts": 1,
@@ -1023,6 +1028,7 @@
     "app/actions/vendors/vendor-plan-subscriptions.ts": 4,
     "app/actions/vendors/vendor-plans.ts": 6,
     "app/actions/vendors-kernel.ts": 6,
+    "app/actions/video/body-visual-rules.ts": 2,
     "app/actions/video/create-video-project.ts": 6,
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
@@ -2561,6 +2567,8 @@
     "app/settings/billing/usage-section.tsx": 1,
     "app/settings/blog-cadence/client.tsx": 1,
     "app/settings/campaign-bundles/client.tsx": 1,
+    "app/settings/campaign-bundles/estimate-stills-card.tsx": 1,
+    "app/settings/campaign-bundles/learned-visual-rules-card.tsx": 1,
     "app/settings/channel-presets/client.tsx": 1,
     "app/settings/connections/connection-center-client.tsx": 1,
     "app/settings/crm/crm-connect-form.tsx": 1,
@@ -2776,7 +2784,7 @@
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
-    "lib/ai-isa/property-lookup-rail.ts": 5,
+    "lib/ai-isa/property-lookup-rail.ts": 9,
     "lib/ai-isa/property-lookup-tools.ts": 4,
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
@@ -2844,10 +2852,11 @@
     "lib/billing/resolve-stripe-account.ts": 3,
     "lib/billing/seat-packages.ts": 6,
     "lib/billing/seat-sync.ts": 1,
-    "lib/billing/stripe-account-scope.ts": 4,
+    "lib/billing/stripe-account-scope.ts": 5,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
     "lib/billing/stripe-subscription-ops.ts": 12,
+    "lib/billing/stripe-webhook-registration.ts": 3,
     "lib/billing/stripe-webhook-secrets.ts": 2,
     "lib/billing/subscription-activation.ts": 5,
     "lib/billing/sync-plan-tier.ts": 1,
@@ -3085,7 +3094,7 @@
     "lib/did/avatar-consent-gate.ts": 1,
     "lib/did/consent.ts": 4,
     "lib/did/context-markers.ts": 3,
-    "lib/did/contract.ts": 8,
+    "lib/did/contract.ts": 10,
     "lib/did/gateway.ts": 2,
     "lib/did/index.ts": 1,
     "lib/did/live-session-metering.ts": 7,
@@ -3571,7 +3580,7 @@
     "lib/kernel/schema-adaptation.ts": 4,
     "lib/kernel/schema-memory.ts": 4,
     "lib/kernel/scraping.ts": 8,
-    "lib/kernel/seat-usage.ts": 4,
+    "lib/kernel/seat-usage.ts": 5,
     "lib/kernel/second-opinion-runner.ts": 1,
     "lib/kernel/second-opinion.ts": 1,
     "lib/kernel/self-book.ts": 5,
@@ -3600,7 +3609,7 @@
     "lib/kernel/tenant-guard.ts": 1,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
     "lib/kernel/tenant-scope.ts": 7,
-    "lib/kernel/tier-role-matrix.ts": 17,
+    "lib/kernel/tier-role-matrix.ts": 18,
     "lib/kernel/title-closing-watchtower.ts": 8,
     "lib/kernel/tour-optimizer.ts": 12,
     "lib/kernel/transactions.ts": 21,
@@ -3795,6 +3804,7 @@
     "lib/marketing/creative-playbooks.ts": 1,
     "lib/marketing/email-campaign-sender.ts": 2,
     "lib/marketing/engagement-rollup.ts": 2,
+    "lib/marketing/estimate-sources.ts": 1,
     "lib/marketing/geo-faq.ts": 3,
     "lib/marketing/guide-booklet-content.ts": 2,
     "lib/marketing/home-value-email.ts": 2,
@@ -3818,6 +3828,7 @@
     "lib/marketing/stuck-campaign-reaper.ts": 1,
     "lib/marketing/stuck-social-post-policy.ts": 1,
     "lib/marketing/stuck-social-post-reaper.ts": 1,
+    "lib/marketing/tenant-screenshot-door.ts": 7,
     "lib/marketing/touchpoint-recorder.ts": 2,
     "lib/marketing/tracked-qr.ts": 7,
     "lib/marketing/trigger-match.ts": 2,
@@ -3970,7 +3981,6 @@
     "lib/pricing/predictive-pricing.ts": 1,
     "lib/privacy/contact-pii-redaction.ts": 2,
     "lib/property/address-lookup.ts": 1,
-    "lib/property/enrichment-chain.ts": 3,
     "lib/property/external-listings-search.ts": 1,
     "lib/property/listing-source.ts": 1,
     "lib/property/neighborhood-scoring.ts": 4,
@@ -3980,6 +3990,7 @@
     "lib/property/rentcast-normalize.ts": 2,
     "lib/property/rentcast.ts": 8,
     "lib/property/resolve-property-facts.ts": 4,
+    "lib/property/street-view.ts": 2,
     "lib/property-alerts/alert-cadence.ts": 1,
     "lib/property-alerts/alert-engine.ts": 2,
     "lib/property-alerts/alert-matcher.ts": 2,
@@ -4235,7 +4246,8 @@
     "lib/video/avatar-explainer.ts": 4,
     "lib/video/avatar-render-orchestrator.ts": 8,
     "lib/video/avatar-track-submit.ts": 1,
-    "lib/video/body-visual-model.ts": 10,
+    "lib/video/body-visual-model.ts": 20,
+    "lib/video/body-visual-rule-ledger.ts": 5,
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
     "lib/video/broll-url.ts": 1,
@@ -4249,7 +4261,7 @@
     "lib/video/director-eval-harness.ts": 5,
     "lib/video/duration-model.ts": 20,
     "lib/video/finish-spec.ts": 1,
-    "lib/video/format-learning.ts": 9,
+    "lib/video/format-learning.ts": 13,
     "lib/video/intro-video-reactor.ts": 2,
     "lib/video/ken-burns-plan.ts": 1,
     "lib/video/language-vocabulary.ts": 3,
@@ -4257,8 +4269,8 @@
     "lib/video/listing-promo-reactor.ts": 1,
     "lib/video/living-video-sweep.ts": 2,
     "lib/video/living-video.ts": 6,
-    "lib/video/memory-video-composition.ts": 6,
-    "lib/video/memory-video-gate.ts": 4,
+    "lib/video/memory-video-composition.ts": 7,
+    "lib/video/memory-video-gate.ts": 5,
     "lib/video/memory-video-render.ts": 1,
     "lib/video/memory-video.ts": 2,
     "lib/video/module-voice.ts": 2,
@@ -4266,6 +4278,7 @@
     "lib/video/narration-window.ts": 2,
     "lib/video/persona-overlay.ts": 1,
     "lib/video/persona-variant-post-pass.ts": 1,
+    "lib/video/pip-panel-split.ts": 2,
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
@@ -4276,7 +4289,7 @@
     "lib/video/script-compliance.ts": 9,
     "lib/video/script-structure.ts": 13,
     "lib/video/verbal-disclosure.ts": 1,
-    "lib/video/video-director.ts": 10,
+    "lib/video/video-director.ts": 11,
     "lib/video/video-identity.ts": 1,
     "lib/video/video-pipeline-reaper-policy.ts": 1,
     "lib/video/video-pipeline-reaper.ts": 1,
@@ -4407,6 +4420,7 @@
     "remotion/components/CaptionLayer.tsx": 1,
     "remotion/components/EndCard.tsx": 1,
     "remotion/components/EqualHousingMark.tsx": 1,
+    "remotion/components/KenBurnsPhoto.tsx": 1,
     "remotion/components/LowerThird.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 2,
     "remotion/components/SafeImg.tsx": 1,
@@ -5168,6 +5182,7 @@
       "startSubscriptionCheckout",
       "cancelSubscription",
       "getSeatDoorAction",
+      "setLicensedProducerAction",
       "buySeatPackagesAction",
       "changePlanTierAction"
     ],
@@ -6497,6 +6512,12 @@
     "app/actions/marketing/publish-guide-to-gbp.ts": [
       "publishGuideToGbpAction"
     ],
+    "app/actions/marketing/tenant-screenshots.ts": [
+      "listEstimateSourcesAction",
+      "captureEstimateStillAction",
+      "listTenantScreenshotStillsAction",
+      "setTenantScreenshotUsesAction"
+    ],
     "app/actions/marketing-agent-resolutions.ts": [
       "getPendingMarketingActions",
       "approveMarketingAction"
@@ -7644,6 +7665,10 @@
       "setScreenshotUsesAction",
       "listDemoStillSurfacesAction"
     ],
+    "app/actions/superadmin/stripe-webhook-events.ts": [
+      "checkStripeWebhookEventsAction",
+      "registerStripeWebhookEventsAction"
+    ],
     "app/actions/superadmin/subscriber-referrals.ts": [
       "listSubscriberReferralsAction",
       "recordSubscriberReferralAction",
@@ -8098,6 +8123,10 @@
       "assignVendorToTransactionAction",
       "updateVendorBookingStatusAction",
       "attachVendorDeliverableAction"
+    ],
+    "app/actions/video/body-visual-rules.ts": [
+      "listBodyVisualRulesAction",
+      "revertBodyVisualRuleAction"
     ],
     "app/actions/video/create-video-project.ts": [
       "improveScript",
@@ -12914,6 +12943,12 @@
     "app/settings/campaign-bundles/client.tsx": [
       "CampaignBundlesClient"
     ],
+    "app/settings/campaign-bundles/estimate-stills-card.tsx": [
+      "EstimateStillsCard"
+    ],
+    "app/settings/campaign-bundles/learned-visual-rules-card.tsx": [
+      "LearnedVisualRulesCard"
+    ],
     "app/settings/channel-presets/client.tsx": [
       "ChannelPresetsClient"
     ],
@@ -13843,6 +13878,10 @@
       "redactFactsForAudience",
       "normalizeStreetLine",
       "formatFullAddress",
+      "splitOneLineAddress",
+      "isAiEstimateAllowed",
+      "decideBatchDataAccess",
+      "resolveBatchDataAccess",
       "lookupPropertyForConversation"
     ],
     "lib/ai-isa/property-lookup-tools.ts": [
@@ -14325,6 +14364,7 @@
       "stripeAccountSideFor",
       "stripeMoneyPath",
       "connectDestinationReachable",
+      "planWebhookEventUnion",
       "webhookSecretFromConfig"
     ],
     "lib/billing/stripe-portal.ts": [
@@ -14349,6 +14389,11 @@
       "computeTrialExtension",
       "stripeApplyCoupon",
       "stripeRefundLatestInvoice"
+    ],
+    "lib/billing/stripe-webhook-registration.ts": [
+      "expectedWebhookUrl",
+      "sameWebhookUrl",
+      "syncStripeWebhookEvents"
     ],
     "lib/billing/stripe-webhook-secrets.ts": [
       "stripeWebhookCandidates",
@@ -15519,6 +15564,8 @@
       "classifyDidError",
       "isRetryable",
       "buildExpressAvatarRequest",
+      "transparentPresenterConfig",
+      "isWebmResult",
       "assetIdFromUserData",
       "externalKeyHeader",
       "normalizeConsentLanguage",
@@ -18023,6 +18070,7 @@
     ],
     "lib/kernel/seat-usage.ts": [
       "resolveSeatUsage",
+      "setLicensedProducerExemption",
       "resolveCatalogSeatLimits",
       "resolveTenantSeatTerms",
       "seatGate"
@@ -18161,6 +18209,7 @@
       "tierAllowsRole",
       "roleConsumesSeat",
       "roleProducesOnTier",
+      "parseNonProducingUserIds",
       "seatLimitForTier",
       "parseSeatOverride",
       "effectiveSeatLimit",
@@ -19180,6 +19229,9 @@
       "rollupEmailCampaignRates",
       "rollupNewsletterCampaignRates"
     ],
+    "lib/marketing/estimate-sources.ts": [
+      "estimateSource"
+    ],
     "lib/marketing/geo-faq.ts": [
       "buildFaqFromTopics",
       "faqPageJsonLd",
@@ -19281,6 +19333,15 @@
     ],
     "lib/marketing/stuck-social-post-reaper.ts": [
       "reapStuckSocialPosts"
+    ],
+    "lib/marketing/tenant-screenshot-door.ts": [
+      "planTenantStill",
+      "captureTenantEstimateStill",
+      "listTenantScreenshotStills",
+      "pickApprovedStill",
+      "approvedTenantStill",
+      "tenantScreenshotUrlsForVideo",
+      "ensureZestimateChallengeStill"
     ],
     "lib/marketing/touchpoint-recorder.ts": [
       "recordCampaignTouchpointSafe",
@@ -20107,11 +20168,6 @@
     "lib/property/address-lookup.ts": [
       "lookupPropertyByAddress"
     ],
-    "lib/property/enrichment-chain.ts": [
-      "enrichPropertyChain",
-      "getStreetViewImageUrl",
-      "getStaticMapImageUrl"
-    ],
     "lib/property/external-listings-search.ts": [
       "searchExternalListings"
     ],
@@ -20154,6 +20210,10 @@
       "resolvePropertyFacts",
       "verifyExternalAvailability",
       "normalizeVendorStatus"
+    ],
+    "lib/property/street-view.ts": [
+      "getStreetViewImageUrl",
+      "getStaticMapImageUrl"
     ],
     "lib/property-alerts/alert-cadence.ts": [
       "isSnoozed"
@@ -21325,16 +21385,33 @@
       "submitAvatarTrack"
     ],
     "lib/video/body-visual-model.ts": [
+      "checkRuleOverrideBounds",
+      "resolvePurposeRule",
       "segmentScript",
       "assetsFromProps",
+      "brollAvailable",
       "planBodyVisual",
+      "segmentUsesBroll",
       "fitBodyVisualPlan",
       "sceneWindowsFromPlan",
+      "panelWindowsFromPlan",
       "segmentAtFrame",
+      "photoSlotsForSegment",
+      "gateVisualPlanForDispatch",
+      "bareTalkingHeadPlan",
       "stageBodyVisualPlan",
       "safeInsets",
       "pipCornerStyle",
-      "insideSafeArea"
+      "insideSafeArea",
+      "planWantsKeyedPresenter",
+      "bodyVisualStamp"
+    ],
+    "lib/video/body-visual-rule-ledger.ts": [
+      "bodyVisualVetoKey",
+      "loadBodyVisualRuleOverrides",
+      "listBodyVisualRuleOverrides",
+      "applyBodyVisualRuleOverride",
+      "revertBodyVisualRuleOverride"
     ],
     "lib/video/broll-picker.ts": [
       "pickBrollClips"
@@ -21429,11 +21506,15 @@
       "scoreFormatOutcomes",
       "recommendFormatAdjustment",
       "loadFormatOutcomes",
+      "scoreBodyVisualOutcomes",
+      "recommendBodyVisualRuleAdjustment",
+      "loadBodyVisualOutcomes",
       "scoreHookOutcomes",
       "recommendHookWinner",
       "loadHookExperiment",
       "pickPluralityAngle",
-      "recommendPreferredAngleForKind"
+      "recommendPreferredAngleForKind",
+      "runBodyVisualRuleLearning"
     ],
     "lib/video/intro-video-reactor.ts": [
       "dispatchAssignmentIntroVideo",
@@ -21468,6 +21549,7 @@
       "summarizeRefresh"
     ],
     "lib/video/memory-video-composition.ts": [
+      "memoryChapterSegments",
       "memoryVideoCoverFrames",
       "chapterDurationFrames",
       "estimatedChapterSeconds",
@@ -21478,6 +21560,7 @@
     "lib/video/memory-video-gate.ts": [
       "qualifiesForMemoryVideo",
       "assessMemoryVideoTenure",
+      "assessSellerMedia",
       "assembleSellerDictatedScript",
       "isSellerAuthored"
     ],
@@ -21507,6 +21590,10 @@
     ],
     "lib/video/persona-variant-post-pass.ts": [
       "runPersonaVariantPostPass"
+    ],
+    "lib/video/pip-panel-split.ts": [
+      "explainerPanelSplit",
+      "thirdsPanelSplit"
     ],
     "lib/video/playable-video.ts": [
       "resolvePlayableVideo"
@@ -21595,6 +21682,7 @@
       "defaultHookForSituation",
       "hookVariants",
       "assemblySpec",
+      "videoPurposeForSituation",
       "commissionVideo",
       "commissionVideoExperiment"
     ],
@@ -22141,6 +22229,9 @@
     ],
     "remotion/components/EqualHousingMark.tsx": [
       "EqualHousingMark"
+    ],
+    "remotion/components/KenBurnsPhoto.tsx": [
+      "KenBurnsPhoto"
     ],
     "remotion/components/LowerThird.tsx": [
       "LowerThird"
