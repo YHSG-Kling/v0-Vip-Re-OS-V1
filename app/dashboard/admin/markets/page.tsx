@@ -30,7 +30,7 @@ export const metadata = {
 export default async function MarketsSetupPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
 
   const { data: userData } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()

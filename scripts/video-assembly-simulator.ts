@@ -95,7 +95,7 @@ import { clipCaptionCuesBeforeFrame, clipCaptionCuesFromFrame, shiftCaptionCues,
 import { shouldAutoRequeueFailedRender, MAX_AUTO_REQUEUE_ATTEMPTS } from "../lib/remotion/render-decision"
 import {
   VIDEO_COMPOSITION_FILES, safeEval, buildScope, extractSegments, extractKeyedUnitDurations,
-  gapExplainedByKeyedRepeat, tileSegments, type Segment,
+  gapExplainedByKeyedRepeat, tileSegments, productPromoSceneChain, type Segment,
 } from "./composition-segments"
 import {
   MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS, memoryVideoChapterLayout, memoryVideoDurationFrames,
@@ -160,7 +160,11 @@ function sumsSection() {
     // Checked below (delegates the full window, not a slice of it).
     // MemoryVideoReel (lane 78D): every slot is computed from props and the
     // length from calculateMetadata — checked by its own rule below.
-    if (["ListingPresentationSlide", "BuyerConsultationSlide", "PhotoWalkthroughReel", "PartnersMeetingReel", "ListingSectionReel", "MemoryVideoReel"].includes(id)) continue
+    // ProductPromoReel (lane 79C): the hook/beat scene windows come from the
+    // body-visual plan (sceneWindowsFromPlan) — `scenes.hook.from` is a
+    // runtime value; checked below through the SAME helper, with and without
+    // a plan, at the cap and at a planned duration.
+    if (["ListingPresentationSlide", "BuyerConsultationSlide", "PhotoWalkthroughReel", "PartnersMeetingReel", "ListingSectionReel", "MemoryVideoReel", "ProductPromoReel"].includes(id)) continue
 
     let result = tileSegments(segments, geometry.duration_frames)
     let note = ""
@@ -232,6 +236,34 @@ function sumsSection() {
       !/const\s+[A-Z_]{3,}\s*=\s*\d/.test(source))
     check("CONTROL: the tiler still refuses a layout with a hole — dropping the outro is caught",
       !tileSegments(synthetic.slice(0, -1), total).ok)
+  }
+
+  // ── ProductPromoReel (lane 79C) — a PLAN-DRIVEN scene chain: the hook and
+  // each proof beat get the frames their spoken words take (the body-visual
+  // plan the product spec stages, re-fitted to the render's duration), the
+  // last beat runs to the body's end, the CTA tile is the registered outro.
+  // The RULE: the chain tiles [0, total) exactly WITH the plan and WITHOUT it
+  // (the even-split fallback), at the cap and at a shorter planned length;
+  // and the source mounts the scenes through the ONE helper. ──
+  {
+    const id = "ProductPromoReel"
+    const geometry = COMPOSITION_GEOMETRY[id]
+    const source = readStripped(VIDEO_COMPOSITION_FILES[id])
+    for (const total of [geometry.duration_frames, 1200]) {
+      const withPlan = tileSegments(productPromoSceneChain(total, { withPlan: true }), total)
+      const without = tileSegments(productPromoSceneChain(total, { withPlan: false }), total)
+      check(`${id}: hook + beats (from the body-visual plan) + CTA tile [0, ${total}) exactly`, withPlan.ok, withPlan.reason)
+      check(`${id}: …and the no-plan even split tiles [0, ${total}) exactly too`, without.ok, without.reason)
+    }
+    const planned = productPromoSceneChain(geometry.duration_frames, { withPlan: true }), even = productPromoSceneChain(geometry.duration_frames, { withPlan: false })
+    check(`${id}: the plan actually moves the scene cuts (word-weighted ≠ even split) — the plan is read, not decorative`,
+      planned.map((s) => s.duration).join() !== even.map((s) => s.duration).join())
+    check(`${id}: the composition mounts the hook and each beat through sceneWindowsFromPlan (scenes.hook / scenes.beats[i]) and the CTA at BODY for CTA`,
+      /sceneWindowsFromPlan\(plan, BODY, beats\.length\)/.test(source)
+      && /<Sequence from=\{scenes\.hook\.from\} durationInFrames=\{scenes\.hook\.durationInFrames\}>/.test(source)
+      && /from=\{scenes\.beats\[i\]\.from\} durationInFrames=\{scenes\.beats\[i\]\.durationInFrames\}/.test(source)
+      && /<Sequence from=\{BODY\} durationInFrames=\{CTA\}>/.test(source))
+    check("CONTROL: the tiler still refuses the plan chain with its CTA tile dropped", !tileSegments(planned.slice(0, -1), geometry.duration_frames).ok)
   }
 
   // ── The two single-segment slides — bounded avatar window, not a chain ──

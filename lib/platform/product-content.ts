@@ -12,6 +12,8 @@
 // by design and is NOT reused here).
 
 import { type ProductBrand, DEFAULT_PRODUCT_BRAND, brandCta, topicToAngle } from "./product-brand"
+import { stageBodyVisualPlan, type BodyVisualPlan, type ScriptSegment } from "@/lib/video/body-visual-model"
+import { spokenWords } from "@/lib/video/script-structure"
 
 export const PRODUCT_CHANNELS = ["linkedin", "instagram", "facebook", "x"] as const
 export type ProductChannel = (typeof PRODUCT_CHANNELS)[number]
@@ -163,7 +165,7 @@ export interface ProductVideoSpec {
   height: number
   fps: 30
   durationInFrames: 450
-  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string; name?: string; tagline?: string }; ctaDomain?: string; imageUrls?: string[]; captionScript?: string }
+  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string; name?: string; tagline?: string }; ctaDomain?: string; imageUrls?: string[]; captionScript?: string; bodyVisualPlan?: BodyVisualPlan }
   /** The voiceover/caption script — hook + beats + CTA, honest, no invented stats. */
   script: string
   /** The social caption that ships WITH the video (same composer as text posts). */
@@ -196,6 +198,29 @@ export function composeProductVideoSpec(
     : videoProofBeats(resolvedAngle)
   const cta = "See the AI team hand a real deal between managers — live."
   const post = composeProductPost(f.channel, custom ? angle : resolvedAngle, brand, custom)
+  const baseProps = {
+    hook: a.hook, proofs: beats, cta,
+    brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, name: brand.name, tagline: brand.tagline },
+    ctaDomain: brand.ctaUrl.replace(/^https?:\/\//, "") + "/get-started",
+    imageUrls,
+    // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
+    // string as `script` below (§6, one text): product-content-autopilot.ts
+    // staged `script` onto the draft row but never into inputProps, so the
+    // composition (which has no other way to receive it) rendered caption-less.
+    captionScript: [a.hook, ...beats, cta].join("\n"),
+  }
+  // THE BODY VISUAL (wave 79C, lib/video/body-visual-model.ts): the demo's
+  // segments are ALREADY cut (hook → three proof beats → CTA), so they are
+  // handed over as-is; the product_demo rule puts the OS itself on screen —
+  // `imageUrls` here ARE screenshot stills (demoStillImageUrls, the
+  // screenshot seam) — behind each beat, with kinetic text when no still
+  // exists yet. Pure: the plan is deterministic from the text and the stills.
+  const segments: ScriptSegment[] = [
+    { kind: "hook", text: a.hook, words: spokenWords(a.hook).length },
+    ...beats.map((b): ScriptSegment => ({ kind: "beat", text: b, words: spokenWords(b).length })),
+    { kind: "cta", text: cta, words: spokenWords(cta).length },
+  ]
+  const visual = stageBodyVisualPlan({ compositionId: "ProductPromoReel", props: baseProps, avatarClip: false, segments })
   return {
     compositionId: "ProductPromoReel",
     format: VIDEO_FORMATS[format] ? format : "vertical",
@@ -204,15 +229,8 @@ export function composeProductVideoSpec(
     fps: 30,
     durationInFrames: 450,
     inputProps: {
-      hook: a.hook, proofs: beats, cta,
-      brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, name: brand.name, tagline: brand.tagline },
-      ctaDomain: brand.ctaUrl.replace(/^https?:\/\//, "") + "/get-started",
-      imageUrls,
-      // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
-      // string as `script` below (§6, one text): product-content-autopilot.ts
-      // staged `script` onto the draft row but never into inputProps, so the
-      // composition (which has no other way to receive it) rendered caption-less.
-      captionScript: [a.hook, ...beats, cta].join("\n"),
+      ...baseProps,
+      ...(visual.ok ? { bodyVisualPlan: visual.plan } : {}),
     },
     script: [a.hook, ...beats, cta].join("\n"),
     caption: post.content,

@@ -17,7 +17,7 @@ export const metadata = {
  */
 export default async function ApiTokensPage() {
   const gate = await requirePlatformCapability("providers")
-  if (!gate.userId) redirect("/auth/login")
+  if (!gate.userId) redirect("/login")
   if (!gate.ok) redirect("/dashboard")
 
   const res = await listAgenticTokens()

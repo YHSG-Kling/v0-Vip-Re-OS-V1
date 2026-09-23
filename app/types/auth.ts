@@ -94,3 +94,14 @@ export function toMagicLinkMessage(raw: string | null | undefined): MagicLinkMes
   const v = decodeURIComponent(raw).trim()
   return (MAGIC_LINK_MESSAGES as readonly string[]).includes(v) ? (v as MagicLinkMessage) : null
 }
+
+// ── PAID ACTIVATION OUTCOMES (wave 79A) ──────────────────────────────────────
+// The hosted activation checkout (lib/kernel/tenant-creation.ts →
+// createActivationCheckout) returns the payer to /login with `?activated=1`
+// on success (the webhook links the row) or `?activation=cancelled` when they
+// left the Stripe page. One wording per outcome; the query string itself is
+// never echoed. Read by app/login/page.tsx.
+export const ACTIVATION_COPY = {
+  activated: "Your subscription is active. Sign in with the email you used at checkout — if you have not set a password yet, use the sign-in link in your inbox.",
+  cancelled: "Checkout was not completed, so your plan is not active yet. Sign in to finish activating from Settings → Billing, or use the checkout link in your email.",
+} as const

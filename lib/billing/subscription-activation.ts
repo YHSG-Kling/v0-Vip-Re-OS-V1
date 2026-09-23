@@ -205,6 +205,14 @@ export interface NormalizedStripeSub {
   currentPeriodEnd: number | null
   trialEnd: number | null
   cancelAt: number | null
+  /** SEAT FACTS (wave 79A) — present only when the caller derived them from
+   *  the subscription ITEMS (lib/billing/seat-packages.ts). Absent ⇒ the patch
+   *  leaves the seat columns alone, so a caller that did not look at the items
+   *  can never zero a tenant's purchased seats by omission. */
+  stripePriceId?: string | null
+  stripeSeatItemId?: string | null
+  seatPackages?: number
+  extraSeats?: number
 }
 
 const iso = (unix: number | null): string | null => (unix ? new Date(unix * 1000).toISOString() : null)
@@ -212,6 +220,14 @@ const iso = (unix: number | null): string | null => (unix ? new Date(unix * 1000
 /** Build the `subscriptions` row patch (never includes brokerage_id — the writer
  *  scopes by that). Pure + unit-testable. */
 export function buildSubscriptionPatch(s: NormalizedStripeSub): Record<string, unknown> {
+  const seatFacts = s.seatPackages !== undefined && s.extraSeats !== undefined
+    ? {
+        seat_packages: s.seatPackages,
+        extra_seats: s.extraSeats,
+        stripe_seat_item_id: s.stripeSeatItemId ?? null,
+        ...(s.stripePriceId ? { stripe_price_id: s.stripePriceId } : {}),
+      }
+    : {}
   return {
     stripe_subscription_id: s.stripeSubscriptionId,
     stripe_customer_id: s.stripeCustomerId,
@@ -224,6 +240,7 @@ export function buildSubscriptionPatch(s: NormalizedStripeSub): Record<string, u
     current_period_end: iso(s.currentPeriodEnd),
     trial_end: iso(s.trialEnd),
     cancel_at: iso(s.cancelAt),
+    ...seatFacts,
     updated_at: new Date().toISOString(),
   }
 }

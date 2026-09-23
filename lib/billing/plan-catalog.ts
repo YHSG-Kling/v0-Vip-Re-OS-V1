@@ -50,30 +50,36 @@ export const AI_OVERAGE_METRIC = "ai_tokens_monthly" as const
 export const CANONICAL_TIERS = ["solo_agent", "team", "brokerage", "multi_location"] as const
 export type CanonicalTierName = (typeof CANONICAL_TIERS)[number]
 
-// ── THE SEAT BANDS — ONE DERIVATION (wave 78A, owner verbatim 2026-09-22) ─────
+// ── THE SEAT BANDS — ONE DERIVATION (wave 79A, owner verbatim 2026-09-23) ─────
 //
-//   "the tier seat bands are solo agent maxseats 2 team is 5 brokerage is
-//    unlimited and same to multiple locations is unlimited. … staff should not
-//    take up seats. … these seat numbers have already been coded."
+//   "not charging for staff/admin (non producing) and charging producing
+//    seats. solo tier is 2 seats; team tier is 10 seats; brokerage tier is 30
+//    seats; multi location tier is custom pricing for seats. the fee is setup
+//    fee. there will be an opportunity for buying more seat packages and if
+//    the tenant hits a limit they will be able to either upgrade to a higher
+//    tier (or lower tier if their business changes) or buy more seats.
+//    subscriptions will be setup in stripe so they sync."
 //
-// They HAD been coded — in three places that disagreed: lib/kernel/tier-role-
-// matrix.ts said 2/5/50/null (brokerage 50 per the superseded 2026-08-22
-// ruling), lib/platform/prospect-conversion.ts said 1/15/75/∞ (a tier-fit
-// table nobody reconciled), and the live catalogue (subscription_tiers.
-// max_agents, plan_limits.active_users) said 2/5/50. CLAUDE.md §6: two
-// spellings of one number is a defect. This is the ONE product statement of
-// the bands; every other seat surface DERIVES from it:
+// SUPERSEDES wave 78A's 2 / 5 / ∞ / ∞ (m655). Wave 78A had already collapsed
+// three disagreeing tables (tier-role-matrix 2/5/50, prospect-conversion
+// 1/15/75, the live catalogue 2/5/50) onto THIS object; the number moves here
+// and nowhere else. Every other seat surface DERIVES from it:
 //
 //   · lib/kernel/tier-role-matrix.ts  TIER_SEAT_LIMITS  ≡ this object (the
 //     gate's fallback when the catalogue cannot be read)
 //   · lib/platform/prospect-conversion.ts tierForProspect → tierForSeatCount
-//   · supabase/migrations/m655-…sql moves the live catalogue onto it; the
+//   · supabase/migrations/m660-…sql moves the live catalogue onto it; the
 //     seat gate reads the catalogue FIRST (resolveCatalogSeatLimits) and
-//     scripts/seat-bands-guard.ts pins the migration's numbers to this table.
+//     scripts/seat-bands-guard.ts + scripts/seat-packages-guard.ts pin the
+//     migration's numbers to this table.
 //
-// `null` = unlimited. multi_location is unlimited too — it is chosen by SHAPE
-// (several offices), never by a seat count, which is why tierForSeatCount can
-// never return it.
+// `null` = CUSTOM. multi_location has no band: its seats are negotiated per
+// tenant (subscriptions.custom_seat_limit, priced by a tenant-specific Stripe
+// price — subscriptions.custom_stripe_price_id) and a multi_location tenant
+// with no negotiated count is UNLIMITED for the gate (nobody is refused for
+// a number nobody set). The band is a floor, not a ceiling: a tenant's
+// EFFECTIVE cap is band + purchased extra seats (seat packages, below), so
+// hitting the band is a DOOR — upgrade, downgrade, or buy seats — never a wall.
 //
 // WHAT A SEAT IS (the second half of the ruling) lives beside the count that
 // enforces it: lib/kernel/tier-role-matrix.ts PRODUCER_SEAT_ROLES /
@@ -81,24 +87,76 @@ export type CanonicalTierName = (typeof CANONICAL_TIERS)[number]
 // form: a seat is a LICENSED PRODUCER; staff never consume one.
 export const TIER_SEAT_BANDS: Readonly<Record<CanonicalTierName, number | null>> = Object.freeze({
   solo_agent:     2,
-  team:           5,
-  brokerage:      null,
+  team:           10,
+  brokerage:      30,
   multi_location: null,
 })
 
 /** PURE: the cheapest tier whose band fits this many producer seats, walking
  *  CANONICAL_TIERS in order. 0/NaN/negative reads as one seat (the person
- *  asking). Never returns a tier by mistake of arithmetic — the first
- *  unlimited band takes everything above the capped ones. */
+ *  asking). A count above every capped band lands on the custom tier
+ *  (multi_location) — the only plan that seats it — which the conversion
+ *  path already hands to a person (conversionHumanReasons: enterprise_size). */
 export function tierForSeatCount(seats: number | null | undefined): CanonicalTierName {
   const n = typeof seats === "number" && Number.isFinite(seats) && seats > 0 ? Math.round(seats) : 1
   for (const tier of CANONICAL_TIERS) {
     const band = TIER_SEAT_BANDS[tier]
     if (band === null || n <= band) return tier
   }
-  // Unreachable while any band is unlimited; kept so a future all-capped table
-  // still answers with the largest tier rather than undefined.
+  // Reached only if every band is capped: the largest tier still answers.
   return CANONICAL_TIERS[CANONICAL_TIERS.length - 1]
+}
+
+/** PURE: the first seat count that NO capped band fits — the seat at which a
+ *  prospect is an enterprise conversation (custom pricing, a person). Derived
+ *  so it moves with the bands instead of drifting from them. */
+export function seatCountAboveEveryBand(): number {
+  let top = 0
+  for (const tier of CANONICAL_TIERS) {
+    const band = TIER_SEAT_BANDS[tier]
+    if (band !== null && band > top) top = band
+  }
+  return top + 1
+}
+
+// ── SEAT PACKAGES (wave 79A) ─────────────────────────────────────────────────
+//
+// A seat package is a Stripe add-on: ONE licensed price per tier
+// (subscription_tiers.stripe_seat_price_id) sold by QUANTITY on a second
+// subscription item, `seat_package_size` seats per unit at
+// `seat_package_price_cents` per unit per month. Stripe is the catalogue
+// source — the superadmin "sync from Stripe" action writes these columns from
+// the live prices, and the webhook / reconcile write the tenant's purchased
+// quantity onto subscriptions.seat_packages / extra_seats. A tier whose seat
+// price is NOT linked cannot sell packages: the door then offers the tier
+// change only and says why (fail closed — never a "buy" button that charges
+// nothing, CLAUDE.md §4).
+export interface SeatPackageFacts {
+  /** Seats per package unit (≥ 1). */
+  size: number
+  /** Monthly price per package unit, integer cents; null = not priced yet. */
+  priceCents: number | null
+  /** The Stripe licensed price the package is sold on; null = not linked. */
+  stripePriceId: string | null
+}
+
+/** Tier → seat-package facts read from the catalogue. Absent / null = the
+ *  tier sells no packages (multi_location: custom pricing, a person). */
+export type SeatPackageCatalog = Partial<Record<CanonicalTierName, SeatPackageFacts | null>>
+
+/** PURE: may this tier sell seat packages right now? Requires a size, a
+ *  price and a Stripe price — a package with any of the three missing is not
+ *  sellable, and the door must not offer it. */
+export function seatPackageSellable(facts: SeatPackageFacts | null | undefined): facts is SeatPackageFacts & { priceCents: number; stripePriceId: string } {
+  return !!facts && Number.isInteger(facts.size) && facts.size >= 1
+    && typeof facts.priceCents === "number" && Number.isInteger(facts.priceCents) && facts.priceCents > 0
+    && typeof facts.stripePriceId === "string" && facts.stripePriceId.trim().length > 0
+}
+
+/** PURE: how many package units cover `seatsOver` more seats. */
+export function seatPackagesNeeded(seatsOver: number, packageSize: number): number {
+  if (!(seatsOver > 0) || !(packageSize >= 1)) return 0
+  return Math.ceil(seatsOver / packageSize)
 }
 
 export interface PlanTierInput {
@@ -113,6 +171,10 @@ export interface PlanTierInput {
   isActive?: boolean
   maxAgents?: number | null
   stripePriceId?: string | null
+  /** Seat package (wave 79A): seats per unit, cents per unit, the Stripe licensed price. */
+  seatPackageSize?: number | null
+  seatPackagePriceCents?: number | null
+  stripeSeatPriceId?: string | null
 }
 
 export interface NormalizedPlanTier {
@@ -127,6 +189,9 @@ export interface NormalizedPlanTier {
   isActive: boolean
   maxAgents: number | null
   stripePriceId: string | null
+  seatPackageSize: number | null
+  seatPackagePriceCents: number | null
+  stripeSeatPriceId: string | null
 }
 
 export type ValidationResult =
@@ -272,6 +337,17 @@ export function validatePlanTierInput(input: PlanTierInput): ValidationResult {
 
   const maxAgents = input.maxAgents == null ? null : (Number.isFinite(Number(input.maxAgents)) && Number(input.maxAgents) >= 0 ? Math.round(Number(input.maxAgents)) : null)
 
+  // Seat package: size ≥ 1 when given; price non-negative integer cents when
+  // given. Malformed money is REFUSED, not repaired (same discipline as the
+  // overage rate). A 0-cent price is stored as null — "not priced", never
+  // "free seats" (a free package would sell producers unbilled).
+  const seatPackageSize = input.seatPackageSize == null ? null : Number(input.seatPackageSize)
+  if (seatPackageSize !== null && (!Number.isInteger(seatPackageSize) || seatPackageSize < 1)) {
+    return { ok: false, error: "seat_package_size must be an integer >= 1 (seats per package)" }
+  }
+  const seatPrice = input.seatPackagePriceCents == null ? null : nonNeg(input.seatPackagePriceCents)
+  if (seatPrice !== null && Number.isNaN(seatPrice)) return { ok: false, error: "seat_package_price_cents must be a non-negative integer" }
+
   return {
     ok: true,
     value: {
@@ -286,6 +362,9 @@ export function validatePlanTierInput(input: PlanTierInput): ValidationResult {
       isActive: input.isActive !== false,
       maxAgents,
       stripePriceId: (input.stripePriceId ?? "").trim() || null,
+      seatPackageSize,
+      seatPackagePriceCents: seatPrice === null || seatPrice === 0 ? null : seatPrice,
+      stripeSeatPriceId: (input.stripeSeatPriceId ?? "").trim() || null,
     },
   }
 }

@@ -294,7 +294,24 @@ check("refresh: no new cron — CRON_REGISTRY carries no screenshot/still entry 
 }
 // human door
 const door = strippedKeepStrings("app/actions/superadmin/screenshot-capture.ts")
-check("the superadmin door gates EVERY export with requireMarketing before the service client (§4 gate first) and is 'use server' with async exports only", src("app/actions/superadmin/screenshot-capture.ts").startsWith('"use server"') && (door.match(/export async function/g) ?? []).length === 3 && !/export (const|function|let)/.test(door) && (door.match(/await requireMarketing\(\)/g) ?? []).length === 3 && door.indexOf("await requireMarketing()") < door.indexOf("createServiceClient()"))
+// Re-anchored (wave 79C, CLAUDE.md §2 — assert the RULE, never a waypoint):
+// the door's export COUNT was pinned at 3 and went red the moment lane 79C
+// added the two multi-use doors (list stills for a use / set a still's
+// uses). The rule is per export: every `export async function` awaits
+// requireMarketing() before it touches the service client, and there are no
+// non-async exports. Derived from the source, whatever the count.
+{
+  const doorExports = door.split(/(?=export async function )/).filter((chunk) => chunk.startsWith("export async function "))
+  const gatedFirst = doorExports.every((chunk) => {
+    const gate = chunk.indexOf("await requireMarketing()")
+    const svcAt = chunk.indexOf("createServiceClient()")
+    return gate !== -1 && (svcAt === -1 || gate < svcAt)
+  })
+  check(`the superadmin door gates EVERY export (${doorExports.length}) with requireMarketing before the service client (§4 gate first) and is 'use server' with async exports only`,
+    src("app/actions/superadmin/screenshot-capture.ts").startsWith('"use server"') && doorExports.length >= 3 && !/export (const|function|let)/.test(door) && gatedFirst)
+  check("CONTROL: an export that reaches the service client before the gate is caught",
+    !(["export async function bad() {\n  const svc = createServiceClient()\n  const auth = await requireMarketing()\n}"].every((chunk) => { const g = chunk.indexOf("await requireMarketing()"); const s = chunk.indexOf("createServiceClient()"); return g !== -1 && (s === -1 || g < s) })))
+}
 check("the door never accepts a brokerageId from its input (tenant is the demo tenant, resolved server-side)", !/input\.brokerageId|brokerageId: input/.test(door) && door.includes('brokerageId: "platform"'))
 check("refresh: the asset-manager regenerate_asset(kind=image) path already flips regen_status — the seam adds no second flag writer", (strippedKeepStrings("lib/agents/asset-manager-actions.ts").match(/regen_status: "requested"/g) ?? []).length === 1 && (seamSrc.match(/regen_status: "requested"/g) ?? []).length === 1)
 

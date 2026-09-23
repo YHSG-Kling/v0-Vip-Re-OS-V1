@@ -50,7 +50,7 @@ async function requireSuperadmin(): Promise<{ ok: true; userId: string } | { ok:
   return { ok: true, userId: user.id }
 }
 
-const TIER_COLS = "id, tier_name, display_name, description, monthly_price_cents, annual_price_cents, setup_fee_cents, marketing_bullets, is_featured, is_active, max_agents, max_brokerages, stripe_price_id, features"
+const TIER_COLS = "id, tier_name, display_name, description, monthly_price_cents, annual_price_cents, setup_fee_cents, marketing_bullets, is_featured, is_active, max_agents, max_brokerages, stripe_price_id, features, seat_package_size, seat_package_price_cents, stripe_seat_price_id"
 
 export async function listPlanTiersAction(): Promise<{ ok: true; tiers: any[] } | { ok: false; error: string }> {
   const auth = await requireSuperadmin()
@@ -80,6 +80,9 @@ export async function upsertPlanTierAction(input: PlanTierInput & { id?: string 
     is_active: v.value.isActive,
     max_agents: v.value.maxAgents,
     stripe_price_id: v.value.stripePriceId,
+    seat_package_size: v.value.seatPackageSize,
+    seat_package_price_cents: v.value.seatPackagePriceCents,
+    stripe_seat_price_id: v.value.stripeSeatPriceId,
   }
 
   if (input.id) {
@@ -140,6 +143,46 @@ export async function syncPlanTierFromStripeAction(tierId: string): Promise<{ ok
   } catch (err: any) {
     return { ok: false, error: `Stripe sync failed: ${err?.message ?? "unknown"}` }
   }
+}
+
+/**
+ * SYNC THE WHOLE CATALOGUE FROM STRIPE (wave 79A — owner: "subscriptions will
+ * be setup in stripe so they sync"). Stripe is the catalogue source: every
+ * ACTIVE recurring price whose metadata names a canonical `tier_name` lands
+ * on its tier — a monthly plan price → stripe_price_id + monthly_price_cents,
+ * a yearly one → annual_price_cents, and a `kind = seat_package` price →
+ * stripe_seat_price_id + seat_package_price_cents (+ seat_package_size from
+ * metadata / transform_quantity). Prices it cannot place are RETURNED by id
+ * with the reason, never guessed; tiers Stripe holds no plan price for are
+ * named so a "synced" catalogue is never read as complete. Every tier write
+ * is COUNTED and audited. Pure mapping: lib/billing/seat-packages.ts
+ * catalogFromStripePrices. `dryRun` returns the patches without writing.
+ */
+export async function syncCatalogFromStripeAction(opts: { dryRun?: boolean } = {}): Promise<
+  | { ok: true; updated: Array<{ tierName: string; patch: Record<string, unknown> }>; unmatched: Array<{ priceId: string; reason: string }>; tiersWithoutPlanPrice: string[]; dryRun: boolean }
+  | { ok: false; error: string }
+> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const { stripeListActivePrices } = await import("@/lib/billing/stripe-subscription-ops")
+  const listed = await stripeListActivePrices()
+  if (!listed.ok) return { ok: false, error: listed.skipped ? "Stripe is not configured (STRIPE_SECRET_KEY) — nothing to sync from" : `Stripe price list failed: ${listed.error ?? "unknown"}` }
+  const { catalogFromStripePrices, priceFactsOf } = await import("@/lib/billing/seat-packages")
+  const mapped = catalogFromStripePrices(listed.prices.map(priceFactsOf))
+
+  const svc = createServiceClient()
+  const updated: Array<{ tierName: string; patch: Record<string, unknown> }> = []
+  for (const { tierName, patch } of mapped.patches) {
+    if (Object.keys(patch).length === 0) continue
+    if (opts.dryRun) { updated.push({ tierName, patch }); continue }
+    const { data, error } = await svc.from("subscription_tiers").update(patch).eq("tier_name", tierName).select("id")
+    if (error) return { ok: false, error: `subscription_tiers update refused for ${tierName}: ${error.message}` }
+    if (!data || data.length === 0) return { ok: false, error: `no subscription_tiers row for '${tierName}' — a tier is a migration decision, never minted by a sync` }
+    updated.push({ tierName, patch })
+    await audit(auth.userId, "plan_tier.catalog_synced_from_stripe", (data[0] as any).id, { tierName, patch })
+  }
+  if (!opts.dryRun) { revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup") }
+  return { ok: true, updated, unmatched: mapped.unmatched, tiersWithoutPlanPrice: mapped.tiersWithoutPlanPrice, dryRun: opts.dryRun === true }
 }
 
 /**

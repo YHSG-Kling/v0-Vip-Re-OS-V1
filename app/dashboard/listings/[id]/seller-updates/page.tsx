@@ -47,7 +47,7 @@ export default async function SellerUpdatesPage({ params }: PageProps) {
   try {
     agentContext = await getAgentContext()
   } catch {
-    redirect("/auth/login")
+    redirect("/login")
   }
 
   const { agentId, brokerageId } = agentContext

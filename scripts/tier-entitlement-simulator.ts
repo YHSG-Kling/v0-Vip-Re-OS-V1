@@ -48,7 +48,7 @@ const TIERS: Record<string, Record<string, boolean>> = {
 // wave 78A: brokerage unlimited). It is asserted equal to TIER_SEAT_LIMITS
 // below, so if either the catalogue or the code literal moves without the
 // other, this fixture is what reports it.
-const MAX_AGENTS: Record<string, number | null> = { solo_agent: 2, team: 5, brokerage: null, multi_location: null }
+const MAX_AGENTS: Record<string, number | null> = { solo_agent: 2, team: 10, brokerage: 30, multi_location: null } // wave 79A (m660)
 
 async function main() {
   console.log("\n[isTierFeatureIncluded · pure — object shape]")
@@ -73,9 +73,9 @@ async function main() {
   check("EVERY tier gets EVERY tool capability", Object.values(TIERS).every((t) => ALL_TOOLS.every((k) => isTierFeatureIncluded(t, k) === true)))
   check("multi_location still owns the SCALE flags (usage_metering + multi_brokerage)", isTierFeatureIncluded(TIERS.multi_location, "usage_metering") === true && isTierFeatureIncluded(TIERS.multi_location, "multi_brokerage") === true)
   check("non-multi tiers do NOT get multi_brokerage (scale-gated)", !isTierFeatureIncluded(TIERS.solo_agent, "multi_brokerage") && !isTierFeatureIncluded(TIERS.team, "multi_brokerage") && !isTierFeatureIncluded(TIERS.brokerage, "multi_brokerage"))
-  // OWNER, 2026-09-22 (wave 78A): 2 → 5 → unlimited → unlimited. m655 moves brokerage live.
-  check("SCALE is the differentiator — seats step 2 → 5 → unlimited → unlimited (owner's ruling)",
-    MAX_AGENTS.solo_agent === 2 && MAX_AGENTS.team === 5 && MAX_AGENTS.brokerage === null
+  // OWNER, 2026-09-23 (wave 79A): 2 → 10 → 30 → custom. m660 moves the catalogue live.
+  check("SCALE is the differentiator — seats step 2 → 10 → 30 → custom (owner's ruling)",
+    MAX_AGENTS.solo_agent === 2 && MAX_AGENTS.team === 10 && MAX_AGENTS.brokerage === 30
     && MAX_AGENTS.multi_location === null)
   check("…and these agree with the seat matrix the gate enforces, so catalogue and code cannot drift",
     MAX_AGENTS.solo_agent === TIER_SEAT_LIMITS.solo_agent
@@ -120,17 +120,17 @@ async function main() {
     resolveEntitlement({ flag: { ...OPEN_FLAG, tierLimit: 5 }, usageCurrent: 5, tier: "solo_agent" }).allowed === false)
 
   console.log("\n[PARITY · SEATS STILL DIFFER — the ruling is the seat count, so flattening it would break it]")
-  check("solo is capped at 2 · team at 5 · brokerage unlimited · multi unlimited",
-    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
-    && TIER_SEAT_LIMITS.brokerage === null && TIER_SEAT_LIMITS.multi_location === null)
+  check("solo is capped at 2 · team at 10 · brokerage at 30 · multi custom",
+    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 10
+    && TIER_SEAT_LIMITS.brokerage === 30 && TIER_SEAT_LIMITS.multi_location === null)
   check("a 3rd seat on solo is REFUSED and names the upgrade",
     seatDecision("solo_agent", 2, null, 1).withinLimit === false
     && seatDecision("solo_agent", 2, null, 1).upgradeTo === "team")
-  check("a 6th seat on team is REFUSED and names the upgrade",
-    seatDecision("team", 5, null, 1).withinLimit === false
-    && seatDecision("team", 5, null, 1).upgradeTo === "brokerage")
-  check("a brokerage is NEVER refused (unlimited — wave 78A)",
-    seatDecision("brokerage", 50, null, 1).withinLimit === true && seatDecision("brokerage", 5000, null, 1).withinLimit === true)
+  check("the seat past the team band is REFUSED and names the upgrade",
+    seatDecision("team", TIER_SEAT_LIMITS.team as number, null, 1).withinLimit === false
+    && seatDecision("team", TIER_SEAT_LIMITS.team as number, null, 1).upgradeTo === "brokerage")
+  check("a brokerage is admitted under its band and refused at it (wave 79A)",
+    seatDecision("brokerage", (TIER_SEAT_LIMITS.brokerage as number) - 1, null, 1).withinLimit === true && seatDecision("brokerage", TIER_SEAT_LIMITS.brokerage as number, null, 1).withinLimit === false)
   check("POSITIVE CONTROL — a catalogue that capped brokerage WOULD refuse, so 'never refused' is the band, not a stuck gate",
     seatDecision("brokerage", 50, null, 1, { brokerage: 50 }).withinLimit === false)
   check("multi_location keeps hiring too",

@@ -71,7 +71,7 @@ const SIGNUP = "app/actions/auth/signup-brokerage.ts"
 const FORM = "app/get-started/trial-funnel-form.tsx"
 const GROWTH_ACTIONS = "app/actions/superadmin/platform-growth.ts"
 const BOARD = "app/dashboard/superadmin/growth/platform-growth-board.tsx"
-const MIGRATION = "supabase/migrations/m655-brokerage-seats-are-unlimited-and-a-seat-is-a-producer.sql"
+const MIGRATION = "supabase/migrations/m660-seat-bands-2-10-30-custom-and-seat-packages.sql" // the NEWEST band migration (m655 → m660, wave 79A)
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[1 · ONE DERIVATION — the bands, the identity, the fit, no second table, the migration]")
@@ -79,8 +79,9 @@ const { TIER_SEAT_BANDS, tierForSeatCount, CANONICAL_TIERS } = await import("../
 const { TIER_SEAT_LIMITS, TIER_ORDER, seatDecision, roleConsumesSeat, roleProducesOnTier, PRODUCER_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES, WORKSPACE_STAFF_ROLES, PARTNER_ROLES } = await import("../lib/kernel/tier-role-matrix")
 const { tierForProspect } = await import("../lib/platform/prospect-conversion")
 
-check("the bands are the owner's: solo_agent 2 · team 5 · brokerage unlimited · multi_location unlimited",
-  TIER_SEAT_BANDS.solo_agent === 2 && TIER_SEAT_BANDS.team === 5 && TIER_SEAT_BANDS.brokerage === null && TIER_SEAT_BANDS.multi_location === null)
+check("the bands are the owner's (wave 79A): solo_agent 2 · team 10 · brokerage 30 · multi_location custom (null)",
+  TIER_SEAT_BANDS.solo_agent === 2 && TIER_SEAT_BANDS.team === 10 && TIER_SEAT_BANDS.brokerage === 30 && TIER_SEAT_BANDS.multi_location === null)
+const BAND = (t: (typeof CANONICAL_TIERS)[number]) => TIER_SEAT_BANDS[t] as number
 check("every canonical tier has a band and nothing else does", CANONICAL_TIERS.every((t) => t in TIER_SEAT_BANDS) && Object.keys(TIER_SEAT_BANDS).length === CANONICAL_TIERS.length)
 check("the capped bands ascend and every tier after the first unlimited one is unlimited (a plan above never sells fewer seats)",
   (() => {
@@ -95,12 +96,12 @@ check("the capped bands ascend and every tier after the first unlimited one is u
   })())
 check("TIER_SEAT_LIMITS (the gate's fallback) IS TIER_SEAT_BANDS — one object, not a copy that could drift", (TIER_SEAT_LIMITS as unknown) === (TIER_SEAT_BANDS as unknown) && TIER_ORDER.every((t) => TIER_SEAT_LIMITS[t] === TIER_SEAT_BANDS[t]))
 control("a copied table that agreed today would still be a second spelling — identity is what the check reads", ({ ...TIER_SEAT_BANDS } as unknown) !== (TIER_SEAT_BANDS as unknown))
-check("tierForSeatCount fits by the bands: 1,2 → solo · 3,5 → team · 6, 200 → brokerage; multi_location is never reached by a count",
-  tierForSeatCount(1) === "solo_agent" && tierForSeatCount(2) === "solo_agent" && tierForSeatCount(3) === "team" && tierForSeatCount(5) === "team"
-  && tierForSeatCount(6) === "brokerage" && tierForSeatCount(200) === "brokerage" && tierForSeatCount(null) === "solo_agent" && tierForSeatCount(0) === "solo_agent"
-  && ![1, 2, 3, 5, 6, 50, 200, 5000].some((n) => tierForSeatCount(n) === "multi_location"))
+check("tierForSeatCount fits by the bands (derived): 1..solo → solo · solo+1..team → team · team+1..brokerage → brokerage · above every band → multi_location (custom)",
+  tierForSeatCount(1) === "solo_agent" && tierForSeatCount(BAND("solo_agent")) === "solo_agent" && tierForSeatCount(BAND("solo_agent") + 1) === "team" && tierForSeatCount(BAND("team")) === "team"
+  && tierForSeatCount(BAND("team") + 1) === "brokerage" && tierForSeatCount(BAND("brokerage")) === "brokerage" && tierForSeatCount(BAND("brokerage") + 1) === "multi_location" && tierForSeatCount(5000) === "multi_location"
+  && tierForSeatCount(null) === "solo_agent" && tierForSeatCount(0) === "solo_agent")
 check("tierForProspect derives from it (declared multi_location wins; a seat count follows the bands)",
-  tierForProspect("multi_location", 3) === "multi_location" && tierForProspect("unknown", 3) === "team" && tierForProspect(null, 6) === "brokerage" && tierForProspect(null, 2) === "solo_agent")
+  tierForProspect("multi_location", 3) === "multi_location" && tierForProspect("unknown", BAND("solo_agent") + 1) === "team" && tierForProspect(null, BAND("team") + 1) === "brokerage" && tierForProspect(null, BAND("solo_agent")) === "solo_agent")
 check("prospect-conversion no longer carries its own band table (the 1/15/75 table is tombstoned)", !/TIER_SEAT_BANDS\s*[:=]/.test(code(CONVERSION)) && /tierForSeatCount\(/.test(code(CONVERSION)) && /TOMBSTONE \(wave 78A\)/.test(raw(CONVERSION)))
 
 // NO SECOND SEAT-BAND TABLE ANYWHERE IN RUNTIME CODE. Per-tier objects are
@@ -135,19 +136,21 @@ check("prospect-conversion no longer carries its own band table (the 1/15/75 tab
 // "WRITTEN, NOT APPLIED" header, which is a waypoint (§2).
 {
   const m = raw(MIGRATION)
-  check("m655 exists and moves brokerage to NULL in subscription_tiers and -1 in plan_limits", m.length > 0 && /SET max_agents = NULL\s+WHERE tier_name = 'brokerage'/.test(m) && /SET limit_value = -1[\s\S]{0,80}WHERE plan_tier = 'brokerage'/.test(m))
   const capped = CANONICAL_TIERS.filter((t) => TIER_SEAT_BANDS[t] !== null)
   const unlimited = CANONICAL_TIERS.filter((t) => TIER_SEAT_BANDS[t] === null)
-  check(`m655's postcondition names each capped tier with ITS band (${capped.map((t) => `${t}=${TIER_SEAT_BANDS[t]}`).join(", ")})`,
+  check("the newest band migration exists and SETS every tier's max_agents / active_users to its band (NULL / -1 for the custom tier)", m.length > 0
+    && capped.every((t) => new RegExp(`SET max_agents = ${TIER_SEAT_BANDS[t]}\\s+WHERE tier_name = '${t}'`).test(m) && new RegExp(`SET limit_value = ${TIER_SEAT_BANDS[t]},[^;]*WHERE plan_tier = '${t}'`).test(m))
+    && unlimited.every((t) => new RegExp(`SET max_agents = NULL\\s+WHERE tier_name = '${t}'`).test(m) && new RegExp(`SET limit_value = -1,[^;]*WHERE plan_tier = '${t}'`).test(m)))
+  check(`the migration's postcondition names each capped tier with ITS band (${capped.map((t) => `${t}=${TIER_SEAT_BANDS[t]}`).join(", ")})`,
     capped.every((t) => new RegExp(`WHEN '${t}'\\s+THEN ${TIER_SEAT_BANDS[t]}\\b`).test(m)))
-  check(`…and no capped number for an unlimited tier (${unlimited.join(", ")}) — they fall to the ELSE NULL / -1 branch`,
+  check(`…and no capped number for a custom tier (${unlimited.join(", ")}) — they fall to the ELSE NULL / -1 branch`,
     unlimited.every((t) => !new RegExp(`WHEN '${t}'\\s+THEN \\d`).test(m)) && /ELSE NULL/.test(m) && /ELSE -1/.test(m))
-  control("the migration finder would catch a brokerage number", /WHEN 'brokerage'\s+THEN \d/.test("WHEN 'brokerage' THEN 50"))
-  check("m655 states the producer rule in the column comment (the max_agents name is right again)", /COMMENT ON COLUMN public\.subscription_tiers\.max_agents IS[\s\S]{0,400}PRODUCERS/.test(m))
+  control("the migration finder would catch a stale brokerage number", /WHEN 'brokerage'\s+THEN \d/.test("WHEN 'brokerage' THEN 50") && !new RegExp(`WHEN 'brokerage'\\s+THEN ${TIER_SEAT_BANDS.brokerage}\\b`).test("WHEN 'brokerage' THEN 50"))
+  check("the migration states the producer rule in the column comment (the max_agents name is right again)", /COMMENT ON COLUMN public\.subscription_tiers\.max_agents IS[\s\S]{0,400}PRODUCERS/.test(m))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n[2 · STAFF ARE FREE — producers count, staff never do; the 6th team producer is refused; a brokerage never is]")
+console.log("\n[2 · STAFF ARE FREE — producers count, staff never do; the producer past the team band is refused; a brokerage past its band too; multi_location never]")
 check("the three rosters partition the working roster: producers by type (agent, team_lead), by production (broker, broker_owner, admin), free staff (broker_admin, tc, isa, compliance_officer)",
   [...PRODUCER_SEAT_ROLES].sort().join() === "agent,team_lead" && [...SEAT_BY_PRODUCTION_ROLES].sort().join() === "admin,broker,broker_owner"
   && [...FREE_STAFF_ROLES].sort().join() === "broker_admin,compliance_officer,isa,tc"
@@ -210,31 +213,34 @@ const agentsFx: Fixture = { data: [{ user_id: "owner", is_active: true }, { user
 }
 {
   // The gate on a FULL team: 5 producers seated.
-  const five = usersFx(Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, user_type: "agent" })))
+  const TEAM_BAND = TIER_SEAT_BANDS.team as number
+  const BRK_BAND = TIER_SEAT_BANDS.brokerage as number
+  const five = usersFx(Array.from({ length: TEAM_BAND }, (_, i) => ({ id: `p${i}`, user_type: "agent" })))
   const teamFull = (extra: Record<string, Fixture> = {}) => fakeSvc({ brokerages: { data: [{ plan_tier: "team", billing_metadata: {} }], error: null }, users: five, agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG, ...extra })
   const tc = await seatGate(teamFull(), "b1", "tc")
   const isa = await seatGate(teamFull(), "b1", "isa")
   const brokerAdmin = await seatGate(teamFull(), "b1", "broker_admin")
   check("a full team may still add a TC, an ISA and a broker_admin — not_a_seat, no upgrade demanded", [tc, isa, brokerAdmin].every((v) => v.allowed && v.reason === "not_a_seat"))
   const sixth = await seatGate(teamFull(), "b1", "agent")
-  check("the 6th team PRODUCER is refused, naming Brokerage with UNLIMITED seats", !sixth.allowed && sixth.reason === "over_limit" && sixth.decision?.upgradeTo === "brokerage" && sixth.decision?.upgradeSeats === null && /unlimited seats/.test(sixth.message ?? ""))
+  check(`the ${TEAM_BAND + 1}th team PRODUCER is refused, naming Brokerage with ${BRK_BAND} seats (the door; wave 79A)`, !sixth.allowed && sixth.reason === "over_limit" && sixth.decision?.upgradeTo === "brokerage" && sixth.decision?.upgradeSeats === BRK_BAND && new RegExp(`upgrade to Brokerage for ${BRK_BAND} seats`).test(sixth.message ?? ""))
   const adminOwnerOnTeam = await seatGate(teamFull(), "b1", "admin")
   check("an ADMIN on a team tenant produces (the owner shape) and so is a 6th producer — refused too", !adminOwnerOnTeam.allowed && adminOwnerOnTeam.reason === "over_limit")
   const adminStaffOnTeam = await seatGate(teamFull(), "b1", "admin", { produces: false })
   check("…but an admin the caller states will NOT produce is free on the same full team", adminStaffOnTeam.allowed && adminStaffOnTeam.reason === "not_a_seat")
-  control("the 5th producer on a team of 4 is admitted (the refusal is the cap, not a stuck gate)", (await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "team", billing_metadata: {} }], error: null }, users: usersFx(Array.from({ length: 4 }, (_, i) => ({ id: `p${i}`, user_type: "agent" }))), agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG }), "b1", "agent")).allowed)
+  control(`the ${TEAM_BAND}th producer on a team of ${TEAM_BAND - 1} is admitted (the refusal is the band, not a stuck gate)`, (await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "team", billing_metadata: {} }], error: null }, users: usersFx(Array.from({ length: TEAM_BAND - 1 }, (_, i) => ({ id: `p${i}`, user_type: "agent" }))), agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG }), "b1", "agent")).allowed)
   const solo = usersFx([{ id: "owner", user_type: "admin" }, { id: "a1", user_type: "agent" }])
   const soloSvc = fakeSvc({ brokerages: { data: [{ plan_tier: "solo_agent", billing_metadata: {} }], error: null }, users: solo, agents: { data: [{ user_id: "owner", is_active: true }], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG })
   const soloTc = await seatGate(soloSvc, "b1", "tc")
   const soloThird = await seatGate(soloSvc, "b1", "agent")
   check("SOLO: owner (admin, producing) + agent = 2 of 2; a TC is still free; a 3rd producer is refused naming Team", soloTc.allowed && soloTc.reason === "not_a_seat" && !soloThird.allowed && soloThird.decision?.upgradeTo === "team" && soloThird.seatCount === 2)
-  const many = usersFx(Array.from({ length: 5000 }, (_, i) => ({ id: `p${i}`, user_type: "agent" })))
+  const many = usersFx(Array.from({ length: BRK_BAND }, (_, i) => ({ id: `p${i}`, user_type: "agent" })))
+  const almost = usersFx(Array.from({ length: BRK_BAND - 1 }, (_, i) => ({ id: `p${i}`, user_type: "agent" })))
   const brokerage = fakeSvc({ brokerages: { data: [{ plan_tier: "brokerage", billing_metadata: {} }], error: null }, users: many, agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG })
   const b = await seatGate(brokerage, "b1", "agent")
-  check("a BROKERAGE with 5,000 producers is never refused (unlimited by the catalogue AND the fallback)", b.allowed && b.reason === "within_limit" && b.decision?.limit === null)
-  check("…and by the fallback alone (catalogue absent from the map)", seatDecision("brokerage", 5000).withinLimit && seatDecision("brokerage", 5000, null, 1, {}).withinLimit)
-  control("a catalogue that capped brokerage at 5 WOULD refuse the same add", !(await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "brokerage", billing_metadata: {} }], error: null }, users: many, agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: { data: [{ tier_name: "brokerage", max_agents: 5 }], error: null } }), "b1", "agent")).allowed)
-  check("multi_location is unlimited too", seatDecision("multi_location", 5000).withinLimit)
+  check(`a BROKERAGE at its band (${BRK_BAND}) is refused, offered Multi-Location (custom seats) — by the catalogue AND the fallback`, !b.allowed && b.reason === "over_limit" && b.decision?.limit === BRK_BAND && b.decision?.upgradeTo === "multi_location" && !seatDecision("brokerage", BRK_BAND).withinLimit && !seatDecision("brokerage", BRK_BAND, null, 1, {}).withinLimit)
+  check(`…and one under the band is admitted`, (await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "brokerage", billing_metadata: {} }], error: null }, users: almost, agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG }), "b1", "agent")).allowed)
+  control("a catalogue that capped brokerage BELOW the band WOULD refuse an add one under it", !(await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "brokerage", billing_metadata: {} }], error: null }, users: many, agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: { data: [{ tier_name: "brokerage", max_agents: BRK_BAND - 5 }], error: null } }), "b1", "agent")).allowed)
+  check("multi_location (custom, nothing negotiated) is never refused", seatDecision("multi_location", 5000).withinLimit)
   check("the catalogue reader and the gate rely on the SAME predicate (roleConsumesSeat) — the meter and the refusal cannot disagree about who is billed",
     /roleConsumesSeat\(r, \{ produces: producing\.has\(u\.id\) \}\)/.test(code(USAGE)) && /roleConsumesSeat\(role, \{ produces \}\)/.test(code(USAGE)) && /from\("agents"\)/.test(code(USAGE)))
   check("the retired SEAT_ROLES identifier is gone from runtime code (tombstone kept in prose)", !/\bSEAT_ROLES\b/.test(code(MATRIX)) && !/\bSEAT_ROLES\b/.test(code(USAGE)) && /TOMBSTONE — `SEAT_ROLES`/.test(raw(MATRIX)))
@@ -380,4 +386,4 @@ if (failed > 0) {
   console.log("\n❌ SEAT_BANDS — see failures above")
   process.exit(1)
 }
-console.log("\n✅ SEAT_BANDS — one derivation (2/5/∞/∞), staff never consume a seat, the setup fee rides paid activation and only staff may waive it")
+console.log(`\n✅ SEAT_BANDS — one derivation (${CANONICAL_TIERS.map((t) => TIER_SEAT_BANDS[t] ?? "custom").join("/")}), staff never consume a seat, the setup fee rides paid activation and only staff may waive it`)

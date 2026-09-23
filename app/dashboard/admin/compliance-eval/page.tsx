@@ -45,7 +45,7 @@ const CATEGORY_LABEL: Record<EvalCategory, string> = {
 export default async function ComplianceEvalPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { data: userData } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!isAdminOrBroker({ user_type: userData?.user_type ?? "agent" })) redirect("/dashboard")
 

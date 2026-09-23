@@ -68,7 +68,7 @@
 //     contactId/leadId anywhere in this module.
 
 import type { TenantCreationInput, TenantCreationResult, CanonicalTier, SetupFeeWaiver } from "@/lib/kernel/tenant-creation"
-import { CANONICAL_TIERS, tierForSeatCount } from "@/lib/billing/plan-catalog"
+import { CANONICAL_TIERS, tierForSeatCount, seatCountAboveEveryBand } from "@/lib/billing/plan-catalog"
 
 export type ConversionOutcome = "trial" | "converted"
 
@@ -235,11 +235,13 @@ export interface ProspectTenantFacts {
  *
  * TOMBSTONE (wave 78A): this file carried its OWN band table —
  * `TIER_SEAT_BANDS = solo ≤1 / team ≤15 / brokerage ≤75 / multi ∞` — which
- * contradicted the seat caps the gate enforces (2 / 5 / ∞ / ∞) and so quoted a
- * prospect with 3 agents the Team plan while the plan they were sold seats 5.
+ * contradicted the seat caps the gate enforces and so quoted a prospect with
+ * 3 agents the Team plan while the plan they were sold seated fewer.
  * DELETED; survivor: lib/billing/plan-catalog.ts TIER_SEAT_BANDS +
- * tierForSeatCount (the ONE derivation). multi_location is a SHAPE (several
- * offices), never a seat count, so it is reached only by declaration.
+ * tierForSeatCount (the ONE derivation — 2 / 10 / 30 / custom since wave
+ * 79A). multi_location is reached by declaration (several offices) OR by a
+ * seat count above every capped band, which is exactly the enterprise
+ * conversation conversionHumanReasons hands to a person.
  */
 const CANONICAL_TIER_SET: ReadonlySet<string> = new Set(CANONICAL_TIERS)
 
@@ -302,8 +304,10 @@ export function deriveProspectTenantFacts(
 
 export type ConversionHumanReason = "enterprise_size" | "custom_pricing" | "crm_migration"
 
-/** Seats at or above this are an enterprise deal — contract, rollout plan, a person. */
-export const ENTERPRISE_SEAT_FLOOR = 50
+/** Seats at or above this are an enterprise deal — contract, rollout plan, a
+ *  person. DERIVED from the bands (the first count no capped tier seats —
+ *  31 while brokerage is 30), never retyped, so it moves with TIER_SEAT_BANDS. */
+export const ENTERPRISE_SEAT_FLOOR = seatCountAboveEveryBand()
 
 /** "What they use today" answers that are NOT a CRM to migrate from. */
 export const NO_CRM_PATTERN = /\b(none|nothing|no crm|not? (yet|really)|spreadsheets?|excel|google sheets?|paper|notes? app|my phone|memory)\b/i

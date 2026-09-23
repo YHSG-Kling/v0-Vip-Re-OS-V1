@@ -6,34 +6,40 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
-import { toStoredSubscriptionStatus } from "@/lib/billing/stripe-status"
+import { deriveSubscriptionSeatState, itemFactsOf, normalizeStripeSubscription, type TierSeatLink } from "@/lib/billing/seat-packages"
 import Stripe from "stripe"
 
-/** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants.
+/** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants,
+ *  READING THE ITEMS (wave 79A): the plan item names the tier the tenant is
+ *  billed for and the seat-package item's quantity is the seats they bought,
+ *  so tier + extra seats follow Stripe on every subscription event. Status
+ *  still goes through the ONE shared vocabulary (lib/billing/stripe-status.ts)
+ *  — Stripe's 'canceled' / 'unpaid' / 'incomplete' spellings are not values
+ *  subscriptions.status can hold, and a rejected write once left a cancelled
+ *  tenant on a stale 'active'.
  *
- *  status goes through the ONE shared vocabulary (lib/billing/stripe-status.ts)
- *  that the vendor billing path already uses. It used to be passed through RAW —
- *  `status: s.status` — and Stripe's spellings ('canceled' with one L, 'unpaid',
- *  'incomplete', 'incomplete_expired') are not values subscriptions.status can
- *  hold. The CHECK rejected each one, the discarded update left the row on its
- *  previous 'active', and the paywall never fired for a cancelled tenant. */
-function normalizeSub(s: Stripe.Subscription): NormalizedStripeSub {
-  const a = s as any
-  return {
-    stripeSubscriptionId: s.id,
-    stripeCustomerId: (s.customer as string) ?? null,
-    tierId: s.metadata?.tier_id ?? null,
-    status: toStoredSubscriptionStatus(s.status),
-    currentPeriodStart: a.current_period_start ?? null,
-    currentPeriodEnd: a.current_period_end ?? null,
-    trialEnd: s.trial_end ?? null,
-    cancelAt: s.cancel_at ?? null,
+ *  TOMBSTONE: the private `normalizeSub` that lived here moved to
+ *  lib/billing/seat-packages.ts::normalizeStripeSubscription (the survivor the
+ *  daily reconcile shares). A refused catalogue read falls back to
+ *  metadata.tier_id for the tier and leaves the seat columns UNTOUCHED (the
+ *  patch omits them), never zeroing what a tenant bought. */
+async function normalizeSub(svc: ReturnType<typeof createServiceClient>, s: Stripe.Subscription): Promise<NormalizedStripeSub> {
+  const { data: tiers, error } = await svc
+    .from("subscription_tiers")
+    .select("id, tier_name, stripe_price_id, stripe_seat_price_id, seat_package_size")
+  if (error) {
+    console.error("[Billing Webhook] catalogue read refused — tier from metadata only, seat columns left alone:", error.message)
+    return normalizeStripeSubscription(s, null)
   }
+  const seat = deriveSubscriptionSeatState(itemFactsOf(s as any), (tiers ?? []) as TierSeatLink[])
+  if (seat.unmatchedPriceIds.length > 0) console.warn("[Billing Webhook] subscription items not in the catalogue:", s.id, seat.unmatchedPriceIds)
+  return normalizeStripeSubscription(s, seat)
 }
 
 // Stripe webhook handler — THE PLATFORM'S BILLING LEDGER.
 // Handles: checkout.session.completed, invoice.paid, invoice.payment_failed,
-//          customer.subscription.updated, customer.subscription.deleted, account.updated
+//          customer.subscription.created, customer.subscription.updated,
+//          customer.subscription.deleted, account.updated
 //
 // ── WHOSE STRIPE ACCOUNT SIGNS THIS ENDPOINT ────────────────────────────────
 //
@@ -120,7 +126,7 @@ export async function POST(request: NextRequest) {
         // never insert a duplicate. This is the activation that flips the account live.
         if (session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription as string)
-          const patch = buildSubscriptionPatch(normalizeSub(sub))
+          const patch = buildSubscriptionPatch(await normalizeSub(supabase, sub))
           await upsertBrokerageSubscription(supabase, brokerageId, patch)
           await syncBrokeragePlanTier(brokerageId)
           // THE TRIAL → CONVERTED MOMENT (wave 78A). The prospect row was
@@ -239,11 +245,16 @@ export async function POST(request: NextRequest) {
         break
       }
 
-      // ─── SUBSCRIPTION UPDATED ────────────────────────────────────────────────
+      // ─── SUBSCRIPTION CREATED / UPDATED (items: tier + seat packages) ────────
+      // A tier change made in the Stripe dashboard, a seat-package quantity
+      // change, a downgrade, a reprice — every one arrives here and the row
+      // follows the ITEMS (wave 79A: "subscriptions will be setup in stripe so
+      // they sync"). `created` is handled by the same branch so a subscription
+      // staff mint directly in Stripe (custom multi_location pricing) lands too.
+      case "customer.subscription.created":
       case "customer.subscription.updated": {
         const subscription = event.data.object as Stripe.Subscription
         const brokerageId = subscription.metadata?.brokerage_id
-        const tierId = subscription.metadata?.tier_id
 
         if (!brokerageId) {
           console.error("[Billing Webhook] No brokerage_id in subscription metadata")
@@ -253,7 +264,7 @@ export async function POST(request: NextRequest) {
         // Link/update the brokerage's ONE subscription row (never a duplicate) —
         // the signup row has no stripe_subscription_id, so a raw upsert-by-that-id
         // used to insert a second row here.
-        const patch = buildSubscriptionPatch(normalizeSub(subscription))
+        const patch = buildSubscriptionPatch(await normalizeSub(supabase, subscription))
         await upsertBrokerageSubscription(supabase, brokerageId, patch)
 
         // Keep brokerages.plan_tier in sync with the active subscription so

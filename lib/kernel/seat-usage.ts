@@ -33,8 +33,9 @@ import {
   isCanonicalTier, roleConsumesSeat, roleProducesOnTier, WORKSPACE_STAFF_ROLES,
   seatDecision, seatDecisionMessage, parseSeatOverride,
   normalizeCatalogSeatLimit,
-  type CatalogSeatLimits, type SeatDecision,
+  type CatalogSeatLimits, type SeatDecision, type TenantSeatTerms,
 } from "./tier-role-matrix"
+import type { SeatPackageCatalog } from "@/lib/billing/plan-catalog"
 import type { UserDomainRole, CanonicalTier } from "./users"
 
 type Svc = SupabaseClient<any, any, any>
@@ -166,22 +167,30 @@ export interface CatalogSeatLimitRead {
   ok: boolean
   /** Tier → cap (null = unlimited). Tiers with no active row are simply absent. */
   limits: CatalogSeatLimits
+  /** Tier → seat-package facts (wave 79A; null = the tier sells none). Read
+   *  from the SAME row so the cap and the package the door quotes cannot come
+   *  from two different catalogue reads. */
+  packages: SeatPackageCatalog
   error: string | null
 }
 
 export async function resolveCatalogSeatLimits(svc: Svc): Promise<CatalogSeatLimitRead> {
   const { data, error } = await svc
     .from("subscription_tiers")
-    .select("tier_name, max_agents, is_active")
+    .select("tier_name, max_agents, is_active, seat_package_size, seat_package_price_cents, stripe_seat_price_id")
     .eq("is_active", true)
 
   // READ the error — supabase-js resolves refusals, and an empty `limits` map
   // would otherwise degrade silently into "use the literals", which is exactly
   // the drift this reader exists to end.
-  if (error) return { ok: false, limits: {}, error: error.message }
+  if (error) return { ok: false, limits: {}, packages: {}, error: error.message }
 
   const limits: CatalogSeatLimits = {}
-  for (const row of (data ?? []) as Array<{ tier_name?: string | null; max_agents?: number | null }>) {
+  const packages: SeatPackageCatalog = {}
+  for (const row of (data ?? []) as Array<{
+    tier_name?: string | null; max_agents?: number | null
+    seat_package_size?: number | null; seat_package_price_cents?: number | null; stripe_seat_price_id?: string | null
+  }>) {
     const name = row.tier_name ?? ""
     if (!isCanonicalTier(name)) continue
     // NULL / -1 / unreadable ⇒ unlimited. The fold moved to
@@ -189,8 +198,60 @@ export async function resolveCatalogSeatLimits(svc: Svc): Promise<CatalogSeatLim
     // page and this gate share ONE implementation — the display surfaces were
     // testing only for -1 and rendering the live NULL as the word "null".
     limits[name as CanonicalTier] = normalizeCatalogSeatLimit(row.max_agents)
+    const size = Number(row.seat_package_size)
+    packages[name as CanonicalTier] = Number.isInteger(size) && size >= 1
+      ? {
+          size,
+          priceCents: typeof row.seat_package_price_cents === "number" && row.seat_package_price_cents > 0 ? Math.round(row.seat_package_price_cents) : null,
+          stripePriceId: (row.stripe_seat_price_id ?? "").trim() || null,
+        }
+      : null
   }
-  return { ok: true, limits, error: null }
+  return { ok: true, limits, packages, error: null }
+}
+
+// ─── THE TENANT'S OWN SEAT TERMS SIT ON TOP OF THE BAND (wave 79A) ──────────
+//
+// subscriptions.extra_seats (seat packages × size, written by the Stripe
+// webhook / reconcile from the seat-package subscription item) and, on the
+// custom tier, subscriptions.custom_seat_limit (the negotiated count). Read
+// from the tenant's ONE live subscription row. A refused read is `ok:false`
+// and the gate fails closed on it — a swallowed refusal would read as "no
+// extra seats", which on a tenant who paid for them is a refusal they did not
+// earn, and on the custom tier "no negotiated count" reads as UNLIMITED.
+
+export interface TenantSeatTermsRead {
+  ok: boolean
+  terms: TenantSeatTerms
+  /** The live subscription row's id, for the door's Stripe writes. */
+  subscriptionId: string | null
+  error: string | null
+}
+
+export async function resolveTenantSeatTerms(svc: Svc, brokerageId: string): Promise<TenantSeatTermsRead> {
+  const { data, error } = await svc
+    .from("subscriptions")
+    .select("id, extra_seats, seat_packages, custom_seat_limit, status, updated_at")
+    .eq("brokerage_id", brokerageId)
+    .in("status", ["active", "trialing", "past_due", "paused"])
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) return { ok: false, terms: {}, subscriptionId: null, error: error.message }
+  const row = (data ?? null) as { id: string; extra_seats?: number | null; seat_packages?: number | null; custom_seat_limit?: number | null } | null
+  // No live row is an honest zero: a tenant with no subscription has bought no
+  // seats and negotiated none. That is the band, not a refusal.
+  if (!row) return { ok: true, terms: { extraSeats: 0, seatPackages: 0, customSeatLimit: null }, subscriptionId: null, error: null }
+  return {
+    ok: true,
+    terms: {
+      extraSeats: Math.max(0, Math.floor(Number(row.extra_seats ?? 0)) || 0),
+      seatPackages: Math.max(0, Math.floor(Number(row.seat_packages ?? 0)) || 0),
+      customSeatLimit: typeof row.custom_seat_limit === "number" && Number.isInteger(row.custom_seat_limit) && row.custom_seat_limit >= 0 ? row.custom_seat_limit : null,
+    },
+    subscriptionId: row.id,
+    error: null,
+  }
 }
 
 // ─── ONE GATE, EVERY ADD PATH ────────────────────────────────────────────────
@@ -203,10 +264,12 @@ export async function resolveCatalogSeatLimits(svc: Svc): Promise<CatalogSeatLim
 // REACTIVATING a suspended user handed back a seat the count had already
 // released. All five now call this.
 //
-// IT FAILS CLOSED, in all three of the ways it can fail to know:
+// IT FAILS CLOSED, in all four of the ways it can fail to know:
 //   · the tenant row cannot be read      ⇒ refuse
 //   · the seat count cannot be read      ⇒ refuse   (SeatUsage.ok)
 //   · the plan catalogue cannot be read  ⇒ refuse   (CatalogSeatLimitRead.ok)
+//   · the tenant's seat terms (purchased packages / custom count) cannot be
+//     read                               ⇒ refuse   (TenantSeatTermsRead.ok)
 // and each refusal says WHICH, so an operator is never left reading "denied".
 // An unknown TIER is not in that list: it resolves to the floor tier's cap
 // (seatLimitForTier) and produces an ordinary over-limit refusal naming the
@@ -220,6 +283,7 @@ export type SeatGateReason =
   | "tenant_unreadable"
   | "seat_count_unreadable"
   | "catalog_unreadable"
+  | "seat_terms_unreadable" // the tenant's purchased / negotiated seats could not be read
 
 export interface SeatGateVerdict {
   allowed: boolean
@@ -325,12 +389,27 @@ export async function seatGate(
     }
   }
 
+  // The tenant's OWN terms — purchased seat packages and a negotiated custom
+  // count — read from the subscription row. Refused ⇒ refuse, by name.
+  const seatTerms = await resolveTenantSeatTerms(svc, brokerageId)
+  if (!seatTerms.ok) {
+    return {
+      allowed: false,
+      reason: "seat_terms_unreadable",
+      decision: null,
+      seatCount: usage.seatCount,
+      tier,
+      message: `Seat check could not run: this workspace's purchased seats could not be read${seatTerms.error ? ` (${seatTerms.error})` : ""}. The seat was not added.`,
+    }
+  }
+
   const decision = seatDecision(
     tier,
     usage.seatCount,
     parseSeatOverride((tenant as { billing_metadata?: unknown }).billing_metadata),
     opts?.seatsRequested ?? 1,
     catalog.limits,
+    { terms: seatTerms.terms, packages: catalog.packages },
   )
 
   return {

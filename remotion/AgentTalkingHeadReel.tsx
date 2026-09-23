@@ -52,6 +52,7 @@ import { SceneFade } from "./components/SceneFade"
 import { avatarFadeOutFrame } from "../lib/video/script-structure"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, safeInsets, segmentAtFrame, type BodyTreatment, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentTalkingHeadReelProps {
@@ -106,6 +107,16 @@ export interface AgentTalkingHeadReelProps {
   /** SOUND-OFF CAPTIONS fallback — the raw narration script text; CaptionLayer
    *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
   captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 79C, lib/video/body-visual-model.ts): the director's
+   * per-segment screen plan — which stretch of the body is the presenter full
+   * frame (`full_avatar`), the presenter as a floating card over cutaway
+   * footage (`avatar_pip`), or pure cutaway with the presenter off screen
+   * (`broll`). Re-fitted here to the duration this render actually has.
+   * Additive: absent renders EXACTLY as before (b-roll present → card over
+   * footage for the whole body; none → the near-full-bleed presenter).
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -116,6 +127,10 @@ export interface AgentTalkingHeadReelProps {
     licenseLine?:    string
   }
 }
+
+/** The lower-third's band under the floating card, in px — the strap needs a
+ *  strip of its own above the platform UI (see safeInsets). */
+const LOWER_THIRD_BAND = 120
 
 const FPS    = 30
 // THE BODY IS COMPUTED, NOT TYPED (wave 78 — owner: "the video needs to be long
@@ -131,14 +146,28 @@ const OUTRO  = BOOKENDS.outroFrames
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
   voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips, avatarDurationSeconds,
-  captionsCues, captionScript,
+  captionsCues, captionScript, bodyVisualPlan,
 }) => {
   const frame   = useCurrentFrame()
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })
   const BODY = timeline.body.durationInFrames
   const showEho = brand.showEhoMark ?? true
   const hasBroll = (brollClips?.length ?? 0) > 0
+  // THE TREATMENT AT THIS FRAME (wave 79C). The plan is re-fitted to the
+  // render's own duration; the segment under the playhead says what the body
+  // shows. A `broll` treatment with no clips on hand degrades to the full
+  // presenter (never a black frame); an avatar treatment with clips keeps the
+  // footage behind the card. No plan → the pre-79C behaviour, unchanged.
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "AgentTalkingHeadReel", durationInFrames)
+  const planned: BodyTreatment | null = plan ? segmentAtFrame(plan, frame)?.treatment ?? null : null
+  const treatment: "full_avatar" | "avatar_pip" | "broll" =
+    planned === "broll" && hasBroll ? "broll"
+    : planned === "avatar_pip" && hasBroll ? "avatar_pip"
+    : planned === "full_avatar" || planned === "broll" || planned === "avatar_pip" ? "full_avatar"
+    : hasBroll ? "avatar_pip" : "full_avatar"
+  const showBroll = hasBroll && treatment !== "full_avatar"
+  const safe = safeInsets(width, height)
   // REALISM (wave 55) — null when no measurement or the clip fills the
   // window; a real frame otherwise. `frame` is GLOBAL (called at the
   // composition root, not inside the BODY <Sequence>), and BODY starts at
@@ -150,10 +179,14 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
         extrapolateRight: "clamp",
       })
     : 1
-  // With B-roll behind, the avatar floats as a card (bottom-left) so the
-  // footage reads; without it, the original near-full-bleed layout stands.
-  const avatarBox: React.CSSProperties = hasBroll
-    ? { position: "absolute", bottom: 130, left: 48, width: 560, height: 560 }
+  // With B-roll behind, the avatar floats as a card (bottom-left, INSIDE the
+  // frame's safe insets with a band left under it for the lower-third — wave
+  // 79C; it sat at a typed bottom:130 before) so the footage reads; full
+  // frame, the original near-full-bleed layout stands. On a pure cutaway
+  // (`broll`) the presenter is off screen: the voice continues, the footage
+  // carries the beat.
+  const avatarBox: React.CSSProperties = treatment !== "full_avatar"
+    ? { position: "absolute", bottom: safe.bottom + LOWER_THIRD_BAND, left: safe.left, width: 560, height: 560, opacity: treatment === "broll" ? 0 : 1 }
     : { position: "absolute", top: 90, left: 90, width: 900, height: 900 }
 
   return (
@@ -213,15 +246,22 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           {/* B-roll background (TikTok pattern): cutaway footage behind the
               floating avatar, brand-tinted so the caption strip stays legible. */}
           {hasBroll && (
-            <BrollLayer
-              clips={brollClips!}
-              totalFrames={BODY}
-              overlayColor={`${brand.primaryColor}59`}
-              filmGrain
-              handheldDrift
-            />
+            /* Mounted for the WHOLE body so the clip chain keeps its cadence
+               (brollSlots tiles [0, BODY) once); a full-frame presenter
+               segment hides it rather than remounting it mid-chain. */
+            <div style={{ position: "absolute", inset: 0, opacity: showBroll ? 1 : 0 }}>
+              <BrollLayer
+                clips={brollClips!}
+                totalFrames={BODY}
+                overlayColor={`${brand.primaryColor}59`}
+                filmGrain
+                handheldDrift
+              />
+            </div>
           )}
           {avatarVideoUrl ? (
+            /* ONE continuous <Video> for the body (trimBefore 0 → BODY): the
+               plan changes its BOX per segment, never remounts the player. */
             <Video
               objectFit="cover"
               src={avatarVideoUrl}
@@ -232,8 +272,10 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
                 borderRadius: 12,
                 boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
                 // Wave 55 — fades to the branded/broll background at the
-                // avatar's REAL end instead of holding a frozen last frame.
-                opacity: avatarOpacity,
+                // avatar's REAL end instead of holding a frozen last frame;
+                // wave 79C — a `broll` cutaway segment takes the presenter
+                // off screen (the box's own opacity 0).
+                opacity: Math.min(avatarOpacity, typeof avatarBox.opacity === "number" ? avatarBox.opacity : 1),
               }}
             />
           ) : agentPhotoUrl ? (
@@ -274,14 +316,16 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           {/* Lower-third — agent name + brokerage, persistent so any frame
               screenshot stays attributable. Lane 77D: this was a brokerage-only
               chip; the PERSONAL reel never named the person speaking. The ONE
-              lower-third (remotion/components/LowerThird.tsx) replaces it, at the
-              chip's own 24px so it sits under the floating avatar card. */}
+              lower-third (remotion/components/LowerThird.tsx) replaces it —
+              wave 79C: at the frame's safe bottom inset (it sat at a typed
+              24 px, inside a feed's caption/actions band), in the band the
+              floating card leaves under itself. */}
           <LowerThird
             agentName={agentName}
             brokerageName={brand.brokerageName}
             primaryColor={brand.primaryColor}
             accentColor={brand.accentColor}
-            bottom={24}
+            bottom={safe.bottom}
           />
         </AbsoluteFill>
         </SceneFade>

@@ -11,7 +11,7 @@ import { useState, useEffect, Suspense } from 'react'
 import { Mail, Lock, Loader2, KeyRound } from 'lucide-react'
 import { checkSsoDomainAction } from '@/app/actions/tenant-sso'
 import { loginUser } from '@/app/actions/auth'
-import { MAGIC_LINK_MESSAGE_COPY, toMagicLinkMessage } from '@/app/types/auth'
+import { MAGIC_LINK_MESSAGE_COPY, toMagicLinkMessage, ACTIVATION_COPY } from '@/app/types/auth'
 
 function LoginContent() {
   const [email, setEmail] = useState('')
@@ -53,6 +53,19 @@ function LoginContent() {
     if (magic) {
       if (magic === 'check-email') setMessage(MAGIC_LINK_MESSAGE_COPY[magic])
       else setError(MAGIC_LINK_MESSAGE_COPY[magic])
+    }
+
+    // ── THE ?activated=1 RAIL (wave 79A) ────────────────────────────────────
+    // The hosted activation checkout (lib/kernel/tenant-creation.ts →
+    // lib/billing/subscription-activation.ts createActivationCheckout) sends
+    // the payer back here with `activated=1` on success and
+    // `activation=cancelled` when they abandoned it. Neither had a reader, so a
+    // subscriber who had just paid saw a blank sign-in form. Fixed copy per
+    // outcome; nothing from the query string is echoed.
+    if (searchParams.get('activated') === '1') {
+      setMessage(ACTIVATION_COPY.activated)
+    } else if (searchParams.get('activation') === 'cancelled') {
+      setError(ACTIVATION_COPY.cancelled)
     }
   }, [searchParams])
 

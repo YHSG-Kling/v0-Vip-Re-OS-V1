@@ -82,8 +82,9 @@ const { buildCheckoutConfig } = await import("../lib/billing/subscription-activa
   const atBand = capped.every((t) => planSubscriberEntrance({ producerSeats: TIER_SEAT_BANDS[t]! }).tier === t)
   const overBand = capped.every((t) => { const p = planSubscriberEntrance({ producerSeats: TIER_SEAT_BANDS[t]! + 1 }); return p.tier !== t && p.tier === tierForSeatCount(TIER_SEAT_BANDS[t]! + 1) })
   check(`the seat band is DERIVED (tierForSeatCount over TIER_SEAT_BANDS: ${capped.map((t) => `${t}≤${TIER_SEAT_BANDS[t]}`).join(", ")}) — at the band fits, one over moves up`, capped.length > 0 && atBand && overBand)
-  check("no seat count ever reaches multi_location (a SHAPE, by declaration only); a declared canonical tier wins over the count",
-    [1, 3, 9, 29, 31, 500, 5000].every((n) => planSubscriberEntrance({ producerSeats: n }).tier !== "multi_location")
+  check("a seat count inside the brokerage band never reaches multi_location; past the band (wave 79: brokerage 30) it does, as custom pricing (sales-assisted); a declared canonical tier wins over the count",
+    [1, 3, 9, 29, 30].every((n) => planSubscriberEntrance({ producerSeats: n }).tier !== "multi_location")
+    && [31, 500, 5000].every((n) => planSubscriberEntrance({ producerSeats: n }).tier === "multi_location")
     && planSubscriberEntrance({ declaredTier: "brokerage", producerSeats: 1 }).tier === "brokerage"
     && planSubscriberEntrance({ declaredTier: "fit", producerSeats: 1 }).tier === tierForSeatCount(1))
   check("the door's seatBand echoes lane 79A's table for the chosen tier (null = custom/unlimited)", CANONICAL_TIERS.every((t) => planSubscriberEntrance({ declaredTier: t }).seatBand === TIER_SEAT_BANDS[t]))
@@ -110,7 +111,7 @@ const { buildCheckoutConfig } = await import("../lib/billing/subscription-activa
   check("…a WAIVED fee says so and a plan with no fee says so — never an invented number",
     /setup fee is waived/.test(composeActivationCheckoutEmail({ firstName: "D", brandName: "V", tier: "team", billingCycle: "annual", checkoutUrl: "u", setupFeeCents: 49900, setupFeeWaived: true }).html)
     && /lists no setup fee/.test(composeActivationCheckoutEmail({ firstName: "D", brandName: "V", tier: "team", billingCycle: "annual", checkoutUrl: "u", setupFeeCents: 0 }).html))
-  check("SUBSCRIBER_ACTIVATED_PATH is lane 79A's landing and the booking path is the demo survivor", SUBSCRIBER_ACTIVATED_PATH === "/auth/login?activated=1" && SALES_ASSISTED_BOOKING_PATH === "/demo")
+  check("SUBSCRIBER_ACTIVATED_PATH is the real sign-in page (/login, never the demo /auth/login) and the booking path is the demo survivor", SUBSCRIBER_ACTIVATED_PATH === "/login?activated=1" && SALES_ASSISTED_BOOKING_PATH === "/demo")
 
   // The stall rule — read from rows the core writes, no migration.
   const now = new Date("2026-09-23T12:00:00.000Z")
@@ -133,7 +134,7 @@ const { buildCheckoutConfig } = await import("../lib/billing/subscription-activa
     && subscriberStallState({ ...base, created_at: daysAgo(8), onboarding_status: "pending", subscription: null, billing_metadata: { subscriber_stall: { nudged_at: daysAgo(5) } } }, now).due === "escalate"
     && subscriberStallState({ ...base, created_at: daysAgo(8), onboarding_status: "pending", subscription: null, billing_metadata: { subscriber_stall: { nudged_at: daysAgo(5), escalated_at: daysAgo(1) } } }, now).due === null)
   const nudge = composeStallNudge({ kind: "activation_pending", brandName: "VIP", brokerageName: "Acme", firstName: "Dana", planTier: "team", appUrl: "https://app.test" })
-  check("stall nudge copy: names the stall, the sign-in link, and a person one reply away", /checkout never finished/.test(nudge.html) && nudge.text.includes("https://app.test/auth/login") && /reply/.test(nudge.html) && /waiting/.test(composeStallNudge({ kind: "onboarding_pending", brandName: "V", brokerageName: "A", firstName: "D", planTier: null, appUrl: "" }).subject))
+  check("stall nudge copy: names the stall, the sign-in link, and a person one reply away", /checkout never finished/.test(nudge.html) && nudge.text.includes("https://app.test/login") && /reply/.test(nudge.html) && /waiting/.test(composeStallNudge({ kind: "onboarding_pending", brandName: "V", brokerageName: "A", firstName: "D", planTier: null, appUrl: "" }).subject))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,7 +288,7 @@ console.log("\n[Layer 3 · SOURCE — both entrances on the survivors (stripped,
   check("the core reaches createActivationCheckout exactly once, on the paid branch only, and never on a trial",
     /if \(input\.billing\.mode === "paid"\) \{[\s\S]{0,3000}createActivationCheckout\(service, \{/.test(core) && (core.match(/createActivationCheckout\(/g) ?? []).length === 1 && !/mode === "trial"[\s\S]{0,400}createActivationCheckout/.test(core))
   check("ONE landing: the core's success URL reads SUBSCRIBER_ACTIVATED_PATH from the door (no second '/auth/login?activated=1' literal in the core)",
-    /successUrl: `\$\{appUrl\}\$\{SUBSCRIBER_ACTIVATED_PATH\}`/.test(core) && !/activated=1/.test(core) && /SUBSCRIBER_ACTIVATED_PATH = "\/auth\/login\?activated=1"/.test(door))
+    /successUrl: `\$\{appUrl\}\$\{SUBSCRIBER_ACTIVATED_PATH\}`/.test(core) && !/activated=1/.test(code(CORE)) && /SUBSCRIBER_ACTIVATED_PATH = "\/login\?activated=1"/.test(door))
   check("POSITIVE CONTROL: the landing finder sees a restated literal on a fixture", /activated=1/.test('successUrl: `${appUrl}/auth/login?activated=1`'))
   check("THE MONEY FIX: both Stripe callers put the setup fee in line_items (one-time price → initial invoice) and NEITHER passes subscription_data.add_invoice_items (a Subscriptions-API parameter Checkout rejects)",
     /line_items: \[\.\.\.lineItems, \.\.\.addInvoiceItems\]/.test(code(ACTIVATION)) && /line_items: \[\.\.\.lineItems, \.\.\.addInvoiceItems\]/.test(code(BILLING)) && !/add_invoice_items:/.test(code(ACTIVATION)) && !/add_invoice_items:/.test(code(BILLING)))

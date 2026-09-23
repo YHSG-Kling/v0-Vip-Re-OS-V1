@@ -37,7 +37,7 @@ import {
   WORKSPACE_STAFF_ROLES, PRODUCER_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES,
   PARTNER_ROLES, TIER_SEAT_LIMITS, TIER_ORDER, TIER_INVITABLE_ROLES,
   seatLimitForTier, roleConsumesSeat, effectiveSeatLimit, seatableUserTypes,
-  seatDecision, seatDecisionMessage, agentRoleAdvisory, ADDITIONAL_SEAT_MONTHLY_USD,
+  seatDecision, seatDecisionMessage, agentRoleAdvisory,
   TIER_LABELS,
 } from "../lib/kernel/tier-role-matrix"
 
@@ -70,16 +70,16 @@ console.log("══════════════════════�
 console.log("\n[the limits are the owner's plan]")
 {
   check("Solo = 2 seats", TIER_SEAT_LIMITS.solo_agent === 2)
-  check("Team = 5 seats", TIER_SEAT_LIMITS.team === 5)
-  // MOVED 50 → unlimited (wave 78A). OWNER, 2026-09-22: "brokerage is unlimited
-  // and same to multiple locations is unlimited", superseding the 2026-08-22
-  // "50 seats". m655 moves the live catalogue; this literal is the plan-catalog
+  check("Team = 10 seats", TIER_SEAT_LIMITS.team === 10)
+  // MOVED unlimited → 30 (wave 79A). OWNER, 2026-09-23: "team tier is 10 seats;
+  // brokerage tier is 30 seats; multi location tier is custom pricing for
+  // seats". m660 moves the live catalogue; this literal is the plan-catalog
   // table by identity (scripts/seat-bands-guard.ts).
-  check("Brokerage = unlimited", TIER_SEAT_LIMITS.brokerage === null)
-  check("Multi-Location = unlimited", TIER_SEAT_LIMITS.multi_location === null)
-  check("…and the fallback ladder ascends through the capped tiers into unlimited, so an upgrade always buys seats",
+  check("Brokerage = 30 seats", TIER_SEAT_LIMITS.brokerage === 30)
+  check("Multi-Location = custom (null)", TIER_SEAT_LIMITS.multi_location === null)
+  check("…and the fallback ladder ascends through the capped tiers into the custom tier, so an upgrade always buys seats",
     (TIER_SEAT_LIMITS.solo_agent ?? 0) < (TIER_SEAT_LIMITS.team ?? 0)
-    && TIER_SEAT_LIMITS.brokerage === null
+    && (TIER_SEAT_LIMITS.team ?? 0) < (TIER_SEAT_LIMITS.brokerage ?? 0)
     && TIER_SEAT_LIMITS.multi_location === null)
   check("every canonical tier has a stated limit",
     TIER_ORDER.every((t) => t in TIER_SEAT_LIMITS))
@@ -385,8 +385,8 @@ console.log("\n[the tier sells SEATS — with ONE role constraint on solo]")
   check("the owner's brokerage example is seatable: broker_admin + team_lead + agent",
     ["broker_admin", "team_lead", "agent"].every((r) => TIER_INVITABLE_ROLES.brokerage.includes(r as never)))
   check("…and the LIMITS still differ, because SEATS are the whole of what a tier sells",
-    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
-    && TIER_SEAT_LIMITS.brokerage === null && TIER_SEAT_LIMITS.multi_location === null)
+    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 10
+    && TIER_SEAT_LIMITS.brokerage === 30 && TIER_SEAT_LIMITS.multi_location === null)
 
   // POSITIVE CONTROL — the parity finder above must be able to go RED. A tier
   // whose menu is genuinely short of one role must fail the same comparison.
@@ -411,8 +411,8 @@ console.log("\n[over the limit is a CHOICE — upgrade first, paid seat second]"
 
   const full = seatDecision("solo_agent", 2)
   check("a full Solo plan points at the upgrade rather than dead-ending",
-    !full.withinLimit && full.outcome === "upgrade_offered" && full.upgradeTo === "team")
-  check("…naming the seats the upgrade brings", full.upgradeSeats === 5)
+    !full.withinLimit && full.outcome === "over_limit" && full.upgradeTo === "team" && full.paths.some((p) => p.kind === "upgrade" && p.tier === "team"))
+  check("…naming the seats the upgrade brings", full.upgradeSeats === TIER_SEAT_LIMITS.team)
   // RULING SUPERSEDED (seat-cap lane). This used to require the per-seat price
   // to appear BESIDE the upgrade. Owner, later and more specific: "agent tier
   // subscription only has 2 seats and if they need more than they need to
@@ -421,25 +421,30 @@ console.log("\n[over the limit is a CHOICE — upgrade first, paid seat second]"
   // The price still lives on the top tier / staff-override case (below), where
   // there is nothing to climb to and the earlier ruling is still the only one
   // that speaks — asserted here so it cannot be deleted as dead.
-  check("…and the upgrade is the WHOLE offer, with no per-seat price beside it",
-    (seatDecisionMessage(full) ?? "").includes(`Upgrade to ${TIER_LABELS.team}`) &&
-    !(seatDecisionMessage(full) ?? "").includes(`$${ADDITIONAL_SEAT_MONTHLY_USD}/month`))
+  // Wave 79A: the door may ALSO offer a seat package — but only quoted from the
+  // catalogue. With no catalogue passed here there is no price to quote, so none
+  // appears (and the retired $25 literal cannot).
+  check("…and the upgrade is named, with no invented per-seat price beside it",
+    (seatDecisionMessage(full) ?? "").includes(`upgrade to ${TIER_LABELS.team}`) &&
+    !/\$\d/.test(seatDecisionMessage(full) ?? ""))
   check("…never telling a growing tenant to remove someone",
     !/remove|deactivate|suspend/i.test(seatDecisionMessage(full) ?? ""))
 
-  const team = seatDecision("team", 5)
-  check("a full Team plan points at Brokerage and its UNLIMITED seats",
-    team.upgradeTo === "brokerage" && team.upgradeSeats === null)
+  const team = seatDecision("team", TIER_SEAT_LIMITS.team as number)
+  check("a full Team plan points at Brokerage and its 30 seats",
+    team.upgradeTo === "brokerage" && team.upgradeSeats === TIER_SEAT_LIMITS.brokerage)
 
-  // Brokerage and multi_location are both unlimited (wave 78A).
-  check("an unlimited tier is never 'over'", seatDecision("multi_location", 5000).withinLimit && seatDecision("brokerage", 5000).withinLimit)
-  check("a brokerage at 50 is NOT over any more (the superseded cap)", seatDecision("brokerage", 50).withinLimit && seatDecision("brokerage", 50).remaining === null)
+  // multi_location is custom (unlimited until negotiated); brokerage is banded (wave 79A).
+  check("the custom tier is never 'over'", seatDecision("multi_location", 5000).withinLimit)
+  check("a brokerage one under its band is inside; at the band it is over, offered Multi-Location (custom seats)",
+    seatDecision("brokerage", (TIER_SEAT_LIMITS.brokerage as number) - 1).withinLimit && !seatDecision("brokerage", TIER_SEAT_LIMITS.brokerage as number).withinLimit
+    && seatDecision("brokerage", TIER_SEAT_LIMITS.brokerage as number).upgradeTo === "multi_location")
 
   // A staff-set override is a DELIBERATE cap — answering it with "upgrade" would
   // send a tenant to buy a tier they may already be on.
   const capped = seatDecision("solo_agent", 3, 3)
-  check("a staff override offers the paid seat only, never a tier upgrade",
-    capped.outcome === "paid_seat_only" && capped.upgradeTo === null && capped.overridden)
+  check("a staff override never offers a tier upgrade (a package or a person instead)",
+    capped.outcome === "over_limit" && capped.upgradeTo === null && capped.overridden && !capped.paths.some((p) => p.kind === "upgrade"))
 
   check("the over-by count is exact, so the billing quote is exact",
     seatDecision("solo_agent", 4).seatsOver === 3)
@@ -473,7 +478,7 @@ console.log("\n[a workspace with no AGENT is inert, and says so]")
   // trips on the very explanation that proves the copy changed.
   const panelCode = stripComments(panel)
   check("…and the over-limit copy offers the plan, not a scolding",
-    /See plans/.test(panelCode) && !/remove or suspend a user/.test(panelCode))
+    /Plans &amp; seats/.test(panelCode) && !/remove or suspend a user/.test(panelCode))
 }
 
 console.log("\n[a tenant user without a brokerage_id is locked out by RLS]")
@@ -509,9 +514,9 @@ console.log("\n[the override still wins, on every surface]")
   check("an override raises the limit and is flagged as custom",
     bumped.limit === 4 && bumped.overridden === true)
   const brokerage = effectiveSeatLimit("brokerage", null)
-  check("brokerage resolves to unlimited", brokerage.limit === null && brokerage.overridden === false)
+  check("brokerage resolves to its band", brokerage.limit === TIER_SEAT_LIMITS.brokerage && brokerage.overridden === false)
   const unlimited = effectiveSeatLimit("multi_location", null)
-  check("multi_location stays unlimited", unlimited.limit === null)
+  check("multi_location stays unlimited until a count is negotiated", unlimited.limit === null)
 }
 
 console.log("\n──────────────────────────────────────────────────")

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runDunningSweep } from "@/lib/billing/dunning"
+import { reconcileSubscriptionsFromStripe } from "@/lib/billing/seat-sync"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -16,6 +17,12 @@ export const dynamic = "force-dynamic"
  * past_due/unpaid subscription and sends the next due step of the dunning
  * ladder (in-app always, email when SendGrid creds exist), deduped per
  * episode via platform_dunning_events. See lib/billing/dunning.ts.
+ *
+ * STEP 2 (wave 79A) — SEAT / TIER RECONCILE: Stripe is the tenant's truth for
+ * tier + purchased seat packages; the webhook keeps rows current per event
+ * and this daily pass repairs what a missed delivery left behind
+ * (lib/billing/seat-sync.ts). Skips honestly (reported, not passed) when
+ * Stripe is not configured. Same cron, same ledger row, second summary key.
  */
 export async function GET(request: NextRequest) {
   const unauth = verifyCronAuth(request)
@@ -34,12 +41,19 @@ export async function GET(request: NextRequest) {
   try {
     const svc = createServiceClient()
     const summary = await runDunningSweep(svc)
+    // A reconcile failure must not hide the dunning result (and vice versa):
+    // it is caught, reported under its own key, and the cron row still records
+    // what dunning did.
+    const seatSync = await reconcileSubscriptionsFromStripe(svc).catch((e: unknown) => ({
+      candidates: 0, retrieved: 0, patched: 0, tierChanged: 0, unmatched: [], skipped: false,
+      errors: [{ subscriptionId: "*", error: (e as Error)?.message ?? "seat reconcile threw" }],
+    }))
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: summary.stepsSent,
-      metadata: summary as any,
+      metadata: { ...(summary as any), seatSync },
     })
-    return NextResponse.json({ message: "Dunning sweep complete", summary })
+    return NextResponse.json({ message: "Dunning sweep complete", summary, seatSync })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Dunning sweep failed"
     await recordCronFailureAction({ context_id: contextId, error: message })

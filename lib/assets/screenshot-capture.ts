@@ -433,10 +433,51 @@ export interface ScreenshotAssetRow {
  *  regen loop and every planner query on. */
 export const SCREENSHOT_ASSET_KIND = "screenshot"
 
+// ── MULTI-USE (wave 79C, owner verbatim: "the zestimate screenshot will be
+// used in some marketing campaigns so there can be many uses for the
+// screenshots") ────────────────────────────────────────────────────────────
+// A screenshot still is ONE library row that several consumers select from:
+// marketing campaigns (platform growth content), product videos (the
+// `screenshot` body treatment — lib/video/body-visual-model.ts), demos
+// ([[STILL:url]]) and training modules (figures). The USE is a tag on the
+// existing marketing_assets.tags array (`use:<use>`) mirrored in
+// metadata.uses — no column, no CHECK, no migration (CLAUDE.md §3: checked
+// against scripts/check-vocabularies.ts marketing_assets before deciding).
+// A public_page capture keeps approval_status='pending' whatever its uses:
+// the uses say WHO MAY SELECT IT AS MATERIAL; the approval says it never
+// enters a tenant picker, and nothing here ever reads a value off the page.
+export const SCREENSHOT_USES = ["marketing_campaign", "product_video", "demo", "training"] as const
+export type ScreenshotUse = (typeof SCREENSHOT_USES)[number]
+
+export function screenshotUseTag(use: ScreenshotUse): string { return `use:${use}` }
+
+/** Every capture is usable everywhere by default; a human narrows it
+ *  (setScreenshotUses) — a Zestimate still meant only for a campaign can be
+ *  taken off the training and demo menus without losing the row. */
+export function defaultScreenshotUses(_kind: ScreenshotKind): ScreenshotUse[] { return [...SCREENSHOT_USES] }
+
+/** PURE: the tags array with exactly this use set (other tags kept). */
+export function tagsWithUses(tags: readonly string[] | null | undefined, uses: readonly ScreenshotUse[]): string[] {
+  const kept = (tags ?? []).filter((t) => !t.startsWith("use:"))
+  const valid = SCREENSHOT_USES.filter((u) => uses.includes(u))
+  return [...kept, ...valid.map(screenshotUseTag)]
+}
+
+/** PURE: the uses a row carries — the tag set, else metadata.uses, else (a row
+ *  captured before uses existed) every use. */
+export function usesOfRow(row: { tags?: readonly string[] | null; metadata?: Record<string, unknown> | null }): ScreenshotUse[] {
+  const fromTags = (row.tags ?? []).filter((t) => t.startsWith("use:")).map((t) => t.slice(4)).filter((u): u is ScreenshotUse => (SCREENSHOT_USES as readonly string[]).includes(u))
+  if (fromTags.length) return fromTags
+  const meta = row.metadata?.uses
+  if (Array.isArray(meta)) return meta.filter((u): u is ScreenshotUse => (SCREENSHOT_USES as readonly string[]).includes(String(u)))
+  return [...SCREENSHOT_USES]
+}
+
 /** PURE: the marketing_assets row for a finished capture — the image-library
  *  row shape, plus provenance. */
 export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, capturedAtIso: string, providerName: string): Record<string, unknown> {
   const isOs = plan.kind === "os_surface"
+  const uses = defaultScreenshotUses(plan.kind)
   return {
     brokerage_id: null,
     created_by: null,
@@ -447,7 +488,7 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
     thumbnail_url: assetUrl,
     preview_text: (isOs ? `Demo still of ${plan.route}` : `Public page capture of ${plan.host}`).slice(0, 280),
     source_table: "image_library",
-    tags: ["library", SCREENSHOT_ASSET_KIND, plan.kind, ...(isOs ? [] : ["third_party_page"])],
+    tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, ...(isOs ? [] : ["third_party_page"])], uses),
     // OS stills are platform-OWNED renders (canShareToTenants "owned") and join
     // the tenant pickers; a third-party page capture is NOT redistributable
     // library stock, so it stays 'pending' — reachable only by the demo /
@@ -467,6 +508,7 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
       redact: plan.redactSelectors,
       provider: providerName,
       usage: "demo_training_video_only",
+      uses,
       license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)." : `Third-party page (${plan.host}) captured for internal demo/training/video use; source and capture time recorded; not redistributable as stock.`,
     },
   }
@@ -707,6 +749,92 @@ export async function demoStillImageUrls(svc: any, angle: string): Promise<strin
 /** DB: the one still to show for a product-demo topic, or null. */
 export async function demoStillForTopic(svc: any, topic: ProductDemoTopic): Promise<string | null> {
   return stillUrlsForDemoTopic(topic, await listDemoStills(svc))[0] ?? null
+}
+
+// ── Multi-use selection (the asset-library category the consumers query) ───
+
+export interface ScreenshotStillPick {
+  id: string
+  url: string
+  label: string
+  kind: ScreenshotKind
+  uses: ScreenshotUse[]
+  approvalStatus: string | null
+  sourceUrl: string | null
+  capturedAt: string | null
+  /** ALWAYS false: a still is material for a campaign, a video, a demo or a
+   *  lesson — never an AI-agent statement of a home's value to a customer. */
+  customerFacingValue: false
+}
+
+/**
+ * DB: the stills a consumer may select for a USE — the one query behind the
+ * campaign picker, the product-video `screenshot` treatment
+ * (screenshotUrlsForUse → input_props.screenshotUrls), the demo token and the
+ * training figures. os_surface rows are approved platform renders;
+ * public_page rows (Zestimate & co.) are `pending` by design and come back
+ * ONLY when the caller says `includePublicPage` — a platform-marketing caller
+ * building a campaign or a product video, never a tenant picker. Rows
+ * captured before uses existed carry no use tag and count for every use.
+ */
+export async function listScreenshotStillsForUse(
+  svc: any, use: ScreenshotUse,
+  opts: { includePublicPage?: boolean; kind?: ScreenshotKind; limit?: number } = {},
+): Promise<ScreenshotStillPick[]> {
+  if (!(SCREENSHOT_USES as readonly string[]).includes(use)) return []
+  let q = svc.from("marketing_assets")
+    .select("id, asset_name, asset_url, approval_status, tags, updated_at, metadata")
+    .eq("asset_type", "image").eq("visibility_scope", "platform")
+    .eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)
+    .order("updated_at", { ascending: false }).limit(opts.limit ?? 100)
+  if (opts.kind) q = q.eq("metadata->>screenshot_kind", opts.kind)
+  const { data, error } = await q
+  if (error) { console.error("[screenshot-capture] stills-for-use read refused:", error.message); return [] }
+  const out: ScreenshotStillPick[] = []
+  for (const r of (data ?? []) as Array<ScreenshotAssetRow & { tags?: string[] | null }>) {
+    const meta = r.metadata ?? {}
+    const kind = meta.screenshot_kind === "public_page" ? "public_page" : "os_surface"
+    if (kind === "public_page" && !opts.includePublicPage) continue
+    const uses = usesOfRow(r)
+    if (!uses.includes(use)) continue
+    out.push({
+      id: r.id, url: r.asset_url, label: r.asset_name ?? "", kind, uses,
+      approvalStatus: r.approval_status ?? null,
+      sourceUrl: typeof meta.source_url === "string" ? meta.source_url : null,
+      capturedAt: typeof meta.captured_at === "string" ? meta.captured_at : null,
+      customerFacingValue: false,
+    })
+  }
+  return out
+}
+
+/** DB: just the URLs for a use — what a video producer stages as
+ *  input_props.screenshotUrls for the `screenshot` body treatment. */
+export async function screenshotUrlsForUse(svc: any, use: ScreenshotUse, opts: { includePublicPage?: boolean; limit?: number } = {}): Promise<string[]> {
+  return (await listScreenshotStillsForUse(svc, use, opts)).map((p) => p.url)
+}
+
+/**
+ * DB: narrow or widen a still's uses. Writes the tag set AND metadata.uses
+ * (one fact, two readers: the array filter and the row's own record), only on
+ * a screenshot row. `.select()`ed and COUNTED (CLAUDE.md §3): an unmatched id
+ * — not a screenshot, already gone — is a refusal, never a silent success.
+ */
+export async function setScreenshotUses(svc: any, assetId: string, uses: readonly ScreenshotUse[]): Promise<{ ok: true; uses: ScreenshotUse[] } | ScreenshotRefusal> {
+  const valid = SCREENSHOT_USES.filter((u) => uses.includes(u))
+  const { data: rows, error: readErr } = await svc.from("marketing_assets").select("id, tags, metadata")
+    .eq("id", assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND).limit(1)
+  if (readErr) return { ok: false, reason: `screenshot row ${assetId} read refused: ${readErr.message}` }
+  const row = ((rows ?? []) as Array<{ id: string; tags: string[] | null; metadata: Record<string, unknown> | null }>)[0]
+  if (!row) return { ok: false, reason: `screenshot row ${assetId} not found (or not a screenshot)` }
+  const { data: updated, error } = await svc.from("marketing_assets").update({
+    tags: tagsWithUses(row.tags, valid),
+    metadata: { ...(row.metadata ?? {}), uses: valid },
+    updated_at: new Date().toISOString(),
+  }).eq("id", assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND).select("id")
+  if (error) return { ok: false, reason: `screenshot row ${assetId} update refused: ${error.message}` }
+  if (((updated ?? []) as unknown[]).length !== 1) return { ok: false, reason: `screenshot row ${assetId}: update matched ${((updated ?? []) as unknown[]).length} rows, expected 1` }
+  return { ok: true, uses: valid }
 }
 
 /** PURE: stills as the composition-facing B-roll clip shape (image URLs are

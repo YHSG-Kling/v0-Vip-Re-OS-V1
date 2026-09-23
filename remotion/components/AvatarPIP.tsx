@@ -43,11 +43,21 @@
 // of the clip before it was ever heard. See each caller's own "AVATAR
 // LEAD-IN FIX" comment.
 
+// WAVE 79C — SAFE-AREA CORNERS, DERIVED. The ring sat at a typed 32 px from
+// the frame edge (64/56 for the bottom-right slide placement) whatever the
+// frame was — on a 9:16 feed that is inside the username/audio strip at the
+// top and the caption/actions band at the bottom, so the presenter's face was
+// covered by the platform's own UI. The corner now comes from the ONE
+// safe-area rule (lib/video/body-visual-model.ts pipCornerStyle: vertical
+// frames inset 14 % top / 22 % bottom / 6 % sides; square and horizontal
+// frames 9 % / 5 %), read against useVideoConfig() — never a literal.
+
 import React from "react"
 import { Video } from "@remotion/media"
-import { interpolate, useCurrentFrame } from "remotion"
+import { interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./SafeImg"
 import { avatarPipWindowFade } from "../../lib/video/realism-profile"
+import { pipCornerStyle, type PipCorner } from "../../lib/video/body-visual-model"
 
 export const AvatarPIP: React.FC<{
   avatarVideoUrl: string | null
@@ -77,7 +87,7 @@ export const AvatarPIP: React.FC<{
    *  EquityReportReel/MarketUpdateReel placement). "bottom-right" is the
    *  ListingPresentationSlide/BuyerConsultationSlide placement — see the
    *  tombstones on their former private duplicates. */
-  position?: "top-right" | "top-left" | "bottom-right"
+  position?: PipCorner
   /** Ring boxShadow width in px. Defaults to 4. */
   ringWidth?: number
 }> = ({
@@ -85,10 +95,10 @@ export const AvatarPIP: React.FC<{
   avatarDurationSeconds, fps = 30, size = 200, position = "top-right", ringWidth = 4,
 }) => {
   const frame = useCurrentFrame()
-  const corner: React.CSSProperties =
-    position === "top-left" ? { top: 32, left: 32 }
-    : position === "bottom-right" ? { bottom: 64, right: 56 }
-    : { top: 32, right: 32 }
+  const { width, height } = useVideoConfig()
+  // The corner offsets are the frame's safe insets (wave 79C header note),
+  // clamped so the ring never leaves the frame on a tiny composition.
+  const corner: React.CSSProperties = pipCornerStyle(width, height, position, size)
   const ring: React.CSSProperties = {
     position: "absolute", ...corner,
     width: size, height: size, borderRadius: size / 2,

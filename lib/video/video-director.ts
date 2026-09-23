@@ -1281,6 +1281,36 @@ export async function commissionVideo(
     console.warn(`[video-director] no companion share card for ${format.compositionId} — ${share.skipReason}`)
   }
 
+  // 6e. THE BODY VISUAL (wave 79C — owner: "nowhere do we discuss what to use
+  //     in the body if not a full avatar"). What is ON SCREEN per script
+  //     segment is a registry rule, not a composition's private habit:
+  //     lib/video/body-visual-model.ts cuts the narration into the purpose's
+  //     arc, tiles the duration-model body by spoken words, and picks each
+  //     segment's treatment (full avatar / PiP / b-roll / photos / screenshots
+  //     / kinetic text / chart / brand card) from what the purpose allows, the
+  //     composition can render, the host permits and the assets on hand. The
+  //     plan rides input_props.bodyVisualPlan; the composition re-fits it to
+  //     the duration it renders at. A composition with no rule FAILS LOUDLY —
+  //     blocked like a missing content prop, never rendered unplanned.
+  const { stageBodyVisualPlan } = await import("@/lib/video/body-visual-model")
+  const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
+    .map((k) => (contentProps as Record<string, unknown>)[k])
+    .find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? hookLine
+  const visual = stageBodyVisualPlan({
+    compositionId: format.compositionId,
+    props: { ...contentProps, ...(format.needsBroll ? { brollClips } : {}) },
+    avatarClip: requiresAvatar,
+    script: narrationForVisual,
+  })
+  if (!visual.ok) {
+    return {
+      ok: false, status: "blocked",
+      compositionId: format.compositionId,
+      reason: `body visual could not be planned for ${format.compositionId}: ${visual.reason}`,
+      violations: ["body_visual_unplanned"],
+    }
+  }
+
   const providerMetadata = {
     composition_id: format.compositionId,
     // music_mood rides input_props so buildRenderIntent threads it to the
@@ -1288,6 +1318,9 @@ export async function commissionVideo(
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
       ...contentProps,
+      // The per-segment screen plan (6e) — segments, treatments, b-roll /
+      // photo / screenshot windows, caption window, music duck, avatar share.
+      bodyVisualPlan: visual.plan,
       // Rides under the ONE key render-decision.ts resolveThumbnailProps reads,
       // which is also where lib/geo/video-landing.ts seoHintFromRenderProps
       // reads the hint back for the landing page's og:description. Absent when
@@ -1708,10 +1741,30 @@ export async function commissionVideoExperiment(
       format_why: "Expert default (hook A/B holds the format constant).",
     }
 
+    // The body-visual plan per variant (see 6e on the main path) — the hook
+    // line differs per variant, so the hook segment's words (and its frames)
+    // do too. A composition with no rule blocks the experiment like a missing
+    // content prop, with the already-staged variants rolled back.
+    const { stageBodyVisualPlan } = await import("@/lib/video/body-visual-model")
+    const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
+      .map((k) => (contentProps as Record<string, unknown>)[k])
+      .find((x): x is string => typeof x === "string" && x.trim().length > 0) ?? hookLine
+    const visual = stageBodyVisualPlan({ compositionId: format.compositionId, props: contentProps, avatarClip: requiresAvatar, script: narrationForVisual })
+    if (!visual.ok) {
+      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      return {
+        ok: false, status: "blocked",
+        experimentId, compositionId: format.compositionId,
+        reason: `body visual could not be planned for ${format.compositionId}: ${visual.reason}`,
+        violations: ["body_visual_unplanned"],
+      }
+    }
+
     const providerMetadata = {
       composition_id: format.compositionId,
       input_props: {
         ...contentProps,
+        bodyVisualPlan: visual.plan,
         intro: introProps, outro: outroProps,
         // Flat outro-QR props (see the main path) — each A/B variant carries its OWN tracked QR.
         qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,

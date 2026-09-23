@@ -83,9 +83,9 @@ const {
 const { TIER_SEAT_BANDS, CANONICAL_TIERS: BAND_TIERS } = await import("../lib/billing/plan-catalog")
 const { buildSubscriptionRow, platformMembershipFlags, buildTenantSlug, isCanonicalTier, CANONICAL_TIERS } = await import("../lib/kernel/tenant-creation")
 
-check("tier fit: a declared canonical role_interest wins; else the seat band (2 → solo, 4 → team, 40 → brokerage, 200 → brokerage; multi_location only by declaration)",
-  tierForProspect("brokerage", 2) === "brokerage" && tierForProspect("unknown", 2) === "solo_agent" && tierForProspect(null, 4) === "team" && tierForProspect("unknown", 40) === "brokerage" && tierForProspect(null, 200) === "brokerage" && tierForProspect("multi_location", 3) === "multi_location" && tierForProspect(null, null) === "solo_agent")
-check("the seat bands (plan-catalog) are 2 / 5 / unlimited / unlimited — capped tiers ascend, then unlimited takes everything above", TIER_SEAT_BANDS.solo_agent === 2 && TIER_SEAT_BANDS.team === 5 && TIER_SEAT_BANDS.brokerage === null && TIER_SEAT_BANDS.multi_location === null && BAND_TIERS.length === 4)
+check("tier fit: a declared canonical role_interest wins; else the seat band (2 → solo, 4 → team, 20 → brokerage, 200 → multi_location by count above every band; multi_location also by declaration)",
+  tierForProspect("brokerage", 2) === "brokerage" && tierForProspect("unknown", 2) === "solo_agent" && tierForProspect(null, 4) === "team" && tierForProspect("unknown", 20) === "brokerage" && tierForProspect(null, 200) === "multi_location" && tierForProspect("multi_location", 3) === "multi_location" && tierForProspect(null, null) === "solo_agent")
+check("the seat bands (plan-catalog) are 2 / 10 / 30 / custom (wave 79A) — capped tiers ascend, then the custom tier takes everything above", TIER_SEAT_BANDS.solo_agent === 2 && TIER_SEAT_BANDS.team === 10 && TIER_SEAT_BANDS.brokerage === 30 && TIER_SEAT_BANDS.multi_location === null && BAND_TIERS.length === 4)
 check("name split: 'Dana Lee Smith' → first Dana, last 'Lee Smith'; a single token has an empty last name", splitPersonName(" Dana Lee Smith ").first === "Dana" && splitPersonName("Dana Lee Smith").last === "Lee Smith" && splitPersonName("Dana").last === "")
 
 const row = {

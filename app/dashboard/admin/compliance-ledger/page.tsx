@@ -30,7 +30,7 @@ const SEVERITIES = ["all", "advisory", "blocked"] as const
 export default async function ComplianceLedgerPage({ searchParams }: { searchParams: Promise<{ days?: string; severity?: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { days, severity } = await searchParams
 
   const { data: userData } = await supabase

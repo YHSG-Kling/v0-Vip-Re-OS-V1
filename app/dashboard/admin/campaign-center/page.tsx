@@ -24,7 +24,7 @@ const CHANNEL_LABEL: Record<string, string> = {
 export default async function CampaignCenterPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = u?.user_type ?? "agent"
   const brokerageId = u?.brokerage_id ?? undefined

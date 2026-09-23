@@ -14,7 +14,10 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireMarketing } from "@/lib/auth/platform-guard"
-import { captureScreenshot, capturePublicPropertyPage, DEMO_STILL_SURFACES } from "@/lib/assets/screenshot-capture"
+import {
+  captureScreenshot, capturePublicPropertyPage, DEMO_STILL_SURFACES,
+  listScreenshotStillsForUse, setScreenshotUses, SCREENSHOT_USES, type ScreenshotStillPick, type ScreenshotUse,
+} from "@/lib/assets/screenshot-capture"
 
 type ActionResult = { ok: true; assetId: string; url: string; cached: boolean } | { ok: false; error: string }
 
@@ -33,6 +36,26 @@ export async function capturePublicPropertyStillAction(input: { query: string })
   if (!auth.ok) return { ok: false, error: auth.error }
   const r = await capturePublicPropertyPage(input.query, { svc: createServiceClient() })
   return r.ok ? { ok: true, assetId: r.assetId, url: r.url, cached: r.cached } : { ok: false, error: r.reason }
+}
+
+/** MULTI-USE (wave 79C): the stills a platform-marketing consumer may pick for
+ *  a use — campaigns, product videos, demos, training. Public-page captures
+ *  (Zestimate & co.) come back only on request and stay `pending`; they are
+ *  material, never a value shown to a customer. */
+export async function listScreenshotStillsForUseAction(input: { use: ScreenshotUse; includePublicPage?: boolean }): Promise<{ ok: true; stills: ScreenshotStillPick[] } | { ok: false; error: string }> {
+  const auth = await requireMarketing()
+  if (!auth.ok) return { ok: false, error: auth.error }
+  if (!(SCREENSHOT_USES as readonly string[]).includes(input.use)) return { ok: false, error: `screenshot use "${String(input.use)}" is not one of ${SCREENSHOT_USES.join("/")}` }
+  return { ok: true, stills: await listScreenshotStillsForUse(createServiceClient(), input.use, { includePublicPage: input.includePublicPage === true }) }
+}
+
+/** MULTI-USE (wave 79C): narrow or widen which uses may select a still. */
+export async function setScreenshotUsesAction(input: { assetId: string; uses: ScreenshotUse[] }): Promise<{ ok: true; uses: ScreenshotUse[] } | { ok: false; error: string }> {
+  const auth = await requireMarketing()
+  if (!auth.ok) return { ok: false, error: auth.error }
+  if (typeof input.assetId !== "string" || !input.assetId) return { ok: false, error: "assetId required" }
+  const r = await setScreenshotUses(createServiceClient(), input.assetId, Array.isArray(input.uses) ? input.uses : [])
+  return r.ok ? { ok: true, uses: r.uses } : { ok: false, error: r.reason }
 }
 
 /** The registry, for a picker: id + label + route. */

@@ -152,7 +152,7 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
         <CardContent className="p-8 text-center space-y-2">
           <CheckCircle2 className="h-10 w-10 mx-auto mb-3 text-emerald-600" />
           <p className="font-medium">{email} already has an account.</p>
-          <p className="text-sm text-muted-foreground">Sign in instead — plan changes, seats and billing all live inside the app. <a className="underline" href="/auth/login">Go to sign-in</a>.</p>
+          <p className="text-sm text-muted-foreground">Sign in instead — plan changes, seats and billing all live inside the app. <a className="underline" href="/login">Go to sign-in</a>.</p>
         </CardContent>
       </Card>
     )

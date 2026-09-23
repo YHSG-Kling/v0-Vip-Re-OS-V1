@@ -38,7 +38,7 @@ export const metadata = {
 export default async function CommandCenterPage({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { view } = await searchParams
 
   const { data: userData } = await supabase

@@ -19,6 +19,7 @@ import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, sceneWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 // REPLACES the tombstone that used to sit where `base.fontFamily` is built
@@ -52,6 +53,14 @@ export interface ProductPromoReelProps {
    *  renders on screen, §6); CaptionLayer estimates timing in-composition when no
    *  cues are supplied. Absent → no captions. */
   captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 79C, lib/video/body-visual-model.ts): the segment
+   * plan composeProductVideoSpec stages — hook / three beats / CTA weighted by
+   * their spoken words, each beat's `screenshot` still index, the CTA on the
+   * brand tile. Re-fitted to the duration this render actually has. Additive:
+   * absent, the scenes split the body as before (hook target + even beats).
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 /** Staggered word-by-word reveal — the "system thinking out loud" feel. */
@@ -139,7 +148,7 @@ const KenBurnsShot: React.FC<{ src: string; primary: string }> = ({ src, primary
 }
 
 export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
-  hook, proofs, cta, brand, ctaDomain, imageUrls, captionsCues, captionScript,
+  hook, proofs, cta, brand, ctaDomain, imageUrls, captionsCues, captionScript, bodyVisualPlan,
 }) => {
   const primary = brand?.primaryColor ?? "#0F172A"
   const accent = brand?.accentColor ?? "#F59E0B"
@@ -174,6 +183,30 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
   const BODY  = timeline.body.durationInFrames
   const PROOF = Math.floor(Math.max(0, BODY - HOOK_TARGET) / 3)
   const HOOK  = BODY - PROOF * 3
+  // THE SCENE WINDOWS FOLLOW THE PLAN (wave 79C): the hook and each beat get
+  // the frames their WORDS take (weightedShotSlots in the plan), the last beat
+  // running to the end of the body so the CTA line lands on the CTA tile. No
+  // plan (or a plan short of beats) → the hook-target + even split above.
+  // The ONE helper (sceneWindowsFromPlan) is what the proofs tile with, so
+  // the chain is verified by the same arithmetic that renders it — this
+  // composition is a derived split (scripts/composition-segments.ts
+  // NON_CHAIN_COMPOSITIONS), like PhotoWalkthroughReel and MemoryVideoReel.
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "ProductPromoReel", durationInFrames)
+  const scenes = sceneWindowsFromPlan(plan, BODY, beats.length) ?? {
+    hook: { from: 0, durationInFrames: HOOK },
+    beats: beats.map((_, i) => ({ from: HOOK + i * PROOF, durationInFrames: PROOF })),
+  }
+  // The Ken Burns still slots: the plan's `screenshot` segments (each carrying
+  // the still index it starts on) plus the CTA tile; else one per scene.
+  const stillShots: Array<{ from: number; len: number; idx: number }> = plan && plan.screenshotSlots.length > 0
+    ? [
+        ...plan.segments.filter((s) => s.treatment === "screenshot").map((s) => ({ from: s.from, len: s.durationInFrames, idx: s.assetIndex ?? s.index })),
+        { from: BODY, len: CTA, idx: plan.segments.length },
+      ]
+    : [
+        { from: 0, len: HOOK, idx: 0 }, { from: HOOK, len: PROOF, idx: 1 }, { from: HOOK + PROOF, len: PROOF, idx: 2 },
+        { from: HOOK + PROOF * 2, len: PROOF, idx: 3 }, { from: BODY, len: CTA, idx: 4 },
+      ]
   // Scene fills stay TRANSPARENT so the command-center grid + brand eyebrow show through.
   const scene: React.CSSProperties = { ...base, backgroundColor: "transparent" }
 
@@ -188,12 +221,9 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
         }}
       />
       {/* optional platform-screenshot slideshow (dimmed, Ken Burns) — one per scene */}
-      {(imageUrls ?? []).length > 0 && [
-        { from: 0, len: HOOK }, { from: HOOK, len: PROOF }, { from: HOOK + PROOF, len: PROOF },
-        { from: HOOK + PROOF * 2, len: PROOF }, { from: BODY, len: CTA },
-      ].map((shot, idx) => (
-        <Sequence key={`shot-${idx}`} from={shot.from} durationInFrames={Math.max(1, shot.len)}>
-          <KenBurnsShot src={imageUrls![idx % imageUrls!.length]} primary={primary} />
+      {(imageUrls ?? []).length > 0 && stillShots.map((shot, i) => (
+        <Sequence key={`shot-${i}`} from={shot.from} durationInFrames={Math.max(1, shot.len)}>
+          <KenBurnsShot src={imageUrls![shot.idx % imageUrls!.length]} primary={primary} />
         </Sequence>
       ))}
       <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, durationInFrames], [15, 85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}% 12%, ${accent}26, transparent 55%)` }} />
@@ -205,7 +235,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
         <span style={{ fontSize: width * 0.016, color: "#ffffff88", marginLeft: "auto" }}>COMMAND CENTER · LIVE</span>
       </div>
 
-      <Sequence from={0} durationInFrames={HOOK}>
+      <Sequence from={scenes.hook.from} durationInFrames={scenes.hook.durationInFrames}>
         <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
           <WordReveal text={hook} size={width * 0.06} />
           <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
@@ -215,7 +245,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
       </Sequence>
 
       {beats.map((p, i) => (
-        <Sequence key={i} from={HOOK + i * PROOF} durationInFrames={PROOF}>
+        <Sequence key={i} from={scenes.beats[i].from} durationInFrames={scenes.beats[i].durationInFrames}>
           <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
             <div style={{ fontSize: width * 0.026, color: accent, fontWeight: 800 }}>{`0${i + 1}`}</div>
             <div style={{ marginTop: 14 }}>

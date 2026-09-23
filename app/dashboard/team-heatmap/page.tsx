@@ -66,7 +66,7 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
   try {
     context = await getAgentContext()
   } catch {
-    redirect("/auth/login?redirect=/dashboard/team-heatmap")
+    redirect("/login")
   }
 
   const supabase = await createClient()

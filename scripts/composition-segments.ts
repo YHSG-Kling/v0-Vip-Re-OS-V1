@@ -22,7 +22,9 @@
  */
 import type { RegisteredGeometry } from "../lib/remotion/composition-geometry"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
-import { compositionDurationSpec } from "../lib/video/duration-model"
+import { compositionDurationSpec, compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, sceneWindowsFromPlan } from "../lib/video/body-visual-model"
+import { composeProductVideoSpec } from "../lib/platform/product-content"
 
 /** Every registered VIDEO composition's remotion/ source file, by id. STILLS
  *  (duration_frames === 1) are out of scope — they have no timeline to tile. */
@@ -68,7 +70,44 @@ export const NON_CHAIN_COMPOSITIONS: ReadonlySet<string> = new Set([
   // Lane 78D: every slot is computed from props (lib/video/memory-video-
   // composition.ts) and the length from calculateMetadata — no const chain.
   "MemoryVideoReel",
+  // Lane 79C: the hook / beat scene windows come from the BODY-VISUAL plan
+  // (lib/video/body-visual-model.ts sceneWindowsFromPlan — each scene gets
+  // the frames its words take) or the even split when no plan is staged;
+  // `scenes.hook.from` is a runtime value this tiler cannot resolve. Checked
+  // by productPromoSceneChain below in video-assembly and the matrix.
+  "ProductPromoReel",
 ])
+
+/**
+ * ProductPromoReel's scene chain at `total` frames, built from the SAME pure
+ * helpers the composition renders with: the product spec's own staged plan
+ * (composeProductVideoSpec — hook + three beats + CTA), re-fitted to `total`
+ * (fitBodyVisualPlan), cut into scene windows (sceneWindowsFromPlan), plus the
+ * CTA tile from the registered bookends. `withPlan:false` yields the
+ * composition's own even split (HOOK_TARGET + three equal beats) — the
+ * no-plan fallback the source keeps. Both must tile [0, total) exactly.
+ */
+export function productPromoSceneChain(total: number, opts: { withPlan?: boolean; hookTarget?: number } = {}): Segment[] {
+  const id = "ProductPromoReel"
+  const { introFrames, outroFrames } = compositionBookends(id)
+  const t = computeAssemblyTimeline({ durationInFrames: total, introFrames, outroFrames })
+  const BODY = t.body.durationInFrames, CTA = t.outro.durationInFrames
+  const spec = composeProductVideoSpec("ai_team", "vertical", undefined, null, ["s1", "s2", "s3", "s4"])
+  const beatCount = spec.inputProps.proofs.length
+  const scenes = (opts.withPlan ?? true)
+    ? sceneWindowsFromPlan(fitBodyVisualPlan(spec.inputProps.bodyVisualPlan ?? null, id, total), BODY, beatCount)
+    : null
+  const HOOK_TARGET = opts.hookTarget ?? 90
+  const PROOF = Math.floor(Math.max(0, BODY - HOOK_TARGET) / beatCount)
+  const HOOK = BODY - PROOF * beatCount
+  const fallback = { hook: { from: 0, durationInFrames: HOOK }, beats: Array.from({ length: beatCount }, (_, i) => ({ from: HOOK + i * PROOF, durationInFrames: PROOF })) }
+  const s = scenes ?? fallback
+  return [
+    { tag: "Sequence", from: t.body.from + s.hook.from, duration: s.hook.durationInFrames, fromExpr: "scenes.hook.from", durExpr: "scenes.hook.durationInFrames" },
+    ...s.beats.map((b, i) => ({ tag: "Sequence", from: t.body.from + b.from, duration: b.durationInFrames, fromExpr: `scenes.beats[${i}].from`, durExpr: `scenes.beats[${i}].durationInFrames` })),
+    { tag: "Sequence", from: t.outro.from, duration: CTA, fromExpr: "BODY", durExpr: "CTA" },
+  ]
+}
 
 /** A tag using the from={…}/durationInFrames={…} contract — Sequence itself,
  *  or a locally-defined wrapper sharing the exact same two-prop contract

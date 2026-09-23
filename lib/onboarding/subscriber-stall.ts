@@ -91,7 +91,7 @@ export function subscriberStallState(row: SubscriberStallRow, now: Date): Subscr
 export function composeStallNudge(i: { kind: SubscriberStallKind; brandName: string; brokerageName: string; firstName: string; planTier: string | null; appUrl: string }): { subject: string; html: string; text: string; bellTitle: string; bellBody: string } {
   const plan = (i.planTier ?? "your").replace(/_/g, " ")
   if (i.kind === "activation_pending") {
-    const link = `${i.appUrl}/auth/login`
+    const link = `${i.appUrl}/login`
     return {
       subject: `${i.brokerageName}: your ${i.brandName} plan is reserved but not active yet`,
       html: `<p>Hi ${i.firstName},</p><p>Your ${plan} plan is reserved and your workspace is built, but the checkout never finished, so nothing is live yet. Sign in with the link in your inbox and activate from Billing — it takes a minute: <a href="${link}">${link}</a></p><p>If the checkout gave you trouble, reply to this email and a person will send you a fresh link or take it over the phone.</p>`,
@@ -100,7 +100,7 @@ export function composeStallNudge(i: { kind: SubscriberStallKind; brandName: str
       bellBody: `Your ${plan} plan is reserved. Activate it from Billing and your AI managers go on duty the moment it clears.`,
     }
   }
-  const link = `${i.appUrl}/auth/login`
+  const link = `${i.appUrl}/login`
   return {
     subject: `${i.brokerageName}: your ${i.brandName} workspace is waiting`,
     html: `<p>Hi ${i.firstName},</p><p>Your ${plan} workspace is built and your AI managers are on duty, but nobody has walked in yet. Use the sign-in link in your inbox (or request a new one here: <a href="${link}">${link}</a>) and the onboarding wizard takes it from there — your first contacts, your first market, your voice.</p><p>Stuck on anything? Reply to this email and a person will get you set up.</p>`,

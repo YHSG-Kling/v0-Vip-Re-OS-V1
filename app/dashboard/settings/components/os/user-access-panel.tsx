@@ -36,14 +36,13 @@ interface UserStats {
   upgradeTo?: string | null
   upgradeSeats?: number | null
   /**
-   * The per-seat monthly price. STILL CARRIED, deliberately, though the copy
-   * above no longer prints it: `seatMessage` already contains it in the one case
-   * it still applies — the top tier or a staff-set override, where there is no
-   * tier to upgrade to (lib/kernel/tier-role-matrix.ts seatDecisionMessage). Kept
-   * on the props so a future surface that needs the number does not re-derive it
-   * from a second literal; the ONE source is ADDITIONAL_SEAT_MONTHLY_USD.
+   * Seats purchased beyond the plan's band (seat packages × size, synced from
+   * Stripe — wave 79A). The price of a package is never a literal here: it
+   * arrives inside `seatMessage`, quoted from the catalogue row.
+   * TOMBSTONE — `additionalSeatMonthlyUsd` / ADDITIONAL_SEAT_MONTHLY_USD
+   * ($25 literal) retired; survivor lib/billing/plan-catalog.ts SeatPackageFacts.
    */
-  additionalSeatMonthlyUsd?: number
+  extraSeats?: number
   /** Seats can be used any way the tenant likes — but with no Agent among them
    *  the OS is inert, because contacts, deals and campaigns attach to an agent. */
   agentRoleAdvisory?: string | null
@@ -103,18 +102,17 @@ export function UserAccessPanel({ stats }: UserAccessPanelProps) {
           {stats.seatLimit === null
             ? `Unlimited seats on ${tierName}. Vendors, lenders and portal contacts never use one.`
             : overSeats
-              // Owner's ruling: past the seats, the answer is the UPGRADE
-              // (agent tier → team, team → brokerage). seatMessage names the
-              // exact tier; this fallback runs only if the message is missing,
-              // and it must not quote a per-seat price where an upgrade is the
-              // ruling — that is the offer the owner withdrew. Never "remove
-              // someone" either.
+              // Owner's ruling (wave 79A): past the seats the answer is a DOOR —
+              // upgrade, a smaller plan if the business changed, or a seat
+              // package. seatMessage carries all three from the decision; this
+              // fallback runs only if the message is missing and never invents
+              // a price. Never "remove someone" either.
               ? stats.seatMessage ??
-                `All ${stats.seatLimit} seats on your ${tierName} plan are in use. Upgrading gives you room for more.`
-              : `${stats.seatLimit - stats.seatCount} of ${stats.seatLimit} seats left on ${tierName}. Vendors and lenders never use one.`}
+                `All ${stats.seatLimit} seats on your ${tierName} plan are in use. Upgrade, change plan, or buy a seat package to add more.`
+              : `${stats.seatLimit - stats.seatCount} of ${stats.seatLimit} seats left on ${tierName}${(stats.extraSeats ?? 0) > 0 ? ` (${stats.extraSeats} purchased)` : ""}. Vendors and lenders never use one.`}
           {overSeats && (
             <a href="/settings/billing" className="ml-1 underline">
-              {stats.upgradeTo ? "See plans" : "Add a seat"}
+              Plans &amp; seats
             </a>
           )}
         </p>

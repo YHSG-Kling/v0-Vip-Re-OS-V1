@@ -53,7 +53,7 @@
 //      Merged here; every entrance sends it (TOMBSTONE in prospect-agent-tools).
 //
 //   4. SUBSCRIBER_ACTIVATED_PATH — the post-checkout landing every success
-//      URL and email points at (/auth/login?activated=1 — the notice itself is
+//      URL and email points at (/login?activated=1 — the notice itself is
 //      lane 79A's).
 //
 // TENANT (CLAUDE.md §4): nothing here takes a brokerage id from a request.
@@ -66,8 +66,8 @@ import { conversionHumanReasons, HUMAN_REASON_LABEL, type ConversionHumanReason 
 import type { TenantBilling } from "@/lib/kernel/tenant-creation"
 
 /** Where a paid activation lands after Stripe — lane 79A renders the notice. */
-export const SUBSCRIBER_ACTIVATED_PATH = "/auth/login?activated=1"
-export const SUBSCRIBER_ACTIVATION_CANCELLED_PATH = "/auth/login?activation=cancelled"
+export const SUBSCRIBER_ACTIVATED_PATH = "/login?activated=1"
+export const SUBSCRIBER_ACTIVATION_CANCELLED_PATH = "/login?activation=cancelled"
 
 /** The public page where a sales-assisted signer books the call (the demo
  *  survivor: app/demo → requestPlatformDemoAction → the same prospect row). */

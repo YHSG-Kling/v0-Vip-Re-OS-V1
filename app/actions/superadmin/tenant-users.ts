@@ -228,6 +228,14 @@ export async function createTenantUserAction(params: {
    *  matrix. Default false. When it actually bypasses a matrix rejection, the
    *  override is logged to superadmin_audit_log ("user.tier_matrix_override"). */
   superadminOverride?: boolean
+  /** STAFF DOOR (wave 79A blind spot): will this person PRODUCE? A seat is a
+   *  producer; staff never consume one. For a seat-by-production type
+   *  (admin / broker / broker_owner) the gate otherwise infers production from
+   *  the tenant's tier — a solo/team `admin` reads as the producing owner — so
+   *  a NON-producing admin added to a full solo tenant was refused a seat it
+   *  does not use. Pass `false` to state they are staff; omitted keeps the
+   *  tier inference. Never consulted for agent / team_lead (always a seat). */
+  produces?: boolean
 }): Promise<{ ok: boolean; userId?: string; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
@@ -264,9 +272,10 @@ export async function createTenantUserAction(params: {
     }
   }
 
-  // SEATS (owner model: Solo 2 · Team 5 · Brokerage/Multi unlimited — a seat is
-  // a working staff user; partners never consume one). The same override that
-  // bypasses the role matrix bypasses the seat cap, with the same audit trail.
+  // SEATS (owner model, wave 79A: Solo 2 · Team 10 · Brokerage 30 · Multi
+  // custom, plus purchased seat packages — a seat is a PRODUCER; staff and
+  // partners never consume one). The same override that bypasses the role
+  // matrix bypasses the seat cap, with the same audit trail.
   // ONE GATE with the tenant-side invite, the role-change path, the reactivation
   // path and the recruiting provisioner (lib/kernel/seat-usage.ts `seatGate`):
   // one seat resolver (both role sources), the limit from the PLAN CATALOGUE
@@ -274,12 +283,12 @@ export async function createTenantUserAction(params: {
   // CLOSED on an unreadable tenant / count / catalogue.
   let seatOverLimit = false
   {
-    const verdict = await seatGate(svc, params.brokerageId, params.userType)
+    const verdict = await seatGate(svc, params.brokerageId, params.userType, { produces: params.produces })
     seatOverLimit = !verdict.allowed
     if (seatOverLimit && !params.superadminOverride) {
-      // The tenant-facing sentence names the UPGRADE (owner's ruling: solo → team,
-      // team → brokerage). Platform staff get that sentence PLUS the two levers
-      // only they hold, so a refusal is never a dead end on this console either.
+      // The tenant-facing sentence carries the three paths (upgrade / downgrade
+      // / buy seats). Platform staff get that sentence PLUS the two levers only
+      // they hold, so a refusal is never a dead end on this console either.
       return {
         ok: false,
         error: `${verdict.message ?? "Seat check refused this add."} Staff: raise this tenant's seat override, or pass superadminOverride.`,

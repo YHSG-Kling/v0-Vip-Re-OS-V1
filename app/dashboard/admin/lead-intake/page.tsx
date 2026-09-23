@@ -33,7 +33,7 @@ export default async function LeadIntakeCockpitPage() {
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id, platform_role").eq("id", user.id).maybeSingle()
   const userType = u?.user_type ?? "agent"
   const brokerageId = u?.brokerage_id ?? undefined

@@ -27,7 +27,7 @@ export default async function TrainingPage() {
   } = await supabase.auth.getUser()
   
   if (authError || !user) {
-    redirect("/auth/login")
+    redirect("/login")
   }
 
 

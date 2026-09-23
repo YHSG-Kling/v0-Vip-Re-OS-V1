@@ -12,7 +12,8 @@
 // independent things. Naming them, in the owner's own terms:
 //
 //   1. SUBSCRIPTION TIER   what the tenant BUYS. Decides SEATS. Nothing else.
-//   2. SEATS               2 / 5 / unlimited / unlimited. The ONLY tier-imposed limit.
+//   2. SEATS               2 / 10 / 30 / custom (TIER_SEAT_BANDS) + purchased
+//                          seat packages. The ONLY tier-imposed limit.
 //   3. USER TYPE           what a person IS. One per user. Costs ONE seat when
 //                          it is a PRODUCER (roleConsumesSeat); staff cost none.
 //   4. PERMISSION ROLES    grants layered ON TOP of a user type
@@ -68,35 +69,38 @@
 // scripts/lead-visibility-roster-simulator.ts, which pins the team lead's desk
 // independently of anything here.
 //
-//   • SEATS: solo_agent = 2 · team = 5 · brokerage = unlimited · multi_location =
-//     unlimited (lib/billing/plan-catalog.ts TIER_SEAT_BANDS — the ONE
-//     derivation; wave 78A, owner 2026-09-22: "brokerage is unlimited and same
-//     to multiple locations is unlimited", superseding "a brokerage should be
-//     changed to 50 seats"). A "seat" is a LICENSED PRODUCER (see the three
-//     rosters below); staff, partner users, contacts, lenders and the AI-ISA
-//     system actor do NOT consume seats.
-//   • OVER THE LIMIT IS AN UPGRADE, NOT A PAID EXTRA SEAT — OWNER, VERBATIM,
-//     SUPERSEDING THE EARLIER HALF OF THIS RULE:
+//   • SEATS: solo_agent = 2 · team = 10 · brokerage = 30 · multi_location =
+//     custom (lib/billing/plan-catalog.ts TIER_SEAT_BANDS — the ONE
+//     derivation; wave 79A, owner 2026-09-23: "solo tier is 2 seats; team tier
+//     is 10 seats; brokerage tier is 30 seats; multi location tier is custom
+//     pricing for seats", superseding wave 78A's 2/5/∞/∞). A "seat" is a
+//     LICENSED PRODUCER (see the three rosters below); staff, partner users,
+//     contacts, lenders and the AI-ISA system actor do NOT consume seats.
+//   • THE LIMIT IS A DOOR WITH THREE WAYS THROUGH — OWNER, VERBATIM (wave 79A),
+//     SUPERSEDING "over the limit is an upgrade, not a paid extra seat":
 //
-//       "team tier only has 5 seats for the subscription and if they need more
-//        than they need to upgrade to a brokerage plan. agent tier subscription
-//        only has 2 seats and if they need more than they need to upgrade to a
-//        team subscription. but these lower plans need to be treated like mini
-//        brokerages."
+//       "there will be an opportunity for buying more seat packages and if the
+//        tenant hits a limit they will be able to either upgrade to a higher
+//        tier (or lower tier if their business changes) or buy more seats."
 //
-//     The PREVIOUS ruling recorded here was "if they try to go over alloted
-//     seats, we can charge them monthly for each additional seats but I would
-//     rather get them to upgrade to the team level" — an offer of BOTH paths.
-//     The owner has now named the path: solo → team, team → brokerage. So where
-//     a tier ABOVE exists, the add is refused and the refusal names that tier;
-//     the per-seat price is no longer offered beside it, because offering it is
-//     offering the tenant the thing the owner just said they may not have.
+//     So a producer add past the EFFECTIVE limit (band + purchased extra seats)
+//     is refused, and the refusal offers (1) the next tier UP whose band fits,
+//     (2) a tier DOWN when the producers they already have fit on it — the
+//     business-changed path, never a way past the limit — and (3) a SEAT
+//     PACKAGE, quoted from the catalogue (seat_package_size /
+//     seat_package_price_cents, synced from Stripe), never from a literal.
+//     A tier whose seat price is not linked in Stripe cannot sell a package,
+//     and the door says so instead of showing a button that charges nothing.
+//     multi_location has no band: its seats are negotiated
+//     (subscriptions.custom_seat_limit) and past them the answer is a person.
+//     A staff-set override is still a deliberate cap: it is not answered with
+//     an upgrade, only with the package (or a person when none is sellable).
 //
-//     The per-seat price SURVIVES in exactly the case the new ruling does not
-//     speak to and the old one did: there is no tier to climb — the top tier, or
-//     a staff-set override, which is a deliberate cap rather than a pricing
-//     accident. That is `paid_seat_only` below, and it is the ONLY outcome that
-//     still quotes a dollar figure.
+//     TOMBSTONE — `ADDITIONAL_SEAT_MONTHLY_USD` (a $25 literal) and the
+//     `upgrade_offered` / `paid_seat_only` outcomes are retired here. Survivor
+//     for the price: the catalogue row (lib/billing/plan-catalog.ts
+//     SeatPackageFacts, read by lib/kernel/seat-usage.ts
+//     resolveCatalogSeatLimits). Survivor for the outcome: `SeatDecision.paths`.
 //   • THE NUMBERS ARE CATALOGUE DATA, NOT CODE. TIER_SEAT_LIMITS below is the
 //     FALLBACK, not the source: the administrable home is
 //     `subscription_tiers.max_agents`, which the superadmin plan catalogue
@@ -124,7 +128,7 @@
 // path (see app/actions/superadmin/tenant-users.ts).
 
 import type { UserDomainRole, CanonicalTier } from "./users"
-import { TIER_SEAT_BANDS } from "@/lib/billing/plan-catalog"
+import { TIER_SEAT_BANDS, seatPackageSellable, seatPackagesNeeded, type SeatPackageCatalog, type SeatPackageFacts } from "@/lib/billing/plan-catalog"
 import { requiresAgentRow } from "./tenant-provisioning-spec"
 
 /** Partner roles every tier may invite (never seat-consuming). Vendor ONLY —
@@ -231,7 +235,7 @@ export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole
  *
  * This used to be a literal — 2 / 5 / 50 / null — kept "in agreement with the
  * catalogue by a migration". It drifted anyway: the owner's 2026-09-22 ruling
- * made brokerage unlimited, and three files held three numbers. The fallback
+ * moved the numbers, and three files held three numbers. The fallback
  * the gate uses when the catalogue cannot be read is now BY IDENTITY the one
  * product statement in lib/billing/plan-catalog.ts (`TIER_SEAT_LIMITS ===
  * TIER_SEAT_BANDS`, asserted by scripts/seat-bands-guard.ts), so there is
@@ -501,17 +505,43 @@ export function parseSeatOverride(billingMetadata: unknown): number | null {
 }
 
 /**
- * PURE keep-one seat-limit resolution: the staff override WINS when set (it can raise a
- * capped tier or cap an unlimited one); otherwise the tier default. Every seat surface —
- * both invite gates and the seat meter — resolves through THIS.
+ * The tenant-side seat facts that sit ON TOP of the tier band (wave 79A):
+ * purchased extra seats (seat packages × size, synced from the Stripe
+ * subscription item) and, for the custom tier, the negotiated seat count.
+ * Read from `subscriptions` by lib/kernel/seat-usage.ts resolveTenantSeatTerms.
+ */
+export interface TenantSeatTerms {
+  /** Seats purchased beyond the band (subscriptions.extra_seats). */
+  extraSeats?: number | null
+  /** Package units purchased (subscriptions.seat_packages) — for copy only. */
+  seatPackages?: number | null
+  /** multi_location: the negotiated seat count (subscriptions.custom_seat_limit). */
+  customSeatLimit?: number | null
+}
+
+/**
+ * PURE keep-one seat-limit resolution. Base = the staff override when set (it
+ * can raise a capped tier or cap an unlimited one), else the tenant's
+ * negotiated custom count, else the tier band. The EFFECTIVE limit is base +
+ * purchased extra seats; a null base (custom tier, nothing negotiated) stays
+ * unlimited. Every seat surface — both invite gates and the seat meter —
+ * resolves through THIS.
  */
 export function effectiveSeatLimit(
   tier: string | null | undefined,
   seatOverride?: number | null,
   catalog?: CatalogSeatLimits | null,
-): { limit: number | null; overridden: boolean } {
-  if (seatOverride !== null && seatOverride !== undefined) return { limit: seatOverride, overridden: true }
-  return { limit: seatLimitForTier(tier, catalog), overridden: false }
+  terms?: TenantSeatTerms | null,
+): { limit: number | null; bandLimit: number | null; extraSeats: number; overridden: boolean; custom: boolean } {
+  const extraSeats = Math.max(0, Math.floor(Number(terms?.extraSeats ?? 0)) || 0)
+  const custom = typeof terms?.customSeatLimit === "number" && Number.isInteger(terms.customSeatLimit) && terms.customSeatLimit >= 0
+  const band = seatLimitForTier(tier, catalog)
+  let base: number | null
+  let overridden = false
+  if (seatOverride !== null && seatOverride !== undefined) { base = seatOverride; overridden = true }
+  else if (custom) base = terms!.customSeatLimit as number
+  else base = band
+  return { limit: base === null ? null : base + extraSeats, bandLimit: band, extraSeats, overridden, custom: custom && !overridden }
 }
 
 /**
@@ -546,6 +576,7 @@ export function seatCheck(
   currentSeatCount: number,
   seatOverride?: number | null,
   catalog?: CatalogSeatLimits | null,
+  terms?: TenantSeatTerms | null,
 ): {
   allowed: boolean
   limit: number | null
@@ -553,38 +584,52 @@ export function seatCheck(
   /** true when the limit came from the staff-set per-tenant override, not the tier. */
   overridden: boolean
 } {
-  const d = seatDecision(tier, currentSeatCount, seatOverride, 1, catalog)
+  const d = seatDecision(tier, currentSeatCount, seatOverride, 1, catalog, { terms })
   return { allowed: d.withinLimit, limit: d.limit, remaining: d.remaining, overridden: d.overridden }
 }
 
-/**
- * PRICE OF ONE ADDITIONAL SEAT, per month, when a tenant chooses to expand past
- * their tier rather than upgrade. Stated once here so the invite gate, the seat
- * meter and the billing copy quote the SAME number.
- */
-export const ADDITIONAL_SEAT_MONTHLY_USD = 25
-
 export type SeatOutcome =
-  /** Inside the limit — nothing to decide. */
+  /** Inside the effective limit — nothing to decide. */
   | "within_limit"
-  /** Over the limit, and a higher tier exists: the preferred path. */
-  | "upgrade_offered"
-  /** Over the limit on the TOP tier, or on a staff override: paid seat only. */
-  | "paid_seat_only"
+  /** Past it: the door opens with the paths below (never a wall). */
+  | "over_limit"
+
+/** One way through the limit door (wave 79A). */
+export type SeatPath =
+  /** The next tier UP whose band fits the request. */
+  | { kind: "upgrade"; tier: CanonicalTier; seats: number | null }
+  /** A tier DOWN the tenant's CURRENT producers still fit on — the
+   *  "business changed" path. It never admits the requested seat. */
+  | { kind: "downgrade"; tier: CanonicalTier; seats: number | null }
+  /** Buy seat packages on the current tier: `packages` units of `size`
+   *  seats at `priceCents` per unit per month, from the catalogue. */
+  | { kind: "buy_seats"; size: number; priceCents: number; packages: number; seatsAdded: number }
+  /** Custom pricing (multi_location, an unpriced package, or a staff cap): a
+   *  person decides — the door names who, never a number. */
+  | { kind: "contact"; reason: "custom_pricing" | "package_not_sellable" | "staff_cap" }
 
 export interface SeatDecision {
   outcome: SeatOutcome
   /** May the seat be added right now, without a billing choice? */
   withinLimit: boolean
+  /** The EFFECTIVE limit: band (or override / custom count) + extra seats. */
   limit: number | null
+  /** The tier band alone (TIER_SEAT_BANDS / catalogue), before extra seats. */
+  bandLimit: number | null
+  /** Purchased seats beyond the band (seat packages × size). */
+  extraSeats: number
   remaining: number | null
   overridden: boolean
-  /** The tier to recommend, when one is better than paying per seat. */
+  /** The tier to recommend upward, when one fits (also in `paths`). */
   upgradeTo: CanonicalTier | null
-  /** Seats the recommended tier would give them (null = unlimited). */
+  /** Seats the recommended tier would give them (null = custom/unlimited). */
   upgradeSeats: number | null
-  /** Monthly cost if they instead add seats one at a time. */
-  additionalSeatMonthlyUsd: number
+  /** The tier the tenant could step DOWN to and still fit today's producers. */
+  downgradeTo: CanonicalTier | null
+  downgradeSeats: number | null
+  /** Every way through the door, in the order the copy states them. Empty
+   *  only when withinLimit. */
+  paths: SeatPath[]
   /** How many extra seats this request would put them over by. */
   seatsOver: number
 }
@@ -592,18 +637,22 @@ export interface SeatDecision {
 /**
  * PURE: WHAT HAPPENS WHEN A TENANT ASKS FOR A SEAT THEY HAVE NOT PAID FOR?
  *
- * Not a wall. The owner's ruling: "if they try to go over alloted seats, we can
- * charge them monthly for each additional seats but I would rather get them to
- * upgrade to the team level." Refusing the invite is the one outcome that serves
- * nobody — the tenant is trying to GROW, which is the moment to sell, and a hard
- * stop just teaches them the OS is in the way.
+ * Not a wall. Owner (wave 79A): "if the tenant hits a limit they will be able
+ * to either upgrade to a higher tier (or lower tier if their business
+ * changes) or buy more seats." Inside the effective limit, proceed silently.
+ * Over it, the decision carries every path that is genuinely open:
  *
- * So: inside the limit, proceed silently. Over it, offer the upgrade FIRST
- * (cheaper per seat and it unlocks the rest of the tier) with the per-seat price
- * as the fallback for someone who genuinely needs one more person and nothing
- * else. On the top tier — or where staff have set an explicit override, which is
- * a deliberate cap, not an accident of pricing — there is no tier to climb, so
- * the paid seat is the only honest offer.
+ *   upgrade    the next tier up whose band fits the request (catalogue first)
+ *   downgrade  the highest tier BELOW whose band fits the producers already
+ *              seated — offered because the owner said so, and stated as what
+ *              it is (it does not admit the requested seat)
+ *   buy_seats  the tier's seat package, quoted from `packages` — only when it
+ *              is SELLABLE (size, price and a Stripe price all present)
+ *   contact    custom pricing (multi_location), an unpriced package, or a
+ *              staff-set cap — a person, never an invented number
+ *
+ * A staff override is a deliberate cap, so it is never answered with
+ * "upgrade"; it is answered with the package or a person.
  */
 export function seatDecision(
   tier: string | null | undefined,
@@ -611,17 +660,43 @@ export function seatDecision(
   seatOverride?: number | null,
   seatsRequested = 1,
   catalog?: CatalogSeatLimits | null,
+  seat?: { terms?: TenantSeatTerms | null; packages?: SeatPackageCatalog | null } | null,
 ): SeatDecision {
-  const { limit, overridden } = effectiveSeatLimit(tier, seatOverride, catalog)
+  const { limit, bandLimit, extraSeats, overridden, custom } = effectiveSeatLimit(tier, seatOverride, catalog, seat?.terms)
+  // The tier the tenant is ON is resolved the same fail-CLOSED way the limit is
+  // (unknown ⇒ the floor), so a tenant whose plan_tier cannot be read is still
+  // told where to go — "unreadable" must not read as "nothing to offer".
+  const fromTier: CanonicalTier = isCanonicalTier(tier) ? tier : TIER_ORDER[0]
+  const fromIndex = TIER_ORDER.indexOf(fromTier)
+
+  // DOWN is computed whether or not the tenant is over: the highest lower tier
+  // whose band still fits today's producers (the CURRENT count, not the
+  // request — a downgrade is a business change, not a way past the limit).
+  // It is carried on every decision so the billing surface can offer "move
+  // down" to a tenant whose business shrank, and it joins `paths` at the door.
+  // Never offered against a staff cap or a negotiated custom count.
+  let downgradeTo: CanonicalTier | null = null
+  let downgradeSeats: number | null = null
+  if (!overridden && !custom) {
+    for (const t of TIER_ORDER.slice(0, fromIndex).reverse()) {
+      const s = seatLimitForTier(t, catalog)
+      if (s !== null && s >= currentSeatCount) { downgradeTo = t; downgradeSeats = s; break }
+    }
+  }
+
   const base: SeatDecision = {
     outcome: "within_limit",
     withinLimit: true,
     limit,
+    bandLimit,
+    extraSeats,
     remaining: limit === null ? null : Math.max(0, limit - currentSeatCount),
     overridden,
     upgradeTo: null,
     upgradeSeats: null,
-    additionalSeatMonthlyUsd: ADDITIONAL_SEAT_MONTHLY_USD,
+    downgradeTo,
+    downgradeSeats,
+    paths: [],
     seatsOver: 0,
   }
   if (limit === null) return base
@@ -632,57 +707,83 @@ export function seatDecision(
   if (after <= limit) return base
 
   const seatsOver = after - limit
-  // The next tier UP that actually grants more seats. A staff override is a
-  // deliberate cap, so it is never answered with "upgrade" — that would send a
-  // tenant to buy a tier they may already be on.
+  const paths: SeatPath[] = []
+
+  // (1) UP — the next tier whose band fits the request. Catalogue first: the
+  //     copy must quote the seats the tenant will actually be sold. Never
+  //     offered against a staff cap (it would send a tenant to buy a tier they
+  //     may already be on) or a negotiated custom count.
   let upgradeTo: CanonicalTier | null = null
   let upgradeSeats: number | null = null
-  //
-  // The tier the tenant is ON is resolved the same fail-CLOSED way the limit is
-  // (unknown ⇒ the floor), so a tenant whose plan_tier cannot be read is still
-  // told where to go — "unreadable" must not read as "nothing to offer".
-  const fromTier: CanonicalTier = isCanonicalTier(tier) ? tier : TIER_ORDER[0]
-  if (!overridden) {
-    for (const t of TIER_ORDER.slice(TIER_ORDER.indexOf(fromTier) + 1)) {
-      // Catalogue first — the upgrade copy must quote the seats the tenant will
-      // actually be sold, not a literal that drifted from the plan they buy.
+  if (!overridden && !custom) {
+    for (const t of TIER_ORDER.slice(fromIndex + 1)) {
       const s = seatLimitForTier(t, catalog)
       if (s === null || s >= after) { upgradeTo = t; upgradeSeats = s; break }
     }
   }
+  if (upgradeTo) paths.push({ kind: "upgrade", tier: upgradeTo, seats: upgradeSeats })
+
+  // (2) DOWN — joins the door when it fits (computed above).
+  if (downgradeTo) paths.push({ kind: "downgrade", tier: downgradeTo, seats: downgradeSeats })
+
+  // (3) BUY — the tier's seat package, only when the catalogue can actually
+  //     sell it. multi_location sells no package: custom pricing is a person.
+  const facts: SeatPackageFacts | null | undefined = seat?.packages?.[fromTier]
+  if (fromTier === "multi_location" || custom) {
+    paths.push({ kind: "contact", reason: "custom_pricing" })
+  } else if (seatPackageSellable(facts)) {
+    const packages = seatPackagesNeeded(seatsOver, facts.size)
+    paths.push({ kind: "buy_seats", size: facts.size, priceCents: facts.priceCents, packages, seatsAdded: packages * facts.size })
+  } else if (overridden) {
+    paths.push({ kind: "contact", reason: "staff_cap" })
+  } else {
+    paths.push({ kind: "contact", reason: "package_not_sellable" })
+  }
+
   return {
     ...base,
-    outcome: upgradeTo ? "upgrade_offered" : "paid_seat_only",
+    outcome: "over_limit",
     withinLimit: false,
     remaining: 0,
     upgradeTo,
     upgradeSeats,
+    downgradeTo,
+    downgradeSeats,
+    paths,
     seatsOver,
   }
 }
 
+/** Dollars from integer cents for copy — "$49" or "$49.50", never float math on money. */
+function centsLabel(cents: number): string {
+  const whole = Math.floor(cents / 100)
+  const rest = cents % 100
+  return rest === 0 ? `$${whole}` : `$${whole}.${String(rest).padStart(2, "0")}`
+}
+
 /**
  * PURE: the sentence a tenant reads when they ask for a seat past their limit.
- *
- * WHERE A TIER ABOVE EXISTS, THIS NAMES IT AND NOTHING ELSE. The owner's ruling
- * ("if they need more than they need to upgrade to a brokerage plan… agent tier
- * … upgrade to a team subscription") makes the upgrade THE answer, so quoting a
- * per-seat price beside it would offer the tenant the very thing that ruling
- * withdrew. The dollar figure survives only in `paid_seat_only` — the top tier
- * or a staff override, where there is no tier to climb and the earlier ruling is
- * still the only one that speaks.
- *
- * It is a REFUSAL and it is also a product moment: it says what they have, what
- * it costs them, and where to go — never "deactivate someone".
+ * It is a REFUSAL and it is also a product moment: it says what they have and
+ * every way through — upgrade, downgrade when it fits, buy seats when the
+ * package is sellable — and hands off to a person where pricing is custom.
+ * The only dollar figure it ever quotes is the catalogue's package price.
  */
 export function seatDecisionMessage(d: SeatDecision): string | null {
   if (d.withinLimit) return null
   const over = `${d.seatsOver} seat${d.seatsOver === 1 ? "" : "s"}`
-  if (d.outcome === "upgrade_offered" && d.upgradeTo) {
-    const seats = d.upgradeSeats === null ? "unlimited seats" : `${d.upgradeSeats} seats`
-    return `Your plan includes ${d.limit} seats and all ${d.limit} are in use — that is ${over} more. Upgrade to ${TIER_LABELS[d.upgradeTo]} for ${seats} to add this person.`
+  const have = d.extraSeats > 0
+    ? `Your plan includes ${d.bandLimit ?? d.limit} seats plus ${d.extraSeats} purchased, and all ${d.limit} are in use`
+    : `Your plan includes ${d.limit} seats and all ${d.limit} are in use`
+  const options: string[] = []
+  for (const p of d.paths) {
+    if (p.kind === "upgrade") options.push(`upgrade to ${TIER_LABELS[p.tier]} for ${p.seats === null ? "custom seats" : `${p.seats} seats`}`)
+    else if (p.kind === "buy_seats") options.push(`buy ${p.packages} seat package${p.packages === 1 ? "" : "s"} (${p.size} seats each, ${centsLabel(p.priceCents)}/month per package)`)
+    else if (p.kind === "downgrade") options.push(`or, if your business has changed, move down to ${TIER_LABELS[p.tier]} (${p.seats} seats — your current team fits)`)
+    else if (p.reason === "custom_pricing") options.push("seats on this plan are priced for you — contact us to add more")
+    else if (p.reason === "staff_cap") options.push("your seat count was set by platform staff — contact support to raise it")
+    else options.push("seat packages for this plan are not on sale yet — contact us")
   }
-  return `That is ${over} past your ${d.limit}-seat plan. You can add ${d.seatsOver === 1 ? "it" : "them"} for $${d.additionalSeatMonthlyUsd}/month per seat.`
+  return `${have} — that is ${over} more. You can ${options.join("; ")}.`
 }
 
 /**

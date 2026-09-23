@@ -61,6 +61,7 @@ function fakeSvc(fx: Record<string, TableFixture>) {
         eq() { return thenable },
         in() { return thenable },
         not() { return thenable },
+        order() { return thenable },
         limit() { return thenable },
         maybeSingle: async () => ({ data: Array.isArray(f.data) ? (f.data[0] ?? null) : f.data, error: f.error }),
         then(res: (v: any) => unknown) { return Promise.resolve({ data: f.data, error: f.error }).then(res) },
@@ -77,8 +78,8 @@ const catalog = (rows: Array<{ tier_name: string; max_agents: number | null }>) 
   ({ data: rows, error: null })
 const LIVE_SHAPED_CATALOG = catalog([
   { tier_name: "solo_agent", max_agents: 2 },
-  { tier_name: "team", max_agents: 5 },
-  { tier_name: "brokerage", max_agents: null },
+  { tier_name: "team", max_agents: TIER_SEAT_LIMITS.team },
+  { tier_name: "brokerage", max_agents: TIER_SEAT_LIMITS.brokerage },
   { tier_name: "multi_location", max_agents: -1 },
 ])
 const seatUsers = (n: number) =>
@@ -89,23 +90,26 @@ const agents = (userIds: string[]) => ({ data: userIds.map((user_id) => ({ user_
 
 async function main() {
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[1 · THE CAPS — agent tier 2, team tier 5, brokerage and multi-location unlimited]")
+  console.log("\n[1 · THE CAPS — agent tier 2, team tier 10, brokerage 30, multi-location custom (wave 79A)]")
   check("solo_agent (the owner's 'agent tier subscription') caps at 2",
     TIER_SEAT_LIMITS.solo_agent === 2)
-  check("team caps at 5", TIER_SEAT_LIMITS.team === 5)
-  // OWNER, 2026-09-22 (wave 78A): "brokerage is unlimited and same to multiple
-  // locations is unlimited" — superseding the 2026-08-22 "50 seats". m655 moves
-  // the live catalogue; this literal is the plan-catalog table BY IDENTITY
+  check("team caps at 10", TIER_SEAT_LIMITS.team === 10)
+  // OWNER, 2026-09-23 (wave 79A): "solo tier is 2 seats; team tier is 10 seats;
+  // brokerage tier is 30 seats; multi location tier is custom pricing for
+  // seats" — superseding wave 78A's unlimited brokerage. m660 moves the live
+  // catalogue; this literal is the plan-catalog table BY IDENTITY
   // (scripts/seat-bands-guard.ts), so it cannot say anything else.
-  check("brokerage is UNLIMITED", TIER_SEAT_LIMITS.brokerage === null)
-  check("multi_location is unlimited too", TIER_SEAT_LIMITS.multi_location === null)
-  check("…so a brokerage is never refused — its 51st, its 5,000th",
-    seatDecision("brokerage", 50).withinLimit && seatDecision("brokerage", 4999).withinLimit)
+  check("brokerage caps at 30", TIER_SEAT_LIMITS.brokerage === 30)
+  check("multi_location is custom (null — unlimited until a count is negotiated)", TIER_SEAT_LIMITS.multi_location === null)
+  const TEAM_BAND = TIER_SEAT_LIMITS.team as number
+  const BRK_BAND = TIER_SEAT_LIMITS.brokerage as number
+  check(`…so a brokerage is admitted up to its band and refused past it (${BRK_BAND} → ${BRK_BAND + 1})`,
+    seatDecision("brokerage", BRK_BAND - 1).withinLimit && !seatDecision("brokerage", BRK_BAND).withinLimit)
   check("…while multi_location keeps hiring", seatDecision("multi_location", 4999).withinLimit)
-  control("a brokerage capped at the team number would show as over",
-    seatDecision("brokerage", 499, null, 1, { brokerage: 5 }).withinLimit)
-  control("the superseded 50-seat brokerage WOULD refuse its 51st — the number this moved",
-    seatDecision("brokerage", 50, null, 1, { brokerage: 50 }).withinLimit)
+  control("a brokerage capped at the team number would show as over one under its band",
+    seatDecision("brokerage", BRK_BAND - 1, null, 1, { brokerage: TEAM_BAND }).withinLimit)
+  control("the superseded UNLIMITED brokerage WOULD admit its 5,000th — the number this moved",
+    seatDecision("brokerage", 4999, null, 1, { brokerage: null }).withinLimit === false)
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[1b · THE OWNER'S WORKED EXAMPLES, RE-READ UNDER 'STAFF SHOULD NOT TAKE UP SEATS']")
@@ -149,8 +153,8 @@ async function main() {
     check("TEAM · a broker who runs the shop and does not sell is FREE", seatsFor([{ role: "broker" }]) === 0)
     check("TEAM · admin + tc + isa on top of them are FREE — still 3 of 5",
       seatsFor([...team, { role: "admin" }, { role: "tc" }, { role: "isa" }]) === 3)
-    check("TEAM · 3 of 5 is inside the plan, with 2 to spare",
-      seatDecision("team", 3).withinLimit && seatDecision("team", 3).remaining === 2)
+    check(`TEAM · 3 of ${TEAM_BAND} is inside the plan, with ${TEAM_BAND - 3} to spare`,
+      seatDecision("team", 3).withinLimit && seatDecision("team", 3).remaining === TEAM_BAND - 3)
     control("TEAM · the retired rule billed the admin, tc and isa (6 of 5) — the two rules must disagree here",
       retiredSeatsFor([...team, { role: "admin" }, { role: "tc" }, { role: "isa" }]) === seatsFor([...team, { role: "admin" }, { role: "tc" }, { role: "isa" }]))
 
@@ -158,8 +162,8 @@ async function main() {
     const brokerage: Seated[] = [{ role: "broker_admin" }, { role: "team_lead" }, { role: "agent" }]
     check("BROKERAGE · broker_admin is STAFF (free); team_lead + agent → 2 seats", seatsFor(brokerage) === 2)
     check("BROKERAGE · broker_admin never consumes a seat", !roleConsumesSeat("broker_admin", { produces: true }))
-    check("BROKERAGE · unlimited — 2 seated, and remaining is null (not a number to run out of)",
-      seatDecision("brokerage", 2).withinLimit && seatDecision("brokerage", 2).remaining === null)
+    check(`BROKERAGE · ${BRK_BAND} seats — 2 seated, ${BRK_BAND - 2} remaining`,
+      seatDecision("brokerage", 2).withinLimit && seatDecision("brokerage", 2).remaining === BRK_BAND - 2)
     control("BROKERAGE · the retired rule counted broker_admin (3) — the two rules must disagree here",
       retiredSeatsFor(brokerage) === seatsFor(brokerage))
 
@@ -191,21 +195,21 @@ async function main() {
   const soloAt2 = seatDecision("solo_agent", 2)
   check("agent tier: the 3rd seat is REFUSED", soloAt2.withinLimit === false)
   check("…and the refusal names TEAM, the next tier up", soloAt2.upgradeTo === "team")
-  check("…quoting the seats team gives them", soloAt2.upgradeSeats === 5)
+  check("…quoting the seats team gives them", soloAt2.upgradeSeats === TEAM_BAND)
   check("…in the sentence a person reads",
-    (seatDecisionMessage(soloAt2) ?? "").includes(`Upgrade to ${TIER_LABELS.team}`))
+    (seatDecisionMessage(soloAt2) ?? "").includes(`upgrade to ${TIER_LABELS.team} for ${TEAM_BAND} seats`))
   control("the 2nd seat on agent tier is NOT refused (the cap is 2, not 1)",
     seatDecision("solo_agent", 1).withinLimit === false)
 
-  const teamAt5 = seatDecision("team", 5)
-  check("team tier: the 6th seat is REFUSED", teamAt5.withinLimit === false)
+  const teamAt5 = seatDecision("team", TEAM_BAND)
+  check(`team tier: the ${TEAM_BAND + 1}th seat is REFUSED`, teamAt5.withinLimit === false)
   check("…and the refusal names BROKERAGE", teamAt5.upgradeTo === "brokerage")
-  check("…quoting UNLIMITED seats on brokerage", teamAt5.upgradeSeats === null
-    && /unlimited seats/.test(seatDecisionMessage(teamAt5) ?? ""))
+  check(`…quoting ${BRK_BAND} seats on brokerage`, teamAt5.upgradeSeats === BRK_BAND
+    && new RegExp(`for ${BRK_BAND} seats`).test(seatDecisionMessage(teamAt5) ?? ""))
   check("…in the sentence a person reads",
-    (seatDecisionMessage(teamAt5) ?? "").includes(`Upgrade to ${TIER_LABELS.brokerage}`))
-  control("the 5th seat on team tier is NOT refused (the cap is 5, not 4)",
-    seatDecision("team", 4).withinLimit === false)
+    (seatDecisionMessage(teamAt5) ?? "").includes(`upgrade to ${TIER_LABELS.brokerage}`))
+  control(`the ${TEAM_BAND}th seat on team tier is NOT refused (the cap is ${TEAM_BAND}, not ${TEAM_BAND - 1})`,
+    seatDecision("team", TEAM_BAND - 1).withinLimit === false)
 
   console.log("\n[2b · THE REFUSAL IS AN UPGRADE PROMPT, NOT A SCOLDING OR AN UPSELL]")
   // The NEW ruling replaced 'or pay per seat' with 'upgrade'. Where a tier above
@@ -217,12 +221,16 @@ async function main() {
     && !/\$\d+\/month/.test(seatDecisionMessage(teamAt5) ?? ""))
   control("the superseded copy (which quoted $/month beside the upgrade) would fail that",
     !/\$\d+\/month/.test("Upgrading to Team gives you 5 seats — or add the seat for $25/month."))
-  check("the top tier, where there IS no tier to climb, still gets the per-seat offer",
-    seatDecision("multi_location", 9, 9).outcome === "paid_seat_only"
-    && /\$\d+\/month/.test(seatDecisionMessage(seatDecision("multi_location", 9, 9)) ?? ""))
+  // Wave 79A: the per-seat LITERAL is retired; past a staff cap the door offers
+  // the catalogue's package when sellable, else a person — never an invented $.
+  check("the top tier, where there IS no tier to climb, hands off to a person (contact) with no invented price",
+    seatDecision("multi_location", 9, 9).outcome === "over_limit"
+    && seatDecision("multi_location", 9, 9).paths.every((p) => p.kind === "contact")
+    && !/\$\d/.test(seatDecisionMessage(seatDecision("multi_location", 9, 9)) ?? ""))
   check("a staff-set OVERRIDE is a deliberate cap, so it never says 'upgrade'",
-    seatDecision("solo_agent", 3, 3).outcome === "paid_seat_only"
-    && seatDecision("solo_agent", 3, 3).upgradeTo === null)
+    seatDecision("solo_agent", 3, 3).outcome === "over_limit"
+    && seatDecision("solo_agent", 3, 3).upgradeTo === null
+    && !seatDecision("solo_agent", 3, 3).paths.some((p) => p.kind === "upgrade"))
 
   console.log("\n[3 · WHAT IS A SEAT — producers only; staff, contacts, lenders, vendors are NOT]")
   check("the working roster is the nine staff user types (the invite menu), partitioned into producer / by-production / free",
@@ -373,11 +381,12 @@ async function main() {
     // -1 and NULL are both 'unlimited' in the catalogue's vocabulary.
     const svc = fakeSvc({ subscription_tiers: LIVE_SHAPED_CATALOG })
     const read = await resolveCatalogSeatLimits(svc)
-    check("catalogue read: NULL ⇒ unlimited", read.ok && read.limits.brokerage === null)
-    check("…and the fallback agrees with the catalogue on brokerage (both unlimited)", seatLimitForTier("brokerage", read.limits) === null && seatLimitForTier("brokerage") === null)
+    const nullRead = await resolveCatalogSeatLimits(fakeSvc({ subscription_tiers: catalog([{ tier_name: "multi_location", max_agents: null }]) }))
+    check("catalogue read: NULL ⇒ unlimited", nullRead.ok && nullRead.limits.multi_location === null)
+    check("…and the fallback agrees with the catalogue on brokerage (both the band — wave 79A)", seatLimitForTier("brokerage", read.limits) === TIER_SEAT_LIMITS.brokerage && seatLimitForTier("brokerage") === TIER_SEAT_LIMITS.brokerage)
     check("catalogue read: -1 ⇒ unlimited (not a cap of minus one)", read.limits.multi_location === null)
-    check("catalogue read: the two capped tiers come through as numbers",
-      read.limits.solo_agent === 2 && read.limits.team === 5)
+    check("catalogue read: the three capped tiers come through as numbers",
+      read.limits.solo_agent === 2 && read.limits.team === TIER_SEAT_LIMITS.team && read.limits.brokerage === TIER_SEAT_LIMITS.brokerage)
     control("treating -1 as a literal cap would refuse every add on the top tier",
       seatCheck("multi_location", 0, -1).allowed === true)
   }
@@ -390,8 +399,8 @@ async function main() {
 
   console.log("\n[7 · THE OVERRIDE STILL WINS, AND THE MATH IS UNCHANGED BY ANY OF THIS]")
   check("staff override raises a capped tier", effectiveSeatLimit("solo_agent", 12).limit === 12)
-  check("…and can cap an unlimited one (brokerage is unlimited by default)", effectiveSeatLimit("brokerage", 25).limit === 25 && effectiveSeatLimit("brokerage", null).limit === null)
-  check("no override ⇒ the resolved tier number", effectiveSeatLimit("team", null).limit === 5)
+  check("…and can cap an unlimited one (multi_location is unlimited until negotiated)", effectiveSeatLimit("multi_location", 25).limit === 25 && effectiveSeatLimit("multi_location", null).limit === null)
+  check("no override ⇒ the resolved tier number", effectiveSeatLimit("team", null).limit === TIER_SEAT_LIMITS.team)
   check("asking about the CURRENT state (0 requested) never invents an overage",
     seatDecision("solo_agent", 2, null, 0).withinLimit === true)
 
@@ -489,16 +498,16 @@ async function main() {
     check("live catalogue read succeeds", read.ok)
     check(`live solo_agent cap is 2 (found ${String(read.limits.solo_agent)}) — RED until m523 is applied`,
       read.limits.solo_agent === 2)
-    check(`live team cap is 5 (found ${String(read.limits.team)}) — RED until m523 is applied`,
-      read.limits.team === 5)
-    check(`live brokerage is unlimited (found ${String(read.limits.brokerage)}) — RED until m655 is applied`, read.limits.brokerage === null)
+    check(`live team cap is ${TIER_SEAT_LIMITS.team} (found ${String(read.limits.team)}) — RED until m660 is applied`,
+      read.limits.team === TIER_SEAT_LIMITS.team)
+    check(`live brokerage cap is ${TIER_SEAT_LIMITS.brokerage} (found ${String(read.limits.brokerage)}) — RED until m660 is applied`, read.limits.brokerage === TIER_SEAT_LIMITS.brokerage)
   }
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ SEAT_CAP_FAIL"); process.exit(1) }
-  console.log(" ✅ SEAT_CAP_PASS — 2 seats on agent tier, 5 on team, brokerage unlimited, every add path gated, unreadable refuses, and staff/contacts never eat a seat")
+  console.log(` ✅ SEAT_CAP_PASS — ${TIER_SEAT_LIMITS.solo_agent} seats on agent tier, ${TIER_SEAT_LIMITS.team} on team, ${TIER_SEAT_LIMITS.brokerage} on brokerage, every add path gated, unreadable refuses, and staff/contacts never eat a seat`)
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

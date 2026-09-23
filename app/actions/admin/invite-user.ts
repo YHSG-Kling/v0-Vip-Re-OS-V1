@@ -30,6 +30,10 @@ export interface InviteUserParams {
   userType: string
   brokerageId?: string | null
   teamId?: string | null
+  /** Will this person PRODUCE (hold an agents record)? Only read for a
+   *  seat-by-production type (admin / broker / broker_owner); `false` seats
+   *  them as free staff on any tier (wave 79A). Omitted ⇒ the tier decides. */
+  produces?: boolean
 }
 
 export interface InviteUserResult {
@@ -162,13 +166,11 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // (subscription_tiers.max_agents, with the staff override on top), and it FAILS
   // CLOSED: an unreadable tenant, count or catalogue REFUSES and says which.
   //
-  // PAST THE LIMIT IS AN UPGRADE. The owner's ruling — "agent tier subscription
-  // only has 2 seats and if they need more than they need to upgrade to a team
-  // subscription", team → brokerage — makes this a refusal that names the next
-  // tier, not a dead end and not a per-seat upsell. The full decision rides back
-  // so the UI can render that tier as a button.
+  // PAST THE LIMIT IS A DOOR (wave 79A): the refusal carries every way through
+  // — upgrade, downgrade when today's producers fit, buy a seat package — and
+  // the full decision (`paths`) rides back so the UI renders each as a button.
   {
-    const verdict = await seatGate(service, resolvedBrokerageId, requestedRole)
+    const verdict = await seatGate(service, resolvedBrokerageId, requestedRole, { produces: params.produces })
     if (!verdict.allowed) {
       return {
         success: false,

@@ -38,7 +38,7 @@ const PARTNER_BADGE: Record<string, string> = {
 export default async function DocumentDownloadsPage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { days } = await searchParams
 
   const { data: userData } = await supabase

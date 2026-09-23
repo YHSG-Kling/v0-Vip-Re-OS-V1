@@ -46,7 +46,7 @@ export default async function VideoPlayerPage({
   } = await supabase.auth.getUser()
 
   if (authError || !user) {
-    redirect("/auth/login")
+    redirect("/login")
   }
 
   // Fetch video with progress

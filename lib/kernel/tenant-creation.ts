@@ -331,13 +331,19 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
     try {
       const { createActivationCheckout } = await import("@/lib/billing/subscription-activation")
       // ONE spelling of the landing (lane 79D): the success URL, the checkout
-      // email and lane 79A's /auth/login?activated=1 notice all read it.
+      // email and lane 79A's /login?activated=1 notice all read it.
       const { SUBSCRIBER_ACTIVATED_PATH, SUBSCRIBER_ACTIVATION_CANCELLED_PATH } = await import("@/lib/platform/subscriber-door")
       const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
       const checkout = await createActivationCheckout(service, {
         brokerageId, tierId, billingCycle: input.billing.billingCycle,
         customerEmail: adminEmail,
         waiveSetupFee: !!waiver && !checkoutError,
+        // /login is the REAL sign-in page (app/login/page.tsx, which reads
+        // ?activated=1 and ?activation=cancelled). It used to point at
+        // /auth/login — the DEMO sign-in surface, flag-gated off in production
+        // (MAINTENANCE_DOMAINS.demo_login_hard_gate) — so a paying subscriber
+        // landed on a demo page, or nothing, after checkout (wave 79A). The
+        // spelling lives ONCE in lib/platform/subscriber-door.ts (wave 79D).
         successUrl: `${appUrl}${SUBSCRIBER_ACTIVATED_PATH}`,
         cancelUrl: `${appUrl}${SUBSCRIBER_ACTIVATION_CANCELLED_PATH}`,
       })

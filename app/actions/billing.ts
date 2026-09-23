@@ -525,3 +525,215 @@ export async function cancelSubscription(subscriptionId: string) {
 // BROKERAGE_FINANCE_ADMIN_USER_TYPES / getAgentContext instead, so nothing in
 // app/actions/billing.ts reads across tenants any more — the cross-tenant reads
 // now live behind the platform capability in lib/platform/ and app/actions/superadmin/.
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE SEAT DOOR (wave 79A) — owner verbatim: "if the tenant hits a limit they
+// will be able to either upgrade to a higher tier (or lower tier if their
+// business changes) or buy more seats. subscriptions will be setup in stripe
+// so they sync."
+//
+// Three tenant-side actions on the survivors: the ONE gate (seatGate) for
+// the door, stripeSwapPrice for a tier change, stripeSetSeatPackages for a
+// package (a quantity on the tier's seat price — a second Stripe subscription
+// item, prorated). Tenant from the SESSION; the gate is the COMMERCE roster
+// (may obligate the brokerage to pay). Stripe is written FIRST and the row
+// only after Stripe accepted — the webhook re-syncs the same row from the
+// same items, so a missed local write is repaired, never invented. Every row
+// write is COUNTED (§3) and every door use is audited.
+// ═════════════════════════════════════════════════════════════════════════════
+
+import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { createServiceClient } from "@/lib/supabase/service"
+import { seatGate, resolveSeatUsage, resolveCatalogSeatLimits, resolveTenantSeatTerms } from "@/lib/kernel/seat-usage"
+import { isCanonicalTier, TIER_ORDER, TIER_LABELS, effectiveSeatLimit, parseSeatOverride, type SeatDecision, type SeatPath } from "@/lib/kernel/tier-role-matrix"
+import { seatPackageSellable } from "@/lib/billing/plan-catalog"
+import { stripeSwapPrice, stripeSetSeatPackages } from "@/lib/billing/stripe-subscription-ops"
+import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
+
+async function requireTenantCommerceAdmin(): Promise<
+  | { ok: true; userId: string; email: string | null; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthenticated" }
+  const { data: u, error } = await supabase.from("users").select("user_type, brokerage_id, email").eq("id", user.id).maybeSingle()
+  if (error) return { ok: false, error: `Seat door could not read your account: ${error.message}` }
+  if (!u?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
+  if (!TENANT_COMMERCE_ADMIN_USER_TYPES.has(String((u as any).user_type ?? "").toLowerCase())) {
+    return { ok: false, error: "Only a broker, owner, admin or team lead can change the plan or buy seats" }
+  }
+  return { ok: true, userId: user.id, email: (u as any).email ?? user.email ?? null, brokerageId: u.brokerage_id as string }
+}
+
+async function auditSeatDoor(svc: any, actor: { userId: string; email: string | null }, action: string, brokerageId: string, details: Record<string, unknown>): Promise<void> {
+  const { error } = await svc.from("superadmin_audit_log").insert({
+    actor_user_id: actor.userId, actor_email: actor.email, action,
+    target_type: "brokerage", target_id: brokerageId, details,
+  })
+  if (error) console.warn("[seat-door] audit insert refused:", error.message)
+}
+
+export interface SeatDoor {
+  ok: boolean
+  error?: string
+  tier: string | null
+  seatCount: number | null
+  /** The decision for ONE more producer — the door's paths ride on it. */
+  decision: SeatDecision | null
+  message: string | null
+  paths: SeatPath[]
+}
+
+/** What the tenant is offered when the next producer would cross the limit
+ *  (asked for one seat). Inside the limit: paths is empty. */
+export async function getSeatDoorAction(): Promise<SeatDoor> {
+  const auth = await requireTenantCommerceAdmin()
+  if (!auth.ok) return { ok: false, error: auth.error, tier: null, seatCount: null, decision: null, message: null, paths: [] }
+  const svc = createServiceClient()
+  // "agent" is the plainest producer — the door asks what happens when one is added.
+  const verdict = await seatGate(svc, auth.brokerageId, "agent", { seatsRequested: 1 })
+  if (!verdict.decision) return { ok: false, error: verdict.message ?? "Seat check could not run", tier: verdict.tier, seatCount: verdict.seatCount, decision: null, message: verdict.message, paths: [] }
+  return { ok: true, tier: verdict.tier, seatCount: verdict.seatCount, decision: verdict.decision, message: verdict.message, paths: verdict.decision.paths }
+}
+
+/**
+ * BUY SEAT PACKAGES: set the tenant's package quantity to `packagesTotal`
+ * (an absolute quantity, so a double-click cannot buy twice). Refuses when
+ * the tier's seat price is not linked, when there is no Stripe subscription
+ * to add the item to, or when a DEcrease would drop the limit under the
+ * producers already seated.
+ */
+export async function buySeatPackagesAction(packagesTotal: number): Promise<
+  | { ok: true; seatPackages: number; extraSeats: number; effectiveLimit: number | null; stripeApplied: boolean }
+  | { ok: false; error: string }
+> {
+  const auth = await requireTenantCommerceAdmin()
+  if (!auth.ok) return auth
+  const qty = Math.floor(Number(packagesTotal))
+  if (!Number.isFinite(qty) || qty < 0 || qty > 500) return { ok: false, error: "Seat packages must be a whole number between 0 and 500" }
+  const svc = createServiceClient()
+
+  const { data: brokerage, error: bErr } = await svc.from("brokerages").select("plan_tier, billing_metadata").eq("id", auth.brokerageId).maybeSingle()
+  if (bErr || !brokerage) return { ok: false, error: `Your plan could not be read${bErr ? ` (${bErr.message})` : ""} — no seats were bought.` }
+  const tier = (brokerage as { plan_tier?: string | null }).plan_tier ?? null
+  if (!isCanonicalTier(tier)) return { ok: false, error: "Your plan is not a canonical tier — contact support to buy seats." }
+  if (tier === "multi_location") return { ok: false, error: "Seats on the Multi-Location plan are priced for you — contact us to add more." }
+
+  const catalog = await resolveCatalogSeatLimits(svc)
+  if (!catalog.ok) return { ok: false, error: `The plan catalogue could not be read (${catalog.error}) — no seats were bought.` }
+  const facts = catalog.packages[tier]
+  if (!seatPackageSellable(facts)) return { ok: false, error: `Seat packages for the ${TIER_LABELS[tier]} plan are not on sale yet (no priced Stripe seat package is linked) — contact us.` }
+
+  const terms = await resolveTenantSeatTerms(svc, auth.brokerageId)
+  if (!terms.ok) return { ok: false, error: `Your purchased seats could not be read (${terms.error}) — no seats were bought.` }
+  if (!terms.subscriptionId) return { ok: false, error: "No live subscription to add seats to — activate your plan first." }
+  const usage = await resolveSeatUsage(svc, auth.brokerageId)
+  if (!usage.ok) return { ok: false, error: "The number of seats in use could not be read — no seats were bought." }
+
+  const newExtra = qty * facts.size
+  const { limit: newLimit } = effectiveSeatLimit(tier, parseSeatOverride((brokerage as { billing_metadata?: unknown }).billing_metadata), catalog.limits, { extraSeats: newExtra })
+  if (newLimit !== null && usage.seatCount > newLimit) {
+    return { ok: false, error: `You have ${usage.seatCount} producers seated; ${qty} package${qty === 1 ? "" : "s"} would leave room for only ${newLimit}. Remove a producer first or keep more packages.` }
+  }
+
+  const { data: subRow, error: sErr } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("id", terms.subscriptionId).maybeSingle()
+  if (sErr || !subRow) return { ok: false, error: `Your subscription could not be read${sErr ? ` (${sErr.message})` : ""} — no seats were bought.` }
+  const stripeSubId = (subRow as { stripe_subscription_id?: string | null }).stripe_subscription_id ?? null
+  if (!stripeSubId) return { ok: false, error: "Your plan is not linked to Stripe yet (trial or invoiced) — add a payment method from Billing first, then buy seats." }
+
+  // STRIPE FIRST. A refusal here means nothing was bought and nothing is recorded.
+  const op = await stripeSetSeatPackages(stripeSubId, facts.stripePriceId, qty)
+  if (!op.applied) return { ok: false, error: op.skipped ? "Stripe is not configured — seats cannot be sold from this environment." : `Stripe refused the seat change: ${op.error ?? "unknown"}. Nothing was bought.` }
+
+  const { data: written, error: wErr } = await svc.from("subscriptions")
+    .update({ seat_packages: qty, extra_seats: newExtra, stripe_seat_item_id: op.itemId ?? null, updated_at: new Date().toISOString() })
+    .eq("id", terms.subscriptionId).select("id")
+  // Stripe already holds the truth; a refused local write is reported and the
+  // daily reconcile / next webhook repairs the row from the items.
+  if (wErr || (written ?? []).length !== 1) console.error("[seat-door] subscriptions seat write refused after Stripe accepted — reconcile will repair:", wErr?.message ?? "matched no row")
+
+  await auditSeatDoor(svc, auth, "subscription.seat_packages_changed", auth.brokerageId, { tier, from_packages: terms.terms.seatPackages ?? 0, to_packages: qty, extra_seats: newExtra, stripe_item_id: op.itemId ?? null, stripe_subscription_id: stripeSubId, local_write_ok: !wErr && (written ?? []).length === 1 })
+  return { ok: true, seatPackages: qty, extraSeats: newExtra, effectiveLimit: newLimit, stripeApplied: true }
+}
+
+/**
+ * CHANGE PLAN — up OR down (the "business changed" path). A downgrade is
+ * allowed only when the producers already seated fit the target tier's band
+ * plus any packages kept; an upgrade always fits. Stripe is repriced FIRST
+ * (stripeSwapPrice, prorated) when the tenant has a Stripe subscription and
+ * the target tier a published price; a Stripe-linked tenant whose target has
+ * no price is refused (a tier change that moves what they can do without
+ * moving what they pay is the drift this closes). Then subscriptions.tier_id
+ * and brokerages.plan_tier follow through the ONE tier sync.
+ */
+export async function changePlanTierAction(newTier: string): Promise<
+  | { ok: true; from: string; to: string; direction: "upgrade" | "downgrade"; stripeApplied: boolean; stripeSkipped: boolean }
+  | { ok: false; error: string }
+> {
+  const auth = await requireTenantCommerceAdmin()
+  if (!auth.ok) return auth
+  if (!isCanonicalTier(newTier)) return { ok: false, error: "Unknown plan" }
+  if (newTier === "multi_location") return { ok: false, error: "The Multi-Location plan is priced for you — contact us and we will set it up." }
+  const svc = createServiceClient()
+
+  const { data: brokerage, error: bErr } = await svc.from("brokerages").select("plan_tier, billing_metadata").eq("id", auth.brokerageId).maybeSingle()
+  if (bErr || !brokerage) return { ok: false, error: `Your plan could not be read${bErr ? ` (${bErr.message})` : ""} — nothing changed.` }
+  const fromTier = (brokerage as { plan_tier?: string | null }).plan_tier ?? null
+  if (!isCanonicalTier(fromTier)) return { ok: false, error: "Your current plan is not a canonical tier — contact support." }
+  if (fromTier === newTier) return { ok: false, error: `You are already on ${TIER_LABELS[newTier]}.` }
+  const direction: "upgrade" | "downgrade" = TIER_ORDER.indexOf(newTier) > TIER_ORDER.indexOf(fromTier) ? "upgrade" : "downgrade"
+
+  const catalog = await resolveCatalogSeatLimits(svc)
+  if (!catalog.ok) return { ok: false, error: `The plan catalogue could not be read (${catalog.error}) — nothing changed.` }
+  const terms = await resolveTenantSeatTerms(svc, auth.brokerageId)
+  if (!terms.ok) return { ok: false, error: `Your purchased seats could not be read (${terms.error}) — nothing changed.` }
+  const usage = await resolveSeatUsage(svc, auth.brokerageId)
+  if (!usage.ok) return { ok: false, error: "The number of seats in use could not be read — nothing changed." }
+
+  if (direction === "downgrade") {
+    const { limit } = effectiveSeatLimit(newTier, parseSeatOverride((brokerage as { billing_metadata?: unknown }).billing_metadata), catalog.limits, terms.terms)
+    if (limit !== null && usage.seatCount > limit) {
+      return { ok: false, error: `${TIER_LABELS[newTier]} seats ${limit} producers and you have ${usage.seatCount}. Remove producers or keep a bigger plan.` }
+    }
+  }
+
+  const { data: tierRow, error: tErr } = await svc.from("subscription_tiers").select("id, stripe_price_id, is_active").eq("tier_name", newTier).maybeSingle()
+  if (tErr || !tierRow) return { ok: false, error: `The ${TIER_LABELS[newTier]} plan could not be read${tErr ? ` (${tErr.message})` : ""} — nothing changed.` }
+  if ((tierRow as { is_active?: boolean }).is_active === false) return { ok: false, error: `The ${TIER_LABELS[newTier]} plan is not currently offered.` }
+
+  const { data: subRow, error: sErr } = await svc.from("subscriptions").select("id, stripe_subscription_id")
+    .eq("brokerage_id", auth.brokerageId).in("status", ["active", "trialing", "past_due", "paused"]).order("updated_at", { ascending: false }).limit(1).maybeSingle()
+  if (sErr) return { ok: false, error: `Your subscription could not be read (${sErr.message}) — nothing changed.` }
+  const stripeSubId = (subRow as { stripe_subscription_id?: string | null } | null)?.stripe_subscription_id ?? null
+  const priceId = (tierRow as { stripe_price_id?: string | null }).stripe_price_id ?? null
+
+  let stripeApplied = false
+  let stripeSkipped = false
+  if (stripeSubId) {
+    if (!priceId) return { ok: false, error: `The ${TIER_LABELS[newTier]} plan has no Stripe price published yet — contact us to change plan.` }
+    const r = await stripeSwapPrice(stripeSubId, priceId)
+    if (!r.applied && !r.skipped) return { ok: false, error: `Stripe refused the plan change: ${r.error ?? "unknown"}. Nothing changed.` }
+    stripeApplied = r.applied
+    stripeSkipped = r.skipped
+  } else {
+    stripeSkipped = true // trial / invoiced tenant: local change only, checkout collects on the new tier
+  }
+
+  if (subRow) {
+    const { data: written, error: wErr } = await svc.from("subscriptions")
+      .update({ tier_id: (tierRow as { id: string }).id, ...(priceId ? { stripe_price_id: priceId } : {}), updated_at: new Date().toISOString() })
+      .eq("id", (subRow as { id: string }).id).select("id")
+    if (wErr) return { ok: false, error: `Stripe ${stripeApplied ? "was repriced but" : "untouched;"} the subscription row refused the tier change: ${wErr.message}` }
+    if ((written ?? []).length !== 1) return { ok: false, error: "The subscription row matched nothing — the tier was not changed." }
+  }
+  const synced = await syncBrokeragePlanTier(auth.brokerageId)
+  if (synced !== newTier) {
+    // sync derives from the subscription row; a trial tenant with no row still needs plan_tier moved.
+    const { data: w2, error: pErr } = await svc.from("brokerages").update({ plan_tier: newTier, updated_at: new Date().toISOString() }).eq("id", auth.brokerageId).select("id")
+    if (pErr || (w2 ?? []).length !== 1) return { ok: false, error: `The plan could not be written${pErr ? ` (${pErr.message})` : ""}.` }
+  }
+
+  await auditSeatDoor(svc, auth, "subscription.tier_changed_by_tenant", auth.brokerageId, { from: fromTier, to: newTier, direction, stripe_applied: stripeApplied, stripe_skipped: stripeSkipped, producers: usage.seatCount })
+  return { ok: true, from: fromTier, to: newTier, direction, stripeApplied, stripeSkipped }
+}

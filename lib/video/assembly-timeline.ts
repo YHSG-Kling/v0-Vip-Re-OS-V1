@@ -122,21 +122,53 @@ export function computeAssemblyTimeline(input: AssemblyTimelineInput): AssemblyT
  * PURE.
  */
 export function evenShotSlots(bodyFrames: number, shotCount: number): AssemblySegment[] {
-  const total = Number.isFinite(bodyFrames) && bodyFrames > 0 ? Math.floor(bodyFrames) : 0
   const n = Math.max(1, Math.floor(shotCount || 1))
+  // The equal-weight case of the ONE weighted tiler below (wave 79C): with
+  // every weight 1, cumulative/total === (i+1)/n, so the slot ends are
+  // byte-identical to the even division this function has always produced.
+  return weightedShotSlots(bodyFrames, Array.from({ length: n }, () => 1))
+}
+
+/**
+ * weightedShotSlots — divide `bodyFrames` across N slots in PROPORTION to
+ * `weights` (a script segment's spoken words, a chapter's seconds), tiling the
+ * frame window EXACTLY: integer frames, no gap, no overrun, the rounding
+ * remainder absorbed by the LAST slot, every slot ≥ 1 frame. This is what the
+ * body-visual model (lib/video/body-visual-model.ts) uses to give each script
+ * segment (hook / beats / proof / CTA) the frames its words take, so a screen
+ * treatment is never hand-timed. `evenShotSlots` above is this with all-1
+ * weights. A non-finite or non-positive weight counts as 0 (the slot still
+ * gets its 1-frame floor so the caller's indices stay aligned); all-zero
+ * weights degrade to the even split.
+ *
+ * PURE.
+ */
+export function weightedShotSlots(bodyFrames: number, weights: number[]): AssemblySegment[] {
+  const total = Number.isFinite(bodyFrames) && bodyFrames > 0 ? Math.floor(bodyFrames) : 0
   if (total <= 0) return []
+  const w = (Array.isArray(weights) && weights.length > 0 ? weights : [1]).map((x) => (Number.isFinite(x) && x > 0 ? x : 0))
+  const sum = w.reduce((a, b) => a + b, 0)
+  const norm = sum > 0 ? w : w.map(() => 1)
+  const normSum = norm.reduce((a, b) => a + b, 0)
+  const n = norm.length
 
   const slots: AssemblySegment[] = []
   let cursor = 0
+  let cum = 0
   for (let i = 0; i < n; i++) {
     const isLast = i === n - 1
-    // Even division with the remainder absorbed by the LAST slot — the same
-    // "tile exactly, no drift" rule brollSlots/selectBrollPlan already prove;
-    // this is the integer-frame-domain version of the same idea for a caller
-    // that has no per-clip durations to bound by, only a count.
-    const end = isLast ? total : Math.round(((i + 1) * total) / n)
+    cum += norm[i]
+    // Cumulative-share rounding (the same rule as the even split, generalised):
+    // the end of slot i is round(cum_i / sum × total); the last slot ends at
+    // `total` so the chain tiles exactly. The 1-frame floor keeps a zero-weight
+    // slot addressable; the remaining slots' ends are still monotonic because
+    // cursor only ever moves forward.
+    // `(cum * total) / normSum`, in this operand order, is EXACTLY the even
+    // split's `((i + 1) * total) / n` when every weight is 1 — the same
+    // floating-point expression, so evenShotSlots stays byte-identical.
+    const end = isLast ? total : Math.min(total, Math.max(cursor + 1, Math.round((cum * total) / normSum)))
     slots.push({ from: cursor, durationInFrames: Math.max(1, end - cursor) })
-    cursor = end
+    cursor = Math.max(cursor + 1, end)
   }
   return slots
 }

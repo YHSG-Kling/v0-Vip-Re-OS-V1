@@ -58,6 +58,85 @@ export async function stripeSwapPrice(subscriptionId: string | null | undefined,
   } catch (err: any) { return { applied: false, skipped: false, error: err?.message ?? String(err) } }
 }
 
+// ── SEAT PACKAGES + CATALOGUE READS (wave 79A) ───────────────────────────────
+// The only Stripe calls the seat door, the daily reconcile and the superadmin
+// catalogue sync make. They live HERE — beside stripeSwapPrice — because this
+// file is already on the platform-client roster (scripts/stripe-account-scope-
+// simulator.ts PLATFORM_CLIENT_IMPORTERS: platform_payee), so no new importer
+// of the platform key is minted for them.
+
+export interface SeatItemOpResult extends StripeOpResult {
+  /** The seat-package subscription item id after the write (null when skipped / errored). */
+  itemId?: string | null
+  quantity?: number
+}
+
+/**
+ * Set the tenant's seat-package QUANTITY on its Stripe subscription: updates
+ * the existing item on `seatPriceId` or adds one (Stripe: one item per price;
+ * a quantity change prorates the remainder of the period —
+ * proration_behavior create_prorations, docs.stripe.com/billing/subscriptions/
+ * prorations). Quantity 0 removes the item. Fails closed on a missing price
+ * or subscription: nothing is charged and nothing is recorded as bought.
+ */
+export async function stripeSetSeatPackages(
+  subscriptionId: string | null | undefined,
+  seatPriceId: string | null | undefined,
+  quantity: number,
+): Promise<SeatItemOpResult> {
+  if (!isStripeConfigured() || !subscriptionId) return skip()
+  if (!seatPriceId) return { applied: false, skipped: false, error: "this plan has no Stripe seat-package price linked — seats cannot be sold until the catalogue is synced" }
+  const qty = Math.max(0, Math.floor(quantity))
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const sub = await stripe.subscriptions.retrieve(subscriptionId)
+    const items = ((sub as any).items?.data ?? []) as Array<{ id: string; price?: { id?: string } | string }>
+    const existing = items.find((it) => (typeof it.price === "string" ? it.price : it.price?.id) === seatPriceId)
+    if (existing) {
+      if (qty === 0) {
+        await stripe.subscriptions.update(subscriptionId, { items: [{ id: existing.id, deleted: true }], proration_behavior: "create_prorations" })
+        return { applied: true, skipped: false, itemId: null, quantity: 0 }
+      }
+      await stripe.subscriptions.update(subscriptionId, { items: [{ id: existing.id, quantity: qty }], proration_behavior: "create_prorations" })
+      return { applied: true, skipped: false, itemId: existing.id, quantity: qty }
+    }
+    if (qty === 0) return { applied: true, skipped: false, itemId: null, quantity: 0 }
+    const updated = await stripe.subscriptions.update(subscriptionId, { items: [{ price: seatPriceId, quantity: qty }], proration_behavior: "create_prorations" })
+    const added = (((updated as any).items?.data ?? []) as Array<{ id: string; price?: { id?: string } | string }>)
+      .find((it) => (typeof it.price === "string" ? it.price : it.price?.id) === seatPriceId)
+    return { applied: true, skipped: false, itemId: added?.id ?? null, quantity: qty }
+  } catch (err: any) { return { applied: false, skipped: false, error: err?.message ?? String(err) } }
+}
+
+/** Retrieve a subscription with its items (for the webhook-free reconcile).
+ *  Returns the raw SDK object; lib/billing/seat-packages.ts narrows it. */
+export async function stripeRetrieveSubscription(subscriptionId: string): Promise<{ ok: true; sub: any } | { ok: false; skipped: boolean; error?: string }> {
+  if (!isStripeConfigured() || !subscriptionId) return { ok: false, skipped: true }
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ["items.data.price"] })
+    return { ok: true, sub }
+  } catch (err: any) { return { ok: false, skipped: false, error: err?.message ?? String(err) } }
+}
+
+/** List every ACTIVE recurring price with its product expanded, newest first
+ *  (Stripe's default order) — the catalogue source for the superadmin sync. */
+export async function stripeListActivePrices(): Promise<{ ok: true; prices: any[] } | { ok: false; skipped: boolean; error?: string }> {
+  if (!isStripeConfigured()) return { ok: false, skipped: true }
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const prices: any[] = []
+    let startingAfter: string | undefined
+    for (let page = 0; page < 20; page++) {
+      const res = await stripe.prices.list({ active: true, type: "recurring", limit: 100, expand: ["data.product"], ...(startingAfter ? { starting_after: startingAfter } : {}) })
+      prices.push(...(res.data ?? []))
+      if (!res.has_more || res.data.length === 0) break
+      startingAfter = res.data[res.data.length - 1]!.id
+    }
+    return { ok: true, prices }
+  } catch (err: any) { return { ok: false, skipped: false, error: err?.message ?? String(err) } }
+}
+
 /** Extend the trial to a new end (unix seconds). Comping free time = extending the trial. */
 export function stripeExtendTrial(subscriptionId: string | null | undefined, trialEndUnix: number): Promise<StripeOpResult> {
   return guard(subscriptionId, async (stripe) => { await stripe.subscriptions.update(subscriptionId!, { trial_end: trialEndUnix, proration_behavior: "none" }) })

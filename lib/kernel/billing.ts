@@ -15,6 +15,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // billing_usage writer AND reader in this file filters on it — see the note in
 // lib/usage/period.ts for what happened when neither side did.
 import { currentBillingPeriodLabel } from "@/lib/usage/period"
+import { normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 // The PURE claimed-tenant decision table (no I/O, no client) — see the
 // CLAIMED-TENANT RULE header in lib/platform/acting-context.ts. Imported so this
@@ -839,7 +840,7 @@ export async function calculateOverageExposure(
     // Fetch tier limits
     const { data: subscription, error: subError } = await supabase
       .from("subscriptions")
-      .select("tier_id")
+      .select("tier_id, extra_seats")
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
@@ -864,8 +865,18 @@ export async function calculateOverageExposure(
     }
 
     // Per-metric caps live in the tier's features jsonb (plus the structured max_agents).
+    //
+    // `tier.max_agents ?? 0` was the blind spot (wave 79A): NULL means CUSTOM /
+    // UNLIMITED in the catalogue (m655/m660 — multi_location), and reading it
+    // as 0 projected every producer on the biggest plan as overage at $100 a
+    // head. The fold is the ONE the gate uses (normalizeCatalogSeatLimit:
+    // NULL / -1 ⇒ null), and null becomes no cap. Purchased seat packages
+    // (subscriptions.extra_seats) raise a capped tier's number, the same
+    // effective limit seatDecision enforces.
+    const seatCap = normalizeCatalogSeatLimit(tier.max_agents)
+    const extraSeats = Math.max(0, Math.floor(Number((subscription as { extra_seats?: number | null }).extra_seats ?? 0)) || 0)
     const limits = {
-      active_agents: tier.max_agents ?? 0,
+      active_agents: seatCap === null ? Number.POSITIVE_INFINITY : seatCap + extraSeats,
       ...(((tier.features as any)?.limits ?? {}) as Record<string, number>),
     } as Record<string, number>
     const metrics: Record<string, any> = {}

@@ -110,8 +110,14 @@ export async function queueProductVideoRender(
   // platform-screenshot slideshow) is filled from the demo stills the
   // screenshot seam keeps fresh, instead of a URL pasted by hand. Empty when
   // no still exists yet: the composition keeps its text-motion fallback.
-  const { demoStillImageUrls } = await import("@/lib/assets/screenshot-capture")
-  const imageUrls = await demoStillImageUrls(svc, draft.angle)
+  // Lane 79C — MULTI-USE stills: when no surface is tagged for this angle
+  // yet, any still a human marked usable for product videos
+  // (use:product_video — screenshotUrlsForUse, the asset-library category)
+  // fills the `screenshot` body treatment instead; public-page captures are
+  // NOT included here (they are campaign material a marketer picks by hand).
+  const { demoStillImageUrls, screenshotUrlsForUse } = await import("@/lib/assets/screenshot-capture")
+  const tagged = await demoStillImageUrls(svc, draft.angle)
+  const imageUrls = tagged.length > 0 ? tagged : await screenshotUrlsForUse(svc, "product_video", { limit: 8 })
   const spec = composeProductVideoSpec(draft.angle, format, brand, null, imageUrls)
   const r = await recordRenderQueued({
     brokerageId: PLATFORM_HOUSE_BROKERAGE_ID,

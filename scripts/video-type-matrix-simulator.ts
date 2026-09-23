@@ -74,7 +74,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
-  VIDEO_COMPOSITION_FILES, NON_CHAIN_COMPOSITIONS, buildScope, tileChain, narrationWindow, safeEval, tileSegments, type Segment,
+  VIDEO_COMPOSITION_FILES, NON_CHAIN_COMPOSITIONS, buildScope, tileChain, narrationWindow, safeEval, tileSegments, productPromoSceneChain, type Segment,
 } from "./composition-segments"
 import { COMPOSITION_GEOMETRY, compositionSeconds, geometryFor } from "../lib/remotion/composition-geometry"
 import { finishForVideo, VIDEO_FINISH_SPEC } from "../lib/video/finish-spec"
@@ -290,6 +290,15 @@ function checkSum(r: Resolved) {
     check(`${label}: Root.tsx mounts the ONE durationMetadata, whose rule hook (COMPOSITION_DURATION_RULES.MemoryVideoReel.durationFromProps) computes durationInFrames from the props via memoryVideoDurationFrames`,
       /id="MemoryVideoReel"[\s\S]{0,600}calculateMetadata=\{durationMetadata\("MemoryVideoReel"\)\}/.test(readStripped("remotion/Root.tsx"))
       && /MemoryVideoReel:[^\n]*durationFromProps:\s*\(props, fps\) => memoryVideoDurationFrames\(/.test(readStripped("lib/video/duration-model.ts")))
+  } else if (r.id === "ProductPromoReel") {
+    // Lane 79C — PLAN-DRIVEN scene chain: hook + beats cut by the body-visual
+    // plan's words (sceneWindowsFromPlan), the last beat to the body's end,
+    // the CTA tile the registered outro; tiles with and without a plan.
+    const withPlan = tileSegments(productPromoSceneChain(r.total, { withPlan: true }), r.total)
+    const without = tileSegments(productPromoSceneChain(r.total, { withPlan: false }), r.total)
+    check(`${label}: hook + beats (body-visual plan) + CTA tile [0, ${r.total}) exactly, with AND without a plan`, withPlan.ok && without.ok, withPlan.reason ?? without.reason)
+    check(`${label}: the composition cuts its scenes through sceneWindowsFromPlan (no frame const of its own for the beats)`,
+      /sceneWindowsFromPlan\(plan, BODY, beats\.length\)/.test(r.source) && !/const\s+PROOF\s*=\s*\d/.test(r.source))
   } else {
     check(`${label}: single continuous body (no <Sequence> chain of its own)`, !/<Sequence[\s>]/.test(r.source))
   }
