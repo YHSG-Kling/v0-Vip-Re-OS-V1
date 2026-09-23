@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-21
+ * generated: 2026-09-23
  * source: public.live_schema_json()
- * body-sha256: 6a279225770417f0e9703047df417875b807ac20266df9eed1d2545eba61307f
+ * body-sha256: 9337060cf868f49b7ed19595e835057d800c3dfe3896a433266fef4cd1d8a823
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -616,8 +616,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   strategy_recommendations: ["agent_user_id", "ai_analysis", "ai_narrative", "brokerage_id", "comparable_context", "contact_id", "created_at", "id", "listing_id", "offer_id", "recommended_contingencies", "recommended_earnest", "recommended_price", "risk_factors", "status", "success_probability", "template_id"],
   studio_sessions: ["agent_id", "brokerage_id", "commissioned_count", "created_at", "duration_label", "id", "plan", "session_key", "skipped_count", "spoken_command", "status", "updated_at"],
   subscriber_service_areas: ["active", "agent_user_id", "brokerage_id", "city", "created_at", "id", "is_primary", "joined_at", "state", "team_id", "zip_code"],
-  subscription_tiers: ["annual_price_cents", "created_at", "description", "display_name", "features", "id", "is_active", "is_featured", "marketing_bullets", "max_agents", "max_brokerages", "monthly_price_cents", "setup_fee_cents", "stripe_price_id", "tier_name"],
-  subscriptions: ["brokerage_id", "cancel_at", "cancelled_at", "created_at", "current_period_end", "current_period_start", "id", "status", "stripe_customer_id", "stripe_subscription_id", "tier_id", "trial_end", "updated_at"],
+  subscription_tiers: ["annual_price_cents", "created_at", "description", "display_name", "features", "id", "is_active", "is_featured", "marketing_bullets", "max_agents", "max_brokerages", "monthly_price_cents", "seat_package_price_cents", "seat_package_size", "setup_fee_cents", "stripe_price_id", "stripe_seat_price_id", "tier_name"],
+  subscriptions: ["brokerage_id", "cancel_at", "cancelled_at", "created_at", "current_period_end", "current_period_start", "custom_seat_limit", "custom_stripe_price_id", "extra_seats", "id", "seat_packages", "status", "stripe_customer_id", "stripe_price_id", "stripe_seat_item_id", "stripe_subscription_id", "tier_id", "trial_end", "updated_at"],
   superadmin_audit_log: ["action", "actor_email", "actor_user_id", "created_at", "details", "id", "ip_address", "target_id", "target_type", "user_agent"],
   support_ticket_messages: ["author_kind", "author_user_id", "body", "created_at", "id", "ticket_id"],
   support_tickets: ["agent_id", "assigned_to", "brokerage_id", "category", "contact_id", "created_at", "description", "first_response_at", "id", "lane", "priority", "resolved_at", "satisfaction_at", "satisfaction_comment", "satisfaction_rating", "status", "subject", "submitted_by_user_id", "updated_at", "vendor_id"],

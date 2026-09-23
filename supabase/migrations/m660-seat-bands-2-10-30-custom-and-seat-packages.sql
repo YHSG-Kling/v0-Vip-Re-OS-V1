@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-23 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m660 — SEAT BANDS 2 / 10 / 30 / CUSTOM, AND SEAT PACKAGES SYNCED FROM STRIPE.
 -- ─────────────────────────────────────────────────────────────────────────────

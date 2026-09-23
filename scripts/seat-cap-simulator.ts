@@ -498,9 +498,9 @@ async function main() {
     check("live catalogue read succeeds", read.ok)
     check(`live solo_agent cap is 2 (found ${String(read.limits.solo_agent)}) — RED until m523 is applied`,
       read.limits.solo_agent === 2)
-    check(`live team cap is ${TIER_SEAT_LIMITS.team} (found ${String(read.limits.team)}) — RED until m660 is applied`,
+    check(`live team cap is ${TIER_SEAT_LIMITS.team} (found ${String(read.limits.team)}) (m660 applied live 2026-09-23)`,
       read.limits.team === TIER_SEAT_LIMITS.team)
-    check(`live brokerage cap is ${TIER_SEAT_LIMITS.brokerage} (found ${String(read.limits.brokerage)}) — RED until m660 is applied`, read.limits.brokerage === TIER_SEAT_LIMITS.brokerage)
+    check(`live brokerage cap is ${TIER_SEAT_LIMITS.brokerage} (found ${String(read.limits.brokerage)}) (m660 applied live 2026-09-23)`, read.limits.brokerage === TIER_SEAT_LIMITS.brokerage)
   }
 
   console.log("\n──────────────────────────────────────────────────")
