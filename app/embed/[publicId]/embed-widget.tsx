@@ -22,6 +22,9 @@ import {
   usableModes, initialMode, MODE_COPY, type EmbedMode, type UsableMode,
 } from "@/lib/embed/widget-modes"
 import type { DidPresenterType } from "@/lib/did/agent-presenter"
+// The marker builders sit beside the regexes the custom-LLM route parses with —
+// one grammar (lib/did/context-markers.ts), so the widget cannot drift from it.
+import { contactMarker, embedSessionMarker, platformLiveSessionMarker } from "@/lib/did/context-markers"
 import { SimliFaceSession } from "@/app/components/features/ai-avatar-chat/SimliFaceSession"
 import { ProspectChat } from "@/app/get-started/prospect-chat"
 import { splitDemoClipToken, splitDemoStillToken } from "@/lib/platform/product-demo"
@@ -425,12 +428,12 @@ export function EmbedWidget(props: Props) {
     const markers: string[] = []
     if (!sessionMarkerSentRef.current && sessionIdRef.current) {
       markers.push(isPlatform
-        ? `[[CTX:platformLiveSessionId=${sessionIdRef.current}]]`
-        : `[[CTX:embedSessionId=${sessionIdRef.current}]]`)
+        ? platformLiveSessionMarker(sessionIdRef.current)
+        : embedSessionMarker(sessionIdRef.current))
       sessionMarkerSentRef.current = true
     }
     if (contactId && !ctxMarkerSentRef.current && !isPlatform) {
-      markers.push(`[[CTX:contactId=${contactId}]]`)
+      markers.push(contactMarker(contactId))
       ctxMarkerSentRef.current = true
     }
     const payload = markers.length ? `${markers.join(" ")} ${t}` : t

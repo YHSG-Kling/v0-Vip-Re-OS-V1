@@ -371,10 +371,12 @@ export async function startSubscriptionCheckout(
     ui_mode: "embedded",
     mode: "subscription",
     ...(taxConfig as any),
-    line_items: lineItems as any,
+    // The one-time setup fee rides line_items (a non-recurring price lands on
+    // the FIRST invoice only in subscription mode). Lane 79D: it was passed as
+    // subscription_data.add_invoice_items, a parameter Checkout Sessions reject
+    // — see lib/billing/subscription-activation.ts CheckoutConfig.
+    line_items: [...lineItems, ...addInvoiceItems] as any,
     subscription_data: {
-      // add_invoice_items charges the one-time setup fee on the first invoice only.
-      ...(addInvoiceItems.length > 0 ? { add_invoice_items: addInvoiceItems as any } : {}),
       metadata: {
         brokerage_id: brokerageId,
         tier_id: tierId,

@@ -158,7 +158,7 @@ export async function convertProspectToSubscriberAction(input: {
     | { mode: "active"; billingCycle: "monthly" | "annual" }
   customPricingRequested?: boolean
 }): Promise<
-  | { ok: true; brokerageId: string; alreadyConverted: boolean; tier?: string; inviteSent?: boolean; inviteError?: string | null; humanReasons?: string[]; staffNotified?: number; demoDisposition?: string; checkoutUrl?: string | null; checkoutError?: string | null; setupFeeCents?: number | null; setupFeeWaived?: boolean }
+  | { ok: true; brokerageId: string; alreadyConverted: boolean; tier?: string; inviteSent?: boolean; inviteError?: string | null; humanReasons?: string[]; staffNotified?: number; demoDisposition?: string; checkoutUrl?: string | null; checkoutError?: string | null; setupFeeCents?: number | null; setupFeeWaived?: boolean; checkoutEmailed?: boolean | null; checkoutEmailError?: string | null }
   | { ok: false; error: string }
 > {
   const auth = await requireMarketingStaff()
@@ -182,10 +182,33 @@ export async function convertProspectToSubscriberAction(input: {
     customPricingRequested: input.customPricingRequested === true,
   })
   if (!r.ok) return { ok: false, error: r.error }
+  // PAID (lane 79D): the customer gets the checkout by email through the ONE
+  // sender every entrance uses — the staffer no longer copies a URL by hand.
+  let checkoutEmailed: boolean | null = null
+  let checkoutEmailError: string | null = null
+  if (!r.alreadyConverted && r.checkoutUrl) {
+    try {
+      const { sendActivationCheckoutEmail } = await import("@/lib/platform/subscriber-door")
+      const { loadProductBrand } = await import("@/lib/platform/product-brand")
+      const { data: p } = await svc.from("platform_prospects").select("email, name").eq("id", input.prospectId).maybeSingle()
+      const to = (p as { email?: string | null } | null)?.email ?? null
+      if (to) {
+        const brand = await loadProductBrand(svc).catch(() => ({ name: "the platform" }))
+        const sent = await sendActivationCheckoutEmail(svc, {
+          to, firstName: ((p as { name?: string | null } | null)?.name ?? "").trim().split(/\s+/)[0] || "there", brandName: brand.name,
+          tier: r.tier, billingCycle: billing.mode === "paid" ? billing.billingCycle : "monthly",
+          checkoutUrl: r.checkoutUrl, setupFeeCents: r.setupFeeCents, setupFeeWaived: r.setupFeeWaived,
+        })
+        checkoutEmailed = sent.sent
+        if (!sent.sent) checkoutEmailError = sent.error
+      } else { checkoutEmailed = false; checkoutEmailError = "The prospect has no email on file." }
+    } catch (err) { checkoutEmailed = false; checkoutEmailError = (err as Error)?.message ?? "checkout email failed" }
+  }
   await audit(auth.userId, auth.email, "platform_prospect.convert_to_subscriber_clicked", input.prospectId, {
     brokerage_id: r.brokerageId, already_converted: r.alreadyConverted, billing_mode: billing.mode,
     tier: r.alreadyConverted ? null : r.tier, human_reasons: r.alreadyConverted ? [] : r.humanReasons,
     setup_fee_waived: billing.mode === "paid" && !!billing.setupFeeWaiver,
+    checkout_emailed: checkoutEmailed, checkout_email_error: checkoutEmailError,
   })
   revalidatePath("/dashboard/superadmin/growth")
   if (r.alreadyConverted) return { ok: true, brokerageId: r.brokerageId, alreadyConverted: true }
@@ -194,6 +217,7 @@ export async function convertProspectToSubscriberAction(input: {
     inviteSent: r.inviteSent, inviteError: r.inviteError ?? null,
     humanReasons: r.humanReasons, staffNotified: r.staffNotified, demoDisposition: r.demoDisposition,
     checkoutUrl: r.checkoutUrl, checkoutError: r.checkoutError ?? null, setupFeeCents: r.setupFeeCents, setupFeeWaived: r.setupFeeWaived,
+    checkoutEmailed, checkoutEmailError,
   }
 }
 

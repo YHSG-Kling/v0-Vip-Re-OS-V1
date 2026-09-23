@@ -23,8 +23,16 @@ export interface CheckoutTier {
 }
 
 export interface CheckoutConfig {
+  /** The recurring plan line. */
   lineItems: Array<Record<string, unknown>>
-  /** Added to the FIRST invoice only (Stripe subscription-mode one-time charge). */
+  /** The one-time setup-fee line (no `recurring`) — charged on the FIRST invoice
+   *  only. It goes into the Checkout Session's `line_items` beside the plan:
+   *  `line_items: [...lineItems, ...addInvoiceItems]`. Lane 79D: it used to be
+   *  sent as `subscription_data.add_invoice_items`, which is a Subscriptions-API
+   *  parameter the Checkout Sessions API does not accept ("Received unknown
+   *  parameter: subscription_data[add_invoice_items]") — so the moment a tier
+   *  carried a fee, EVERY paid activation would have been refused at Stripe. It
+   *  never surfaced because every live tier's setup_fee_cents is still 0. */
   addInvoiceItems: Array<Record<string, unknown>>
 }
 
@@ -163,11 +171,10 @@ export async function createActivationCheckout(svc: any, input: ActivationChecko
       mode: "subscription",
       ...(customerId ? { customer: customerId } : { customer_email: (input.customerEmail ?? (brokerage as { email?: string | null }).email ?? undefined) || undefined }),
       ...(taxConfig as Record<string, never>),
-      line_items: lineItems as never,
-      subscription_data: {
-        ...(addInvoiceItems.length > 0 ? { add_invoice_items: addInvoiceItems as never } : {}),
-        metadata,
-      },
+      // One-time prices in subscription-mode line_items land on the initial
+      // invoice only (Stripe Checkout docs) — that IS the setup fee.
+      line_items: [...lineItems, ...addInvoiceItems] as never,
+      subscription_data: { metadata },
       metadata,
       success_url: input.successUrl,
       cancel_url: input.cancelUrl,

@@ -158,7 +158,9 @@ check("the bundle's source union carries the live-agent door ('web:live_agent')"
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 5 · MARKER DISCIPLINE — a third marker, resolved fail-closed]")
-const { PLATFORM_LIVE_CTX_RE, platformLiveSessionMarker } = await import("../lib/did/platform-live-agent")
+// Re-anchored wave 79 (lane E): builder + regex moved to the pure marker module so
+// the widget (client) and the route (server) share ONE grammar.
+const { PLATFORM_LIVE_CTX_RE, platformLiveSessionMarker } = await import("../lib/did/context-markers")
 const sampleId = "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"
 PLATFORM_LIVE_CTX_RE.lastIndex = 0
 const m = PLATFORM_LIVE_CTX_RE.exec(`${platformLiveSessionMarker(sampleId)} hello`)
@@ -173,7 +175,11 @@ check("resolvePlatformLiveSession accepts ONLY an ACTIVE row under the platform'
 const widgetSrc = stripped(WIDGET)
 check("the widget has a deployment prop and posts the platform boot to /api/platform/live-agent/session", /deployment\?: EmbedDeployment/.test(widgetSrc) && widgetSrc.includes('"/api/platform/live-agent/session"'))
 check("under deployment=platform the widget sends ONLY the platform marker (never contactId/embedSessionId)",
-  /isPlatform\s*\?\s*`\[\[CTX:platformLiveSessionId=\$\{sessionIdRef\.current\}\]\]`\s*:\s*`\[\[CTX:embedSessionId=\$\{sessionIdRef\.current\}\]\]`/.test(widgetSrc) &&
+  // wave 79 (lane E): the widget calls the shared builders instead of re-spelling the
+  // markers — the literal grammar is asserted once, on lib/did/context-markers.ts below
+  /isPlatform\s*\?\s*platformLiveSessionMarker\(sessionIdRef\.current\)\s*:\s*embedSessionMarker\(sessionIdRef\.current\)/.test(widgetSrc) &&
+  /import \{[^}]*platformLiveSessionMarker[^}]*\} from "@\/lib\/did\/context-markers"/.test(widgetSrc) &&
+  !/CTX:platformLiveSessionId=|CTX:embedSessionId=|CTX:contactId=/.test(widgetSrc) &&
   /if \(contactId && !ctxMarkerSentRef\.current && !isPlatform\)/.test(widgetSrc))
 check("under deployment=platform the widget never runs the tenant lead-capture form (the agent's save_prospect captures)", /leadCaptureMode === "immediate" && !isPlatform/.test(widgetSrc) && /leadCaptureMode === "after_first_message" && !contactId && !isPlatform/.test(widgetSrc))
 check("the platform fail-over is the EXISTING text prospect chat (ProspectChat), never a dead avatar bubble", /if \(bootError && isPlatform\)[\s\S]{0,900}<ProspectChat brandName=\{label\} \/>/.test(widgetSrc))

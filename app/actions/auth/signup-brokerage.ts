@@ -85,6 +85,16 @@ export interface SignupBrokerageInput {
    *  A self-serve signer can never waive the fee (no waiver field here). */
   activation?:     "trial" | "paid"
   billingCycle?:   "monthly" | "annual"
+  /** Lane 79D — the ONE subscriber door's self-serve entrance. Producing seats
+   *  they run (staff never count) picks the band when `tier` is not chosen;
+   *  a custom-pricing ask or a multi-location shape routes to SALES-ASSISTED
+   *  (a person prices it; no tenant until then); what they use today opens
+   *  the white-glove import task on the tenant the core mints. */
+  producerSeats?:  number | null
+  customPricingRequested?: boolean
+  currentTools?:   string | null
+  /** Honeypot — a human never fills it; a filled value is refused without any write. */
+  website?:        string | null
 }
 
 export interface SignupBrokerageResult {
@@ -97,6 +107,19 @@ export interface SignupBrokerageResult {
   checkoutUrl?: string | null
   checkoutError?: string
   setupFeeCents?: number
+  /** Lane 79D — the activation checkout was ALSO emailed (the redirect's safety net). */
+  checkoutEmailed?: boolean
+  checkoutEmailError?: string
+  /** Lane 79D — the route the door took. 'sales_assisted' = no tenant yet: the
+   *  signer is captured as a platform prospect, staff are rung, and the booking
+   *  path is the demo survivor. 'existing_subscriber' = this email already owns
+   *  a tenant — sign in instead. */
+  route?: "self_serve" | "sales_assisted" | "existing_subscriber"
+  tier?: string
+  humanReasons?: string[]
+  prospectId?: string | null
+  bookingPath?: string
+  staffNotified?: number
   /** Snapshot outcome — honest per-part reporting (only set when snapshotId was given). */
   snapshotApplied?: string[]
   snapshotError?:   string
@@ -139,14 +162,48 @@ export async function signupBrokerageAction(
     return { ok: false, error: "Invalid tier — choose Solo Agent, Team, Brokerage, or Multi-Location." }
   }
 
+  // THE DOOR'S ROUTING RULE (lane 79D, lib/platform/subscriber-door.ts): the
+  // seat band and the humans-when-warranted rule are the SAME derivations the
+  // prospect conversion uses — never restated here.
+  const { planSubscriberEntrance, salesAssistedIntake, sendActivationCheckoutEmail } = await import("@/lib/platform/subscriber-door")
+  const plan = planSubscriberEntrance({
+    declaredTier: input.tier, producerSeats: input.producerSeats ?? null,
+    activation: input.activation ?? "trial", billingCycle: input.billingCycle ?? null,
+    customPricingRequested: input.customPricingRequested === true, currentTools: input.currentTools ?? null,
+    honeypot: input.website ?? null,
+  })
+  // A filled honeypot is a bot: refuse before any write, and say nothing useful.
+  if (plan.bot) return { ok: false, error: "Sign-up failed." }
+
   const service = createServiceClient()
+
+  // SALES-ASSISTED: multi-location is custom-priced per seat and a custom-
+  // pricing ask is a commercial decision — a person prices it BEFORE a tenant
+  // exists. The signer lands on the ONE prospect rail (idempotent by email),
+  // staff are rung, the handoff is open, and the growth board's Convert to
+  // subscriber button is the other entrance, prefilled from this row.
+  if (plan.route === "sales_assisted") {
+    const intake = await salesAssistedIntake(service, {
+      email: input.adminEmail, name: `${input.adminFirstName.trim()} ${input.adminLastName.trim()}`.trim(),
+      company: input.brokerageName.trim(), tier: plan.tier, producerSeats: plan.producerSeats,
+      currentTools: input.currentTools ?? null, territory: input.territoryZip?.trim() || null,
+      activation: plan.billing.mode === "paid" ? "paid" : "trial", humanReasons: plan.humanReasons,
+      source: "get_started:sales_assisted",
+    })
+    if (!intake.ok) return { ok: false, error: intake.error }
+    if (intake.alreadySubscriber) return { ok: true, route: "existing_subscriber", tier: plan.tier, prospectId: null }
+    return {
+      ok: true, route: "sales_assisted", tier: plan.tier, humanReasons: plan.humanReasons,
+      prospectId: intake.prospectId, bookingPath: intake.bookingPath, staffNotified: intake.staffNotified,
+    }
+  }
 
   // The signer's stated choice (wave 78A): trial by default; 'paid' mints the
   // activation checkout inside the core. No waiver can arrive on this public
   // door — TenantBilling's setupFeeWaiver is simply never set here.
-  const activation: "trial" | "paid" = input.activation === "paid" ? "paid" : "trial"
-  const billing = activation === "paid"
-    ? { mode: "paid" as const, billingCycle: input.billingCycle === "annual" ? "annual" as const : "monthly" as const }
+  const activation: "trial" | "paid" = plan.billing.mode === "paid" ? "paid" : "trial"
+  const billing = plan.billing.mode === "paid"
+    ? { mode: "paid" as const, billingCycle: plan.billing.billingCycle }
     : { mode: "trial" as const, trialDays: TRIAL_DAYS }
 
   // THE ONE CORE — brokerage + owner (invite-first, id pinned, tier-aware) +
@@ -159,7 +216,7 @@ export async function signupBrokerageAction(
     adminEmail: input.adminEmail,
     adminFirstName: input.adminFirstName.trim(),
     adminLastName: input.adminLastName.trim(),
-    tier: input.tier,
+    tier: plan.tier,
     city: input.brokerageCity ?? null,
     state: input.brokerageState ?? null,
     signupSource: "self_serve",
@@ -174,6 +231,41 @@ export async function signupBrokerageAction(
   const brokerage = { id: created.brokerageId }
   const newUser = { id: created.userId }
   const trialEndsAt = new Date(created.trialEndsAt ?? Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000)
+
+  // PAID: the browser is redirected to the checkout, and the SAME checkout is
+  // emailed as the safety net (a blocked redirect, a closed tab) through the
+  // ONE sender every entrance uses. Best-effort, reported by name.
+  let checkoutEmailed: boolean | undefined
+  let checkoutEmailError: string | undefined
+  if (activation === "paid" && created.checkoutUrl) {
+    try {
+      const { loadProductBrand } = await import("@/lib/platform/product-brand")
+      const brand = await loadProductBrand(service).catch(() => ({ name: "the platform" }))
+      const sent = await sendActivationCheckoutEmail(service, {
+        to: input.adminEmail, firstName: input.adminFirstName.trim(), brandName: brand.name,
+        tier: plan.tier, billingCycle: billing.mode === "paid" ? billing.billingCycle : "monthly",
+        checkoutUrl: created.checkoutUrl, setupFeeCents: created.setupFeeCents ?? null, setupFeeWaived: created.setupFeeWaived,
+      })
+      checkoutEmailed = sent.sent
+      if (!sent.sent) checkoutEmailError = sent.error
+    } catch (err) { checkoutEmailed = false; checkoutEmailError = (err as Error)?.message ?? "checkout email failed" }
+  }
+
+  // A CRM MIGRATION is white-glove SERVICE on a tenant that now exists — the
+  // same platform-staff task the staff conversion raises, raised here for the
+  // direct signer (humans when warranted, never by default).
+  let staffNotified = 0
+  if (plan.humanReasons.length > 0) {
+    try {
+      const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
+      staffNotified = await notifyPlatformStaff(service as never, {
+        type: "platform_subscriber_white_glove",
+        title: "New subscriber needs a person",
+        body: `${input.brokerageName.trim()} (${input.adminEmail}) just signed up for ${plan.tier.replace(/_/g, " ")} (${activation}): ${plan.humanReasonLabels.join("; ")}. See the tenant in the god console.`,
+        entityType: "brokerage", entityId: brokerage.id, priority: "high",
+      })
+    } catch (err) { console.warn("[signupBrokerage] white-glove bell failed (non-fatal):", (err as Error)?.message) }
+  }
 
   // Snapshot outcome — only say "no snapshot is live" when the caller expected branding.
   let snapshotApplied: string[] | undefined = created.snapshotApplied
@@ -317,7 +409,11 @@ export async function signupBrokerageAction(
       agent_id:      null,
       title:         `Self-serve signup: ${input.brokerageName}`,
       notes:         JSON.stringify({
-        tier:           input.tier,
+        tier:           plan.tier,
+        producer_seats: plan.producerSeats,
+        human_reasons:  plan.humanReasons,
+        staff_notified: staffNotified,
+        checkout_emailed: checkoutEmailed ?? null,
         admin_email:    input.adminEmail,
         trial_ends_at:  trialEndsAt.toISOString(),
         user_agent:     (await headers()).get("user-agent") ?? null,
@@ -357,9 +453,15 @@ export async function signupBrokerageAction(
     brokerageId: brokerage.id,
     trialEndsAt: trialEndsAt.toISOString(),
     activation,
+    route: "self_serve",
+    tier: plan.tier,
+    humanReasons: plan.humanReasons,
+    staffNotified,
     checkoutUrl: activation === "paid" ? (created.checkoutUrl ?? null) : undefined,
     checkoutError: created.checkoutError,
     setupFeeCents: created.setupFeeCents,
+    checkoutEmailed,
+    checkoutEmailError,
     snapshotApplied,
     snapshotError,
     couponApplied,

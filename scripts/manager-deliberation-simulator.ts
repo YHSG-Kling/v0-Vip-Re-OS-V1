@@ -177,7 +177,15 @@ async function main() {
     //     recruiting advertises, which is exactly the seam that must be declared.
     //     NON-deliberative: the broker declares, finance gates, compliance words —
     //     a settled handoff chain with no live raiser that could stage an argument.
-    && Object.keys(MANAGER_COLLABORATIONS).length === 20
+    // Re-anchored wave 79 (lane E): `=== 20` was a WAYPOINT pin (CLAUDE.md §2). The
+    // rule this layer asserts is that the ROUND-41 set is intact and its deliberative
+    // verdicts unchanged — wave 79 added eleven NON-deliberative control/handoff
+    // domains (tenant_identity_controls … subscription_lifecycle_fanout) so the
+    // cooperation MAINTENANCE_DOMAINS already declared is licensed on the bus; the
+    // count is derived and ratcheted by scripts/manager-cross-cooperation-guard.ts.
+    && Object.keys(MANAGER_COLLABORATIONS).length >= 20
+    && ["listing_demand_bridge", "listing_launch_play", "closing_money_and_risk", "tenant_principal_books", "long_horizon_nurture", "agent_licensing_readiness", "creative_distribution", "organic_paid_content", "ad_audience_basis", "offer_intake", "lead_quality_spend", "recruiting_offer_economics", "transaction_vendor_selection", "assignment_policy_outcomes", "public_records_seller_signals", "seller_signal_education_routing", "referral_fee_economics", "sequence_touch_cadence", "approval_queue_slo", "benefit_offerings"].every((k) => k in MANAGER_COLLABORATIONS)
+    && Object.keys(MANAGER_COLLABORATIONS).filter((k) => !/^(listing_demand_bridge|listing_launch_play|closing_money_and_risk|tenant_principal_books|long_horizon_nurture|agent_licensing_readiness|creative_distribution|organic_paid_content|ad_audience_basis|offer_intake|lead_quality_spend|recruiting_offer_economics|transaction_vendor_selection|assignment_policy_outcomes|public_records_seller_signals|seller_signal_education_routing|referral_fee_economics|sequence_touch_cadence|approval_queue_slo|benefit_offerings)$/.test(k)).every((k) => !isDeliberativeDomain(k))
     && !isDeliberativeDomain("tenant_principal_books")
     && !isDeliberativeDomain("seller_signal_education_routing")
     && !isDeliberativeDomain("ad_audience_basis")

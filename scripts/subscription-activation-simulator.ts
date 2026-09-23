@@ -11,7 +11,8 @@
  * Layer 1 (pure): buildCheckoutConfig (recurring plan line item + a one-time SETUP
  *   FEE add-invoice-item only when the tier carries one); buildSubscriptionPatch
  *   (Stripe sub → row patch, unix→ISO).
- * Layer 2 (source): checkout adds the setup fee via add_invoice_items; the webhook
+ * Layer 2 (source): checkout adds the setup fee as a one-time line_items price
+ *   (lane 79D — never subscription_data.add_invoice_items, which Checkout rejects); the webhook
  *   handles checkout.session.completed; BOTH subscription branches route through the
  *   ONE brokerage-keyed writer (upsertBrokerageSubscription), never a raw
  *   onConflict:"stripe_subscription_id" insert.
@@ -75,8 +76,13 @@ async function main() {
 
   console.log("\n[Layer 2 · webhook + checkout wiring]")
   const billingSrc = readFileSync(join(process.cwd(), "app/actions/billing.ts"), "utf8")
-  check("checkout uses buildCheckoutConfig + passes add_invoice_items (setup fee)",
-    /buildCheckoutConfig\(/.test(billingSrc) && /add_invoice_items/.test(billingSrc))
+  // Lane 79D: the setup fee is a ONE-TIME PRICE in line_items — Checkout
+  // Sessions reject subscription_data.add_invoice_items (a Subscriptions-API
+  // parameter), so the old shape would have refused every paid activation
+  // the moment a tier carried a fee.
+  check("checkout uses buildCheckoutConfig + spreads the setup-fee item into line_items (never subscription_data.add_invoice_items)",
+    /buildCheckoutConfig\(/.test(billingSrc) && /line_items: \[\.\.\.lineItems, \.\.\.addInvoiceItems\]/.test(billingSrc) && !/add_invoice_items:/.test(billingSrc))
+  check("POSITIVE CONTROL: the rejected shape is still recognised on a fixture", /add_invoice_items:/.test('subscription_data: { add_invoice_items: items }'))
   const hookSrc = readFileSync(join(process.cwd(), "app/api/billing/webhook/route.ts"), "utf8")
   check("webhook handles checkout.session.completed (activation)",
     /case "checkout\.session\.completed"/.test(hookSrc))
@@ -89,7 +95,8 @@ async function main() {
   const activationSrc = readFileSync(join(process.cwd(), "lib/billing/subscription-activation.ts"), "utf8")
   check("createActivationCheckout is a hosted subscription-mode checkout built from buildCheckoutConfig (same items, same setup fee) with brokerage_id in metadata",
     /export async function createActivationCheckout/.test(activationSrc) && /mode: "subscription"/.test(activationSrc)
-    && /buildCheckoutConfig\(tier as CheckoutTier, input\.billingCycle, \{ waiveSetupFee/.test(activationSrc) && /brokerage_id: input\.brokerageId/.test(activationSrc))
+    && /buildCheckoutConfig\(tier as CheckoutTier, input\.billingCycle, \{ waiveSetupFee/.test(activationSrc) && /brokerage_id: input\.brokerageId/.test(activationSrc)
+    && /line_items: \[\.\.\.lineItems, \.\.\.addInvoiceItems\]/.test(activationSrc) && !/add_invoice_items:/.test(activationSrc))
   check("…and the webhook's checkout.session.completed advances linked prospects trial → converted (counted)",
     /from\("platform_prospects"\)[\s\S]{0,300}status: "converted"[\s\S]{0,200}\.eq\("status", "trial"\)/.test(hookSrc))
 

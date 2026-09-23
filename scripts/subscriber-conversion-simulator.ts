@@ -310,7 +310,9 @@ check("POSITIVE CONTROL: the Stripe scanner sees the staff door's customer creat
 console.log("\n[Layer 5 · SURFACES — the growth board action and the start_subscription tool]")
 const growthSrc = stripped(GROWTH_ACTIONS)
 check("convertProspectToSubscriberAction is marketing/sales platform_role-gated, audited by name, and hands the conversion a platform_staff actor",
-  /convertProspectToSubscriberAction[\s\S]{0,1200}requireMarketingStaff\(\)[\s\S]{0,1200}actor: \{ kind: "platform_staff", userId: auth\.userId, email: auth\.email \}[\s\S]{0,800}audit\(auth\.userId, auth\.email, "platform_prospect\.convert_to_subscriber_clicked"/.test(growthSrc))
+  // Lane 79D: the checkout-email block (sendActivationCheckoutEmail) now sits
+  // between the actor and the audit — the window grew, the order did not.
+  /convertProspectToSubscriberAction[\s\S]{0,1200}requireMarketingStaff\(\)[\s\S]{0,1200}actor: \{ kind: "platform_staff", userId: auth\.userId, email: auth\.email \}[\s\S]{0,2500}audit\(auth\.userId, auth\.email, "platform_prospect\.convert_to_subscriber_clicked"/.test(growthSrc))
 check("the action's request carries the prospect id only — never a brokerage id (the tenant comes back from the core)", /prospectId: input\.prospectId/.test(growthSrc) && !/input\.brokerageId/.test(growthSrc))
 check("the board mounts the Convert to subscriber dialog on convertProspectToSubscriberAction", stripped(BOARD).includes("convertProspectToSubscriberAction(") && stripped(BOARD).includes("Convert to subscriber"))
 const toolsSrc = stripped(TOOLS)

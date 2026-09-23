@@ -330,13 +330,16 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
     }
     try {
       const { createActivationCheckout } = await import("@/lib/billing/subscription-activation")
+      // ONE spelling of the landing (lane 79D): the success URL, the checkout
+      // email and lane 79A's /auth/login?activated=1 notice all read it.
+      const { SUBSCRIBER_ACTIVATED_PATH, SUBSCRIBER_ACTIVATION_CANCELLED_PATH } = await import("@/lib/platform/subscriber-door")
       const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
       const checkout = await createActivationCheckout(service, {
         brokerageId, tierId, billingCycle: input.billing.billingCycle,
         customerEmail: adminEmail,
         waiveSetupFee: !!waiver && !checkoutError,
-        successUrl: `${appUrl}/auth/login?activated=1`,
-        cancelUrl: `${appUrl}/auth/login?activation=cancelled`,
+        successUrl: `${appUrl}${SUBSCRIBER_ACTIVATED_PATH}`,
+        cancelUrl: `${appUrl}${SUBSCRIBER_ACTIVATION_CANCELLED_PATH}`,
       })
       if (checkout.ok) { checkoutUrl = checkout.url; setupFeeCents = checkout.setupFeeCents; setupFeeWaived = checkout.setupFeeWaived }
       else { checkoutError = [checkoutError, checkout.error].filter(Boolean).join(" "); console.error("[tenant-creation] activation checkout not created:", checkout.error, { brokerageId, tierId }) }

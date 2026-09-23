@@ -4150,6 +4150,14 @@ if (LIST) {
     for (const r of rows.slice(0, 400)) console.log(`   ${r.where}  ${r.key}\n        ${r.detail}`)
     if (rows.length > 400) console.log(`   … and ${rows.length - 400} more`)
   }
+  // C3's "named only by a proof" bucket is REPORTED above as a bare count and was
+  // never enumerated anywhere — a number without its members is not a wire list
+  // (§2: publish the finding, not just the numerator). Printed here, under --list
+  // only, so the burn-down has names to work from; still not a finding.
+  if (typeProofOnly.length > 0) {
+    console.log(`\n── C3 · non-function export named ONLY by a proof — reported, not failed (${typeProofOnly.length}) ──`)
+    for (const e of [...typeProofOnly].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)) console.log(`   ${e.file}:${e.line}  ${e.name}`)
+  }
   console.log("\nNOT AN ASSERTION — this is the wire list, not a verdict. Build the missing")
   console.log("half; delete only against a NAMED duplicate at file:line.")
   process.exit(0)

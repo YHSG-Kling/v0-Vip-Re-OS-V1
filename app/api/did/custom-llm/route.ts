@@ -82,7 +82,8 @@ import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { buildCustomerFreeTools } from "@/lib/ai-isa/customer-context-tools"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
 import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
-import { PLATFORM_LIVE_CTX_RE, resolvePlatformLiveSession } from "@/lib/did/platform-live-agent"
+import { resolvePlatformLiveSession } from "@/lib/did/platform-live-agent"
+import { CONTACT_CTX_RE, EMBED_CTX_RE, PLATFORM_LIVE_CTX_RE } from "@/lib/did/context-markers"
 import { resolvePlatformReceptionContext, buildPlatformReceptionPrompt, platformReceptionTools } from "@/lib/voice/platform-reception"
 import { PLATFORM_PROSPECT_TOOL_GUIDANCE } from "@/lib/platform/prospect-agent-tools"
 
@@ -115,9 +116,9 @@ function checkAuth(request: NextRequest): boolean {
 }
 
 // ─── Context markers ────────────────────────────────────────────────────────
-
-const CONTACT_CTX_RE = /\[\[CTX:contactId=([0-9a-f-]{36})\]\]\s*/gi
-const EMBED_CTX_RE = /\[\[CTX:embedSessionId=([0-9a-f-]{36})\]\]\s*/gi
+// TOMBSTONE (wave 79, lane E): CONTACT_CTX_RE / EMBED_CTX_RE were file-local here
+// while the widget spelt the same markers by hand — the regexes now live beside
+// their builders in lib/did/context-markers.ts:31-48 (one grammar, §6).
 
 function extractMarkers(messages: any[]): { contactId: string | null; embedSessionId: string | null; platformLiveSessionId: string | null; cleaned: any[] } {
   let contactId: string | null = null

@@ -142,8 +142,13 @@ function anonymousSection() {
   const route = readStripped("app/api/did/custom-llm/route.ts")
   const widget = readStripped("app/embed/[publicId]/embed-widget.tsx")
 
-  check("custom-llm defines an embedSessionId marker distinct from contactId",
-    /EMBED_CTX_RE/.test(route) && /embedSessionId=/.test(route))
+  // Re-anchored wave 79 (lane E): the marker grammar moved out of the route into the
+  // pure module both the widget and the route consume (lib/did/context-markers.ts).
+  const markers = readStripped("lib/did/context-markers.ts")
+  check("custom-llm parses an embedSessionId marker distinct from contactId, from the ONE marker module",
+    /import \{[^}]*EMBED_CTX_RE[^}]*\} from "@\/lib\/did\/context-markers"/.test(route) &&
+    /export const EMBED_CTX_RE = new RegExp\(`\\\\\[\\\\\[CTX:embedSessionId=\$\{UUID\}/.test(markers) &&
+    /export const CONTACT_CTX_RE = new RegExp\(`\\\\\[\\\\\[CTX:contactId=\$\{UUID\}/.test(markers))
   check("a turn is refused ONLY when NEITHER marker is present (not contactId alone)",
     /!markerContactId && !embedSessionId/.test(route))
   check("an embedSessionId resolves brokerage/agent via embed_sessions (never fabricates a tenant)",
@@ -151,8 +156,11 @@ function anonymousSection() {
   check("a captured contact_id on the embed_sessions row is picked up automatically (no client resend required)",
     /resolvedContactId = resolvedContactId \?\? embedCtx\.contactId/.test(route))
 
+  // wave 79 (lane E): the widget builds the marker through the shared builder
+  // (lib/did/context-markers.ts::embedSessionMarker) instead of re-spelling it.
   check("the embed widget actually SENDS the embedSessionId marker on message one",
-    /embedSessionId=\$\{sessionIdRef\.current\}/.test(widget))
+    /embedSessionMarker\(sessionIdRef\.current\)/.test(widget) &&
+    /import \{[^}]*embedSessionMarker[^}]*\} from "@\/lib\/did\/context-markers"/.test(widget))
   check("the embed widget's marker send is independent of capture state (sent whether or not a contactId exists yet)",
     /sessionMarkerSentRef/.test(widget))
 

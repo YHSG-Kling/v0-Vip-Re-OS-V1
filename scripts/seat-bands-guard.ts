@@ -266,8 +266,10 @@ const TIER = { tier_name: "team", display_name: "Team", monthly_price_cents: 299
   check("the waiver FAILS CLOSED without a staff caller and without a reason, and is AUDITED (superadmin_audit_log subscription.setup_fee_waived + billing_metadata.setup_fee_waiver)",
     /if \(waiver && !input\.callerUserId\) return \{ ok: false/.test(core) && /if \(waiver && !\(waiver\.reason \?\? ""\)\.trim\(\)\) return \{ ok: false/.test(core)
     && /action: "subscription\.setup_fee_waived"/.test(core) && /setup_fee_waiver: waiverRecord/.test(core))
-  check("the activation survivor is a HOSTED subscription checkout on the PLATFORM account with the setup fee as add_invoice_items and the tenant in metadata (the webhook resolves it)",
-    /export async function createActivationCheckout/.test(code(ACTIVATION)) && /mode: "subscription"/.test(code(ACTIVATION)) && /add_invoice_items: addInvoiceItems/.test(code(ACTIVATION))
+  // Lane 79D re-anchor: the fee is a one-time price in line_items (Checkout
+  // Sessions reject subscription_data.add_invoice_items).
+  check("the activation survivor is a HOSTED subscription checkout on the PLATFORM account with the setup fee as a one-time line_items price and the tenant in metadata (the webhook resolves it)",
+    /export async function createActivationCheckout/.test(code(ACTIVATION)) && /mode: "subscription"/.test(code(ACTIVATION)) && /line_items: \[\.\.\.lineItems, \.\.\.addInvoiceItems\]/.test(code(ACTIVATION)) && !/add_invoice_items:/.test(code(ACTIVATION))
     && /getPlatformStripe\(\)/.test(code(ACTIVATION)) && /brokerage_id: input\.brokerageId/.test(code(ACTIVATION)) && /setup_fee_waived/.test(code(ACTIVATION)))
   check("the setup fee lands on the ledger the OS already keeps: the first Stripe invoice → billing_invoices (invoice.paid, amount_paid) — no new table", /case "invoice\.paid"/.test(code(WEBHOOK)) && /from\("billing_invoices"\)[\s\S]{0,300}amount_cents: invoice\.amount_paid/.test(code(WEBHOOK)) && !existsSync(join(root, "supabase/migrations")) === false && !/create table[\s\S]{0,60}setup_fee/i.test(raw(MIGRATION)))
 }
@@ -332,8 +334,12 @@ console.log("\n[4 · SURFACES — the prospect's choice drives trial vs paid; th
   const tools = code(TOOLS)
   check("start_subscription takes activation: trial | paid (+ billing_cycle) and maps 'paid' to billing mode paid, 'trial' to trial",
     /start_subscription:\s*tool\(\{[\s\S]{0,3000}activation: z\.enum\(\["trial", "paid"\]\)/.test(tools) && /a\.activation === "paid"\s*\?\s*\{ mode: "paid" as const/.test(tools) && /: \{ mode: "trial" as const \}/.test(tools))
-  check("the paid result emails the hosted checkout through dispatchEmail (the ONE egress survivor) and never a raw sender; the fee is stated from the result, not a literal",
-    /systemSource: "platform_prospect_activation_checkout"/.test(tools) && /dispatchEmail\(\{/.test(tools) && !/@\/lib\/providers\/messaging/.test(tools) && /r\.setupFeeCents/.test(tools) && !/\$\d{2,}/.test(tools))
+  // Lane 79D re-anchor: the checkout email moved onto the ONE sender
+  // (lib/platform/subscriber-door.ts::sendActivationCheckoutEmail) so every
+  // entrance sends it; the tool delegates and the survivor rides dispatchEmail.
+  const door = code("lib/platform/subscriber-door.ts")
+  check("the paid result emails the hosted checkout through the ONE sender (subscriber-door → dispatchEmail, the ONE egress survivor) and never a raw sender; the fee is stated from the result, not a literal",
+    /sendActivationCheckoutEmail\(svc, \{/.test(tools) && /systemSource: "platform_prospect_activation_checkout"/.test(door) && /@\/lib\/providers\/dispatch/.test(door) && !/@\/lib\/providers\/messaging/.test(tools + door) && /r\.setupFeeCents/.test(tools) && !/\$\d{2,}/.test(tools + door))
   const { PLATFORM_EXIT_MENU } = await import("../lib/ai-isa/qualification-playbook")
   const exit = PLATFORM_EXIT_MENU.find((o) => o.tool === "start_subscription")
   check("the playbook exit offers BOTH honestly — free trial OR activate now with the plan's setup fee — and forbids inventing or waiving it", !!exit && /FREE TRIAL/.test(exit.when) && /ACTIVATE NOW/.test(exit.when) && /setup fee/.test(exit.when) && /never invent/.test(exit.when) && /never offer to waive/.test(exit.when))
@@ -349,7 +355,9 @@ console.log("\n[4 · SURFACES — the prospect's choice drives trial vs paid; th
     /mode: 'paid', billingCycle: form\.cycle, setupFeeWaiverReason/.test(code(BOARD)) && /A waiver needs a reason/.test(raw(BOARD)) && /setupFeeWaiver: \(input\.billing\.setupFeeWaiverReason \?\? ""\)\.trim\(\) \? \{ reason:/.test(code(GROWTH_ACTIONS)))
   check("/get-started posts the signer's choice (activation + billingCycle) and redirects a paid signer to the hosted checkout; the fee shown is the tier row's setupCents",
     /activation,\s*billingCycle: activation === "paid" \? billingCycle : undefined/.test(code(FORM)) && /window\.location\.assign\(r\.checkoutUrl\)/.test(code(FORM)) && /selectedTier\.setupCents/.test(code(FORM)))
-  check("the signup action maps 'paid' → mode paid with no waiver field (a public door cannot waive) and defaults to the trial", /input\.activation === "paid" \? "paid" : "trial"/.test(code(SIGNUP)) && /\{ mode: "paid" as const, billingCycle:/.test(code(SIGNUP)) && !/setupFeeWaiver/.test(code(SIGNUP)))
+  // Lane 79D re-anchor: the signer's choice is planned by the door
+  // (planSubscriberEntrance → plan.billing) and mapped from there.
+  check("the signup action maps 'paid' → mode paid with no waiver field (a public door cannot waive) and defaults to the trial", /plan\.billing\.mode === "paid" \? "paid" : "trial"/.test(code(SIGNUP)) && /\{ mode: "paid" as const, billingCycle:/.test(code(SIGNUP)) && !/setupFeeWaiver/.test(code(SIGNUP)) && !/setupFeeWaiver/.test(code("lib/platform/subscriber-door.ts")))
   check("the webhook's checkout.session.completed advances linked prospects trial → converted, COUNTED", /case "checkout\.session\.completed"[\s\S]{0,2500}from\("platform_prospects"\)[\s\S]{0,200}status: "converted"[\s\S]{0,200}\.eq\("status", "trial"\)[\s\S]{0,80}\.select\("id"\)/.test(code(WEBHOOK)))
   check("the core's prospect stamp: 'converted' only for an invoiced active row; trial AND paid-pending are 'trial' until money moves", /outcome: input\.billing\.mode === "active" \? "converted" : "trial"/.test(code(CORE)))
 }

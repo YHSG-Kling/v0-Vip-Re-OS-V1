@@ -49,13 +49,11 @@ import { findDemoBrokerage } from "@/lib/platform/demo-tenant"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** The marker the platform widget prefixes on its first turn — the ONLY
- *  platform handle in a D-ID payload (D-ID passes no metadata of its own). */
-export const PLATFORM_LIVE_CTX_RE = /\[\[CTX:platformLiveSessionId=([0-9a-f-]{36})\]\]\s*/gi
-
-export function platformLiveSessionMarker(liveSessionId: string): string {
-  return `[[CTX:platformLiveSessionId=${liveSessionId}]]`
-}
+// ── TOMBSTONE (wave 79, lane E) — PLATFORM_LIVE_CTX_RE + platformLiveSessionMarker
+// moved to lib/did/context-markers.ts:45-48 beside the contact and embed markers.
+// The widget (a client component) could not import them from this server module
+// and re-spelt the marker by hand — the orphan-export census filed the builder as
+// proof-only. One pure module now owns builder + regex for all three markers.
 
 /** The configured platform agent, or null when no presenter is set. */
 export async function loadPlatformLiveAgentConfig(svc: Svc = createServiceClient()): Promise<ProductLiveAgent | null> {

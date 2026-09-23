@@ -308,27 +308,24 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
             nextStep: "Tell them the sign-in link is in their inbox, the trial is 14 days with no card, and billing is set up inside the app whenever they're ready.",
           }
         }
-        // PAID: send the hosted checkout through the ONE egress survivor. The
-        // sender identity is the platform rep, exactly as send_signup_link does.
+        // PAID: send the hosted checkout. TOMBSTONE (lane 79D): the rep lookup +
+        // dispatchEmail + copy that stood here was the ONLY sender of the
+        // activation checkout — the self-serve door and the staff convert door
+        // had none. Survivor: lib/platform/subscriber-door.ts::
+        // sendActivationCheckoutEmail (same rep sender, same egress survivor,
+        // same copy), now called by all three entrances.
         const setupFeeText = r.setupFeeCents && r.setupFeeCents > 0 ? `$${(r.setupFeeCents / 100).toLocaleString("en-US")}` : null
         let checkoutSent = false
         let checkoutSendError: string | null = null
         if (r.checkoutUrl) {
-          const { resolvePlatformSalesRep } = await import("@/lib/platform/sales-rep")
-          const rep = await resolvePlatformSalesRep(svc)
-          if (!rep) checkoutSendError = "The platform has no staff account to send from."
-          else {
-            const { dispatchEmail } = await import("@/lib/providers/dispatch")
-            const sent = await dispatchEmail({
-              to: prospect.email, brokerageId: rep.brokerageId, userId: rep.userId,
-              subject: `Activate your ${ctx.brand.name} ${String(r.tier).replace(/_/g, " ")} plan`,
-              html: `<p>Hi ${a.name},</p><p>Your ${ctx.brand.name} account is reserved. Complete your activation here — the ${billing.billingCycle} plan${setupFeeText ? ` plus a one-time ${setupFeeText} setup fee` : ""}: <a href="${r.checkoutUrl}">${r.checkoutUrl}</a></p><p>Your sign-in link arrives separately; your workspace opens the moment the checkout clears.</p>`,
-              text: `Complete your ${ctx.brand.name} activation (${billing.billingCycle} plan${setupFeeText ? ` + one-time ${setupFeeText} setup fee` : ""}): ${r.checkoutUrl}`,
-              channelPurpose: "transactional", systemSource: "platform_prospect_activation_checkout",
-            })
-            checkoutSent = sent.success
-            if (!sent.success) checkoutSendError = sent.error ?? "Checkout email could not be sent."
-          }
+          const { sendActivationCheckoutEmail } = await import("@/lib/platform/subscriber-door")
+          const sent = await sendActivationCheckoutEmail(svc, {
+            to: prospect.email, firstName: a.name.split(/\s+/)[0] || a.name, brandName: ctx.brand.name,
+            tier: String(r.tier), billingCycle: billing.billingCycle, checkoutUrl: r.checkoutUrl,
+            setupFeeCents: r.setupFeeCents ?? null, setupFeeWaived: r.setupFeeWaived,
+          })
+          checkoutSent = sent.sent
+          if (!sent.sent) checkoutSendError = sent.error
         }
         return {
           success: true, activation: "paid", trial: false, plan: r.tier, billingCycle: billing.billingCycle,
