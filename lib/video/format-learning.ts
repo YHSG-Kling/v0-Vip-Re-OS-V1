@@ -34,6 +34,8 @@
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import type { SelectedFormat, TargetChannel, MusicMood } from "@/lib/video/video-director"
+import { BODY_TREATMENTS, checkRuleOverrideBounds, resolvePurposeRule, type BodyTreatment, type BodyVisualRuleOverride } from "@/lib/video/body-visual-model"
+import type { VideoPurpose } from "@/lib/video/duration-model"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -361,6 +363,137 @@ export async function loadFormatOutcomes(
   }
 
   return scoreFormatOutcomes(rows)
+}
+
+// ============================================================================
+// BODY VISUAL — the "what was on screen" learning dimension (wave 80C)
+// ============================================================================
+//
+// OWNER: "if there is any changes to the registry rule for the purpose
+// allowable autonomous ai can learn." The director stamps
+// video_metadata.body_visual (bodyVisualStamp — purpose, the first beat's
+// treatment, backgrounds, verdict, override ids) on every commissioned row;
+// this dimension scores per (purpose × beat treatment) on the SAME real
+// signals (scans + engagement) and, under the SAME gate (MIN_FORMAT_SAMPLE +
+// FORMAT_MARGIN), PROPOSES one bounded rule change: prefer the winning
+// treatment on beats for that purpose. The BOUNDS are not decided here —
+// lib/video/body-visual-model.ts checkRuleOverrideBounds refuses anything the
+// purpose does not already allow, b-roll on a no-b-roll format, an avatar on
+// a presenter-less purpose — and lib/video/body-visual-rule-ledger.ts applies,
+// logs, signals and can revert.
+
+/** One attributed body-visual outcome: the row's stamp + its measured signal. */
+export interface BodyVisualOutcomeRow {
+  purpose: string
+  beatTreatment: string
+  scans: number
+  engagement: number
+}
+
+export interface BodyVisualCellScore {
+  purpose: string
+  beatTreatment: string
+  sample: number
+  meanSignal: number
+  score: number
+}
+
+export interface ScoredBodyVisuals { cells: Record<string, BodyVisualCellScore>; maxMeanSignal: number }
+
+/** PURE — fold body-visual outcomes into (purpose × beat treatment) cells, max-scaled like scoreFormatOutcomes. */
+export function scoreBodyVisualOutcomes(rows: BodyVisualOutcomeRow[]): ScoredBodyVisuals {
+  const acc: Record<string, BodyVisualCellScore & { total: number }> = {}
+  for (const r of rows) {
+    const key = `${r.purpose}|${r.beatTreatment}`.toLowerCase()
+    const cell = acc[key] ?? { purpose: r.purpose, beatTreatment: r.beatTreatment, sample: 0, meanSignal: 0, score: 0, total: 0 }
+    cell.sample += 1
+    cell.total += Math.max(0, r.scans || 0) + Math.max(0, r.engagement || 0)
+    acc[key] = cell
+  }
+  let maxMeanSignal = 0
+  for (const c of Object.values(acc)) { c.meanSignal = c.sample > 0 ? c.total / c.sample : 0; maxMeanSignal = Math.max(maxMeanSignal, c.meanSignal) }
+  const cells: Record<string, BodyVisualCellScore> = {}
+  for (const [k, c] of Object.entries(acc)) cells[k] = { purpose: c.purpose, beatTreatment: c.beatTreatment, sample: c.sample, meanSignal: c.meanSignal, score: maxMeanSignal > 0 ? c.meanSignal / maxMeanSignal : 0 }
+  return { cells, maxMeanSignal }
+}
+
+/** A bounded proposal for the ledger, or null (keep the expert rule — honestly). */
+export interface BodyVisualRuleProposal {
+  purpose: VideoPurpose
+  change: { kind: "prefer_treatment"; segmentKind: "beat"; treatment: BodyTreatment }
+  why: string
+  sample: number
+  source: "autonomous"
+}
+
+/**
+ * recommendBodyVisualRuleAdjustment — PURE. Keeps the expert rule unless a
+ * DIFFERENT beat treatment for THIS purpose has a real sample
+ * (≥ MIN_FORMAT_SAMPLE) AND beats the rule's current first preference by
+ * ≥ FORMAT_MARGIN; then proposes moving that treatment to the front of the
+ * purpose's beat preference — and ONLY when the bounds admit it (a treatment
+ * the purpose does not allow, b-roll on a no-b-roll format, an avatar on a
+ * presenter-less purpose are refused HERE too, so a proposal is never made
+ * that the ledger would have to refuse).
+ */
+export function recommendBodyVisualRuleAdjustment(
+  purpose: VideoPurpose,
+  scored: ScoredBodyVisuals,
+  overrides: readonly BodyVisualRuleOverride[] = [],
+): BodyVisualRuleProposal | null {
+  const rule = resolvePurposeRule(purpose, overrides)
+  if (!rule) return null
+  const current = rule.prefer.beat[0]
+  const field = Object.values(scored.cells).filter((c) => c.purpose.toLowerCase() === purpose.toLowerCase())
+  if (field.length === 0 || scored.maxMeanSignal <= 0) return null
+  const currentScore = field.filter((c) => c.beatTreatment === current).reduce((m, c) => Math.max(m, c.score), 0)
+  const top = field
+    .filter((c) => c.beatTreatment !== current && c.sample >= MIN_FORMAT_SAMPLE)
+    .filter((c) => (BODY_TREATMENTS as readonly string[]).includes(c.beatTreatment))
+    .sort((a, b) => b.score - a.score)[0]
+  if (!top) return null
+  if (top.score - currentScore < FORMAT_MARGIN) return null
+  const proposal: BodyVisualRuleProposal = {
+    purpose,
+    change: { kind: "prefer_treatment", segmentKind: "beat", treatment: top.beatTreatment as BodyTreatment },
+    why: `Learned from ${top.sample} real ${purpose} videos: beats on ${top.beatTreatment} out-converted ${current} — score ${fmtScore(top.score)} vs ${fmtScore(currentScore)}. Override gate: ≥${MIN_FORMAT_SAMPLE} sample AND ≥${FORMAT_MARGIN} margin met.`,
+    sample: top.sample,
+    source: "autonomous",
+  }
+  const bounds = checkRuleOverrideBounds({ ...proposal, id: "proposal", appliedAt: "" })
+  return bounds.ok ? proposal : null
+}
+
+/** Read the stamped body-visual outcomes for a tenant — the same rows and signals loadFormatOutcomes reads. */
+export async function loadBodyVisualOutcomes(brokerageId: string, client?: Svc): Promise<ScoredBodyVisuals> {
+  if (!brokerageId) return { cells: {}, maxMeanSignal: 0 }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc: Svc = client ?? createServiceClient()
+  const { data: projects, error } = await svc
+    .from("ai_video_projects").select("id, video_url, video_metadata").eq("brokerage_id", brokerageId).not("video_metadata", "is", null).limit(2000)
+  if (error) { console.error(`[format-learning] body-visual outcomes read refused for ${brokerageId}: ${error.message}`); return { cells: {}, maxMeanSignal: 0 } }
+  const rows: BodyVisualOutcomeRow[] = []
+  for (const p of (projects ?? []) as Array<{ video_url: string | null; video_metadata: Record<string, unknown> | null }>) {
+    const meta = p.video_metadata ?? {}
+    const stamp = meta.body_visual as { purpose?: string; beat_treatment?: string | null } | undefined
+    if (!stamp || typeof stamp.purpose !== "string" || typeof stamp.beat_treatment !== "string") continue
+    const qrCodeId = typeof meta.qr_code_id === "string" ? meta.qr_code_id : null
+    let scans = 0
+    if (qrCodeId) {
+      const { count } = await svc.from("qr_scan_events").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("qr_code_id", qrCodeId)
+      scans = count ?? 0
+    }
+    let engagement = 0
+    if (p.video_url) {
+      const { data: posts } = await svc.from("social_posts").select("engagement_data").eq("brokerage_id", brokerageId).contains("media_urls", [p.video_url])
+      for (const post of (posts ?? []) as Array<{ engagement_data: Record<string, number> | null }>) {
+        const m = post.engagement_data ?? {}
+        engagement += (m.views || 0) + (m.engagement || 0) + (m.comments || 0) + (m.shares || 0)
+      }
+    }
+    rows.push({ purpose: stamp.purpose, beatTreatment: stamp.beat_treatment, scans, engagement })
+  }
+  return scoreBodyVisualOutcomes(rows)
 }
 
 // ============================================================================

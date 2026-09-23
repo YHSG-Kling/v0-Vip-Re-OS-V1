@@ -102,7 +102,7 @@ import { computeAssemblyTimeline } from "./assembly-timeline"
 import {
   NARRATION_HEADROOM, WORDS_PER_MINUTE, spokenWords, type NarrationBudget,
 } from "./script-structure"
-import { memoryVideoDurationFrames, type MemoryVideoTimelineProps } from "./memory-video-composition"
+import { memoryVideoDurationFrames, MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS, MEMORY_VIDEO_MAX_SECONDS, type MemoryVideoTimelineProps } from "./memory-video-composition"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § PURPOSES — the reason a video exists, and how long that reason takes
@@ -187,10 +187,12 @@ export const PURPOSE_DURATION_RULES: Record<VideoPurpose, PurposeDurationRule> =
   memory: {
     // Voiceover host (lane 78D's MemoryVideoReel — no avatar, so D-ID's 5-min
     // single-render limit does not bind): the story is as long as the seller
-    // dictated it. 1200 s IS lib/video/memory-video-composition.ts
-    // MEMORY_VIDEO_MAX_SECONDS (one number, two readers — the matrix proof
-    // asserts they agree).
-    minSeconds: 60, idealSeconds: 150, maxSeconds: 1200,
+    // recorded it. The BODY max is the film's cap minus its cover and outro
+    // (lib/video/memory-video-composition.ts MEMORY_VIDEO_MAX_SECONDS /
+    // _COVER_SECONDS / _OUTRO_SECONDS — wave 80C: the cover and the end card
+    // are the composition's registered bookends) — one set of numbers, two
+    // readers; the matrix proof asserts they agree.
+    minSeconds: 60, idealSeconds: 150, maxSeconds: MEMORY_VIDEO_MAX_SECONDS - MEMORY_VIDEO_COVER_SECONDS - MEMORY_VIDEO_OUTRO_SECONDS,
     why: "A seller-dictated family history of the home: as long as the story is, on the voiceover host (no avatar clip cap). Never model-authored (lib/video/memory-video-gate.ts).",
     sources: ["d-id.com/faqs: output video length limited to 5 min", "sendspark.com onboarding guide (2026-08): 2-5-8 rule — a single story holds to ~5 min"],
   },
@@ -328,10 +330,10 @@ export interface CompositionDurationSpec {
    *   it) and renders at its registered duration. Every `fixed` row says why.
    */
   bodyMode: "narration" | "fixed"
-  /** The body is STITCHED from several synthesis clips (each under the
-   *  provider's single-clip cap), so the purpose max is not bounded by one
-   *  clip — lane 78D's MemoryVideoReel splits chapters on sentence
-   *  boundaries (lib/video/memory-video-render.ts splitForSynthesis). */
+  /** The body is STITCHED from several clips (each under the provider's
+   *  single-clip cap), so the purpose max is not bounded by one clip —
+   *  lane 78D's MemoryVideoReel plays one clip per chapter; since wave 80C
+   *  each clip is the seller's OWN recording (no synthesis at all). */
   multiClip?: true
   /** A composition whose length is computed by its OWN pure planner from its
    *  props (chapter clips, cover, outro) instead of the generic
@@ -350,7 +352,11 @@ export const COMPOSITION_DURATION_RULES: Record<string, CompositionDurationSpec>
   ExplainerAnimReel:     { purpose: "explainer", host: "avatar", introFrames: 90, outroFrames: 90, bodyMode: "narration" },
   TeammateExplainerReel: { purpose: "explainer", host: "avatar", introFrames: 75, outroFrames: 90, bodyMode: "narration" },
   // ── Voiceover-hosted ──
-  MemoryVideoReel:           { purpose: "memory", host: "voiceover", introFrames: 0, outroFrames: 0, bodyMode: "narration", multiClip: true, durationFromProps: (props, fps) => memoryVideoDurationFrames(props as unknown as MemoryVideoTimelineProps, fps) },
+  // Wave 80C: the silent cover and the "recorded for" end card ARE this
+  // composition's bookends, read from the ONE memory timeline constant so the
+  // body-visual plan's intro/body/outro split and memoryVideoChapterLayout
+  // agree by construction (30 fps is the registered geometry).
+  MemoryVideoReel:           { purpose: "memory", host: "voiceover", introFrames: MEMORY_VIDEO_COVER_SECONDS * 30, outroFrames: MEMORY_VIDEO_OUTRO_SECONDS * 30, bodyMode: "narration", multiClip: true, durationFromProps: (props, fps) => memoryVideoDurationFrames(props as unknown as MemoryVideoTimelineProps, fps) },
   JustListedReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration" },
   JustListedReelSquare:      { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration" },
   JustListedReelHorizontal:  { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 90, bodyMode: "narration" },
@@ -778,7 +784,7 @@ export function planDurationForProps(
 ): DurationPlan {
   const length = narrationLengthFromProps(compositionId, props)
   const purpose = opts.purpose ?? ((props?.videoPurpose as VideoPurpose | undefined) && PURPOSE_DURATION_RULES[props!.videoPurpose as VideoPurpose] ? (props!.videoPurpose as VideoPurpose) : null)
-  return planCompositionDuration({
+  const plan = planCompositionDuration({
     compositionId,
     spokenSeconds: length?.spokenSeconds ?? null,
     spokenSecondsSource: length?.source ?? null,
@@ -786,6 +792,23 @@ export function planDurationForProps(
     geometry: opts.geometry ?? null,
     floorToPurposeMin: length?.from === "copy",
   })
+  // Wave 80C: a composition with its OWN pure planner (MemoryVideoReel — the
+  // chapters' measured clips) is as long as that planner says, exactly as
+  // durationMetadata() already hands Remotion; the body-visual plan is cut
+  // from the same length rather than from a word estimate the reel ignores.
+  const own = COMPOSITION_DURATION_RULES[compositionId]?.durationFromProps
+  if (own && props) {
+    const durationInFrames = Math.max(1, Math.round(own(props, plan.fps)))
+    const t = computeAssemblyTimeline({ durationInFrames, introFrames: plan.introFrames, outroFrames: plan.outroFrames })
+    return {
+      ...plan, durationInFrames: t.totalFrames,
+      introFrames: t.intro.durationInFrames, bodyFrames: t.body.durationInFrames, outroFrames: t.outro.durationInFrames,
+      narrationWindow: { from: t.body.from, to: t.body.from + t.body.durationInFrames },
+      bodySeconds: t.body.durationInFrames / plan.fps, requestedBodySeconds: t.body.durationInFrames / plan.fps,
+      notes: [...plan.notes, `${compositionId}: length computed by its own planner (durationFromProps) — ${durationInFrames} frames.`],
+    }
+  }
+  return plan
 }
 
 /**

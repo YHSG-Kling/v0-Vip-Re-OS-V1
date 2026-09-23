@@ -976,17 +976,23 @@ function avatarPipWindowSection() {
     !/const AvatarPIP: React\.FC/.test(explainer))
   check("AgentExplainerReel declares avatarDurationSeconds on its own props (the D-ID measurement can actually reach the component)",
     /avatarDurationSeconds\?:\s*number \| null/.test(explainer))
-  check("all THREE PIP windows in AgentExplainerReel thread avatarDurationSeconds through (not just one of three — a partial thread leaves two windows still freeze-risked)",
-    (explainer.match(/avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6/g) ?? []).length === 3)
+  // Wave 80C: the three windows are ONE call site inside `panels.map` (the
+  // windows come from the body-visual plan), so a single thread covers all
+  // three by construction — the rule is "the one call site threads it AND it
+  // is the mapped site", never "three copies".
+  check("the ONE mapped AvatarPIP call site in AgentExplainerReel threads avatarDurationSeconds through (it renders all three panels — a thread here cannot leave a window freeze-risked)",
+    (explainer.match(/avatarDurationSeconds, avatarVideoTransparent, fps: FPS, size: 360, position: "top-left", ringWidth: 6/g) ?? []).length === 1 && /panels\.map\(\(p, i\) =>/.test(explainer))
 
   // EquityReportReel / MarketUpdateReel: already imported the survivor
   // (round-4 census); wave 56 adds the SAME avatarDurationSeconds thread so
   // their own three-window shape gets the identical fix, not a fix that only
   // landed on the newest caller.
   check("EquityReportReel's pipFor helper threads avatarDurationSeconds (one thread point covers all three of its STAT windows)",
-    /avatarDurationSeconds,\s*\n\s*fps: FPS,/.test(equity))
-  check("MarketUpdateReel threads avatarDurationSeconds on all THREE STAT windows",
-    (marketUpdate.match(/avatarDurationSeconds, fps: FPS,\s*\n\s*startFrame:/g) ?? []).length === 3)
+    /avatarDurationSeconds,\s*\n\s*avatarVideoTransparent,\s*\n\s*fps: FPS,/.test(equity))
+  // Wave 80C: MarketUpdateReel's three STAT windows are ONE mapped call site
+  // (`panels.map`) — see the AgentExplainerReel note above.
+  check("MarketUpdateReel threads avatarDurationSeconds on its ONE mapped STAT call site (all three windows)",
+    (marketUpdate.match(/avatarDurationSeconds, avatarVideoTransparent, fps: FPS,\s*\n\s*startFrame:/g) ?? []).length === 1 && /panels\.map\(\(p, i\) =>/.test(marketUpdate))
 
   // POSITIVE CONTROLS (§2) — avatarPipWindowFade itself, against AgentExplainerReel's
   // OWN real geometry (BULLET1 frames 90-180, BULLET2 180-300, BULLET3 300-450 —
@@ -1268,8 +1274,12 @@ function v3Section() {
     /select\("elevenlabs_voice_id, did_photo_url, did_video_url, did_avatar_id, default_expression, expression_intensity"\)/.test(dispatch))
   check("dispatch.ts branches to D-ID's /expressives endpoint for a V4-marked avatar, /clips or /talks otherwise",
     /path: isV4Expressive \? "\/expressives" : isVideoSource \? "\/clips" : "\/talks"/.test(dispatch))
-  check("the V4 branch does NOT spread DID_TALK_REALISM_CONFIG (a TalksConfig shape /expressives does not accept) — only result_format carries over",
-    /config: \{ result_format: DID_TALK_REALISM_CONFIG\.result_format \}/.test(dispatch))
+  // Wave 80C: the keyed-presenter config (`...keyed.config` — result_format
+  // webm when the plan wants a transparent PiP; lib/did/contract.ts) is the
+  // ONLY other thing that may ride into the V4 config; DID_TALK_REALISM_CONFIG
+  // still never does.
+  check("the V4 branch does NOT spread DID_TALK_REALISM_CONFIG (a TalksConfig shape /expressives does not accept) — only result_format (and the keyed-presenter override of it) carries over",
+    /config: \{ result_format: DID_TALK_REALISM_CONFIG\.result_format, \.\.\.keyed\.config \}/.test(dispatch))
   check("DID_TALK_REALISM_CONFIG is a TalksConfig shape realism-profile.ts's own D-ID V4 header explicitly says does NOT apply to /expressives — asserted so nobody 'fixes' this by spreading it in",
     !/config: \{ \.\.\.DID_TALK_REALISM_CONFIG, .*avatar_id/.test(readRaw("lib/providers/dispatch.ts")))
 

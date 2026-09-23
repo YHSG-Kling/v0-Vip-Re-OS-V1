@@ -32,6 +32,8 @@ import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
+import { MEMORY_VIDEO_MODES, type MemoryVideoMode } from "@/lib/video/memory-video-composition"
 import { Badge } from "@/components/ui/badge"
 import { MEMORY_VIDEO_PROMPTS, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
 import { offerMemoryVideoAction, saveMemoryVideoDictationAction, renderMemoryVideoAction } from "@/app/actions/video/memory-video"
@@ -46,12 +48,24 @@ interface Props {
   initialWords: Record<string, string>
   /** ai_video_projects id when a capture already exists. */
   projectId: string | null
+  /** WAVE 80C — the mode the capture was saved in, the seller's recording per chapter, the home's photos. */
+  initialMode?: MemoryVideoMode | null
+  initialMedia?: Record<string, { url: string; seconds: number | null }>
+  initialPhotoUrls?: string[]
 }
 
 export function MemoryVideoCard({
-  contactId, tenureYears, offerStanding, initialWords, projectId,
+  contactId, tenureYears, offerStanding, initialWords, projectId, initialMode, initialMedia, initialPhotoUrls,
 }: Props) {
   const [words, setWords] = useState<Record<string, string>>(initialWords)
+  // WAVE 80C — the two ways the film is made (owner ruling in
+  // lib/video/memory-video-composition.ts). The seller's OWN recording per
+  // chapter is what narrates; the platform never voices their words for them.
+  const [mode, setMode] = useState<MemoryVideoMode>(initialMode ?? "seller_audio_photos")
+  const [media, setMedia] = useState<Record<string, { url: string; seconds: string }>>(
+    Object.fromEntries(Object.entries(initialMedia ?? {}).map(([k, v]) => [k, { url: v.url, seconds: v.seconds != null ? String(v.seconds) : "" }])),
+  )
+  const [photoText, setPhotoText] = useState<string>((initialPhotoUrls ?? []).join("\n"))
   const [offered, setOffered] = useState(offerStanding)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -77,17 +91,27 @@ export function MemoryVideoCard({
     const capturedAt = new Date().toISOString()
     const segments: SellerDictatedSegment[] = MEMORY_VIDEO_PROMPTS
       .filter((p) => (words[p.id] ?? "").trim().length > 0)
-      .map((p) => ({
-        promptId:    p.id,
-        sellerWords: words[p.id].trim(),
-        // The agent is TRANSCRIBING what the seller says. The provenance is
-        // recorded on every chapter so a later reader can see whose words these
-        // are without taking anyone's word for it.
-        capturedVia: "agent_transcription",
-        capturedAt,
-      }))
+      .map((p) => {
+        const m = media[p.id]
+        const url = (m?.url ?? "").trim()
+        const secs = Number(m?.seconds)
+        return {
+          promptId:    p.id,
+          sellerWords: words[p.id].trim(),
+          // The agent is TRANSCRIBING what the seller says. The provenance is
+          // recorded on every chapter so a later reader can see whose words these
+          // are without taking anyone's word for it. When the seller's own
+          // recording is attached the words are its transcript / captions.
+          capturedVia: url ? "voice_recording" : "agent_transcription",
+          capturedAt,
+          mediaUrl: url || null,
+          mediaKind: url ? (mode === "seller_walkthrough" ? "video" : "audio") : null,
+          mediaDurationSeconds: Number.isFinite(secs) && secs > 0 ? secs : null,
+        }
+      })
+    const photoUrls = photoText.split(/\n+/).map((u) => u.trim()).filter((u) => /^https?:\/\//.test(u))
     startTransition(async () => {
-      const r = await saveMemoryVideoDictationAction(contactId, segments)
+      const r = await saveMemoryVideoDictationAction(contactId, segments, { mode, photoUrls })
       if (!r.ok) { setError(r.reason); return }
       setMessage(r.reason)
     })
@@ -131,6 +155,21 @@ export function MemoryVideoCard({
           {offered ? "Offer already proposed" : "Offer the memory video"}
         </Button>
 
+        <div className="space-y-2 pt-2">
+          <div className="text-sm font-medium">How the film is made</div>
+          <div className="flex flex-wrap gap-4 text-sm">
+            {MEMORY_VIDEO_MODES.map((m) => (
+              <label key={m} className="flex items-center gap-2">
+                <input type="radio" name="mv-mode" value={m} checked={mode === m} onChange={() => setMode(m)} />
+                {m === "seller_walkthrough" ? "The seller on camera, walking the home (their own clip per chapter)" : "The seller's own audio per chapter, over photos of the home"}
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The narrator is always the seller&apos;s own recording — nothing is read aloud for them and no voice is cloned.
+          </p>
+        </div>
+
         <div className="space-y-3 pt-2">
           {MEMORY_VIDEO_PROMPTS.map((p) => (
             <div key={p.id} className="space-y-1">
@@ -142,9 +181,31 @@ export function MemoryVideoCard({
                 value={words[p.id] ?? ""}
                 onChange={(e) => setWords((w) => ({ ...w, [p.id]: e.target.value }))}
               />
+              <div className="flex gap-2">
+                <Input
+                  id={`mv-media-${p.id}`}
+                  placeholder={mode === "seller_walkthrough" ? "URL of the seller's clip for this chapter (uploaded to storage)" : "URL of the seller's audio for this chapter (uploaded to storage)"}
+                  value={media[p.id]?.url ?? ""}
+                  onChange={(e) => setMedia((m) => ({ ...m, [p.id]: { url: e.target.value, seconds: m[p.id]?.seconds ?? "" } }))}
+                />
+                <Input
+                  className="w-28"
+                  placeholder="seconds"
+                  inputMode="decimal"
+                  value={media[p.id]?.seconds ?? ""}
+                  onChange={(e) => setMedia((m) => ({ ...m, [p.id]: { url: m[p.id]?.url ?? "", seconds: e.target.value } }))}
+                />
+              </div>
             </div>
           ))}
         </div>
+
+        {mode === "seller_audio_photos" ? (
+          <div className="space-y-1">
+            <label htmlFor="mv-photos" className="text-sm font-medium">Photos of the home (one URL per line — these are the visuals)</label>
+            <Textarea id="mv-photos" rows={4} placeholder="https://…" value={photoText} onChange={(e) => setPhotoText(e.target.value)} />
+          </div>
+        ) : null}
 
         <Button onClick={save} disabled={pending || dictatedCount === 0} size="sm" variant="secondary">
           Save what they dictated

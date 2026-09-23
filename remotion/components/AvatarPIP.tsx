@@ -59,6 +59,9 @@ import { SafeImg } from "./SafeImg"
 import { avatarPipWindowFade } from "../../lib/video/realism-profile"
 import { pipCornerStyle, type PipCorner } from "../../lib/video/body-visual-model"
 
+/** A keyed head-and-shoulders needs more room than a cropped face ring — 1.6 × the ring diameter. */
+const KEYED_SCALE = 1.6
+
 export const AvatarPIP: React.FC<{
   avatarVideoUrl: string | null
   agentPhotoUrl: string | null
@@ -90,15 +93,31 @@ export const AvatarPIP: React.FC<{
   position?: PipCorner
   /** Ring boxShadow width in px. Defaults to 4. */
   ringWidth?: number
+  /**
+   * WAVE 80C — the clip is a KEYED presenter (transparent webm from D-ID:
+   * `background.color:false` on /clips, `TransparentBackground` on V4 —
+   * lib/did/contract.ts transparentPresenterConfig; merged as
+   * input_props.avatarVideoTransparent by lib/video/avatar-render-
+   * orchestrator.ts). The person is composited straight over the content —
+   * no ring, no crop, no backdrop — in the same safe corner, at KEYED_SCALE ×
+   * the ring size so head and shoulders read. @remotion/media's <Video>
+   * decodes VP9 alpha natively (remotion.dev/docs/videos/transparency: "No
+   * transparent prop is needed when the video is decoded by @remotion/media").
+   * Absent/false renders EXACTLY as before (the ring-cropped card) — the
+   * opaque fallback when the engine could not key (a photo-sourced /talks).
+   */
+  avatarVideoTransparent?: boolean | null
 }> = ({
   avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor,
-  avatarDurationSeconds, fps = 30, size = 200, position = "top-right", ringWidth = 4,
+  avatarDurationSeconds, fps = 30, size = 200, position = "top-right", ringWidth = 4, avatarVideoTransparent,
 }) => {
   const frame = useCurrentFrame()
   const { width, height } = useVideoConfig()
+  const keyed = avatarVideoTransparent === true && !!avatarVideoUrl
+  const boxSize = keyed ? Math.round(size * KEYED_SCALE) : size
   // The corner offsets are the frame's safe insets (wave 79C header note),
   // clamped so the ring never leaves the frame on a tiny composition.
-  const corner: React.CSSProperties = pipCornerStyle(width, height, position, size)
+  const corner: React.CSSProperties = pipCornerStyle(width, height, position, boxSize)
   const ring: React.CSSProperties = {
     position: "absolute", ...corner,
     width: size, height: size, borderRadius: size / 2,
@@ -116,6 +135,17 @@ export const AvatarPIP: React.FC<{
     ? interpolate(frame, [fadeFrame, fadeFrame + 12], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1
 
+  if (avatarVideoUrl && hasRealContent && keyed) {
+    // The keyed presenter: the alpha IS the crop. `contain` keeps the whole
+    // figure; nothing is painted behind it, so the body's background, b-roll
+    // or photos show through around the person.
+    return (
+      <div style={{ position: "absolute", ...corner, width: boxSize, height: boxSize, overflow: "visible" }}>
+        <Video src={avatarVideoUrl} objectFit="contain" trimBefore={startFrame} trimAfter={endFrame}
+          style={{ width: "100%", height: "100%", opacity }} />
+      </div>
+    )
+  }
   if (avatarVideoUrl && hasRealContent) {
     return (
       <div style={ring}>

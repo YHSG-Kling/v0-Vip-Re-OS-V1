@@ -39,6 +39,8 @@ import React from "react"
 import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, panelWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { explainerPanelSplit } from "../lib/video/pip-panel-split"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -88,12 +90,23 @@ export interface AgentExplainerReelProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 80C, lib/video/body-visual-model.ts): the director's
+   * per-segment plan. The three bullet panels open on the plan's three beats
+   * (panelWindowsFromPlan — the first panel absorbs the hook, the last the
+   * proof and the CTA), so a bullet gets the frames its spoken words take.
+   * Absent, or fewer than three beats → the composition's own 3:4:5 split.
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
+  /** The avatar clip is a keyed (transparent webm) presenter — see remotion/components/AvatarPIP.tsx. */
+  avatarVideoTransparent?: boolean | null
 }
 
 const FPS    = 30
 // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
 // `B1/B2/B3 = 3/4/5 s` stood here. Bookends come from the ONE registry; the
-// three bullet windows split the computed body in the same 3:4:5 proportion.
+// three bullet windows come from the body-visual plan (wave 80C) or, without
+// one, split the computed body in the same 3:4:5 proportion.
 const BOOKENDS = compositionBookends("AgentExplainerReel")
 const COVER  = BOOKENDS.introFrames
 const CTA    = BOOKENDS.outroFrames
@@ -142,15 +155,18 @@ const BulletPanel: React.FC<{
 export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
   eyebrow, title, bullets, ctaLabel, agentName, avatarVideoUrl, agentPhotoUrl, brand,
   captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean, avatarDurationSeconds,
+  bodyVisualPlan, avatarVideoTransparent,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
   const { durationInFrames } = useVideoConfig()
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY = timeline.body.durationInFrames
-  const B1   = Math.round(BODY * 3 / 12)
-  const B2   = Math.round(BODY * 4 / 12)
-  const B3   = BODY - B1 - B2
+  // THE THREE PANELS — BODY-relative windows, which is also the avatar track's
+  // OWN timeline (it first mounts at COVER; see the AVATAR LEAD-IN FIX below):
+  // from the plan's beats when a plan is staged, else the 3:4:5 split.
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "AgentExplainerReel", durationInFrames)
+  const panels = panelWindowsFromPlan(plan, BODY, 3) ?? explainerPanelSplit(BODY)
   return (
     <AbsoluteFill style={{
       backgroundColor: brand.primaryColor,
@@ -185,46 +201,27 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* BULLET 1 — 3-6s.
+      {/* BULLETS 1-3 — the three panels, each on its plan window.
           AVATAR LEAD-IN FIX (wave 60 realism audit — same defect + fix as
           MarketUpdateReel/EquityReportReel). AvatarPIP never mounts during
           COVER and D-ID is never asked to pad COVER seconds of lead-in
           silence (pad_audio is 0.3s TRAILING only — realism-profile.ts), so
           passing the composition-absolute frame as `<Video trimBefore>`
           skipped the clip's first COVER seconds of REAL narration. Each
-          window now gets frames relative to the avatar track's own start
-          (0, B1, B1+B2) instead. */}
-      <Sequence from={COVER} durationInFrames={B1}>
-        <AbsoluteFill>
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: 0, endFrame: B1,
-            avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
-          <BulletPanel index={1} text={bullets[0]} accentColor={brand.accentColor} />
-        </AbsoluteFill>
-      </Sequence>
-
-      {/* BULLET 2 — 6-10s. See the AVATAR LEAD-IN FIX note on BULLET 1. */}
-      <Sequence from={COVER + B1} durationInFrames={B2}>
-        <AbsoluteFill>
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: B1, endFrame: B1 + B2,
-            avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
-          <BulletPanel index={2} text={bullets[1]} accentColor={brand.accentColor} />
-        </AbsoluteFill>
-      </Sequence>
-
-      {/* BULLET 3 — 10-15s. See the AVATAR LEAD-IN FIX note on BULLET 1. */}
-      <Sequence from={COVER + B1 + B2} durationInFrames={B3}>
-        <AbsoluteFill>
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: B1 + B2, endFrame: B1 + B2 + B3,
-            avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6 }} />
-          <BulletPanel index={3} text={bullets[2]} accentColor={brand.accentColor} />
-        </AbsoluteFill>
-      </Sequence>
+          window gets frames relative to the avatar track's own start — the
+          panel's BODY-relative `from` (the first panel starts at 0 by
+          construction of panelWindowsFromPlan / explainerPanelSplit). */}
+      {panels.map((p, i) => (
+        <Sequence key={`bullet-${i}`} from={COVER + p.from} durationInFrames={p.durationInFrames}>
+          <AbsoluteFill>
+            <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
+              accentColor: brand.accentColor, primaryColor: brand.primaryColor,
+              avatarDurationSeconds, avatarVideoTransparent, fps: FPS, size: 360, position: "top-left", ringWidth: 6,
+              startFrame: p.from, endFrame: p.from + p.durationInFrames }} />
+            <BulletPanel index={(i + 1) as 1 | 2 | 3} text={bullets[i]} accentColor={brand.accentColor} />
+          </AbsoluteFill>
+        </Sequence>
+      ))}
 
       {/* CTA — 15-18s */}
       <Sequence from={COVER + BODY} durationInFrames={CTA}>

@@ -164,6 +164,33 @@ export async function submitAvatarTrack(
       return { submitted: false, reason: describeMissingContent(args.request.target_composition_id, missing) }
     }
 
+    // ── PLAN BEFORE SEND (wave 80C) ──────────────────────────────────────────
+    // Owner: "if the script is going to need visuals ai agent plans this
+    // before sending." The body-visual plan is what the composition will put
+    // on screen around this avatar; a lane that staged one hands it over on
+    // input_props.bodyVisualPlan, a lane that did not (the presentation and
+    // buyer-slide lanes, the seller update) gets it planned HERE from the
+    // same props — and the ONE gate (lib/video/body-visual-model.ts
+    // gateVisualPlanForDispatch) refuses the D-ID spend when the plan cannot
+    // exist or names an asset the row does not carry. The plan is written
+    // back onto the request so the merged render row carries it.
+    const { stageBodyVisualPlan, gateVisualPlanForDispatch, assetsFromProps, planWantsKeyedPresenter } = await import("@/lib/video/body-visual-model")
+    const stagedPlan = (args.request.input_props.bodyVisualPlan ?? null) as import("@/lib/video/body-visual-model").BodyVisualPlan | null
+    const planned = stagedPlan && stagedPlan.compositionId === args.request.target_composition_id
+      ? { ok: true as const, plan: stagedPlan }
+      : stageBodyVisualPlan({ compositionId: args.request.target_composition_id, props: args.request.input_props, avatarClip: true, script })
+    if (!planned.ok) {
+      return { submitted: false, reason: `body visual could not be planned for ${args.request.target_composition_id}: ${planned.reason} — not sent to D-ID` }
+    }
+    const visualGate = gateVisualPlanForDispatch(planned.plan, assetsFromProps(args.request.input_props, { avatarClip: true, compositionId: args.request.target_composition_id }))
+    if (!visualGate.ok) {
+      return { submitted: false, reason: `${visualGate.reason} — not sent to D-ID` }
+    }
+    args.request.input_props = { ...args.request.input_props, bodyVisualPlan: planned.plan }
+    // A PiP segment asks D-ID for a KEYED presenter (transparent webm) so the
+    // composition composites the person over the body instead of ring-cropping.
+    const keyedWanted = planWantsKeyedPresenter(planned.plan)
+
     // ── §5: nothing reaches a client's ears unscreened ──────────────────────
     // The deterministic detector, not a second model call: it is pure, it
     // cannot fail open, and every caller here has a non-avatar fallback already
@@ -238,6 +265,7 @@ export async function submitAvatarTrack(
       brokerageId: args.brokerageId,
       expression: presenter.expression ?? "neutral",
       submitOnly: true,
+      transparentBackground: keyedWanted,
     })
     if (submitted.status === "error" || !submitted.videoId) {
       return { submitted: false, reason: `D-ID submit refused: ${submitted.note ?? "no job id returned"}` }
@@ -283,6 +311,13 @@ export async function submitAvatarTrack(
         // /expressives off this and never guesses from id shapes.
         mode: submitted.engine === "expressives" ? "expressive" : "talk",
         talk_id: submitted.videoId,
+        // Wave 80C — the keyed presenter: what the plan asked for, what the
+        // engine could return. poll-did-videos hosts a webm AS webm and skips
+        // the band burn (it would flatten the alpha); the orchestrator merges
+        // input_props.avatarVideoTransparent from this and the hosted URL.
+        transparent_requested: keyedWanted,
+        transparent: submitted.transparent === true,
+        result_format: submitted.resultFormat ?? "mp4",
         // THE TWO KEYS THE READER NEEDS. Without the first,
         // enqueueAvatarCompositionForProject skips the project forever; the
         // second is what merges the avatar into the render row this lane

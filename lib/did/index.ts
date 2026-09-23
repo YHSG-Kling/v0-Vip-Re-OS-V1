@@ -35,7 +35,7 @@ import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { classifyDidError, externalKeyHeader, DID_STATUS_IN_FLIGHT } from "./contract"
+import { classifyDidError, externalKeyHeader, transparentPresenterConfig, DID_STATUS_IN_FLIGHT } from "./contract"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -94,6 +94,16 @@ export interface GenerateVideoInput {
    *  ai_video_projects row (status='generating') and the poll-did-videos cron drives completion +
    *  the avatar→composition handoff. Default false (keeps the synchronous submit+poll behavior). */
   submitOnly?: boolean
+  /**
+   * WAVE 80C — ask for a KEYED (transparent) presenter so Remotion composites
+   * the person over the body's background / b-roll / photos instead of a
+   * ring-cropped rectangle. Honoured on the V4 expressive engine (webm with
+   * alpha, lib/did/contract.ts transparentPresenterConfig); a photo-sourced
+   * /talks render has no transparent output and stays opaque — the result
+   * says which (`transparent`). Set by the body-visual plan when a segment is
+   * `avatar_pip` (planWantsKeyedPresenter), never by hand.
+   */
+  transparentBackground?: boolean
 }
 
 export interface GenerateVideoResult {
@@ -110,6 +120,9 @@ export interface GenerateVideoResult {
   status: "done" | "processing" | "error"
   /** Human-readable note (e.g. "B-roll compositing deferred to Sprint C") */
   note?: string
+  /** Wave 80C — whether a keyed (alpha) result was actually REQUESTED, and in which container. */
+  transparent?: boolean
+  resultFormat?: "mp4" | "webm"
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +532,10 @@ export async function generateVideo(
   // the proven /talks path with driver_expressions. One submit, two engines,
   // zero drift for callers.
   const isV4Expressive = typeof avatarSrc.actorId === "string" && avatarSrc.actorId.includes("@avt_")
+  // WAVE 80C — the keyed presenter, ONE spelling (lib/did/contract.ts). The
+  // plan asked for a PiP; V4 returns a webm with alpha, /talks cannot and the
+  // reason rides the result so the caller records the fallback honestly.
+  const keyed = transparentPresenterConfig(isV4Expressive ? "expressives" : "talks", input.transparentBackground === true)
   let talkId: string
   try {
     if (isV4Expressive) {
@@ -527,7 +544,8 @@ export async function generateVideo(
         avatar_id: avatarSrc.actorId,
         script: scriptBlock,
         sentiment_id: sentimentFor[expression] ?? "neutral",
-        config: { result_format: "mp4" },
+        ...keyed.body,
+        config: { result_format: "mp4", ...keyed.config },
       })
       talkId = created.id
     } else {
@@ -554,12 +572,15 @@ export async function generateVideo(
   // 3. Poll for completion (skipped in submitOnly mode — the async pipeline drives it)
   // ---------------------------------------------------------------------------
 
+  if (keyed.fallbackReason) notes.push(`keyed presenter requested but ${keyed.fallbackReason}`)
   if (input.submitOnly) {
     return {
       videoId: talkId,
       videoUrl: null,
       status: "processing",
       engine: isV4Expressive ? "expressives" : "talks",
+      transparent: keyed.resultFormat === "webm",
+      resultFormat: keyed.resultFormat,
       note: [notes.length ? notes.join("; ") : undefined, `D-ID job ${talkId} submitted — poll-did-videos will complete it`].filter(Boolean).join("; "),
     }
   }
@@ -608,8 +629,13 @@ export async function generateVideo(
       try {
         const bytes = dl.data
         const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-        const hosted = await hostRenderedMedia(createServiceClient(), `workflow-video/${talkId}.mp4`, bytes, "video/mp4")
-        return { videoId: talkId, videoUrl: hosted, status: "done", engine: isV4Expressive ? "expressives" : "talks", note }
+        // Wave 80C — a keyed (webm/alpha) result is hosted AS webm; naming it
+        // .mp4 would strip nothing but would lie to every player and to
+        // isWebmResult (lib/did/contract.ts), which is how the composition
+        // knows to composite instead of ring-crop.
+        const ext = keyed.resultFormat === "webm" ? "webm" : "mp4"
+        const hosted = await hostRenderedMedia(createServiceClient(), `workflow-video/${talkId}.${ext}`, bytes, `video/${ext}`)
+        return { videoId: talkId, videoUrl: hosted, status: "done", engine: isV4Expressive ? "expressives" : "talks", transparent: keyed.resultFormat === "webm", resultFormat: keyed.resultFormat, note }
       } catch (hostErr: unknown) {
         const msg = hostErr instanceof Error ? hostErr.message : String(hostErr)
         return {

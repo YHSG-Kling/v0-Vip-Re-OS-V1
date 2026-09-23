@@ -74,7 +74,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
-  VIDEO_COMPOSITION_FILES, NON_CHAIN_COMPOSITIONS, buildScope, tileChain, narrationWindow, safeEval, tileSegments, productPromoSceneChain, type Segment,
+  VIDEO_COMPOSITION_FILES, NON_CHAIN_COMPOSITIONS, PIP_PANEL_COMPOSITIONS, buildScope, tileChain, narrationWindow, safeEval, tileSegments, productPromoSceneChain, pipPanelChain, type Segment,
 } from "./composition-segments"
 import { COMPOSITION_GEOMETRY, compositionSeconds, geometryFor } from "../lib/remotion/composition-geometry"
 import { finishForVideo, VIDEO_FINISH_SPEC } from "../lib/video/finish-spec"
@@ -299,6 +299,16 @@ function checkSum(r: Resolved) {
     check(`${label}: hook + beats (body-visual plan) + CTA tile [0, ${r.total}) exactly, with AND without a plan`, withPlan.ok && without.ok, withPlan.reason ?? without.reason)
     check(`${label}: the composition cuts its scenes through sceneWindowsFromPlan (no frame const of its own for the beats)`,
       /sceneWindowsFromPlan\(plan, BODY, beats\.length\)/.test(r.source) && !/const\s+PROOF\s*=\s*\d/.test(r.source))
+  } else if ((PIP_PANEL_COMPOSITIONS as readonly string[]).includes(r.id)) {
+    // Lane 80C — PLAN-DRIVEN panels: the three bullets / stats open on the
+    // body-visual plan's beats (panelWindowsFromPlan), the first absorbing the
+    // hook and the last the proof + CTA; tiles with and without a plan.
+    const id = r.id as (typeof PIP_PANEL_COMPOSITIONS)[number]
+    const withPlan = tileSegments(pipPanelChain(id, r.total, { withPlan: true }), r.total)
+    const without = tileSegments(pipPanelChain(id, r.total, { withPlan: false }), r.total)
+    check(`${label}: cover + three panels (body-visual plan) + outro tile [0, ${r.total}) exactly, with AND without a plan`, withPlan.ok && without.ok, withPlan.reason ?? without.reason)
+    check(`${label}: the composition cuts its panels through panelWindowsFromPlan(plan, BODY, 3) and mounts each at COVER + p.from`,
+      /panelWindowsFromPlan\(plan, BODY, 3\)/.test(r.source) && /from=\{COVER \+ (p|panels\[\d\])\.from\}/.test(r.source))
   } else {
     check(`${label}: single continuous body (no <Sequence> chain of its own)`, !/<Sequence[\s>]/.test(r.source))
   }
@@ -613,24 +623,36 @@ function surfacesSection() {
   check("memory-video-gate publishes MODEL_MAY / MODEL_MAY_NOT (the authorship boundary is in the code)", /export const MODEL_MAY\b/.test(gate) && /export const MODEL_MAY_NOT\b/.test(gate))
   check("memory-video.ts calls NO routed model (the family's history is never generated)", !MODEL_CALL.test(readCode("lib/video/memory-video.ts")))
   const render = readCode("lib/video/memory-video-render.ts")
-  check("memory-video-render.ts calls NO routed model either — TTS reads the seller's words VERBATIM, the gate's permitted arm", !MODEL_CALL.test(render))
+  check("memory-video-render.ts calls NO routed model either — the seller's own recording narrates (wave 80C), nothing composes a sentence", !MODEL_CALL.test(render))
   check("CONTROL: the model-call finder still fires on the reactor that does draft through the gateway", MODEL_CALL.test(readCode("lib/video/intro-video-reactor.ts")))
   const stagers = Object.keys(VIDEO_COMPOSITION_FILES).filter((id) => readStripped("lib/video/memory-video-render.ts").includes(id) || /MEMORY_VIDEO_COMPOSITION_ID/.test(render) && id === MEMORY_VIDEO_COMPOSITION_ID)
   check(`memory video stages exactly ONE composition (${stagers.join(",") || "none"}) — ${MEMORY_VIDEO_COMPOSITION_ID}, on the voiceover host`,
     stagers.length === 1 && stagers[0] === MEMORY_VIDEO_COMPOSITION_ID)
-  check(`...whose window (${MEMORY_VIDEO_MAX_SECONDS}s cap, real length from the narration) is a VOICEOVER body, not an avatar body window, and the purpose cap agrees with the composition's own constant (one number, two readers)`,
+  // Wave 80C: the cover and the end card are the composition's registered
+  // BOOKENDS, so the purpose max is the film cap minus them — one set of
+  // constants, two readers (the RULE, not the old `max === cap` waypoint).
+  const memoryBookendSeconds = (COMPOSITION_DURATION_RULES[MEMORY_VIDEO_COMPOSITION_ID].introFrames + COMPOSITION_DURATION_RULES[MEMORY_VIDEO_COMPOSITION_ID].outroFrames) / 30
+  check(`...whose window (${MEMORY_VIDEO_MAX_SECONDS}s film cap, real length from the seller's recordings) is a VOICEOVER body, not an avatar body window, and the purpose max + the registered bookends equal the composition's own cap (one set of numbers, two readers)`,
     COMPOSITION_DURATION_RULES[MEMORY_VIDEO_COMPOSITION_ID]?.host === "voiceover" && COMPOSITION_DURATION_RULES[MEMORY_VIDEO_COMPOSITION_ID]?.purpose === "memory"
-    && PURPOSE_DURATION_RULES.memory.maxSeconds === MEMORY_VIDEO_MAX_SECONDS && narrationWindowSeconds(MEMORY_VIDEO_COMPOSITION_ID) === MEMORY_VIDEO_MAX_SECONDS)
+    && PURPOSE_DURATION_RULES.memory.maxSeconds + memoryBookendSeconds === MEMORY_VIDEO_MAX_SECONDS && narrationWindowSeconds(MEMORY_VIDEO_COMPOSITION_ID) + memoryBookendSeconds === MEMORY_VIDEO_MAX_SECONDS)
   check("the stager passes the render-hold gate (evaluateVideoRenderHold with the projectId) before anything is queued",
     /evaluateVideoRenderHold\(\{[\s\S]{0,300}projectId: project\.id/.test(readStripped("lib/video/memory-video-render.ts")) && /if \(hold\.hold\) return/.test(readStripped("lib/video/memory-video-render.ts")))
   check("the stager reads the chapters OFF THE CAPTURE ROW (video_metadata.dictation, last segment per prompt) and refuses when chapters are still unrecorded",
-    /latestWordsByChapter\(meta\.dictation/.test(readStripped("lib/video/memory-video-render.ts")) && /chapters still unrecorded/.test(readStripped("lib/video/memory-video-render.ts")))
-  check("every clip's frames come from the measured narration (prepareReelVoiceover durationSeconds → chapterDurationFrames), estimated at the fleet pace only when synthesis returned no length",
-    /chapterDurationFrames\(seconds, geo\.fps\)/.test(readStripped("lib/video/memory-video-render.ts")) && /vo\?\.durationSeconds \?\? estimatedChapterSeconds\(words\)/.test(readStripped("lib/video/memory-video-render.ts")))
-  check("a chapter longer than the synthesis cap is split on SENTENCE boundaries into its own clips (nothing past the cap is dropped)",
-    /splitForSynthesis\(ch\.words, MAX_SCRIPT_CHARS\)/.test(readStripped("lib/video/memory-video-render.ts")))
+    /latestByChapter\(meta\.dictation/.test(readStripped("lib/video/memory-video-render.ts")) && /chapters still unrecorded/.test(readStripped("lib/video/memory-video-render.ts")))
+  // Wave 80C — THE NARRATOR IS THE SELLER: no TTS arm remains in the render
+  // (the seller's own recording per chapter is the clip; memory-video-gate.ts
+  // MEMORY_VIDEO_VOICE_RULE), the media verdict runs before the hold gate,
+  // and a clip's frames come from the recording's MEASURED seconds, estimated
+  // from the words only when no duration was recorded — and reported.
+  const renderStripped = readStripped("lib/video/memory-video-render.ts")
+  check("every clip's frames come from the seller's recording (mediaDurationSeconds → chapterDurationFrames), estimated at the fleet pace only when no duration was recorded on upload",
+    /chapterDurationFrames\(secs \?\? estimatedChapterSeconds\(s\.sellerWords\), geo\.fps\)/.test(renderStripped) && /s\.mediaDurationSeconds/.test(renderStripped))
+  check("the render synthesizes NOTHING — no prepareReelVoiceover, no cloned voice: the narrator is the seller's own recording in both modes (MEMORY_VIDEO_VOICE_RULE)",
+    !/prepareReelVoiceover\(/.test(renderStripped) && !/resolveVideoIdentity\(/.test(renderStripped) && /assessSellerMedia\(/.test(renderStripped)
+    && /export const MEMORY_VIDEO_VOICE_RULE/.test(gate))
+  check("CONTROL: the TTS finder still recognises the retired arm", /prepareReelVoiceover\(/.test('const vo = await prepareReelVoiceover({ brokerageId })'))
   const split = splitForSynthesis("One. Two three four. Five six seven eight nine. Ten.", 20)
-  check("CONTROL: splitForSynthesis keeps every character and never cuts inside a sentence", split.join(" ") === "One. Two three four. Five six seven eight nine. Ten." && split.every((p) => p.length <= 20 || !p.includes(". ")))
+  check("CONTROL: splitForSynthesis (now the on-screen pager only) keeps every character and never cuts inside a sentence", split.join(" ") === "One. Two three four. Five six seven eight nine. Ten." && split.every((p) => p.length <= 20 || !p.includes(". ")))
   check("purpose is the named constant, not a free string", MEMORY_VIDEO_PURPOSE === "memory" && /MEMORY_VIDEO_PURPOSE/.test(render))
   check("the finish spec is a keepsake's: voiceover host, no avatar, no bookends, no QR, captions off (the words are on screen verbatim)",
     (() => { const f = finishForVideo(MEMORY_VIDEO_COMPOSITION_ID); return f.presenter === "none" && !f.bookends && !f.qr && !f.captions && f.music })())

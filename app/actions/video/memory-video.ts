@@ -29,6 +29,7 @@ import {
   type MemoryVideoCaptureResult,
 } from "@/lib/video/memory-video"
 import type { SellerDictatedSegment } from "@/lib/video/memory-video-gate"
+import { MEMORY_VIDEO_MODES, type MemoryVideoMode } from "@/lib/video/memory-video-composition"
 import { stageMemoryVideoRender, type MemoryVideoRenderResult } from "@/lib/video/memory-video-render"
 
 type Caller =
@@ -88,11 +89,21 @@ export async function offerMemoryVideoAction(
 export async function saveMemoryVideoDictationAction(
   contactId: string,
   segments: SellerDictatedSegment[],
+  /**
+   * WAVE 80C — how the film is made and the home's photos. `mode` is one of
+   * MEMORY_VIDEO_MODES (the rail's assessSellerMedia refuses anything else);
+   * every segment carries the seller's own recording as mediaUrl/mediaKind.
+   * Omitted → the capture keeps whatever mode it already had.
+   */
+  media?: { mode: MemoryVideoMode; photoUrls?: string[] } | null,
 ): Promise<MemoryVideoCaptureResult> {
   const caller = await requireCaller()
   if (!caller.ok) return { ok: false, status: "failed", reason: caller.error }
   if (!contactId) return { ok: false, status: "failed", reason: "contactId required" }
   if (!Array.isArray(segments)) return { ok: false, status: "failed", reason: "segments required" }
+  if (media && !(MEMORY_VIDEO_MODES as readonly string[]).includes(String(media.mode))) {
+    return { ok: false, status: "failed", reason: `mode must be one of ${MEMORY_VIDEO_MODES.join(", ")}` }
+  }
 
   const supabase = await createClient()
   // ai_video_projects.agent_id is an agents.id and agents.id / users.id are
@@ -108,6 +119,7 @@ export async function saveMemoryVideoDictationAction(
     contactId,
     agentRecordId,
     segments,
+    media: media ?? null,
   })
   if (result.ok) revalidatePath(`/crm/contacts/${contactId}`)
   return result

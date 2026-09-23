@@ -61,6 +61,7 @@ import type { VideoQrKind } from "@/lib/video/video-qr"
 // and selectVideoFormat itself never touches it (backward-compat preserved).
 import { recommendFormatAdjustment, type ScoredFormats } from "@/lib/video/format-learning"
 import { finishForVideo } from "@/lib/video/finish-spec"
+import { COMPOSITION_DURATION_RULES, compositionPurposes, type VideoPurpose } from "@/lib/video/duration-model"
 import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 // ============================================================================
@@ -713,6 +714,24 @@ export function assemblySpec(
 type AnyClient = ReturnType<typeof createServiceClient>
 
 /** Map a Director SituationKind → the ai_video_projects.video_type CHECK enum. */
+/**
+ * THE PURPOSE A SITUATION STAGES (wave 80C — 79C's open item). A composition
+ * registered with `alsoServes` (lib/video/duration-model.ts) plans as its
+ * DEFAULT purpose unless the producer stages `videoPurpose`; the Director
+ * never did, so a lead_intro on AgentExplainerReel planned (word window AND
+ * body visual) as an `explainer` instead of a `lead_reel`. PURE: the purpose
+ * to stage when the situation's purpose differs from the composition's
+ * default and the composition is registered to serve it; null otherwise (the
+ * default stands, nothing is staged).
+ */
+export function videoPurposeForSituation(kind: SituationKind, compositionId: string): VideoPurpose | null {
+  const wanted: VideoPurpose | null = kind === "lead_intro" ? "lead_reel" : null
+  if (!wanted) return null
+  const served = compositionPurposes(compositionId)
+  const spec = COMPOSITION_DURATION_RULES[compositionId]
+  return spec && spec.purpose !== wanted && served.includes(wanted) ? wanted : null
+}
+
 function videoTypeForSituation(kind: SituationKind): string {
   switch (kind) {
     case "new_listing":   return "just_listed"
@@ -1292,10 +1311,7 @@ export async function commissionVideo(
   //     plan rides input_props.bodyVisualPlan; the composition re-fits it to
   //     the duration it renders at. A composition with no rule FAILS LOUDLY —
   //     blocked like a missing content prop, never rendered unplanned.
-  const { stageBodyVisualPlan, COMPOSITION_TREATMENTS } = await import("@/lib/video/body-visual-model")
-  const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
-    .map((k) => (contentProps as Record<string, unknown>)[k])
-    .find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? hookLine
+  const { COMPOSITION_TREATMENTS } = await import("@/lib/video/body-visual-model")
   // 6d. TENANT SCREENSHOT STILLS (wave 80D — owner: "screenshots can be used
   //     by tenants"). When the chosen composition can RENDER the `screenshot`
   //     treatment (its COMPOSITION_TREATMENTS row — derived, never a typed
@@ -1313,11 +1329,36 @@ export async function commissionVideo(
       console.warn("[video-director] tenant still pick failed; staging without screenshots:", (e as Error).message)
     }
   }
+  //     WAVE 80C — PLAN BEFORE SEND. The plan is cut under the tenant's LIVE
+  //     learned rule overrides (lib/video/body-visual-rule-ledger.ts), the
+  //     situation's own purpose is staged when the composition alsoServes it
+  //     (videoPurposeForSituation — a lead_intro is a lead_reel, not an
+  //     explainer), and the ONE dispatch gate (gateVisualPlanForDispatch)
+  //     runs BEFORE the row that the render cron and the D-ID poller act on
+  //     is written: a segment with no asset behind it, b-roll on a no-b-roll
+  //     format, or a treatment the purpose disallows BLOCKS the commission.
+  const { stageBodyVisualPlan, gateVisualPlanForDispatch, assetsFromProps, bodyVisualStamp } = await import("@/lib/video/body-visual-model")
+  const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
+  const visualOverrides = await loadBodyVisualRuleOverrides(opts.brokerageId, svc)
+  const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId)
+  const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
+    .map((k) => (contentProps as Record<string, unknown>)[k])
+    .find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? hookLine
+  // The Director's b-roll comes from the stock library (pickBrollClips) — the
+  // verdict-aware planner needs to know it is not the home's own media.
+  const visualProps: Record<string, unknown> = {
+    ...contentProps,
+    ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
+    ...(format.needsBroll ? { brollClips, brollSource: "stock" } : {}),
+    // 6d (wave 80D): the tenant's approved stills ride the ONE key the plan reads.
+    ...(screenshotUrls.length ? { screenshotUrls } : {}),
+  }
   const visual = stageBodyVisualPlan({
     compositionId: format.compositionId,
-    props: { ...contentProps, ...(format.needsBroll ? { brollClips } : {}), ...(screenshotUrls.length ? { screenshotUrls } : {}) },
+    props: visualProps,
     avatarClip: requiresAvatar,
     script: narrationForVisual,
+    overrides: visualOverrides,
   })
   if (!visual.ok) {
     return {
@@ -1325,6 +1366,15 @@ export async function commissionVideo(
       compositionId: format.compositionId,
       reason: `body visual could not be planned for ${format.compositionId}: ${visual.reason}`,
       violations: ["body_visual_unplanned"],
+    }
+  }
+  const visualGate = gateVisualPlanForDispatch(visual.plan, assetsFromProps(visualProps, { avatarClip: requiresAvatar, compositionId: format.compositionId }), { overrides: visualOverrides })
+  if (!visualGate.ok) {
+    return {
+      ok: false, status: "blocked",
+      compositionId: format.compositionId,
+      reason: visualGate.reason,
+      violations: ["body_visual_unplanned", ...visualGate.missing],
     }
   }
 
@@ -1340,6 +1390,9 @@ export async function commissionVideo(
       // The per-segment screen plan (6e) — segments, treatments, b-roll /
       // photo / screenshot windows, caption window, music duck, avatar share.
       bodyVisualPlan: visual.plan,
+      // Wave 80C — the purpose this reel is planned under (alsoServes), so
+      // Root.tsx's calculateMetadata and the composition read the same rule.
+      ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
       // Rides under the ONE key render-decision.ts resolveThumbnailProps reads,
       // which is also where lib/geo/video-landing.ts seoHintFromRenderProps
       // reads the hint back for the landing page's og:description. Absent when
@@ -1354,7 +1407,7 @@ export async function commissionVideo(
       qrCaption: qrCaptionForSituation(situation.kind),
       mlsClean: opts.mlsClean ?? false,
       music_mood: finish.music ? effectiveMood : null,
-      ...(format.needsBroll ? { brollClips } : {}),
+      ...(format.needsBroll ? { brollClips, brollSource: "stock" } : {}),
     },
   }
 
@@ -1387,7 +1440,8 @@ export async function commissionVideo(
       intro_video_url: null,             // assembled by the render coordinator's bookend pass
       outro_video_url: null,
       b_roll_urls: format.needsBroll ? brollClips.map((c) => c.url) : null,
-      video_metadata: videoMetadata,
+      // Wave 80C — the audit stamp the learning loop reads back (format-learning.ts).
+      video_metadata: { ...videoMetadata, body_visual: bodyVisualStamp(visual.plan) },
       provider_metadata: providerMetadata,
       created_at: now,
       updated_at: now,
@@ -1764,11 +1818,17 @@ export async function commissionVideoExperiment(
     // line differs per variant, so the hook segment's words (and its frames)
     // do too. A composition with no rule blocks the experiment like a missing
     // content prop, with the already-staged variants rolled back.
-    const { stageBodyVisualPlan } = await import("@/lib/video/body-visual-model")
+    // Wave 80C — same plan-before-send as the main path: live overrides, the
+    // situation's purpose, the ONE dispatch gate before any variant row.
+    const { stageBodyVisualPlan, gateVisualPlanForDispatch, assetsFromProps, bodyVisualStamp } = await import("@/lib/video/body-visual-model")
+    const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
+    const visualOverrides = await loadBodyVisualRuleOverrides(opts.brokerageId, svc)
+    const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId)
     const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
       .map((k) => (contentProps as Record<string, unknown>)[k])
       .find((x): x is string => typeof x === "string" && x.trim().length > 0) ?? hookLine
-    const visual = stageBodyVisualPlan({ compositionId: format.compositionId, props: contentProps, avatarClip: requiresAvatar, script: narrationForVisual })
+    const visualProps: Record<string, unknown> = { ...contentProps, ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}) }
+    const visual = stageBodyVisualPlan({ compositionId: format.compositionId, props: visualProps, avatarClip: requiresAvatar, script: narrationForVisual, overrides: visualOverrides })
     if (!visual.ok) {
       for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
       return {
@@ -1778,12 +1838,23 @@ export async function commissionVideoExperiment(
         violations: ["body_visual_unplanned"],
       }
     }
+    const visualGate = gateVisualPlanForDispatch(visual.plan, assetsFromProps(visualProps, { avatarClip: requiresAvatar, compositionId: format.compositionId }), { overrides: visualOverrides })
+    if (!visualGate.ok) {
+      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      return {
+        ok: false, status: "blocked",
+        experimentId, compositionId: format.compositionId,
+        reason: visualGate.reason,
+        violations: ["body_visual_unplanned", ...visualGate.missing],
+      }
+    }
 
     const providerMetadata = {
       composition_id: format.compositionId,
       input_props: {
         ...contentProps,
         bodyVisualPlan: visual.plan,
+        ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
         intro: introProps, outro: outroProps,
         // Flat outro-QR props (see the main path) — each A/B variant carries its OWN tracked QR.
         qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
@@ -1817,7 +1888,7 @@ export async function commissionVideoExperiment(
         intro_video_url: null,
         outro_video_url: null,
         b_roll_urls: null,
-        video_metadata: videoMetadata,
+        video_metadata: { ...videoMetadata, body_visual: bodyVisualStamp(visual.plan) },
         provider_metadata: providerMetadata,
         created_at: now,
         updated_at: now,

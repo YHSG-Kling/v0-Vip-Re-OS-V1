@@ -60,6 +60,7 @@ import {
   type VideoPurpose, type HostKind, type CompositionDurationSpec,
 } from "../lib/video/duration-model"
 import { narrationWindowBudget, narrationWindowSeconds } from "../lib/video/narration-window"
+import { MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS } from "../lib/video/memory-video-composition"
 import {
   WORDS_PER_MINUTE, NARRATION_HEADROOM, narrationBudget, fitNarrationToBudget, narrationLengthDirective,
   spokenWords, spokenSentences,
@@ -336,6 +337,15 @@ function sourcesSection() {
     if (spec.introFrames === 0 && spec.outroFrames === 0) {
       skipNote(`[bookends] ${id}`, "no chrome tiles of its own (0/0) — the whole duration is body; nothing to read from the registry (published exclusion)")
       check(`${id}: no hardcoded body literal survives`, !HARDCODED_BODY.test(source))
+    } else if (id === "MemoryVideoReel") {
+      // Wave 80C: the registry row's bookends ARE memory-video-composition's
+      // cover/outro constants (one source); the composition reads them through
+      // that module's own helpers (memoryVideoCoverFrames / the outro at the
+      // computed end), which is the same fact by construction — asserted here
+      // numerically rather than by a second import.
+      check(`${id}: its registered bookends equal the memory cover/outro constants it lays out with, and no hardcoded body literal survives`,
+        spec.introFrames === MEMORY_VIDEO_COVER_SECONDS * 30 && spec.outroFrames === MEMORY_VIDEO_OUTRO_SECONDS * 30
+        && /memoryVideoCoverFrames\(fps\)/.test(source) && !HARDCODED_BODY.test(source))
     } else {
       check(`${id}: reads its bookends from the ONE registry (compositionBookends("${id}")) and no hardcoded body literal survives`,
         new RegExp(`compositionBookends\\("${id}"\\)`).test(source) && !HARDCODED_BODY.test(source))

@@ -37,6 +37,8 @@ import React from "react"
 import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, panelWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { thirdsPanelSplit } from "../lib/video/pip-panel-split"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -100,13 +102,21 @@ export interface MarketUpdateReelProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 80C, lib/video/body-visual-model.ts): the three stat
+   * cards open on the plan's three beats (panelWindowsFromPlan), so each stat
+   * holds the screen for the words spoken about it. Absent → thirds.
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
+  /** The avatar clip is a keyed (transparent webm) presenter — see remotion/components/AvatarPIP.tsx. */
+  avatarVideoTransparent?: boolean | null
 }
 
 const FPS    = 30
 // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
 // `STAT = 4 * FPS` stood here. The bookends are read from the ONE registry;
-// the three stat windows split whatever body the render's durationInFrames
-// leaves between them (calculateMetadata sizes it to the fitted narration).
+// the three stat windows come from the body-visual plan (wave 80C) or split
+// whatever body the render's durationInFrames leaves between them in thirds.
 const BOOKENDS = compositionBookends("MarketUpdateReel")
 const COVER  = BOOKENDS.introFrames
 const CTA    = BOOKENDS.outroFrames
@@ -208,7 +218,7 @@ const AreaChip: React.FC<{ areaName: string; period: string; accentColor: string
 export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   areaName, period, stats, ctaLabel, agentName, agentPhone,
   avatarVideoUrl, agentPhotoUrl, brand, captionsCues, captionScript,
-  qrCodeDataUrl, qrCaption, mlsClean, avatarDurationSeconds,
+  qrCodeDataUrl, qrCaption, mlsClean, avatarDurationSeconds, bodyVisualPlan, avatarVideoTransparent,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brand.upColor   ?? "#22C55E"
@@ -218,8 +228,10 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   const { durationInFrames } = useVideoConfig()
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY  = timeline.body.durationInFrames
-  const STAT  = Math.floor(BODY / 3)
-  const STAT3 = BODY - STAT * 2
+  // THE THREE STAT WINDOWS — BODY-relative, which is also the avatar track's
+  // own timeline (see the AVATAR LEAD-IN FIX below): from the plan's beats, else thirds.
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "MarketUpdateReel", durationInFrames)
+  const panels = panelWindowsFromPlan(plan, BODY, 3) ?? thirdsPanelSplit(BODY)
 
   return (
     <AbsoluteFill style={{
@@ -278,45 +290,21 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           `localActualSeconds` math now measures against the correct
           remaining length instead of over-penalizing every later window by
           COVER seconds it never actually lost. */}
-      <Sequence from={COVER} durationInFrames={STAT}>
-        <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
-          <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            avatarDurationSeconds, fps: FPS,
-            startFrame: 0, endFrame: STAT }} />
-          <StatCard stat={stats[0]} index={1} accentColor={brand.accentColor}
-            upColor={upColor} downColor={downColor} />
-        </AbsoluteFill>
-      </Sequence>
-
-      {/* STAT 2 — 6-10s. See the AVATAR LEAD-IN FIX note on STAT 1 above:
-          `startFrame`/`endFrame` are relative to the avatar track's own
-          start, not the composition's. */}
-      <Sequence from={COVER + STAT} durationInFrames={STAT}>
-        <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
-          <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            avatarDurationSeconds, fps: FPS,
-            startFrame: STAT, endFrame: STAT * 2 }} />
-          <StatCard stat={stats[1]} index={2} accentColor={brand.accentColor}
-            upColor={upColor} downColor={downColor} />
-        </AbsoluteFill>
-      </Sequence>
-
-      {/* STAT 3 — 10-14s. See the AVATAR LEAD-IN FIX note on STAT 1 above. */}
-      <Sequence from={COVER + STAT * 2} durationInFrames={STAT3}>
-        <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
-          <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            avatarDurationSeconds, fps: FPS,
-            startFrame: STAT * 2, endFrame: BODY }} />
-          <StatCard stat={stats[2]} index={3} accentColor={brand.accentColor}
-            upColor={upColor} downColor={downColor} />
-        </AbsoluteFill>
-      </Sequence>
+      {panels.map((p, i) => (
+        <Sequence key={`stat-${i}`} from={COVER + p.from} durationInFrames={p.durationInFrames}>
+          <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
+            <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
+            {/* `startFrame`/`endFrame` are relative to the avatar track's own
+                start, not the composition's — the panel's BODY-relative window. */}
+            <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
+              accentColor: brand.accentColor, primaryColor: brand.primaryColor,
+              avatarDurationSeconds, avatarVideoTransparent, fps: FPS,
+              startFrame: p.from, endFrame: p.from + p.durationInFrames }} />
+            <StatCard stat={stats[i]} index={(i + 1) as 1 | 2 | 3} accentColor={brand.accentColor}
+              upColor={upColor} downColor={downColor} />
+          </AbsoluteFill>
+        </Sequence>
+      ))}
 
       {/* CTA — 14-16s */}
       <Sequence from={COVER + BODY} durationInFrames={CTA}>

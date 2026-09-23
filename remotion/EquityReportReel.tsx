@@ -40,6 +40,9 @@ import React from "react"
 import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, panelWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+// The ONE thirds split (§6) — shared with MarketUpdateReel, not a second copy.
+import { thirdsPanelSplit } from "../lib/video/pip-panel-split"
 import { SafeImg } from "./components/SafeImg"
 import { horizontalBars } from "../lib/charts/geometry"
 import { ordinal } from "../lib/format/ordinal"
@@ -100,6 +103,13 @@ export interface EquityReportReelProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 80C, lib/video/body-visual-model.ts): the three stat
+   * windows open on the plan's three beats (panelWindowsFromPlan). Absent → thirds.
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
+  /** The avatar clip is a keyed (transparent webm) presenter — see remotion/components/AvatarPIP.tsx. */
+  avatarVideoTransparent?: boolean | null
 }
 
 const FPS    = 30
@@ -244,7 +254,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
   agentName, agentPhotoUrl, avatarVideoUrl, brandColors,
   address, estimatedValue, purchasePrice, appreciation, appreciationPct,
   estimatedEquity, yearsHeld, qrCodeDataUrl, qrCaption, avatarDurationSeconds,
-  captionsCues, captionScript,
+  captionsCues, captionScript, bodyVisualPlan, avatarVideoTransparent,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brandColors.upColor   ?? "#22C55E"
@@ -258,39 +268,37 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
   const { durationInFrames } = useVideoConfig()
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })
   const BODY  = timeline.body.durationInFrames
-  const STAT  = Math.floor(BODY / 3)
-  const STAT3 = BODY - STAT * 2
+  // THE THREE STAT WINDOWS (wave 80C) — BODY-relative: from the plan's beats,
+  // else thirds (the ONE split, MarketUpdateReel's).
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "EquityReportReel", durationInFrames)
+  const panels = panelWindowsFromPlan(plan, BODY, 3) ?? thirdsPanelSplit(BODY)
 
   // AVATAR LEAD-IN FIX (wave 60 realism audit — see MarketUpdateReel's twin
-  // comment on its own AvatarPIP calls). `start` is this stat window's frame
+  // comment on its own AvatarPIP calls). `p.from` is this stat window's frame
   // offset into the D-ID clip's OWN timeline, RELATIVE TO WHEN THE AVATAR
-  // TRACK ITSELF FIRST BECOMES VISIBLE (0 for STAT1's window, STAT for
-  // STAT2's, STAT*2 for STAT3's — passed by the three call sites below).
-  // Before this fix the call sites passed the composition-ABSOLUTE frame
-  // (COVER, COVER+STAT, COVER+STAT*2) instead: the clip is D-ID's ONE
-  // continuous render for the whole reel, AvatarPIP never mounts during the
-  // silent COVER tile, and D-ID is never asked to pad COVER seconds of
-  // lead-in silence at the head (DID_TALK_REALISM_CONFIG.pad_audio is 0.3s
-  // of TRAILING silence only — lib/video/realism-profile.ts), so that
-  // absolute value fed straight to `<Video trimBefore>` silently skipped the
-  // clip's first COVER seconds of REAL narration — for the single short
-  // compliance-gated script this narration actually is, that can be most or
-  // all of what the avatar says. Starting the first window's own trim at 0
-  // (STAT2/STAT3 at STAT/STAT*2 — this function's own `start` param) means
-  // no real narration is discarded, and avatarPipWindowFade's
-  // `localActualSeconds` math now measures against the correct remaining
-  // length instead of over-penalizing every window by COVER seconds it
-  // never actually lost.
-  const pipFor = (start: number) => ({
+  // TRACK ITSELF FIRST BECOMES VISIBLE (0 for the first window, by construction
+  // of panelWindowsFromPlan / thirdsPanelSplit). Before this fix the call
+  // sites passed the composition-ABSOLUTE frame (COVER, COVER+STAT, …)
+  // instead: the clip is D-ID's ONE continuous render for the whole reel,
+  // AvatarPIP never mounts during the silent COVER tile, and D-ID is never
+  // asked to pad COVER seconds of lead-in silence at the head
+  // (DID_TALK_REALISM_CONFIG.pad_audio is 0.3s of TRAILING silence only —
+  // lib/video/realism-profile.ts), so that absolute value fed straight to
+  // `<Video trimBefore>` silently skipped the clip's first COVER seconds of
+  // REAL narration. Starting the first window's own trim at 0 means no real
+  // narration is discarded, and avatarPipWindowFade's `localActualSeconds`
+  // math measures against the correct remaining length.
+  const pipFor = (p: { from: number; durationInFrames: number }) => ({
     avatarVideoUrl: avatarVideoUrl ?? null,
     agentPhotoUrl:  agentPhotoUrl ?? null,
     agentName,
-    startFrame: start,
-    endFrame:   start + STAT,
     accentColor: brandColors.accentColor,
     primaryColor: brandColors.primaryColor,
     avatarDurationSeconds,
+    avatarVideoTransparent,
     fps: FPS,
+    startFrame: p.from,
+    endFrame:   p.from + p.durationInFrames,
   })
 
   return (
@@ -333,11 +341,11 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* STAT 1 — estimated current value + the basis bars. 2-6s */}
-      <Sequence from={COVER} durationInFrames={STAT}>
+      {/* STAT 1 — estimated current value + the basis bars. */}
+      <Sequence from={COVER + panels[0].from} durationInFrames={panels[0].durationInFrames}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
-          <AvatarPIP {...pipFor(0)} />
+          <AvatarPIP {...pipFor(panels[0])} />
           <div style={{
             height: "100%", display: "flex", flexDirection: "column",
             justifyContent: "center", alignItems: "flex-start", padding: "0 88px",
@@ -362,11 +370,11 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* STAT 2 — appreciation since purchase (honest about negative). 6-10s */}
-      <Sequence from={COVER + STAT} durationInFrames={STAT}>
+      {/* STAT 2 — appreciation since purchase (honest about negative). */}
+      <Sequence from={COVER + panels[1].from} durationInFrames={panels[1].durationInFrames}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
-          <AvatarPIP {...pipFor(STAT)} />
+          <AvatarPIP {...pipFor(panels[1])} />
           <StatCard
             label={gained ? "ESTIMATED VALUE GROWTH" : "ESTIMATED VALUE CHANGE"}
             value={fmtUsd(appreciation)}
@@ -378,13 +386,13 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* STAT 3 — equity OR the honest appreciation-only treatment. 10-14s */}
-      <Sequence from={COVER + STAT * 2} durationInFrames={STAT3}>
+      {/* STAT 3 — equity OR the honest appreciation-only treatment. The third
+          panel ends at the body's end by construction (panelWindowsFromPlan /
+          thirdsPanelSplit), so no endFrame override is needed. */}
+      <Sequence from={COVER + panels[2].from} durationInFrames={panels[2].durationInFrames}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
-          {/* The third window absorbs the body's rounding remainder (STAT3 ≥ STAT),
-              so its end is the body's end — overriding the helper's + STAT. */}
-          <AvatarPIP {...pipFor(STAT * 2)} endFrame={BODY} />
+          <AvatarPIP {...pipFor(panels[2])} />
           {mode === "value_minus_balance" && estimatedEquity != null ? (
             <StatCard
               label="ESTIMATED EQUITY"

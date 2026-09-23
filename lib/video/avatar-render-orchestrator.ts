@@ -81,6 +81,14 @@ export interface AvatarRenderRowParams {
    */
   avatarDurationSeconds?: number | null
   /**
+   * WAVE 80C — the avatar clip is a KEYED (transparent webm) presenter
+   * (lib/did/contract.ts transparentPresenterConfig; poll-did-videos records
+   * provider_metadata.transparent). Merged as input_props.avatarVideoTransparent
+   * so AvatarPIP / AgentTalkingHeadReel composite the person over the body's
+   * background instead of ring-cropping. Absent/false renders exactly as before.
+   */
+  avatarVideoTransparent?: boolean | null
+  /**
    * THE LIVING IDENTITY of the row this one REPLACES — m312's three columns,
    * exactly as lib/remotion/registry.ts recordRenderQueued stamps them.
    *
@@ -144,6 +152,7 @@ export function buildAvatarRenderRow(p: AvatarRenderRowParams): Record<string, u
       // Additive — undefined when the caller has no measurement, which a
       // JSONB column stores as an absent key, same as never having passed it.
       ...(typeof p.avatarDurationSeconds === "number" ? { avatarDurationSeconds: p.avatarDurationSeconds } : {}),
+      ...(p.avatarVideoTransparent === true ? { avatarVideoTransparent: true } : {}),
     },
     scope_type:    "agent",
     scope_id:      p.agentId,
@@ -220,6 +229,11 @@ export async function enqueueAvatarCompositionForProject(
 
   const avatarVideoUrl = pickAvatarTrackUrl(meta, project.video_url)
   if (!avatarVideoUrl) return { ok: false, skipped: "no avatar video URL on completed project" }
+  // Wave 80C — a keyed (alpha) clip: what the poller recorded, else the
+  // hosted container (a webm from a keyed request). Never inferred from a
+  // request alone — an opaque fallback stays opaque.
+  const { isWebmResult } = await import("@/lib/did/contract")
+  const avatarVideoTransparent = meta.transparent === true || (meta.transparent_requested === true && isWebmResult(avatarVideoUrl))
 
   // ── THE `target_render_id` READER (built 2026-09-01; §1.2) ────────────────
   // Both presentation lanes (section-narration-orchestrator + the buyer
@@ -293,6 +307,7 @@ export async function enqueueAvatarCompositionForProject(
         ...(voiceover ? { voiceoverUrl: voiceover } : {}),
         // Wave 55 realism — see AvatarRenderRowParams.avatarDurationSeconds.
         ...(typeof project.duration_seconds === "number" ? { avatarDurationSeconds: project.duration_seconds } : {}),
+        ...(avatarVideoTransparent ? { avatarVideoTransparent: true } : {}),
       }
       const { data: updated, error: updErr } = await supabase
         .from("remotion_composition_renders")
@@ -342,6 +357,7 @@ export async function enqueueAvatarCompositionForProject(
       ?? ((staged?.input_props?.voiceoverUrl as string | undefined) ?? null),
     // Wave 55 realism — see AvatarRenderRowParams.avatarDurationSeconds.
     avatarDurationSeconds: typeof project.duration_seconds === "number" ? project.duration_seconds : null,
+    avatarVideoTransparent,
     // The staged render's own props win over meta.input_props: they are the
     // slide as it was actually staged (title/body/brand/…), which the
     // replacement row must carry or the content contract cancels it.

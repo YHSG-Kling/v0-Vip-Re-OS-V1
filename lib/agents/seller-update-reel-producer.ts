@@ -427,8 +427,18 @@ export async function requestSellerUpdateReel(
       )
     }
     const urls = allUrls.filter((u) => !isVideoUrl(u)).slice(0, 5)
-    if (urls.length > 0) props.brollClips = urls.map((url) => ({ url }))
+    if (urls.length > 0) {
+      props.brollClips = urls.map((url) => ({ url }))
+      // Wave 80C — the seller_update b-roll verdict is OWN MEDIA ONLY
+      // (lib/video/body-visual-model.ts PURPOSE_BODY_VISUAL_RULES): these are
+      // the listing's own photos, and the plan's gate needs to know it.
+      props.brollSource = "own"
+    }
   } catch { /* no photos → the solid-brand layout stands */ }
+  // Wave 80C (79C's open item): AgentTalkingHeadReel alsoServes seller_update;
+  // without this key the duration model and the body-visual plan cut this
+  // update as a `welcome` (a different arc, a different presenter share).
+  props.videoPurpose = "seller_update"
 
   // TRACKED QR on the outro (owner rule: QR ships on every non-selfie video) —
   // "scan to talk" via the shared tracked-QR core, idempotent per listing.

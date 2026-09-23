@@ -13,6 +13,7 @@ import { ExternalLink } from "lucide-react"
 import { LifetimeSegmentSelector } from "./components/lifetime-segment-selector"
 import { normalizeLifetimeSegment } from "@/lib/portal/lifetime-segment"
 import { MemoryVideoCard } from "./components/memory-video-card"
+import { MEMORY_VIDEO_MODES, type MemoryVideoMode } from "@/lib/video/memory-video-composition"
 import { parseLengthOfResidence } from "@/lib/avm/provider-chain"
 import {
   assessMemoryVideoTenure,
@@ -180,6 +181,9 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
 
   let memoryVideoProjectId: string | null = null
   const memoryVideoWords: Record<string, string> = {}
+  const memoryVideoMedia: Record<string, { url: string; seconds: number | null }> = {}
+  let memoryVideoMode: MemoryVideoMode | null = null
+  let memoryVideoPhotoUrls: string[] = []
   let memoryVideoOfferStanding = false
   if (memoryVideoVerdict.eligible) {
     // Read the two halves the card needs: the capture so far, and whether an
@@ -205,11 +209,21 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
     const project = (projectRes.data?.[0] as { id: string; video_metadata: unknown } | undefined) ?? null
     if (project) {
       memoryVideoProjectId = project.id
-      const dictation = ((project.video_metadata ?? {}) as { dictation?: SellerDictatedSegment[] }).dictation
+      const vm = (project.video_metadata ?? {}) as { dictation?: SellerDictatedSegment[]; seller_media?: { mode?: string; photo_urls?: string[] } | null }
+      const dictation = vm.dictation
       const known = new Set(MEMORY_VIDEO_PROMPTS.map((p) => p.id))
       for (const seg of Array.isArray(dictation) ? dictation : []) {
-        if (known.has(seg?.promptId)) memoryVideoWords[seg.promptId] = seg.sellerWords ?? ""
+        if (known.has(seg?.promptId)) {
+          memoryVideoWords[seg.promptId] = seg.sellerWords ?? ""
+          // Wave 80C — the seller's own recording per chapter (the last capture wins, as the rail treats words).
+          if (typeof seg.mediaUrl === "string" && seg.mediaUrl.length > 0) {
+            memoryVideoMedia[seg.promptId] = { url: seg.mediaUrl, seconds: typeof seg.mediaDurationSeconds === "number" ? seg.mediaDurationSeconds : null }
+          }
+        }
       }
+      const m = vm.seller_media?.mode
+      memoryVideoMode = (MEMORY_VIDEO_MODES as readonly string[]).includes(String(m)) ? (m as MemoryVideoMode) : null
+      memoryVideoPhotoUrls = (vm.seller_media?.photo_urls ?? []).filter((u): u is string => typeof u === "string" && u.length > 0)
     }
     memoryVideoOfferStanding = !offerRes.error && (offerRes.data?.length ?? 0) > 0
   }
@@ -256,6 +270,9 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
           offerStanding={memoryVideoOfferStanding}
           initialWords={memoryVideoWords}
           projectId={memoryVideoProjectId}
+          initialMode={memoryVideoMode}
+          initialMedia={memoryVideoMedia}
+          initialPhotoUrls={memoryVideoPhotoUrls}
         />
       ) : null}
 

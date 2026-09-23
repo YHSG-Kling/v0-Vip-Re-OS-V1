@@ -94,8 +94,8 @@ import {
 import { clipCaptionCuesBeforeFrame, clipCaptionCuesFromFrame, shiftCaptionCues, buildCaptionPlan, type CaptionCue } from "../lib/video/caption-plan"
 import { shouldAutoRequeueFailedRender, MAX_AUTO_REQUEUE_ATTEMPTS } from "../lib/remotion/render-decision"
 import {
-  VIDEO_COMPOSITION_FILES, safeEval, buildScope, extractSegments, extractKeyedUnitDurations,
-  gapExplainedByKeyedRepeat, tileSegments, productPromoSceneChain, type Segment,
+  VIDEO_COMPOSITION_FILES, NON_CHAIN_COMPOSITIONS, PIP_PANEL_COMPOSITIONS, safeEval, buildScope, extractSegments, extractKeyedUnitDurations,
+  gapExplainedByKeyedRepeat, tileSegments, productPromoSceneChain, pipPanelChain, pipPanelWindows, type Segment,
 } from "./composition-segments"
 import {
   MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS, memoryVideoChapterLayout, memoryVideoDurationFrames,
@@ -164,7 +164,10 @@ function sumsSection() {
     // body-visual plan (sceneWindowsFromPlan) — `scenes.hook.from` is a
     // runtime value; checked below through the SAME helper, with and without
     // a plan, at the cap and at a planned duration.
-    if (["ListingPresentationSlide", "BuyerConsultationSlide", "PhotoWalkthroughReel", "PartnersMeetingReel", "ListingSectionReel", "MemoryVideoReel", "ProductPromoReel"].includes(id)) continue
+    // AgentExplainerReel / MarketUpdateReel / EquityReportReel (lane 80C): the
+    // three panels open on the body-visual plan's beats (panelWindowsFromPlan)
+    // — `panels[i].from` is a runtime value; checked below through pipPanelChain.
+    if (NON_CHAIN_COMPOSITIONS.has(id)) continue
 
     let result = tileSegments(segments, geometry.duration_frames)
     let note = ""
@@ -237,6 +240,33 @@ function sumsSection() {
     check("CONTROL: the tiler still refuses a layout with a hole — dropping the outro is caught",
       !tileSegments(synthetic.slice(0, -1), total).ok)
   }
+
+  // ── The three PiP reels (lane 80C) — PLAN-DRIVEN panels: the bullets /
+  // stats open on the body-visual plan's beats (panelWindowsFromPlan), the
+  // first panel absorbing the hook and the last the proof + CTA, so a panel
+  // holds the screen for the words spoken about it. The RULE: cover + three
+  // panels + outro tile [0, total) exactly WITH the plan and WITHOUT it (the
+  // composition's own split), at the cap and at a shorter planned length; the
+  // plan actually moves the cuts; the first panel starts at 0 (the avatar
+  // track's own timeline — the wave 60 lead-in fix, now by construction). ──
+  for (const id of PIP_PANEL_COMPOSITIONS) {
+    const geometry = COMPOSITION_GEOMETRY[id]
+    for (const total of [geometry.duration_frames, 600]) {
+      const withPlan = tileSegments(pipPanelChain(id, total, { withPlan: true }), total)
+      const without = tileSegments(pipPanelChain(id, total, { withPlan: false }), total)
+      check(`${id}: cover + three panels (from the body-visual plan) + outro tile [0, ${total}) exactly`, withPlan.ok, withPlan.reason)
+      check(`${id}: …and the no-plan split tiles [0, ${total}) exactly too`, without.ok, without.reason)
+    }
+    const planned = pipPanelWindows(id, geometry.duration_frames, { withPlan: true }), own = pipPanelWindows(id, geometry.duration_frames, { withPlan: false })
+    check(`${id}: the plan actually moves the panel cuts (word-weighted ≠ the composition's own split) — the plan is read, not decorative`,
+      planned.map((p) => p.durationInFrames).join() !== own.map((p) => p.durationInFrames).join())
+    check(`${id}: the first panel starts at the avatar track's own frame 0, with and without a plan`, planned[0].from === 0 && own[0].from === 0)
+    const source = readStripped(VIDEO_COMPOSITION_FILES[id])
+    check(`${id}: the composition mounts its panels through panelWindowsFromPlan(plan, BODY, 3) at COVER + p.from and hands AvatarPIP the panel's own window`,
+      /panelWindowsFromPlan\(plan, BODY, 3\)/.test(source) && /from=\{COVER \+ (p|panels\[\d\])\.from\}/.test(source) && /startFrame:\s*p\.from,\s*endFrame:\s*p\.from \+ p\.durationInFrames/.test(source))
+  }
+  check("CONTROL: the panel tiler refuses a chain with a hole — dropping a panel is caught",
+    !tileSegments(pipPanelChain("MarketUpdateReel", 600).filter((_, i) => i !== 2), 600).ok)
 
   // ── ProductPromoReel (lane 79C) — a PLAN-DRIVEN scene chain: the hook and
   // each proof beat get the frames their spoken words take (the body-visual
@@ -860,16 +890,24 @@ function avatarSection() {
   // AvatarPIP startFrame/endFrame call sites — strictly increasing per pair,
   // and bounded by the registered duration_frames. Reuses the same scope
   // builder as §sums so it is not a second arithmetic engine (§6).
+  // Lane 80C: MarketUpdateReel / EquityReportReel / AgentExplainerReel now cut
+  // their windows from the body-visual plan (`p.from` — a runtime value the
+  // static resolver cannot evaluate), so their windows are reproduced through
+  // the SAME helper the compositions call (pipPanelWindows, with and without a
+  // plan) and checked under the same rule; ExplainerAnimReel keeps the static path.
   const pipCallers: Array<{ id: string; file: string }> = [
     { id: "MarketUpdateReel", file: "remotion/MarketUpdateReel.tsx" },
     { id: "EquityReportReel", file: "remotion/EquityReportReel.tsx" },
+    { id: "AgentExplainerReel", file: "remotion/AgentExplainerReel.tsx" },
     { id: "ExplainerAnimReel", file: "remotion/ExplainerAnimReel.tsx" },
   ]
   for (const { id, file } of pipCallers) {
     const geometry = COMPOSITION_GEOMETRY[id]
     const source = readStripped(file)
     const scope = buildScope(source, geometry, id)
-    const windows = resolveAvatarPipWindows(source, scope)
+    const windows = (PIP_PANEL_COMPOSITIONS as readonly string[]).includes(id)
+      ? [true, false].flatMap((withPlan) => pipPanelWindows(id as (typeof PIP_PANEL_COMPOSITIONS)[number], geometry.duration_frames, { withPlan }).map((p) => ({ start: p.from, end: p.from + p.durationInFrames })))
+      : resolveAvatarPipWindows(source, scope)
     let allOk = true
     let detail = ""
     for (const w of windows) {
@@ -908,13 +946,17 @@ function avatarSection() {
   // the first window must start the clip's own timeline at frame 0, never
   // at the composition-absolute COVER frame (which would skip that many
   // seconds of real narration — see the file's own comment on BULLET 1).
+  // Lane 80C: the three bullet windows are the plan's panels (one .map, one
+  // call site): `startFrame: p.from` — BODY-relative, and the first panel's
+  // `from` is 0 by construction (proven numerically in the pipCallers loop
+  // above through pipPanelWindows). The source rule: the call site hands the
+  // panel's own window, never a composition-absolute frame.
   {
     const src = readStripped("remotion/AgentExplainerReel.tsx").replace(/\s+/g, " ")
-    const firstCall = /startFrame:\s*([^,]+),\s*endFrame:\s*([^,]+),/.exec(src)
-    check("AgentExplainerReel: the FIRST AvatarPIP window starts the clip at its own frame 0 — no lead-in seconds of real narration skipped before the avatar first appears",
-      !!firstCall && firstCall[1].trim() === "0", firstCall ? `first call site: startFrame: ${firstCall[1].trim()}` : "no AvatarPIP call site found")
-    check("CONTROL: the AgentExplainerReel startFrame/endFrame regex still recognises a call site shape",
-      /startFrame:\s*([^,]+),\s*endFrame:\s*([^,]+),/.test('<AvatarPIP {...{ startFrame: COVER, endFrame: COVER + B1, avatarDurationSeconds }} />'))
+    check("AgentExplainerReel: the ONE AvatarPIP call site hands the panel's own window (startFrame: p.from) — never the composition-absolute COVER frame",
+      /startFrame:\s*p\.from,\s*endFrame:\s*p\.from \+ p\.durationInFrames/.test(src) && !/startFrame:\s*COVER/.test(src))
+    check("CONTROL: the lead-in finder still catches the historical shape (startFrame: COVER)",
+      /startFrame:\s*COVER/.test('<AvatarPIP {...{ startFrame: COVER, endFrame: COVER + B1, avatarDurationSeconds }} />'))
   }
 
   // Single continuous-body slides: avatarStartFrame < avatarEndFrame in

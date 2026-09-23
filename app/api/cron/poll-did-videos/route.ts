@@ -257,6 +257,15 @@ export async function GET(request: NextRequest) {
           let persistedVideoUrl: string | null = null
           let persistedThumbnailUrl: string | null = null
           const agentFolder = video.agent_id ?? "shared"
+          // WAVE 80C — a KEYED presenter (transparent webm, lib/did/contract.ts
+          // transparentPresenterConfig) was requested at submit and comes back
+          // as webm: it is hosted AS webm (the container carries the alpha) and
+          // it is never band-burned below — the ffmpeg overlay would flatten
+          // the alpha and the Remotion composite applies the tenant's chrome
+          // itself. Read off the RECORDED request, then the result's container.
+          const { isWebmResult } = await import("@/lib/did/contract")
+          const keyedResult = pmeta?.transparent === true || (pmeta?.transparent_requested === true && isWebmResult(didResultUrl))
+          const resultExt = keyedResult ? "webm" : "mp4"
 
           if (didResultUrl) {
             try {
@@ -264,7 +273,7 @@ export async function GET(request: NextRequest) {
               if (videoFetch.ok) {
                 const videoBuffer = Buffer.from(await videoFetch.arrayBuffer())
                 persistedVideoUrl = await hostRenderedMedia(
-                  supabase, `agent-videos/${agentFolder}/${video.id}.mp4`, videoBuffer, "video/mp4",
+                  supabase, `agent-videos/${agentFolder}/${video.id}.${resultExt}`, videoBuffer, `video/${resultExt}`,
                 )
               } else {
                 console.error(`[poll-did-videos] D-ID result download failed: HTTP ${videoFetch.status}`)
@@ -298,7 +307,7 @@ export async function GET(request: NextRequest) {
           let brandedVideoUrl: string | null = null
           let visualOverlayApplied = false
 
-          if (persistedVideoUrl && usageIntent !== "mls") {
+          if (persistedVideoUrl && usageIntent !== "mls" && !keyedResult) {
             try {
               const { data: brokerage } = await supabase
                 .from("brokerages")
@@ -557,6 +566,10 @@ export async function GET(request: NextRequest) {
                 clean_video_url:       persistedVideoUrl ?? null,
                 branded_video_url:     brandedVideoUrl,
                 visual_overlay_applied: visualOverlayApplied,
+                // Wave 80C — the hosted result is a keyed webm (alpha kept, no
+                // band burned); the orchestrator reads this into
+                // input_props.avatarVideoTransparent for the composite.
+                transparent: keyedResult,
                 // 'explainer' when the cron composited PIP + background;
                 // 'standard' when it ran the single-talking-head pipeline.
                 render_mode:

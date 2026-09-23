@@ -117,6 +117,14 @@ export interface AgentTalkingHeadReelProps {
    * footage for the whole body; none → the near-full-bleed presenter).
    */
   bodyVisualPlan?: BodyVisualPlan | null
+  /**
+   * WAVE 80C — the avatar clip is a KEYED (transparent webm) presenter
+   * (lib/did/contract.ts transparentPresenterConfig; merged by lib/video/
+   * avatar-render-orchestrator.ts). The floating card loses its frame, ring
+   * and fill so the person is composited straight over the footage / brand
+   * background; absent/false renders the opaque card exactly as before.
+   */
+  avatarVideoTransparent?: boolean | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -146,7 +154,7 @@ const OUTRO  = BOOKENDS.outroFrames
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
   voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips, avatarDurationSeconds,
-  captionsCues, captionScript, bodyVisualPlan,
+  captionsCues, captionScript, bodyVisualPlan, avatarVideoTransparent,
 }) => {
   const frame   = useCurrentFrame()
   const { durationInFrames, width, height } = useVideoConfig()
@@ -188,6 +196,12 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   const avatarBox: React.CSSProperties = treatment !== "full_avatar"
     ? { position: "absolute", bottom: safe.bottom + LOWER_THIRD_BAND, left: safe.left, width: 560, height: 560, opacity: treatment === "broll" ? 0 : 1 }
     : { position: "absolute", top: 90, left: 90, width: 900, height: 900 }
+  // The keyed presenter (wave 80C) — no frame, no ring, no fill: the alpha is
+  // the crop and the footage / brand background shows through around the person.
+  const keyed = avatarVideoTransparent === true && !!avatarVideoUrl
+  const avatarChrome: React.CSSProperties = keyed
+    ? {}
+    : { borderRadius: 12, boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)` }
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -263,14 +277,13 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             /* ONE continuous <Video> for the body (trimBefore 0 → BODY): the
                plan changes its BOX per segment, never remounts the player. */
             <Video
-              objectFit="cover"
+              objectFit={keyed ? "contain" : "cover"}
               src={avatarVideoUrl}
               trimBefore={0}
               trimAfter={BODY}
               style={{
                 ...avatarBox,
-                borderRadius: 12,
-                boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
+                ...avatarChrome,
                 // Wave 55 — fades to the branded/broll background at the
                 // avatar's REAL end instead of holding a frozen last frame;
                 // wave 79C — a `broll` cutaway segment takes the presenter

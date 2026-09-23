@@ -187,6 +187,81 @@ export interface SellerDictatedSegment {
   capturedVia: "agent_transcription" | "seller_typed" | "voice_recording"
   /** ISO timestamp of capture. */
   capturedAt: string
+  /**
+   * THE SELLER'S OWN RECORDING for this chapter (wave 80C): an on-camera clip
+   * (seller_walkthrough) or an audio recording (seller_audio_photos), hosted in
+   * a Supabase bucket. This is what narrates the film — never TTS, never a
+   * cloned voice (MEMORY_VIDEO_VOICE_RULE).
+   */
+  mediaUrl?: string | null
+  mediaKind?: "video" | "audio" | null
+  /** Measured on upload; the chapter's frames come from it. Absent → estimated from the words and reported. */
+  mediaDurationSeconds?: number | null
+}
+
+// ─── THE TWO MODES AND WHOSE VOICE (wave 80C) ────────────────────────────────
+
+import { MEMORY_VIDEO_MODES, type MemoryVideoMode } from "./memory-video-composition"
+export { MEMORY_VIDEO_MODES, type MemoryVideoMode }
+
+/**
+ * WHOSE VOICE NARRATES. Stated once, asserted by the proof: the seller's own
+ * recording is the narration in BOTH modes. The platform does not synthesize
+ * the seller's words in the agent's voice (a stranger telling the family's
+ * story) and it NEVER clones the seller's voice — a voice clone is a consent
+ * gate the seller has not walked (lib/did/consent.ts, the D-ID/ElevenLabs
+ * consent rail) and this product must not be the place it is skipped.
+ */
+export const MEMORY_VIDEO_VOICE_RULE =
+  "The narrator is the seller's own recording. No text-to-speech, no cloned voice: a memory film speaks in the family's voice or it is not made."
+
+/** Photos the audio mode needs before it can film — one is the floor; one per chapter is the recommendation reported back. */
+export const MEMORY_VIDEO_MIN_PHOTOS = 1
+
+export interface SellerMediaVerdict {
+  ok: boolean
+  mode: MemoryVideoMode | null
+  /** Chapters (prompt ids) still missing the seller's recording. */
+  missingMedia: string[]
+  photoCount: number
+  reason: string
+}
+
+/**
+ * PURE — does the capture carry the seller's OWN media for the mode it was
+ * made in? FAILS CLOSED: an unknown mode, a chapter without its recording, a
+ * recording of the wrong kind for the mode, or an audio film with no photos
+ * all refuse, naming what is missing. A capture that holds only typed or
+ * transcribed words (the wave-78 shape) is NOT filmable until the seller's
+ * recordings are attached — the platform does not voice it for them.
+ */
+export function assessSellerMedia(input: {
+  mode: string | null | undefined
+  segments: readonly SellerDictatedSegment[]
+  photoUrls?: readonly string[] | null
+}): SellerMediaVerdict {
+  const photos = (input.photoUrls ?? []).filter((u) => typeof u === "string" && u.trim().length > 0)
+  const mode = (MEMORY_VIDEO_MODES as readonly string[]).includes(String(input.mode ?? "")) ? (input.mode as MemoryVideoMode) : null
+  if (!mode) {
+    return { ok: false, mode: null, missingMedia: [], photoCount: photos.length, reason: `no memory-video mode on the capture — it is made either as ${MEMORY_VIDEO_MODES.join(" or ")}; pick one and attach the seller's recordings` }
+  }
+  const wantKind: "video" | "audio" = mode === "seller_walkthrough" ? "video" : "audio"
+  const dictated = input.segments.filter((s) => (s.sellerWords ?? "").trim().length > 0)
+  // The last capture per chapter wins (a re-record corrects), exactly as assembleSellerDictatedScript treats words.
+  const latest = new Map<string, SellerDictatedSegment>()
+  for (const s of dictated) latest.set(s.promptId, s)
+  const missingMedia = [...latest.entries()]
+    .filter(([, s]) => !(typeof s.mediaUrl === "string" && s.mediaUrl.trim().length > 0 && s.mediaKind === wantKind))
+    .map(([id]) => id)
+  if (latest.size === 0) return { ok: false, mode, missingMedia, photoCount: photos.length, reason: "nothing has been captured yet" }
+  if (missingMedia.length > 0) {
+    return { ok: false, mode, missingMedia, photoCount: photos.length, reason: `${mode}: the seller's ${wantKind} recording is missing for ${missingMedia.join(", ")} — the platform does not voice a family's story for them (${MEMORY_VIDEO_VOICE_RULE})` }
+  }
+  if (mode === "seller_audio_photos" && photos.length < MEMORY_VIDEO_MIN_PHOTOS) {
+    return { ok: false, mode, missingMedia, photoCount: photos.length, reason: `seller_audio_photos: the home's photos are the visuals and none are attached (need ≥ ${MEMORY_VIDEO_MIN_PHOTOS}; one per chapter — ${latest.size} — is the recommendation)` }
+  }
+  const advice = mode === "seller_audio_photos" && photos.length < latest.size ? ` (${photos.length} photo(s) over ${latest.size} chapters — one per chapter is the recommendation; photos will repeat)` : ""
+  return { ok: true, mode, missingMedia, photoCount: photos.length, reason: `${mode}: every chapter carries the seller's own ${wantKind}${advice}` }
 }
 
 export interface MemoryVideoScript {

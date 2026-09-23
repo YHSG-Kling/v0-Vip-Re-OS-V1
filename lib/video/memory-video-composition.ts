@@ -52,7 +52,25 @@ export const MEMORY_VIDEO_CHAPTER_TAIL_SECONDS = 0.75
  */
 export const MEMORY_VIDEO_MAX_SECONDS = 20 * 60
 
-/** ONE chapter as the composition receives it — a clip per (chapter, part). */
+/**
+ * THE TWO WAYS A MEMORY VIDEO IS MADE (owner, wave 80, verbatim): "the memory
+ * videos either can be a full video with the seller on screen walking the home
+ * with the story or an uploaded audio of the seller talking about the home to
+ * preserve the family's home and photos of the home are used for the visuals."
+ *   seller_walkthrough  — the seller ON SCREEN: their own uploaded clip per
+ *                         chapter fills the frame (body-visual treatment
+ *                         client_footage); the words ride as captions.
+ *   seller_audio_photos — the seller's own uploaded AUDIO per chapter narrates
+ *                         the home's PHOTOS (property_photos with Ken Burns,
+ *                         slots computed from the body-visual plan); the words
+ *                         ride as captions.
+ * In both, the narrator is the SELLER'S OWN VOICE — no text-to-speech and no
+ * cloned voice (lib/video/memory-video-gate.ts MEMORY_VIDEO_VOICE_RULE).
+ */
+export const MEMORY_VIDEO_MODES = ["seller_walkthrough", "seller_audio_photos"] as const
+export type MemoryVideoMode = (typeof MEMORY_VIDEO_MODES)[number]
+
+/** ONE chapter as the composition receives it — a clip per chapter. */
 export interface MemoryVideoChapterProps {
   /** memory-video-gate prompt id (arrival, the_people, …) — the chapter key. */
   id: string
@@ -60,10 +78,20 @@ export interface MemoryVideoChapterProps {
   title: string
   /** The seller's words for THIS clip, verbatim. */
   sellerWords: string
-  /** Hosted narration for this clip, or null when synthesis was unavailable (the words still show on screen). */
+  /** The seller's OWN audio recording for this chapter (seller_audio_photos), or null (seller_walkthrough — the clip carries its own sound). */
   voiceoverUrl: string | null
-  /** Frames this clip plays — computed from the narration by chapterDurationFrames. */
+  /** The seller's OWN on-camera clip for this chapter (seller_walkthrough), or null. */
+  videoUrl?: string | null
+  /** Frames this clip plays — computed from the recording's measured seconds by chapterDurationFrames. */
   durationFrames: number
+}
+
+/** The plan's segment shape for one chapter (structural — lib/video/body-visual-model.ts ScriptSegment; no import, to keep this module free of that cycle). */
+export interface MemoryChapterSegment { kind: "beat"; text: string; words: number; frames: number }
+
+/** PURE — one body-visual segment per chapter, weighted by the chapter's MEASURED frames (never a word estimate when a recording exists). */
+export function memoryChapterSegments(chapters: ReadonlyArray<Pick<MemoryVideoChapterProps, "sellerWords" | "durationFrames">>): MemoryChapterSegment[] {
+  return chapters.map((c) => ({ kind: "beat", text: c.sellerWords, words: Math.max(1, spokenWords(c.sellerWords).length), frames: Math.max(1, Math.floor(c.durationFrames) || 1) }))
 }
 
 export interface MemoryVideoTimelineProps {

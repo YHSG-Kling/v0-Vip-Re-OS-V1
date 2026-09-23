@@ -227,6 +227,66 @@ export function buildExpressAvatarRequest(input: {
   return req
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Transparent (keyed) presenter — wave 80C
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The three engines this repo submits to; the transparency support differs per engine. */
+export type DidSubmitEngine = "talks" | "clips" | "expressives"
+
+export interface TransparentPresenterConfig {
+  /** Whether the engine can return a keyed (alpha) clip at all. */
+  supported: boolean
+  /** Fields to spread into the request BODY (`background`). Empty when unsupported or not wanted. */
+  body: Record<string, unknown>
+  /** Fields to spread into `config` (`result_format`). Empty when unsupported or not wanted. */
+  config: Record<string, unknown>
+  /** The container the result will come back in. */
+  resultFormat: "mp4" | "webm"
+  /** Why the request stays opaque, when it does. */
+  fallbackReason: string | null
+}
+
+/**
+ * PURE — the ONE spelling of "ask D-ID for a transparent presenter" (§6),
+ * shared by lib/did/index.ts generateVideo and lib/providers/dispatch.ts.
+ *
+ * Transcribed from the published contract (2026-09-23):
+ *   · /clips (video-sourced, Express / Premium): `background.color: false`
+ *     "to use transparent background in-case of webm result format" and
+ *     `config.result_format: "webm"` (D-ID client SDK ClipConfig / clip.d.ts;
+ *     docs.d-id.com getclip result_format enum mp4 | mov | webm);
+ *   · Videos V4 /expressives: `background: ColorBackground |
+ *     ExpressiveImageBackground | TransparentBackground` (docs.d-id.com
+ *     createv4video) — sent as `{ type: "transparent" }` with a webm result;
+ *   · /talks (photo-sourced V2): NO transparent output is documented — the
+ *     background IS the photo. The request stays opaque and the composition
+ *     falls back to the ring-cropped card (remotion/components/AvatarPIP.tsx).
+ *
+ * COST: D-ID bills per rendered second / credit whatever the container; no
+ * transparency surcharge is documented. The webm is larger on disk and
+ * Remotion decodes alpha a little slower (remotion.dev/docs/offthreadvideo:
+ * PNG frame extraction ~40 % slower under <OffthreadVideo transparent>; the
+ * @remotion/media <Video> path needs no flag) — a render-time cost, not a
+ * provider one. Verify on the first invoice; nothing here assumes it is free.
+ */
+export function transparentPresenterConfig(engine: DidSubmitEngine, wanted: boolean): TransparentPresenterConfig {
+  if (!wanted) return { supported: engine !== "talks", body: {}, config: {}, resultFormat: "mp4", fallbackReason: null }
+  switch (engine) {
+    case "clips":
+      return { supported: true, body: { background: { color: false } }, config: { result_format: "webm" }, resultFormat: "webm", fallbackReason: null }
+    case "expressives":
+      return { supported: true, body: { background: { type: "transparent" } }, config: { result_format: "webm" }, resultFormat: "webm", fallbackReason: null }
+    default:
+      return { supported: false, body: {}, config: {}, resultFormat: "mp4", fallbackReason: "a photo-sourced /talks render has no transparent output (the photo is the background) — the composition shows the opaque presenter card instead" }
+  }
+}
+
+/** True when a hosted result URL is a webm (alpha-capable) container. PURE. */
+export function isWebmResult(url: string | null | undefined): boolean {
+  return typeof url === "string" && /\.webm(\?|#|$)/i.test(url)
+}
+
 /** Parse the correlation id back out of a job's user_data. */
 export function assetIdFromUserData(userData: unknown): string | null {
   if (typeof userData !== "string") return null

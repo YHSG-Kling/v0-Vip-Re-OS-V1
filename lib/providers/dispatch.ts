@@ -66,6 +66,8 @@ import {
   withNaturalPauses,
 } from "@/lib/video/realism-profile"
 import { presenterTypeForTwin } from "@/lib/did/agent-presenter"
+import { transparentPresenterConfig, type DidSubmitEngine } from "@/lib/did/contract"
+import { assetsFromProps, bareTalkingHeadPlan, bodyVisualStamp, gateVisualPlanForDispatch, planWantsKeyedPresenter, type BodyVisualPlan } from "@/lib/video/body-visual-model"
 
 /** True when a governed manager is sending unattended (arms the Fair-Housing content backstop's
  *  hard-block; human-approved sends are flagged-but-allowed). */
@@ -1174,6 +1176,18 @@ export interface DispatchVideoParams extends DispatchActorContext {
    * needed.
    */
   ttsLanguageCode?: string | null
+  /**
+   * WAVE 80C — the BODY VISUAL this avatar clip serves (lib/video/body-visual-
+   * model.ts). A caller that composites the clip into a Remotion body passes
+   * the staged plan; when a segment is `avatar_pip` the D-ID request asks for
+   * a KEYED (transparent webm) presenter — `background.color:false` on /clips,
+   * `TransparentBackground` on V4 — so Remotion composites the person over the
+   * body's background / b-roll / photos. A photo-sourced /talks render has no
+   * transparent output and stays opaque (recorded in the usage metadata).
+   * Absent → this is a bare talking head, planned as one full-frame presenter
+   * (bareTalkingHeadPlan) and gated the same way: PLAN BEFORE SEND.
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 export async function dispatchVideo(params: DispatchVideoParams): Promise<DispatchResult> {
@@ -1319,6 +1333,24 @@ async function dispatchVideoViaDID({
     String(params.templateId ?? "")
   ) || JSON.stringify(params.scriptVars ?? {})
 
+  // ─── PLAN BEFORE SEND (wave 80C — owner: "if the script is going to need
+  // visuals ai agent plans this before sending") ─────────────────────────────
+  // The ONE gate every provider door runs (lib/video/body-visual-model.ts
+  // gateVisualPlanForDispatch), BEFORE the ElevenLabs and D-ID spend below. A
+  // composited clip brings the director's plan; a bare outreach talking head
+  // is planned here as one full-frame presenter over the spoken script — so
+  // an empty script, a plan whose assets are missing, or b-roll on a no-b-roll
+  // purpose is refused with the reason, never rendered.
+  const visualPlan = params.bodyVisualPlan ?? bareTalkingHeadPlan(renderedScript)
+  const visualGate = gateVisualPlanForDispatch(visualPlan, {
+    avatarClip: true, brollClips: 0, propertyPhotos: 0, screenshots: 0,
+    ...(params.bodyVisualPlan ? assetsFromProps((params.metadata?.input_props as Record<string, unknown> | undefined) ?? {}, { avatarClip: true }) : {}),
+  })
+  if (!visualGate.ok) {
+    return { success: false, providerKey: "did", error: `Video not sent — ${visualGate.reason}` }
+  }
+  const keyedWanted = planWantsKeyedPresenter(visualPlan)
+
   // ─── 1. Generate audio via ElevenLabs TTS ───────────────────────────────────
   // REALISM (wave 55): `voice_settings` was never sent on this call — every
   // avatar video's voice rode ElevenLabs' bare API default (stability 0.5,
@@ -1412,18 +1444,27 @@ async function dispatchVideoViaDID({
   const isV4Expressive = presenterTypeForTwin(didProfile.did_avatar_id) === "expressive"
   const expressiveSentimentFor: Record<string, string> = { happy: "happy", neutral: "neutral", serious: "serious", surprise: "surprise" }
 
+  // WAVE 80C — the keyed presenter, ONE spelling (lib/did/contract.ts
+  // transparentPresenterConfig): `background.color:false` + webm on /clips,
+  // `TransparentBackground` + webm on V4, nothing on /talks (a photo render
+  // has no alpha — the fallback is recorded below, never silent).
+  const engine: DidSubmitEngine = isV4Expressive ? "expressives" : isVideoSource ? "clips" : "talks"
+  const keyed = transparentPresenterConfig(engine, keyedWanted)
+
   const didPayload = isV4Expressive
     ? {
         avatar_id: (didProfile as { did_avatar_id?: string }).did_avatar_id,
         script: { type: "audio", audio_url: audioUrl },
         sentiment_id: expressiveSentimentFor[expression] ?? "neutral",
-        config: { result_format: DID_TALK_REALISM_CONFIG.result_format },
+        ...keyed.body,
+        config: { result_format: DID_TALK_REALISM_CONFIG.result_format, ...keyed.config },
       }
     : isVideoSource
     ? {
         source_url: sourceUrl,
         script: { type: "audio", audio_url: audioUrl },
-        config: { ...DID_TALK_REALISM_CONFIG, driver_expressions: driverExpressions },
+        ...keyed.body,
+        config: { ...DID_TALK_REALISM_CONFIG, driver_expressions: driverExpressions, ...keyed.config },
       }
     : {
         source_url: sourceUrl,
@@ -1465,6 +1506,12 @@ async function dispatchVideoViaDID({
       mode: isV4Expressive ? "expressive" : isVideoSource ? "clip" : "talk",
       recipient_email: params.recipientEmail,
       provider_key: "did",
+      // Wave 80C — what the body plan asked for and what the engine could do.
+      body_visual: bodyVisualStamp(visualPlan),
+      transparent_requested: keyedWanted,
+      transparent: keyed.resultFormat === "webm",
+      result_format: keyed.resultFormat,
+      ...(keyed.fallbackReason ? { transparent_fallback_reason: keyed.fallbackReason } : {}),
       ...(params.metadata ?? {}),
     },
   })

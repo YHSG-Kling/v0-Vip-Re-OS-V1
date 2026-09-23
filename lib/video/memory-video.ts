@@ -49,10 +49,12 @@ import { parseLengthOfResidence } from "@/lib/avm/provider-chain"
 import {
   assembleSellerDictatedScript,
   assessMemoryVideoTenure,
+  assessSellerMedia,
   isSellerAuthored,
   qualifiesForMemoryVideo,
   MEMORY_VIDEO_MIN_TENURE_YEARS,
   MEMORY_VIDEO_PROMPTS,
+  type MemoryVideoMode,
   type MemoryVideoTenureVerdict,
   type SellerDictatedSegment,
 } from "@/lib/video/memory-video-gate"
@@ -271,6 +273,14 @@ export async function recordMemoryVideoDictation(input: {
   /** agents.id. NOT users.id — the two id spaces are disjoint (CLAUDE.md §3). */
   agentRecordId: string
   segments: readonly SellerDictatedSegment[]
+  /**
+   * HOW THE FILM IS MADE (wave 80C, lib/video/memory-video-composition.ts
+   * MEMORY_VIDEO_MODES) and the home's photos for the audio mode. Stored on
+   * video_metadata.seller_media (jsonb — no column, no CHECK; checked against
+   * scripts/check-vocabularies.ts and scripts/schema-snapshot.ts, so no
+   * migration; m663 unused). Omitted → the prior seller_media is kept.
+   */
+  media?: { mode: MemoryVideoMode; photoUrls?: readonly string[] } | null
 }): Promise<MemoryVideoCaptureResult> {
   if (!input.brokerageId || !input.contactId || !input.agentRecordId) {
     return { ok: false, status: "failed", reason: "brokerageId + contactId + agentRecordId required" }
@@ -302,15 +312,6 @@ export async function recordMemoryVideoDictation(input: {
 
   const complete = assembled.missing.length === 0
   const title = `Memory video — ${[contact.first_name, contact.last_name].filter(Boolean).join(" ") || "seller"}`
-  const metadata = {
-    authored_by:  "seller" as const,
-    dictation:    input.segments,
-    chapters:     assembled.chapters,
-    missing:      assembled.missing,
-    tenure_years: tenure.tenureYears,
-    property_address: contact.address ?? null,
-    captured_by_agent_id: input.agentRecordId,
-  }
 
   const { data: existing, error: existingErr } = await svc
     .from("ai_video_projects")
@@ -320,6 +321,28 @@ export async function recordMemoryVideoDictation(input: {
     .eq("video_type", "memory_video")
     .limit(1)
   if (existingErr) return { ok: false, status: "failed", reason: `project lookup: ${existingErr.message}` }
+
+  // The mode + photos: what this call carries, else what the row already holds.
+  const priorMedia = ((existing?.[0] as { video_metadata?: { seller_media?: unknown } } | undefined)?.video_metadata?.seller_media ?? null) as { mode?: string; photo_urls?: string[] } | null
+  const sellerMedia = input.media
+    ? { mode: input.media.mode, photo_urls: (input.media.photoUrls ?? []).filter((u) => typeof u === "string" && u.trim().length > 0) }
+    : priorMedia
+  const mediaVerdict = assessSellerMedia({ mode: sellerMedia?.mode ?? null, segments: input.segments, photoUrls: sellerMedia?.photo_urls ?? [] })
+
+  const metadata = {
+    authored_by:  "seller" as const,
+    dictation:    input.segments,
+    chapters:     assembled.chapters,
+    missing:      assembled.missing,
+    tenure_years: tenure.tenureYears,
+    property_address: contact.address ?? null,
+    captured_by_agent_id: input.agentRecordId,
+    ...(sellerMedia ? { seller_media: sellerMedia } : {}),
+    // The filmability verdict beside the words, so the card can say what is
+    // still to attach without re-deriving it (never a substitute for the
+    // render-time re-check in memory-video-render.ts).
+    media_verdict: { ok: mediaVerdict.ok, mode: mediaVerdict.mode, missing_media: mediaVerdict.missingMedia, reason: mediaVerdict.reason },
+  }
 
   // ADOPT ONLY A ROW THIS RAIL WROTE (wired 2026-09-03). Before m565 the
   // anniversary reactor borrowed the memory_video name, and the manual wizard
@@ -364,7 +387,7 @@ export async function recordMemoryVideoDictation(input: {
     }
     return {
       ok: true, status: "captured", videoProjectId: id, missing: assembled.missing,
-      reason: assembled.reason,
+      reason: `${assembled.reason}; ${mediaVerdict.reason}`,
     }
   }
 
@@ -384,6 +407,6 @@ export async function recordMemoryVideoDictation(input: {
   }
   return {
     ok: true, status: "captured", videoProjectId: (created as { id: string }).id,
-    missing: assembled.missing, reason: assembled.reason,
+    missing: assembled.missing, reason: `${assembled.reason}; ${mediaVerdict.reason}`,
   }
 }

@@ -6,33 +6,51 @@
  * with no composition (lane 77D's matrix) now has one, on the VOICEOVER host,
  * chaptered, purpose "memory", no avatar.
  *
+ * WAVE 80C (owner verbatim): "the memory videos either can be a full video
+ * with the seller on screen walking the home with the story or an uploaded
+ * audio of the seller talking about the home to preserve the family's home and
+ * photos of the home are used for the visuals." Two modes, one stager:
+ *   seller_walkthrough  — each chapter is the seller's own on-camera clip
+ *                         (input_props.chapters[].videoUrl → client_footage);
+ *   seller_audio_photos — each chapter is the seller's own audio recording
+ *                         (chapters[].voiceoverUrl) over the home's photos
+ *                         (input_props.photoUrls → property_photos, slots cut
+ *                         from the body-visual plan, never hand-timed).
+ * THE NARRATOR IS THE SELLER (memory-video-gate.ts MEMORY_VIDEO_VOICE_RULE):
+ * this file no longer synthesizes anything. TOMBSTONE (CLAUDE.md §1.3): the
+ * prepareReelVoiceover call that read the seller's words aloud in the AGENT's
+ * ElevenLabs voice (lane 78D) is gone — it made a stranger the narrator of a
+ * family's story, and the owner's two modes both carry the seller's own
+ * recording. The ONE narration synthesiser (lib/video/reel-voiceover.ts) stays
+ * the survivor for every OTHER composition. No voice is cloned here: a clone
+ * is a consent gate (lib/did/consent.ts) this product must not bypass.
+ *
+ * PLAN BEFORE SEND (owner: "if the script is going to need visuals ai agent
+ * plans this before sending"): the body-visual plan is cut from the measured
+ * chapters and gated (lib/video/body-visual-model.ts gateVisualPlanForDispatch)
+ * BEFORE the render row is written — a mode whose media is missing never
+ * reaches the render queue.
+ *
  * ALREADY EXISTED — REUSED (CLAUDE.md §1; nothing here is a second copy):
  *   · lib/video/memory-video.ts + memory-video-gate.ts — the capture rail and
  *     the authorship boundary. The CHAPTERS ARE READ OFF THE ROW this rail
  *     stamped (video_metadata.dictation, the last segment per prompt — a
  *     re-record is a correction, exactly as assembleSellerDictatedScript
- *     treats it) and isSellerAuthored is the ONE predicate consulted.
+ *     treats it) and isSellerAuthored is the ONE predicate consulted;
+ *     assessSellerMedia is the ONE media verdict.
  *   · lib/video/video-render-hold.ts evaluateVideoRenderHold — every render
  *     door passes through it; a memory_video that cannot prove authorship is
  *     HELD there as a red flag (fail closed).
- *   · lib/video/reel-voiceover.ts prepareReelVoiceover — the ONE narration
- *     synthesiser (v3 lane, natural pauses, m310 cache, Supabase host), one
- *     clip per chapter part, its measured `durationSeconds` sizing the clip.
- *   · lib/video/video-identity.ts resolveVideoIdentity (contact_facing) — the
- *     agent's own narration voice; lib/video/reel-brand.ts resolveReelBrand —
- *     the tenant brand cascade; lib/remotion/registry.ts recordRenderQueued —
- *     the ONE render row writer; lib/remotion/content-contract.ts — the
- *     refusal when nothing dictated is on the row.
+ *   · lib/video/reel-brand.ts resolveReelBrand — the tenant brand cascade;
+ *     lib/remotion/registry.ts recordRenderQueued — the ONE render row writer;
+ *     lib/remotion/content-contract.ts — the refusal when nothing dictated is
+ *     on the row.
  *   · lib/video/memory-video-composition.ts — the pure timeline arithmetic
  *     the composition and Root.tsx's calculateMetadata share.
+ *   · lib/video/body-visual-model.ts — the ONE body-visual planner and gate.
  *
  * NO MODEL IS CALLED HERE (memory-video-gate.ts MODEL_MAY / MODEL_MAY_NOT;
- * CLAUDE.md §5's appraiser rule, same reason). TTS reading the seller's words
- * aloud is the "VERBATIM" arm the gate permits; nothing composes, trims or
- * improves a sentence. WHOSE VOICE: the agent's configured narration voice —
- * the seller has no cloned voice on this platform and consenting one is a
- * D-ID/ElevenLabs gate this lane does not touch; the words on screen are the
- * seller's in any case.
+ * CLAUDE.md §5's appraiser rule, same reason).
  *
  * TENANCY: `brokerageId` arrives already gated from the SESSION
  * (app/actions/video/memory-video.ts renderMemoryVideoAction); every read
@@ -46,13 +64,12 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isSellerAuthored, MEMORY_VIDEO_PROMPTS, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
+import { assessSellerMedia, isSellerAuthored, MEMORY_VIDEO_PROMPTS, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
 import {
   MEMORY_VIDEO_COMPOSITION_ID, MEMORY_VIDEO_PURPOSE,
-  chapterDurationFrames, estimatedChapterSeconds, memoryVideoDurationFrames, splitForSynthesis,
-  type MemoryVideoChapterProps,
+  chapterDurationFrames, estimatedChapterSeconds, memoryChapterSegments, memoryVideoDurationFrames,
+  type MemoryVideoChapterProps, type MemoryVideoMode,
 } from "@/lib/video/memory-video-composition"
-import { MAX_SCRIPT_CHARS } from "@/lib/video/reel-voiceover"
 import { geometryFor } from "@/lib/remotion/composition-geometry"
 
 export interface MemoryVideoRenderResult {
@@ -61,9 +78,11 @@ export interface MemoryVideoRenderResult {
   renderId?: string
   /** Frames the film will run — cover + every clip + outro. */
   durationFrames?: number
-  /** Clips synthesised vs. clips left silent (words still on screen). */
-  narrated?: number
-  silent?: number
+  /** The mode the film is made in. */
+  mode?: MemoryVideoMode
+  /** Chapters whose length was MEASURED on upload vs. estimated from the words. */
+  measured?: number
+  estimated?: number
   reason: string
 }
 
@@ -80,12 +99,12 @@ interface ProjectRow {
 }
 
 /** The last dictated segment per chapter, in the canonical chapter order (a re-record replaces). */
-function latestWordsByChapter(segments: readonly SellerDictatedSegment[]): Array<{ id: string; title: string; words: string }> {
-  const out: Array<{ id: string; title: string; words: string }> = []
+function latestByChapter(segments: readonly SellerDictatedSegment[]): Array<{ id: string; title: string; segment: SellerDictatedSegment }> {
+  const out: Array<{ id: string; title: string; segment: SellerDictatedSegment }> = []
   for (const p of MEMORY_VIDEO_PROMPTS) {
     const mine = segments.filter((s) => s.promptId === p.id && (s.sellerWords ?? "").trim().length > 0)
     if (mine.length === 0) continue
-    out.push({ id: p.id, title: p.ask, words: mine[mine.length - 1].sellerWords.trim() })
+    out.push({ id: p.id, title: p.ask, segment: mine[mine.length - 1] })
   }
   return out
 }
@@ -127,19 +146,29 @@ export async function stageMemoryVideoRender(input: {
   if (!isSellerAuthored(project.video_metadata)) {
     return { ok: false, status: "refused", reason: "the capture is not provably seller-authored (video_metadata.authored_by='seller' with dictated segments) — nothing was queued" }
   }
-  const meta = project.video_metadata as { dictation?: SellerDictatedSegment[]; missing?: string[]; tenure_years?: number | null; property_address?: string | null }
-  const chapters = latestWordsByChapter(meta.dictation ?? [])
+  const meta = project.video_metadata as {
+    dictation?: SellerDictatedSegment[]; missing?: string[]; tenure_years?: number | null; property_address?: string | null
+    seller_media?: { mode?: string; photo_urls?: string[] } | null
+  }
+  const chapters = latestByChapter(meta.dictation ?? [])
   if (chapters.length === 0) return { ok: false, status: "refused", reason: "the capture holds no dictated chapter — nothing to film" }
   if ((meta.missing ?? []).length > 0) {
     return { ok: false, status: "refused", reason: `chapters still unrecorded: ${(meta.missing ?? []).join(", ")} — the platform does not finish a family's story; capture them first` }
   }
+
+  // 1b. THE MEDIA VERDICT (wave 80C) — the seller's own recordings for the
+  //     mode, fail closed. Re-run here, never trusted off the row.
+  const photoUrls = (meta.seller_media?.photo_urls ?? []).filter((u) => typeof u === "string" && u.trim().length > 0)
+  const media = assessSellerMedia({ mode: meta.seller_media?.mode ?? null, segments: chapters.map((c) => c.segment), photoUrls })
+  if (!media.ok || !media.mode) return { ok: false, status: "refused", reason: media.reason }
+  const mode = media.mode
 
   // 2. THE HOLD GATE — the same door every other render passes (fail closed).
   const { evaluateVideoRenderHold } = await import("@/lib/video/video-render-hold")
   const hold = await evaluateVideoRenderHold({
     supabase: svc,
     actor: { userId: input.agentUserId, brokerageId: input.brokerageId },
-    script: project.script_content ?? chapters.map((c) => c.words).join("\n\n"),
+    script: project.script_content ?? chapters.map((c) => c.segment.sellerWords).join("\n\n"),
     projectId: project.id,
     journeyType: "seller",
     videoType: "memory_video",
@@ -147,9 +176,7 @@ export async function stageMemoryVideoRender(input: {
   })
   if (hold.hold) return { ok: false, status: "held", reason: hold.reasons.join(" | ") || "held by the render gate" }
 
-  // 3. Whose voice narrates + whose brand frames it.
-  const { resolveVideoIdentity } = await import("@/lib/video/video-identity")
-  const identity = await resolveVideoIdentity(svc, { brokerageId: input.brokerageId, agentUserId: input.agentUserId, purpose: "contact_facing" })
+  // 3. Whose brand frames it (whose VOICE is settled: the seller's own recording).
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
   const brand = await resolveReelBrand(svc, input.brokerageId, { agentUserId: input.agentUserId })
 
@@ -165,47 +192,61 @@ export async function stageMemoryVideoRender(input: {
     ? `${Math.floor(meta.tenure_years)} years in the home`
     : null
 
-  // 4. ONE CLIP PER CHAPTER PART — the timeline is sized by the narration.
-  const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+  // 4. ONE CLIP PER CHAPTER — the seller's own recording sizes the timeline.
+  //    A recording measured on upload is the clip's length; an unmeasured one
+  //    is estimated from the words at the fleet pace and REPORTED, never
+  //    silently guessed.
   const clips: MemoryVideoChapterProps[] = []
-  let narrated = 0, silent = 0
+  let measured = 0, estimated = 0
   for (const ch of chapters) {
-    const parts = splitForSynthesis(ch.words, MAX_SCRIPT_CHARS)
-    for (let i = 0; i < parts.length; i++) {
-      const words = parts[i]
-      const vo = identity.voiceId
-        ? await prepareReelVoiceover({
-            brokerageId: input.brokerageId, narration: words, voiceId: identity.voiceId,
-            renderKey: `${MEMORY_VIDEO_PURPOSE}-${project.id.slice(0, 8)}-${ch.id}-${i}`,
-          })
-        : null
-      if (vo) narrated++; else silent++
-      const seconds = vo?.durationSeconds ?? estimatedChapterSeconds(words)
-      clips.push({
-        id: parts.length > 1 ? `${ch.id}-${i + 1}` : ch.id,
-        title: ch.title,
-        sellerWords: words,
-        voiceoverUrl: vo?.url ?? null,
-        durationFrames: chapterDurationFrames(seconds, geo.fps),
-      })
-    }
+    const s = ch.segment
+    const secs = typeof s.mediaDurationSeconds === "number" && Number.isFinite(s.mediaDurationSeconds) && s.mediaDurationSeconds > 0
+      ? s.mediaDurationSeconds
+      : null
+    if (secs != null) measured++; else estimated++
+    clips.push({
+      id: ch.id,
+      title: ch.title,
+      sellerWords: s.sellerWords.trim(),
+      voiceoverUrl: mode === "seller_audio_photos" ? (s.mediaUrl ?? null) : null,
+      videoUrl: mode === "seller_walkthrough" ? (s.mediaUrl ?? null) : null,
+      durationFrames: chapterDurationFrames(secs ?? estimatedChapterSeconds(s.sellerWords), geo.fps),
+    })
   }
   const durationFrames = memoryVideoDurationFrames({ chapters: clips }, geo.fps)
 
   const inputProps: Record<string, unknown> = {
-    title, familyName, tenureLine, chapters: clips,
+    title, familyName, tenureLine, chapters: clips, mode, photoUrls,
+    videoPurpose: MEMORY_VIDEO_PURPOSE,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: brand.showEhoMark, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
   }
   const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
   const missing = missingContentProps(MEMORY_VIDEO_COMPOSITION_ID, inputProps)
   if (missing.length > 0) return { ok: false, status: "refused", reason: describeMissingContent(MEMORY_VIDEO_COMPOSITION_ID, missing) }
 
-  // 5. The render row — the ONE writer.
+  // 4b. PLAN BEFORE SEND — the body visual per chapter (client_footage in the
+  //     walkthrough, property_photos with plan-cut slots in the audio mode),
+  //     gated before any row is written. The segments are the chapters with
+  //     their MEASURED frames, so the plan's slots ARE the chapter layout.
+  const { stageBodyVisualPlan, gateVisualPlanForDispatch, assetsFromProps } = await import("@/lib/video/body-visual-model")
+  const visual = stageBodyVisualPlan({
+    compositionId: MEMORY_VIDEO_COMPOSITION_ID, props: inputProps, purpose: MEMORY_VIDEO_PURPOSE,
+    segments: memoryChapterSegments(clips),
+  })
+  if (!visual.ok) return { ok: false, status: "refused", reason: `body visual could not be planned: ${visual.reason}` }
+  const gate = gateVisualPlanForDispatch(visual.plan, assetsFromProps(inputProps, { compositionId: MEMORY_VIDEO_COMPOSITION_ID, avatarClip: false }))
+  if (!gate.ok) return { ok: false, status: "refused", reason: gate.reason }
+  inputProps.bodyVisualPlan = visual.plan
+
+  // 5. The render row — the ONE writer. usedVoiceover is TRUE in the audio
+  //    mode (a separate narration track plays under the photos) and false in
+  //    the walkthrough (the clip carries its own sound) — the flag names a
+  //    track that actually plays.
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const queued = await recordRenderQueued({
     brokerageId: input.brokerageId, compositionId: MEMORY_VIDEO_COMPOSITION_ID, agentUserId: input.agentUserId,
     entityType: "memory_video", entityId: project.id,
-    usedDidAvatar: false, usedVoiceover: narrated > 0,
+    usedDidAvatar: false, usedVoiceover: mode === "seller_audio_photos",
     inputProps, scopeType: "brokerage", scopeId: input.brokerageId, requestedVia: "manual",
   })
   if (!queued.ok) {
@@ -214,7 +255,7 @@ export async function stageMemoryVideoRender(input: {
   return {
     ok: true, status: "queued",
     renderId: ("renderId" in queued && typeof queued.renderId === "string") ? queued.renderId : undefined,
-    durationFrames, narrated, silent,
-    reason: `queued the ${Math.round(durationFrames / geo.fps)}s film: ${clips.length} clip(s) over ${chapters.length} chapter(s), ${narrated} narrated${silent > 0 ? `, ${silent} silent (no narration voice configured — the words still show on screen)` : ""}`,
+    durationFrames, mode, measured, estimated,
+    reason: `queued the ${Math.round(durationFrames / geo.fps)}s film (${mode}): ${clips.length} chapter(s) in the seller's own voice, ${measured} measured${estimated > 0 ? `, ${estimated} estimated from the words (no duration was recorded on upload)` : ""}${mode === "seller_audio_photos" ? `, ${photoUrls.length} photo(s) as the visuals` : ""}`,
   }
 }

@@ -21,10 +21,11 @@
  * tombstone naming `<Sequence from={X}>` must never read as a live segment.
  */
 import type { RegisteredGeometry } from "../lib/remotion/composition-geometry"
-import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { computeAssemblyTimeline, type AssemblySegment } from "../lib/video/assembly-timeline"
 import { compositionDurationSpec, compositionBookends } from "../lib/video/duration-model"
-import { fitBodyVisualPlan, sceneWindowsFromPlan } from "../lib/video/body-visual-model"
+import { fitBodyVisualPlan, sceneWindowsFromPlan, panelWindowsFromPlan, stageBodyVisualPlan } from "../lib/video/body-visual-model"
 import { composeProductVideoSpec } from "../lib/platform/product-content"
+import { explainerPanelSplit, thirdsPanelSplit } from "../lib/video/pip-panel-split"
 
 /** Every registered VIDEO composition's remotion/ source file, by id. STILLS
  *  (duration_frames === 1) are out of scope — they have no timeline to tile. */
@@ -76,7 +77,46 @@ export const NON_CHAIN_COMPOSITIONS: ReadonlySet<string> = new Set([
   // `scenes.hook.from` is a runtime value this tiler cannot resolve. Checked
   // by productPromoSceneChain below in video-assembly and the matrix.
   "ProductPromoReel",
+  // Lane 80C: the three PiP panels (bullets / stats) open on the body-visual
+  // plan's beats (panelWindowsFromPlan) or the composition's own split;
+  // `panels[i].from` is a runtime value. Checked by pipPanelChain below.
+  "AgentExplainerReel", "MarketUpdateReel", "EquityReportReel",
 ])
+
+/** The three PiP compositions whose panels are cut from the plan (lane 80C) and the no-plan split each keeps. */
+export const PIP_PANEL_COMPOSITIONS = ["AgentExplainerReel", "MarketUpdateReel", "EquityReportReel"] as const
+const PIP_PANEL_FIXTURE = "Rates moved again this week. Inventory is up eleven percent on your side of town. Median price held at six seventy five. Days on market fell to nine. Text me for the block-by-block picture."
+
+/**
+ * The BODY-relative panel windows a PiP composition renders at `total`
+ * frames — through the SAME helpers the composition calls: a fixture plan
+ * (stageBodyVisualPlan, avatar host) re-fitted to `total` (fitBodyVisualPlan)
+ * and cut into three panels (panelWindowsFromPlan); `withPlan:false` yields
+ * the composition's own split (explainerPanelSplit / thirdsPanelSplit).
+ */
+export function pipPanelWindows(id: (typeof PIP_PANEL_COMPOSITIONS)[number], total: number, opts: { withPlan?: boolean } = {}): AssemblySegment[] {
+  const { introFrames, outroFrames } = compositionBookends(id)
+  const t = computeAssemblyTimeline({ durationInFrames: total, introFrames, outroFrames })
+  const BODY = t.body.durationInFrames
+  if (opts.withPlan ?? true) {
+    const staged = stageBodyVisualPlan({ compositionId: id, props: { narrationScript: PIP_PANEL_FIXTURE }, avatarClip: true })
+    const planned = staged.ok ? panelWindowsFromPlan(fitBodyVisualPlan(staged.plan, id, total), BODY, 3) : null
+    if (planned) return planned
+  }
+  return id === "AgentExplainerReel" ? explainerPanelSplit(BODY) : thirdsPanelSplit(BODY)
+}
+
+/** The full Sequence chain (cover + three panels + outro tile) for a PiP composition at `total` frames. */
+export function pipPanelChain(id: (typeof PIP_PANEL_COMPOSITIONS)[number], total: number, opts: { withPlan?: boolean } = {}): Segment[] {
+  const { introFrames, outroFrames } = compositionBookends(id)
+  const t = computeAssemblyTimeline({ durationInFrames: total, introFrames, outroFrames })
+  const panels = pipPanelWindows(id, total, opts)
+  return [
+    { tag: "Sequence", from: 0, duration: t.intro.durationInFrames, fromExpr: "0", durExpr: "COVER" },
+    ...panels.map((p, i) => ({ tag: "Sequence", from: t.body.from + p.from, duration: p.durationInFrames, fromExpr: `COVER + panels[${i}].from`, durExpr: `panels[${i}].durationInFrames` })),
+    { tag: "Sequence", from: t.outro.from, duration: t.outro.durationInFrames, fromExpr: "COVER + BODY", durExpr: "OUTRO" },
+  ]
+}
 
 /**
  * ProductPromoReel's scene chain at `total` frames, built from the SAME pure

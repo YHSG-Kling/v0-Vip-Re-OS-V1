@@ -47,6 +47,33 @@
  *                 is excluded by default, included on request, never a
  *                 customer-facing value; setScreenshotUses refuses a 0-row
  *                 match (CLAUDE.md §3 counted update)
+ *   WAVE 80C (owner: "background visuals also should be included in body
+ *   plans", "stat cards are visuals", "only certain type of video formats need
+ *   broll", "autonomous ai can learn"):
+ *   §vocabulary   stat_card / background / client_footage are in the closed
+ *                 set; every rule names its allowed backgrounds ⊆
+ *                 BACKGROUND_KINDS, a b-roll verdict with sources, and its
+ *                 required treatments ⊆ allowed
+ *   §backgrounds  every composition has a COMPOSITION_BACKGROUNDS row whose
+ *                 kinds leave their mark in the stripped source (control: a
+ *                 fixture without a gradient is refused brand_gradient); every
+ *                 non-full-frame segment of every plan carries an allowed,
+ *                 paintable background
+ *   §verdicts     b-roll appears ONLY where the verdict admits it: never →
+ *                 no broll segment even with clips; own_media_only → stock
+ *                 refused, own admitted; fallback_when_photos_scarce → admitted
+ *                 with 0 photos, refused with ≥ BROLL_PHOTO_SCARCITY; the gate
+ *                 refuses a hand-made broll plan on a never-purpose (control)
+ *   §learning     checkRuleOverrideBounds refuses widening the allowed set,
+ *                 b-roll on a never-purpose, an avatar on a presenter-less
+ *                 purpose; admits a reorder; resolvePurposeRule applies live
+ *                 overrides in order, skips reverted ones, keeps every required
+ *                 treatment; a plan cut under an override changes and carries
+ *                 the override id; recommendBodyVisualRuleAdjustment proposes
+ *                 only past the sample+margin gate and never outside the bounds
+ *   §panels       panelWindowsFromPlan tiles [0, body) exactly, first panel at
+ *                 0, null below three content segments; photoSlotsForSegment
+ *                 tiles a segment exactly and covers every photo
  *
  * No network. Every DB touch is an injected fake client.
  */
@@ -56,12 +83,15 @@ import { fileURLToPath } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
   BODY_TREATMENTS, AVATAR_TREATMENTS, SEGMENT_KINDS, PURPOSE_BODY_VISUAL_RULES, COMPOSITION_TREATMENTS, TREATMENT_MARKS,
+  BACKGROUND_KINDS, BROLL_VERDICTS, BROLL_PHOTO_SCARCITY, COMPOSITION_BACKGROUNDS, BACKGROUND_MARKS, FULL_FRAME_TREATMENTS,
   planBodyVisual, stageBodyVisualPlan, fitBodyVisualPlan, segmentScript, segmentAtFrame, assetsFromProps,
-  safeInsets, pipCornerStyle, insideSafeArea,
-  type BodyTreatment, type BodyVisualAssets, type BodyVisualPlan,
+  safeInsets, pipCornerStyle, insideSafeArea, gateVisualPlanForDispatch,
+  checkRuleOverrideBounds, resolvePurposeRule, panelWindowsFromPlan, photoSlotsForSegment, bareTalkingHeadPlan,
+  type BodyTreatment, type BodyVisualAssets, type BodyVisualPlan, type BodyVisualRuleOverride,
 } from "../lib/video/body-visual-model"
+import { scoreBodyVisualOutcomes, recommendBodyVisualRuleAdjustment, MIN_FORMAT_SAMPLE } from "../lib/video/format-learning"
 import {
-  PURPOSE_DURATION_RULES, COMPOSITION_DURATION_RULES, planCompositionDuration, compositionBookends, type VideoPurpose,
+  PURPOSE_DURATION_RULES, COMPOSITION_DURATION_RULES, planCompositionDuration, planDurationForProps, compositionBookends, type VideoPurpose,
 } from "../lib/video/duration-model"
 import { computeAssemblyTimeline, evenShotSlots, weightedShotSlots } from "../lib/video/assembly-timeline"
 import { COMPOSITION_GEOMETRY } from "../lib/remotion/composition-geometry"
@@ -81,8 +111,8 @@ const check = (name: string, cond: boolean, detail?: string) => {
 }
 
 const SCRIPT = "Hi Dana, congrats on the new place. The market on your block moved this week. Two homes sold above ask in nine days. Buyers are still out there and rates ticked down. Showings doubled since the price change. Text me back when you want the next step."
-const FULL_ASSETS: BodyVisualAssets = { avatarClip: true, brollClips: 3, propertyPhotos: 6, screenshots: 4, chartData: true }
-const NO_ASSETS: BodyVisualAssets = { avatarClip: false, brollClips: 0, propertyPhotos: 0, screenshots: 0, chartData: false }
+const FULL_ASSETS: BodyVisualAssets = { avatarClip: true, brollClips: 3, brollSource: "stock", propertyPhotos: 6, screenshots: 4, statCards: 3, clientFootage: 2, chartData: true }
+const NO_ASSETS: BodyVisualAssets = { avatarClip: false, brollClips: 0, propertyPhotos: 0, screenshots: 0, statCards: 0, clientFootage: 0, chartData: false }
 const NARRATION_IDS = Object.keys(COMPOSITION_DURATION_RULES)
 
 function planFor(id: string, assets: BodyVisualAssets, script = SCRIPT): BodyVisualPlan {
@@ -131,6 +161,19 @@ console.log("\n── §registry · every purpose has a rule, every composition 
     check(`${id}: every claimed treatment [${treatments.join(", ")}] leaves its render mark in the stripped source${siblings.length ? ` (or in mounted ${siblings.join("/")})` : ""}`, unproven.length === 0, `unproven: ${unproven.join(", ")}`)
     check(`${id}: kinetic_text and brand_card are claimed (the universal floor)`, treatments.includes("kinetic_text") && treatments.includes("brand_card"))
   }
+  // Wave 80C — the BACKGROUND registry, proven the same way.
+  const missingBg = NARRATION_IDS.filter((id) => !(id in COMPOSITION_BACKGROUNDS) || COMPOSITION_BACKGROUNDS[id].length === 0)
+  check(`every COMPOSITION_DURATION_RULES row has a non-empty COMPOSITION_BACKGROUNDS row`, missingBg.length === 0, missingBg.join(", "))
+  for (const [id, kinds] of Object.entries(COMPOSITION_BACKGROUNDS)) {
+    const own = readStripped(`remotion/${id}.tsx`)
+    const siblings = mountedSiblings(own)
+    const src = [own, ...siblings.map((x) => readStripped(`remotion/${x}.tsx`))].join("\n")
+    const unproven = kinds.filter((k) => !BACKGROUND_MARKS[k].test(src))
+    const unknownKinds = kinds.filter((k) => !(BACKGROUND_KINDS as readonly string[]).includes(k))
+    check(`${id}: every claimed background [${kinds.join(", ")}] leaves its paint mark in the stripped source and is a known kind`, unproven.length === 0 && unknownKinds.length === 0, `unproven: ${unproven.join(", ")}`)
+  }
+  check("CONTROL: a fixture with a flat brand fill but no gradient/blur is refused brand_gradient and blurred_photo",
+    BACKGROUND_MARKS.solid_brand.test("style={{ backgroundColor: brand.primaryColor }}") && !BACKGROUND_MARKS.brand_gradient.test("style={{ backgroundColor: brand.primaryColor }}") && !BACKGROUND_MARKS.blurred_photo.test("style={{ backgroundColor: brand.primaryColor }}"))
   const fixture = "export const X = () => <div style={{ opacity: 1 }}>{brand.brokerageName}</div>"
   check("CONTROL: a fixture source with no <AvatarPIP>/<BrollLayer>/<Video src={avatarVideoUrl}> is refused those treatments",
     !TREATMENT_MARKS.avatar_pip.test(fixture) && !TREATMENT_MARKS.broll.test(fixture) && !TREATMENT_MARKS.full_avatar.test(fixture) && TREATMENT_MARKS.brand_card.test(fixture))
@@ -255,7 +298,10 @@ console.log("\n── §wiring · the director, the product spec, the consumer c
 {
   const director = readStripped("lib/video/video-director.ts")
   check("video-director.ts stages input_props.bodyVisualPlan on BOTH commission paths", (director.match(/bodyVisualPlan:\s*visual\.plan/g) ?? []).length === 2)
-  check("video-director.ts BLOCKS a commission whose body visual cannot be planned (body_visual_unplanned), on both paths", (director.match(/body_visual_unplanned/g) ?? []).length === 2 && (director.match(/if \(!visual\.ok\)/g) ?? []).length === 2)
+  check("video-director.ts BLOCKS a commission whose body visual cannot be planned (body_visual_unplanned), on both paths — and runs the ONE dispatch gate on both (wave 80C)",
+    (director.match(/body_visual_unplanned/g) ?? []).length === 4 && (director.match(/if \(!visual\.ok\)/g) ?? []).length === 2 && (director.match(/gateVisualPlanForDispatch\(visual\.plan/g) ?? []).length === 2)
+  check("video-director.ts cuts the plan under the tenant's LIVE learned overrides and stamps body_visual on the row, on both paths",
+    (director.match(/loadBodyVisualRuleOverrides\(opts\.brokerageId, svc\)/g) ?? []).length === 2 && (director.match(/body_visual: bodyVisualStamp\(visual\.plan\)/g) ?? []).length === 2)
   const product = readStripped("lib/platform/product-content.ts")
   check("composeProductVideoSpec stages the plan from its own hook/beats/CTA segments", /stageBodyVisualPlan\(\{ compositionId: "ProductPromoReel"/.test(product) && /bodyVisualPlan: visual\.plan/.test(product))
   for (const id of ["AgentTalkingHeadReel", "ProductPromoReel"]) {
@@ -266,7 +312,8 @@ console.log("\n── §wiring · the director, the product spec, the consumer c
   check("AgentTalkingHeadReel: the treatment under the playhead comes from segmentAtFrame; the card and the lower-third sit on the safe insets; no typed bottom:130 / bottom={24} remains",
     /segmentAtFrame\(plan, frame\)/.test(ath) && /safeInsets\(width, height\)/.test(ath) && /bottom=\{safe\.bottom\}/.test(ath) && !/bottom:\s*130\b/.test(ath) && !/bottom=\{24\}/.test(ath))
   const pip = blankStrings(readStripped("remotion/components/AvatarPIP.tsx"))
-  check("AvatarPIP: the corner is pipCornerStyle(width, height, position, size) from useVideoConfig — no typed corner literal", /pipCornerStyle\(width, height, position, size\)/.test(pip) && !/top:\s*32\b/.test(pip) && !/bottom:\s*64\b/.test(pip))
+  check("AvatarPIP: the corner is pipCornerStyle(width, height, position, boxSize) from useVideoConfig (boxSize = the ring, or the keyed figure's larger box) — no typed corner literal",
+    /pipCornerStyle\(width, height, position, boxSize\)/.test(pip) && /boxSize = keyed \? Math\.round\(size \* KEYED_SCALE\) : size/.test(pip) && !/top:\s*32\b/.test(pip) && !/bottom:\s*64\b/.test(pip))
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> }
   const guard = pkg.scripts.guard ?? ""
   check("package.json: test:body-visual-model is registered and runs in the guard chain after test:scrapers (ordering only)",
@@ -275,6 +322,140 @@ console.log("\n── §wiring · the director, the product spec, the consumer c
   check("manager-registry: MAINTENANCE_DOMAINS.body_visual_model names this proof", /body_visual_model:\s*\{ manager: "asset_manager", proof: "test:body-visual-model"/.test(registry))
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n── §vocabulary · stat cards, backgrounds and the client's own footage are visuals; every rule says which backgrounds and whether b-roll ──")
+{
+  check("BODY_TREATMENTS carries stat_card, background and client_footage (wave 80C)", ["stat_card", "background", "client_footage"].every((t) => (BODY_TREATMENTS as readonly string[]).includes(t)))
+  check("BACKGROUND_KINDS is the closed set solid_brand / brand_gradient / blurred_photo / subtle_motion", BACKGROUND_KINDS.join() === "solid_brand,brand_gradient,blurred_photo,subtle_motion")
+  check("BROLL_VERDICTS is the closed set needed / optional / own_media_only / fallback_when_photos_scarce / never", BROLL_VERDICTS.join() === "needed,optional,own_media_only,fallback_when_photos_scarce,never")
+  for (const [p, r] of Object.entries(PURPOSE_BODY_VISUAL_RULES)) {
+    check(`${p}: backgrounds [${r.backgrounds.join(", ")}] non-empty ⊆ BACKGROUND_KINDS; b-roll verdict ${r.broll.verdict} with a reason and ≥1 source; required ⊆ allowed`,
+      r.backgrounds.length > 0 && r.backgrounds.every((b) => (BACKGROUND_KINDS as readonly string[]).includes(b))
+      && (BROLL_VERDICTS as readonly string[]).includes(r.broll.verdict) && r.broll.why.length > 20 && r.broll.sources.length >= 1
+      && r.required.every((t) => r.allowed.includes(t)))
+    check(`${p}: a verdict of never means broll is not even in the allowed set — one spelling of "no b-roll here"`, r.broll.verdict !== "never" || !r.allowed.includes("broll"))
+    check(`${p}: a verdict other than never means broll IS allowed (the verdict and the set agree)`, r.broll.verdict === "never" || r.allowed.includes("broll"))
+  }
+  const verdicts = Object.fromEntries(Object.entries(PURPOSE_BODY_VISUAL_RULES).map(([p, r]) => [p, r.broll.verdict]))
+  check("the research verdicts: neighbourhood spotlight NEEDS footage; explainer / market update / welcome may cut away; seller update and testimonial only to the client's / home's own media; listing promos fall back to stock only when photos are scarce; demos, CMA, equity, memory, walkthrough, presentation, partners, newsletter, lead reel, buyer match NEVER",
+    verdicts.neighborhood_spotlight === "needed" && ["explainer", "market_update", "welcome"].every((p) => verdicts[p] === "optional")
+    && verdicts.seller_update === "own_media_only" && verdicts.testimonial === "own_media_only" && verdicts.listing_promo === "fallback_when_photos_scarce"
+    && ["product_demo", "cma", "anniversary_equity", "memory", "photo_walkthrough", "listing_presentation_section", "partners_meeting", "newsletter", "lead_reel", "buyer_match"].every((p) => verdicts[p] === "never"))
+  check("stat cards are preferred proof on the data purposes (seller_update, market_update, anniversary_equity, partners_meeting) and required there",
+    ["seller_update", "market_update", "anniversary_equity", "partners_meeting"].every((p) => PURPOSE_BODY_VISUAL_RULES[p as keyof typeof PURPOSE_BODY_VISUAL_RULES].prefer.proof[0] === "stat_card" && PURPOSE_BODY_VISUAL_RULES[p as keyof typeof PURPOSE_BODY_VISUAL_RULES].required.includes("stat_card")))
+  // Every plan's non-full-frame segment carries an allowed, paintable background.
+  let bgOk = true, bgDetail = ""
+  for (const id of NARRATION_IDS) {
+    const plan = planFor(id, FULL_ASSETS)
+    const rule = PURPOSE_BODY_VISUAL_RULES[plan.purpose]
+    for (const seg of plan.segments) {
+      const full = FULL_FRAME_TREATMENTS.has(seg.treatment)
+      if (full ? seg.background !== "none" : !(rule.backgrounds.includes(seg.background as never) && COMPOSITION_BACKGROUNDS[id].includes(seg.background as never))) { bgOk = false; bgDetail = `${id} #${seg.index} ${seg.treatment} → ${seg.background}`; break }
+    }
+    if (!bgOk) break
+  }
+  check("every segment of every plan names its background: none for a full-frame treatment, else one the purpose allows AND the composition paints", bgOk, bgDetail)
+  const stat = planFor("MarketUpdateReel", FULL_ASSETS)
+  check("MarketUpdateReel market_update with stats staged: the beats are stat cards (the numbers are the star), the presenter rides as PiP on the hook/CTA", stat.segments.filter((s) => s.kind === "beat").every((s) => s.treatment === "stat_card") && stat.segments.find((s) => s.kind === "hook")?.treatment === "avatar_pip")
+  check("assetsFromProps counts stat cards (stats[] / cards[] / a price figure) and the client's own footage (chapters[].videoUrl)",
+    assetsFromProps({ stats: [1, 2, 3] }).statCards === 3 && assetsFromProps({ price: 500000 }).statCards === 1 && assetsFromProps({ chapters: [{ videoUrl: "https://x/a.mp4" }, { videoUrl: null }] }).clientFootage === 1 && assetsFromProps({ brollSource: "own" }).brollSource === "own")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n── §verdicts · b-roll appears only where the research verdict admits it ──")
+{
+  const stock: BodyVisualAssets = { ...FULL_ASSETS, avatarClip: false, brollClips: 3, brollSource: "stock" }
+  const own: BodyVisualAssets = { ...stock, brollSource: "own" }
+  const hasBroll = (plan: BodyVisualPlan) => plan.segments.some((s) => s.treatment === "broll")
+  // never — the composition CAN render broll (ComingSoonReel) but the purpose (photo_walkthrough-like never) forbids it.
+  const neverPlan = planBodyVisual({ compositionId: "ComingSoonReel", duration: planCompositionDuration({ compositionId: "ComingSoonReel", wordCount: 60 }), script: SCRIPT, assets: stock, purpose: "newsletter" })
+  check("never: a purpose whose verdict is never gets NO broll segment even on a composition that renders it, with clips on hand — and says why", !hasBroll(neverPlan) && neverPlan.notes.some((n) => /verdict never/.test(n)))
+  // fallback_when_photos_scarce — listing_promo on ComingSoonReel.
+  const scarce = planBodyVisual({ compositionId: "ComingSoonReel", duration: planCompositionDuration({ compositionId: "ComingSoonReel", wordCount: 60 }), script: SCRIPT, assets: { ...stock, propertyPhotos: 0 } })
+  const plenty = planBodyVisual({ compositionId: "ComingSoonReel", duration: planCompositionDuration({ compositionId: "ComingSoonReel", wordCount: 60 }), script: SCRIPT, assets: { ...stock, propertyPhotos: BROLL_PHOTO_SCARCITY } })
+  check(`fallback_when_photos_scarce: a coming-soon with 0 photos cuts to stock footage; with ${BROLL_PHOTO_SCARCITY} photos the home's own photos are the footage and stock is refused`, hasBroll(scarce) && !hasBroll(plenty) && plenty.segments.some((s) => s.treatment === "property_photos"))
+  // own_media_only — seller_update on AgentTalkingHeadReel (avatar host).
+  const suStock = planBodyVisual({ compositionId: "AgentTalkingHeadReel", duration: planCompositionDuration({ compositionId: "AgentTalkingHeadReel", wordCount: 60, purpose: "seller_update" }), script: SCRIPT, assets: { ...stock, avatarClip: true }, purpose: "seller_update" })
+  const suOwn = planBodyVisual({ compositionId: "AgentTalkingHeadReel", duration: planCompositionDuration({ compositionId: "AgentTalkingHeadReel", wordCount: 60, purpose: "seller_update" }), script: SCRIPT, assets: { ...own, avatarClip: true }, purpose: "seller_update" })
+  check("own_media_only: a seller update refuses STOCK cutaways (no b-roll window) and admits the listing's OWN photos behind the floating agent", suStock.brollWindows.length === 0 && suStock.notes.some((n) => /own_media_only/.test(n)) && suOwn.brollWindows.length > 0)
+  // needed / optional admit.
+  const nb = planBodyVisual({ compositionId: "NeighborhoodSpotlightReel", duration: planCompositionDuration({ compositionId: "NeighborhoodSpotlightReel", wordCount: 60 }), script: SCRIPT, assets: stock })
+  check("needed: the neighbourhood spotlight is footage under the copy", hasBroll(nb))
+  // The gate refuses a hand-made broll plan on a never-purpose.
+  const forged: BodyVisualPlan = { ...neverPlan, segments: neverPlan.segments.map((s) => ({ ...s, treatment: "broll" as const, background: "none" as const })) }
+  const g = gateVisualPlanForDispatch(forged, stock)
+  check("CONTROL: the dispatch gate refuses a plan that puts broll on a never-purpose (broll_forbidden) and names the treatment as disallowed", !g.ok && g.missing.includes("broll_forbidden:newsletter") && g.missing.includes("treatment_not_allowed:broll"))
+  const g2 = gateVisualPlanForDispatch({ ...suOwn }, { ...own, avatarClip: true })
+  check("…and passes the seller update whose cutaways are the home's own photos", g2.ok)
+  const g3 = gateVisualPlanForDispatch({ ...suOwn }, { ...stock, avatarClip: true })
+  check("…but refuses the same plan when the staged clips are stock (broll_not_own_media)", !g3.ok && g3.missing.includes("broll_not_own_media"))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n── §learning · the purpose rules are data; a learned change stays inside the bounds ──")
+{
+  const mk = (purpose: keyof typeof PURPOSE_BODY_VISUAL_RULES, change: BodyVisualRuleOverride["change"], extra: Partial<BodyVisualRuleOverride> = {}): BodyVisualRuleOverride =>
+    ({ id: `o_${Math.random().toString(36).slice(2, 6)}`, purpose, change, why: "test", sample: 12, source: "autonomous", appliedAt: "2026-09-23T00:00:00Z", revertedAt: null, ...extra })
+  check("bounds: a treatment the purpose does not allow is refused (never widens the allowed set)", !checkRuleOverrideBounds(mk("listing_promo", { kind: "prefer_treatment", segmentKind: "beat", treatment: "full_avatar" })).ok)
+  check("bounds: b-roll can never be learned into a no-b-roll format", !checkRuleOverrideBounds(mk("product_demo", { kind: "prefer_treatment", segmentKind: "beat", treatment: "broll" })).ok)
+  check("bounds: an avatar treatment can never be learned into a presenter-less purpose", !checkRuleOverrideBounds(mk("memory", { kind: "prefer_treatment", segmentKind: "beat", treatment: "avatar_pip" })).ok)
+  check("bounds: a background the purpose does not allow is refused", !checkRuleOverrideBounds(mk("cma", { kind: "prefer_background", background: "blurred_photo" })).ok)
+  check("bounds: an unknown segment kind / treatment / background is refused", !checkRuleOverrideBounds(mk("welcome", { kind: "prefer_treatment", segmentKind: "bogus" as never, treatment: "broll" })).ok && !checkRuleOverrideBounds(mk("welcome", { kind: "prefer_background", background: "neon" as never })).ok)
+  const reorder = mk("market_update", { kind: "prefer_treatment", segmentKind: "beat", treatment: "kinetic_text" })
+  check("bounds: reordering an allowed treatment to the front is admitted", checkRuleOverrideBounds(reorder).ok)
+  const base = PURPOSE_BODY_VISUAL_RULES.market_update
+  const live = resolvePurposeRule("market_update", [reorder])
+  check("resolvePurposeRule applies the override (kinetic_text now leads the beat preference), drops nothing, and keeps every required treatment",
+    live.prefer.beat[0] === "kinetic_text" && live.prefer.beat.length === base.prefer.beat.length && base.required.every((t) => live.prefer.beat.includes(t) || live.prefer.proof.includes(t)) && live.allowed.join() === base.allowed.join())
+  check("a reverted override is skipped; an out-of-bounds one written by hand is skipped too", resolvePurposeRule("market_update", [{ ...reorder, revertedAt: "2026-09-24T00:00:00Z" }]).prefer.beat[0] === base.prefer.beat[0]
+    && resolvePurposeRule("product_demo", [mk("product_demo", { kind: "prefer_treatment", segmentKind: "beat", treatment: "broll" })]).allowed.includes("broll") === false)
+  const before = planBodyVisual({ compositionId: "MarketUpdateReel", duration: planCompositionDuration({ compositionId: "MarketUpdateReel", wordCount: 60 }), script: SCRIPT, assets: FULL_ASSETS })
+  const after = planBodyVisual({ compositionId: "MarketUpdateReel", duration: planCompositionDuration({ compositionId: "MarketUpdateReel", wordCount: 60 }), script: SCRIPT, assets: FULL_ASSETS, overrides: [reorder] })
+  check("a plan cut under the override actually changes (beats move from stat cards to kinetic text) and records the override id for the audit trail",
+    before.segments.filter((s) => s.kind === "beat").every((s) => s.treatment === "stat_card") && after.segments.filter((s) => s.kind === "beat").every((s) => s.treatment === "kinetic_text") && after.overrideIds.join() === reorder.id && before.overrideIds.length === 0)
+  check("the gate accepts the learned plan when given the same overrides, and refuses it against the base rule only if the treatment were disallowed (here it is allowed either way)",
+    gateVisualPlanForDispatch(after, FULL_ASSETS, { overrides: [reorder] }).ok && gateVisualPlanForDispatch(after, FULL_ASSETS).ok)
+  // The proposer: sample + margin gate, bounds respected.
+  const rows = (n: number, treatment: string, signal: number) => Array.from({ length: n }, () => ({ purpose: "market_update", beatTreatment: treatment, scans: signal, engagement: 0 }))
+  const thin = scoreBodyVisualOutcomes([...rows(MIN_FORMAT_SAMPLE - 1, "kinetic_text", 10), ...rows(3, "stat_card", 1)])
+  const strong = scoreBodyVisualOutcomes([...rows(MIN_FORMAT_SAMPLE, "kinetic_text", 10), ...rows(3, "stat_card", 1)])
+  check("recommendBodyVisualRuleAdjustment keeps the expert rule on a thin sample and proposes the winner past the gate", recommendBodyVisualRuleAdjustment("market_update", thin) === null
+    && recommendBodyVisualRuleAdjustment("market_update", strong)?.change.treatment === "kinetic_text")
+  const forbidden = scoreBodyVisualOutcomes([...rows(MIN_FORMAT_SAMPLE, "broll", 10), ...rows(3, "stat_card", 1)].map((r) => ({ ...r, purpose: "product_demo" })))
+  check("CONTROL: a winning sample for a treatment the purpose forbids (broll on product_demo) yields NO proposal — the bounds hold at the proposer too", recommendBodyVisualRuleAdjustment("product_demo", forbidden) === null)
+  const bare = bareTalkingHeadPlan(SCRIPT)
+  check("bareTalkingHeadPlan (the outreach dispatcher): one full-frame presenter over the whole spoken script, no bookends, gated like every other plan", bare.segments.length === 1 && bare.segments[0].treatment === "full_avatar" && bare.body.durationInFrames === bare.durationInFrames && gateVisualPlanForDispatch(bare, { avatarClip: true, brollClips: 0, propertyPhotos: 0, screenshots: 0 }).ok
+    && !gateVisualPlanForDispatch(bareTalkingHeadPlan(""), { avatarClip: true, brollClips: 0, propertyPhotos: 0, screenshots: 0 }).ok)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n── §panels · the PiP reels' panels and the memory reel's photo slots come from the plan ──")
+{
+  for (const id of ["AgentExplainerReel", "MarketUpdateReel", "EquityReportReel"]) {
+    const plan = planFor(id, FULL_ASSETS)
+    const body = plan.body.durationInFrames
+    const panels = panelWindowsFromPlan(plan, body, 3)
+    let cursor = 0, tiles = !!panels
+    for (const p of panels ?? []) { if (p.from !== cursor || p.durationInFrames < 1) tiles = false; cursor += p.durationInFrames }
+    check(`${id}: three panels tile [0, ${body}) exactly and the first starts at 0 (the avatar track's own timeline)`, tiles && cursor === body && panels![0].from === 0)
+  }
+  const one = planBodyVisual({ compositionId: "MarketUpdateReel", duration: planCompositionDuration({ compositionId: "MarketUpdateReel", wordCount: 20 }), script: "One line only.", assets: FULL_ASSETS })
+  check("fewer content segments than panels → null (the composition keeps its own split), never a fabricated cut", panelWindowsFromPlan(one, one.body.durationInFrames, 3) === null)
+  const memoryChapters = [{ durationFrames: 900 }, { durationFrames: 1500 }, { durationFrames: 600 }]
+  const memory = planBodyVisual({ compositionId: "MemoryVideoReel", duration: planDurationForProps("MemoryVideoReel", { chapters: memoryChapters, videoPurpose: "memory" }), assets: { ...NO_ASSETS, propertyPhotos: 5 },
+    segments: [{ kind: "beat", text: "a", words: 40, frames: 900 }, { kind: "beat", text: "b", words: 60, frames: 1500 }, { kind: "beat", text: "c", words: 20, frames: 600 }] })
+  const covered = new Set<number>()
+  let slotsOk = true
+  for (const seg of memory.segments) {
+    const slots = photoSlotsForSegment(memory, seg.index, 5)
+    let c = seg.from
+    for (const s of slots) { if (s.from !== c) slotsOk = false; c += s.durationInFrames; covered.add(s.photoIndex) }
+    if (c !== seg.from + seg.durationInFrames || slots.length === 0) slotsOk = false
+  }
+  check("memory (audio + photos): every chapter is property_photos, its photo slots tile the chapter exactly through the ONE tiler, and the five photos are all used across the chapters", memory.segments.every((s) => s.treatment === "property_photos") && slotsOk && covered.size === 5)
+  check("measured frames weight the memory plan (segments carry `frames`): 900/1500/600 reproduce exactly", memory.segments.map((s) => s.durationInFrames).join() === "900,1500,600")
+}
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n── §screenshots · one still, many uses; a public-page capture is material, never a customer-facing value ──")
 {
