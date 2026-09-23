@@ -95,6 +95,10 @@
 //     (subscriptions.custom_seat_limit) and past them the answer is a person.
 //     A staff-set override is still a deliberate cap: it is not answered with
 //     an upgrade, only with the package (or a person when none is sellable).
+//   • WHO IS A PRODUCER (wave 80A, owner: "brokers and broker owners can be a
+//     producing seat."): agent and team_lead by type; broker and broker_owner
+//     by type UNLESS the tenant marks them non-producing; admin while they
+//     hold an agents record; everyone else never. See the four rosters below.
 //
 //     TOMBSTONE — `ADDITIONAL_SEAT_MONTHLY_USD` (a $25 literal) and the
 //     `upgrade_offered` / `paid_seat_only` outcomes are retired here. Survivor
@@ -149,21 +153,44 @@ export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 // was at 2 of 2 and could not add a second agent — the plan was measuring the
 // wrong thing.
 //
-// THREE ROSTERS, ONE PREDICATE (`roleConsumesSeat`):
+// FOUR ROSTERS, ONE PREDICATE (`roleConsumesSeat`):
 //
 //   PRODUCER_SEAT_ROLES        a seat by TYPE. agent and team_lead always carry
 //                              a book of business (AGENT_ROLES in
 //                              tenant-provisioning-spec.ts) and always count.
 //
-//   SEAT_BY_PRODUCTION_ROLES   a seat ONLY WHILE THEY PRODUCE. broker and
-//                              broker_owner are licensed but many run the shop
-//                              and never sell; admin is staff — EXCEPT that the
-//                              solo/team tenant OWNER is provisioned as `admin`
-//                              wearing an agents row (provisionTenantOwner +
-//                              requiresAgentRow), and that owner IS the
-//                              producing agent the plan is sold to. So these
-//                              count exactly when they hold an active `agents`
-//                              record. "Brokers count only if they produce."
+//   LICENSED_SEAT_ROLES        a seat by TYPE — UNLESS THE TENANT EXEMPTS THEM.
+//                              (wave 80A, owner verbatim 2026-09-23: "brokers
+//                              and broker owners can be a producing seat.")
+//                              broker and broker_owner are licensed producers:
+//                              the industry norm (Follow Up Boss, Sierra, Lofty,
+//                              BoldTrail, TotalBrokerage, BrokerTeq — every
+//                              login on the roster is a priced user and the
+//                              selling owner is the first one) is that the
+//                              broker-owner who sells counts, and the ONE
+//                              exemption vendors sell is an explicit non-
+//                              producing / admin-only licence. So the default
+//                              is a seat, and the exemption is a STATEMENT the
+//                              tenant makes — `produces: false` — recorded on
+//                              brokerages.billing_metadata.non_producing_user_ids
+//                              (parseNonProducingUserIds; written only by the
+//                              tenant's commerce admin or the invite that seats
+//                              them as staff). Never inferred from the agents
+//                              table: a broker of record with no agents row is
+//                              still a licensed producer until someone says
+//                              otherwise. The previous rule ("brokers count
+//                              only if they produce", wave 78A) inferred the
+//                              opposite from that same absence, so a selling
+//                              broker seated without an agents row was FREE —
+//                              the plan under-billed the person it is sold to.
+//
+//   SEAT_BY_PRODUCTION_ROLES   a seat ONLY WHILE THEY PRODUCE. admin is staff —
+//                              EXCEPT that the solo/team tenant OWNER is
+//                              provisioned as `admin` wearing an agents row
+//                              (provisionTenantOwner + requiresAgentRow), and
+//                              that owner IS the producing agent the plan is
+//                              sold to. So admin counts exactly when they hold
+//                              an active `agents` record.
 //
 //   FREE_STAFF_ROLES           never a seat, even when the desk gave them an
 //                              agents record for operational reasons (the ISA
@@ -171,12 +198,16 @@ export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 //                              is a desk, not a licence).
 //
 // The solo owner is therefore still seat 1 of 2 (they produce), a TC or ISA
-// they hire is free, and their second seat is a second producer. Positive
-// controls in scripts/seat-cap-simulator.ts and scripts/seat-bands-guard.ts
-// pin all three directions: a staff add never moves the count, the 6th team
-// producer is refused, a brokerage is never refused.
+// they hire is free, and their second seat is a second producer. A broker on
+// a team tenant is seat 3 of 10 the day they are seated, and seat 0 the day
+// the tenant marks them non-producing. Positive controls in
+// scripts/seat-cap-simulator.ts, scripts/seat-bands-guard.ts and
+// scripts/seat-producer-roles-guard.ts pin every direction: a staff add never
+// moves the count, a broker add DOES, an exempted broker does not, the 11th
+// team producer is refused.
 export const PRODUCER_SEAT_ROLES: readonly UserDomainRole[] = ["agent", "team_lead"]
-export const SEAT_BY_PRODUCTION_ROLES: readonly UserDomainRole[] = ["broker", "broker_owner", "admin"]
+export const LICENSED_SEAT_ROLES: readonly UserDomainRole[] = ["broker", "broker_owner"]
+export const SEAT_BY_PRODUCTION_ROLES: readonly UserDomainRole[] = ["admin"]
 export const FREE_STAFF_ROLES: readonly UserDomainRole[] = ["broker_admin", "tc", "isa", "compliance_officer"]
 
 /**
@@ -187,7 +218,7 @@ export const FREE_STAFF_ROLES: readonly UserDomainRole[] = ["broker_admin", "tc"
  * TOMBSTONE — `SEAT_ROLES` (this same nine-name list) was retired in wave 78A
  * because its name asserted that every entry consumed a seat, and the owner
  * ruled that staff do not. Nothing merged: the roster is unchanged, only its
- * meaning split into "may be seated" (here) and "is billed" (the three lists
+ * meaning split into "may be seated" (here) and "is billed" (the four lists
  * above). Survivor for the billing question: `roleConsumesSeat`,
  * this file; for the count: lib/kernel/seat-usage.ts resolveSeatUsage.
  *
@@ -198,7 +229,7 @@ export const FREE_STAFF_ROLES: readonly UserDomainRole[] = ["broker_admin", "tc"
  * product-only user type is never offered before its migration lands.
  */
 export const WORKSPACE_STAFF_ROLES: readonly UserDomainRole[] = [
-  ...PRODUCER_SEAT_ROLES, ...SEAT_BY_PRODUCTION_ROLES, ...FREE_STAFF_ROLES,
+  ...PRODUCER_SEAT_ROLES, ...LICENSED_SEAT_ROLES, ...SEAT_BY_PRODUCTION_ROLES, ...FREE_STAFF_ROLES,
 ]
 
 /**
@@ -422,34 +453,65 @@ export function tierAllowsRole(tier: string | null | undefined, role: UserDomain
  * disagree about who is billed.
  *
  *   producer by type          → true
+ *   licensed role             → true UNLESS `produces` is EXPLICITLY false
+ *   (broker, broker_owner)      (the tenant's exemption). Undefined is not an
+ *                               exemption: "nobody said" means a licensed
+ *                               producer is billed (wave 80A).
  *   seat-by-production role   → `produces` (holds / will hold an active agents
- *                               record). Absent that fact the answer is FALSE:
- *                               a broker or admin is staff until they sell.
+ *   (admin)                     record). Absent that fact the answer is FALSE:
+ *                               an admin is staff until they sell.
  *   free staff / partner /
  *   contact / system / platform → false, whatever else is true
  *
- * `produces` is a FACT the caller supplies — the resolver reads the agents
- * table; the gate derives it from requiresAgentRow(role, tier) for an invite
- * or takes the caller's explicit statement. It is never inferred here from the
- * role alone, because that is the inference the retired SEAT_ROLES made.
+ * `produces` is a FACT the caller supplies, with three values: true (an agents
+ * record / the caller's statement), false (the tenant's exemption — the meter
+ * reads billing_metadata.non_producing_user_ids, the gate takes the invite's
+ * statement) and undefined (no statement). The resolver and the gate hand it
+ * over; it is never inferred here from the role alone, because that is the
+ * inference the retired SEAT_ROLES made.
  */
 export function roleConsumesSeat(role: UserDomainRole | string, opts?: { produces?: boolean }): boolean {
   if ((PRODUCER_SEAT_ROLES as readonly string[]).includes(role)) return true
+  if ((LICENSED_SEAT_ROLES as readonly string[]).includes(role)) return opts?.produces !== false
   if ((SEAT_BY_PRODUCTION_ROLES as readonly string[]).includes(role)) return opts?.produces === true
   return false
 }
 
 /**
  * PURE: will a person invited as `role` onto a tenant on `tier` produce?
- * The provisioning spec already answers "does this (role, tier) get an agents
- * row" — that IS production for a seat-by-production role (the solo/team
- * owner is an admin wearing an agents row; a brokerage-tier admin is not).
- * FREE_STAFF_ROLES are excluded before the spec is consulted so the ISA's
- * operational agents row never reads as a licence.
+ * A LICENSED role produces by type on every tier (the broker of record on a
+ * brokerage tenant gets no agents row from the provisioning spec, and is a
+ * producer regardless — the spec answers "who needs an agents ROW", not "who
+ * is billed"). For everyone else the provisioning spec already answers "does
+ * this (role, tier) get an agents row" — that IS production for the
+ * seat-by-production admin (the solo/team owner is an admin wearing an agents
+ * row; a brokerage-tier admin is not). FREE_STAFF_ROLES are excluded before
+ * the spec is consulted so the ISA's operational agents row never reads as a
+ * licence.
  */
 export function roleProducesOnTier(role: UserDomainRole | string, tier: string | null | undefined): boolean {
   if ((FREE_STAFF_ROLES as readonly string[]).includes(role)) return false
+  if ((LICENSED_SEAT_ROLES as readonly string[]).includes(role)) return true
   return requiresAgentRow(role, tier ?? null)
+}
+
+/**
+ * PURE: the tenant's NON-PRODUCING exemptions out of brokerages.billing_metadata
+ * ({ ..., non_producing_user_ids: [<users.id>, …] }). The ids are users.id —
+ * NEVER agents.id (the two classes are disjoint, CLAUDE.md §3; the meter joins
+ * the agents table through agents.user_id and looks this list up by the users
+ * row, so one person can never be counted twice or exempted by the wrong id).
+ * Anything that is not an array of non-empty strings reads as NO exemptions —
+ * a malformed blob must fail toward BILLING the licensed producer, never toward
+ * a free seat. Written only by lib/kernel/seat-usage.ts setLicensedProducerExemption
+ * (the tenant's commerce admin from the seat door, or an invite that seats a
+ * broker as staff with `produces: false`).
+ */
+export function parseNonProducingUserIds(billingMetadata: unknown): ReadonlySet<string> {
+  if (!billingMetadata || typeof billingMetadata !== "object") return new Set()
+  const raw = (billingMetadata as Record<string, unknown>).non_producing_user_ids
+  if (!Array.isArray(raw)) return new Set()
+  return new Set(raw.filter((v): v is string => typeof v === "string" && v.trim() !== ""))
 }
 
 /**

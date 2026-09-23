@@ -34,7 +34,7 @@ import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { stripComments } from "./strip-comments"
 import {
-  WORKSPACE_STAFF_ROLES, PRODUCER_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES,
+  WORKSPACE_STAFF_ROLES, PRODUCER_SEAT_ROLES, LICENSED_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES,
   PARTNER_ROLES, TIER_SEAT_LIMITS, TIER_ORDER, TIER_INVITABLE_ROLES,
   seatLimitForTier, roleConsumesSeat, effectiveSeatLimit, seatableUserTypes,
   seatDecision, seatDecisionMessage, agentRoleAdvisory,
@@ -140,9 +140,10 @@ console.log("\n[every seat role is a real user_type]")
 
   // The inverse: an admitted WORKING role missing from the roster is a tenant
   // getting a person the meter cannot see. broker_owner was missing once.
-  check("broker_owner is on the working roster (admitted) — and a SEAT only while producing (wave 78A)",
+  check("broker_owner is on the working roster (admitted) — and a SEAT by type unless the tenant exempts them (wave 80A; a LICENSED role, not a by-production one)",
     (WORKSPACE_STAFF_ROLES as readonly string[]).includes("broker_owner") && admitted.includes("broker_owner")
-    && (SEAT_BY_PRODUCTION_ROLES as readonly string[]).includes("broker_owner"))
+    && (LICENSED_SEAT_ROLES as readonly string[]).includes("broker_owner") && !(SEAT_BY_PRODUCTION_ROLES as readonly string[]).includes("broker_owner")
+    && roleConsumesSeat("broker_owner") && !roleConsumesSeat("broker_owner", { produces: false }))
   check("broker_admin IS a working user type (owner ruling + CLAUDE.md §4 roster) — and FREE staff",
     (WORKSPACE_STAFF_ROLES as readonly string[]).includes("broker_admin") && (FREE_STAFF_ROLES as readonly string[]).includes("broker_admin"))
 

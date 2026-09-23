@@ -20,18 +20,39 @@
 // (primary or assigned) is seat-consuming. Distinct users, never role rows —
 // giving a user a second role must never charge them twice.
 //
-// AND A SEAT IS A PRODUCER (wave 78A, owner: "staff should not take up seats").
-// The third read below is the `agents` table: a broker, broker_owner or admin
-// counts only while they hold an ACTIVE agents record (they produce — the
-// solo/team owner is exactly this), an agent or team_lead counts by type, and
+// AND A SEAT IS A PRODUCER (wave 78A, owner: "staff should not take up seats";
+// wave 80A, owner: "brokers and broker owners can be a producing seat."). The
+// third read below is the `agents` table and the fourth is the tenant's
+// billing_metadata: an agent or team_lead counts by type; a broker or
+// broker_owner counts by type UNLESS the tenant listed them in
+// billing_metadata.non_producing_user_ids (the explicit exemption — never
+// inferred from a missing agents row); an admin counts only while they hold an
+// ACTIVE agents record (they produce — the solo/team owner is exactly this);
 // free staff (broker_admin, tc, isa, compliance_officer) never count even when
 // the desk seeded them an agents row. The predicate is lib/kernel/
-// tier-role-matrix.ts roleConsumesSeat — this file supplies the FACT it needs.
+// tier-role-matrix.ts roleConsumesSeat — this file supplies the FACTS it needs.
+//
+// THE PRODUCERS QUERY, IN SQL, for the next band migration's postcondition
+// (m660's ran under the wave-78A rule and is applied — history, not a source).
+// Derive from THIS and the rosters, never retype:
+//
+//   SELECT count(DISTINCT u.id)
+//     FROM public.users u
+//     LEFT JOIN public.agents a ON a.user_id = u.id AND a.brokerage_id = b.id
+//                              AND a.is_active IS DISTINCT FROM false
+//    WHERE u.brokerage_id = b.id AND u.status IS DISTINCT FROM 'suspended'
+//      AND (   u.user_type IN ('agent', 'team_lead')                       -- PRODUCER_SEAT_ROLES
+//           OR (u.user_type IN ('broker', 'broker_owner')                  -- LICENSED_SEAT_ROLES
+//               AND NOT COALESCE(b.billing_metadata->'non_producing_user_ids', '[]'::jsonb) ? u.id::text)
+//           OR (u.user_type = 'admin' AND a.id IS NOT NULL))              -- SEAT_BY_PRODUCTION_ROLES
+//
+// (user_role_assignments grants are folded in by the TypeScript meter; a SQL
+// postcondition that must see them joins that table by the same rule.)
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
-  isCanonicalTier, roleConsumesSeat, roleProducesOnTier, WORKSPACE_STAFF_ROLES,
-  seatDecision, seatDecisionMessage, parseSeatOverride,
+  isCanonicalTier, roleConsumesSeat, roleProducesOnTier, WORKSPACE_STAFF_ROLES, LICENSED_SEAT_ROLES,
+  seatDecision, seatDecisionMessage, parseSeatOverride, parseNonProducingUserIds,
   normalizeCatalogSeatLimit,
   type CatalogSeatLimits, type SeatDecision, type TenantSeatTerms,
 } from "./tier-role-matrix"
@@ -56,9 +77,14 @@ export interface SeatUsage {
   /** Everyone in the workspace, seat-holding or not (partners, contacts, system). */
   peopleCount: number
   /** Non-suspended working staff who hold NO seat (admin, tc, isa, compliance,
-   *  broker_admin, a non-producing broker) — shown beside the seat count so a
-   *  tenant sees that staff are free rather than uncounted. */
+   *  broker_admin, a broker the tenant EXEMPTED as non-producing) — shown
+   *  beside the seat count so a tenant sees that staff are free rather than
+   *  uncounted. */
   freeStaffCount: number
+  /** users.id of every non-suspended LICENSED user (broker / broker_owner) the
+   *  tenant has exempted as non-producing — the ids the meter did NOT bill.
+   *  A surface that lets the tenant flip the exemption reads this. */
+  nonProducingIds: string[]
   /**
    * Every DISTINCT role in use by a non-suspended seat holder, from BOTH sources.
    *
@@ -76,30 +102,41 @@ export interface SeatUsage {
  * rather than a misleading number, and the caller renders an honest empty state.
  */
 export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<SeatUsage> {
-  const [usersRes, rolesRes, agentsRes] = await Promise.all([
+  const [usersRes, rolesRes, agentsRes, tenantRes] = await Promise.all([
     svc.from("users").select("id, user_type, status").eq("brokerage_id", brokerageId),
     svc.from("user_role_assignments").select("user_id, role").eq("brokerage_id", brokerageId),
-    // The PRODUCTION fact — an active agents record is what makes a broker,
-    // broker_owner or admin a seat. agents.user_id → users.id (the two id
-    // classes are disjoint, CLAUDE.md §3; this is the documented crossing).
+    // The PRODUCTION fact — an active agents record is what makes an admin a
+    // seat. agents.user_id → users.id (the two id classes are disjoint,
+    // CLAUDE.md §3; this is the documented crossing).
     svc.from("agents").select("user_id, is_active").eq("brokerage_id", brokerageId),
+    // The EXEMPTION fact — the tenant's non_producing_user_ids (wave 80A): a
+    // licensed broker / broker_owner is a seat by type unless listed here.
+    svc.from("brokerages").select("billing_metadata").eq("id", brokerageId).maybeSingle(),
   ])
 
-  // ALL THREE reads must have succeeded for the number to mean anything: the
+  // ALL FOUR reads must have succeeded for the number to mean anything: the
   // seat count is a UNION over users.user_type and user_role_assignments,
-  // qualified by the agents table, so a refusal on any part silently
-  // under-counts, which on a gate is an admit.
-  const ok = !usersRes.error && !rolesRes.error && !agentsRes.error
+  // qualified by the agents table and the exemption list, so a refusal on any
+  // part silently mis-counts, which on a gate is an admit (or, for a refused
+  // exemption read, a bill for a seat the tenant said was free).
+  const ok = !usersRes.error && !rolesRes.error && !agentsRes.error && !tenantRes.error
 
   const users = (usersRes.data ?? []) as Array<{ id: string; user_type: string | null; status: string | null }>
   const assignments = (rolesRes.data ?? []) as Array<{ user_id: string | null; role: string | null }>
   const agentRows = (agentsRes.data ?? []) as Array<{ user_id: string | null; is_active: boolean | null }>
+  const exempt = parseNonProducingUserIds((tenantRes.data as { billing_metadata?: unknown } | null)?.billing_metadata)
 
   // user_id → who produces (an agents row that is not switched off). A row
   // with is_active NULL is treated as active — the column defaults true and a
   // NULL is an unbackfilled row, not a deactivated agent.
   const producing = new Set<string>()
   for (const a of agentRows) if (a.user_id && a.is_active !== false) producing.add(a.user_id)
+  // The three-valued FACT roleConsumesSeat reads: false = the tenant's
+  // exemption (a licensed role is then free; an admin never produced anyway),
+  // true = an agents record, undefined = nobody said (a licensed role is
+  // billed by type, an admin is staff).
+  const producesFact = (userId: string): boolean | undefined =>
+    exempt.has(userId) ? false : producing.has(userId) ? true : undefined
 
   // user_id → every role they hold by ASSIGNMENT
   const assignedRoles = new Map<string, string[]>()
@@ -112,12 +149,17 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
 
   const working = users.filter((u) => u.status !== "suspended")
   const holders = working.filter((u) =>
-    rolesOf(u).some((r) => roleConsumesSeat(r, { produces: producing.has(u.id) })),
+    rolesOf(u).some((r) => roleConsumesSeat(r, { produces: producesFact(u.id) })),
   )
   const holderIds = new Set(holders.map((u) => u.id))
   // Free staff: working people who hold a WORKSPACE role but no seat.
   const staffRoles = new Set<string>(WORKSPACE_STAFF_ROLES as readonly string[])
   const freeStaff = working.filter((u) => !holderIds.has(u.id) && rolesOf(u).some((r) => staffRoles.has(r)))
+  // The exemptions that are actually in force: a listed id that is not a
+  // working licensed user (left the tenant, changed type, was suspended) is
+  // stale and is not reported — the list is read for who it frees, not kept.
+  const licensed = new Set<string>(LICENSED_SEAT_ROLES as readonly string[])
+  const nonProducingIds = working.filter((u) => exempt.has(u.id) && rolesOf(u).some((r) => licensed.has(r))).map((u) => u.id)
 
   // Roles actually in use across both sources, restricted to seat holders — a
   // suspended user's role is not "in use", and a partner's never was. A holder
@@ -136,8 +178,64 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
     seatHolderIds: holders.map((u) => u.id),
     peopleCount: users.length,
     freeStaffCount: freeStaff.length,
+    nonProducingIds,
     rolesInUse: [...rolesInUse].sort(),
   }
+}
+
+// ─── THE EXEMPTION'S WRITER (wave 80A) ───────────────────────────────────────
+//
+// A read with no writer is an orphan (CLAUDE.md §1), so the flag the meter
+// reads is written HERE and nowhere else: the tenant's commerce admin flips it
+// from the seat door (app/actions/billing.ts setLicensedProducerAction) and an
+// invite that seats a broker as staff (`produces: false`) records it the moment
+// the user exists, so the gate's admit and the meter's count cannot disagree
+// the next morning. Read-modify-write on brokerages.billing_metadata beside
+// seat_override / setup_fee_waiver / subscriber_stall (the same carry-bag,
+// the same spread-and-patch shape lib/kernel/tenant-creation.ts uses), and the
+// UPDATE is COUNTED — an unmatched tenant id resolves with no error and an
+// empty set (§3), which here means the exemption was NOT recorded.
+
+export type LicensedProducerExemptionResult =
+  | { ok: true; nonProducing: boolean; nonProducingIds: string[] }
+  | { ok: false; reason: "not_licensed" | "user_not_in_tenant" | "tenant_unreadable" | "write_refused"; error: string }
+
+/**
+ * Mark (or unmark) ONE licensed user of `brokerageId` as non-producing.
+ * `brokerageId` is the caller's SESSION tenant (§4) — the user must belong to
+ * it, hold a LICENSED role (broker / broker_owner; an admin's seat is the
+ * agents record, an agent's is their type — neither is exemptible), and the
+ * result reports what the list now holds.
+ */
+export async function setLicensedProducerExemption(
+  svc: Svc,
+  brokerageId: string,
+  userId: string,
+  nonProducing: boolean,
+): Promise<LicensedProducerExemptionResult> {
+  const { data: user, error: userErr } = await svc
+    .from("users").select("id, user_type, brokerage_id").eq("id", userId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (userErr) return { ok: false, reason: "tenant_unreadable", error: `The user could not be read (${userErr.message}); the exemption was not changed.` }
+  if (!user) return { ok: false, reason: "user_not_in_tenant", error: "That person is not on this workspace; the exemption was not changed." }
+  const role = String((user as { user_type?: string | null }).user_type ?? "")
+  if (!(LICENSED_SEAT_ROLES as readonly string[]).includes(role)) {
+    return { ok: false, reason: "not_licensed", error: `Only a broker or broker owner can be marked non-producing (this person is '${role || "untyped"}'). Agents and team leads are always a seat; an admin is a seat while they hold an agents record.` }
+  }
+  const { data: tenant, error: tenantErr } = await svc.from("brokerages").select("billing_metadata").eq("id", brokerageId).maybeSingle()
+  if (tenantErr || !tenant) return { ok: false, reason: "tenant_unreadable", error: `This workspace's billing record could not be read${tenantErr ? ` (${tenantErr.message})` : ""}; the exemption was not changed.` }
+  const bm = (tenant as { billing_metadata?: unknown }).billing_metadata
+  const current = parseNonProducingUserIds(bm)
+  const next = new Set(current)
+  if (nonProducing) next.add(userId); else next.delete(userId)
+  const nonProducingIds = [...next].sort()
+  const { data: written, error: writeErr } = await svc
+    .from("brokerages")
+    .update({ billing_metadata: { ...(bm && typeof bm === "object" ? (bm as Record<string, unknown>) : {}), non_producing_user_ids: nonProducingIds }, updated_at: new Date().toISOString() })
+    .eq("id", brokerageId)
+    .select("id")
+  if (writeErr) return { ok: false, reason: "write_refused", error: `The exemption could not be saved (${writeErr.message}).` }
+  if ((written ?? []).length !== 1) return { ok: false, reason: "write_refused", error: "The exemption was not saved: the workspace row did not match (0 rows updated)." }
+  return { ok: true, nonProducing, nonProducingIds }
 }
 
 // ─── THE PLAN CATALOGUE IS WHERE THE SEAT NUMBER LIVES ───────────────────────
@@ -311,9 +409,12 @@ export async function seatGate(
   opts?: {
     seatsRequested?: number
     subjectUserId?: string | null
-    /** Will this person PRODUCE (hold an agents record)? Only consulted for a
-     *  seat-by-production role (broker / broker_owner / admin). Omitted → the
-     *  provisioning spec answers for the tenant's tier (roleProducesOnTier). */
+    /** Will this person PRODUCE? For a LICENSED role (broker / broker_owner)
+     *  only `false` matters — it is the tenant's exemption, and the caller
+     *  that admits on it must also RECORD it (setLicensedProducerExemption) or
+     *  the meter bills the seat tomorrow. For the seat-by-production admin it
+     *  is "will they hold an agents record". Omitted → roleProducesOnTier
+     *  answers (licensed: yes; admin: the provisioning spec for the tier). */
     produces?: boolean
   },
 ): Promise<SeatGateVerdict> {
@@ -344,7 +445,8 @@ export async function seatGate(
 
   const tier = (tenant as { plan_tier?: string | null }).plan_tier ?? null
 
-  // A seat-by-production role is a seat only if this person will produce. The
+  // A seat-by-production admin is a seat only if this person will produce, and
+  // a licensed broker is a seat unless the caller states the exemption. The
   // tier had to be read first (the solo/team owner produces, a brokerage-tier
   // admin does not), which is why this check sits after the tenant read.
   const produces = opts?.produces ?? roleProducesOnTier(role, tier)

@@ -21,10 +21,11 @@
  *       (control: a fixture restating the bands is caught); m655 pins the
  *       live catalogue to the same numbers, derived — not retyped — here.
  *   2 · STAFF ARE FREE  — resolveSeatUsage counts producers only; adding a
- *       TC / ISA / compliance / broker_admin / non-producing broker never
+ *       TC / ISA / compliance / broker_admin / EXEMPTED broker never
  *       moves the count (control: the retired every-staff-is-a-seat rule
- *       WOULD move it); the 6th team producer is refused; a brokerage is
- *       never refused (control: a capped catalogue refuses).
+ *       WOULD move it); a broker is a producer by type (wave 80A) unless the
+ *       tenant exempts them; the 11th team producer is refused; a brokerage
+ *       past its band is refused (control: a capped catalogue refuses).
  *   3 · SETUP FEE       — present on a paid activation checkout, absent on a
  *       trial and when WAIVED; the waiver is audited by the core and refused
  *       without a staff caller / to a self-converting prospect.
@@ -76,7 +77,7 @@ const MIGRATION = "supabase/migrations/m660-seat-bands-2-10-30-custom-and-seat-p
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[1 · ONE DERIVATION — the bands, the identity, the fit, no second table, the migration]")
 const { TIER_SEAT_BANDS, tierForSeatCount, CANONICAL_TIERS } = await import("../lib/billing/plan-catalog")
-const { TIER_SEAT_LIMITS, TIER_ORDER, seatDecision, roleConsumesSeat, roleProducesOnTier, PRODUCER_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES, WORKSPACE_STAFF_ROLES, PARTNER_ROLES } = await import("../lib/kernel/tier-role-matrix")
+const { TIER_SEAT_LIMITS, TIER_ORDER, seatDecision, roleConsumesSeat, roleProducesOnTier, PRODUCER_SEAT_ROLES, LICENSED_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES, WORKSPACE_STAFF_ROLES, PARTNER_ROLES } = await import("../lib/kernel/tier-role-matrix")
 const { tierForProspect } = await import("../lib/platform/prospect-conversion")
 
 check("the bands are the owner's (wave 79A): solo_agent 2 · team 10 · brokerage 30 · multi_location custom (null)",
@@ -151,17 +152,18 @@ check("prospect-conversion no longer carries its own band table (the 1/15/75 tab
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[2 · STAFF ARE FREE — producers count, staff never do; the producer past the team band is refused; a brokerage past its band too; multi_location never]")
-check("the three rosters partition the working roster: producers by type (agent, team_lead), by production (broker, broker_owner, admin), free staff (broker_admin, tc, isa, compliance_officer)",
-  [...PRODUCER_SEAT_ROLES].sort().join() === "agent,team_lead" && [...SEAT_BY_PRODUCTION_ROLES].sort().join() === "admin,broker,broker_owner"
+check("the four rosters partition the working roster: producers by type (agent, team_lead), licensed (broker, broker_owner — wave 80A), by production (admin), free staff (broker_admin, tc, isa, compliance_officer)",
+  [...PRODUCER_SEAT_ROLES].sort().join() === "agent,team_lead" && [...LICENSED_SEAT_ROLES].sort().join() === "broker,broker_owner" && [...SEAT_BY_PRODUCTION_ROLES].sort().join() === "admin"
   && [...FREE_STAFF_ROLES].sort().join() === "broker_admin,compliance_officer,isa,tc"
-  && new Set(WORKSPACE_STAFF_ROLES).size === PRODUCER_SEAT_ROLES.length + SEAT_BY_PRODUCTION_ROLES.length + FREE_STAFF_ROLES.length
+  && new Set(WORKSPACE_STAFF_ROLES).size === PRODUCER_SEAT_ROLES.length + LICENSED_SEAT_ROLES.length + SEAT_BY_PRODUCTION_ROLES.length + FREE_STAFF_ROLES.length
   && !PARTNER_ROLES.some((p) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(p)))
-check("roleConsumesSeat: producer types always; by-production only with the fact; staff/partners/contacts never — even 'producing'",
+check("roleConsumesSeat: producer types always; licensed unless EXEMPTED (produces:false); by-production only with the fact; staff/partners/contacts never — even 'producing'",
   roleConsumesSeat("agent") && roleConsumesSeat("team_lead") && roleConsumesSeat("agent", { produces: false })
-  && !roleConsumesSeat("broker") && roleConsumesSeat("broker", { produces: true }) && !roleConsumesSeat("admin") && roleConsumesSeat("admin", { produces: true })
+  && roleConsumesSeat("broker") && roleConsumesSeat("broker", { produces: true }) && !roleConsumesSeat("broker", { produces: false }) && roleConsumesSeat("broker_owner") && !roleConsumesSeat("broker_owner", { produces: false })
+  && !roleConsumesSeat("admin") && roleConsumesSeat("admin", { produces: true })
   && ["tc", "isa", "compliance_officer", "broker_admin", "vendor", "contact", "system", "superadmin", "support", "lender"].every((r) => !roleConsumesSeat(r, { produces: true })))
-check("roleProducesOnTier: the solo/team OWNER (admin) produces; a brokerage-tier admin does not; the ISA's operational agents row is never a licence",
-  roleProducesOnTier("admin", "solo_agent") && roleProducesOnTier("admin", "team") && !roleProducesOnTier("admin", "brokerage") && !roleProducesOnTier("broker", "brokerage") && !roleProducesOnTier("isa", "solo_agent") && roleProducesOnTier("agent", "brokerage"))
+check("roleProducesOnTier: the solo/team OWNER (admin) produces; a brokerage-tier admin does not; a broker produces on EVERY tier (licensed by type); the ISA's operational agents row is never a licence",
+  roleProducesOnTier("admin", "solo_agent") && roleProducesOnTier("admin", "team") && !roleProducesOnTier("admin", "brokerage") && roleProducesOnTier("broker", "brokerage") && roleProducesOnTier("broker_owner", "team") && !roleProducesOnTier("isa", "solo_agent") && roleProducesOnTier("agent", "brokerage"))
 
 // The count, against an injected client. Only the shapes resolveSeatUsage and
 // seatGate use: .from(t).select().eq()… thenable, and .maybeSingle().
@@ -188,24 +190,31 @@ const workspace = [
   { id: "isa", user_type: "isa" },              // has an agents row (desk), still free
   { id: "co", user_type: "compliance_officer" },
   { id: "ba", user_type: "broker_admin" },
-  { id: "brk", user_type: "broker" },           // no agents row: runs the shop, does not sell
+  { id: "brk", user_type: "broker" },           // no agents row — still a SEAT (licensed by type, wave 80A)
   { id: "own2", user_type: "broker_owner" },    // agents row: sells → a seat
+  { id: "bor", user_type: "broker" },           // the broker of record the tenant EXEMPTED (billing_metadata below) → free
   { id: "c", user_type: "contact" }, { id: "v", user_type: "vendor" }, { id: "sys", user_type: "system" },
   { id: "susp", user_type: "agent", status: "suspended" },
 ]
 const usersFx = (rows: Array<{ id: string; user_type: string; status?: string }>): Fixture => ({ data: rows.map((r) => ({ status: "active", ...r })), error: null })
 const agentsFx: Fixture = { data: [{ user_id: "owner", is_active: true }, { user_id: "a1", is_active: true }, { user_id: "isa", is_active: true }, { user_id: "own2", is_active: null }, { user_id: "susp", is_active: true }], error: null }
+// The tenant's exemption list (wave 80A) — the ONLY thing that frees a licensed broker.
+const tenantFx: Fixture = { data: [{ billing_metadata: { non_producing_user_ids: ["bor"] } }], error: null }
 {
-  const usage = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: agentsFx, user_role_assignments: { data: [], error: null } }), "b1")
-  check("12 people → 3 seats (owner-admin producing, the agent, the producing broker_owner); tc/isa/compliance/broker_admin/non-producing broker are FREE staff (5); partners, contacts, system, suspended never count",
-    usage.ok && usage.seatCount === 3 && [...usage.seatHolderIds].sort().join() === "a1,own2,owner" && usage.freeStaffCount === 5 && usage.peopleCount === 12, JSON.stringify(usage))
-  const plusTc = await resolveSeatUsage(fakeSvc({ users: usersFx([...workspace, { id: "tc2", user_type: "tc" }, { id: "isa2", user_type: "isa" }]), agents: { data: [...(agentsFx.data as unknown[]), { user_id: "isa2", is_active: true }], error: null }, user_role_assignments: { data: [], error: null } }), "b1")
+  const usage = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: agentsFx, brokerages: tenantFx, user_role_assignments: { data: [], error: null } }), "b1")
+  check("13 people → 4 seats (owner-admin producing, the agent, the broker with no agents row, the producing broker_owner); tc/isa/compliance/broker_admin/EXEMPTED broker are FREE staff (5); partners, contacts, system, suspended never count",
+    usage.ok && usage.seatCount === 4 && [...usage.seatHolderIds].sort().join() === "a1,brk,own2,owner" && usage.freeStaffCount === 5 && usage.peopleCount === 13 && usage.nonProducingIds.join() === "bor", JSON.stringify(usage))
+  const noExemption = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: agentsFx, user_role_assignments: { data: [], error: null } }), "b1")
+  control("without the exemption the same broker of record IS a seat (5) — the list, not the agents table, is what frees a licensed producer", noExemption.seatCount === 5 && noExemption.seatHolderIds.includes("bor") && noExemption.nonProducingIds.length === 0)
+  const plusTc = await resolveSeatUsage(fakeSvc({ users: usersFx([...workspace, { id: "tc2", user_type: "tc" }, { id: "isa2", user_type: "isa" }]), agents: { data: [...(agentsFx.data as unknown[]), { user_id: "isa2", is_active: true }], error: null }, brokerages: tenantFx, user_role_assignments: { data: [], error: null } }), "b1")
   check("POSITIVE CONTROL (the ruling): adding a TC and an ISA does NOT move the seat count", plusTc.seatCount === usage.seatCount && plusTc.freeStaffCount === usage.freeStaffCount + 2)
-  const plusAgent = await resolveSeatUsage(fakeSvc({ users: usersFx([...workspace, { id: "a2", user_type: "agent" }]), agents: agentsFx, user_role_assignments: { data: [], error: null } }), "b1")
+  const plusAgent = await resolveSeatUsage(fakeSvc({ users: usersFx([...workspace, { id: "a2", user_type: "agent" }]), agents: agentsFx, brokerages: tenantFx, user_role_assignments: { data: [], error: null } }), "b1")
   check("…while adding an AGENT does (the counter is not stuck)", plusAgent.seatCount === usage.seatCount + 1)
-  // The retired rule — every working type is a seat — would have said 8 here.
+  // The retired rule — every working type is a seat — would have said 9 here.
   const retiredRule = workspace.filter((u) => (u as { status?: string }).status !== "suspended" && (WORKSPACE_STAFF_ROLES as readonly string[]).includes(u.user_type)).length
-  control("the retired every-staff-is-a-seat rule counts 8 of the same roster — the defect this pins", retiredRule === 8 && retiredRule !== usage.seatCount)
+  control("the retired every-staff-is-a-seat rule counts 9 of the same roster — the defect this pins", retiredRule === 9 && retiredRule !== usage.seatCount)
+  const exemptRefused = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: agentsFx, brokerages: { data: null, error: { message: "brokerages refused" } }, user_role_assignments: { data: [], error: null } }), "b1")
+  check("a refused exemption read makes the count ok:false (a swallowed refusal would bill the broker the tenant exempted)", exemptRefused.ok === false)
   const granted = await resolveSeatUsage(fakeSvc({ users: usersFx([{ id: "c1", user_type: "contact" }, { id: "ad", user_type: "admin" }]), agents: { data: [], error: null }, user_role_assignments: { data: [{ user_id: "c1", role: "agent" }, { user_id: "ad", role: "tc" }], error: null } }), "b1")
   check("a contact GRANTED the agent role holds a seat (assignments count); an admin granted tc holds none", granted.seatCount === 1 && granted.seatHolderIds[0] === "c1")
   const refused = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: { data: null, error: { message: "agents refused" } }, user_role_assignments: { data: [], error: null } }), "b1")
@@ -227,6 +236,10 @@ const agentsFx: Fixture = { data: [{ user_id: "owner", is_active: true }, { user
   check("an ADMIN on a team tenant produces (the owner shape) and so is a 6th producer — refused too", !adminOwnerOnTeam.allowed && adminOwnerOnTeam.reason === "over_limit")
   const adminStaffOnTeam = await seatGate(teamFull(), "b1", "admin", { produces: false })
   check("…but an admin the caller states will NOT produce is free on the same full team", adminStaffOnTeam.allowed && adminStaffOnTeam.reason === "not_a_seat")
+  const brokerOnTeam = await seatGate(teamFull(), "b1", "broker")
+  check("a BROKER on the full team is a producer by type (wave 80A) — refused as the 11th, no agents row consulted", !brokerOnTeam.allowed && brokerOnTeam.reason === "over_limit")
+  const exemptBrokerOnTeam = await seatGate(teamFull(), "b1", "broker_owner", { produces: false })
+  check("…and the broker of record the tenant states does NOT produce is free on the same full team (the invite then RECORDS the exemption)", exemptBrokerOnTeam.allowed && exemptBrokerOnTeam.reason === "not_a_seat")
   control(`the ${TEAM_BAND}th producer on a team of ${TEAM_BAND - 1} is admitted (the refusal is the band, not a stuck gate)`, (await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "team", billing_metadata: {} }], error: null }, users: usersFx(Array.from({ length: TEAM_BAND - 1 }, (_, i) => ({ id: `p${i}`, user_type: "agent" }))), agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG }), "b1", "agent")).allowed)
   const solo = usersFx([{ id: "owner", user_type: "admin" }, { id: "a1", user_type: "agent" }])
   const soloSvc = fakeSvc({ brokerages: { data: [{ plan_tier: "solo_agent", billing_metadata: {} }], error: null }, users: solo, agents: { data: [{ user_id: "owner", is_active: true }], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: LIVE_CATALOG })
@@ -242,7 +255,7 @@ const agentsFx: Fixture = { data: [{ user_id: "owner", is_active: true }, { user
   control("a catalogue that capped brokerage BELOW the band WOULD refuse an add one under it", !(await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "brokerage", billing_metadata: {} }], error: null }, users: many, agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: { data: [{ tier_name: "brokerage", max_agents: BRK_BAND - 5 }], error: null } }), "b1", "agent")).allowed)
   check("multi_location (custom, nothing negotiated) is never refused", seatDecision("multi_location", 5000).withinLimit)
   check("the catalogue reader and the gate rely on the SAME predicate (roleConsumesSeat) — the meter and the refusal cannot disagree about who is billed",
-    /roleConsumesSeat\(r, \{ produces: producing\.has\(u\.id\) \}\)/.test(code(USAGE)) && /roleConsumesSeat\(role, \{ produces \}\)/.test(code(USAGE)) && /from\("agents"\)/.test(code(USAGE)))
+    /roleConsumesSeat\(r, \{ produces: producesFact\(u\.id\) \}\)/.test(code(USAGE)) && /roleConsumesSeat\(role, \{ produces \}\)/.test(code(USAGE)) && /from\("agents"\)/.test(code(USAGE)) && /parseNonProducingUserIds\(/.test(code(USAGE)))
   check("the retired SEAT_ROLES identifier is gone from runtime code (tombstone kept in prose)", !/\bSEAT_ROLES\b/.test(code(MATRIX)) && !/\bSEAT_ROLES\b/.test(code(USAGE)) && /TOMBSTONE — `SEAT_ROLES`/.test(raw(MATRIX)))
 }
 

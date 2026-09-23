@@ -7,6 +7,7 @@ import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
 import { deriveSubscriptionSeatState, itemFactsOf, normalizeStripeSubscription, type TierSeatLink } from "@/lib/billing/seat-packages"
+import { TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
 import Stripe from "stripe"
 
 /** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants,
@@ -40,6 +41,10 @@ async function normalizeSub(svc: ReturnType<typeof createServiceClient>, s: Stri
 // Handles: checkout.session.completed, invoice.paid, invoice.payment_failed,
 //          customer.subscription.created, customer.subscription.updated,
 //          customer.subscription.deleted, account.updated
+// — exactly TENANT_BILLING_WEBHOOK_EVENTS (lib/billing/stripe-account-scope.ts),
+// the ONE vocabulary the Stripe-SDK registration and the launch checklist
+// read; scripts/stripe-webhook-events-guard.ts holds this switch equal to it
+// (wave 80A). Add a case → add it there → the registration action enables it.
 //
 // ── WHOSE STRIPE ACCOUNT SIGNS THIS ENDPOINT ────────────────────────────────
 //
@@ -345,7 +350,15 @@ export async function POST(request: NextRequest) {
       }
 
       default:
-        console.log(`[Billing Webhook] Unhandled event type: ${event.type}`)
+        // A delivery of an event the registration vocabulary NAMES but this
+        // switch does not handle is drift between the two — the guard holds
+        // them equal at build time; at run time it is logged as an error, not
+        // as the routine "unhandled" line Stripe's extra events get.
+        if (TENANT_BILLING_WEBHOOK_EVENTS.includes(event.type)) {
+          console.error(`[Billing Webhook] DRIFT — ${event.type} is in TENANT_BILLING_WEBHOOK_EVENTS but has no case here`)
+        } else {
+          console.log(`[Billing Webhook] Unhandled event type: ${event.type}`)
+        }
     }
 
     return NextResponse.json({ received: true })

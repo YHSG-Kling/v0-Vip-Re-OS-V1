@@ -19,6 +19,7 @@ import {
   buySeatPackagesAction,
   changePlanTierAction,
   getSeatDoorAction,
+  setLicensedProducerAction,
   type SeatDoor,
 } from "@/app/actions/billing"
 
@@ -27,7 +28,7 @@ export function SeatDoorCard() {
   const [pending, start] = useTransition()
   const { toast } = useToast()
 
-  const load = () => getSeatDoorAction().then(setDoor).catch((e) => setDoor({ ok: false, error: e instanceof Error ? e.message : "Could not read the seat door", tier: null, seatCount: null, decision: null, message: null, paths: [] }))
+  const load = () => getSeatDoorAction().then(setDoor).catch((e) => setDoor({ ok: false, error: e instanceof Error ? e.message : "Could not read the seat door", tier: null, seatCount: null, decision: null, message: null, paths: [], licensed: [] }))
   useEffect(() => { void load() }, [])
 
   function act(fn: () => Promise<{ ok: boolean; error?: string }>, done: string) {
@@ -49,10 +50,30 @@ export function SeatDoorCard() {
         <p className="text-xs text-muted-foreground">
           {door.seatCount ?? 0} producer{door.seatCount === 1 ? "" : "s"} seated on the {door.tier ?? "current"} plan
           {d ? ` · band ${d.bandLimit ?? "custom"}${d.extraSeats ? ` + ${d.extraSeats} purchased` : ""}${d.remaining !== null ? ` · ${d.remaining} remaining` : ""}` : ""}.
-          Staff and non-producing brokers never take a seat.
+          Agents, team leads, brokers and broker owners are producer seats; staff never take one.
+          A broker who runs the shop and does not sell can be marked non-producing below.
         </p>
         {door.message && <p className="text-xs mt-1">{door.message}</p>}
       </div>
+      {door.licensed.length > 0 && (
+        <div className="space-y-1">
+          <h3 className="text-xs font-medium">Licensed brokers</h3>
+          <ul className="space-y-1">
+            {door.licensed.map((p) => (
+              <li key={p.userId} className="flex items-center justify-between gap-2 text-xs">
+                <span>
+                  {p.label} <span className="text-muted-foreground">({p.role.replace("_", " ")})</span>
+                  {" — "}{p.producing ? "producing (seat)" : "non-producing (free)"}
+                </span>
+                <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={pending}
+                  onClick={() => act(() => setLicensedProducerAction(p.userId, !p.producing), p.producing ? `${p.label} marked non-producing` : `${p.label} marked producing`)}>
+                  {p.producing ? "Mark non-producing" : "Mark producing"}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {door.paths.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {door.paths.map((p, i) => {

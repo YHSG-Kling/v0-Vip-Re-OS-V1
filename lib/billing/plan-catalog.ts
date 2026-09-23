@@ -83,8 +83,11 @@ export type CanonicalTierName = (typeof CANONICAL_TIERS)[number]
 //
 // WHAT A SEAT IS (the second half of the ruling) lives beside the count that
 // enforces it: lib/kernel/tier-role-matrix.ts PRODUCER_SEAT_ROLES /
-// SEAT_BY_PRODUCTION_ROLES / FREE_STAFF_ROLES and roleConsumesSeat. Short
-// form: a seat is a LICENSED PRODUCER; staff never consume one.
+// LICENSED_SEAT_ROLES / SEAT_BY_PRODUCTION_ROLES / FREE_STAFF_ROLES and
+// roleConsumesSeat. Short form: a seat is a LICENSED PRODUCER — agent, team
+// lead, broker and broker owner (wave 80A, owner: "brokers and broker owners
+// can be a producing seat."; a broker the tenant marks non-producing is free),
+// the admin owner while they hold an agents record; staff never consume one.
 export const TIER_SEAT_BANDS: Readonly<Record<CanonicalTierName, number | null>> = Object.freeze({
   solo_agent:     2,
   team:           10,

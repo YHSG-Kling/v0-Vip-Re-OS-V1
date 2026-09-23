@@ -9,7 +9,8 @@ import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
 import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
 import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
-import { seatGate } from "@/lib/kernel/seat-usage"
+import { seatGate, setLicensedProducerExemption } from "@/lib/kernel/seat-usage"
+import { LICENSED_SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 // NOT isAdminOrBroker (lane ROSTER, 2026-09-04). The owner's ruling added
 // `compliance_officer` to TENANT_ADMIN_USER_TYPES, and this gate is the one
 // place in the admin surface that SPENDS: `seatGate` below decides whether the
@@ -30,9 +31,12 @@ export interface InviteUserParams {
   userType: string
   brokerageId?: string | null
   teamId?: string | null
-  /** Will this person PRODUCE (hold an agents record)? Only read for a
-   *  seat-by-production type (admin / broker / broker_owner); `false` seats
-   *  them as free staff on any tier (wave 79A). Omitted ⇒ the tier decides. */
+  /** Will this person PRODUCE? Read for an admin (will they hold an agents
+   *  record — the tier decides when omitted, wave 79A) and for a LICENSED
+   *  broker / broker_owner, who is a seat by type (wave 80A) unless this is
+   *  `false`: then they are seated as free staff AND the exemption is
+   *  RECORDED on the tenant (setLicensedProducerExemption) so the meter
+   *  agrees with the gate that admitted them. Never read for agent / team_lead. */
   produces?: boolean
 }
 
@@ -193,6 +197,17 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
     return { success: false, error: provisioned.error ?? "Failed to provision the invited user." }
   }
   const resolvedUserId = provisioned.userId
+
+  // ── 7b. A broker seated as STAFF is recorded as non-producing (wave 80A) ──
+  // The gate above admitted them free on `produces: false`; without this
+  // write the meter bills the seat by type tomorrow. A refused write is
+  // reported, not swallowed: the person exists, the exemption does not.
+  if (params.produces === false && (LICENSED_SEAT_ROLES as readonly string[]).includes(requestedRole)) {
+    const exemption = await setLicensedProducerExemption(service, resolvedBrokerageId, resolvedUserId, true)
+    if (!exemption.ok) {
+      return { success: false, error: `${params.email} was invited, but could not be recorded as non-producing — they will count as a producer seat until it is set from the billing page. ${exemption.error}` }
+    }
+  }
 
   // ── 8. Emit USER_INVITED event ────────────────────────────────────────────
   if (resolvedUserId) {

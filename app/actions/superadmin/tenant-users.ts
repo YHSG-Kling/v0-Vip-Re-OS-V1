@@ -18,10 +18,10 @@ import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
 // spelling that let the admin meter disagree with the invite gate. Neither
 // export is orphaned by this — `roleConsumesSeat` has 8 other references and
 // `SEAT_ROLES` has 37, both still in lib/kernel/tier-role-matrix.ts.
-import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, roleRefusalReason, seatableUserTypes, LICENSED_SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
-import { seatGate } from "@/lib/kernel/seat-usage"
+import { seatGate, setLicensedProducerExemption } from "@/lib/kernel/seat-usage"
 import { requirePlatformCapability, resolvePlatformRole } from "@/lib/platform/require-capability"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -229,12 +229,13 @@ export async function createTenantUserAction(params: {
    *  override is logged to superadmin_audit_log ("user.tier_matrix_override"). */
   superadminOverride?: boolean
   /** STAFF DOOR (wave 79A blind spot): will this person PRODUCE? A seat is a
-   *  producer; staff never consume one. For a seat-by-production type
-   *  (admin / broker / broker_owner) the gate otherwise infers production from
-   *  the tenant's tier — a solo/team `admin` reads as the producing owner — so
-   *  a NON-producing admin added to a full solo tenant was refused a seat it
-   *  does not use. Pass `false` to state they are staff; omitted keeps the
-   *  tier inference. Never consulted for agent / team_lead (always a seat). */
+   *  producer; staff never consume one. For the seat-by-production admin the
+   *  gate otherwise infers production from the tenant's tier — a solo/team
+   *  `admin` reads as the producing owner — so a NON-producing admin added to
+   *  a full solo tenant was refused a seat it does not use. A LICENSED broker
+   *  / broker_owner is a seat by type (wave 80A); `false` seats them as staff
+   *  AND records the exemption on the tenant. Omitted keeps the inference.
+   *  Never consulted for agent / team_lead (always a seat). */
   produces?: boolean
 }): Promise<{ ok: boolean; userId?: string; error?: string }> {
   const auth = await requireSuperadmin()
@@ -307,6 +308,16 @@ export async function createTenantUserAction(params: {
     redirectTo:   `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
   })
   if (!res.success || !res.userId) return { ok: false, error: res.error ?? "Failed to create user" }
+
+  // A broker seated as STAFF is recorded as non-producing (wave 80A) so the
+  // meter agrees with the gate that admitted them free. Reported, not swallowed.
+  if (params.produces === false && (LICENSED_SEAT_ROLES as readonly string[]).includes(params.userType)) {
+    const exemption = await setLicensedProducerExemption(svc, params.brokerageId, res.userId, true)
+    if (!exemption.ok) {
+      return { ok: false, userId: res.userId, error: `User created, but could not be recorded as non-producing — they count as a producer seat until it is set. ${exemption.error}` }
+    }
+    await audit(auth.userId, auth.email, "user.marked_non_producing", res.userId, { brokerage_id: params.brokerageId, role: params.userType, non_producing: true })
+  }
 
   // The override actually bypassed the matrix or the seat cap → ledger entry
   // (accountability for the one sanctioned bypass).

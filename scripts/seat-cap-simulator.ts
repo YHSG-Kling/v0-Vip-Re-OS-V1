@@ -31,7 +31,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import {
   seatDecision, seatDecisionMessage, seatCheck, effectiveSeatLimit, seatLimitForTier,
-  roleConsumesSeat, TIER_SEAT_LIMITS, WORKSPACE_STAFF_ROLES, PRODUCER_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES, PARTNER_ROLES, TIER_LABELS,
+  roleConsumesSeat, TIER_SEAT_LIMITS, WORKSPACE_STAFF_ROLES, PRODUCER_SEAT_ROLES, LICENSED_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES, PARTNER_ROLES, TIER_LABELS,
   tierAllowsRole,
   type CatalogSeatLimits,
 } from "../lib/kernel/tier-role-matrix"
@@ -117,18 +117,23 @@ async function main() {
   // OWNER, 2026-08-22, gave four rosters; OWNER, 2026-09-22 (wave 78A), ruled
   // "staff should not take up seats". The rosters stand — every user type may
   // still be SEATED on every tier — but what is BILLED is the producer: agent
-  // and team_lead by type; broker, broker_owner and admin only while they hold
-  // an agents record; broker_admin, tc, isa, compliance_officer never.
+  // and team_lead by type; broker and broker_owner by type unless the tenant
+  // exempts them (wave 80A, owner: "brokers and broker owners can be a
+  // producing seat."); admin only while they hold an agents record;
+  // broker_admin, tc, isa, compliance_officer never.
   //
   //   solo (2)      : owner(admin, produces) + agent      = 2 of 2, a tc is free, a 3rd producer refused
-  //   team (5)      : team_lead + agent + broker(produces) = 3 of 5, admin + tc + isa free
+  //   team (10)     : team_lead + agent + broker            = 3 of 10, admin + tc + isa free, an EXEMPTED broker free
   //   brokerage (∞) : broker_admin + team_lead + agent     = 2 seats, never refused
   //   multi         : the same shapes, unlimited
   {
     type Seated = { role: string; produces?: boolean }
-    /** Seats consumed by a roster — the rule under test. */
+    /** Seats consumed by a roster — the rule under test. `produces` is passed
+     *  THREE-VALUED (true / false / undefined): this helper used to collapse
+     *  "nobody said" onto false, which is exactly the wave-78A inference the
+     *  wave-80A ruling retires (a broker with no statement is a seat). */
     const seatsFor = (roster: readonly Seated[]) =>
-      roster.filter((r) => roleConsumesSeat(r.role, { produces: r.produces === true })).length
+      roster.filter((r) => roleConsumesSeat(r.role, { produces: r.produces })).length
     /** The RETIRED rule (every working user type is a seat) — the control in each example. */
     const retiredSeatsFor = (roster: readonly Seated[]) =>
       roster.filter((r) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(r.role)).length
@@ -145,12 +150,14 @@ async function main() {
     control("SOLO · the retired rule charged the TC a seat (3 of 2) — if staff ever count again the two rules agree and this goes red",
       retiredSeatsFor([...solo, { role: "tc" }]) === seatsFor([...solo, { role: "tc" }]))
 
-    // ── TEAM: team_lead + agent + broker(produces) = 3 of 5 ─────────────────
-    const team: Seated[] = [{ role: "team_lead" }, { role: "agent" }, { role: "broker", produces: true }]
-    check("TEAM · team_lead + agent + a SELLING broker → 3 seats", seatsFor(team) === 3)
+    // ── TEAM: team_lead + agent + broker = 3 of 10 ──────────────────────────
+    const team: Seated[] = [{ role: "team_lead" }, { role: "agent" }, { role: "broker" }]
+    check("TEAM · team_lead + agent + a broker → 3 seats (a broker is a producer BY TYPE, wave 80A — no agents row needed)", seatsFor(team) === 3)
     check("TEAM · a BROKER may be seated on team tier (the ruling that moved this)",
       tierAllowsRole("team", "broker"))
-    check("TEAM · a broker who runs the shop and does not sell is FREE", seatsFor([{ role: "broker" }]) === 0)
+    check("TEAM · a broker who runs the shop and does not sell is FREE only once the tenant EXEMPTS them (produces: false)", seatsFor([{ role: "broker", produces: false }]) === 0)
+    // (this file's control() takes the DEFECT condition and goes red when it is true)
+    control("TEAM · the superseded wave-78A inference (no agents row ⇒ free broker) would count a broker with NO statement as 0 — if that ever comes back this goes red", seatsFor([{ role: "broker" }]) === 0)
     check("TEAM · admin + tc + isa on top of them are FREE — still 3 of 5",
       seatsFor([...team, { role: "admin" }, { role: "tc" }, { role: "isa" }]) === 3)
     check(`TEAM · 3 of ${TEAM_BAND} is inside the plan, with ${TEAM_BAND - 3} to spare`,
@@ -178,8 +185,9 @@ async function main() {
       seatDecision("multi_location", 3, null, 1, { multi_location: 2 }).withinLimit)
 
     // ── THE RULE UNDERNEATH ALL FOUR ────────────────────────────────────────
-    check("EVERY producer costs exactly ONE seat — by type or by production",
-      PRODUCER_SEAT_ROLES.every((r) => seatsFor([{ role: r }]) === 1)
+    check("EVERY producer costs exactly ONE seat — by type, by licence unless exempted, or by production",
+      PRODUCER_SEAT_ROLES.every((r) => seatsFor([{ role: r }]) === 1 && seatsFor([{ role: r, produces: false }]) === 1)
+      && LICENSED_SEAT_ROLES.every((r) => seatsFor([{ role: r }]) === 1 && seatsFor([{ role: r, produces: true }]) === 1 && seatsFor([{ role: r, produces: false }]) === 0)
       && SEAT_BY_PRODUCTION_ROLES.every((r) => seatsFor([{ role: r, produces: true }]) === 1 && seatsFor([{ role: r }]) === 0))
     check("…and FREE STAFF cost none, even 'producing' (the ISA's desk agents row is not a licence)",
       FREE_STAFF_ROLES.every((r) => seatsFor([{ role: r, produces: true }]) === 0))
@@ -233,10 +241,10 @@ async function main() {
     && !seatDecision("solo_agent", 3, 3).paths.some((p) => p.kind === "upgrade"))
 
   console.log("\n[3 · WHAT IS A SEAT — producers only; staff, contacts, lenders, vendors are NOT]")
-  check("the working roster is the nine staff user types (the invite menu), partitioned into producer / by-production / free",
+  check("the working roster is the nine staff user types (the invite menu), partitioned into producer / licensed / by-production / free",
     ["admin", "broker", "broker_admin", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer"]
       .every((r) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(r))
-    && WORKSPACE_STAFF_ROLES.length === PRODUCER_SEAT_ROLES.length + SEAT_BY_PRODUCTION_ROLES.length + FREE_STAFF_ROLES.length)
+    && WORKSPACE_STAFF_ROLES.length === PRODUCER_SEAT_ROLES.length + LICENSED_SEAT_ROLES.length + SEAT_BY_PRODUCTION_ROLES.length + FREE_STAFF_ROLES.length)
   for (const nonSeat of ["contact", "lender", "vendor", "system", "tc", "isa", "compliance_officer", "broker_admin"]) {
     check(`'${nonSeat}' consumes NO seat`, roleConsumesSeat(nonSeat as any, { produces: true }) === false)
   }

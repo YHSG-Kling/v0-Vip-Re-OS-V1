@@ -544,8 +544,8 @@ export async function cancelSubscription(subscriptionId: string) {
 
 import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { createServiceClient } from "@/lib/supabase/service"
-import { seatGate, resolveSeatUsage, resolveCatalogSeatLimits, resolveTenantSeatTerms } from "@/lib/kernel/seat-usage"
-import { isCanonicalTier, TIER_ORDER, TIER_LABELS, effectiveSeatLimit, parseSeatOverride, type SeatDecision, type SeatPath } from "@/lib/kernel/tier-role-matrix"
+import { seatGate, resolveSeatUsage, resolveCatalogSeatLimits, resolveTenantSeatTerms, setLicensedProducerExemption } from "@/lib/kernel/seat-usage"
+import { isCanonicalTier, TIER_ORDER, TIER_LABELS, LICENSED_SEAT_ROLES, effectiveSeatLimit, parseSeatOverride, type SeatDecision, type SeatPath } from "@/lib/kernel/tier-role-matrix"
 import { seatPackageSellable } from "@/lib/billing/plan-catalog"
 import { stripeSwapPrice, stripeSetSeatPackages } from "@/lib/billing/stripe-subscription-ops"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
@@ -583,18 +583,69 @@ export interface SeatDoor {
   decision: SeatDecision | null
   message: string | null
   paths: SeatPath[]
+  /** The tenant's LICENSED users (broker / broker_owner) and whether each is
+   *  billed (wave 80A: a seat by type unless the tenant marks them
+   *  non-producing). Empty when the door could not run. */
+  licensed: LicensedSeatRow[]
+}
+
+export interface LicensedSeatRow {
+  userId: string
+  label: string
+  role: string
+  /** false = the tenant exempted them (billing_metadata.non_producing_user_ids). */
+  producing: boolean
 }
 
 /** What the tenant is offered when the next producer would cross the limit
  *  (asked for one seat). Inside the limit: paths is empty. */
 export async function getSeatDoorAction(): Promise<SeatDoor> {
   const auth = await requireTenantCommerceAdmin()
-  if (!auth.ok) return { ok: false, error: auth.error, tier: null, seatCount: null, decision: null, message: null, paths: [] }
+  if (!auth.ok) return { ok: false, error: auth.error, tier: null, seatCount: null, decision: null, message: null, paths: [], licensed: [] }
   const svc = createServiceClient()
   // "agent" is the plainest producer — the door asks what happens when one is added.
   const verdict = await seatGate(svc, auth.brokerageId, "agent", { seatsRequested: 1 })
-  if (!verdict.decision) return { ok: false, error: verdict.message ?? "Seat check could not run", tier: verdict.tier, seatCount: verdict.seatCount, decision: null, message: verdict.message, paths: [] }
-  return { ok: true, tier: verdict.tier, seatCount: verdict.seatCount, decision: verdict.decision, message: verdict.message, paths: verdict.decision.paths }
+  if (!verdict.decision) return { ok: false, error: verdict.message ?? "Seat check could not run", tier: verdict.tier, seatCount: verdict.seatCount, decision: null, message: verdict.message, paths: [], licensed: [] }
+  // The licensed roster, with the exemption the meter applied — read through
+  // the ONE count so this list and the seat number come from the same facts.
+  const usage = await resolveSeatUsage(svc, auth.brokerageId)
+  const exempt = new Set(usage.nonProducingIds)
+  const { data: people, error: peopleErr } = await svc
+    .from("users").select("id, first_name, last_name, email, user_type, status")
+    .eq("brokerage_id", auth.brokerageId).in("user_type", [...LICENSED_SEAT_ROLES])
+  if (peopleErr) console.warn("[seat-door] licensed roster read refused:", peopleErr.message)
+  const licensed: LicensedSeatRow[] = ((people ?? []) as Array<{ id: string; first_name?: string | null; last_name?: string | null; email?: string | null; user_type?: string | null; status?: string | null }>)
+    .filter((p) => p.status !== "suspended")
+    .map((p) => ({
+      userId: p.id,
+      label: [p.first_name, p.last_name].filter(Boolean).join(" ") || p.email || p.id.slice(0, 8),
+      role: p.user_type ?? "",
+      producing: !exempt.has(p.id),
+    }))
+  return { ok: true, tier: verdict.tier, seatCount: verdict.seatCount, decision: verdict.decision, message: verdict.message, paths: verdict.decision.paths, licensed }
+}
+
+/**
+ * MARK A LICENSED BROKER NON-PRODUCING (or producing again) — wave 80A, owner:
+ * "brokers and broker owners can be a producing seat." The default is the
+ * seat; this is the tenant's exemption for the broker of record who runs the
+ * shop and never sells. Tenant from the SESSION, commerce-admin gate (it
+ * moves the bill), the ONE writer (setLicensedProducerExemption), audited.
+ */
+export async function setLicensedProducerAction(userId: string, producing: boolean): Promise<
+  | { ok: true; producing: boolean; seatCount: number | null }
+  | { ok: false; error: string }
+> {
+  const auth = await requireTenantCommerceAdmin()
+  if (!auth.ok) return auth
+  const id = String(userId ?? "").trim()
+  if (!id) return { ok: false, error: "A user is required" }
+  const svc = createServiceClient()
+  const res = await setLicensedProducerExemption(svc, auth.brokerageId, id, !producing)
+  if (!res.ok) return { ok: false, error: res.error }
+  const usage = await resolveSeatUsage(svc, auth.brokerageId)
+  await auditSeatDoor(svc, auth, "seat.licensed_producer_set", auth.brokerageId, { user_id: id, producing, non_producing_user_ids: res.nonProducingIds, producers_after: usage.ok ? usage.seatCount : null })
+  return { ok: true, producing, seatCount: usage.ok ? usage.seatCount : null }
 }
 
 /**

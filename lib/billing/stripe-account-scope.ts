@@ -339,6 +339,73 @@ export const STRIPE_WEBHOOK_ROUTES: Record<StripeWebhookEndpoint, string> = {
 }
 
 /**
+ * THE EVENT VOCABULARY OF THE TENANT-BILLING ENDPOINT — one list, three
+ * readers (wave 80A, owner: "go ahead with the add event to stripe webhook
+ * endpoint but remember we use stripe sdk"):
+ *
+ *   · app/api/billing/webhook/route.ts handles exactly these in its switch
+ *     (scripts/stripe-webhook-events-guard.ts derives the switch's cases from
+ *     stripped source and asserts set EQUALITY — an event handled but not
+ *     listed is never delivered; one listed but not handled is a lie on the
+ *     registration).
+ *   · lib/billing/stripe-webhook-registration.ts unions them onto the
+ *     endpoint's `enabled_events` through the Stripe SDK
+ *     (stripe.webhookEndpoints.update — never raw HTTP).
+ *   · lib/platform/launch-checklist.ts prints them in the operator
+ *     instruction, so the checklist can no longer name a stale list (it did:
+ *     customer.subscription.created was handled at route.ts:254 and missing
+ *     from the instruction, so an operator following it registered an
+ *     endpoint Stripe would never send that event to).
+ *
+ * The VENDOR endpoint's vocabulary is not here: its route dispatches through
+ * lib/billing/vendor-payout-completion's event map rather than a switch, and a
+ * list this module cannot derive from that route would be a second spelling.
+ */
+export const TENANT_BILLING_WEBHOOK_EVENTS: readonly string[] = Object.freeze([
+  "checkout.session.completed",
+  "invoice.paid",
+  "invoice.payment_failed",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "account.updated",
+])
+
+/** What a registration run decided — PURE, so the guard can drive it. */
+export interface WebhookEventUnionPlan {
+  /** The endpoint already enables every event (`*` or a superset) — no write. */
+  inSync: boolean
+  /** Stripe's wildcard is on: every event is delivered, nothing to add. */
+  wildcard: boolean
+  /** Events the route handles that the endpoint did not enable. */
+  missing: string[]
+  /** Events the endpoint enables that the route does not handle — reported
+   *  (drift the other way), never removed: another consumer may need them. */
+  extra: string[]
+  /** The list to write: current ∪ required, deduplicated, stable order. */
+  enabledAfter: string[]
+}
+
+/**
+ * PURE: the UNION a registration writes. `enabled_events` on
+ * webhookEndpoints.update REPLACES the list (Stripe API reference: "You may
+ * edit the url, the list of enabled_events, and the status"), so the caller
+ * must send current ∪ required — sending only the missing events would
+ * silently DROP every event another consumer registered on the same endpoint.
+ * `['*']` means every event and is left alone.
+ */
+export function planWebhookEventUnion(current: readonly string[], required: readonly string[] = TENANT_BILLING_WEBHOOK_EVENTS): WebhookEventUnionPlan {
+  const cur = [...new Set(current.map((e) => String(e).trim()).filter(Boolean))]
+  const req = [...new Set(required.map((e) => String(e).trim()).filter(Boolean))]
+  if (cur.includes("*")) return { inSync: true, wildcard: true, missing: [], extra: [], enabledAfter: cur }
+  const have = new Set(cur)
+  const need = new Set(req)
+  const missing = req.filter((e) => !have.has(e))
+  const extra = cur.filter((e) => !need.has(e))
+  return { inSync: missing.length === 0, wildcard: false, missing, extra, enabledAfter: [...cur, ...missing] }
+}
+
+/**
  * The config-blob keys a stored Stripe credential may carry each endpoint's
  * WEBHOOK signing secret under. Closed on purpose — a config blob is
  * caller-supplied, and scanning it for anything that "looks like" a signing

@@ -574,6 +574,8 @@ console.log("\n═══ C8 · the platform key moves no tenant money — DERIVE
       why: "Platform discounts against platform prices." },
     "app/api/cron/stripe-drift/route.ts": { kind: "platform_payee",
       why: "Weekly drift check on the platform's own tier prices." },
+    "lib/billing/stripe-webhook-registration.ts": { kind: "connect_admin",
+      why: "ACCOUNT ADMIN ONLY (wave 80A) — webhookEndpoints.list / webhookEndpoints.update on the PLATFORM's own account, to enable the events /api/billing/webhook handles. Moves nothing, creates nothing (no product, price or endpoint — the owner publishes packages at production rollout)." },
     "app/actions/vendor-payments.ts": { kind: "connect_admin",
       why: "CONNECT-PLATFORM ADMIN ONLY — accounts.create / accountLinks.create / accounts.retrieve. An acct_… is minted on the Connect platform that will own it and this product has exactly one; none of the three moves a cent. Its money paths (vendor payout, portal checkout) go through lib/providers/payment on the TENANT's account." },
   }

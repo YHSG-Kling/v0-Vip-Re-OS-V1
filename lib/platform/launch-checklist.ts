@@ -27,7 +27,28 @@
 //   optional         — nice-to-have rails (osint/research, stock media,
 //                      direct mail, social/accounting OAuth apps).
 
+import { STRIPE_WEBHOOK_ROUTES, TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
+
 export type LaunchTier = "launch-blocking" | "launch-degraded" | "optional"
+
+/**
+ * A DRIFT CHECK — a launch requirement a presence map CANNOT answer, because
+ * the truth lives at a vendor (which events Stripe will deliver to our
+ * endpoint) and reading it is a network call. Listed here so the checklist
+ * NAMES it beside the env rows instead of leaving it to tribal knowledge; the
+ * status arrives on demand from the action each row names, never on page
+ * load. No env value, no vendor value is carried in this row.
+ */
+export interface LaunchDriftCheck {
+  key: string
+  capability: string
+  /** What drifts, and what "in sync" means. */
+  whatDrifts: string
+  /** The server action that reads the live state (and the one that repairs it). */
+  checkAction: string
+  repairAction: string
+  tier: LaunchTier
+}
 
 export interface LaunchChecklistItem {
   key: string
@@ -53,6 +74,8 @@ export interface LaunchChecklist {
   optionalConfigured: number
   optionalTotal: number
   items: LaunchChecklistItem[]
+  /** On-demand vendor-state checks (wave 80A) — metadata only; see LaunchDriftCheck. */
+  driftChecks: LaunchDriftCheck[]
 }
 
 /** The ONLY place this module touches process.env — presence check, value discarded. */
@@ -134,7 +157,13 @@ const ROWS: RowDef[] = [
     // customer.subscription.* delivery would fail, paid signups would never
     // activate — and this very checklist would have gone GREEN, because it
     // checks that the SECRET is set and cannot see where it was pointed.
-    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/billing/webhook in the PLATFORM's Stripe dashboard (events: checkout.session.completed, invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted, account.updated) and set its signing secret here. This is the PLATFORM account's secret only: /api/billing/webhook now identifies the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) and refuses to write the platform's billing ledger from a tenant-signed delivery, so a tenant's own webhook secret belongs on that tenant's platform_credentials row (config.webhook_secret), never here.",
+    // THE EVENT LIST IS DERIVED, NOT TYPED (wave 80A). This row used to spell
+    // out six events and omitted customer.subscription.created, which the route
+    // has handled since wave 79A — an operator following it registered an
+    // endpoint Stripe would never send that event to. TENANT_BILLING_WEBHOOK_EVENTS
+    // is the one vocabulary the route's switch, the SDK registration and this
+    // instruction share; scripts/stripe-webhook-events-guard.ts holds them equal.
+    whatLightsUp: `Paid signups actually ACTIVATE — register https://<app>${STRIPE_WEBHOOK_ROUTES.tenant_billing} in the PLATFORM's Stripe dashboard (events: ${TENANT_BILLING_WEBHOOK_EVENTS.join(", ")} — the "Stripe webhook events" drift check below registers any that are missing through the Stripe SDK) and set its signing secret here. This is the PLATFORM account's secret only: ${STRIPE_WEBHOOK_ROUTES.tenant_billing} now identifies the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) and refuses to write the platform's billing ledger from a tenant-signed delivery, so a tenant's own webhook secret belongs on that tenant's platform_credentials row (config.webhook_secret), never here.`,
     tier: "launch-blocking",
   },
   {
@@ -346,6 +375,19 @@ const ROWS: RowDef[] = [
   },
 ]
 
+// Vendor-state checks the board runs ON DEMAND. Every checkAction / repairAction
+// named here is a real export of app/actions/superadmin/* (the guard verifies).
+const DRIFT_CHECKS: LaunchDriftCheck[] = [
+  {
+    key: "stripe_webhook_events",
+    capability: "Stripe webhook events — PLATFORM account (tenant billing)",
+    whatDrifts: `The endpoint registered at ${STRIPE_WEBHOOK_ROUTES.tenant_billing} must enable every event the route handles (${TENANT_BILLING_WEBHOOK_EVENTS.length}: ${TENANT_BILLING_WEBHOOK_EVENTS.join(", ")}). A handled event that is not enabled is never delivered — a subscription minted in the Stripe dashboard would never reach the ledger. In sync = the endpoint's enabled_events ⊇ the handled list (or the wildcard). Register writes the UNION through the Stripe SDK (webhookEndpoints.update) and creates nothing.`,
+    checkAction: "checkStripeWebhookEventsAction",
+    repairAction: "registerStripeWebhookEventsAction",
+    tier: "launch-blocking",
+  },
+]
+
 /** Build the live checklist — presence only; env values are never carried into the result. */
 export function buildLaunchChecklist(): LaunchChecklist {
   const items: LaunchChecklistItem[] = ROWS.map((r) => ({
@@ -375,5 +417,6 @@ export function buildLaunchChecklist(): LaunchChecklist {
     optionalConfigured: o.configured,
     optionalTotal: o.total,
     items,
+    driftChecks: DRIFT_CHECKS.map((d) => ({ ...d })),
   }
 }
