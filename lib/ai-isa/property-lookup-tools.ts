@@ -46,6 +46,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { deriveLikelihoodBand } from "@/lib/buyer-search/investor-offmarket-match"
 import { toInvestorFacingCandidates } from "@/lib/buyer-search/investor-facing"
 import { lookupPropertyForConversation } from "@/lib/ai-isa/property-lookup-rail"
+import { redactionModeForPersona } from "@/lib/ai-isa/persona-tool-policy"
 import type { CustomerCapabilityContext } from "@/lib/ai-isa/capability-catalogue"
 
 /** A raw property row of any provider/cache shape (moved from batchdata-isa-tools.ts). */
@@ -182,7 +183,13 @@ export function buildSearchOffmarketOpportunitiesTool(ctx: CustomerCapabilityCon
       if (error) return { success: false, error: `off-market matches could not be read: ${error.message}` }
       // Reader-boundary redaction FIRST (drops owner_* / equity_percent on the typed
       // row), then the allowlist mapper shapes what the model sees.
-      const redacted = toInvestorFacingCandidates((data ?? []) as Array<Record<string, unknown>>, "investor")
+      // The PERSONA POLICY decides the redaction (lib/ai-isa/persona-tool-policy.ts):
+      // "property-only" strips owner identity at the reader boundary (the investor
+      // audience); "identity" would keep it (the brokerage audience). The investor
+      // persona is property-only by ruling, and this reads that ruling rather than
+      // restating it — the one runtime reader of redactionModeForPersona.
+      const audience = redactionModeForPersona("investor") === "property-only" ? "investor" : "brokerage"
+      const redacted = toInvestorFacingCandidates((data ?? []) as Array<Record<string, unknown>>, audience)
       const rows = redacted.map((r) => toInvestorFacingToolRow(r as PropertyRowLike))
       return { success: true, count: rows.length, matches: rows, note: rows.length === 0 ? "No cached matches yet — the agent will run a search against the buy box." : "Property facts only; the brokerage handles any owner approach." }
     },

@@ -845,7 +845,10 @@ function realismSection() {
     (orchestrator.match(/avatarDurationSeconds/g) ?? []).length >= 3)
   check("AgentTalkingHeadReel imports avatarFadeOutFrame and applies it as the avatar <Video>'s opacity (fade, not freeze)",
     /import \{ avatarFadeOutFrame \} from "\.\.\/lib\/video\/script-structure"/.test(talkingHead) &&
-    /opacity: avatarOpacity,/.test(talkingHead))
+    // Wave 79C composes the fade with the body-visual treatment's own box opacity
+    // (Math.min) — the fade still reaches the avatar <Video>; the RULE is that
+    // avatarOpacity is what the avatar's opacity is computed from.
+    /opacity: (Math\.min\()?avatarOpacity[,)]/.test(talkingHead))
   check("the fade is ADDITIVE — a null fade start (no measurement, or the clip fills the window) yields full opacity, unchanged behavior",
     /const avatarOpacity = avatarFadeStart != null[\s\S]{0,250}?: 1/.test(talkingHead))
 

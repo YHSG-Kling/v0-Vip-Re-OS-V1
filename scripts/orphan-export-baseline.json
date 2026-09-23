@@ -3,7 +3,6 @@
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-predictions.ts": 2,
     "app/actions/ai-transaction-coordinator.ts": 2,
-    "app/actions/billing.ts": 3,
     "app/actions/cda-portal.ts": 3,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
@@ -11,7 +10,6 @@
     "app/actions/listings.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
-    "app/actions/superadmin/screenshot-capture.ts": 2,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/video/create-video-project.ts": 1,
     "app/actions/video-repurposing.ts": 3,
@@ -67,7 +65,7 @@
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
     "lib/ai-isa/next-best-touch.ts": 1,
-    "lib/ai-isa/persona-tool-policy.ts": 6,
+    "lib/ai-isa/persona-tool-policy.ts": 5,
     "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
@@ -467,7 +465,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9857,
+  "census": 9858,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1813,6 +1811,7 @@
     "app/dashboard/admin/billing/manage-billing-button.tsx": 1,
     "app/dashboard/admin/billing/referral-earnings-card.tsx": 1,
     "app/dashboard/admin/billing/revenue-summary-card.tsx": 1,
+    "app/dashboard/admin/billing/seat-door-card.tsx": 1,
     "app/dashboard/admin/billing/subscription-agreement-card.tsx": 1,
     "app/dashboard/admin/brand/brand-client.tsx": 1,
     "app/dashboard/admin/campaign-center/actions.ts": 2,
@@ -10601,6 +10600,9 @@
     ],
     "app/dashboard/admin/billing/revenue-summary-card.tsx": [
       "RevenueSummaryCard"
+    ],
+    "app/dashboard/admin/billing/seat-door-card.tsx": [
+      "SeatDoorCard"
     ],
     "app/dashboard/admin/billing/subscription-agreement-card.tsx": [
       "SubscriptionAgreementCard"
@@ -22167,5 +22169,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 3
+  "trulyDead": 0
 }

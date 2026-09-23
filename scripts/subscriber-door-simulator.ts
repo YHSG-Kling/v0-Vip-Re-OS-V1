@@ -204,7 +204,7 @@ function fakeSvc(seed: Record<string, Row[]>) {
   check("the handoff is OPEN (silences the cold ladder) and status advanced to contacted; ONE platform-staff bell on the prospect (entity platform_prospect), priority high; booking path = /demo",
     row.details.human_handoff?.status === "open" && row.status === "contacted" && bells.length === 1 && bells[0]!.entityType === "platform_prospect" && bells[0]!.entityId === row.id && bells[0]!.priority === "high" && r1.ok && !r1.alreadySubscriber && r1.staffNotified === 3 && r1.bookingPath === "/demo")
   const r2 = await salesAssistedIntake(svc, { ...input, producerSeats: 45 }, deps)
-  check("IDEMPOTENT: a second submit with the same email merges onto the SAME row (one prospect, seats updated, no second row)", r2.ok && !r2.alreadySubscriber && r2.prospectId === r1.prospectId && !r2.created && svc.tables.platform_prospects.length === 1 && row.details.qualification.size_seats === 45)
+  check("IDEMPOTENT: a second submit with the same email merges onto the SAME row (one prospect, seats updated, no second row)", r2.ok && !r2.alreadySubscriber && r1.ok && !r1.alreadySubscriber && r2.prospectId === r1.prospectId && !r2.created && svc.tables.platform_prospects.length === 1 && row.details.qualification.size_seats === 45)
   const svc2 = fakeSvc({ users: [{ id: "u1", email: "owner@acme.com", brokerage_id: "brk-live" }], platform_prospects: [] })
   const bells2: unknown[] = []
   const r3 = await salesAssistedIntake(svc2, input, { notifyStaff: async (_s: unknown, n: unknown) => { bells2.push(n); return 1 } })

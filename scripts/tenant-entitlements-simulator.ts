@@ -20,6 +20,7 @@ import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { normalizeOverrideType } from "../lib/kernel/override-vocab"
 import { parseSeatOverride, effectiveSeatLimit, seatCheck } from "../lib/kernel/tier-role-matrix"
+import { TIER_SEAT_BANDS } from "../lib/billing/plan-catalog"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -44,12 +45,11 @@ function pureLayer() {
   check("override WINS when set — raises a capped tier and caps an unlimited one",
     effectiveSeatLimit("solo_agent", 12).limit === 12 && effectiveSeatLimit("solo_agent", 12).overridden === true
     && effectiveSeatLimit("brokerage", 25).limit === 25)
-  // Brokerage 50 → unlimited (wave 78A, owner 2026-09-22; m655).
-  check("null override ⇒ tier default (Solo 2 · Team 5 · Brokerage unlimited · Multi unlimited)",
-    effectiveSeatLimit("solo_agent", null).limit === 2 && effectiveSeatLimit("solo_agent", null).overridden === false
-    && effectiveSeatLimit("team", null).limit === 5
-    && effectiveSeatLimit("brokerage", null).limit === null
-    && effectiveSeatLimit("multi_location", null).limit === null)
+  // Bands are DERIVED from lib/billing/plan-catalog.ts TIER_SEAT_BANDS (wave 79A: 2 / 10 / 30 / custom;
+  // m660) — never restated here (CLAUDE.md §2: assert the rule, derive the number).
+  check("null override ⇒ tier default (the plan catalogue's TIER_SEAT_BANDS, tier by tier)",
+    effectiveSeatLimit("solo_agent", null).overridden === false
+    && (["solo_agent", "team", "brokerage", "multi_location"] as const).every((t) => effectiveSeatLimit(t, null).limit === TIER_SEAT_BANDS[t]))
   check("seatCheck enforces the SAME resolved limit (2 in use: solo denies, solo+override 12 allows)",
     seatCheck("solo_agent", 2).allowed === false
     && seatCheck("solo_agent", 2, 12).allowed === true && seatCheck("solo_agent", 2, 12).overridden === true
@@ -143,7 +143,9 @@ function sourceLayer() {
     /seatCheck\(planTier, seatCount, parseSeatOverride\(/.test(meterCode)
     && /custom limit/.test(meterCode))
   check("  ↳ …and seatCheck is the gate's own verdict, not a second copy of the arithmetic",
-    /seatDecision\(tier, currentSeatCount, seatOverride, 1, catalog\)/.test(
+    // Wave 79A threads the tenant's purchased seat terms through as well; the RULE is
+    // that seatCheck asks seatDecision for ONE more seat with the same inputs.
+    /seatDecision\(tier, currentSeatCount, seatOverride, 1, catalog(, \{ terms \})?\)/.test(
       stripComments(src("lib/kernel/tier-role-matrix.ts"))))
   const INLINE_CAPACITY = /seatLimit !== null && seatCount >= seatLimit/
   check("  ↳ …and the meter no longer re-derives at-capacity inline",
