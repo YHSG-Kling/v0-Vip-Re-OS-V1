@@ -273,7 +273,8 @@ check("every PLATFORM_EXIT_MENU tool is a registered PLATFORM_PROSPECT_TOOL_NAME
 // RE-ANCHORED (lane 77B): a FOURTH exit — start_subscription (the prospect
 // says yes and becomes a subscriber on the spot; scripts/subscriber-
 // conversion-simulator.ts owns it). The three original exits are unchanged.
-check("the exits are exactly demo / signup link / start subscription / human", PLATFORM_EXIT_MENU.map((o) => o.tool).sort().join(",") === ["book_demo_appointment", "request_human_handoff", "send_signup_link", "start_subscription"].join(","))
+// Lane 79B adds the fifth exit: "call me back when I'm ready" (schedule_prospect_callback).
+check("the exits are exactly demo / signup link / start subscription / callback-when-ready / human", PLATFORM_EXIT_MENU.map((o) => o.tool).sort().join(",") === ["book_demo_appointment", "request_human_handoff", "schedule_prospect_callback", "send_signup_link", "start_subscription"].join(","))
 for (const name of PLATFORM_PROSPECT_TOOL_NAMES) check(`tool '${name}' is actually registered in buildPlatformProspectTools`, new RegExp(`\\b${name}:\\s*tool\\(\\{`).test(toolsSrc))
 check("POSITIVE CONTROL: a tool name NOT in the bundle is reported unregistered", !/\bbook_showing:\s*tool\(\{/.test(toolsSrc))
 const platformPrompt = buildQualificationPrompt({ surface: "platform_reception" })

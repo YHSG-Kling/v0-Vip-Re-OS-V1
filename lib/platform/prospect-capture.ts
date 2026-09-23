@@ -47,6 +47,9 @@ export interface ProspectQualification {
   brokerage_name?: string | null
   /** Seats / agent count they run. */
   size_seats?: number | null
+  /** Lane 79B — of those, the PRODUCING agents (wave 79 seat ruling: the
+   *  priced unit; staff/admin seats ride free). */
+  producers_count?: number | null
   /** Their role at the business (broker-owner, team lead, ops, agent …). */
   role_title?: string | null
   current_tools?: string | null
@@ -54,7 +57,13 @@ export interface ProspectQualification {
   timeline?: ProspectTimelineBucket | null
   /** Markets / territory they work. */
   territory?: string | null
+  /** Lane 79B — "what would be most helpful next", in the prospect's own choice. */
+  preferred_path?: ProspectPreferredPath | null
 }
+
+/** Lane 79B — the prospect's own "what next" choice (never a forced one). */
+export const PROSPECT_PREFERRED_PATHS = ["demo", "trial", "paid", "callback", "undecided"] as const
+export type ProspectPreferredPath = (typeof PROSPECT_PREFERRED_PATHS)[number]
 
 export interface UpsertPlatformProspectInput {
   prospectId?: string | null
@@ -95,6 +104,8 @@ export function normalizeProspectQualification(q: ProspectQualification | null |
   const str = (v: unknown, max = 300): string | null => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null)
   if (str(q.brokerage_name)) out.brokerage_name = str(q.brokerage_name, 160)
   if (typeof q.size_seats === "number" && Number.isFinite(q.size_seats) && q.size_seats > 0) out.size_seats = Math.round(q.size_seats)
+  if (typeof q.producers_count === "number" && Number.isFinite(q.producers_count) && q.producers_count > 0) out.producers_count = Math.round(q.producers_count)
+  if (q.preferred_path && (PROSPECT_PREFERRED_PATHS as readonly string[]).includes(q.preferred_path)) out.preferred_path = q.preferred_path
   if (str(q.role_title)) out.role_title = str(q.role_title, 120)
   if (str(q.current_tools)) out.current_tools = str(q.current_tools)
   if (str(q.pain)) out.pain = str(q.pain, 600)
@@ -310,6 +321,35 @@ export async function markProspectHandoff(svc: any, input: {
     status: advanceProspectStatus(row.status, "contacted"),
     contacted_at: new Date().toISOString(),
     details: { ...(row.details ?? {}), human_handoff: stamp },
+  })
+}
+
+/** Lane 79B — details.callback: the prospect asked to be called back when
+ *  THEY are ready. Read by lib/platform/prospect-followup.ts (both rungs
+ *  stand down while it is set) and the growth board. */
+export interface ProspectCallbackStamp {
+  requested_at: string
+  /** When they said, in their words ("after Q1", "next Tuesday morning"). */
+  when: string | null
+  reason: string | null
+  channel: string
+}
+
+export async function markProspectCallback(svc: any, input: {
+  prospectId: string; when?: string | null; reason?: string | null; channel: string
+}): Promise<boolean> {
+  const row = await readProspectForStamp(svc, input.prospectId)
+  if (!row) return false
+  const stamp: ProspectCallbackStamp = {
+    requested_at: new Date().toISOString(),
+    when: (input.when ?? "").trim().slice(0, 120) || null,
+    reason: (input.reason ?? "").trim().slice(0, 300) || null,
+    channel: input.channel,
+  }
+  return stampProspect(svc, input.prospectId, {
+    status: advanceProspectStatus(row.status, "contacted"),
+    contacted_at: new Date().toISOString(),
+    details: { ...(row.details ?? {}), callback: stamp },
   })
 }
 

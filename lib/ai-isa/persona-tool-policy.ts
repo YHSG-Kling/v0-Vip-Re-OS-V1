@@ -53,14 +53,18 @@
  *                mid-conversation, exactly the "value over the conversation"
  *                the owner ruled against; schedule_home_value_review (the
  *                catalogue) books a callback and never runs an AVM at all.
- *   investor   — UNCHANGED from wave 71/72 (lane 75B EXCEPTION, owner's own
- *                wording: "property-only search/comps preview since that IS
- *                its service"): search_properties_preview/count/page,
- *                comparable_property_preview/count, investor_buybox_
- *                preview/count — property fields ONLY, passed through
- *                `toInvestorFacingToolRow`'s redaction. No RentCast (BatchData
- *                is the off-market/quicklist provider that persona needs —
- *                wave 69).
+ *   investor   — ZERO BatchData since lane 79B (owner, wave 79: BatchData
+ *                is reserved for platform lead ACQUISITION, skip-trace and
+ *                DNC; the investor persona stays "property-only (off-market
+ *                most-likely-to-sell)"). Its off-market matches come from
+ *                OUR OWN CACHE — investor_offmarket_candidates, filled by the
+ *                platform's acquisition runner — through
+ *                lib/ai-isa/property-lookup-tools.ts::
+ *                buildSearchOffmarketOpportunitiesTool (redacted by
+ *                lib/buyer-search/investor-facing.ts). The wave-75 "that IS
+ *                its service" exception is SUPERSEDED: the service is the
+ *                cached match list, not a live per-record BatchData pull
+ *                from inside a chat. No RentCast.
  *   renter     — RentCast RENTAL-shaped tools only. Zero BatchData — a renter
  *                is not buying, so BatchData's per-record cost has nothing to
  *                buy for them.
@@ -97,12 +101,18 @@
  *    Sales Agent qualification tags, CINC AI script goals, Alma/Noem/Hyperleap
  *    receptionist intake fields, TalkLuna vendor/leasing intake) ────────────
  * The PROMPT half of this table lives in lib/ai-isa/qualification-playbook.ts
- * ::PERSONA_QUESTION_GUIDE (one place, mounted on every surface); the TOOL
- * half is the free catalogue (lib/ai-isa/capability-catalogue.ts) — cheapest
- * first: own DB (search_our_listings / get_listing_details / send_matching_
- * listings) → RentCast (rentcast_* by persona pattern; send_matching_listings'
- * rental mode) → BatchData preview/count ONLY where nothing cheaper covers the
- * need (investor off-market/comps preview — the one explicit exception).
+ * ::PERSONA_QUESTION_GUIDE (one place, mounted on every surface — asks,
+ * infoNeeded, ladder, offers); the TOOL half is the free catalogue
+ * (lib/ai-isa/capability-catalogue.ts) — cheapest first: own DB
+ * (search_our_listings / get_listing_details / send_matching_listings /
+ * lookup_property_facts' cache rung / search_offmarket_opportunities) →
+ * tenant IDX → RentCast (rentcast_* by persona pattern; the rail's rentcast
+ * rung; send_matching_listings' rental mode) → public records. BatchData is
+ * NEVER a customer-persona property rail since lane 79B
+ * (lib/ai-isa/property-lookup-rail.ts::BATCHDATA_ELIGIBLE_PURPOSES —
+ * acquisition / skip_trace / dnc only). The one BatchData surface a persona
+ * conversation still carries is the sphere DNC/TCPA/phone check, and only
+ * when the caller declares the conversation outbound-eligible.
  *
  * `staff` (the in-app agent copilot, app/api/internal/ai-chat) is
  * DELIBERATELY NOT a `ToolPersona` value — wave 72B's own docs already record
@@ -245,14 +255,25 @@ export const PERSONA_TOOL_POLICY: Record<ToolPersona, PersonaToolPolicy> = {
     redaction: "identity",
   },
   investor: {
-    batchDataToolNames: [
-      "search_properties_preview", "search_properties_count", "search_properties_page",
-      "comparable_property_preview", "comparable_property_count",
-      "investor_buybox_preview", "investor_buybox_count",
-    ],
+    // TOMBSTONE (lane 79B, CLAUDE.md §1.3): search_properties_preview/count/
+    // page, comparable_property_preview/count and investor_buybox_preview/
+    // count are GONE from this persona's allowlist — and from lib/ai-isa/
+    // batchdata-isa-tools.ts's registry altogether. Owner (wave 79): "tools
+    // for the ai agents should not be using batchdata tools if there are
+    // less expensive tools… BatchData reserved for platform lead ACQUISITION,
+    // skip-trace, DNC. Investor persona: property-only (off-market
+    // most-likely-to-sell)." SURVIVORS: lib/ai-isa/property-lookup-tools.ts::
+    // buildSearchOffmarketOpportunitiesTool (the investor's cached off-market
+    // matches — investor_offmarket_candidates, filled by the platform's own
+    // acquisition runner lib/buyer-search/investor-offmarket-runner.ts, read
+    // through lib/buyer-search/investor-facing.ts's redaction) and
+    // buildLookupPropertyFactsTool (facts by address through lib/ai-isa/
+    // property-lookup-rail.ts, never BatchData for a conversation). Comps
+    // for an investor are on-market inventory: send_matching_listings.
+    batchDataToolNames: [],
     rentCastEnabled: false,
     rentCastNamePattern: null,
-    capCents: 200,
+    capCents: 0,
     redaction: "property-only",
   },
   renter: {
@@ -503,6 +524,14 @@ export const FREE_INTERNAL_TOOL_NAMES: readonly string[] = [
   // user-type surface, which never carries a BatchData/RentCast tool to rank
   // against — lib/ai-isa/user-type-tool-policy.ts). Seat tools are rank-0 by
   // construction on their own surface; they never enter selectToolsForPersona.
+  // Lane 79B — the property rail's two persona tools (lib/ai-isa/property-
+  // lookup-tools.ts): facts by address through the cheapest-first rail (own
+  // DB → tenant IDX → RentCast → public records; a RentCast rung is metered
+  // by lib/property/rentcast.ts itself but the TOOL is free to mount and
+  // answers from the cache first), and the investor's own cached off-market
+  // matches (own-DB read).
+  "lookup_property_facts",
+  "search_offmarket_opportunities",
 ]
 
 /** PURE — the cost rank for one tool NAME. Generic over any registry's key

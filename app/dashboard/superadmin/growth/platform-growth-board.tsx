@@ -116,7 +116,16 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName
   const qualLine = (p: Prospect): string => {
     const q = (p.details?.qualification ?? null) as Record<string, unknown> | null
     if (!q) return ''
-    return [q.size_seats ? `${q.size_seats} seats` : null, q.role_title, q.timeline, q.territory].filter(Boolean).join(' · ')
+    // Lane 79B — producing seats are the priced unit (wave 79 seat ruling) and
+    // the prospect's own "what next" choice / callback window ride beside them.
+    const callback = (p.details?.callback ?? null) as { when?: string | null } | null
+    return [
+      q.size_seats ? `${q.size_seats} seats` : null,
+      q.producers_count ? `${q.producers_count} producing` : null,
+      q.role_title, q.timeline, q.territory,
+      q.preferred_path ? `wants: ${q.preferred_path}` : null,
+      callback ? `callback: ${callback.when ?? 'when ready'}` : null,
+    ].filter(Boolean).join(' · ')
   }
 
   return (

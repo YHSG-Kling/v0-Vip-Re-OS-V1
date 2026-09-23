@@ -108,6 +108,9 @@ export type CapabilityId =
   | "get_listing_details"
   | "request_vendor_referral"
   | "capture_referral"
+  // Lane 79B — the property rail's two persona tools (lib/ai-isa/property-lookup-tools.ts).
+  | "lookup_property_facts"
+  | "search_offmarket_opportunities"
   // TOMBSTONE (lane 77A): "get_my_vendor_status" left this union — a vendor
   // is a SEAT, not a customer persona (owner, wave 77). Survivor:
   // lib/ai-isa/user-type-tools.ts::buildGetMyVendorStatusTool, keyed on the
@@ -291,6 +294,27 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
     signalType: "referral_received (KernelEvent — the SAME event createReferral emits)",
     requiresIdentity: true,
     survivor: "lib/referrals/referral-record.ts::insertReferralRecord (extracted from app/actions/referrals/referral-actions.ts::createReferral) + lib/contact-pipeline/contact-capture.ts::captureContact",
+  },
+  // ── Lane 79B — property lookup WITHOUT BatchData (owner, wave 79) ──────
+  {
+    id: "lookup_property_facts",
+    label: "Look up a property's facts by address",
+    usefulFor: "\"tell me about 123 Main St\" / \"is it 3 or 4 beds?\" — beds, baths, sqft, year built, type and our own list price when it is our listing; cheapest source first (our records → the tenant's MLS feed → RentCast → public records), NEVER BatchData in a conversation, and NEVER a home value (that is schedule_home_value_review's callback)",
+    personas: null,
+    costRank: 0,
+    signalType: "(read-only — no signal)",
+    requiresIdentity: false,
+    survivor: "lib/ai-isa/property-lookup-rail.ts::lookupPropertyForConversation + lib/ai-isa/property-lookup-tools.ts::buildLookupPropertyFactsTool",
+  },
+  {
+    id: "search_offmarket_opportunities",
+    label: "Show an investor their cached off-market matches",
+    usefulFor: "an investor asks what off-market / likely-to-sell properties fit their buy box — read from OUR OWN cache (investor_offmarket_candidates, filled by the platform's acquisition runner), property facts + likelihood band only, never an owner's contact",
+    personas: ["investor"],
+    costRank: 0,
+    signalType: "(read-only — no signal)",
+    requiresIdentity: true,
+    survivor: "lib/buyer-search/investor-offmarket-runner.ts (writer) + lib/buyer-search/investor-facing.ts::toInvestorFacingCandidates (redaction) + lib/ai-isa/property-lookup-tools.ts::buildSearchOffmarketOpportunitiesTool",
   },
   // TOMBSTONE (lane 77A, CLAUDE.md §1.3): the `get_my_vendor_status` entry
   // lane 76A added here (a vendor persona's own placement/invoice/payout read,

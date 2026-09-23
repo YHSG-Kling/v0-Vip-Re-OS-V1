@@ -138,6 +138,15 @@ export type VoiceTurnAction =
 // never read by any route (app/api/voice/twilio/turn, app/api/voice/relay/
 // plan only ever read `.say`/`.action`), so its removal from VoiceTurnPlan
 // does not touch the OUTPUT CONTRACT those routes consume.
+// Lane 79B — the BatchData registry this allowlist filters no longer carries
+// any PROPERTY tool (lib/ai-isa/batchdata-isa-tools.ts holds the DNC purpose
+// only; the property rail lives in lib/ai-isa/property-lookup-rail.ts and its
+// lookup_property_facts tool rides the FREE bundle merged in below). The
+// allowlist survives as the voice line's COMPLIANCE boundary: it keeps
+// verify_phone / check_dnc_status / check_tcpa_status off a customer call
+// whatever the persona registry grants, and the names below stay so a future
+// property tool re-added to that registry is still filtered rather than
+// mounted by default.
 export const VOICE_TOOL_ALLOWLIST = [
   "lookup_property",
   "comparable_property_preview",

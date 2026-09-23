@@ -319,7 +319,10 @@ check("every menu tool name is a real catalogue capability id",
 // question about ONE of our listings — a lookup, not an offer). Lane 77A
 // REMOVED get_my_vendor_status from the catalogue — a vendor is a SEAT, and
 // its tools live in lib/ai-isa/user-type-tools.ts (never a customer capability).
-const EXPECTED_CATALOGUE_ONLY = new Set(["get_my_context", "search_our_listings", "record_qualification", "get_listing_details"])
+// Lane 79B adds two more lookups (never offers): lookup_property_facts (a
+// property's facts by address through the cheapest-first rail) and
+// search_offmarket_opportunities (the investor's cached off-market matches).
+const EXPECTED_CATALOGUE_ONLY = new Set(["get_my_context", "search_our_listings", "record_qualification", "get_listing_details", "lookup_property_facts", "search_offmarket_opportunities"])
 const unexpectedCatalogueOnly = catalogueOnlyNonMenu.filter((c) => !EXPECTED_CATALOGUE_ONLY.has(c))
 check("every OTHER catalogue capability (beyond the 5 documented non-offered ones) is on the follow-up menu",
   unexpectedCatalogueOnly.length === 0, unexpectedCatalogueOnly.length ? unexpectedCatalogueOnly.join(", ") : undefined)

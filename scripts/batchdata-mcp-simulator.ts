@@ -309,14 +309,22 @@ const read = (rel: string) => stripComments(readFileSync(join(root, rel), "utf8"
      "billing diagnostics: the panel shows BOTH the live balance and this month's estimated spend side by side")
 }
 
-console.log("\n[wave 71 — extractRows exported for reuse by the ISA tool set]")
+console.log("\n[wave 71 → lane 79B — ONE row reader; the ISA tool set no longer maps property rows at all]")
 {
+  // Lane 79B retired every property tool from batchdata-isa-tools.ts (owner:
+  // BatchData is for acquisition / skip-trace / DNC only), so its extractRows
+  // import went with them and the reader is module-private again — the ONE
+  // defensive multi-shape reader still feeds the four typed wrappers here.
   const mcpSrc = read("lib/external/batchdata-mcp.ts")
-  ok(/export function extractRows\(/.test(mcpSrc),
-     "batchdata-mcp.ts: extractRows is exported (was module-private) so batchdata-isa-tools.ts reuses the SAME defensive multi-shape row reader instead of a second copy (CLAUDE.md §6)")
+  ok(/^function extractRows\(/m.test(mcpSrc) && !/export function extractRows\(/.test(mcpSrc),
+     "batchdata-mcp.ts: extractRows is module-private again (no external importer since lane 79B) — never a second copy elsewhere")
+  ok((mcpSrc.match(/extractRows\(r\.data\)/g) ?? []).length >= 4,
+     "batchdata-mcp.ts: the four typed wrappers (comparable preview/page, buybox preview/page) still read rows through the ONE extractRows")
   const isaToolsSrc = read("lib/ai-isa/batchdata-isa-tools.ts")
-  ok(/import\s*\{[^}]*\bextractRows\b[^}]*\}\s*from\s*["']@\/lib\/external\/batchdata-mcp["']/.test(isaToolsSrc),
-     "batchdata-isa-tools.ts: imports extractRows from batchdata-mcp.ts rather than re-implementing row extraction")
+  ok(!/\bextractRows\b/.test(isaToolsSrc) && /import\s*\{[^}]*\bcheckDncStatus\b[^}]*\}\s*from\s*["']@\/lib\/external\/batchdata-mcp["']/.test(isaToolsSrc),
+     "batchdata-isa-tools.ts: no extractRows import remains (no row-returning tool remains) — it imports ONLY the phone/DNC wrappers from batchdata-mcp.ts")
+  ok(!/\bextractRows\b/.test(read("lib/ai-isa/property-lookup-rail.ts")) && !/\bextractRows\b/.test(read("lib/ai-isa/property-lookup-tools.ts")),
+     "the property rail / persona tools do not re-implement or import BatchData row extraction either")
 }
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

@@ -127,8 +127,13 @@ check("runtime: team_lead mounts its board/rules/coaching tools; broker_admin it
 for (const seat of USER_TYPE_SEATS) {
   const block = seatPromptBlock(seat, USER_TYPE_TOOL_POLICY[seat].seatToolNames)
   const promised = (block.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []).filter((t) => t.startsWith("get_") || t.startsWith("update_") || t.startsWith("send_") || t.startsWith("respond_") || t.startsWith("flag_") || t.startsWith("list_"))
-  const unknown = [...new Set(promised)].filter((t) => !registered.has(t) && t !== "draft_ai_reply")
-  check(`${seat}: the seat prompt block promises only registered seat tools (or draft_ai_reply from the staff toolkit)`, unknown.length === 0, unknown.join(","))
+  // Lane 79B — a staff-side seat's followUps may also name the CUSTOMER
+  // bundle's catalogue tools (it acts FOR a contact: send_matching_listings…),
+  // but ONLY when the table lets that seat mount the customer bundle.
+  const customerBundleIds = new Set<string>(USER_TYPE_TOOL_POLICY[seat].customerPersonaToolsForContact ? CAPABILITY_CATALOGUE.map((c) => c.id as string) : [])
+  const unknown = [...new Set(promised)].filter((t) => !registered.has(t) && t !== "draft_ai_reply" && !customerBundleIds.has(t))
+  check(`${seat}: the seat prompt block promises only registered seat tools (or draft_ai_reply from the staff toolkit${USER_TYPE_TOOL_POLICY[seat].customerPersonaToolsForContact ? ", or the customer bundle it may act through" : ""})`, unknown.length === 0, unknown.join(","))
+  check(`${seat}: the seat carries ≥ 2 follow-up offers (lane 79B — a seat with nothing to offer next is not a copilot)`, USER_TYPE_TOOL_POLICY[seat].followUps.length >= 2)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

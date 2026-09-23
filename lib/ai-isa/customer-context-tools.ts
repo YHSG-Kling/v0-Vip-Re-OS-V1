@@ -40,7 +40,8 @@ import {
 // working — the implementation lives in qualification-signals.ts (§6, the
 // ONE writer both the staff tool and every customer-safe tool below share).
 export { writeFollowUpActivity }
-import { buildNewCatalogueTools, buildGetListingDetailsTool, loadEnabledCapabilities, type CustomerCapabilityContext } from "@/lib/ai-isa/capability-catalogue"
+import { buildNewCatalogueTools, buildGetListingDetailsTool, loadEnabledCapabilities, isCapabilityEnabled, type CustomerCapabilityContext } from "@/lib/ai-isa/capability-catalogue"
+import { buildLookupPropertyFactsTool, buildSearchOffmarketOpportunitiesTool } from "@/lib/ai-isa/property-lookup-tools"
 
 export interface CustomerContextToolsContext {
   brokerageId: string
@@ -961,8 +962,20 @@ export async function buildCustomerFreeTools(ctx: CustomerContextToolsContext): 
   if (!disabled.includes("get_listing_details")) {
     out.get_listing_details = buildGetListingDetailsTool(ctx as CustomerCapabilityContext)
   }
+  // Lane 79B — a property's FACTS by address through the cheapest-first rail
+  // (lib/ai-isa/property-lookup-rail.ts; never BatchData for a conversation,
+  // never a value for a customer). Identity-optional like get_listing_details.
+  if (!disabled.includes("lookup_property_facts")) {
+    out.lookup_property_facts = buildLookupPropertyFactsTool(ctx as CustomerCapabilityContext)
+  }
   if (ctx.contactId) {
     out.request_showing = buildRequestShowingTool({ ...ctx, contactId: ctx.contactId })
+    // Lane 79B — the investor's OWN cached off-market matches (own-DB read,
+    // redacted). Persona-gated by the catalogue (investor only) and keyed on
+    // the contact row the conversation resolved to — never a model-supplied id.
+    if (isCapabilityEnabled("search_offmarket_opportunities", ctx.persona, disabled)) {
+      out.search_offmarket_opportunities = buildSearchOffmarketOpportunitiesTool({ ...(ctx as CustomerCapabilityContext), contactId: ctx.contactId })
+    }
   }
   // The six CORE follow-up tools register on IDENTITY, not persona: "buyer" is
   // the unknown default and buy+sell ("both") is a live contact_type, so a

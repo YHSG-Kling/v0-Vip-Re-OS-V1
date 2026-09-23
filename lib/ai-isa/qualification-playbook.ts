@@ -284,7 +284,27 @@ export interface PersonaQuestionGuide {
   asks: readonly string[]
   /** Tool names this persona is realistically OFFERED (subset of the registered tools). */
   offers: readonly string[]
+  /** Lane 79B — the INFO the conversation must end with for this persona:
+   *  QUALIFICATION_GOALS keys (never a second spelling) — what
+   *  record_qualification should hold before the agent takes over. */
+  infoNeeded: readonly string[]
+  /** Lane 79B — the conversational LADDER (owner: "not salesy but… get them
+   *  qualified"): value first, one ask per rung, the offer LAST. Rendered
+   *  into the prompt as numbered rungs the model climbs in order, never a
+   *  form. Every rung is typical real-estate talk, not a sales script. */
+  ladder: readonly string[]
 }
+
+/** The owner's five follow-up offers (wave 74/79) — the set every persona's
+ *  `offers` must draw at least two from, and the sphere/seller pair must
+ *  include the no-number value review. One list; the proof holds it. */
+export const OWNER_FOLLOW_UP_OFFERS: readonly string[] = [
+  "schedule_callback",           // call them again when they are ready
+  "send_matching_listings",      // the list of properties matching the criteria they just gave
+  "schedule_home_value_review",  // a time to look up their value and call back — the AI never speaks a number
+  "book_listing_appointment",    // an agent coming out to discuss — no obligation
+  "request_showing",             // a showing / meeting
+] as const
 
 export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> = {
   seller: {
@@ -304,6 +324,15 @@ export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> =
       "which next step suits them: a call once the agent has reviewed the home's value, or an agent coming out to talk it through — no obligation, at least a week out",
     ],
     offers: ["schedule_home_value_review", "book_listing_appointment", "send_market_report", "send_explainer_video", "schedule_callback", "request_vendor_referral"],
+    infoNeeded: ["contact_info", "intent", "seller_address", "seller_situation", "timeline", "representation", "follow_up_preference"],
+    ladder: [
+      "Answer what they actually asked first (a market fact, a process answer, or an honest 'let me find out') — value before any question.",
+      "Ask what's prompting the move, in their words, and the address of the home (lookup_property_facts can confirm beds/baths/year built — never a value).",
+      "Ask the timeline bucket, then the home's condition and whether it's already listed, FSBO or expired.",
+      "Ask whether they're already working with an agent — if yes, help as a courtesy and stop qualifying.",
+      "Ask if they'll need to buy next (then run the buyer ladder too), and record everything with record_qualification.",
+      "Offer ONE next step as a choice, not a close: a call once the agent has reviewed the home's value, or an agent coming out — no obligation, a week or more out. Confirm how and when they'd like the follow-up.",
+    ],
   },
   buyer: {
     // The buyer intake every ISA converges on (CINC/Structurely: location,
@@ -322,6 +351,15 @@ export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> =
       "the best way and time for the agent to follow up",
     ],
     offers: ["send_matching_listings", "get_listing_details", "request_showing", "request_vendor_referral", "send_explainer_video", "send_market_report", "schedule_callback"],
+    infoNeeded: ["contact_info", "intent", "buyer_criteria", "timeline", "financing_status", "representation", "follow_up_preference"],
+    ladder: [
+      "Answer the question that brought them in (a listing's facts via get_listing_details / lookup_property_facts, whether it's still available, what the area's inventory looks like) — value first.",
+      "Ask the area(s) and what matters most in the home; then a price RANGE, beds/baths and must-haves — one at a time.",
+      "Ask whether it's a home to live in or an investment (an investment switches to the investor ladder), and the timeline bucket.",
+      "Ask about financing plainly — pre-approved, cash, or still need a lender (offer a lender intro from our bench, never a random name).",
+      "Ask whether they're already working with an agent, and whether they have a home to sell first (then run the seller ladder too). Record with record_qualification.",
+      "Offer ONE next step: matching listings as they come in, a showing of the home they asked about, or a callback when they're ready — and the best way/time to follow up.",
+    ],
   },
   investor: {
     // Property-only by ruling (wave 68/69): comps/search PREVIEW and matching
@@ -336,7 +374,15 @@ export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> =
       "whether they'd like matching on-market and off-market opportunities sent as they come up",
       "the best way and time for the agent to follow up",
     ],
-    offers: ["send_matching_listings", "get_listing_details", "request_showing", "send_market_report", "schedule_callback"],
+    offers: ["send_matching_listings", "get_listing_details", "request_showing", "send_market_report", "search_offmarket_opportunities", "schedule_callback"],
+    infoNeeded: ["contact_info", "intent", "buyer_criteria", "timeline", "financing_status", "follow_up_preference"],
+    ladder: [
+      "Lead with what we can actually show: on-market inventory that fits, and — once they're a contact — the off-market / likely-to-sell matches already cached for their buy box (search_offmarket_opportunities: property facts only, never an owner's contact).",
+      "Ask the buy box one piece at a time: area, price range, property type, strategy (buy-and-hold, flip, BRRRR, short-term rental).",
+      "Ask how they're funding it (cash, financing, 1031) and how soon they want to place capital — the timeline bucket.",
+      "Ask deal volume this year and whether they already hold rentals in the area; record with record_qualification.",
+      "Offer ONE next step: matching on-market and off-market opportunities as they come up, a showing/walk-through of one, or a callback — and how they want to be reached.",
+    ],
   },
   renter: {
     // TalkLuna/Lofty renter intake, plus the ONE ask that turns a renter into
@@ -350,6 +396,14 @@ export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> =
       "whether buying is something they'd consider down the road (never pushed — just so the agent can keep them posted)",
     ],
     offers: ["send_matching_listings", "get_listing_details", "request_showing", "schedule_callback"],
+    infoNeeded: ["contact_info", "intent", "buyer_criteria", "timeline", "follow_up_preference"],
+    ladder: [
+      "Answer what they asked about the rental first (facts, availability, whether pets are OK) — value first.",
+      "Ask the area, monthly budget and bedrooms, then move-in date — one at a time.",
+      "Ask pets and lease length; record with record_qualification.",
+      "Mention, never push, that when buying is ever on the table the agent can keep them posted.",
+      "Offer ONE next step: matching rentals as they list, a tour of the one they asked about, or a callback when they're ready.",
+    ],
   },
   relocation: {
     asks: [
@@ -360,6 +414,14 @@ export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> =
       "whether a virtual tour or a visit trip is planned, and whether they're already working with an agent on either end",
     ],
     offers: ["send_matching_listings", "send_market_report", "get_listing_details", "request_showing", "request_vendor_referral", "schedule_callback"],
+    infoNeeded: ["contact_info", "intent", "buyer_criteria", "seller_address", "timeline", "representation", "follow_up_preference"],
+    ladder: [
+      "Answer the practical question first — how the market here works, what a budget buys, how a remote purchase or rental typically goes — value first, never a characterization of an area.",
+      "Ask where they're moving to and roughly when (a job or employer date often drives it) — the timeline bucket.",
+      "Ask whether they'll buy or rent on arrival and their price range; ask only the constraints THEY raise (commute, timing).",
+      "Ask whether they need to sell where they are now (then run the seller ladder), and whether they're working with an agent on either end.",
+      "Offer ONE next step: matching listings for the move, a market report for the area, a virtual tour / visit-trip showing, or a callback — record with record_qualification.",
+    ],
   },
   sphere: {
     // The past-client / lifetime-customer conversation (Rechat Lucy's
@@ -373,6 +435,14 @@ export const PERSONA_QUESTION_GUIDE: Record<ToolPersona, PersonaQuestionGuide> =
       "whether they themselves are thinking of a move (then run the seller or buyer questions)",
     ],
     offers: ["schedule_home_value_review", "request_vendor_referral", "capture_referral", "send_market_report", "send_newsletter", "schedule_callback"],
+    infoNeeded: ["contact_info", "intent", "follow_up_preference"],
+    ladder: [
+      "Open with them, not with business: how they've been since closing, the home anniversary — and answer anything they ask.",
+      "Offer the equity check-in as a gift, not a pitch: the agent prepares the number and calls (schedule_home_value_review) — never a figure from you.",
+      "Ask whether they need a trusted vendor for anything (contractor, plumber, mover, a refinance lender) — an intro from our own bench.",
+      "Ask, with permission, whether anyone they know is thinking of buying, selling or renting (capture_referral).",
+      "Only if THEY raise it: are they thinking of a move themselves — then run the seller or buyer ladder. Otherwise offer the newsletter or a market update and leave it there.",
+    ],
   },
   // TOMBSTONE (lane 77A): the `vendor` guide lane 76A added here is GONE —
   // "vendors are not contact type, they are user type" (owner, wave 77). The
@@ -387,6 +457,11 @@ function personaGuideBlock(persona: ToolPersona | null | undefined): string {
   if (!g) return ""
   const lines = [`THIS PERSON LOOKS LIKE A ${persona.toUpperCase()} — what they usually need to be asked (one at a time):`]
   for (const a of g.asks) lines.push(`- ${a}`)
+  // Lane 79B — the ladder and the info the conversation must end with, as
+  // DATA the routed model reads (never prose in a doc alone).
+  lines.push("THE LADDER — climb it in order, one rung per turn, value before every ask, the offer last:")
+  g.ladder.forEach((rung, i) => lines.push(`${i + 1}. ${rung}`))
+  lines.push(`BEFORE THE AGENT TAKES OVER, record_qualification should hold: ${g.infoNeeded.join(", ")}.`)
   lines.push(`Follow-ups that fit this persona: ${g.offers.join(", ")}.`)
   if (persona === "buyer") lines.push("Note: 'buyer' is also the default for an unknown contact — confirm early whether they are buying, selling, or both.")
   return lines.join("\n")
@@ -405,11 +480,17 @@ export const PLATFORM_QUALIFICATION_GOALS: readonly QualificationGoal[] = [
   { key: "contact_info", label: "Contact info", detail: "their name and a work email (phone is already on the call when they called in) — collected as the conversation earns it, never demanded up front" },
   { key: "brokerage_name", label: "Brokerage / team name", detail: "the business they run or work in" },
   { key: "size_seats", label: "Size", detail: "roughly how many agents / seats — solo, a team, a brokerage, or several offices" },
+  // Lane 79B — wave 79 seat ruling: only PRODUCING seats are charged (staff /
+  // admin seats are free), so the number that sizes a plan is the producers.
+  { key: "producers_count", label: "Producing agents", detail: "of those, how many actually produce (list and sell) — those are the seats that count toward a plan; office staff and admins ride free" },
   { key: "role_title", label: "Their role", detail: "broker-owner, team lead, operations, marketing, or an agent — who decides on software" },
   { key: "current_tools", label: "Current tools", detail: "what they use today for CRM, lead follow-up, marketing, and transactions" },
   { key: "pain", label: "What hurts", detail: "the one thing they wish ran itself — in THEIR words" },
   { key: "timeline", label: "Timeline", detail: "when they want to be up and running — right away, 1-3 months, 3-6 months, 6-12 months, 12+ months, or still researching" },
   { key: "territory", label: "Territory", detail: "the markets / metro areas they work" },
+  // Lane 79B — the "what would be most helpful next" ask (the 3-question
+  // SaaS qualification pattern: fit, timing, intent) — never a forced choice.
+  { key: "preferred_path", label: "Preferred path", detail: "what would be most helpful next — see it live (demo), try it themselves (free trial), start now (paid activation with the setup fee), or a callback when they're ready" },
 ] as const
 
 /** THE EXITS every platform surface offers once a prospect is engaged — a
@@ -420,7 +501,51 @@ export const PLATFORM_EXIT_MENU: readonly FollowUpOption[] = [
   { tool: "send_signup_link", label: "Send the online signup link", when: "they'd rather start the free trial themselves later — text or email them the signup link" },
   { tool: "start_subscription", label: "Start their subscription now", when: "they say YES and want to start right now — confirm their work email, name and business name, fit the plan to their size unless they chose one, then ask which way they want to start and pass it as activation: the 14-day FREE TRIAL (no card, billing set up inside the app later) or ACTIVATE NOW (they complete a secure checkout for the plan plus the plan's one-time setup fee; their access opens when it clears). State the setup fee ONLY as the plan pricing above lists it — if no setup fee is listed, say the plan is quoted without one; never invent an amount and never offer to waive it. The account is created on the spot either way and the sign-in link goes to their email. If the tool says a person is needed — enterprise size, custom pricing, a CRM migration — hand off instead" },
   { tool: "request_human_handoff", label: "Hand off to a person", when: "they want to talk pricing, contracts, migration, or anything you can't answer — a real person follows up (on a call, offer the live transfer first when one is available)" },
+  // Lane 79B — the same "call me when I'm ready" every customer persona gets:
+  // a prospect who is interested but not ready is scheduled, never chased.
+  { tool: "schedule_prospect_callback", label: "Call them back when they're ready", when: "they're interested but not ready to decide today (budget cycle, a partner to consult, a busy season) — ask when a good time is, record it, and the automated follow-up ladder stands down until then" },
 ] as const
+
+/**
+ * Lane 79B — the PLATFORM prospect's realistic question model (same shape as
+ * PERSONA_QUESTION_GUIDE so the routed model reads one kind of data on every
+ * surface). Sources: the 3-question SaaS qualification pattern (fit / timing
+ * / "what would be most helpful next"), the vertical-SaaS brokerage
+ * committee (broker-owner, tech director, team lead, ops, CFO), and the
+ * wave-79 seat ruling (producing seats are the priced unit). Every `offers`
+ * entry is a registered PLATFORM_PROSPECT_TOOL_NAMES tool.
+ */
+export const PLATFORM_PROSPECT_QUESTION_GUIDE: PersonaQuestionGuide = {
+  asks: [
+    "what they're trying to solve — the one thing they wish ran itself (their words)",
+    "the brokerage / team name and what they run: solo, a team, a brokerage, or several offices",
+    "roughly how many agents, and of those how many actually produce (producing seats are what a plan is priced on; staff and admins ride free)",
+    "their role — broker-owner, team lead, ops, marketing, or an agent — and who else weighs in on software",
+    "what they use today for CRM, lead follow-up, marketing and transactions (and what has to keep working — MLS/IDX, e-sign, transaction management)",
+    "when they want to be up and running: right away, 1-3, 3-6, 6-12 months, or still researching",
+    "the markets they work",
+    "what would be most helpful next — see it live, try it themselves, start now, or a callback when they're ready",
+  ],
+  offers: ["book_demo_appointment", "send_signup_link", "start_subscription", "schedule_prospect_callback", "request_human_handoff"],
+  infoNeeded: ["contact_info", "brokerage_name", "size_seats", "producers_count", "role_title", "current_tools", "pain", "timeline", "preferred_path"],
+  ladder: [
+    "Answer their actual question first — what the OS does for their situation, honestly, from the product content and the live plan bullets (show_product_demo when they want to SEE it).",
+    "Ask what they're trying to solve, then who they are and what they run — name, business, role — and call save_prospect as soon as you learn any of it.",
+    "Ask size in two halves: how many agents, and how many of those produce; then what they use today and what must keep working.",
+    "Ask the timeline bucket; never manufacture urgency.",
+    "Ask what would be most helpful next and offer ONE exit that matches: a live demo on a rep's real calendar, the signup link for a self-serve trial, starting now (trial or paid activation), a callback when they're ready, or a person for pricing/contracts/migration.",
+  ],
+}
+
+function platformProspectGuideBlock(): string {
+  const g = PLATFORM_PROSPECT_QUESTION_GUIDE
+  const lines = ["WHAT A PROSPECT USUALLY NEEDS TO BE ASKED (one at a time, as the conversation earns it):"]
+  for (const a of g.asks) lines.push(`- ${a}`)
+  lines.push("THE LADDER — climb it in order, one rung per turn, value before every ask, the exit last:")
+  g.ladder.forEach((rung, i) => lines.push(`${i + 1}. ${rung}`))
+  lines.push(`BEFORE A REP TAKES OVER, save_prospect should hold: ${g.infoNeeded.join(", ")}.`)
+  return lines.join("\n")
+}
 
 function platformGoalsBlock(): string {
   const lines = ["WHAT TO LEARN ABOUT THE PROSPECT, OVER THE COURSE OF THE CONVERSATION (one at a time, as it comes up naturally) — and call save_prospect as soon as you learn any of it:"]
@@ -550,7 +675,7 @@ export function buildQualificationPrompt(input: BuildQualificationPromptInput): 
     // software buyer's qualification) and its OWN three-exit menu (demo /
     // signup link / human). Brand here is the PLATFORM's own brand/KB
     // (loadBrandPlaybookContext({brokerageId: null, ...})) — never a tenant's.
-    return [brandBlock, conversationalRulesBlock(), platformGoalsBlock(), platformExitMenuBlock()].filter(Boolean).join("\n\n")
+    return [brandBlock, conversationalRulesBlock(), platformGoalsBlock(), platformProspectGuideBlock(), platformExitMenuBlock()].filter(Boolean).join("\n\n")
   }
   if (input.surface === "staff_copilot") {
     return [

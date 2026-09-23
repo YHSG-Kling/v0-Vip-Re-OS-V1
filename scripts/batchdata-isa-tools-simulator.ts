@@ -16,9 +16,12 @@
  *       registry at all); renter has ZERO BatchData tools of any kind; sphere
  *       gets verify_phone/check_dnc_status/check_tcpa_status ONLY when the
  *       conversation is declared outbound-eligible (fail closed by default).
- *   [3] Page-before-count/preview ordering — PURE decision core + an ACTUAL
- *       tool execute() call proving "never seen → refused before any network
- *       attempt" (the refusal check runs before callBatchDataMcp is reached).
+ *   [3] LANE 79B — NO PROPERTY TOOL IS REGISTERED ANY MORE (owner, wave 79:
+ *       "BatchData reserved for platform lead ACQUISITION, skip-trace, DNC"):
+ *       the registry carries the DNC purpose only; the page-before-preview
+ *       ordering rule went with the page pull it ordered (tombstone in the
+ *       module). The property survivor is lib/ai-isa/property-lookup-rail.ts
+ *       (scripts/persona-tool-realism-guard.ts proves the ladder).
  *   [4] Budget refusal — PURE decision core (evaluateBudget) + an ACTUAL tool
  *       execute() call (seller persona's verify_address) with the conversation
  *       budget set below one call's cost.
@@ -50,13 +53,12 @@ import { blankComments } from "./strip-comments"
 import {
   batchDataIsaTools,
   evaluateBudget,
-  evaluatePageOrder,
   resolveBatchDataIsaBudgetCents,
   resolvePersonaBudgetCents,
-  toInvestorFacingToolRow,
-  toIsaFacingToolRow,
-  criteriaKey,
 } from "../lib/ai-isa/batchdata-isa-tools"
+// Lane 79B — the row mappers MOVED to the property tool module (tombstone in
+// batchdata-isa-tools.ts); the proof follows the survivor.
+import { toInvestorFacingToolRow, toIsaFacingToolRow } from "../lib/ai-isa/property-lookup-tools"
 import {
   resolveToolPersona,
   PERSONA_TOOL_POLICY,
@@ -69,7 +71,7 @@ import {
   filterToolsByTier,
   type ToolPersona,
 } from "../lib/ai-isa/persona-tool-policy"
-import type { BuyBoxMatchRow } from "../lib/external/batchdata-mcp"
+type BuyBoxMatchRow = Record<string, unknown>
 
 let pass = 0, fail = 0
 const ok = (cond: boolean, msg: string) => { if (cond) pass++; else { fail++; console.log(` ✗ ${msg}`) } }
@@ -169,7 +171,17 @@ let sphereToolsEligible: Record<string, unknown> = {}
      "RULING: buyer persona has no direct BatchData property search — RentCast is first, BatchData is comps-only")
   ok(Object.keys(buyerTools).length === 0, "RULING (wave 75): buyer persona has NO BatchData tools of any kind — the capability catalogue covers customer care instead")
   ok(Object.keys(relocationTools).length === 0, "RULING (wave 75): relocation persona has NO BatchData tools of any kind — search_our_listings/send_matching_listings cover area visibility")
-  ok(Object.keys(investorTools).length > 0, "RULING (wave 75 EXCEPTION, owner's own wording): investor persona KEEPS its property-only search/comps preview — \"that IS its service\"")
+  // RULING SUPERSEDED (lane 79B, owner wave 79 verbatim): "tools for the ai agents should not be
+  // using batchdata tools if there are less expensive tools to look up properties… BatchData
+  // reserved for platform lead ACQUISITION, skip-trace, DNC. Investor persona: property-only
+  // (off-market most-likely-to-sell)." The investor's off-market matches now come from OUR OWN
+  // CACHE (investor_offmarket_candidates) through lib/ai-isa/property-lookup-tools.ts::
+  // buildSearchOffmarketOpportunitiesTool — never a live BatchData pull from inside a chat.
+  ok(Object.keys(investorTools).length === 0, "RULING (wave 79): investor persona has NO BatchData tools of any kind — search_offmarket_opportunities (own cache) is the survivor")
+  for (const [label, tools] of [["buyer", buyerTools], ["seller", sellerTools], ["investor", investorTools], ["renter", renterTools], ["relocation", relocationTools], ["sphere (eligible)", sphereToolsEligible]] as const) {
+    ok(!Object.keys(tools).some((n) => /lookup_property|search_properties|comparable_property|investor_buybox|verify_address/.test(n)),
+       `RULING (wave 79): ${label} persona registry carries NO property tool — the rail (lib/ai-isa/property-lookup-rail.ts) is the survivor`)
+  }
 
   // ── sphere: outbound-eligibility gate, fail closed by default ──────────
   ok(Object.keys(sphereToolsBlocked).length === 0,
@@ -180,32 +192,17 @@ let sphereToolsEligible: Record<string, unknown> = {}
   delete process.env.BATCHDATA_TOOL_TIER
 }
 
-// ─── 3. Page-before-preview/count ordering ─────────────────────────────────────────────────
+// ─── 3. Lane 79B — the property tools are GONE from the module (stripped source) ────────
 {
-  // (a) PURE decision core
-  const criteria = { address: "123 Main St", city: "Austin", state: "TX", zip: "78701" }
-  const neverSeen = evaluatePageOrder(new Set(), "search_properties", criteria)
-  ok(neverSeen !== null && neverSeen.success === false, "evaluatePageOrder: refuses when criteria never previewed/counted")
-  const alreadySeen = evaluatePageOrder(new Set([`search_properties:${criteriaKey(criteria)}`]), "search_properties", criteria)
-  ok(alreadySeen === null, "evaluatePageOrder: allows once the SAME criteria was previewed/counted")
-  const differentCriteria = evaluatePageOrder(new Set([`search_properties:${criteriaKey(criteria)}`]), "search_properties", { ...criteria, zip: "78702" })
-  ok(differentCriteria !== null, "evaluatePageOrder: a DIFFERENT zip is a different criteria — still refused")
-  const caseVariant = evaluatePageOrder(new Set([`search_properties:${criteriaKey(criteria)}`]), "search_properties", { ...criteria, city: "AUSTIN" })
-  ok(caseVariant === null, "evaluatePageOrder: criteria matching is case-insensitive")
-
-  // (b) ACTUAL tool call — never-seen criteria, investor persona (the only persona with
-  // search_properties_page), fresh conversation, tier pinned to "full" so the ordering
-  // refusal — not a tier filter — is what's under test.
-  process.env.BATCHDATA_TOOL_TIER = "full"
-  const investorForPage = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "investor", conversationKey: "conv-page-order" })
-  const pageTool = investorForPage.search_properties_page as { execute: (args: any) => Promise<any> } | undefined
-  ok(!!pageTool, "investor persona exposes search_properties_page to call")
-  if (pageTool) {
-    const result = await pageTool.execute({ address: "999 Never Previewed Ave", city: null, state: null, zip: null, take: null, skip: null })
-    ok(result.success === false, "search_properties_page.execute: refused for a criteria never previewed/counted this conversation")
-    ok(typeof result.error === "string" && /preview|count/i.test(result.error), "search_properties_page.execute: refusal names the missing preview/count step")
+  const isaSrc = readBlanked("lib/ai-isa/batchdata-isa-tools.ts")
+  for (const name of ["lookup_property", "search_properties_preview", "search_properties_count", "search_properties_page", "verify_address", "comparable_property_preview", "comparable_property_count", "investor_buybox_preview", "investor_buybox_count"]) {
+    ok(!new RegExp(`registry\\.${name}\\s*=\\s*tool\\(`).test(isaSrc), `stripped batchdata-isa-tools.ts registers NO \`${name}\` tool any more (tombstoned; survivor lib/ai-isa/property-lookup-rail.ts)`)
   }
-  delete process.env.BATCHDATA_TOOL_TIER
+  ok(/registry\.verify_phone\s*=\s*tool\(/.test(isaSrc) && /registry\.check_dnc_status\s*=\s*tool\(/.test(isaSrc) && /registry\.check_tcpa_status\s*=\s*tool\(/.test(isaSrc),
+     "POSITIVE CONTROL: the SAME scan still sees the three DNC-purpose tools that remain registered")
+  ok(!/evaluatePageOrder|criteriaKey\(|seenCriteria/.test(isaSrc), "the page-before-preview ordering rule left with the page pull it ordered (no evaluatePageOrder / criteriaKey / seenCriteria token in stripped source)")
+  ok(!/from ["']@\/lib\/external\/batchdata-mcp["']/.test(isaSrc) || !/callBatchDataMcp|extractRows|comparablePropertyPreview|investorBuyboxPreview/.test(isaSrc),
+     "no property-shaped BatchData MCP wrapper (callBatchDataMcp / extractRows / comparable / buybox) is imported any more — only the phone/DNC wrappers")
 }
 
 // ─── 4. Budget refusal ─────────────────────────────────────────────────────────────────────
@@ -358,8 +355,12 @@ let sphereToolsEligible: Record<string, unknown> = {}
   // batchDataIsaTools returns, not just the standalone pure functions above.
   process.env.BATCHDATA_API_KEY = "test-fake-key-never-used-for-a-real-call"
   process.env.BATCHDATA_TOOL_TIER = "off"
-  const offTierTools = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "investor", conversationKey: "conv-tier-off" })
-  ok(Object.keys(offTierTools).length === 0, "batchDataIsaTools: \"off\" tier returns ZERO tools even for the investor persona, which has its own non-empty allowlist")
+  // Lane 79B: sphere (outbound-eligible) is now the ONLY persona with a non-empty allowlist.
+  const offTierTools = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "sphere", conversationKey: "conv-tier-off", outboundEligible: true })
+  ok(Object.keys(offTierTools).length === 0, "batchDataIsaTools: \"off\" tier returns ZERO tools even for the outbound-eligible sphere persona, the one persona with a non-empty allowlist")
+  process.env.BATCHDATA_TOOL_TIER = "lean"
+  const leanTierTools = await batchDataIsaTools({ brokerageId: "brokerage-1", persona: "sphere", conversationKey: "conv-tier-lean", outboundEligible: true })
+  ok(Object.keys(leanTierTools).sort().join(",") === "check_dnc_status,check_tcpa_status,verify_phone", "POSITIVE CONTROL: the documented default \"lean\" tier still mounts the three DNC-purpose tools for an outbound-eligible sphere contact")
   delete process.env.BATCHDATA_TOOL_TIER
 }
 

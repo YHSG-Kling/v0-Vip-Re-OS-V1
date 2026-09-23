@@ -52,8 +52,8 @@ import { PLATFORM_EXIT_MENU } from "@/lib/ai-isa/qualification-playbook"
 import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
 import { brandCta, type ProductBrand } from "@/lib/platform/product-brand"
 import {
-  upsertPlatformProspect, markProspectHandoff, markProspectSignupLinkSent,
-  PROSPECT_TIMELINE_BUCKETS, type ProspectQualification,
+  upsertPlatformProspect, markProspectHandoff, markProspectSignupLinkSent, markProspectCallback,
+  PROSPECT_TIMELINE_BUCKETS, PROSPECT_PREFERRED_PATHS, type ProspectQualification,
 } from "@/lib/platform/prospect-capture"
 
 export const PLATFORM_PROSPECT_TOOL_NAMES = [
@@ -64,6 +64,9 @@ export const PLATFORM_PROSPECT_TOOL_NAMES = [
   "request_human_handoff",
   "start_subscription",
   "show_product_demo",
+  // Lane 79B — "call me when I'm ready": the prospect twin of the customer
+  // schedule_callback (lib/platform/prospect-capture.ts::markProspectCallback).
+  "schedule_prospect_callback",
 ] as const
 // Module-private: nothing imports the name type yet (opposite-missing census
 // class 3); export it when a real importer needs it.
@@ -99,6 +102,7 @@ export const PLATFORM_PROSPECT_TOOL_GUIDANCE = [
   "Never invent a demo time — only offer times find_demo_slots returned. If it reports no calendar is connected, offer the human handoff instead.",
   "book_demo_appointment needs their email for the calendar invite — ask for it if you don't have it yet.",
   "When they say YES and want to start now, call start_subscription (their work email, name and business name are required; pick the plan that fits their size unless they chose one). Ask which way they want to start and pass it as activation: 'trial' (14 days free, no card, billing set up inside the app later) or 'paid' (activate now — they complete a secure checkout for the plan plus the plan's one-time setup fee, emailed to them; access opens when it clears). Quote the setup fee only as the plan pricing lists it — never invent an amount, never offer to waive it. Either way the account is created on the spot and the sign-in link goes to their email. If it answers needsHuman, do NOT retry — say a person will take it from here and call request_human_handoff.",
+  "When they are interested but not ready to decide today, ask when a good time to call back is and call schedule_prospect_callback with their words — never chase them meanwhile; a person calls when they said.",
   "When they ask what the product does or want to SEE it, call show_product_demo with the closest topic and walk them through it in your own words, one beat at a time. If it returns a clipToken, put that token verbatim at the END of your reply so the sample plays; never claim a video is playing when there is no token.",
 ].join("\n")
 
@@ -140,19 +144,22 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
         company: z.string().nullable().describe("Brokerage / team / company name, or null"),
         role_interest: z.enum(PROSPECT_ROLES).describe("What they run: solo_agent, team, brokerage, multi_location, or unknown"),
         size_seats: z.number().int().positive().nullable().describe("Rough agent / seat count, or null"),
+        producers_count: z.number().int().positive().nullable().describe("Of those, how many actually produce (list and sell) — the priced seats; staff/admins ride free. Or null"),
         role_title: z.string().nullable().describe("Their role (broker-owner, team lead, ops, agent…), or null"),
         current_tools: z.string().nullable().describe("What they use today, or null"),
         pain: z.string().nullable().describe("What hurts, in their words, or null"),
         timeline: z.enum(PROSPECT_TIMELINE_BUCKETS).nullable().describe("When they want to be running, or null"),
         territory: z.string().nullable().describe("Markets / metros they work, or null"),
+        preferred_path: z.enum(PROSPECT_PREFERRED_PATHS).nullable().describe("What they said would be most helpful next: demo, trial, paid (start now), callback, undecided — or null"),
         note: z.string().nullable().describe("One line on what they want, or null"),
       }),
-      execute: async (a: { name: string | null; email: string | null; company: string | null; role_interest: string; size_seats: number | null; role_title: string | null; current_tools: string | null; pain: string | null; timeline: string | null; territory: string | null; note: string | null }) => {
+      execute: async (a: { name: string | null; email: string | null; company: string | null; role_interest: string; size_seats: number | null; producers_count: number | null; role_title: string | null; current_tools: string | null; pain: string | null; timeline: string | null; territory: string | null; preferred_path: string | null; note: string | null }) => {
         const saved = await resolveProspect({
           email: a.email, name: a.name, company: a.company, roleInterest: a.role_interest, note: a.note,
           qualification: {
-            brokerage_name: a.company, size_seats: a.size_seats, role_title: a.role_title,
+            brokerage_name: a.company, size_seats: a.size_seats, producers_count: a.producers_count, role_title: a.role_title,
             current_tools: a.current_tools, pain: a.pain, timeline: a.timeline as ProspectQualification["timeline"], territory: a.territory,
+            preferred_path: a.preferred_path as ProspectQualification["preferred_path"],
           },
         })
         if (!saved) return { success: false, error: "Need at least a name with an email (or the caller's number) to save them — ask for their email." }
@@ -240,6 +247,24 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
         }
         await markProspectSignupLinkSent(svc, { prospectId: prospect.id, channel: a.channel, url })
         return { success: true, channel: a.channel, url }
+      },
+    }),
+
+    // ── Lane 79B — "call me back when I'm ready" (never chased meanwhile) ──
+    schedule_prospect_callback: tool({
+      description: "The prospect is interested but not ready to decide today — record when THEY want to be called back (their words: 'after our busy season', 'next Tuesday morning'). The automated follow-up ladder stands down for them until a person calls. Needs a name with an email, or the caller's number.",
+      inputSchema: z.object({
+        when: z.string().describe("When they'd like the callback, in their words"),
+        reason: z.string().nullable().describe("Why not now — budget cycle, a partner to consult, busy season — or null"),
+        email: z.string().nullable().describe("Their email if known, or null"),
+        name: z.string().nullable().describe("Their name, or null"),
+      }),
+      execute: async (a: { when: string; reason: string | null; email: string | null; name: string | null }) => {
+        const prospect = await resolveProspect({ email: a.email, name: a.name, note: a.reason, qualification: { preferred_path: "callback" } })
+        if (!prospect) return { success: false, error: "Need a name with an email (or the caller's number) first." }
+        const stamped = await markProspectCallback(svc, { prospectId: prospect.id, when: a.when, reason: a.reason, channel: ctx.source })
+        if (!stamped) return { success: false, error: "The callback could not be recorded — say a person will follow up and call request_human_handoff." }
+        return { success: true, callbackWhen: a.when }
       },
     }),
 

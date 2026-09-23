@@ -121,8 +121,18 @@ for (const s of SURFACES) {
 // source.
 check("skip_trace_property/reverse_skip_trace never appear in lib/ai-isa/batchdata-isa-tools.ts's registry at all (not gated — ABSENT for every persona)",
   !isaToolsSrc.includes("skip_trace_property") && !isaToolsSrc.includes("reverse_skip_trace"))
-check("every registry entry is gated through isToolAllowedForPersona against the ONE persona-tool-policy.ts table, not a hand-rolled per-tool literal check",
-  (isaToolsSrc.match(/isToolAllowedForPersona\(ctx\.persona,/g) ?? []).length >= 6)
+// Lane 79B — the registry shrank to the DNC purpose (verify_phone / check_dnc_
+// status / check_tcpa_status under ONE gate); the rule is "every tool block sits
+// under a table gate and no literal persona word gates a tool", not a pinned
+// gate count (CLAUDE.md §2: assert the rule, derive the number).
+{
+  const gateCount = (isaToolsSrc.match(/isToolAllowedForPersona\(ctx\.persona,/g) ?? []).length
+  const toolBlocks = (isaToolsSrc.match(/registry\.[a-z_]+ = tool\(\{/g) ?? []).length
+  const firstGate = isaToolsSrc.indexOf("isToolAllowedForPersona(ctx.persona,")
+  const firstTool = isaToolsSrc.indexOf("registry.")
+  check("every registry entry is gated through isToolAllowedForPersona against the ONE persona-tool-policy.ts table (≥ 1 gate, the first tool block sits AFTER the first gate) and no `ctx.persona === \"<persona>\"` literal gates a property tool",
+    gateCount >= 1 && toolBlocks >= 3 && firstGate >= 0 && firstTool > firstGate && !/ctx\.persona === "(isa|investor|buyer|seller|renter|relocation)"/.test(isaToolsSrc))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYER 1C — surfaces audited and found to correctly carry NO batchdata/
@@ -331,9 +341,12 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
   // Lane 76A — get_listing_details ("is the house on Oak Street still
   // available?") rides unconditionally beside search_our_listings, so the
   // no-identity bundle is now THREE free tools + the one allowlisted BatchData tool.
-  check("native round: VOICE_TOOL_ALLOWLIST subset (lookup_property) reaches `tools:` ALONGSIDE the free capture bundle's unconditional tools (get_my_context, search_our_listings, get_listing_details) — verify_phone (non-allowlisted BatchData) is still filtered out",
+  // Lane 79B — lookup_property_facts (the cheapest-first property rail's
+  // tool, lib/ai-isa/property-lookup-tools.ts) rides the no-identity bundle
+  // too, so it is FOUR free tools + the one allowlisted (injected) BatchData tool.
+  check("native round: VOICE_TOOL_ALLOWLIST subset (lookup_property) reaches `tools:` ALONGSIDE the free capture bundle's unconditional tools (get_my_context, search_our_listings, get_listing_details, lookup_property_facts) — verify_phone (non-allowlisted BatchData) is still filtered out",
     seenToolNames.includes("lookup_property") && seenToolNames.includes("get_my_context") && seenToolNames.includes("search_our_listings") && seenToolNames.includes("get_listing_details")
-    && !seenToolNames.includes("verify_phone") && seenToolNames.length === 4)
+    && seenToolNames.includes("lookup_property_facts") && !seenToolNames.includes("verify_phone") && seenToolNames.length === 5)
   check("native round: free (rank 0) tools sort before the paid BatchData tool — cost-ranked order (CLAUDE.md §6)",
     seenToolNames.indexOf("get_my_context") < seenToolNames.indexOf("lookup_property")
     && seenToolNames.indexOf("search_our_listings") < seenToolNames.indexOf("lookup_property"))

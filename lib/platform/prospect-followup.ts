@@ -64,6 +64,10 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     .eq("status", "new")
     .not("email", "is", null)
     .is("details->human_handoff", null)
+    // Lane 79B — a prospect who asked to be called back when THEY are ready
+    // (details.callback, written by prospect-agent-tools.ts::schedule_prospect_
+    // callback) is scheduled, never chased: the ladder stands down for them.
+    .is("details->callback", null)
     .lt("created_at", introCutoff)
     .eq("followup_count", 0)
     .order("created_at", { ascending: true })
@@ -89,6 +93,7 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     .eq("followup_count", 1)
     .not("email", "is", null)
     .is("details->human_handoff", null)
+    .is("details->callback", null)
     .lt("last_followup_at", nudgeCutoff)
     .order("last_followup_at", { ascending: true })
     .limit(BATCH)

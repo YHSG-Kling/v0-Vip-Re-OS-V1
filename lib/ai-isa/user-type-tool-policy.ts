@@ -193,6 +193,11 @@ export interface UserTypeToolPolicy {
   customerPersonaToolsForContact: boolean
   /** What this seat realistically asks the copilot — the prompt's guide. */
   asks: readonly string[]
+  /** Lane 79B — what the copilot realistically OFFERS this seat next, each
+   *  naming the registered tool (a seat tool, a staff tool, or draft_ai_reply)
+   *  in parentheses — the seat-side twin of the persona follow-up menu.
+   *  Never a sale: a seat is a colleague, not a prospect. */
+  followUps: readonly string[]
   /** Hard rules the prompt states for this seat. */
   rules: readonly string[]
 }
@@ -203,6 +208,19 @@ const STAFF_ASKS: readonly string[] = [
   "drafting a client message in the brand voice (draft_ai_reply — never auto-sent)",
   "staging a listing / offer / campaign / open house / video from what they just said",
   "a property or comp lookup — cheapest tool first (our own listings → RentCast → BatchData preview/count)",
+]
+
+// Lane 79B — the seat-side follow-up menu. Staff seats act FOR a customer, so
+// the offers mirror the customer follow-ups the copilot can stage on their
+// behalf (all through the customer bundle when the copilot is open on a
+// contact) plus the drafting door.
+const STAFF_FOLLOW_UPS: readonly string[] = [
+  "draft the next client message in the brand voice for their review — never auto-sent (draft_ai_reply)",
+  "stage a callback task for the contact they are working (schedule_callback, when acting for a contact)",
+  "send the contact the listings matching the criteria they described (send_matching_listings)",
+  "book the seller's no-obligation listing appointment on the agent's own calendar (find_listing_appointment_slots → book_listing_appointment)",
+  "queue a home-value review for the agent to run and call back on — the copilot never quotes the number (schedule_home_value_review)",
+  "look up a property's facts by address, cheapest source first (lookup_property_facts)",
 ]
 
 const STAFF_RULES: readonly string[] = [
@@ -221,6 +239,7 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
     rentCast: true,
     customerPersonaToolsForContact: true,
     asks: STAFF_ASKS,
+    followUps: STAFF_FOLLOW_UPS,
     rules: STAFF_RULES,
   },
   team_lead: {
@@ -236,6 +255,11 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
       "how the team is doing this week — production, open deals, unworked leads (get_team_board)",
       "which assignment rules route leads to the team and whether they're firing (get_team_assignment_rules)",
       "a coaching brief for one of their agents before a 1:1 (get_agent_coaching_brief)",
+    ],
+    followUps: [
+      ...STAFF_FOLLOW_UPS,
+      "pull the team board before the weekly 1:1s and flag unworked leads (get_team_board)",
+      "prepare a coaching brief for the agent they name (get_agent_coaching_brief)",
     ],
     rules: [
       ...STAFF_RULES,
@@ -255,6 +279,12 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
       "what's still not set up for the brokerage to run autonomously (get_setup_readiness)",
       "where the subscription stands — plan, period, seats, trial (get_billing_summary — a READ; changes happen in Billing)",
       "open compliance flags by severity and what's waiting for approval (get_compliance_summary)",
+    ],
+    followUps: [
+      ...STAFF_FOLLOW_UPS,
+      "walk through what is still not set up for the brokerage to run autonomously (get_setup_readiness)",
+      "summarise where the subscription stands before a billing decision — read only (get_billing_summary)",
+      "list the open compliance flags by severity so the officer can clear them (get_compliance_summary)",
     ],
     rules: [
       ...STAFF_RULES,
@@ -287,6 +317,12 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
       "adding a state / ZIP they now cover, or their typical turnaround (update_my_service_area / update_my_availability)",
       "getting a note to the agent on a job (send_vendor_message_to_agent)",
     ],
+    followUps: [
+      "accept or decline the booking they are looking at, with a date (respond_to_booking)",
+      "send the agent a note on the job — a delay, a question, a completed visit (send_vendor_message_to_agent)",
+      "update their service area or turnaround so they get matched to more jobs (update_my_service_area / update_my_availability)",
+      "point them at the missing W-9 / insurance / licence item so payouts are not held (get_my_documents)",
+    ],
     rules: [
       "Their OWN vendor account only — never another vendor's jobs, invoices or payouts, and never a contact's or the brokerage's financials (CLAUDE.md §5).",
       "Never quote or negotiate a price on the brokerage's behalf; a price question goes to the agent.",
@@ -314,6 +350,12 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
       "which documents are on a deal and which are still unsigned or missing (list_transaction_documents)",
       "getting a note to the agent on a deal (send_lender_message_to_agent)",
     ],
+    followUps: [
+      "record the loan status or rate-lock they just described (update_loan_status)",
+      "flag the condition the agent needs to act on before it slips (flag_loan_issue)",
+      "send the agent a note on the deal (send_lender_message_to_agent)",
+      "list the documents still unsigned or missing on the file (list_transaction_documents)",
+    ],
     rules: [
       "Only transactions their lender vendor is ASSIGNED to (vendor_assignments) — never another lender's deals, never a borrower they are not on.",
       "Clear-to-close is issued from the portal's own action with its checks — not from this chat.",
@@ -333,6 +375,10 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
       "moving a file's title status forward — title search, commitment issued, closing ready, closed (update_title_status)",
       "getting a note to the agent on a closing (send_title_message_to_agent)",
     ],
+    followUps: [
+      "move the file's title status forward as they report it (update_title_status)",
+      "send the agent a note on the closing — a title issue, a scheduling change (send_title_message_to_agent)",
+    ],
     rules: [
       "Only transactions their title company is on (title_company_users.transaction_id) — never another file.",
       "Earnest money and wire details are never spoken or changed here (wire-fraud posture); the portal's own screens handle them.",
@@ -349,6 +395,10 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
     asks: [
       "which tenants, system errors and AI feedback need attention from the context",
       "explaining a platform feature or process",
+    ],
+    followUps: [
+      "draft the tenant-facing reply for their review (draft_ai_reply)",
+      "open the tenant's setup readiness / billing / compliance read so support sees what the broker sees (get_setup_readiness / get_billing_summary / get_compliance_summary)",
     ],
     rules: [
       "Support-investigation posture: read broadly, act narrowly; impersonation is a grant that walks the account and never exceeds it (CLAUDE.md §5).",
@@ -425,6 +475,8 @@ export function seatPromptBlock(seat: UserTypeSeat, mountedSeatTools: readonly s
   if (p.staffToolkit === "none") {
     lines.push("You have NO contact search, NO CRM write tools and NO property-data tools on this seat — never claim to have looked something up you could not.")
   }
+  // Lane 79B — the seat's own follow-up menu: what to OFFER next, never a sale.
+  lines.push("WHAT TO OFFER NEXT (one that fits, never several):", ...p.followUps.map((f) => `- ${f}`))
   lines.push("RULES FOR THIS SEAT:", ...p.rules.map((r) => `- ${r}`))
   return lines.join("\n")
 }
