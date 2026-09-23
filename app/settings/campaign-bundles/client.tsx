@@ -31,6 +31,7 @@ import { upsertCampaignPreset, deactivateCampaignPreset, type PresetChannel } fr
 import type { PlaybookScore } from "@/app/actions/creative-playbooks"
 import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
 import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
+import { EstimateStillsCard } from "./estimate-stills-card"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -309,6 +310,8 @@ export function CampaignBundlesClient({
               </div>
             ))}
           </div>
+          {/* Wave 80D — the Zestimate Challenge's still: tenant-picked source + address, pending approval. */}
+          <EstimateStillsCard />
         </section>
       )}
 

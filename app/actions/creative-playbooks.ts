@@ -99,7 +99,13 @@ export interface InstallPlaybookResult {
   }
 }
 
-export async function installCreativePlaybook(playbookKey: string): Promise<InstallPlaybookResult> {
+export async function installCreativePlaybook(
+  playbookKey: string,
+  /** Wave 80D — the tenant's "Zestimate & co." pick for the zestimate_challenge
+   *  play: which estimate source the still comes from and (optionally) which
+   *  listing's address it is captured for. Tenant is the SESSION's, never here. */
+  opts: { estimateSource?: string | null; listingId?: string | null } = {},
+): Promise<InstallPlaybookResult> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const playbook = getPlaybook(playbookKey)
@@ -113,6 +119,38 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
   let qrImageUrl: string | null = null
   let qrCodeId: string | null = null
   let videoProjectId: string | null = null
+
+  // ── 0. THE STILL (wave 80D — owner: "screenshots can be used by tenants";
+  //      the play's own whyItWorks: "their online estimate framing the
+  //      background"). AUTONOMOUS: when this is the Zestimate Challenge and the
+  //      tenant has no still for the chosen source + address, the OS captures
+  //      one through lib/marketing/tenant-screenshot-door.ts into the tenant's
+  //      marketing assets, PENDING — queued for the human on the existing
+  //      approval rail, never used until approved. An APPROVED still is what
+  //      the postcard art and the video's screenshot slot consume below.
+  let approvedStillUrl: string | null = null
+  let approvedStillId: string | null = null
+  if (playbook.key === "zestimate_challenge") {
+    const { ensureZestimateChallengeStill } = await import("@/lib/marketing/tenant-screenshot-door")
+    // Address: the named listing, else the tenant's most recent listing (own
+    // DB — the cheapest rail; no provider is asked for an address).
+    let address: string | null = null
+    if (opts.listingId) {
+      const { data: l, error: lErr } = await svc.from("listings").select("address, city, state").eq("id", opts.listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      if (lErr) notes.push(`Still: listing read refused — ${lErr.message}`)
+      address = l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
+    } else {
+      const { data: l, error: lErr } = await svc.from("listings").select("address, city, state").eq("brokerage_id", ctx.brokerageId).not("address", "is", null).order("updated_at", { ascending: false }).limit(1).maybeSingle()
+      if (lErr) notes.push(`Still: listing read refused — ${lErr.message}`)
+      address = l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
+    }
+    const still = await ensureZestimateChallengeStill({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null, source: opts.estimateSource ?? null })
+    if (still.state === "approved") { approvedStillUrl = still.url; approvedStillId = still.assetId; notes.push(`Still: using your approved ${still.source.replace(/_/g, " ")} still as the postcard art and the video's screenshot slot.`) }
+    else if (still.state === "captured") notes.push(`Still: captured a ${still.source.replace(/_/g, " ")} still for ${address} — awaiting your approval under Zestimate & co. stills (the QR stays the postcard art until then).`)
+    else if (still.state === "pending") notes.push(`Still: a ${still.source.replace(/_/g, " ")} still for ${address} is awaiting your approval under Zestimate & co. stills.`)
+    else if (still.state === "refused") notes.push(`Still: not captured — ${still.reason}`)
+    else notes.push("Still: no listing address on file to capture an estimate still for — add one under Zestimate & co. stills.")
+  }
 
   // Brand voice grounding — THE single brand source of truth (tier cascade).
   let brandLine = "the agent's brokerage"
@@ -176,6 +214,7 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
       videoProjectId = await createPlaybookVideo({
         svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
         playbook, videoStep, brandLine, magnetId, notes, author,
+        screenshotUrls: approvedStillUrl ? [approvedStillUrl] : [],
       })
     }
   }
@@ -233,7 +272,12 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
         locked_headline: isPostcard ? fill(copy.headline) : null,
         locked_body: isPostcard ? fill(copy.body) : null,
         locked_cta: isPostcard ? copy.cta : null,
-        property_photo_url: qrImageUrl, // the QR IS the art focus on these plays
+        // The QR IS the art focus on these plays — unless the tenant has
+        // APPROVED an estimate still (wave 80D): the industry's ZMA / "the
+        // Zestimate was wrong" piece puts the portal's own number on the card
+        // (Inman 2024-12-08; Listing Leads ZMA), so an approved still wins and
+        // the QR rides the copy's scan CTA. Never a pending still.
+        property_photo_url: approvedStillUrl ?? qrImageUrl,
         locked_letter_greeting: !isPostcard ? copy.greeting : null,
         locked_letter_body: !isPostcard ? fill(copy.body) : null,
         locked_letter_signoff: !isPostcard ? copy.signoff : null,
@@ -293,6 +337,7 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
         qrCodeId,
         bundleId,
         videoProjectId,
+        estimateStillAssetId: approvedStillId,
         installedAt: new Date().toISOString(),
       },
     }).eq("id", magnetId)
@@ -371,6 +416,11 @@ async function createPlaybookVideo(args: {
   magnetId: string | null
   notes: string[]
   author: (kind: string, brief: string, shape: Record<string, string>) => Promise<Record<string, string> | null>
+  /** Wave 80D — the APPROVED tenant estimate still(s) that frame the
+   *  presentation's background: staged as input_props.screenshotUrls, the key
+   *  lib/video/body-visual-model.ts assetsFromProps reads for the `screenshot`
+   *  treatment. Empty when none is approved — never a pending still. */
+  screenshotUrls?: string[]
 }): Promise<string | null> {
   const { svc, notes } = args
 
@@ -478,6 +528,10 @@ async function createPlaybookVideo(args: {
       mode: voiceProfile.did_video_url ? "clip" : "talk",
       lead_magnet_id: args.magnetId,
       playbook_key: args.playbook.key,
+      // The approved still rides the SAME input_props key every producer
+      // stages (screenshotUrls) so the body-visual `screenshot` treatment sees
+      // it when this clip is composited into a composition.
+      input_props: { screenshotUrls: args.screenshotUrls ?? [] },
     },
   }).eq("id", (project as any).id)
 

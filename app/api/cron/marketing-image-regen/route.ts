@@ -83,7 +83,10 @@ export async function GET(req: NextRequest) {
   // A screenshot row is RE-CAPTURED (same id, new asset_url), never re-generated.
   if (meta.asset_kind === SCREENSHOT_ASSET_KIND) {
     const { data: full, error: fullErr } = await svc.from("marketing_assets")
-      .select("id, asset_name, asset_url, thumbnail_url, approval_status, updated_at, metadata").eq("id", asset.id).maybeSingle()
+      // brokerage_id / created_by / tags: a TENANT-owned still (wave 80D)
+      // re-captures into the same tenant with its uses — recaptureScreenshotAsset
+      // reads the owner off the row.
+      .select("id, brokerage_id, created_by, tags, asset_name, asset_url, thumbnail_url, approval_status, updated_at, metadata").eq("id", asset.id).maybeSingle()
     if (fullErr || !full) {
       await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
       return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: `screenshot row read refused: ${fullErr?.message ?? "no row"}` }, { status: 200 })

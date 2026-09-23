@@ -1292,13 +1292,30 @@ export async function commissionVideo(
   //     plan rides input_props.bodyVisualPlan; the composition re-fits it to
   //     the duration it renders at. A composition with no rule FAILS LOUDLY —
   //     blocked like a missing content prop, never rendered unplanned.
-  const { stageBodyVisualPlan } = await import("@/lib/video/body-visual-model")
+  const { stageBodyVisualPlan, COMPOSITION_TREATMENTS } = await import("@/lib/video/body-visual-model")
   const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
     .map((k) => (contentProps as Record<string, unknown>)[k])
     .find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? hookLine
+  // 6d. TENANT SCREENSHOT STILLS (wave 80D — owner: "screenshots can be used
+  //     by tenants"). When the chosen composition can RENDER the `screenshot`
+  //     treatment (its COMPOSITION_TREATMENTS row — derived, never a typed
+  //     composition name), the tenant's APPROVED `use:product_video` stills
+  //     (Zestimate & co., lib/marketing/tenant-screenshot-door.ts) are staged
+  //     as input_props.screenshotUrls, the key assetsFromProps reads. Pending
+  //     stills never ride; an empty tenant stages nothing (the plan falls to
+  //     its universal floor). Best-effort — a refused read never blocks.
+  let screenshotUrls: string[] = []
+  if ((COMPOSITION_TREATMENTS[format.compositionId] ?? []).includes("screenshot")) {
+    try {
+      const { tenantScreenshotUrlsForVideo } = await import("@/lib/marketing/tenant-screenshot-door")
+      screenshotUrls = await tenantScreenshotUrlsForVideo(svc, opts.brokerageId)
+    } catch (e) {
+      console.warn("[video-director] tenant still pick failed; staging without screenshots:", (e as Error).message)
+    }
+  }
   const visual = stageBodyVisualPlan({
     compositionId: format.compositionId,
-    props: { ...contentProps, ...(format.needsBroll ? { brollClips } : {}) },
+    props: { ...contentProps, ...(format.needsBroll ? { brollClips } : {}), ...(screenshotUrls.length ? { screenshotUrls } : {}) },
     avatarClip: requiresAvatar,
     script: narrationForVisual,
   })
@@ -1318,6 +1335,8 @@ export async function commissionVideo(
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
       ...contentProps,
+      // The tenant's approved stills (6d) under the ONE key the plan read.
+      ...(screenshotUrls.length ? { screenshotUrls } : {}),
       // The per-segment screen plan (6e) — segments, treatments, b-roll /
       // photo / screenshot windows, caption window, music duck, avatar share.
       bodyVisualPlan: visual.plan,

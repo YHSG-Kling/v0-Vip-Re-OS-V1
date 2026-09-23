@@ -152,6 +152,25 @@ export interface ScreenshotRequest {
   label?: string
   /** Day key override (tests); defaults to today UTC. */
   dayIso?: string
+  /**
+   * TENANT OWNER (wave 80D — owner: "screenshots can be used by tenants").
+   * When set, the row lands in THAT brokerage's marketing assets
+   * (visibility_scope='brokerage', brokerage_id, created_by) instead of the
+   * platform library, with exactly these uses tagged, and the URL+day cache is
+   * scoped to the same tenant (one tenant's still is never another's). The
+   * brokerageId here comes from the caller's SESSION gate
+   * (lib/marketing/tenant-screenshot-door.ts), never from a request body.
+   * public_page only — an os_surface capture stays demo-tenant-only.
+   */
+  owner?: ScreenshotOwner
+}
+
+export interface ScreenshotOwner {
+  brokerageId: string
+  createdBy: string | null
+  uses?: readonly ScreenshotUse[]
+  /** Free provenance the owner records on metadata (estimate_source, address, listing_id…). */
+  provenance?: Record<string, unknown>
 }
 
 export interface ScreenshotPlan {
@@ -475,9 +494,51 @@ export function usesOfRow(row: { tags?: readonly string[] | null; metadata?: Rec
 
 /** PURE: the marketing_assets row for a finished capture — the image-library
  *  row shape, plus provenance. */
-export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, capturedAtIso: string, providerName: string): Record<string, unknown> {
+export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, capturedAtIso: string, providerName: string, owner?: ScreenshotOwner | null): Record<string, unknown> {
   const isOs = plan.kind === "os_surface"
-  const uses = defaultScreenshotUses(plan.kind)
+  // A tenant-owned still carries the uses the tenant chose (marketing_campaign
+  // always — it is campaign material by definition); a platform still is
+  // usable everywhere until a human narrows it.
+  const uses: ScreenshotUse[] = owner
+    ? SCREENSHOT_USES.filter((u) => u === "marketing_campaign" || (owner.uses ?? []).includes(u))
+    : defaultScreenshotUses(plan.kind)
+  if (owner) {
+    return {
+      brokerage_id: owner.brokerageId,
+      created_by: owner.createdBy,
+      visibility_scope: "brokerage",
+      asset_type: "image",
+      asset_name: plan.label.slice(0, 160),
+      asset_url: assetUrl,
+      thumbnail_url: assetUrl,
+      preview_text: `Online estimate page capture of ${plan.host} — marketing material, pending approval`.slice(0, 280),
+      source_table: "image_library",
+      tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, "third_party_page", "estimate_still"], uses),
+      // ALWAYS pending: a third-party page capture enters a tenant's campaign
+      // only once a human approves it on the tenant's own marketing_assets
+      // approval rail (app/actions/marketing-studio.ts approveAsset/rejectAsset).
+      approval_status: "pending",
+      metadata: {
+        asset_kind: SCREENSHOT_ASSET_KIND,
+        source: `screenshot:${plan.kind}`,
+        screenshot_kind: plan.kind,
+        surface_id: null,
+        route: null,
+        source_url: plan.targetUrl,
+        captured_at: capturedAtIso,
+        cache_key: plan.cacheKey,
+        day: plan.dayIso,
+        viewport: plan.viewport,
+        redact: plan.redactSelectors,
+        provider: providerName,
+        usage: "marketing_material_never_customer_value",
+        uses,
+        customer_facing_value: false,
+        license_note: `Third-party page (${plan.host}) captured as this brokerage's own marketing material; source and capture time recorded; shown whole as the portal's own figure; never redistributed as stock and never spoken as a value.`,
+        ...(owner.provenance ?? {}),
+      },
+    }
+  }
   return {
     brokerage_id: null,
     created_by: null,
@@ -555,14 +616,20 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
   const { siteUrl } = await import("@/lib/platform/site-url")
   const plan = planScreenshotCapture(req, { siteOrigin: siteUrl(), now: deps.now })
   if (!plan.ok) return plan
+  const owner = req.owner ?? null
+  if (owner && plan.kind !== "public_page") return { ok: false, reason: "REFUSED: an os_surface still is demo-tenant-only — a tenant owner may capture public_page stills only" }
+  if (owner && !owner.brokerageId) return { ok: false, reason: "REFUSED: a tenant-owned capture needs the session's brokerage id" }
   const svc = deps.svc ?? (await import("@/lib/supabase/service")).createServiceClient()
 
   // Cache by URL + day — the same still is never captured twice in a day.
-  const { data: hit, error: hitErr } = await svc.from("marketing_assets")
+  // Scoped to the OWNER: a tenant's cache hit is its own row, never another
+  // tenant's and never the platform library's.
+  let cacheQ = svc.from("marketing_assets")
     .select("id, asset_url, metadata")
-    .eq("asset_type", "image").eq("visibility_scope", "platform")
+    .eq("asset_type", "image")
     .eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND).eq("metadata->>cache_key", plan.cacheKey)
-    .limit(1).maybeSingle()
+  cacheQ = owner ? cacheQ.eq("visibility_scope", "brokerage").eq("brokerage_id", owner.brokerageId) : cacheQ.eq("visibility_scope", "platform")
+  const { data: hit, error: hitErr } = await cacheQ.limit(1).maybeSingle()
   if (hitErr) return { ok: false, reason: `screenshot cache read refused: ${hitErr.message}` }
   if (hit) {
     const h = hit as { id: string; asset_url: string; metadata: Record<string, unknown> | null }
@@ -609,7 +676,7 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
   try { url = await hostRenderedMedia(svc, plan.storagePath, png, "image/png") }
   catch (e) { return { ok: false, reason: (e as Error).message } }
 
-  const { data: row, error } = await svc.from("marketing_assets").insert(screenshotAssetRow(plan, url, capturedAt, provider.name)).select("id").single()
+  const { data: row, error } = await svc.from("marketing_assets").insert(screenshotAssetRow(plan, url, capturedAt, provider.name, owner)).select("id").single()
   if (error || !row) return { ok: false, reason: `screenshot library row insert refused: ${error?.message ?? "no row"}` }
   return { ok: true, assetId: (row as { id: string }).id, url, cached: false, kind: plan.kind, capturedAt, sourceUrl: plan.targetUrl }
 }
@@ -625,17 +692,28 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
 export async function capturePublicPropertyPage(
   query: string,
   deps: CaptureDeps & { search?: (q: string, domains: string[]) => Promise<Array<{ url: string | null }>> } = {},
+  opts: {
+    /** Restrict the search to a SUBSET of PUBLIC_PAGE_HOSTS (a tenant's chosen
+     *  estimate source — wave 80D). A host off the allowlist refuses. */
+    domains?: readonly string[]
+    /** Extra request fields (owner, label) merged onto the capture. */
+    request?: Partial<Pick<ScreenshotRequest, "owner" | "label" | "dayIso" | "viewport">>
+  } = {},
 ): Promise<CaptureResult | ScreenshotRefusal> {
   const q = query.trim()
   if (q.length < 6) return { ok: false, reason: "a property search needs an address or a specific query" }
-  const search = deps.search ?? (async (qq: string, domains: string[]) => {
+  const domains = opts.domains?.length ? [...opts.domains] : [...PUBLIC_PAGE_HOSTS]
+  const offList = domains.filter((d) => !isPublicPageHost(d))
+  if (offList.length) return { ok: false, reason: `search domain ${offList.join(", ")} is not on PUBLIC_PAGE_HOSTS (${PUBLIC_PAGE_HOSTS.join(", ")}) — not searched` }
+  const search = deps.search ?? (async (qq: string, dd: string[]) => {
     const { exaSearch } = await import("@/lib/external/exa-client")
-    return (await exaSearch({ query: qq, numResults: 5, includeDomains: domains })).results
+    return (await exaSearch({ query: qq, numResults: 5, includeDomains: dd })).results
   })
-  const results = await search(q, [...PUBLIC_PAGE_HOSTS])
-  const first = results.map((r) => r.url).find((u): u is string => typeof u === "string" && (() => { try { return isPublicPageHost(new URL(u).hostname) } catch { return false } })())
-  if (!first) return { ok: false, reason: `the search tool found no public property page on ${PUBLIC_PAGE_HOSTS.join("/")} for "${q}"` }
-  return captureScreenshot({ kind: "public_page", url: first, label: `Public listing page — ${q}`.slice(0, 160) }, deps)
+  const results = await search(q, domains)
+  const onDomain = (host: string) => domains.some((d) => host === d || host.endsWith(`.${d}`))
+  const first = results.map((r) => r.url).find((u): u is string => typeof u === "string" && (() => { try { const h = new URL(u).hostname.toLowerCase(); return isPublicPageHost(h) && onDomain(h) } catch { return false } })())
+  if (!first) return { ok: false, reason: `the search tool found no public property page on ${domains.join("/")} for "${q}"` }
+  return captureScreenshot({ kind: "public_page", url: first, label: `Public listing page — ${q}`.slice(0, 160), ...(opts.request ?? {}) }, deps)
 }
 
 // ── Refresh loop (rides marketing-image-regen) ───────────────────────────────
@@ -683,13 +761,19 @@ export async function seedMissingDemoStill(svc: any, deps: CaptureDeps = {}): Pr
  * public_page rows re-run the ToS gate; os_surface rows re-mint the demo
  * session. A refusal leaves the old still and reports the reason.
  */
-export async function recaptureScreenshotAsset(svc: any, row: ScreenshotAssetRow, deps: CaptureDeps = {}): Promise<{ ok: true; url: string } | ScreenshotRefusal> {
+export async function recaptureScreenshotAsset(svc: any, row: ScreenshotAssetRow & { brokerage_id?: string | null; created_by?: string | null; tags?: string[] | null }, deps: CaptureDeps = {}): Promise<{ ok: true; url: string } | ScreenshotRefusal> {
   const meta = row.metadata ?? {}
   const kind = meta.screenshot_kind
   if (kind !== "os_surface" && kind !== "public_page") return { ok: false, reason: `row ${row.id} has no screenshot_kind in metadata` }
+  // A tenant-owned still (wave 80D) re-captures INTO the same tenant: the
+  // owner rides from the row itself, so the fresh cache row is that tenant's
+  // and its uses/provenance survive the refresh.
+  const owner: ScreenshotOwner | undefined = kind === "public_page" && row.brokerage_id
+    ? { brokerageId: row.brokerage_id, createdBy: row.created_by ?? null, uses: usesOfRow(row), provenance: Object.fromEntries(Object.entries(meta).filter(([k]) => ["estimate_source", "address", "listing_id"].includes(k))) }
+    : undefined
   const req: ScreenshotRequest = kind === "os_surface"
     ? { kind, surfaceId: typeof meta.surface_id === "string" ? meta.surface_id : undefined, route: typeof meta.route === "string" ? meta.route : undefined, brokerageId: "platform", label: row.asset_name ?? undefined }
-    : { kind, url: typeof meta.source_url === "string" ? meta.source_url : undefined, label: row.asset_name ?? undefined }
+    : { kind, url: typeof meta.source_url === "string" ? meta.source_url : undefined, label: row.asset_name ?? undefined, owner }
   const { siteUrl } = await import("@/lib/platform/site-url")
   const plan = planScreenshotCapture(req, { siteOrigin: siteUrl(), now: deps.now })
   if (!plan.ok) return plan
@@ -762,6 +846,10 @@ export interface ScreenshotStillPick {
   approvalStatus: string | null
   sourceUrl: string | null
   capturedAt: string | null
+  /** Tenant estimate stills (wave 80D): the picked source key + the address
+   *  the tenant typed; null on platform stills. */
+  estimateSource?: string | null
+  address?: string | null
   /** ALWAYS false: a still is material for a campaign, a video, a demo or a
    *  lesson — never an AI-agent statement of a home's value to a customer. */
   customerFacingValue: false
@@ -779,22 +867,32 @@ export interface ScreenshotStillPick {
  */
 export async function listScreenshotStillsForUse(
   svc: any, use: ScreenshotUse,
-  opts: { includePublicPage?: boolean; kind?: ScreenshotKind; limit?: number } = {},
+  opts: {
+    includePublicPage?: boolean; kind?: ScreenshotKind; limit?: number
+    /** TENANT SCOPE (wave 80D): list THAT brokerage's own stills instead of the
+     *  platform library. The id comes from the session gate, never a body.
+     *  Tenant stills are public_page captures by construction, so
+     *  includePublicPage is implied; `approvedOnly` narrows to the rows a
+     *  human has approved on the tenant's rail — the campaign consumer's view. */
+    brokerageId?: string
+    approvedOnly?: boolean
+  } = {},
 ): Promise<ScreenshotStillPick[]> {
   if (!(SCREENSHOT_USES as readonly string[]).includes(use)) return []
   let q = svc.from("marketing_assets")
     .select("id, asset_name, asset_url, approval_status, tags, updated_at, metadata")
-    .eq("asset_type", "image").eq("visibility_scope", "platform")
+    .eq("asset_type", "image")
     .eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)
-    .order("updated_at", { ascending: false }).limit(opts.limit ?? 100)
+  q = opts.brokerageId ? q.eq("visibility_scope", "brokerage").eq("brokerage_id", opts.brokerageId) : q.eq("visibility_scope", "platform")
   if (opts.kind) q = q.eq("metadata->>screenshot_kind", opts.kind)
-  const { data, error } = await q
+  if (opts.approvedOnly) q = q.eq("approval_status", "approved")
+  const { data, error } = await q.order("updated_at", { ascending: false }).limit(opts.limit ?? 100)
   if (error) { console.error("[screenshot-capture] stills-for-use read refused:", error.message); return [] }
   const out: ScreenshotStillPick[] = []
   for (const r of (data ?? []) as Array<ScreenshotAssetRow & { tags?: string[] | null }>) {
     const meta = r.metadata ?? {}
     const kind = meta.screenshot_kind === "public_page" ? "public_page" : "os_surface"
-    if (kind === "public_page" && !opts.includePublicPage) continue
+    if (kind === "public_page" && !opts.includePublicPage && !opts.brokerageId) continue
     const uses = usesOfRow(r)
     if (!uses.includes(use)) continue
     out.push({
@@ -802,6 +900,8 @@ export async function listScreenshotStillsForUse(
       approvalStatus: r.approval_status ?? null,
       sourceUrl: typeof meta.source_url === "string" ? meta.source_url : null,
       capturedAt: typeof meta.captured_at === "string" ? meta.captured_at : null,
+      estimateSource: typeof meta.estimate_source === "string" ? meta.estimate_source : null,
+      address: typeof meta.address === "string" ? meta.address : null,
       customerFacingValue: false,
     })
   }
@@ -820,18 +920,28 @@ export async function screenshotUrlsForUse(svc: any, use: ScreenshotUse, opts: {
  * a screenshot row. `.select()`ed and COUNTED (CLAUDE.md §3): an unmatched id
  * — not a screenshot, already gone — is a refusal, never a silent success.
  */
-export async function setScreenshotUses(svc: any, assetId: string, uses: readonly ScreenshotUse[]): Promise<{ ok: true; uses: ScreenshotUse[] } | ScreenshotRefusal> {
+export async function setScreenshotUses(
+  svc: any, assetId: string, uses: readonly ScreenshotUse[],
+  /** TENANT SCOPE (wave 80D): both the read and the counted update carry the
+   *  session tenant's predicate, so another tenant's still matches 0 rows and
+   *  refuses (§3) instead of being re-tagged. Omitted = platform library. */
+  scope: { brokerageId?: string } = {},
+): Promise<{ ok: true; uses: ScreenshotUse[] } | ScreenshotRefusal> {
   const valid = SCREENSHOT_USES.filter((u) => uses.includes(u))
-  const { data: rows, error: readErr } = await svc.from("marketing_assets").select("id, tags, metadata")
-    .eq("id", assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND).limit(1)
+  let readQ = svc.from("marketing_assets").select("id, tags, metadata")
+    .eq("id", assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)
+  readQ = scope.brokerageId ? readQ.eq("brokerage_id", scope.brokerageId) : readQ.eq("visibility_scope", "platform")
+  const { data: rows, error: readErr } = await readQ.limit(1)
   if (readErr) return { ok: false, reason: `screenshot row ${assetId} read refused: ${readErr.message}` }
   const row = ((rows ?? []) as Array<{ id: string; tags: string[] | null; metadata: Record<string, unknown> | null }>)[0]
-  if (!row) return { ok: false, reason: `screenshot row ${assetId} not found (or not a screenshot)` }
-  const { data: updated, error } = await svc.from("marketing_assets").update({
+  if (!row) return { ok: false, reason: `screenshot row ${assetId} not found (or not a screenshot${scope.brokerageId ? " of this brokerage" : ""})` }
+  let updQ = svc.from("marketing_assets").update({
     tags: tagsWithUses(row.tags, valid),
     metadata: { ...(row.metadata ?? {}), uses: valid },
     updated_at: new Date().toISOString(),
-  }).eq("id", assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND).select("id")
+  }).eq("id", assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)
+  updQ = scope.brokerageId ? updQ.eq("brokerage_id", scope.brokerageId) : updQ.eq("visibility_scope", "platform")
+  const { data: updated, error } = await updQ.select("id")
   if (error) return { ok: false, reason: `screenshot row ${assetId} update refused: ${error.message}` }
   if (((updated ?? []) as unknown[]).length !== 1) return { ok: false, reason: `screenshot row ${assetId}: update matched ${((updated ?? []) as unknown[]).length} rows, expected 1` }
   return { ok: true, uses: valid }
