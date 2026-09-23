@@ -97,9 +97,15 @@
 import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
 
 export type PropertyLookupPurpose = "conversation" | "listing_intake" | "acquisition" | "skip_trace" | "dnc"
-export const PROPERTY_LOOKUP_PURPOSES: readonly PropertyLookupPurpose[] = [
+// Module-private (wave 79 integration, opposite-missing C3: the exported list had no
+// reader). Its ONE reader is the entry gate below — a "use server" caller can hand the
+// rail any string, and an unknown purpose must fail CLOSED, never fall to a rung.
+const PROPERTY_LOOKUP_PURPOSES: readonly PropertyLookupPurpose[] = [
   "conversation", "listing_intake", "acquisition", "skip_trace", "dnc",
 ]
+function isPropertyLookupPurpose(v: unknown): v is PropertyLookupPurpose {
+  return typeof v === "string" && (PROPERTY_LOOKUP_PURPOSES as readonly string[]).includes(v)
+}
 
 /** The owner's carve-out: the ONLY purposes that may ever reach BatchData. */
 export const BATCHDATA_ELIGIBLE_PURPOSES: ReadonlySet<PropertyLookupPurpose> = new Set<PropertyLookupPurpose>([
@@ -406,6 +412,10 @@ export async function lookupPropertyForConversation(
   deps: PropertyLookupDeps = {},
 ): Promise<PropertyLookupResult> {
   const result: PropertyLookupResult = { found: false, facts: null, rungsTried: [], skipped: [] }
+  if (!isPropertyLookupPurpose(req.purpose)) {
+    result.skipped.push({ rung: "cache", reason: `purpose "${String(req.purpose)}" is not one of ${PROPERTY_LOOKUP_PURPOSES.join("/")} — refused, fail closed` })
+    return result
+  }
   if (!req.brokerageId) {
     result.skipped.push({ rung: "cache", reason: "no tenant on the request — a tenant-less lookup is refused (§4)" })
     return result

@@ -14,9 +14,16 @@ import {
   captureDemoStillAction,
   capturePublicPropertyStillAction,
   listDemoStillSurfacesAction,
+  listScreenshotStillsForUseAction,
+  setScreenshotUsesAction,
 } from "@/app/actions/superadmin/screenshot-capture"
 
 type Surface = { id: string; label: string; route: string }
+// Mirrors SCREENSHOT_USES in lib/assets/screenshot-capture.ts (a server-only
+// module a client component cannot import); the action refuses any other value.
+const USES = ["marketing_campaign", "product_video", "demo", "training"] as const
+type Use = (typeof USES)[number]
+type Still = { id: string; url: string; label: string; uses: Use[]; approvalStatus: string | null }
 
 export function DemoStillsCard() {
   const [surfaces, setSurfaces] = useState<Surface[]>([])
@@ -25,6 +32,27 @@ export function DemoStillsCard() {
   const [result, setResult] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [pending, start] = useTransition()
+  // OWNER (2026-09-23): "the zestimate screenshot will be used in some marketing
+  // campaigns so there can be many uses for the screenshots" — every still
+  // carries its uses; a person widens or narrows them here (lane 79C).
+  const [use, setUse] = useState<Use>("marketing_campaign")
+  const [stills, setStills] = useState<Still[]>([])
+
+  function loadStills(u: Use) {
+    listScreenshotStillsForUseAction({ use: u, includePublicPage: true })
+      .then((r) => { if (r.ok) setStills(r.stills as Still[]); else setErr(r.error) })
+      .catch((e) => setErr(e instanceof Error ? e.message : "Could not list the stills"))
+  }
+  useEffect(() => { loadStills(use) }, [use])
+
+  function toggleUse(still: Still, u: Use) {
+    const next = still.uses.includes(u) ? still.uses.filter((x) => x !== u) : [...still.uses, u]
+    setErr(null)
+    start(async () => {
+      const r = await setScreenshotUsesAction({ assetId: still.id, uses: next })
+      if (r.ok) loadStills(use); else setErr(r.error)
+    })
+  }
 
   useEffect(() => {
     listDemoStillSurfacesAction().then((r) => {
@@ -87,6 +115,27 @@ export function DemoStillsCard() {
         <button type="button" className="rounded border px-3 py-1 text-sm" onClick={capturePublic} disabled={pending || !query.trim()}>
           {pending ? "Working…" : "Capture public page"}
         </button>
+      </div>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">Stills usable for</span>
+          <select className="rounded border bg-background px-2 py-1 text-sm" value={use} onChange={(e) => setUse(e.target.value as Use)} disabled={pending}>
+            {USES.map((u) => <option key={u} value={u}>{u.replace("_", " ")}</option>)}
+          </select>
+        </div>
+        {stills.length === 0 && <p className="text-xs text-muted-foreground">No stills carry this use yet.</p>}
+        {stills.map((s) => (
+          <div key={s.id} className="flex flex-wrap items-center gap-2 text-xs">
+            <a className="underline break-all" href={s.url} target="_blank" rel="noreferrer">{s.label}</a>
+            {s.approvalStatus && s.approvalStatus !== "approved" && <span className="text-muted-foreground">({s.approvalStatus})</span>}
+            {USES.map((u) => (
+              <label key={u} className="flex items-center gap-1">
+                <input type="checkbox" checked={s.uses.includes(u)} disabled={pending} onChange={() => toggleUse(s, u)} />
+                {u.replace("_", " ")}
+              </label>
+            ))}
+          </div>
+        ))}
       </div>
       {result && <p className="text-xs break-all">{result}</p>}
       {err && <p className="text-xs text-destructive">{err}</p>}

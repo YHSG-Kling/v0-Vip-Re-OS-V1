@@ -16,6 +16,7 @@ import { OverageCalculator } from "@/app/components/features/admin/overage-calcu
 import { FeatureEntitlementList } from "@/app/components/features/admin/feature-entitlement-list"
 import { BillingDiagnosticsPanel } from "@/app/components/features/admin/billing-diagnostics-panel"
 import { ManageBillingButton } from "./manage-billing-button"
+import { SeatDoorCard } from "./seat-door-card"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { SubscriptionAgreementCard } from "./subscription-agreement-card"
 import { RevenueSummaryCard } from "./revenue-summary-card"
@@ -193,6 +194,7 @@ export default async function BillingAdminPage({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Column - Subscription & Features */}
           <div className="lg:col-span-2 space-y-6">
+            <SeatDoorCard />
             {agreementView && <SubscriptionAgreementCard initialView={agreementView} />}
             {referralEarnings.length > 0 && <ReferralEarningsCard initialRows={referralEarnings} />}
             <BillingDashboard brokerageId={brokerageId} />

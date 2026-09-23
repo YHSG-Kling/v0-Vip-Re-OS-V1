@@ -3,6 +3,7 @@
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-predictions.ts": 2,
     "app/actions/ai-transaction-coordinator.ts": 2,
+    "app/actions/billing.ts": 3,
     "app/actions/cda-portal.ts": 3,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
@@ -10,6 +11,7 @@
     "app/actions/listings.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
+    "app/actions/superadmin/screenshot-capture.ts": 2,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/video/create-video-project.ts": 1,
     "app/actions/video-repurposing.ts": 3,
@@ -52,9 +54,8 @@
     "lib/ai/web-search.ts": 1,
     "lib/ai-isa/adaptive-reengagement.ts": 2,
     "lib/ai-isa/appointment-form.ts": 1,
-    "lib/ai-isa/batchdata-isa-tools.ts": 7,
+    "lib/ai-isa/batchdata-isa-tools.ts": 3,
     "lib/ai-isa/callback-task.ts": 2,
-    "lib/ai-isa/capability-catalogue.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 1,
     "lib/ai-isa/contact-reel-situation.ts": 1,
     "lib/ai-isa/customer-context-tools.ts": 6,
@@ -66,10 +67,12 @@
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
     "lib/ai-isa/next-best-touch.ts": 1,
-    "lib/ai-isa/persona-tool-policy.ts": 5,
+    "lib/ai-isa/persona-tool-policy.ts": 6,
     "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
+    "lib/ai-isa/property-lookup-rail.ts": 4,
+    "lib/ai-isa/property-lookup-tools.ts": 2,
     "lib/ai-isa/reengagement-policy.ts": 2,
     "lib/ai-isa/resolve-isa-settings.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
@@ -78,7 +81,7 @@
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/application/listing-lifecycle.ts": 1,
-    "lib/assets/screenshot-capture.ts": 14,
+    "lib/assets/screenshot-capture.ts": 18,
     "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
@@ -112,7 +115,6 @@
     "lib/crm/import-pull.ts": 3,
     "lib/data-guard/index.ts": 1,
     "lib/did/avatar-completion.ts": 2,
-    "lib/did/platform-live-agent.ts": 1,
     "lib/direct-mail/address-suppression.ts": 2,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
@@ -353,6 +355,7 @@
     "lib/onboarding/onboarding-roster.ts": 1,
     "lib/onboarding/setup-readiness.ts": 1,
     "lib/onboarding/state-license-registry.ts": 1,
+    "lib/onboarding/subscriber-stall.ts": 3,
     "lib/osint-client.ts": 1,
     "lib/platform/acting-context.ts": 1,
     "lib/platform/ai-ops.ts": 1,
@@ -371,13 +374,14 @@
     "lib/platform/product-demo.ts": 1,
     "lib/platform/prospect-agent-tools.ts": 1,
     "lib/platform/prospect-capture.ts": 5,
-    "lib/platform/prospect-conversion.ts": 4,
+    "lib/platform/prospect-conversion.ts": 3,
     "lib/platform/prospect-sourcer.ts": 2,
     "lib/platform/provider-posture.ts": 1,
     "lib/platform/referral-payouts.ts": 1,
     "lib/platform/revenue-analytics.ts": 1,
     "lib/platform/sales-rep.ts": 2,
     "lib/platform/self-audit-rollup.ts": 1,
+    "lib/platform/subscriber-door.ts": 3,
     "lib/platform/subscription-oversight.ts": 2,
     "lib/platform/territory-marketplace.ts": 1,
     "lib/platform/trial-funnel.ts": 1,
@@ -432,6 +436,7 @@
     "lib/vendors/vendor-scope.ts": 1,
     "lib/vendors/vendor-service-area.ts": 3,
     "lib/video/avatar-render-orchestrator.ts": 1,
+    "lib/video/body-visual-model.ts": 4,
     "lib/video/caption-plan.ts": 1,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 10,
@@ -462,7 +467,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9802,
+  "census": 9857,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -580,7 +585,7 @@
     "app/actions/autonomy-halt.ts": 1,
     "app/actions/avatar-video.ts": 2,
     "app/actions/avatar-voice-catalog.ts": 3,
-    "app/actions/billing.ts": 9,
+    "app/actions/billing.ts": 12,
     "app/actions/blog-cadence-policy.ts": 2,
     "app/actions/blog.ts": 13,
     "app/actions/brand-template-registry.ts": 12,
@@ -948,7 +953,7 @@
     "app/actions/superadmin/number-provisioning.ts": 3,
     "app/actions/superadmin/os-sentinel.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 2,
-    "app/actions/superadmin/plan-catalog.ts": 7,
+    "app/actions/superadmin/plan-catalog.ts": 8,
     "app/actions/superadmin/platform-announcements.ts": 1,
     "app/actions/superadmin/platform-brand.ts": 6,
     "app/actions/superadmin/platform-content.ts": 5,
@@ -962,7 +967,7 @@
     "app/actions/superadmin/platform-staff.ts": 9,
     "app/actions/superadmin/portal-clients.ts": 2,
     "app/actions/superadmin/provider-posture.ts": 3,
-    "app/actions/superadmin/screenshot-capture.ts": 3,
+    "app/actions/superadmin/screenshot-capture.ts": 5,
     "app/actions/superadmin/subscriber-referrals.ts": 4,
     "app/actions/superadmin/subscription-contracts.ts": 6,
     "app/actions/superadmin/subscription-oversight.ts": 1,
@@ -2732,7 +2737,7 @@
     "lib/ai-isa/adaptive-reengagement.ts": 4,
     "lib/ai-isa/appointment-form.ts": 4,
     "lib/ai-isa/appointment-scheduler.ts": 1,
-    "lib/ai-isa/batchdata-isa-tools.ts": 8,
+    "lib/ai-isa/batchdata-isa-tools.ts": 4,
     "lib/ai-isa/book-seller-appointment.ts": 1,
     "lib/ai-isa/brand-playbook-context.ts": 1,
     "lib/ai-isa/brand-voice-prompt.ts": 2,
@@ -2772,6 +2777,8 @@
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
+    "lib/ai-isa/property-lookup-rail.ts": 5,
+    "lib/ai-isa/property-lookup-tools.ts": 4,
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
     "lib/ai-isa/qualification-playbook.ts": 2,
@@ -2808,7 +2815,7 @@
     "lib/application/transactions.ts": 55,
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
-    "lib/assets/screenshot-capture.ts": 24,
+    "lib/assets/screenshot-capture.ts": 31,
     "lib/audiences/audience-sync.ts": 3,
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
@@ -2833,13 +2840,15 @@
     "lib/billing/dunning.ts": 5,
     "lib/billing/phone-plan-resolve.ts": 2,
     "lib/billing/phone-plan.ts": 3,
-    "lib/billing/plan-catalog.ts": 4,
+    "lib/billing/plan-catalog.ts": 7,
     "lib/billing/plan-tier.ts": 3,
     "lib/billing/resolve-stripe-account.ts": 3,
+    "lib/billing/seat-packages.ts": 6,
+    "lib/billing/seat-sync.ts": 1,
     "lib/billing/stripe-account-scope.ts": 4,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
-    "lib/billing/stripe-subscription-ops.ts": 9,
+    "lib/billing/stripe-subscription-ops.ts": 12,
     "lib/billing/stripe-webhook-secrets.ts": 2,
     "lib/billing/subscription-activation.ts": 5,
     "lib/billing/sync-plan-tier.ts": 1,
@@ -3076,11 +3085,12 @@
     "lib/did/avatar-completion.ts": 4,
     "lib/did/avatar-consent-gate.ts": 1,
     "lib/did/consent.ts": 4,
+    "lib/did/context-markers.ts": 3,
     "lib/did/contract.ts": 8,
     "lib/did/gateway.ts": 2,
     "lib/did/index.ts": 1,
     "lib/did/live-session-metering.ts": 7,
-    "lib/did/platform-live-agent.ts": 6,
+    "lib/did/platform-live-agent.ts": 5,
     "lib/did/result-url-rehost-sweep.ts": 1,
     "lib/did/webhook.ts": 3,
     "lib/direct-mail/address-suppression.ts": 4,
@@ -3162,7 +3172,7 @@
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
     "lib/external/batchdata-client.ts": 23,
-    "lib/external/batchdata-mcp.ts": 13,
+    "lib/external/batchdata-mcp.ts": 12,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
     "lib/external/census-appreciation.ts": 4,
@@ -3562,7 +3572,7 @@
     "lib/kernel/schema-adaptation.ts": 4,
     "lib/kernel/schema-memory.ts": 4,
     "lib/kernel/scraping.ts": 8,
-    "lib/kernel/seat-usage.ts": 3,
+    "lib/kernel/seat-usage.ts": 4,
     "lib/kernel/second-opinion-runner.ts": 1,
     "lib/kernel/second-opinion.ts": 1,
     "lib/kernel/self-book.ts": 5,
@@ -3861,6 +3871,7 @@
     "lib/onboarding/state-license-registry.ts": 3,
     "lib/onboarding/state-machine.ts": 2,
     "lib/onboarding/step-categories.ts": 4,
+    "lib/onboarding/subscriber-stall.ts": 4,
     "lib/open-house/instant-greeting.ts": 1,
     "lib/orchestrator/internal.ts": 2,
     "lib/osint-client.ts": 2,
@@ -3900,7 +3911,7 @@
     "lib/platform/product-content.ts": 6,
     "lib/platform/product-demo.ts": 5,
     "lib/platform/prospect-agent-tools.ts": 2,
-    "lib/platform/prospect-capture.ts": 11,
+    "lib/platform/prospect-capture.ts": 12,
     "lib/platform/prospect-conversion.ts": 6,
     "lib/platform/prospect-followup.ts": 1,
     "lib/platform/prospect-sourcer.ts": 3,
@@ -3916,6 +3927,7 @@
     "lib/platform/site-url.ts": 1,
     "lib/platform/staff-action-gate.ts": 2,
     "lib/platform/status-notice.ts": 7,
+    "lib/platform/subscriber-door.ts": 6,
     "lib/platform/subscriber-referrals.ts": 6,
     "lib/platform/subscription-oversight.ts": 4,
     "lib/platform/suppression-list.ts": 4,
@@ -4218,12 +4230,13 @@
     "lib/vendors/w9-vocab.ts": 3,
     "lib/vendors/w9.ts": 3,
     "lib/video/anniversary-script.ts": 5,
-    "lib/video/assembly-timeline.ts": 2,
+    "lib/video/assembly-timeline.ts": 3,
     "lib/video/assistant-faces.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-explainer.ts": 4,
     "lib/video/avatar-render-orchestrator.ts": 8,
     "lib/video/avatar-track-submit.ts": 1,
+    "lib/video/body-visual-model.ts": 10,
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
     "lib/video/broll-url.ts": 1,
@@ -5154,7 +5167,10 @@
       "getBillingUsage",
       "getInvoiceHistory",
       "startSubscriptionCheckout",
-      "cancelSubscription"
+      "cancelSubscription",
+      "getSeatDoorAction",
+      "buySeatPackagesAction",
+      "changePlanTierAction"
     ],
     "app/actions/blog-cadence-policy.ts": [
       "getMyBlogCadencePolicy",
@@ -7535,6 +7551,7 @@
       "upsertPlanTierAction",
       "removePlanTierAction",
       "syncPlanTierFromStripeAction",
+      "syncCatalogFromStripeAction",
       "publishTierToStripeAction",
       "listAIOverageTermsAction",
       "upsertAIOverageTermsAction"
@@ -7624,6 +7641,8 @@
     "app/actions/superadmin/screenshot-capture.ts": [
       "captureDemoStillAction",
       "capturePublicPropertyStillAction",
+      "listScreenshotStillsForUseAction",
+      "setScreenshotUsesAction",
       "listDemoStillSurfacesAction"
     ],
     "app/actions/superadmin/subscriber-referrals.ts": [
@@ -13604,13 +13623,9 @@
       "scheduleISAAppointment"
     ],
     "lib/ai-isa/batchdata-isa-tools.ts": [
-      "criteriaKey",
       "resolveBatchDataIsaBudgetCents",
       "resolvePersonaBudgetCents",
       "evaluateBudget",
-      "evaluatePageOrder",
-      "toInvestorFacingToolRow",
-      "toIsaFacingToolRow",
       "batchDataIsaTools"
     ],
     "lib/ai-isa/book-seller-appointment.ts": [
@@ -13820,6 +13835,19 @@
       "callerTurns",
       "isCallerOptOut",
       "routePostCallOutcome"
+    ],
+    "lib/ai-isa/property-lookup-rail.ts": [
+      "isBatchDataRungAllowed",
+      "redactFactsForAudience",
+      "normalizeStreetLine",
+      "formatFullAddress",
+      "lookupPropertyForConversation"
+    ],
+    "lib/ai-isa/property-lookup-tools.ts": [
+      "toInvestorFacingToolRow",
+      "toIsaFacingToolRow",
+      "buildLookupPropertyFactsTool",
+      "buildSearchOffmarketOpportunitiesTool"
     ],
     "lib/ai-isa/qualification-core.ts": [
       "signalScore",
@@ -14108,6 +14136,10 @@
       "hostedScreenshotProvider",
       "resolveScreenshotProvider",
       "demoSessionCookies",
+      "screenshotUseTag",
+      "defaultScreenshotUses",
+      "tagsWithUses",
+      "usesOfRow",
       "screenshotAssetRow",
       "captureScreenshot",
       "capturePublicPropertyPage",
@@ -14119,6 +14151,9 @@
       "stillUrlsForVideoAngle",
       "demoStillImageUrls",
       "demoStillForTopic",
+      "listScreenshotStillsForUse",
+      "screenshotUrlsForUse",
+      "setScreenshotUses",
       "stillsAsBrollClips",
       "figuresForEducationTopic",
       "renderFigures"
@@ -14256,6 +14291,9 @@
     ],
     "lib/billing/plan-catalog.ts": [
       "tierForSeatCount",
+      "seatCountAboveEveryBand",
+      "seatPackageSellable",
+      "seatPackagesNeeded",
       "comparePlanPriceToStripe",
       "validateAIOverageTermsInput",
       "validatePlanTierInput"
@@ -14269,6 +14307,17 @@
       "resolvePlatformStripeAccount",
       "resolveTenantStripeAccount",
       "readTenantStripeWebhookCredentials"
+    ],
+    "lib/billing/seat-packages.ts": [
+      "itemFactsOf",
+      "deriveSubscriptionSeatState",
+      "normalizeStripeSubscription",
+      "catalogFromStripePrices",
+      "priceFactsOf",
+      "seatRowPatch"
+    ],
+    "lib/billing/seat-sync.ts": [
+      "reconcileSubscriptionsFromStripe"
     ],
     "lib/billing/stripe-account-scope.ts": [
       "stripeAccountSideFor",
@@ -14290,6 +14339,9 @@
       "stripeCancelAtPeriodEnd",
       "stripeResume",
       "stripeSwapPrice",
+      "stripeSetSeatPackages",
+      "stripeRetrieveSubscription",
+      "stripeListActivePrices",
       "stripeExtendTrial",
       "stripePauseCollection",
       "computeTrialExtension",
@@ -15455,6 +15507,11 @@
       "findVerifiedConsent",
       "resolveConsentIdForAvatar"
     ],
+    "lib/did/context-markers.ts": [
+      "contactMarker",
+      "embedSessionMarker",
+      "platformLiveSessionMarker"
+    ],
     "lib/did/contract.ts": [
       "classifyDidStatus",
       "classifyDidError",
@@ -15482,7 +15539,6 @@
       "listLiveAgentSessionsForBrokerage"
     ],
     "lib/did/platform-live-agent.ts": [
-      "platformLiveSessionMarker",
       "loadPlatformLiveAgentConfig",
       "resolvePlatformLiveAgentBrokerageId",
       "platformDidAgentCache",
@@ -15896,7 +15952,6 @@
       "callBatchDataMcp",
       "listBatchDataMcpTools",
       "batchDataPreferMcp",
-      "extractRows",
       "investorBuyboxPreview",
       "investorBuyboxCount",
       "investorBuyboxPage",
@@ -17967,6 +18022,7 @@
     "lib/kernel/seat-usage.ts": [
       "resolveSeatUsage",
       "resolveCatalogSeatLimits",
+      "resolveTenantSeatTerms",
       "seatGate"
     ],
     "lib/kernel/second-opinion-runner.ts": [
@@ -19477,6 +19533,12 @@
       "clampOnboardingStepDay",
       "clampOnboardingStepOrder"
     ],
+    "lib/onboarding/subscriber-stall.ts": [
+      "isActivationPending",
+      "subscriberStallState",
+      "composeStallNudge",
+      "runSubscriberStallSweep"
+    ],
     "lib/open-house/instant-greeting.ts": [
       "sendInstantOpenHouseGreeting"
     ],
@@ -19743,6 +19805,7 @@
       "markProspectDemoConfirmed",
       "markProspectSignupLinkSent",
       "markProspectHandoff",
+      "markProspectCallback",
       "markProspectConverted"
     ],
     "lib/platform/prospect-conversion.ts": [
@@ -19823,6 +19886,14 @@
       "proposeStatusNotice",
       "withdrawProposedStatusNotice",
       "clearProposedStatusNotice"
+    ],
+    "lib/platform/subscriber-door.ts": [
+      "normalizeProducerSeats",
+      "isHoneypotTripped",
+      "planSubscriberEntrance",
+      "salesAssistedIntake",
+      "composeActivationCheckoutEmail",
+      "sendActivationCheckoutEmail"
     ],
     "lib/platform/subscriber-referrals.ts": [
       "monthIndexForPeriod",
@@ -21223,7 +21294,8 @@
     ],
     "lib/video/assembly-timeline.ts": [
       "computeAssemblyTimeline",
-      "evenShotSlots"
+      "evenShotSlots",
+      "weightedShotSlots"
     ],
     "lib/video/assistant-faces.ts": [
       "generateAssistantFaceOptions"
@@ -21249,6 +21321,18 @@
     ],
     "lib/video/avatar-track-submit.ts": [
       "submitAvatarTrack"
+    ],
+    "lib/video/body-visual-model.ts": [
+      "segmentScript",
+      "assetsFromProps",
+      "planBodyVisual",
+      "fitBodyVisualPlan",
+      "sceneWindowsFromPlan",
+      "segmentAtFrame",
+      "stageBodyVisualPlan",
+      "safeInsets",
+      "pipCornerStyle",
+      "insideSafeArea"
     ],
     "lib/video/broll-picker.ts": [
       "pickBrollClips"
@@ -22083,5 +22167,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 3
 }

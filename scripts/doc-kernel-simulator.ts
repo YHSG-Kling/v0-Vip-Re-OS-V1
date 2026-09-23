@@ -2514,6 +2514,7 @@ async function main() {
       //  no broker — and SEATS are the constraint (2/5/unlimited); lender is a
       //  vendor CATEGORY, not a partner role. Assertions updated to that model.)
       const { TIER_INVITABLE_ROLES, tierAllowsRole, TIER_SEAT_LIMITS, PARTNER_ROLES } = await import("../lib/kernel/tier-role-matrix")
+      const { TIER_SEAT_BANDS } = await import("../lib/billing/plan-catalog")
       check("ROUND 15 — THE OWNER'S CANONICAL ROLE MODEL, AUDITED THEN ALIGNED. The audit proved four spec items ALREADY TRUE (solo owner = admin wearing an agents row at 100% split; contact-portal view-as via the Portal button + same-brokerage staff preview rule; vendor invites open to every tier; platform social self-marketing) — untouched. THE FIVE DRIFTS, FIXED: (1) tier→role matrix EXISTED NOWHERE — now a pure kernel module enforced at BOTH tenant grant surfaces AND the god console (target-tenant tier, audited superadminOverride). ROUND 17 SUPERSEDED ITS ROLE HALF: the owner seated a BROKER on TEAM tier ('takes up 3 of 5 seats'), so a tier restricts HOW MANY seats, never WHICH user types fill them — all four tiers now share ONE menu and the tier's only say is the seat cap (2/5/50/unlimited, brokerage moved to 50 per 'a brokerage should be changed to 50 seats'). m518's team_lead lead desk SURVIVES that: is_lead_visible_role() is per-user with no tier clause, so seating a broker only adds someone who passes. The fail-closed duty moved off the role menu onto the seat axis, where an unreadable tier floors to the smallest cap and seatGate refuses outright on an unreadable tenant/count/catalogue; and the menu is intersected with the live users_user_type_check vocabulary so a user type the column cannot store is never offered (broker_admin, pending m530); (2) vendors are now CHARGEABLE for premium placement — the two unconnected halves (vendor_directory.preferred/display_priority flags, vendor_invoices billing ledger) wired keep-one: offer → 'submitted' invoice (the LIVE vocabulary — 'pending' does not exist in the CHECK) → mark-paid flips featured + records placement_until on the line item → daily expiry rider on the EXISTING vendor-orchestration cron; full flow live-fired (including the category vocabulary catch: lowercase 'stager'), residue 0; payment marking is documented as the tenant's assertion of off-platform collection — never simulated; (3) the platform phone reception surfaced first-class at /communications (mounting the SAME panel — keep-one); (4) per-subscriber usage reports across ALL tiers in one table (seats, book size, monthly metered media) — the spec's oversight view; (5) the marketing staff role got its dashboard route. Platform website builder: the one spec item deliberately DEFERRED as a real feature, reported not faked",
         // ── SUPERSEDED IN FULL (lane A, 2026-08-22) ──────────────────────────
         //
@@ -2539,11 +2540,10 @@ async function main() {
         && (["solo_agent", "team", "brokerage", "multi_location"] as const).every((t) =>
           TIER_INVITABLE_ROLES[t].slice().sort().join(",") ===
           TIER_INVITABLE_ROLES.brokerage.slice().sort().join(","))
-        // SEATS are the whole of the tier's say — 2 / 5 / unlimited / unlimited.
+        // SEATS are the whole of the tier's say — derived from TIER_SEAT_BANDS (wave 79A: 2 / 10 / 30 / custom), never restated.
         // brokerage moved 50 → unlimited in wave 78A (owner, 2026-09-22:
         // "brokerage is unlimited"), m655; the literal is the plan-catalog table.
-        && TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
-        && TIER_SEAT_LIMITS.brokerage === null && TIER_SEAT_LIMITS.multi_location === null
+        && (["solo_agent", "team", "brokerage", "multi_location"] as const).every((t) => TIER_SEAT_LIMITS[t] === TIER_SEAT_BANDS[t])
         && PARTNER_ROLES.join(",") === "vendor"
         && src("app/actions/admin/invite-user.ts").includes("tierAllowsRole")
         && src("app/actions/superadmin/tenant-users.ts").includes("tier_matrix_override")

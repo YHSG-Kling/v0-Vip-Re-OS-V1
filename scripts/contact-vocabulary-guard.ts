@@ -68,7 +68,7 @@ import { CAMPAIGN_CONTACT_TYPES, CAMPAIGN_PERSONAS } from "../lib/campaigns/cont
 import { ADS_ELIGIBLE_PERSONAS } from "../lib/ads/audience-persona-basis"
 import { FB_AUDIENCE_TEMPLATES } from "../lib/ads/fb-audience-templates"
 import { TIER_ORDER, TIER_SEAT_LIMITS, TIER_LABELS, isCanonicalTier } from "../lib/kernel/tier-role-matrix"
-import { CANONICAL_TIERS } from "../lib/billing/plan-catalog"
+import { CANONICAL_TIERS, TIER_SEAT_BANDS } from "../lib/billing/plan-catalog"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -400,11 +400,10 @@ check("isCanonicalTier accepts all four and refuses anything else",
   TIER_ORDER.every(isCanonicalTier)
   && !isCanonicalTier("free") && !isCanonicalTier("enterprise") && !isCanonicalTier(null))
 
-// OWNER (wave 78A, 2026-09-22): solo_agent 2 · team 5 · brokerage unlimited · multi_location unlimited.
-const SEAT_LADDER: Record<string, number | null> = {
-  solo_agent: 2, team: 5, brokerage: null, multi_location: null,
-}
-check("the seat ladder is 2 / 5 / unlimited / unlimited, exactly",
+// OWNER (wave 79A, 2026-09-23): solo_agent 2 · team 10 · brokerage 30 · multi_location custom.
+// DERIVED from the one table (lib/billing/plan-catalog.ts TIER_SEAT_BANDS), never restated (CLAUDE.md §2).
+const SEAT_LADDER: Record<string, number | null> = TIER_SEAT_BANDS
+check("the seat ladder is the plan catalogue's TIER_SEAT_BANDS, exactly (one derivation)",
   TIER_ORDER.every((t) => TIER_SEAT_LIMITS[t] === SEAT_LADDER[t]),
   TIER_ORDER.filter((t) => TIER_SEAT_LIMITS[t] !== SEAT_LADDER[t]).map((t) => `${t}=${TIER_SEAT_LIMITS[t]}`).join(",") || "—")
 check("the capped tiers ascend strictly, and once a tier is unlimited every tier above it is too",

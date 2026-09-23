@@ -390,6 +390,8 @@ console.log(" ✅ TENANT_SCOPE_PASS — no new unscoped tenant-table queries (th
 const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
   "app/actions/auth/signup-brokerage.ts":
     "signup — the tenant does not exist yet",
+  "lib/platform/subscriber-door.ts":
+    "the subscriber door's sales-assisted intake (lane 79D) — an existing OWNER is looked up by email BEFORE any tenant exists so a second tenant is never minted for a subscriber who already has one; it returns 'sign in', never the row",
   "lib/kernel/tenant-creation.ts":
     "the ONE tenant-creation core (lane 77B) — the duplicate-owner guard looks the email up before the tenant exists; every door (signup, staff, prospect conversion) delegates here",
   "app/actions/privacy/data-subject-requests.ts":

@@ -56,6 +56,7 @@ const EXEMPT: Record<string, string> = {
   "/embed/[publicId]": "iframe src minted by the embed loader script (app/api/embed/script/route.ts, string concat) — embedded on EXTERNAL sites",
   // ── Intentionally nav-less internal tooling ──
   "/seed": "developer seed utility — typed URL, auth-gated; unlinked by design",
+  "/auth/login": "the DEMO sign-in surface (demoSignIn / getDemoUsers), hard-gated off in production by DEMO_CONFIG.ENABLED (MAINTENANCE_DOMAINS.demo_login_hard_gate); reached by typed URL from the demo room. Every real sign-in link and redirect points at /login (wave 79: 18 dashboard pages, the activation landing, the stall nudge and the trial funnel were repointed), so zero in-app links to it is the CORRECT state, not a lost wire",
   // ── Legacy redirect stubs (bookmark compatibility) ──
   // Each page is a pure redirect() to its canonical successor. They are kept
   // (not deleted) because NOTHING routes old URLs at runtime: ROUTE_ALIASES
