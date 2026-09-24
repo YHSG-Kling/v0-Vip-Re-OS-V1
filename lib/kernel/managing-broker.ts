@@ -7,8 +7,8 @@
 // of the brokerage. there can only be one managing broker per brokerage
 // location."
 //
-// WHERE THE FACT LIVES: locations.managing_broker_user_id (m661, WRITTEN NOT
-// APPLIED) — a scalar column on the office row, so "one per location" is true
+// WHERE THE FACT LIVES: locations.managing_broker_user_id (m661, APPLIED LIVE
+// 2026-09-24) — a scalar column on the office row, so "one per location" is true
 // by construction rather than by a second index. The office model already
 // existed (public.locations; agents/users/listings/contacts.location_id FK to
 // it; app/actions/admin/locations.ts is the office CRUD). A single-office

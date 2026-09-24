@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 708 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 709 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-23
+ * generated: 2026-09-24
  * source: public.live_schema_json()
- * body-sha256: 9337060cf868f49b7ed19595e835057d800c3dfe3896a433266fef4cd1d8a823
+ * body-sha256: 5feded2e0631be9fba1f60501d7c0a29265c010ec2921027e739f081c7e79441
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -44,6 +44,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_assistant_tool_calls: ["brokerage_id", "error_message", "id", "latency_ms", "session_id", "success", "tool_input", "tool_name", "tool_output", "ts"],
   agent_avatar_assets: ["agent_id", "approval_status", "approved_at", "approved_by", "avatar_url", "brokerage_id", "created_at", "did_agent_id", "did_avatar_id", "error_message", "greeting", "greeting_sentiment", "id", "is_default", "label", "personality", "rejection_reason", "simli_face_id", "source_type", "source_url", "status", "thumbnail_url", "updated_at", "voice_id", "voice_sample_url"],
   agent_badges: ["agent_id", "awarded_at", "awarded_reason", "badge_id", "brokerage_id", "id"],
+  agent_book_transfers: ["brokerage_id", "created_at", "created_by", "from_agent_id", "id", "moved", "reason", "reverted", "reverted_at", "reverted_by", "scope", "status", "to_agent_id", "until_at"],
   agent_cap_tracking: ["agent_id", "anniversary_end", "anniversary_start", "brokerage_id", "cap_amount", "cap_paid_to_date", "created_at", "id", "is_capped"],
   agent_ce_completions: ["agent_id", "brokerage_id", "category", "certificate_url", "completed_on", "course_name", "created_at", "hours", "id", "notes", "provider"],
   agent_certifications: ["agent_id", "brokerage_id", "cert_type", "certificate_url", "certification_name", "created_at", "expires_at", "id", "issued_at", "issued_by"],
@@ -401,7 +402,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   listings: ["address", "agent_id", "appointment_at", "appointment_event_id", "appointment_notes", "bathrooms", "bedrooms", "brokerage_id", "city", "commission_rate", "contact_id", "created_at", "created_via", "deleted_at", "dotloop_loop_id", "estimated_close_date", "expiration_date", "external_provider_source", "external_provider_transaction_id", "flood_zone", "go_live_confirmed_at", "go_live_date", "has_pool", "has_septic", "has_solar", "hoa_dues", "id", "last_price_change_at", "last_provider_sync_at", "lifecycle_stage", "list_price", "listing_agent_email", "listing_agent_name", "listing_date", "location_id", "lot_size", "marketing_budget", "marketing_tier_id", "metadata", "mls_link", "mls_number", "open_house_event_date", "open_house_marketing_date", "photos", "primary_photo_url", "property_type", "public_remarks", "seller_contact_id", "seller_walkaway_price", "showing_count", "showing_instructions", "slug", "sold_date", "sold_price", "sqft", "stage_entered_at", "stage_updated_at", "state", "status", "sub_category", "team_id", "transaction_provider_ref", "updated_at", "year_built", "zip"],
   live_agent_sessions: ["agent_id", "brokerage_id", "contact_id", "created_at", "did_agent_id", "ended_at", "id", "last_seen_at", "metadata", "minutes_billed", "provider", "started_at", "status", "surface"],
   local_news_sources: ["brokerage_id", "category", "created_at", "enabled", "id", "is_active", "market_name", "market_zip_codes", "name", "refresh_frequency", "updated_at", "url"],
-  locations: ["address", "brokerage_id", "city", "created_at", "id", "name", "state"],
+  locations: ["address", "brokerage_id", "city", "created_at", "id", "managing_broker_assigned_at", "managing_broker_assigned_by", "managing_broker_user_id", "name", "state"],
   mail_response_tracking: ["brokerage_id", "campaign_id", "contact_id", "created_at", "id", "lead_id", "response_metadata", "response_type"],
   mail_tracking: ["batch_id", "brokerage_id", "campaign_id", "created_at", "delivered_at", "id", "mailed_at", "provider_delivery_status", "returned_at", "tracking_payload"],
   managed_agent_sessions: ["anthropic_session_id", "brokerage_id", "created_at", "ended_at", "entity_id", "entity_type", "id", "last_agent_message", "last_event_at", "managed_agent_id", "status", "stop_reason"],

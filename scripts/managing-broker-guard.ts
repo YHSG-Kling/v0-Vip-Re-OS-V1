@@ -96,7 +96,7 @@ const seedMeter = (withOffice: boolean) => ({
   const none = await resolveSeatUsage(memSupabase(seedMeter(false)), "b1")
   control("with NO office naming mb the same roster bills 1 — the managing-broker fact is what moved the number", none.seatCount === 1 && [...none.nonProducingIds].sort().join() === "bo,mb")
   const refused = await resolveSeatUsage(memSupabase(seedMeter(true), { missingColumns: { locations: ["managing_broker_user_id"] } }), "b1")
-  check("m661 NOT APPLIED (42703) or a refused offices read: the meter still runs (ok), applies the list as written (1 seat) and PUBLISHES managingBrokerReadRefused",
+  check("the column absent (42703 — the pre-m661 shape) or a refused offices read: the meter still runs (ok), applies the list as written (1 seat) and PUBLISHES managingBrokerReadRefused",
     refused.ok && refused.seatCount === 1 && refused.managingBrokerReadRefused === true, JSON.stringify(refused))
   const rls = await resolveSeatUsage(memSupabase(seedMeter(true), { refuse: { locations: "permission denied" } }), "b1")
   check("…same for an RLS refusal", rls.ok && rls.managingBrokerReadRefused === true)
@@ -125,7 +125,7 @@ console.log("\n[3 · THE WRITER — refuses to exempt a managing broker; fails c
   check("FAILS CLOSED: an unreadable offices row refuses the exemption (tenant_unreadable, names the check) and writes nothing",
     !r3.ok && r3.reason === "tenant_unreadable" && /managing broker/i.test(r3.error) && unreadable.writes.length === 0, JSON.stringify(r3))
   const unapplied = memSupabase(seed(), { missingColumns: { locations: ["managing_broker_user_id"] } })
-  check("…and so does m661-not-yet-applied (42703) — no free seat before the column exists", !(await setLicensedProducerExemption(unapplied, "b1", "bo", true)).ok && unapplied.writes.length === 0)
+  check("…and so does an absent column (42703, the pre-m661 shape) — no free seat before the column exists", !(await setLicensedProducerExemption(unapplied, "b1", "bo", true)).ok && unapplied.writes.length === 0)
   const clearing = memSupabase(seed(), { refuse: { locations: "permission denied" } })
   const r4 = await setLicensedProducerExemption(clearing, "b1", "mb", false)
   check("CLEARING an exemption (producing again) is never gated by the offices read — it succeeds even when that read is refused", r4.ok && r4.nonProducingIds.length === 0, JSON.stringify(r4))

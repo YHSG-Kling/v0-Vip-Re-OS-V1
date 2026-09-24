@@ -1,6 +1,5 @@
 -- supabase/migrations/m661-one-managing-broker-per-location-and-agent-book-transfers.sql
---
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-24 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m661 — ONE MANAGING BROKER PER BROKERAGE LOCATION, AND THE AGENT-BOOK TRANSFER LEDGER.
 -- ─────────────────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@
 //     NEW leads: a deactivated agent is filtered out of a rule's pool
 //     (assignment-engine, wave 81A) and an away agent is redirected (coverage).
 //
-// THE LEDGER: public.agent_book_transfers (m661, WRITTEN NOT APPLIED). A
+// THE LEDGER: public.agent_book_transfers (m661, APPLIED LIVE 2026-09-24). A
 // temporary transfer writes its row FIRST (status active, until_at) and only
 // then moves anything — if the table is not there yet the transfer refuses
 // before a single row moves (fail closed by ordering). The ids of every moved
