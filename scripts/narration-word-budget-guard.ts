@@ -165,7 +165,8 @@ function main() {
   check("…while the RAW source keeps the retired map legible as the record",
     listingRaw.includes("150-180 words (2 min narration)"))
   check("the file stages through the Director's commissionVideo (photo_walkthrough)",
-    /commissionVideo\(/.test(listing) && /['"]photo_walkthrough['"]/.test(listing))
+    // Wave 81C: commissionListingCuts rides commissionVideo — the rule is the Director rail.
+    /commission(Video|ListingCuts)\(/.test(listing) && /['"]photo_walkthrough['"]/.test(listing))
   check("no narration is authored here any more — no model call remains",
     !/generateText\(/.test(listing) && !/generateAIResponse\(/.test(listing)
     && !/maxTokens/.test(listing))

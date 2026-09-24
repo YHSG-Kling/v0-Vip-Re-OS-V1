@@ -355,8 +355,8 @@ console.log("\n[5. THEM FIRST — four readings of one ratio, collapsed onto one
     // listing-video authors no content any more — it must stage through the
     // Director (whose gate is the kernel rule array), not regrow its own pass.
     const masked = tokens("app/actions/listing-video.ts")
-    t("app/actions/listing-video.ts: stages through commissionVideo (the gated rail)",
-      /commissionVideo\(/.test(masked))
+    t("app/actions/listing-video.ts: stages through the gated Director rail (commissionVideo, or commissionListingCuts which rides it — wave 81C)",
+      /commission(Video|ListingCuts)\(/.test(masked))
     t("app/actions/listing-video.ts: authors no script for a private gate to miss",
       !/generateText\(/.test(masked) && !/generateAIResponse\(/.test(masked))
   }

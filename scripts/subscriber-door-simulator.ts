@@ -221,7 +221,7 @@ function fakeSvc(seed: Record<string, Row[]>) {
   const b = await convertProspectToSubscriber(svc, { prospectId: "p-1", actor: { kind: "platform_staff", userId: "s", email: "s@p.com" }, billing: { mode: "trial" } }, deps)
   check("a prospect converting TWICE returns the same tenant both times and the core is called ZERO times (already linked)", a.ok && a.alreadyConverted && a.brokerageId === "brk-old" && b.ok && b.alreadyConverted && calls.length === 0)
   check("the duplicate-EMAIL guard lives in the core (one spelling): users.email lookup → 'already exists. Sign in instead' BEFORE the brokerage insert",
-    (() => { const c = code(CORE); const guard = c.indexOf('.eq("email", adminEmail)'); return guard > 0 && c.includes("An account with this email already exists. Sign in instead.") && guard < c.indexOf('from("brokerages")') })())
+    (() => { const c = code(CORE); const guard = c.indexOf('.eq("email", adminEmail)'); const insertAt = c.search(/from\("brokerages"\)\s*\.insert\(/); return guard > 0 && insertAt > 0 && c.includes("An account with this email already exists. Sign in instead.") && guard < insertAt })())
 }
 
 {

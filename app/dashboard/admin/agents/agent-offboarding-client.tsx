@@ -214,6 +214,7 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
                     <span>
                       {nameOf(t.fromAgentId)} → {nameOf(t.toAgentId)} · {t.scope}
                       {t.untilAt ? ` until ${t.untilAt.slice(0, 10)}` : ""} · <Badge variant={t.status === "active" ? "default" : "secondary"}>{t.status}</Badge>
+                      {t.revertedAt ? <span className="text-muted-foreground"> · reverted {t.revertedAt.slice(0, 10)}{t.revertedBy ? " by an admin" : " by the daily sweep"}{t.reverted && typeof (t.reverted as { skipped?: unknown }).skipped === "object" ? " (some rows left where the tenant re-pointed them)" : ""}</span> : null}
                       {t.reason ? <span className="text-muted-foreground"> — {t.reason}</span> : null}
                     </span>
                     {t.status === "active" && (

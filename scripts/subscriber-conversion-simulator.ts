@@ -275,7 +275,7 @@ check("the conversion delegates to the SAME core (dynamic import — the @proofS
 check("POSITIVE CONTROL: the delegation finder rejects a door that spells its own insert", !/createTenantCore\(/.test('const { data } = await svc.from("brokerages").insert({ name })'))
 check("the core: tier row → duplicate-owner guard → brokerage → provisionTenantOwner + counted rollback → subscription (error READ) → snapshot → stamp → ISA actor → assistant → SUBSCRIPTION_CREATED → onboarding library, in that order",
   (() => {
-    const order = ['from("subscription_tiers")', 'from("users")', 'from("brokerages")', "provisionTenantOwner({", "rollbackTenantCreation(", 'from("subscriptions").insert(', "snapshotForTier(input.tier", "applySnapshotPayload(", "stampProspectConversion(", "provisionIsaActorForBrokerage(", "seedStarterAssistant(", "KernelEvent.SUBSCRIPTION_CREATED", 'from("learning_assignments")']
+    const order = ['from("subscription_tiers")', 'from("users")', 'from("brokerages")\n    .insert(', "provisionTenantOwner({", "rollbackTenantCreation(", 'from("subscriptions").insert(', "snapshotForTier(input.tier", "applySnapshotPayload(", "stampProspectConversion(", "provisionIsaActorForBrokerage(", "seedStarterAssistant(", "KernelEvent.SUBSCRIPTION_CREATED", 'from("learning_assignments")']
     const idx = order.map((t) => coreSrc.indexOf(t))
     return idx.every((i) => i >= 0) && idx.every((i, k) => k === 0 || i > idx[k - 1]!)
   })())

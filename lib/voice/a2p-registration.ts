@@ -651,8 +651,10 @@ export function isTollFreeNumber(phone: string | null | undefined): boolean {
   return ten.length === 10 && (TOLLFREE_PREFIXES as readonly string[]).includes(ten.slice(0, 3))
 }
 
-export type TollfreeStatus = "PENDING_REVIEW" | "IN_REVIEW" | "TWILIO_APPROVED" | "TWILIO_REJECTED"
-const TOLLFREE_TERMINAL: readonly string[] = ["TWILIO_APPROVED", "TWILIO_REJECTED"]
+// Module-private (wave 81 integration, opposite-missing C3): no importer existed; the
+// terminal list below is its reader, so a status outside the vocabulary cannot be terminal.
+type TollfreeStatus = "PENDING_REVIEW" | "IN_REVIEW" | "TWILIO_APPROVED" | "TWILIO_REJECTED"
+const TOLLFREE_TERMINAL: readonly TollfreeStatus[] = ["TWILIO_APPROVED", "TWILIO_REJECTED"]
 
 /** PURE: one honest status line for the toll-free lane. */
 export function describeTollfreeState(s: A2pState): string {
@@ -689,7 +691,7 @@ export async function runTollfreeVerification(svc: any, brokerageId: string, opt
 
   // Poll an existing verification by its own sid (never a constant).
   if (state.tollfree_verification_sid) {
-    if (!TOLLFREE_TERMINAL.includes((state.tollfree_status ?? "").toUpperCase())) {
+    if (!TOLLFREE_TERMINAL.includes((state.tollfree_status ?? "").toUpperCase() as TollfreeStatus)) {
       const poll = await twilio<{ status?: string; rejection_reason?: string }>({ accountSid: creds.accountSid, authToken: creds.authToken }, MESSAGING, `/v1/Tollfree/Verifications/${state.tollfree_verification_sid}`, "GET")
       if (poll.ok && poll.data?.status) {
         state.tollfree_status = poll.data.status

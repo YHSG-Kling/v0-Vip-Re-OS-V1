@@ -42,6 +42,8 @@ export interface ManagingBrokerSlot {
   managingBrokerUserId: string | null
   managingBrokerLabel: string | null
   assignedAt: string | null
+  /** users.id of the admin who assigned (audit trail on the row; read here, shown on the card). */
+  assignedBy: string | null
 }
 
 export interface ManagingBrokerRoster {
@@ -64,7 +66,7 @@ function labelOf(u: { id: string; first_name?: string | null; last_name?: string
  */
 export async function readManagingBrokerRoster(svc: Svc, brokerageId: string): Promise<ManagingBrokerRoster> {
   const [locRes, peopleRes, brkRes] = await Promise.all([
-    svc.from("locations").select("id, name, managing_broker_user_id, managing_broker_assigned_at").eq("brokerage_id", brokerageId).order("name"),
+    svc.from("locations").select("id, name, managing_broker_user_id, managing_broker_assigned_at, managing_broker_assigned_by").eq("brokerage_id", brokerageId).order("name"),
     svc.from("users").select("id, first_name, last_name, email, user_type, status").eq("brokerage_id", brokerageId),
     svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle(),
   ])
@@ -75,7 +77,7 @@ export async function readManagingBrokerRoster(svc: Svc, brokerageId: string): P
   const eligible = people
     .filter((p) => p.status !== "suspended" && canBeManagingBroker(p.user_type))
     .map((p) => ({ userId: p.id, label: labelOf(p), role: String(p.user_type ?? "") }))
-  const rows = (locRes.data ?? []) as Array<{ id: string; name: string | null; managing_broker_user_id: string | null; managing_broker_assigned_at: string | null }>
+  const rows = (locRes.data ?? []) as Array<{ id: string; name: string | null; managing_broker_user_id: string | null; managing_broker_assigned_at: string | null; managing_broker_assigned_by: string | null }>
   const brokerageName = ((brkRes.data as { name?: string | null } | null)?.name ?? "").trim() || "Principal office"
   const slots: ManagingBrokerSlot[] = rows.length > 0
     ? rows.map((r) => {
@@ -86,9 +88,10 @@ export async function readManagingBrokerRoster(svc: Svc, brokerageId: string): P
           managingBrokerUserId: r.managing_broker_user_id,
           managingBrokerLabel: mb ? labelOf(mb) : r.managing_broker_user_id ? "(not on the roster)" : null,
           assignedAt: r.managing_broker_assigned_at,
+          assignedBy: r.managing_broker_assigned_by ?? null,
         }
       })
-    : [{ locationId: null, locationName: brokerageName, managingBrokerUserId: null, managingBrokerLabel: null, assignedAt: null }]
+    : [{ locationId: null, locationName: brokerageName, managingBrokerUserId: null, managingBrokerLabel: null, assignedAt: null, assignedBy: null }]
   return { ok: true, slots, eligible }
 }
 

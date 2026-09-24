@@ -383,6 +383,10 @@ export interface BookTransferRow {
   scope: BookTransferScope
   status: string
   untilAt: string | null
+  /** The revert stamps (temporary transfers): read here so the ledger's audit half has a reader (wave 81 integration). */
+  revertedAt: string | null
+  revertedBy: string | null
+  reverted: Record<string, unknown> | null
   reason: string | null
   createdAt: string
   moved: Record<string, unknown>
@@ -391,14 +395,14 @@ export interface BookTransferRow {
 /** The tenant's transfers, newest first (active temporary ones first for the revert door). */
 export async function listBookTransfers(svc: Svc, brokerageId: string, limit = 50): Promise<{ ok: boolean; error?: string; transfers: BookTransferRow[] }> {
   const { data, error } = await svc.from("agent_book_transfers")
-    .select("id, from_agent_id, to_agent_id, scope, status, until_at, reason, created_at, moved")
+    .select("id, from_agent_id, to_agent_id, scope, status, until_at, reason, created_at, moved, reverted, reverted_at, reverted_by")
     .eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(limit)
   if (error) return { ok: false, error: error.message, transfers: [] }
-  const rows = (data ?? []) as Array<{ id: string; from_agent_id: string; to_agent_id: string; scope: BookTransferScope; status: string; until_at: string | null; reason: string | null; created_at: string; moved: Record<string, unknown> | null }>
+  const rows = (data ?? []) as Array<{ id: string; from_agent_id: string; to_agent_id: string; scope: BookTransferScope; status: string; until_at: string | null; reverted_at?: string | null; reverted_by?: string | null; reverted?: unknown; reason: string | null; created_at: string; moved: Record<string, unknown> | null }>
   return {
     ok: true,
     transfers: rows
-      .map((r) => ({ id: r.id, fromAgentId: r.from_agent_id, toAgentId: r.to_agent_id, scope: r.scope, status: r.status, untilAt: r.until_at, reason: r.reason, createdAt: r.created_at, moved: r.moved ?? {} }))
+      .map((r) => ({ id: r.id, fromAgentId: r.from_agent_id, toAgentId: r.to_agent_id, scope: r.scope, status: r.status, untilAt: r.until_at, revertedAt: r.reverted_at ?? null, revertedBy: r.reverted_by ?? null, reverted: (r.reverted as Record<string, unknown> | null) ?? null, reason: r.reason, createdAt: r.created_at, moved: r.moved ?? {} }))
       .sort((a, b) => Number(b.status === "active") - Number(a.status === "active")),
   }
 }

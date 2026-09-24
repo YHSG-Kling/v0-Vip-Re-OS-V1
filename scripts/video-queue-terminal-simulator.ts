@@ -203,7 +203,9 @@ console.log("\n── the THIRD writer stages on the rail that renders (merged 2
   const LISTING_RAW = existsSync("app/actions/listing-video.ts")
     ? readFileSync("app/actions/listing-video.ts", "utf8") : ""
   check("it commissions through the Director rail (photo_walkthrough)",
-    /commissionVideo\(/.test(LISTING) && /['"]photo_walkthrough['"]/.test(LISTING))
+    // Wave 81C: the listing action commissions its two cuts through commissionListingCuts,
+    // which rides commissionVideo — the RULE is the Director rail, not one spelling.
+    /commission(Video|ListingCuts)\(/.test(LISTING) && /['"]photo_walkthrough['"]/.test(LISTING))
   check("…sharing the walkthrough-premiere idempotency key, so the button and the\n    autonomous play (video-plays.ts) converge on ONE reel per listing",
     /idempotencyDiscriminator:\s*['"]walkthrough['"]/.test(LISTING))
   check("the hand-rolled, status-omitting project insert is GONE",

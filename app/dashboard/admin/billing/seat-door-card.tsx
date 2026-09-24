@@ -109,7 +109,7 @@ export function SeatDoorCard() {
                     {s.locationName}
                     {s.locationId === null && <span className="text-muted-foreground"> (principal office)</span>}
                     {" — "}
-                    {s.managingBrokerLabel ? <span>{s.managingBrokerLabel}</span> : <span className="text-amber-700">no managing broker assigned</span>}
+                    {s.managingBrokerLabel ? <span>{s.managingBrokerLabel}{s.assignedAt ? <span className="text-muted-foreground"> · since {s.assignedAt.slice(0, 10)}{s.assignedBy ? " (assigned by an admin)" : ""}</span> : null}</span> : <span className="text-amber-700">no managing broker assigned</span>}
                   </span>
                   <select
                     className="h-6 rounded border bg-background px-1 text-xs"

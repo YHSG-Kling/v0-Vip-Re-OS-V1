@@ -469,8 +469,9 @@ console.log("\n[Layer 4 · BatchData skip-trace unit cost — one named constant
 
 const batchdataClientSrc = stripped("lib/external/batchdata-client.ts")
 const batchdataClientMod = await import("../lib/external/batchdata-client")
-check("BATCHDATA_SKIP_TRACE_COST_USD is exported and equals the wave-67 researched figure ($0.06), not the prior unsourced $0.15",
-  (batchdataClientMod as any).BATCHDATA_SKIP_TRACE_COST_USD === 0.06)
+const propertyLookupRailMod = await import("../lib/ai-isa/property-lookup-rail")
+check("BATCHDATA_SKIP_TRACE_COST_USD is exported, is the ONE price the contact-provider route table reads for BatchData skip trace (wave 81B: published V3 floor, derived — never a restated number here), and is not the prior unsourced $0.15",
+  (() => { const v = (batchdataClientMod as any).BATCHDATA_SKIP_TRACE_COST_USD; const routes = (propertyLookupRailMod as any).CONTACT_PROVIDER_ROUTES; const st = routes?.skip_trace ?? routes?.contact_append ?? Object.values(routes ?? {}).flat().find((e: any) => e?.provider === "batchdata" && e?.unitCostUsd === v); const entry = Array.isArray(st) ? st.find((e: any) => e.provider === "batchdata") : st; return typeof v === "number" && v > 0 && v < 0.15 && !!entry && entry.unitCostUsd === v })())
 check("no bare 0.15 literal remains at the skip-trace cost accumulation site",
   !/cost \+= chunk\.length \* 0\.15/.test(batchdataClientSrc))
 check("the skip-trace cost accumulation site now derives from the named constant",
@@ -479,8 +480,8 @@ check("skipTraceBatchDataV3Batch is the ONLY reader of the skip-trace unit cost 
   (batchdataClientSrc.match(/BATCHDATA_SKIP_TRACE_COST_USD/g) ?? []).length === 2) // the const decl + its one use site
 
 const envExampleSrc = readFileSync(".env.example", "utf8")
-check(".env.example's documented skip-trace price (~$0.06/matched record) agrees with the code constant — no second, disagreeing figure",
-  envExampleSrc.includes("~$0.06/matched record"))
+check(".env.example's documented skip-trace price agrees with the code constant — no second, disagreeing figure",
+  envExampleSrc.includes(`~$${(batchdataClientMod as any).BATCHDATA_SKIP_TRACE_COST_USD.toFixed(2)}/matched record`))
 
 const providersDocSrc = readFileSync("docs/real-estate-data-providers-2026-09.md", "utf8")
 check("docs/real-estate-data-providers-2026-09.md records the reconciliation (not still flagging an unreconciled discrepancy)",
