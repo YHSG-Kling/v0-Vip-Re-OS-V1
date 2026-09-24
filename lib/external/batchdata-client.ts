@@ -391,7 +391,7 @@ export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions
   return {
     records,
     recordsFound: data?.results?.meta?.totalResults ?? properties.length,
-    cost: records.length * 0.05,
+    cost: records.length * BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD,
   }
 }
 
@@ -961,8 +961,28 @@ const SKIP_TRACE_BATCH_LIMIT = 100
  * ("keep the researched value unless the code comment cites a verified invoice" —
  * it did not). Every reader of BatchData's V3 skip-trace unit cost uses THIS
  * constant; a second literal is the defect §6 names.
+ *
+ * RE-PRICED lane 81B (Exa 2026-09-24): batchdata.io/pricing lists the skip-trace
+ * plans as "Pay per matched record"; batchdata.io/blog/batchdata-skip-tracing-
+ * comparison-tlo-idi (2026-04-02) publishes "$0.07–$0.18 per record … pay-per-match
+ * at about $0.07 per record for large volumes"; help.getbatch.co (2024-09-25)
+ * "starts at $0.07 per skiptrace record". The wave-67 figure ($0.06) is below every
+ * published floor, so the ledger UNDERSTATED platform spend — 0.07 is the published
+ * pay-per-match floor. Billed PER MATCHED RECORD, not per attempt (the reverse-skip-
+ * trace page: "A lookup that resolves to no one isn't counted") — the batch function
+ * below still books per attempt as the conservative (never understating) estimate
+ * until the wallet reconcile (reconcileBatchDataWalletSpend) says otherwise.
+ * ROUTING: lib/ai-isa/property-lookup-rail.ts::CONTACT_PROVIDER_ROUTES holds this
+ * beside PeopleData's $0.25/match — BatchData is the cheaper owner-contact provider
+ * and runs FIRST for any record with a property address; PeopleData is the fallback.
  */
-export const BATCHDATA_SKIP_TRACE_COST_USD = 0.06
+export const BATCHDATA_SKIP_TRACE_COST_USD = 0.07
+
+/** ONE name for the per-record estimate a V1 Property Search pull books (fetchMotivatedSellers,
+ *  fetchIncrementalPropertySearch). Plan-tier list price is $0.01–$0.0033/record (docs/real-
+ *  estate-data-providers-2026-09.md); 0.05 is the repo's conservative pay-as-you-go estimate
+ *  carried since wave 6x — kept (never understate), named so two `* 0.05` literals cannot drift. */
+export const BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD = 0.05
 
 /** PURE — one V3 skip-trace response row → phones[]/emails[], read defensively across
  *  the plausible shapes (a `persons[]` array, a flat `phoneNumbers`/`emails`, or the
@@ -1335,7 +1355,7 @@ export async function fetchIncrementalPropertySearch(params: {
       nextPageCursor: typeof data?.results?.nextPageCursor === "string" ? data.results.nextPageCursor : null,
       resultsFound: typeof data?.results?.meta?.totalResults === "number" ? data.results.meta.totalResults : (typeof data?.results?.resultsFound === "number" ? data.results.resultsFound : null),
       sessionUnsupported: false,
-      cost: records.length * 0.05,
+      cost: records.length * BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD,
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)

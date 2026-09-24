@@ -142,25 +142,156 @@
  *                 (checkDncStatus → unconfigured → the runner DEFERS). The gate
  *                 still declares the purpose, so the reach is auditable.
  *   conversation / listing_intake — refused, always.
+ *   valuation   — (wave 81 lane B) the STAFF valuation / deal-analytics lane the
+ *                 owner admitted in wave 70 ("BatchData supplement when short"
+ *                 for CMA comps): lib/cma/comp-provider.ts (comps supplement),
+ *                 lib/avm/provider-chain.ts (AVM chain), lib/offers/public-
+ *                 record-preload.ts (net-sheet tax line), lib/agentic-os/deal-
+ *                 investigator.ts (deal synthesis). Tier ≠ off, tenant required,
+ *                 no on-market opt-in (it is not a per-tenant list pull); each
+ *                 caller keeps its own cheaper-first order (RentCast / cache /
+ *                 free preview) and its own budget gate. Never a customer audience.
+ *
+ * ── PROVIDER CHOICE — PEOPLESEARCH vs BATCHDATA (wave 81 lane B) ────────────
+ * Owner verbatim: "make sure that peoplesearch and batchdata don't overlap and if
+ * they do then search which one is cheaper, then use that one. those capabilities
+ * and scraping acquisition are platform paid." The audit (lane-81B notes, Exa
+ * 2026-09-24) found ONE overlap — owner-contact discovery (phone/email append):
+ *   · BatchData V3 skip trace — $0.07 per MATCHED record at the published
+ *     pay-per-match floor (batchdata.io/pricing "pay per matched record";
+ *     blog 2026-04-02 "$0.07–$0.18"), DNC/TCPA/litigator/deceased flags INLINE,
+ *     property-keyed (owner name + property address).
+ *   · PeopleData Labs Person Enrichment — $0.25–$0.28 per MATCH (support.
+ *     peopledatalabs.com Pricing & credits 2025-10-24), person-keyed (name/
+ *     email/phone/profile URL), carries demographics + employment + socials
+ *     BatchData does not sell (the non-overlapping "person_profile" capability).
+ * CONTACT_PROVIDER_ROUTES is the price table AS DATA, cheapest first per
+ * capability, and resolveContactProviderRoute picks the order for ONE record by
+ * what it carries: a record with a property address is traced by BatchData FIRST
+ * and reaches PeopleData ONLY when BatchData returns nothing; a record keyed by
+ * email/phone/handle alone has no BatchData rail in this repo (reverse skip trace
+ * is an MCP tool, unbuilt — open item) and goes to PeopleData. DNC/TCPA, property
+ * facts, motivated-seller lists and email validation do not overlap (one provider
+ * each). The BatchData leg still declares purpose "skip_trace" through
+ * resolveBatchDataAccess — this resolver chooses the ORDER, the gate stays ONE.
+ * lib/osint-client.ts ("peoplesearch" as a scrape of truepeoplesearch/whitepages
+ * through ZenRows) is a FROZEN scraper lane, audited only: it returns no
+ * structured person record (records: [] by construction) and is not a provider
+ * this table routes to. Every booking these providers make lands on
+ * vendor_usage_tracking (the PLATFORM ledger, brokerage-attributed for telemetry)
+ * and never on meter_readings / usage_counters (tenant metering) —
+ * scripts/provider-cost-routing-guard.ts holds that.
  */
 
 import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
+import { BATCHDATA_SKIP_TRACE_COST_USD, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD } from "@/lib/external/batchdata-client"
+import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@/lib/external/peopledata-client"
+import { MCP_TOOL_CALL_COST_USD } from "@/lib/external/batchdata-ai-tools"
+import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 
-export type PropertyLookupPurpose = "conversation" | "listing_intake" | "acquisition" | "skip_trace" | "dnc"
+export type PropertyLookupPurpose = "conversation" | "listing_intake" | "acquisition" | "skip_trace" | "dnc" | "valuation"
 // Module-private (wave 79 integration, opposite-missing C3: the exported list had no
 // reader). Its ONE reader is the entry gate below — a "use server" caller can hand the
 // rail any string, and an unknown purpose must fail CLOSED, never fall to a rung.
 const PROPERTY_LOOKUP_PURPOSES: readonly PropertyLookupPurpose[] = [
-  "conversation", "listing_intake", "acquisition", "skip_trace", "dnc",
+  "conversation", "listing_intake", "acquisition", "skip_trace", "dnc", "valuation",
 ]
 function isPropertyLookupPurpose(v: unknown): v is PropertyLookupPurpose {
   return typeof v === "string" && (PROPERTY_LOOKUP_PURPOSES as readonly string[]).includes(v)
 }
 
-/** The owner's carve-out: the ONLY purposes that may ever reach BatchData. */
+/** The owner's carve-out (wave 79: acquisition / skip-trace / DNC) plus the wave-70
+ *  staff valuation lane (comps supplement): the ONLY purposes that may ever reach
+ *  BatchData. A conversation or a listing intake never does. */
 export const BATCHDATA_ELIGIBLE_PURPOSES: ReadonlySet<PropertyLookupPurpose> = new Set<PropertyLookupPurpose>([
-  "acquisition", "skip_trace", "dnc",
+  "acquisition", "skip_trace", "dnc", "valuation",
 ])
+
+// ─── PROVIDER CHOICE TABLE (data, cheapest first) ───────────────────────────
+
+export type ContactDataProvider = "batchdata" | "peopledata"
+
+/** The capabilities the two providers sell, named by the QUESTION a caller asks. */
+export type ProviderCapability =
+  | "owner_contact"          // phone / email / mailing append for a person or a property owner
+  | "person_profile"         // demographics, employment, socials, life events for a known person
+  | "dnc_tcpa"               // DNC / TCPA-litigator / line-type scrub of a phone number
+  | "email_validation"       // is this address deliverable / role / disposable
+  | "property_facts"         // beds/baths/sqft/year/lot for an address (the rail's rung 5)
+  | "motivated_seller_list"  // quicklist pulls (pre-foreclosure, absentee, vacant, …)
+
+export interface ProviderRouteEntry {
+  provider: ContactDataProvider
+  /** Documented per-unit USD (the constant the ledger books) — a cost ORDER, never an invoice. */
+  unitCostUsd: number
+  /** What the provider needs to be asked with. */
+  keyedBy: "property_address" | "person_identifier" | "phone" | "email" | "geography"
+}
+
+/**
+ * THE ONE PRICE TABLE, cheapest first per capability. scripts/provider-cost-
+ * routing-guard.ts asserts (a) every list is sorted ascending by unitCostUsd, (b)
+ * owner_contact's first provider is the cheaper of the two, (c) every unit cost is
+ * the SAME constant the transport books (no second spelling), (d) the capabilities
+ * that do not overlap name exactly one provider.
+ */
+export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readonly ProviderRouteEntry[]>> = {
+  owner_contact: [
+    { provider: "batchdata", unitCostUsd: BATCHDATA_SKIP_TRACE_COST_USD, keyedBy: "property_address" },
+    { provider: "peopledata", unitCostUsd: PEOPLEDATA_MATCH_COST_USD, keyedBy: "person_identifier" },
+  ],
+  person_profile: [
+    { provider: "peopledata", unitCostUsd: PEOPLEDATA_MATCH_COST_USD, keyedBy: "person_identifier" },
+  ],
+  dnc_tcpa: [
+    { provider: "batchdata", unitCostUsd: MCP_TOOL_CALL_COST_USD, keyedBy: "phone" },
+  ],
+  email_validation: [
+    { provider: "peopledata", unitCostUsd: PEOPLEDATA_EMAIL_VALIDATE_COST_USD, keyedBy: "email" },
+  ],
+  property_facts: [
+    { provider: "batchdata", unitCostUsd: MCP_TOOL_CALL_COST_USD, keyedBy: "property_address" },
+  ],
+  motivated_seller_list: [
+    { provider: "batchdata", unitCostUsd: BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, keyedBy: "geography" },
+  ],
+}
+
+/** What ONE record carries — the resolver picks the provider order from this, never
+ *  from a vendor preference. */
+export interface ContactRouteInput {
+  hasName: boolean
+  hasPropertyAddress: boolean
+  hasEmailOrPhone: boolean
+  hasProfileUrl: boolean
+}
+
+export interface ContactProviderRoute {
+  capability: "owner_contact"
+  /** Providers to try IN ORDER; the next runs only when the previous returned nothing. */
+  providers: readonly ContactDataProvider[]
+  reason: string
+}
+
+/**
+ * PURE — the owner-contact route for ONE record. Cheapest adequate provider first;
+ * the dearer one only as a fallback when the cheaper one cannot be asked (input
+ * shape) or returned nothing (the caller's job to fall through). Empty = refused.
+ */
+export function resolveContactProviderRoute(input: ContactRouteInput): ContactProviderRoute {
+  const pdlUsable = input.hasName || input.hasEmailOrPhone || input.hasProfileUrl
+  const bdUsable = input.hasPropertyAddress // V3 skip trace is property-keyed; owner name optional
+  const ordered = CONTACT_PROVIDER_ROUTES.owner_contact
+    .filter((e) => (e.provider === "batchdata" ? bdUsable : pdlUsable))
+    .map((e) => e.provider)
+  if (ordered.length === 0) {
+    return { capability: "owner_contact", providers: [], reason: "no identifier — neither a property address (BatchData) nor a name/email/phone/profile (PeopleData) to trace from" }
+  }
+  const reason = ordered[0] === "batchdata"
+    ? `property address present → BatchData first ($${BATCHDATA_SKIP_TRACE_COST_USD}/match)${ordered.length > 1 ? `; PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) only when BatchData returns nothing` : "; no PeopleData identifier"}`
+    : `no property address → BatchData V3 skip trace cannot be asked (reverse skip trace by email/phone is MCP-only, unbuilt); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) is the only adequate provider`
+  return { capability: "owner_contact", providers: ordered, reason }
+}
 
 export type PropertyLookupAudience = "customer" | "staff"
 
@@ -511,7 +642,8 @@ async function readProductionPolicy(brokerageId: string): Promise<PropertyLookup
   } catch { batchDataTier = "off" }
   try {
     const { resolveActiveListingSources } = await import("@/lib/buyer-search/listing-source-order")
-    batchDataOptedIn = (await resolveActiveListingSources(brokerageId)).includes("batchdata_on_market")
+    // ONE code-side name for the stored "batchdata_on_market" flag (listing-source-order.ts).
+    batchDataOptedIn = (await resolveActiveListingSources(brokerageId)).includes(BATCHDATA_BILLED_PULL_OPT_IN)
   } catch { batchDataOptedIn = false }
   return { batchDataTier, batchDataOptedIn }
 }
@@ -542,15 +674,18 @@ export function decideBatchDataAccess(
     return { allowed: false, purpose, reason: `purpose "${String(purpose)}" is not one of ${PROPERTY_LOOKUP_PURPOSES.join("/")} — refused, fail closed` }
   }
   if (!BATCHDATA_ELIGIBLE_PURPOSES.has(purpose)) {
-    return { allowed: false, purpose, reason: `purpose "${purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC)` }
+    return { allowed: false, purpose, reason: `purpose "${purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC / staff valuation)` }
   }
   if (purpose === "dnc") return { allowed: true, purpose, reason: "DNC/TCPA compliance scrub — never refused by a spend policy; the MCP wrapper reports unconfigured" }
   if (!req.brokerageId) return { allowed: false, purpose, reason: "no tenant on the request — a tenant-less billed BatchData reach is refused (§4)" }
   if (policy.batchDataTier === "off") return { allowed: false, purpose, reason: "BatchData tier is off (configured off, or the platform monthly cap is spent)" }
   if (purpose === "acquisition" && policy.batchDataOptedIn !== true) {
-    return { allowed: false, purpose, reason: "tenant not opted into billed BatchData pulls by platform staff (batchdata_on_market)" }
+    return { allowed: false, purpose, reason: `tenant not opted into billed BatchData pulls by platform staff (${BATCHDATA_BILLED_PULL_OPT_IN})` }
   }
-  return { allowed: true, purpose, reason: purpose === "acquisition" ? "acquisition under tier + platform-staff opt-in" : "skip trace under tier (platform-wide cap)" }
+  const reason = purpose === "acquisition" ? "acquisition under tier + platform-staff opt-in"
+    : purpose === "valuation" ? "staff valuation / deal analytics under tier (platform-wide cap; the caller's own cheaper-first order and budget gate still apply)"
+    : "skip trace under tier (platform-wide cap)"
+  return { allowed: true, purpose, reason }
 }
 
 /**
@@ -606,7 +741,7 @@ export async function lookupPropertyForConversation(
   for (const rung of PROPERTY_LOOKUP_RUNG_ORDER) {
     if (rung === "batchdata") {
       if (!BATCHDATA_ELIGIBLE_PURPOSES.has(req.purpose)) {
-        result.skipped.push({ rung, reason: `purpose "${req.purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC)` })
+        result.skipped.push({ rung, reason: `purpose "${req.purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC / staff valuation)` })
         continue
       }
       policy = policy ?? (await readProductionPolicy(req.brokerageId))

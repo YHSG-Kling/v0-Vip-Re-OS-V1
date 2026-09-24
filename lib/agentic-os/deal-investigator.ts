@@ -98,9 +98,15 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
 
   if (result.cost >= cap) { result.warnings.push("cap reached after MLS — skipping property"); return result }
 
-  // (3) Property — BatchData MCP first, REST adapter as fallback (per recommendation #2)
+  // (3) Property — BatchData MCP first, REST adapter as fallback (per recommendation #2).
+  // THE ONE BATCHDATA GATE (wave 81 lane B): a deal investigation is the STAFF "valuation"
+  // purpose — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off, the
+  // contact's tenant). Refused → the property source stays null and the warning says why.
   try {
-    if (address) {
+    const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+    const access = address ? await resolveBatchDataAccess({ brokerageId: contact.brokerage_id, purpose: "valuation" }) : null
+    if (access && !access.allowed) result.warnings.push(`batchdata: not reached — ${access.reason}`)
+    if (address && access?.allowed) {
       const { batchDataPreferMcp } = await import("@/lib/external/batchdata-mcp")
       const property = await batchDataPreferMcp<Record<string, unknown>>(
         "property.search",

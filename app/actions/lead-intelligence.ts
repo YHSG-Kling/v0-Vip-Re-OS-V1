@@ -844,6 +844,13 @@ export async function enrichPropertyIntelligence(
   try {
     const supabase = createServiceClient()
 
+    // THE ONE BATCHDATA GATE (wave 81 lane B): a lead's property intelligence pull is
+    // ACQUISITION — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠
+    // off AND the platform-staff opt-in). Refused → reported, never an ungated reach.
+    const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+    const access = await resolveBatchDataAccess({ brokerageId: auth.brokerageId, purpose: "acquisition" })
+    if (!access.allowed) return { success: false, error: `BatchData not reached — ${access.reason}` }
+
     const batchData = new BatchDataClient()
     const matches = await batchData.searchByAddress(
       propertyData.address,
@@ -1091,6 +1098,17 @@ async function enrichWithPeopleData(
       firstName: lead.first_name as string | undefined,
       lastName: lead.last_name as string | undefined,
     })
+    // PLATFORM LEDGER (lane 81B — this PDL reach was UNBOOKED): vendor_usage_tracking at
+    // the outcome's real price (per successful match; a no-match is $0 and no-ops).
+    {
+      const { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_NO_MATCH_COST_USD } = await import("@/lib/external/peopledata-client")
+      await meterVendorSpend({
+        vendorName: "peopledata", usageType: "person_profile",
+        cost: enrichedData ? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,
+        brokerageId, systemSource: "lead_intelligence",
+        metadata: { leadId, matched: !!enrichedData },
+      })
+    }
 
     if (enrichedData) {
       const { error: peopleError } = await supabase.from("lead_people_data").insert({
@@ -1135,9 +1153,17 @@ async function enrichWithPropertyOwnership(
   brokerageId: string | null,
 ) {
   const supabase = createServiceClient()
-  const batchData = new BatchDataClient()
 
   try {
+    // THE ONE BATCHDATA GATE (wave 81 lane B): property ownership for a lead is
+    // ACQUISITION — refused (no tenant / tier off / no opt-in) → nothing pulled, said why.
+    const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+    const access = await resolveBatchDataAccess({ brokerageId, purpose: "acquisition" })
+    if (!access.allowed) {
+      console.info("[lead-intelligence] property-ownership enrichment not reached:", access.reason)
+      return
+    }
+    const batchData = new BatchDataClient()
     let properties: Record<string, unknown>[] = []
 
     if (lead.address) {
@@ -2691,10 +2717,21 @@ export async function scrapeExternalBehavior(
     const rawRecords: NormalizedScrapedRecord[] = []
     const discoveredAddresses: string[] = []
 
+    // THE ONE BATCHDATA GATE (wave 81 lane B): enriching scraped behaviour with BatchData
+    // is ACQUISITION — asked ONCE for the batch; refused → the scraped rows are kept
+    // un-enriched (the raw record still lands), never an ungated per-row reach.
+    const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+    const behaviorAccess = await resolveBatchDataAccess({ brokerageId: auth.brokerageId, purpose: "acquisition" })
+    if (!behaviorAccess.allowed) console.info("[lead-intelligence] external-behavior BatchData enrich not reached:", behaviorAccess.reason)
+
     for (const property of allProperties.slice(0, 20)) {
-      // Enrich property data with BatchData
-      const enrichedData = await batchData.searchByAddress(property.address || "", targetLocation.city, targetLocation.state)
-      await meterVendorSpend({ vendorName: "batchdata", usageType: "external_behavior_enrich", cost: BATCHDATA_LOOKUP_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id, address: property.address } })
+      // Enrich property data with BatchData (gated above)
+      const enrichedData = behaviorAccess.allowed
+        ? await batchData.searchByAddress(property.address || "", targetLocation.city, targetLocation.state)
+        : []
+      if (behaviorAccess.allowed) {
+        await meterVendorSpend({ vendorName: "batchdata", usageType: "external_behavior_enrich", cost: BATCHDATA_LOOKUP_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id, address: property.address } })
+      }
 
       const propertyDetails = enrichedData[0] || {}
 

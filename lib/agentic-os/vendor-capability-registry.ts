@@ -83,7 +83,11 @@ export const VENDOR_CAPABILITY_REGISTRY: Record<VendorCapability, VendorCapabili
     purpose: "Resolve a lead's missing phone/email/identity from name + location.",
     inputs: ["firstName", "lastName", "city?", "state?", "email?", "phone?"],
     providers: [
-      { vendor: "peopledata", tier: "paid", note: "PeopleData skip-trace — primary enrichment" },
+      // Lane 81B route (lib/ai-isa/property-lookup-rail.ts::CONTACT_PROVIDER_ROUTES): the cheaper
+      // owner-contact provider FIRST when the record carries a property address; PeopleData only
+      // on a BatchData miss, or when the record is keyed by email/phone/handle alone.
+      { vendor: "batchdata", tier: "paid", note: "BatchData V3 skip trace — FIRST for a property-keyed record ($0.07/match, DNC/TCPA inline)" },
+      { vendor: "peopledata", tier: "paid", note: "PeopleData person enrichment — fallback on a BatchData miss / person-keyed records ($0.25/match)" },
       { vendor: "perplexity", tier: "free", note: "Cost-gated web gap-fill when skip-trace is thin" },
     ],
   },

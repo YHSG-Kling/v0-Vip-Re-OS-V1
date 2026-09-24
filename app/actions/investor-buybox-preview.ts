@@ -60,6 +60,14 @@ export async function getInvestorBuyboxPreviewForListing(params: {
     if (error) return { success: false, error: error.message }
     if (!listing) return { success: false, error: "Listing not found for this brokerage" }
 
+    // THE ONE BATCHDATA GATE (wave 81 lane B): a buy-box match is investor ACQUISITION —
+    // lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off AND the
+    // platform-staff opt-in). A $0 preview whose billed page would be refused is not
+    // offered either — the badge must not promise a pull the tenant cannot buy.
+    const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+    const access = await resolveBatchDataAccess({ brokerageId: ctx.brokerageId, purpose: "acquisition" })
+    if (!access.allowed) return { success: false, error: `Buy Box preview not available — ${access.reason}` }
+
     const preview = await investorBuyboxPreview({
       address: (listing as any).address, city: (listing as any).city,
       state: (listing as any).state, zip: (listing as any).zip,

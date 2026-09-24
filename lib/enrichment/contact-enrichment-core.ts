@@ -572,14 +572,22 @@ export async function enrichContactRecord(params: {
       phone: (contact.phone as string) ?? undefined,
     })
 
-    await trackVendorUsageService({
-      vendor: "peopledata",
-      systemSource: "skip_trace",
-      unitCount: 1,
-      brokerageId,
-      contactId,
-      metadata: { lane: "contact_enrichment", source: params.source ?? "auto", matched: Boolean(personData) },
-    })
+    // PLATFORM LEDGER (vendor_usage_tracking) at the outcome's real price: PDL bills per
+    // successful match only (lib/external/peopledata-client.ts constants), so a no-match
+    // books $0 — meterVendorSpend no-ops on zero rather than pricing a unit at the
+    // matched rate (lane 81B; was a unitCount:1 through the normalizer).
+    {
+      const { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_NO_MATCH_COST_USD } = await import("@/lib/external/peopledata-client")
+      const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+      await meterVendorSpend({
+        vendorName: "peopledata",
+        usageType: "skip_trace",
+        cost: personData ? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,
+        brokerageId,
+        systemSource: "skip_trace",
+        metadata: { lane: "contact_enrichment", source: params.source ?? "auto", matched: Boolean(personData), contactId },
+      })
+    }
 
     if (personData) {
       enrichmentData = {

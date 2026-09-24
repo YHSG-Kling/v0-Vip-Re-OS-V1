@@ -71,7 +71,14 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
   'peopledata': {
     vendorName: 'PeopleData Labs',
     unitType: 'records',
-    costPerUnit: 0.10, // $0.10 per enrichment
+    // MUST EQUAL lib/external/peopledata-client.ts::PEOPLEDATA_MATCH_COST_USD
+    // (scripts/provider-cost-routing-guard.ts holds the two in agreement). Was
+    // 0.10 — a unitCount:1 booking through trackVendorUsageService priced a
+    // $0.25 match at $0.10 in the SAME ledger checkVendorBudget reads. Callers
+    // that know the real per-call outcome book through meterVendorSpend with
+    // the matched/no-match constant instead of a unit count (lane 81B).
+    costPerUnit: 0.25,
+    notes: 'Per SUCCESSFUL match (PDL bills nothing on a 404 no-match) — lib/external/peopledata-client.ts',
   },
 
   // KEYLESS / FREE LANES — rated at exactly $0 ON PURPOSE.

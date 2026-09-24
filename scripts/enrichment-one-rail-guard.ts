@@ -206,6 +206,14 @@ const GATED = [
   "lib/compliance/phone-scrub-runner.ts",
   "lib/communication/tcpa-gate.ts",
   "lib/ai-isa/property-lookup-rail.ts", // the facts rung, behind isBatchDataRungAllowed
+  // Lane 81B — the six former blind spots that still reach BatchData, now gated (purpose
+  // "valuation" for the staff analytics lane, "acquisition" for the lead/investor lanes).
+  "lib/cma/comp-provider.ts",
+  "lib/avm/provider-chain.ts",
+  "lib/agentic-os/deal-investigator.ts",
+  "lib/offers/public-record-preload.ts",
+  "app/actions/investor-buybox-preview.ts",
+  "app/actions/lead-intelligence.ts",
 ]
 // (a) transports / registries / probes / re-exports — they ARE the seam, not a caller.
 const TRANSPORT = new Set([
@@ -225,17 +233,11 @@ const SCRAPER_LANE = new Set([
   "app/api/cron/permit-signal-scan/route.ts", // cron: permit → seller-signal scan
   "app/actions/admin/run-scrape-test.ts", "app/api/admin/scrape-test/route.ts", // admin dry-run of a scrape source
 ])
-// (d) published blind spots — direct reaches this lane did NOT migrate (each named with why). SHRINK-ONLY.
-const BLIND_SPOTS = new Set([
-  "lib/cma/comp-provider.ts",               // CMA comps (own lane test:cma-provider-lane; its own budget/eligibility gate)
-  "lib/avm/provider-chain.ts",              // AVM value chain (comps/value — not a facts lookup; own provider order)
-  "lib/agentic-os/deal-investigator.ts",    // agentic-OS deal investigation (batchDataPreferMcp lookup_property)
-  "lib/offers/public-record-preload.ts",    // offer public-record preload (the seam the rail's rung 5 rides)
-  "app/actions/investor-buybox-preview.ts", // superadmin/investor preview action
-  "app/actions/calculators.ts",             // calculators (BatchDataClient)
-  "app/actions/ai-predictions.ts",          // predictions (BatchDataClient)
-  "app/actions/lead-intelligence.ts",       // lead intelligence (BatchDataClient via @/lib/external)
-])
+// (d) published blind spots — direct reaches not yet migrated. SHRINK-ONLY. Lane 81B struck all
+// eight wave-80 entries: six are GATED above; app/actions/calculators.ts was repointed to the rail
+// (a customer conversation) and app/actions/ai-predictions.ts's dead `new BatchDataClient()` was
+// deleted, so neither imports BatchData any more (scripts/provider-cost-routing-guard.ts holds each).
+const BLIND_SPOTS = new Set<string>([])
 const importers = CORPUS.filter((p) => BD_IMPORT.test(stripped(p)) && (BD_REACH.test(blankStrings(stripped(p))) || /BatchData/.test(stripped(p))))
 const gatedOk: string[] = [], gatedBad: string[] = [], unknown: string[] = []
 for (const p of importers) {
@@ -262,11 +264,11 @@ check("NO production file reaches BatchData outside the transport / scraper-lane
 const missingGated = GATED.filter((p) => !importers.includes(p))
 check("every GATED file is still a real BatchData importer (a gate on a file that no longer reaches BatchData would be a stale claim)", missingGated.length === 0, missingGated.join(", "))
 const staleBlind = [...BLIND_SPOTS].filter((p) => !importers.includes(p))
-check("every published blind spot still reaches BatchData directly (a stale entry must be struck, not carried)", staleBlind.length === 0, staleBlind.join(", "))
+check("every published blind spot still reaches BatchData directly (a stale entry must be struck, not carried) — the list is EMPTY since lane 81B", staleBlind.length === 0 && BLIND_SPOTS.size === 0, staleBlind.join(", "))
 check("POSITIVE CONTROL: a fixture that reaches BatchData with no gate IS flagged by the same predicates",
   (() => { const fx = `import { skipTraceBatchDataV3Batch } from "@/lib/external/batchdata-client"\nawait skipTraceBatchDataV3Batch([])`; return BD_IMPORT.test(fx) && BD_REACH.test(blankStrings(fx)) && !GATE.test(fx) })())
 const orchSrc = blankStrings(stripped("lib/lead-pipeline/enrichment-orchestrator.ts"))
-check("enrichment-orchestrator: the property-dataset step is purpose 'acquisition' and the V3 skip-trace fallback is purpose 'skip_trace' (two gates, two purposes)",
+check("enrichment-orchestrator: the property-dataset step is purpose 'acquisition' and the V3 skip trace (FIRST provider since 81B) is purpose 'skip_trace' (two gates, two purposes)",
   (orchSrc.match(/resolveBatchDataAccess\(/g) ?? []).length === 2 && /purpose: 'acquisition'/.test(stripped("lib/lead-pipeline/enrichment-orchestrator.ts")) && /purpose: 'skip_trace'/.test(stripped("lib/lead-pipeline/enrichment-orchestrator.ts")))
 check("investor-offmarket-runner: purpose 'acquisition'; phone-scrub-runner + tcpa-gate: purpose 'dnc' and a refusal DEFERS (never a fabricated verdict)",
   /purpose: "acquisition"/.test(stripped("lib/buyer-search/investor-offmarket-runner.ts"))

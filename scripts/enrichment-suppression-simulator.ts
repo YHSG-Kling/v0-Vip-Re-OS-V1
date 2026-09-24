@@ -668,8 +668,10 @@ function freeOsintLaneLayer() {
   console.log("\n[pure · free is priced at ZERO, so metering it cannot inflate the budget ledger]")
   check("VENDOR_PRICING carries an osint_free row", !!VENDOR_PRICING["osint_free"])
   check("...rated at exactly $0", normalizeVendorCost("osint_free", 7) === 0)
-  check("the paid key the drain meters MATCHES the pricing table (not the $0.01 unknown-vendor fallback)",
-    normalizeVendorCost("peopledata", 1) === 0.10)
+  // Re-anchored lane 81B: VENDOR_PRICING.peopledata now equals the client's matched price
+  // (PEOPLEDATA_MATCH_COST_USD, $0.25 — was $0.10, a 2.5× understatement in the same ledger).
+  check("the paid key the drain meters MATCHES the pricing table (not the $0.01 unknown-vendor fallback) and the client's matched price",
+    normalizeVendorCost("peopledata", 1) === 0.25)
 
   console.log("\n[source · the drain actually SELECTS the free lane, before spending]")
   check("the drain imports the lane router", /planEnrichmentLane/.test(drain))
@@ -685,7 +687,9 @@ function freeOsintLaneLayer() {
   check("...importing the server-only budget gate DYNAMICALLY (plain-tsx guards import this module)",
     /await import\(['"]@\/lib\/vendor-governance\/budget-gate['"]\)/.test(drain))
   check("the free lane is metered as vendor 'osint_free'", /vendor:\s*'osint_free'/.test(drain))
-  check("...and the paid lane with the LOWERCASE pricing key", /vendor:\s*'peopledata'/.test(drain))
+  // Lane 81B: the paid lane books through meterVendorSpend at the client's reported cost
+  // (`vendorName: 'peopledata'`), no longer a unitCount through trackVendorUsageService.
+  check("...and the paid lane with the LOWERCASE pricing key", /vendorName:\s*'peopledata'/.test(drain))
   check("...the capitalised 'PeopleData' key (which no pricing row matched) is gone",
     !/vendor:\s*'PeopleData'/.test(drain))
 

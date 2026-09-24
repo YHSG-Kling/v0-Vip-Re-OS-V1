@@ -565,7 +565,15 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
   let batchDataSoldContribution = 0
   let batchDataMcpPreviewAvailable: boolean | null = null
   if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY) {
-    try {
+    // THE ONE BATCHDATA GATE (wave 81 lane B): the comps supplement is the STAFF
+    // "valuation" purpose — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess
+    // (tier ≠ off, tenant required; the cache / free MCP pre-flight / RentCast-first order
+    // below is this lane's own cheaper-first ladder and stays). Refused → the shortfall
+    // stands and the note says why; never an ungated reach. The short-mix guard above is
+    // kept verbatim (test:cma-provider-lane anchors on it) — the gate sits INSIDE it.
+    const compsAccess = await (await import("@/lib/ai-isa/property-lookup-rail")).resolveBatchDataAccess({ brokerageId: req.brokerageId, purpose: "valuation" })
+    if (!compsAccess.allowed) notes.push(`BatchData comps supplement not reached — ${compsAccess.reason}.`)
+    if (compsAccess.allowed) try {
       // ── SAME-DAY CACHE, CHECKED FIRST (wave 70 owner ruling: "…need to best output for
       // property appraisal adjusted comps without high costs") — lib/cma/comp-supplement-
       // cache.ts. A cache hit skips BOTH the free MCP pre-flight/preview AND the billed pull

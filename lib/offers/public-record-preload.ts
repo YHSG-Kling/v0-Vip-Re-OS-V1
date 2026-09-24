@@ -58,7 +58,10 @@ export async function preloadPublicRecordCosts(address: {
   city: string | null
   state: string | null
   zip: string | null
-}): Promise<PublicRecordCosts> {
+}, opts: {
+  /** The listing's tenant (never a body value) — THE ONE BATCHDATA GATE refuses a tenant-less reach (§4). */
+  brokerageId?: string | null
+} = {}): Promise<PublicRecordCosts> {
   const none = (reason: string): PublicRecordCosts =>
     ({ annualTaxAmount: null, assessedValue: null, taxYear: null, via: "skipped", skipReason: reason })
 
@@ -67,6 +70,12 @@ export async function preloadPublicRecordCosts(address: {
   }
 
   try {
+    // THE ONE BATCHDATA GATE (wave 81 lane B): the net-sheet tax line is the STAFF
+    // "valuation" purpose — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess.
+    // A refusal is a clean skip with its reason (the template default stands).
+    const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+    const access = await resolveBatchDataAccess({ brokerageId: opts.brokerageId ?? null, purpose: "valuation" })
+    if (!access.allowed) return none(`records lookup not reached — ${access.reason}`)
     const { batchDataPreferMcp } = await import("@/lib/external/batchdata-mcp")
     const r = await batchDataPreferMcp<unknown>(
       "lookup_property",

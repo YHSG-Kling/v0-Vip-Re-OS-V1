@@ -986,7 +986,15 @@ export async function calculateHomeValue(
   },
 ) {
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const { BatchDataClient } = await import("@/lib/batchdata-client")
+  // TOMBSTONE (wave 81 lane B, §1.3): `new BatchDataClient().searchByAddress` stood here and
+  // returned a RAW BatchData property row (owner name, valuation, mortgage) to an ANONYMOUS
+  // public visitor as `propertyIntelligence`. A public calculator is a CUSTOMER audience:
+  // the owner's carve-out (BatchData = acquisition / skip-trace / DNC / staff valuation)
+  // never admits it, and §5 says a customer sees no financials. SURVIVOR:
+  // lib/ai-isa/property-lookup-rail.ts::lookupPropertyForConversation (purpose
+  // "conversation", audience "customer") — cache → IDX → RentCast → public records, facts
+  // only, valuation-shaped fields stripped.
+  const { lookupPropertyForConversation } = await import("@/lib/ai-isa/property-lookup-rail")
   const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
 
   const vid = opts.visitorId || generateVisitorId()
@@ -1002,8 +1010,6 @@ export async function calculateHomeValue(
       visitorId: vid,
     }
   }
-
-  const batchData = new BatchDataClient()
 
   // ── Resolve the brokerage this CMA (and its paid provider spend) runs under ──
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
@@ -1050,9 +1056,14 @@ export async function calculateHomeValue(
   })
 
   try {
-    const [property, propertyData, cma] = await Promise.all([
+    const [property, propertyFacts, cma] = await Promise.all([
       idxClient.searchProperties(address),
-      batchData.searchByAddress(address, opts.city ?? "", opts.state),
+      lookupPropertyForConversation({
+        brokerageId,
+        purpose: "conversation",
+        audience: "customer",
+        address: { street: address, city: opts.city ?? null, state: opts.state, zip: opts.zipCode ?? null },
+      }),
       runAiCma({
         mode: "standard",
         brokerageId,
@@ -1121,7 +1132,8 @@ export async function calculateHomeValue(
     return {
       success: true,
       property: property?.[0],
-      propertyIntelligence: propertyData?.[0],
+      // Customer-redacted facts from the rail (beds/baths/sqft/year; no valuation fields).
+      propertyIntelligence: propertyFacts.facts,
       valuation: {
         estimated_value: Math.round(cma.estimatedValueMid),
         value_range: { low: Math.round(cma.estimatedValueLow), high: Math.round(cma.estimatedValueHigh) },

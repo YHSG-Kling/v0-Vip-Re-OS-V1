@@ -2,10 +2,29 @@
 // ONE VOCABULARY for PeopleData's per-record charge (wave 72 integration):
 // the enrichment orchestrator pre-flights the vendor budget with the MATCHED
 // price (the worst case a call can cost) and the ledger records what the call
-// actually reported. Values carried from the wave-64 client; PeopleData bills
-// per successful match on Person Enrichment, a no-match returns cheaper.
+// actually reported.
+//
+// PRICED FROM THE PUBLISHED SCHEDULE (lane 81B, Exa 2026-09-24 —
+// support.peopledatalabs.com "Pricing & credits", 2025-10-24; docs.peopledatalabs.com
+// "Reference - Person Enrichment API"): Person Enrichment consumes ONE credit per
+// SUCCESSFUL match (HTTP 200); a 404 no-match is NOT charged ("We charge per
+// match"). Pro monthly credits are $0.28 (350–2,500/mo) → $0.265 → $0.25
+// (5,001–8,333/mo); annual $0.224 → $0.20. The repo keeps $0.25 as the ledger
+// figure (the Pro tier a platform account lands in once volume exceeds 5k/mo —
+// the monthly floor; $0.28 is the entry tier and the platform-paid ledger should
+// not understate, so a re-price to 0.28 is one line here if the account stays
+// under 5k). The old NO_MATCH = 0.10 was the wave-64 client's guess and booked
+// $0.10 of spend PDL never bills — corrected to 0. Every reader derives from
+// these two names; a third literal is the §6 defect.
+// SEE ALSO lib/ai-isa/property-lookup-rail.ts::CONTACT_PROVIDER_ROUTES — the
+// per-capability price table that routes owner-contact skip traces to the
+// CHEAPER provider (BatchData $0.07/match) and reaches this one only as the
+// fallback / for the person-profile capability BatchData does not sell.
 export const PEOPLEDATA_MATCH_COST_USD = 0.25
-export const PEOPLEDATA_NO_MATCH_COST_USD = 0.10
+export const PEOPLEDATA_NO_MATCH_COST_USD = 0
+/** PDL Email Validation API — a separate endpoint, a separate (unpublished-in-tier)
+ *  per-call price the repo has carried as $0.01 since wave 5; ONE name for it. */
+export const PEOPLEDATA_EMAIL_VALIDATE_COST_USD = 0.01
 
 export class PeopleDataClient {
   async enrich(data: { email?: string; phone?: string; firstName?: string; lastName?: string }) {
@@ -274,7 +293,7 @@ export async function validateEmailViaPeopleData(email: string): Promise<{
   })
 
   if (!res.ok || !res.data) {
-    return { data: null, cost: 0.01 }
+    return { data: null, cost: PEOPLEDATA_EMAIL_VALIDATE_COST_USD }
   }
   const d = res.data
   const status = typeof d.status === "string" ? d.status.toLowerCase() : null
@@ -293,6 +312,6 @@ export async function validateEmailViaPeopleData(email: string): Promise<{
       isCatchAll:    catchAll,
       raw:           d,
     },
-    cost: 0.01,
+    cost: PEOPLEDATA_EMAIL_VALIDATE_COST_USD,
   }
 }

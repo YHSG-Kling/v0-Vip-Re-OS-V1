@@ -154,8 +154,16 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
       if (rc && rc.confidence >= 0.6) return rc
     }
     if (!skip.has("batchdata") && process.env.BATCHDATA_API_KEY) {
-      const bd = await tryBatchData(req)
-      if (bd && bd.confidence >= 0.6) return bd
+      // THE ONE BATCHDATA GATE (wave 81 lane B): the AVM leg is the STAFF "valuation"
+      // purpose — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off,
+      // tenant required). RentCast already ran first above; a refusal falls to the next
+      // rung, never to an ungated reach.
+      const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+      const access = await resolveBatchDataAccess({ brokerageId: req.brokerageId, purpose: "valuation" })
+      if (access.allowed) {
+        const bd = await tryBatchData(req)
+        if (bd && bd.confidence >= 0.6) return bd
+      }
     }
     if (!skip.has("zenrows_zillow") && process.env.ZENROWS_API_KEY) {
       const zen = await tryZillowViaZenRows(req)

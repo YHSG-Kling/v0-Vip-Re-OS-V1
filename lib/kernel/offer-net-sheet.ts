@@ -222,6 +222,8 @@ export async function runOfferNetSheets(
           m
             ? { street: m[1], city: m[2], state: m[3].toUpperCase(), zip: m[4] }
             : { street: addr, city: (lst as any).city ?? null, state: (lst as any).state ?? null, zip: (lst as any).zip_code ?? null },
+          // The listing's own tenant — the ONE BatchData gate refuses a tenant-less reach.
+          { brokerageId: (lst as any).brokerage_id ?? null },
         )
         if (rec.annualTaxAmount !== null) {
           // Seller owes the prorated share to close — half a year is the honest

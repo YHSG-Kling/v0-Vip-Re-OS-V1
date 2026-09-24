@@ -47,6 +47,27 @@ export type ActiveListingSource = "idx" | "rentcast" | "batchdata_on_market"
 const ALLOWED: ReadonlySet<ActiveListingSource> = new Set(["idx", "rentcast", "batchdata_on_market"])
 
 /**
+ * THE ONE CODE-SIDE NAME for the platform-staff opt-in that admits BILLED BatchData
+ * pulls for a tenant (lane 81B, resolving the §6 tension 80B published).
+ *
+ * The STORED spelling is "batchdata_on_market" — m642 named it after the on-market
+ * listing pull it first gated, and m643 made the column platform-managed. 79B then
+ * used the same flag as the per-tenant permission for EVERY billed BatchData pull
+ * (property-lookup-rail.ts: "No opt-in → no BatchData, even for an acquisition
+ * purpose"), so the name said less than the flag meant. RESOLUTION: the CONCEPT has
+ * one name — this constant — and every gate reads it through here (the rail's
+ * readProductionPolicy) rather than re-spelling the literal; the three ON-MARKET
+ * readers (market-watch, external-match, listings-batchdata-feed) keep the literal
+ * because for them the stored name is exactly right. A RENAME of the stored value
+ * ("batchdata_billed_pulls") is a migration on a live jsonb value plus a change to
+ * app/dashboard/superadmin/brokerages/[id]/listing-sources-panel.tsx and
+ * test:buyer-matching-rails, and needs an owner ruling — recorded as an open item in
+ * the lane-81B notes, NOT done silently under m662. Until then: one name in code,
+ * the stored spelling documented here as historical.
+ */
+export const BATCHDATA_BILLED_PULL_OPT_IN: ActiveListingSource = "batchdata_on_market"
+
+/**
  * The one safe fallback when the IDX-credential cascade cannot be read: serve RentCast (the
  * platform's own feed — never billed to a brokerage that may in fact own an IDX credential we
  * simply could not prove) and never guess "batchdata_on_market" on.

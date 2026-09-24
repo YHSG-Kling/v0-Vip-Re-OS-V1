@@ -2662,7 +2662,11 @@ Predict for next 90 days:
 
 export async function findMarketArbitrage(data: { city: string; state: string; agentId: string }) {
   const supabase = await createClient()
-  const { BatchDataClient } = await import("@/lib/batchdata-client")
+  // TOMBSTONE (wave 81 lane B, CLAUDE.md §1.3): `new BatchDataClient()` stood here with
+  // NO call on it — a dead instantiation that kept this file on the direct-BatchData-reach
+  // list (scripts/enrichment-one-rail-guard.ts blind spots). The arbitrage sweep reads the
+  // IDX feed + market_data only; a property-facts need here rides
+  // lib/ai-isa/property-lookup-rail.ts (never a bare BatchData client).
 
   // `data.agentId` is a caller-supplied parameter and is NOT the tenant: it is
   // only used to narrow the investor sweep below. The IDX account — and the
@@ -2670,7 +2674,6 @@ export async function findMarketArbitrage(data: { city: string; state: string; a
   // SESSION, once, and idxForCallerBrokerage refuses rather than returning null.
   const { client: idxClient, brokerageId: arbBrokerageId } =
     await idxForCallerBrokerage("findMarketArbitrage")
-  const batchData = new BatchDataClient()
 
   // Get all active listings the brokerage's IDX feed carries for this city.
   const activeListings = await idxClient.searchActiveListings({ city: data.city })

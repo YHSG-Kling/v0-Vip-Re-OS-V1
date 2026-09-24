@@ -212,8 +212,10 @@ const OFF = { batchDataTier: "off" as const, batchDataOptedIn: true }
 check("rung order is cache → tenant_idx → rentcast → public_records → batchdata and the documented cost is non-decreasing up to public records (BatchData is per-record priced beyond the sample)",
   PROPERTY_LOOKUP_RUNG_ORDER.join(",") === "cache,tenant_idx,rentcast,public_records,batchdata"
   && PROPERTY_LOOKUP_RUNG_COST_USD.cache === 0 && PROPERTY_LOOKUP_RUNG_COST_USD.tenant_idx === 0 && PROPERTY_LOOKUP_RUNG_COST_USD.rentcast > 0 && PROPERTY_LOOKUP_RUNG_COST_USD.public_records > 0)
-check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc — never conversation or listing_intake",
-  [...BATCHDATA_ELIGIBLE_PURPOSES].sort().join(",") === "acquisition,dnc,skip_trace")
+// Re-anchored lane 81B: 'valuation' (the wave-70 staff comps/AVM lane) joined the carve-out
+// through the ONE gate; a conversation or a listing intake still never reaches BatchData.
+check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc / valuation — never conversation or listing_intake",
+  [...BATCHDATA_ELIGIBLE_PURPOSES].sort().join(",") === "acquisition,dnc,skip_trace,valuation")
 check("isBatchDataRungAllowed: conversation → false even under an allowing policy; acquisition → true only with tier≠off AND opt-in",
   !isBatchDataRungAllowed("conversation", ALLOW) && !isBatchDataRungAllowed("listing_intake", ALLOW)
   && isBatchDataRungAllowed("acquisition", ALLOW) && !isBatchDataRungAllowed("acquisition", NO_OPT_IN) && !isBatchDataRungAllowed("acquisition", OFF))

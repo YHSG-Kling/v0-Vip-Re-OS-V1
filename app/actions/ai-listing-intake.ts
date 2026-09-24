@@ -2,19 +2,20 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+// Lane 81B: every model call in this file is ROUTED + BOOKED (generateObjectRouted /
+// generateTextRouted with a feature and the SESSION tenant). The unbooked
+// `@/lib/ai/generate` shim is gone from here — its one side-booking (logAIUsage on the
+// enrichment call) covered one of four calls; the other three booked nothing.
+import { generateTextRouted as generateText, generateObjectRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { guardContent, attachApprovalSubject } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { z } from "zod"
 import { createHash } from "node:crypto"
-import { PROPERTY_TYPES } from "@/lib/constants"
 
 // ============================================
 // AI LISTING INTAKE SYSTEM
@@ -54,93 +55,41 @@ export async function aiEnrichPropertyData(address: string, _agentId?: string) {
     const agentId = ctx.agentId
     if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
-    // AI estimate — used for listing-appointment prep when there's no real
-    // listing yet (agent is preparing materials for a seller visit). The
-    // real MLS pull happens at go-live time (currently manual entry by
-    // admin/agent; auto-pull lives in lib/property/enrichment-chain.ts and
-    // is used by listing-presentation-builder, not by this action).
-    const enrichmentPrompt = `You are a real estate data analyst. Based on this address, estimate property details.
-Address: ${address}
-
-Provide realistic estimates in JSON format:
-{
-  "beds": number,
-  "baths": number,
-  "sqft": number,
-  "yearBuilt": number,
-  "lotSize": number,
-  "stories": number,
-  "garage": number,
-  "pool": boolean,
-  "propertyType": "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial" | "other",
-  "style": "modern" | "traditional" | "craftsman" | "mediterranean" | "contemporary",
-  "roofType": string,
-  "hvac": string,
-  "estimatedValue": number,
-  "estimatedRent": number,
-  "schoolDistrict": string,
-  "walkScore": number,
-  "floodZone": string
-}`
-
-    const { object: propertyData, usage } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
-      schema: z.object({
-        beds: z.number(),
-        baths: z.number(),
-        sqft: z.number(),
-        yearBuilt: z.number(),
-        lotSize: z.number(),
-        stories: z.number(),
-        garage: z.number(),
-        pool: z.boolean(),
-        // Canonical vocabulary (lib/constants PROPERTY_TYPES). This enum used to be
-        // narrowed to three values while the surrounding types allowed six, so a
-        // multi-family, land or commercial listing was forced to one of the three and
-        // silently mis-typed. One list, used everywhere.
-        propertyType: z.enum(PROPERTY_TYPES),
-        style: z.string(),
-        roofType: z.string(),
-        hvac: z.string(),
-        estimatedValue: z.number(),
-        estimatedRent: z.number(),
-        schoolDistrict: z.string(),
-        walkScore: z.number(),
-        floodZone: z.string(),
-      }),
-      prompt: enrichmentPrompt,
-    })
-
-    // Log the enrichment onto the CANONICAL cost ledger.
-    //
-    // MERGED PER §1 — `ai_usage_log` was a DUPLICATE of `ai_tool_usage` (both
-    // carry agent_id, brokerage_id, cost_cents, tokens_used, model) and its
-    // readerless columns (action_type, input_data, output_data, tokens_used;
-    // readerless-write-census) were never read anywhere in the app — only by
-    // the `ai_usage_log_select` RLS policy, which is not a reader. Worse: the
-    // dead insert hardcoded `tokens_used: 500` rather than the real usage
-    // `generateObject` already returns, so even a future reader would have
-    // gotten a fabricated number for every enrichment call.
-    //
-    // SURVIVOR: lib/ai/cost-tracking.ts:122 logAIUsage — CLAUDE.md §5 names
-    // `ai_tool_usage` as THE AI cost ledger, feeding the
-    // `increment_ai_usage_monthly` RPC and from there `meter_readings.ai_tokens`
-    // and the overage projection. None of that was reached before: this call
-    // was completely unmetered on the canonical ledger. Booked BESIDE the call
-    // (not routed through generateTextRouted) because the model here is pinned
-    // by the caller — same shape as lib/onboarding/license-verifier.ts:273.
-    //
-    // TENANT FROM THE SESSION (§4) — `ctx.brokerageId` / `agentId` came from
-    // getAgentContext() above; the `_agentId` parameter stays ignored.
-    await logAIUsage({
-      userId: null,
+    // ── THE ONE PROPERTY-LOOKUP RAIL (wave 81 lane B, closing 80B's open item) ──
+    // TOMBSTONE (§1.3): a private gpt-4o-mini prompt stood here that asked the model
+    // to "estimate property details" INCLUDING estimatedValue, estimatedRent,
+    // walkScore, schoolDistrict and floodZone from nothing but an address — a
+    // second spelling of the rail's listing_intake estimate, and the value-
+    // fabrication §5 forbids (a model-guessed figure is not a home value; the
+    // seller's number comes from aiSuggestListPrice over real comps, never from
+    // here). SURVIVOR: lib/ai-isa/property-lookup-rail.ts::lookupPropertyForConversation
+    // with purpose "listing_intake" / audience "staff" — cache → tenant IDX → RentCast
+    // → public records, and ONLY when every rung misses a FACTS-ONLY estimate
+    // (beds/baths/sqft/yearBuilt/lotSize/propertyType) flagged isEstimate and
+    // booked to ai_tool_usage under the tenant by generateObjectRouted (the old
+    // call's logAIUsage side-booking went with it — the rail's own booking is the
+    // one ledger entry). BatchData is never reached for a listing intake.
+    // The card (listing-intelligence-card.tsx) spreads `data` under the listing's
+    // own facts and marks the pricing as estimated when isEstimate is true.
+    const { lookupPropertyForConversation, splitOneLineAddress } = await import("@/lib/ai-isa/property-lookup-rail")
+    const lookup = await lookupPropertyForConversation({
       brokerageId: ctx.brokerageId,
+      purpose: "listing_intake",
+      audience: "staff",
+      address: splitOneLineAddress(address),
+      userId: ctx.userId ?? null,
       agentId,
-      model: "gpt-4o-mini",
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      feature: "property_enrichment",
     })
+    if (!lookup.found || !lookup.facts) {
+      const why = lookup.skipped.map((s) => `${s.rung}: ${s.reason}`).join("; ")
+      return { success: false, error: `No property record or estimate for this address${why ? ` (${why})` : ""}` }
+    }
+    const f = lookup.facts
+    // Facts only — no value, rent, score or district field exists on this shape.
+    const propertyData = {
+      beds: f.beds, baths: f.baths, sqft: f.sqft, yearBuilt: f.yearBuilt, lotSize: f.lotSize,
+      propertyType: f.propertyType, isEstimate: f.isEstimate, source: f.source, sourceNote: f.sourceNote,
+    }
 
     return { success: true, data: propertyData }
   } catch (error) {
@@ -244,8 +193,9 @@ export async function aiGenerateListingDescription(params: {
       .eq("agent_id", agentId)
       .maybeSingle()
 
-    const { object: descriptions } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const { object: descriptions } = await generateObjectRouted({
+      feature: "listing_description",
+      brokerageId, agentId, userId: ctx.userId ?? null,
       schema: z.object({
         mlsDescription: z.string().describe("MLS-compliant description, 500 chars max, no superlatives"),
         marketingDescription: z.string().describe("Marketing headline and paragraph for websites"),
@@ -427,8 +377,9 @@ export async function aiSuggestListPrice(params: {
       }
     }
 
-    const { object: pricing } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const { object: pricing } = await generateObjectRouted({
+      feature: "cma_narrative",
+      brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? null, userId: ctx.userId ?? null,
       schema: z.object({
         suggestedListPrice: z.number(),
         priceRangeLow: z.number(),
@@ -557,8 +508,9 @@ export async function aiCheckListingCompliance(params: {
       scopedListingId = listing.id as string
     }
 
-    const { object: compliance } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const { object: compliance } = await generateObjectRouted({
+      feature: "compliance_check",
+      brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? null, userId: ctx.userId ?? null,
       schema: z.object({
         isCompliant: z.boolean(),
         overallScore: z.number().min(0).max(100),

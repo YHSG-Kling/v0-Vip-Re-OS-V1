@@ -12,6 +12,11 @@ import {
   batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
 } from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
+import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
+// THE ONE BATCHDATA GATE + the owner-contact provider route (wave 80B / 81B) are
+// imported DYNAMICALLY at their call sites (same reason as queueContactEnrichment
+// below: the rail's transports must not join this module's static graph, which
+// test:compliance-scope walks).
 import {
   handleLeadScored,
   processKernelEvent,
@@ -40,11 +45,12 @@ import {
 const BATCH_SIZE = 10
 
 /**
- * PeopleData's per-record charge, PRE-FLIGHTED at the matched (worst-case)
- * price so the budget check can never admit a call the ledger then books
- * higher (wave 72 integration: the old comment claimed 0.10 on both paths while
- * lib/external/peopledata-client.ts reported 0.25 on a match). The ledger still
- * records the cost the client actually reports.
+ * The owner-contact lane's WORST-CASE per-record charge, PRE-FLIGHTED so the
+ * budget check can never admit a call the ledger then books higher (wave 72
+ * integration). Since wave 81B the route asks BatchData first ($0.07/match) and
+ * PeopleData only on a miss ($0.25/match) — the pre-flight stays at the dearer
+ * figure because a single row can still reach both. The ledger records the cost
+ * each client actually reports.
  */
 const PEOPLEDATA_UNIT_COST = PEOPLEDATA_MATCH_COST_USD
 
@@ -477,15 +483,94 @@ export async function processEnrichmentQueue(
         throw new Error('No identifier (first_name, phone, or email) available for skip trace')
       }
 
-      // Step 5: Call PeopleData
-      const name = [entity.first_name, entity.last_name].filter(Boolean).join(' ') || undefined
-      const { data: enriched, cost } = await skipTraceWithPeopleData({
-        name,
-        phone: entity.phone ?? undefined,
-        email: entity.email ?? undefined,
+      // ── Step 5: OWNER-CONTACT PROVIDER ROUTE — cheapest adequate provider FIRST ──
+      // (wave 81 lane B, owner verbatim: "make sure that peoplesearch and batchdata
+      // don't overlap and if they do then search which one is cheaper, then use that
+      // one"). The ONE overlap is phone/email append. BatchData V3 skip trace bills
+      // $0.07 per matched record (DNC/TCPA flags inline); PeopleData bills $0.25 per
+      // match. lib/ai-isa/property-lookup-rail.ts::resolveContactProviderRoute picks
+      // the order from what THIS record carries: a property address → BatchData first,
+      // PeopleData ONLY when BatchData returns nothing; no address → PeopleData (the
+      // only provider that can be asked by name/email/phone). Before this wave the
+      // order was the reverse (PeopleData first, BatchData as the no-match fallback),
+      // which paid the dearer provider on every address-bearing row.
+      // BEHAVIOUR CHANGE, published: a row BatchData matches no longer buys the
+      // PeopleData person profile (demographics / employment / socials) — the persona
+      // builder below runs only on the PeopleData path. Cost-down was the ruling.
+      const { resolveBatchDataAccess, resolveContactProviderRoute } = await import('@/lib/ai-isa/property-lookup-rail')
+      const propertyStreet = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
+      const route = resolveContactProviderRoute({
+        hasName: !!(entity.first_name || entity.last_name),
+        hasPropertyAddress: !!propertyStreet,
+        hasEmailOrPhone: !!(entity.email || entity.phone),
+        hasProfileUrl: false,
       })
+      console.info('[enrichment-orchestrator] owner-contact route:', route.providers.join(' → ') || 'none', '—', route.reason)
 
-      result.totalCost += cost
+      let batchDataFallback: { phones: string[]; emails: string[] } | null = null
+      let batchDataFallbackCost = 0
+      // Captured (not just logged) so the Step 7 no-match path below can classify it
+      // instead of always defaulting to "transient" — a BatchData token/provisioning
+      // refusal here is the SAME config fault the top-level catch (~:1034) escalates.
+      let batchDataFallbackErrorMessage: string | null = null
+      // THE ONE BATCHDATA GATE (wave 80 lane B): purpose "skip_trace" through
+      // lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off — the
+      // platform-wide monthly cap; the tenant on-market opt-in does not apply to a skip
+      // trace). Refused → falls through to PeopleData (when the route admits it) or to
+      // the Step 7 no-match handling below.
+      const skipTraceAccess = route.providers[0] === 'batchdata' && process.env.BATCHDATA_API_KEY
+        ? await resolveBatchDataAccess({ brokerageId, purpose: 'skip_trace' })
+        : null
+      if (skipTraceAccess && !skipTraceAccess.allowed) {
+        console.info('[enrichment-orchestrator] batchdata skip trace skipped:', skipTraceAccess.reason)
+      }
+      if (skipTraceAccess?.allowed) {
+        try {
+          const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
+          const { matches, cost: btCost } = await skipTraceBatchDataV3Batch([{
+            ref: entityId,
+            firstName: (entity.first_name as string | null) ?? undefined,
+            lastName: (entity.last_name as string | null) ?? undefined,
+            address: propertyStreet ?? undefined,
+            city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? undefined,
+            state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? undefined,
+            zip: (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? undefined,
+          }])
+          batchDataFallbackCost = btCost
+          const m = matches[0]
+          if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails }
+        } catch (e) {
+          batchDataFallbackErrorMessage = e instanceof Error ? e.message : String(e)
+          console.warn('[enrichment-orchestrator] batchdata skip trace failed (non-blocking):', e)
+        }
+        if (batchDataFallbackCost > 0) {
+          // PLATFORM LEDGER (vendor_usage_tracking) at the REAL cost the client reported —
+          // never a unitCount the normalizer prices at VENDOR_PRICING.batchdata's $0.50
+          // motivated-seller rate (a 7× overstatement that tripped the platform cap early).
+          await meterVendorSpend({
+            vendorName: 'batchdata',
+            usageType: 'skip_trace',
+            cost: batchDataFallbackCost,
+            brokerageId,
+            systemSource: 'skip_trace',
+            metadata: { entityType, entityId, queueEntryId: entry.id, result: batchDataFallback ? 'matched' : 'no_match', route: route.providers.join('>') },
+          })
+        }
+      }
+
+      // Step 5b: PeopleData — the dearer provider, asked ONLY when the route names it and
+      // BatchData found nothing (or could not be asked). Its no-match is free (PDL bills
+      // per successful match), so a fall-through here costs nothing extra.
+      const name = [entity.first_name, entity.last_name].filter(Boolean).join(' ') || undefined
+      const { data: enriched, cost } = !batchDataFallback && route.providers.includes('peopledata')
+        ? await skipTraceWithPeopleData({
+            name,
+            phone: entity.phone ?? undefined,
+            email: entity.email ?? undefined,
+          })
+        : { data: null, cost: 0 }
+
+      result.totalCost += cost + batchDataFallbackCost
 
       // Step 6: Data returned
       if (enriched) {
@@ -743,20 +828,17 @@ export async function processEnrichmentQueue(
           })
           .eq('id', entry.id)
 
-        // Step 6c: Track vendor usage.
-        // Vendor key is LOWERCASE 'peopledata' — the key VENDOR_PRICING actually
-        // holds ($0.10/record). It was 'PeopleData', which no pricing row matches,
-        // so normalizeVendorCost fell through to its $0.01/unit unknown-vendor
-        // default and this lane under-reported its own spend by 10x in the same
-        // ledger checkVendorBudget reads. lib/enrichment/contact-enrichment-core.ts
-        // already meters it lowercase.
-        await trackVendorUsageService({
-          vendor: 'peopledata',
-          systemSource: 'skip_trace',
-          unitCount: 1,
+        // Step 6c: Track vendor usage — PLATFORM LEDGER (vendor_usage_tracking) at the
+        // cost the client reported (PEOPLEDATA_MATCH_COST_USD on a match). Vendor key
+        // LOWERCASE 'peopledata'. Was a unitCount:1 through trackVendorUsageService,
+        // which priced a $0.25 match at VENDOR_PRICING's old $0.10 (lane 81B).
+        await meterVendorSpend({
+          vendorName: 'peopledata',
+          usageType: 'skip_trace',
+          cost,
           brokerageId,
-          ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }),
-          metadata: { entityType, entityId, queueEntryId: entry.id, cost, lane: plan.label },
+          systemSource: 'skip_trace',
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost, lane: plan.label, ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }) },
         })
 
         // Step 6d: Lead-specific post-enrichment
@@ -894,7 +976,7 @@ export async function processEnrichmentQueue(
         // (tier ≠ off AND the platform-staff opt-in). Refused → this step is skipped with
         // the reason logged; the person-enrichment result above stands.
         const propertyAccess = isBatchDataOrigin(entity) && process.env.BATCHDATA_API_KEY
-          ? await (await import('@/lib/ai-isa/property-lookup-rail')).resolveBatchDataAccess({ brokerageId, purpose: 'acquisition' })
+          ? await resolveBatchDataAccess({ brokerageId, purpose: 'acquisition' })
           : null
         if (propertyAccess && !propertyAccess.allowed) {
           console.info('[enrichment-orchestrator] batchdata property-enrichment skipped:', propertyAccess.reason)
@@ -914,12 +996,14 @@ export async function processEnrichmentQueue(
                   if (propWriteError) {
                     console.warn('[enrichment-orchestrator] batchdata property-enrichment write failed:', propWriteError.message)
                   } else {
-                    await trackVendorUsageService({
-                      vendor: 'batchdata',
-                      systemSource: 'property_enrichment',
-                      unitCount: 1,
+                    // PLATFORM LEDGER at the client's reported cost (lane 81B — was a
+                    // unitCount:1 priced at the $0.50 motivated-seller rate).
+                    await meterVendorSpend({
+                      vendorName: 'batchdata',
+                      usageType: 'property_enrichment',
+                      cost: propEnrichment.cost,
                       brokerageId,
-                      ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }),
+                      systemSource: 'property_enrichment',
                       metadata: { entityType, entityId, queueEntryId: entry.id, cost: propEnrichment.cost },
                     })
                   }
@@ -933,61 +1017,10 @@ export async function processEnrichmentQueue(
 
         result.succeeded++
       } else {
-        // ── BATCHDATA V3 SKIP-TRACE FALLBACK (task 4, wave 65) ──────────────────────
-        // PeopleData found nothing for this identifier. Before retrying/terminalizing,
-        // try BatchData's V3 Skip Trace ONCE — a different provider's index can hold a
-        // phone/email PeopleData's does not. Reuses the SAME DNC/TCPA scrub
-        // (scrubPhonesForPatch, lib/compliance/phone-scrub-runner.ts) every other phone
-        // candidate in this file already goes through — never a duplicate scrub path.
-        // Fail-closed: no BATCHDATA_API_KEY or no match found here falls straight
-        // through to the ORIGINAL Step 7 no-match handling below, unchanged.
-        let batchDataFallback: { phones: string[]; emails: string[] } | null = null
-        let batchDataFallbackCost = 0
-        // Captured (not just logged) so the Step 7 no-match path below can classify it
-        // instead of always defaulting to "transient" — a BatchData token/provisioning
-        // refusal here is the SAME config fault the top-level catch (~:1034) escalates.
-        let batchDataFallbackErrorMessage: string | null = null
-        // THE ONE BATCHDATA GATE (wave 80 lane B): purpose "skip_trace" through
-        // lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off — the
-        // platform-wide monthly cap; the tenant on-market opt-in does not apply to a skip
-        // trace). Refused → falls straight through to the Step 7 no-match handling below.
-        const skipTraceAccess = process.env.BATCHDATA_API_KEY && (entity.first_name || entity.address || entity.mailing_address)
-          ? await (await import('@/lib/ai-isa/property-lookup-rail')).resolveBatchDataAccess({ brokerageId, purpose: 'skip_trace' })
-          : null
-        if (skipTraceAccess && !skipTraceAccess.allowed) {
-          console.info('[enrichment-orchestrator] batchdata skip-trace fallback skipped:', skipTraceAccess.reason)
-        }
-        if (skipTraceAccess?.allowed) {
-          try {
-            const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
-            const { matches, cost: btCost } = await skipTraceBatchDataV3Batch([{
-              ref: entityId,
-              firstName: (entity.first_name as string | null) ?? undefined,
-              lastName: (entity.last_name as string | null) ?? undefined,
-              address: (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? undefined,
-              city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? undefined,
-              state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? undefined,
-              zip: (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? undefined,
-            }])
-            batchDataFallbackCost = btCost
-            const m = matches[0]
-            if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails }
-          } catch (e) {
-            batchDataFallbackErrorMessage = e instanceof Error ? e.message : String(e)
-            console.warn('[enrichment-orchestrator] batchdata skip-trace fallback failed (non-blocking):', e)
-          }
-          if (batchDataFallbackCost > 0) {
-            await trackVendorUsageService({
-              vendor: 'batchdata',
-              systemSource: 'skip_trace',
-              unitCount: 1,
-              brokerageId,
-              ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }),
-              metadata: { entityType, entityId, queueEntryId: entry.id, cost: batchDataFallbackCost, result: batchDataFallback ? 'matched' : 'no_match' },
-            })
-          }
-        }
-
+        // ── BATCHDATA V3 SKIP TRACE MATCHED (the cheaper provider, asked FIRST in Step 5
+        // since wave 81 lane B; wave 65 built this as the PeopleData no-match fallback).
+        // Reuses the SAME DNC/TCPA scrub (scrubPhonesForPatch, lib/compliance/phone-
+        // scrub-runner.ts) every other phone candidate in this file goes through.
         if (batchDataFallback) {
           // Same phone-scrub discipline as the PeopleData matched path — DNC/TCPA
           // scrubbed and the clean line elected primary, never a naive first-found.
@@ -1007,7 +1040,9 @@ export async function processEnrichmentQueue(
             ...phonePatch,
             ...(batchDataFallback.emails[0] && { email: batchDataFallback.emails[0] }),
             last_enriched_at: new Date().toISOString(),
-            enrichment_provider: 'batchdata_skip_trace_fallback',
+            // 'batchdata_skip_trace' (was 'batchdata_skip_trace_fallback' — it is the
+            // FIRST provider now; no reader of the old spelling existed: grepped lane 81B).
+            enrichment_provider: 'batchdata_skip_trace',
             ...(entityType === 'lead' && { enrichment_status: 'complete' }),
           }
           const { error: fallbackWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
@@ -1020,10 +1055,10 @@ export async function processEnrichmentQueue(
               status: 'completed',
               enrichment_cost: cost + batchDataFallbackCost,
               enrichment_results: {
-                lane: 'batchdata_skip_trace_fallback',
-                person_enrichment: 'batchdata_fallback_match',
+                lane: 'batchdata_skip_trace',
+                person_enrichment: 'batchdata_match',
                 free_osint: free ? freeLaneProfileBlock(free) : null,
-                note: 'PeopleData no_match; BatchData V3 skip trace fallback found a contact point',
+                note: `BatchData V3 skip trace (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData not asked`,
               },
               completed_at: new Date().toISOString(),
             })
@@ -1066,9 +1101,8 @@ export async function processEnrichmentQueue(
               person_enrichment: 'no_match',
               free_osint: free ? freeLaneProfileBlock(free) : null,
             },
-            error_message: 'No match found in PeopleData'
-              + (free ? ` — ${describeFreeLane(free)}` : '')
-              + (process.env.BATCHDATA_API_KEY ? ' — BatchData V3 skip-trace fallback also found nothing' : ''),
+            error_message: `No match found (owner-contact route ${route.providers.join(' → ') || 'none'}: ${route.reason})`
+              + (free ? ` — ${describeFreeLane(free)}` : ''),
           })
           .eq('id', entry.id)
 
@@ -1084,16 +1118,19 @@ export async function processEnrichmentQueue(
           })
         }
 
-        // Lowercase 'peopledata' — see the note at the matched path above; the
-        // capitalised key missed VENDOR_PRICING and priced this call at $0.01.
-        await trackVendorUsageService({
-          vendor: 'peopledata',
-          systemSource: 'skip_trace',
-          unitCount: 1,
-          brokerageId,
-          ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }),
-          metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match', lane: plan.label },
-        })
+        // Lowercase 'peopledata'; PLATFORM LEDGER at the reported cost — a PDL no-match
+        // is $0 (PEOPLEDATA_NO_MATCH_COST_USD), so meterVendorSpend no-ops on it rather
+        // than booking a unit the normalizer would price at the matched rate.
+        if (cost > 0) {
+          await meterVendorSpend({
+            vendorName: 'peopledata',
+            usageType: 'skip_trace',
+            cost,
+            brokerageId,
+            systemSource: 'skip_trace',
+            metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match', lane: plan.label },
+          })
+        }
 
         result.failed++
         }
