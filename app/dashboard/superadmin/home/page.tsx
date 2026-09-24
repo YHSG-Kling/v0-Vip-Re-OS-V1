@@ -114,6 +114,8 @@ const GROUPS: ToolGroup[] = [
         desc: "Per-tenant phone inventory — staff-side provisioning and release, with the number-event audit feed." },
       { label: "A2P 10DLC", href: "/dashboard/superadmin/a2p", cap: "providers",
         desc: "Every tenant's SMS campaign registration status." },
+      { label: "QR registry — platform + every tenant", href: "/dashboard/superadmin/qr-codes", cap: "marketing",
+        desc: "The one QR management registry: every tracked code the OS minted (video outros, listing pages, landing pages, direct mail, business cards, studio assets), who owns it — the platform or a tenant — and its scans." },
       { label: "Suppression list", href: "/dashboard/superadmin/suppression", cap: "sentinel",
         desc: "Platform-wide outbound suppression — addresses that must never be contacted." },
       { label: "Vendors — every tenant", href: "/dashboard/superadmin/vendors", cap: "sentinel",

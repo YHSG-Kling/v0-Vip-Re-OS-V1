@@ -123,6 +123,10 @@ export interface TenantCreationResult {
   /** READ (§3) and reported — the tenant exists even when this row was refused. */
   subscriptionError?: string
   slug?: string
+  /** THE TENANT WEBSITE (wave 81D): `/site/<slug>` — served by app/site/[slug]
+   *  from live tables the moment the brokerage row exists (brand cascade,
+   *  listings, agents, blog, recruiting). Present on every ok result. */
+  websitePath?: string
   trialEndsAt?: string | null
   inviteSent?: boolean
   inviteError?: string
@@ -148,6 +152,30 @@ const DEFAULT_TRIAL_DAYS = 14
 export function buildTenantSlug(brokerageName: string, suffix: string = Math.random().toString(36).slice(2, 6)): string {
   const base = brokerageName.trim().toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "brokerage"
   return `${base}-${suffix}`
+}
+
+/** The storefront path a slug serves (app/site/[slug]) — ONE spelling. */
+export function tenantWebsitePath(slug: string): string { return `/site/${slug}` }
+
+/**
+ * THE WEBSITE IS PROVISIONED BY THE SLUG (wave 81D, owner: "when a tenant is
+ * created, we also coded an automatic website is created"). app/site/[slug]
+ * resolves `brokerages.slug` and assembles the storefront from live tables, so
+ * the slug IS the provisioning step — and it must be UNIQUE or two tenants
+ * share one storefront. Live: brokerages.slug carries no unique index, so the
+ * check happens here, BEFORE the insert: a collision re-suffixes (bounded), a
+ * REFUSED read fails the creation loudly (never "probably unique"), and the
+ * caller reports the path it provisioned.
+ */
+export async function resolveUniqueTenantSlug(service: any, brokerageName: string, opts: { attempts?: number; suffixes?: string[] } = {}): Promise<{ ok: true; slug: string; retried: number } | { ok: false; error: string }> {
+  const attempts = Math.max(1, opts.attempts ?? 4)
+  for (let i = 0; i < attempts; i++) {
+    const slug = buildTenantSlug(brokerageName, opts.suffixes?.[i])
+    const { data, error } = await service.from("brokerages").select("id").eq("slug", slug).limit(1)
+    if (error) return { ok: false, error: `Website slug check refused (${error.message}) — tenant NOT created: a storefront must be provably its own.` }
+    if (!(data ?? []).length) return { ok: true, slug, retried: i }
+  }
+  return { ok: false, error: `Could not provision a unique website slug for "${brokerageName}" after ${attempts} attempts — tenant NOT created.` }
 }
 
 /** PURE: platform-membership flags — for a SOLO agent the broker-side steps
@@ -248,7 +276,12 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
   const trialEndsAt = input.billing.mode === "trial"
     ? new Date(Date.now() + (input.billing.trialDays ?? DEFAULT_TRIAL_DAYS) * 24 * 60 * 60 * 1000).toISOString()
     : null
-  const slug = buildTenantSlug(brokerageName)
+  // THE WEBSITE: the slug is checked against live rows first — a collision
+  // re-suffixes, a refused read FAILS the creation (two tenants on one
+  // storefront is worse than no tenant). app/site/[slug] serves it from here on.
+  const slugRes = await resolveUniqueTenantSlug(service, brokerageName)
+  if (!slugRes.ok) return { ok: false, error: slugRes.error, extrasSkipped }
+  const slug = slugRes.slug
   const { data: brokerage, error: bErr } = await service
     .from("brokerages")
     .insert({
@@ -451,11 +484,11 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
     await sentinelWrite(service, service.from("notifications").insert({
       user_id: userId, brokerage_id: brokerageId, type: "agent_onboarding",
       title: pendingPayment ? "Welcome — finish activating your plan" : "Welcome — meet your AI team",
-      body: pendingPayment
+      body: `${pendingPayment
         ? `Your ${planLabel} plan is reserved. Complete the checkout in your email (plan + one-time setup) and your eleven AI managers go on duty the moment it clears.`
         : assigned > 0
         ? `Your ${planLabel} plan is live. Start with your ${assigned}-lesson onboarding path — your eleven AI managers are already on duty.`
-        : `Your ${planLabel} plan is live — your eleven AI managers are already on duty. Your onboarding wizard is ready.`,
+        : `Your ${planLabel} plan is live — your eleven AI managers are already on duty. Your onboarding wizard is ready.`} Your website is already up at ${tenantWebsitePath(slug)}.`,
       priority: "high", is_read: false,
     }), { table: "notifications", flow: "tenant_creation_welcome", brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   } catch (err) { extrasSkipped.push("onboarding_education"); console.warn("[tenant-creation] onboarding education failed (non-fatal):", (err as Error)?.message) }
@@ -479,7 +512,7 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
 
   return {
     ok: true,
-    brokerageId, userId, subscriptionId, subscriptionError, slug, trialEndsAt,
+    brokerageId, userId, subscriptionId, subscriptionError, slug, websitePath: tenantWebsitePath(slug), trialEndsAt,
     inviteSent: owner.inviteSent, inviteError: owner.inviteError,
     snapshotApplied, snapshotName, snapshotError,
     prospectStamp,

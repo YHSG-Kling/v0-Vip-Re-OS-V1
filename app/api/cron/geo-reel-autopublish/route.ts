@@ -80,10 +80,18 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // THE LISTING-PAGE NET (wave 81D): every non-draft listing without a public
+  // slug gets its /listing/[slug] page here — the same GEO tick that publishes
+  // reels — so a listing created off the two hooked paths (intake, launch)
+  // still has a page. Bounded; refusals named in the JSON, never swallowed.
+  const { ensureMissingListingSlugs } = await import("@/lib/listings/listing-slug")
+  const listingPages = await ensureMissingListingSlugs(svc, 100).catch((e: unknown) => ({ scanned: 0, created: 0, errors: [(e as Error).message] }))
+
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     scanned: reels.length,
     published,
     results,
+    listing_pages: listingPages,
   })
 }

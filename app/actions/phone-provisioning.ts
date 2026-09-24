@@ -86,6 +86,8 @@ interface ProvisionResult {
   bound?: boolean
   /** Honest note when the number exists/bills but the webhook bind failed. */
   bindNote?: string
+  /** wave 81D: what the automatic carrier registration did after this number landed. */
+  registrationNote?: string
 }
 
 /**
@@ -171,6 +173,7 @@ export async function autoProvisionAgentPhone(params: {
     // rather than swallowed — the number exists and is billing either way.
     bound: result.bound,
     bindNote: result.bindNote,
+    registrationNote: result.registration?.statusLine,
   }
 }
 
@@ -352,7 +355,19 @@ export async function manuallyAddAgentPhone(params: {
     twilioSid: verifiedSid ?? undefined,
   })
 
-  return { success: true, phoneNumber: cleaned, twilioSid: verifiedSid ?? undefined, bound, bindNote }
+  // AUTOMATIC BUSINESS REGISTRATION after a port-in / BYO add (wave 81D) —
+  // the same kickoff the purchase pipeline runs; best-effort, audited, honest
+  // about a missing business profile. Never undoes the row above.
+  let registrationNote: string | undefined
+  try {
+    const { kickCarrierRegistration } = await import("@/lib/voice/a2p-registration")
+    const reg = await kickCarrierRegistration(svc, { brokerageId: ctx.brokerageId, phoneNumber: cleaned, trigger: params.source === "ported_in" ? "ported_in" : "manually_added" })
+    registrationNote = reg.statusLine
+  } catch (err) {
+    registrationNote = `Business registration could not start: ${(err as Error)?.message ?? "unknown"}`
+  }
+
+  return { success: true, phoneNumber: cleaned, twilioSid: verifiedSid ?? undefined, bound, bindNote, registrationNote }
 }
 
 /**

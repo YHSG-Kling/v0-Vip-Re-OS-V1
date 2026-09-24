@@ -86,7 +86,9 @@ delete process.env.VERCEL; delete process.env.AWS_LAMBDA_FUNCTION_NAME; delete p
 // ── Stubs ────────────────────────────────────────────────────────────────────
 function countingProvider(): ScreenshotProvider & { calls: ProviderCaptureInput[] } {
   const calls: ProviderCaptureInput[] = []
-  return { name: "puppeteer", calls, async capture(input) { calls.push(input); return { png: Buffer.from("png-bytes") } } }
+  // The stub CONFIRMS every readiness label (wave 81D) — the seam refuses otherwise; the refusal
+  // itself is proved by scripts/zestimate-only-guard.ts with a provider that confirms nothing.
+  return { name: "puppeteer", calls, async capture(input) { calls.push(input); return { png: Buffer.from("png-bytes"), satisfied: input.readyWhen.map((r) => r.label) } } }
 }
 interface SvcOpts { cacheHit?: { id: string; asset_url: string; metadata: Record<string, unknown> } | null; insertId?: string }
 function makeSvc(opts: SvcOpts = {}) {
@@ -202,15 +204,17 @@ check("robots: wildcard + $ anchor honoured", !isRobotsAllowed("User-agent: *\nD
 }
 {
   const provider = countingProvider(); const svc = makeSvc({ insertId: "pub-1" })
-  const r = await captureScreenshot({ kind: "public_page", url: "https://www.redfin.com/TX/Austin/1-Main/home/1" }, { svc, provider, fetchRobots: async () => "User-agent: *\nAllow: /", now: new Date("2026-09-22T10:00:00Z") })
+  const r = await captureScreenshot({ kind: "public_page", url: "https://www.zillow.com/homedetails/1-Main-Austin-TX/1_zpid/" }, { svc, provider, fetchRobots: async () => "User-agent: *\nAllow: /", now: new Date("2026-09-22T10:00:00Z") })
   const row = svc.inserted[0] as any
   check("stubbed run: an allowed public page is captured once with the identified UA and no cookies", r.ok && provider.calls.length === 1 && provider.calls[0].userAgent.includes("VipReOS-DemoStillBot") && !provider.calls[0].cookies)
-  check("the third-party row is PENDING (never a tenant-picker asset), tagged third_party_page, with source_url + captured_at + day + provider", !!row && row.approval_status === "pending" && row.tags.includes("third_party_page") && row.metadata.source_url === "https://www.redfin.com/TX/Austin/1-Main/home/1" && row.metadata.captured_at === "2026-09-22T10:00:00.000Z" && row.metadata.day === "2026-09-22" && row.metadata.provider === "puppeteer" && row.metadata.usage === "demo_training_video_only")
+  check("the third-party row is PENDING (never a tenant-picker asset), tagged third_party_page, with source_url + captured_at + day + provider", !!row && row.approval_status === "pending" && row.tags.includes("third_party_page") && row.metadata.source_url === "https://www.zillow.com/homedetails/1-Main-Austin-TX/1_zpid/" && row.metadata.captured_at === "2026-09-22T10:00:00.000Z" && row.metadata.day === "2026-09-22" && row.metadata.provider === "puppeteer" && row.metadata.usage === "demo_training_video_only")
   check("the third-party row's source is NOT a redistributable library source (canShareToTenants would say no)", row && !["ai_image", "upload", "owned", "licensed_redistribution"].includes(row.metadata.source))
 }
 {
   const provider = countingProvider(); const svc = makeSvc()
-  const host = "www.homes.com"
+  // The apex host: a separate limiter key from the www. captures above (wave 81D — the allowlist
+  // is zillow.com only, so the rate test rides the same domain on its other hostname).
+  const host = "zillow.com"
   const results: boolean[] = []
   for (let i = 0; i < PUBLIC_PAGE_RATE.limit + 1; i++) {
     const r = await captureScreenshot({ kind: "public_page", url: `https://${host}/property/${i}/` }, { svc, provider, fetchRobots: async () => "User-agent: *\nAllow: /" })
@@ -240,7 +244,7 @@ check("the seam's public_page row shape uses only live marketing_assets columns 
   return Object.keys(row).every((k) => cols.has(k)) && v.approval_status.includes(row.approval_status as string) && v.visibility_scope.includes(row.visibility_scope as string) && v.asset_type.includes(row.asset_type as string)
 })())
 check("the hosted provider adapter is selectable by env and refuses unconfigured (never a silent no-op)", resolveScreenshotProvider({} as unknown as NodeJS.ProcessEnv).name === "puppeteer" && resolveScreenshotProvider({ SCREENSHOT_PROVIDER: "hosted" } as unknown as NodeJS.ProcessEnv).name === "hosted"
-  && await resolveScreenshotProvider({ SCREENSHOT_PROVIDER: "hosted" } as unknown as NodeJS.ProcessEnv).capture({ url: "https://x", viewport: { width: 1, height: 1 }, redactSelectors: [], userAgent: "u", timeoutMs: 1 }).then(() => false, (e: Error) => /not configured/.test(e.message)))
+  && await resolveScreenshotProvider({ SCREENSHOT_PROVIDER: "hosted" } as unknown as NodeJS.ProcessEnv).capture({ url: "https://x", viewport: { width: 1, height: 1 }, redactSelectors: [], readyWhen: [], userAgent: "u", timeoutMs: 1 }).then(() => false, (e: Error) => /not configured/.test(e.message)))
 
 console.log("\n[6 · NO customer-facing tool imports the seam]")
 const customerFacingDirs = ["lib/ai-isa", "lib/voice", "lib/portal", "app/portal", "app/api/portal", "app/api/public", "app/api/widget", "lib/customer-portal"]

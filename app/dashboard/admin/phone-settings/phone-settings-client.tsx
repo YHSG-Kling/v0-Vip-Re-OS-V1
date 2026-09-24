@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Phone, Volume2, CheckCircle2, AlertCircle, Loader2, Plus, Search, Mic } from "lucide-react"
 import { A2pRegistrationCard } from "./a2p-card"
+import { PhoneTestCard } from "./phone-test-card"
 import { VoiceRecorder } from "@/app/dashboard/settings/twin-studio/components/voice-recorder"
 import { uploadBrokerageVoiceSample } from "@/app/actions/twin-studio-upload"
 import {
@@ -448,6 +449,9 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
 
       {/* Carrier registration — the platform files A2P 10DLC for the tenant */}
       <A2pRegistrationCard />
+
+      {/* Phone test — gated on the registration above (wave 81D) */}
+      <PhoneTestCard />
 
       {/* Compliance note */}
       <Card className="bg-amber-50/50 border-amber-200">

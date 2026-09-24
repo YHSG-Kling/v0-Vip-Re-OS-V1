@@ -43,7 +43,7 @@ import {
   capturePublicPropertyPage, listScreenshotStillsForUse, SCREENSHOT_USES,
   type CaptureDeps, type CaptureResult, type ScreenshotRefusal, type ScreenshotStillPick, type ScreenshotUse,
 } from "@/lib/assets/screenshot-capture"
-import { estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey } from "@/lib/marketing/estimate-sources"
+import { estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_SOURCE_KEYS, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey, type EstimateStillMustShow } from "@/lib/marketing/estimate-sources"
 
 export interface TenantStillRequest {
   /** From the SESSION gate — never a request body. */
@@ -72,14 +72,16 @@ export interface TenantStillResult {
 }
 
 /** PURE: validate a tenant request before anything runs. */
-export function planTenantStill(req: TenantStillRequest): { ok: true; source: NonNullable<ReturnType<typeof estimateSource>>; address: string; uses: ScreenshotUse[]; query: string; label: string } | ScreenshotRefusal {
+export function planTenantStill(req: TenantStillRequest): { ok: true; source: NonNullable<ReturnType<typeof estimateSource>>; address: string; uses: ScreenshotUse[]; query: string; label: string; mustShow: readonly EstimateStillMustShow[] } | ScreenshotRefusal {
   if (!req.brokerageId) return { ok: false, reason: "REFUSED: tenant still capture needs the session's brokerage id" }
   const src = estimateSource(req.source)
-  if (!src) return { ok: false, reason: `estimate source "${String(req.source)}" is not one of the sources a tenant may pick (zillow_zestimate | realtor_estimate | redfin_estimate | homes_estimate)` }
+  // The vocabulary is ONE source (wave 81D — the Zestimate is the only property-page still); the
+  // refusal names whatever the vocabulary holds rather than restating it.
+  if (!src) return { ok: false, reason: `estimate source "${String(req.source)}" is not one of the sources a tenant may pick (${ESTIMATE_SOURCE_KEYS.join(" | ")})` }
   const address = (req.address ?? "").trim().replace(/\s+/g, " ")
   if (address.length < 6) return { ok: false, reason: "an estimate still needs a street address (6+ characters)" }
   const uses: ScreenshotUse[] = SCREENSHOT_USES.filter((u) => u === "marketing_campaign" || (u === "product_video" && req.alsoForVideo === true))
-  return { ok: true, source: src, address, uses, query: `${address} ${src.searchHint}`.trim(), label: `${src.estimateName} — ${address}`.slice(0, 160) }
+  return { ok: true, source: src, address, uses, query: `${address} ${src.searchHint}`.trim(), label: `${src.estimateName} — ${address}`.slice(0, 160), mustShow: src.mustShow }
 }
 
 /**

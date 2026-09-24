@@ -127,6 +127,13 @@ export interface A2pState {
   shaken_trust_product_sid?: string
   shaken_status?: string
   voice_integrity_error?: string | null
+  // ── Toll-free verification (wave 81D) — the 8xx lane; same store. Status
+  // is Twilio's own (PENDING_REVIEW | IN_REVIEW | TWILIO_APPROVED |
+  // TWILIO_REJECTED), polled by sid; tollfree_error is kept SEPARATE from
+  // last_error for the same reason voice_integrity_error is.
+  tollfree_verification_sid?: string
+  tollfree_status?: string
+  tollfree_error?: string | null
 }
 
 /** PURE: the next step to run given persisted state (resumable, idempotent). */
@@ -623,4 +630,198 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
   state.voice_integrity_error = null
   await saveA2pState(svc, brokerageId, rowId, state)
   return { ok: true, state, advancedTo: nextVoiceIntegrityStep(state) }
+}
+
+// ── TOLL-FREE VERIFICATION (wave 81D) ────────────────────────────────────────
+// A toll-free number (8xx) is NOT registered through 10DLC — it is VERIFIED
+// through Twilio's Tollfree Verifications resource
+// (POST https://messaging.twilio.com/v1/Tollfree/Verifications; Exa,
+// 2026-09-24: unverified toll-free traffic is BLOCKED since 2023-11-08 /
+// 2024-01-31; statuses PENDING_REVIEW → IN_REVIEW → TWILIO_APPROVED |
+// TWILIO_REJECTED, polled by sid). Same business profile, same
+// platform_credentials 'twilio_a2p' jsonb, same honesty: nothing is marked
+// verified that Twilio did not say.
+
+const TOLLFREE_PREFIXES = ["800", "833", "844", "855", "866", "877", "888"] as const
+
+/** PURE: is this E.164 (or 10/11-digit) number a US toll-free number? */
+export function isTollFreeNumber(phone: string | null | undefined): boolean {
+  const d = (phone ?? "").replace(/\D/g, "")
+  const ten = d.length === 11 && d.startsWith("1") ? d.slice(1) : d
+  return ten.length === 10 && (TOLLFREE_PREFIXES as readonly string[]).includes(ten.slice(0, 3))
+}
+
+export type TollfreeStatus = "PENDING_REVIEW" | "IN_REVIEW" | "TWILIO_APPROVED" | "TWILIO_REJECTED"
+const TOLLFREE_TERMINAL: readonly string[] = ["TWILIO_APPROVED", "TWILIO_REJECTED"]
+
+/** PURE: one honest status line for the toll-free lane. */
+export function describeTollfreeState(s: A2pState): string {
+  if (!s.tollfree_verification_sid) return `Toll-free verification not yet submitted.${s.tollfree_error ? ` Last error: ${s.tollfree_error}` : ""}`
+  const st = (s.tollfree_status ?? "PENDING_REVIEW").toUpperCase()
+  if (st === "TWILIO_APPROVED") return "Toll-free number verified — carrier-approved texting is active."
+  if (st === "TWILIO_REJECTED") return `Toll-free verification REJECTED${s.tollfree_error ? `: ${s.tollfree_error}` : ""} — fix the profile / opt-in evidence and resubmit.`
+  return `Toll-free verification under carrier review (${st}). Sending is restricted until approved.`
+}
+
+export interface TollfreeRunResult { ok: boolean; state: A2pState; status: string | null; error?: string }
+
+/**
+ * Submit (once) and poll the toll-free verification for the tenant's toll-free
+ * number(s). Idempotent: an existing verification sid is polled, never
+ * re-filed. Needs the SAME complete business profile the 10DLC machine needs.
+ */
+export async function runTollfreeVerification(svc: any, brokerageId: string, opts?: { mock?: boolean }): Promise<TollfreeRunResult> {
+  const { rowId, state } = await loadA2pState(svc, brokerageId)
+  const fail = async (error: string): Promise<TollfreeRunResult> => {
+    const s = { ...state, tollfree_error: error.slice(0, 400) }
+    await saveA2pState(svc, brokerageId, rowId, s)
+    return { ok: false, state: s, status: s.tollfree_status ?? null, error }
+  }
+
+  const { data: bs } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+  const profileV = validateA2pProfile((bs as any)?.settings?.a2p_business_profile)
+  if (!profileV.ok) return fail(`Business profile incomplete — missing: ${profileV.missing.join(", ")}`)
+  const profile = profileV.value
+
+  const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
+  const creds = await resolveTenantTwilioCreds(svc, brokerageId)
+  if (!creds) return fail("Twilio not configured for this tenant — nothing was filed")
+
+  // Poll an existing verification by its own sid (never a constant).
+  if (state.tollfree_verification_sid) {
+    if (!TOLLFREE_TERMINAL.includes((state.tollfree_status ?? "").toUpperCase())) {
+      const poll = await twilio<{ status?: string; rejection_reason?: string }>({ accountSid: creds.accountSid, authToken: creds.authToken }, MESSAGING, `/v1/Tollfree/Verifications/${state.tollfree_verification_sid}`, "GET")
+      if (poll.ok && poll.data?.status) {
+        state.tollfree_status = poll.data.status
+        if (poll.data.status.toUpperCase() === "TWILIO_REJECTED") state.tollfree_error = (poll.data.rejection_reason ?? "rejected — see Twilio console").slice(0, 400)
+      }
+    }
+    await saveA2pState(svc, brokerageId, rowId, state)
+    return { ok: true, state, status: state.tollfree_status ?? null }
+  }
+
+  const { data: numbers } = await svc.from("tenant_phone_numbers")
+    .select("phone_number, twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+    .not("twilio_number_sid", "is", null).limit(10)
+  const tollFree = ((numbers ?? []) as Array<{ phone_number: string; twilio_number_sid: string }>).find((n) => isTollFreeNumber(n.phone_number))
+  if (!tollFree) return fail("No active toll-free number to verify — provision one first")
+
+  if (opts?.mock) {
+    // Honest mock: the form is validated and nothing is filed; state records
+    // the intent so a later real run submits.
+    state.tollfree_error = null
+    await saveA2pState(svc, brokerageId, rowId, state)
+    return { ok: true, state, status: null }
+  }
+
+  // CONTRACT (Twilio Tollfree Verifications, 2026-09-24 docs): business identity
+  // + contact + opt-in evidence + use case + samples + volume + the number's SID;
+  // Privacy/Terms URLs and the EIN (BusinessRegistrationNumber/Authority) are
+  // required for every business type but SOLE_PROPRIETOR.
+  const created = await twilio<{ sid?: string; status?: string }>({ accountSid: creds.accountSid, authToken: creds.authToken }, MESSAGING, "/v1/Tollfree/Verifications", "POST", {
+    BusinessName: profile.legalName,
+    BusinessWebsite: profile.website,
+    BusinessStreetAddress: profile.street,
+    BusinessCity: profile.city,
+    BusinessStateProvinceRegion: profile.region,
+    BusinessPostalCode: profile.postalCode,
+    BusinessCountry: "US",
+    BusinessContactFirstName: profile.contactFirstName,
+    BusinessContactLastName: profile.contactLastName,
+    BusinessContactEmail: profile.contactEmail,
+    BusinessContactPhone: profile.contactPhone,
+    NotificationEmail: profile.contactEmail,
+    UseCaseCategories: ["CUSTOMER_CARE", "ACCOUNT_NOTIFICATIONS"],
+    UseCaseSummary: profile.useCaseDescription,
+    ProductionMessageSample: `Hi {first name}, this is ${profile.legalName}. Confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule. Reply STOP to opt out.`,
+    OptInImageUrls: [profile.website],
+    OptInType: "WEB_FORM",
+    MessageVolume: "1,000",
+    TollfreePhoneNumberSid: tollFree.twilio_number_sid,
+    PrivacyPolicyUrl: profile.privacyPolicyUrl,
+    TermsAndConditionsUrl: profile.termsUrl,
+    BusinessRegistrationNumber: profile.ein,
+    BusinessRegistrationAuthority: "EIN",
+    BusinessRegistrationCountry: "US",
+    BusinessType: "PRIVATE_PROFIT",
+    OptInKeywords: ["START", "YES"],
+    HelpMessageSample: `${profile.legalName}: reply HELP for help or STOP to opt out. Msg&data rates may apply.`,
+    OptInConfirmationMessage: `${profile.legalName}: You're opted in to appointment and listing updates. Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
+  })
+  if (!created.ok || !created.data?.sid) return fail(`Toll-free verification submit failed: ${created.error ?? created.status}`)
+  state.tollfree_verification_sid = created.data.sid
+  state.tollfree_status = created.data.status ?? "PENDING_REVIEW"
+  state.tollfree_error = null
+  await saveA2pState(svc, brokerageId, rowId, state)
+  return { ok: true, state, status: state.tollfree_status }
+}
+
+// ── AUTOMATIC KICK-OFF AFTER A PURCHASE / PORT-IN (wave 81D) ─────────────────
+// Owner: "automatic registering business after phone number purchase/port over
+// so can use the phone/test feature." Until this wave the step machine ran only
+// when a human pressed "Run / resume registration". Now the number pipeline
+// (lib/voice/number-provisioning.ts provisionNumber) and the port-in door
+// (app/actions/phone-provisioning.ts manuallyAddAgentPhone) call this the
+// moment a number lands: best-effort, NEVER blocks or undoes the purchase,
+// audited on phone_number_events, and HONEST when the business profile is
+// incomplete — it says which fields the tenant still owes instead of pretending
+// a registration is under way.
+
+export interface CarrierKickoffResult {
+  kicked: boolean
+  lane: "10dlc" | "tollfree"
+  statusLine: string
+  reason?: string
+}
+
+export async function kickCarrierRegistration(svc: any, args: { brokerageId: string; phoneNumber: string; trigger: "purchased" | "ported_in" | "manually_added" }): Promise<CarrierKickoffResult> {
+  const lane: CarrierKickoffResult["lane"] = isTollFreeNumber(args.phoneNumber) ? "tollfree" : "10dlc"
+  let result: CarrierKickoffResult
+  try {
+    const { data: bs } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", args.brokerageId).maybeSingle()
+    const profileV = validateA2pProfile((bs as any)?.settings?.a2p_business_profile)
+    if (!profileV.ok) {
+      result = { kicked: false, lane, statusLine: `Business registration waiting on the business profile — missing: ${profileV.missing.join(", ")} (Phone settings → Carrier registration).`, reason: "profile_incomplete" }
+    } else if (lane === "tollfree") {
+      const r = await runTollfreeVerification(svc, args.brokerageId)
+      result = { kicked: r.ok, lane, statusLine: describeTollfreeState(r.state), reason: r.error }
+    } else {
+      const r = await runA2pRegistration(svc, args.brokerageId)
+      result = { kicked: r.ok, lane, statusLine: describeA2pState(r.state), reason: r.error }
+    }
+  } catch (err) {
+    result = { kicked: false, lane, statusLine: "Business registration could not start — it will resume from Phone settings.", reason: (err as Error)?.message ?? "unknown" }
+  }
+  // Audit line on the SAME table the manual button writes (event_type from the
+  // live CHECK — webhooks_bound is the value the a2p_registration source has
+  // always used; the source names this automatic path).
+  const { error } = await svc.from("phone_number_events").insert({
+    brokerage_id: args.brokerageId, phone_number: args.phoneNumber,
+    event_type: "webhooks_bound", source: "a2p_auto_kickoff",
+    notes: `auto ${lane} registration after ${args.trigger}: ${result.kicked ? "kicked" : "not kicked"} — ${result.statusLine}${result.reason ? ` (${result.reason.slice(0, 160)})` : ""}`.slice(0, 500),
+  })
+  if (error) console.warn("[a2p] auto-kickoff audit line refused:", error.message)
+  return result
+}
+
+// ── THE PHONE TEST FEATURE IS GATED ON REGISTRATION (wave 81D) ───────────────
+
+export interface PhoneTestReadiness {
+  ready: boolean
+  /** Which lanes the tenant's active numbers need, and each lane's status. */
+  lanes: Array<{ lane: "10dlc" | "tollfree"; registered: boolean; statusLine: string }>
+  reason: string | null
+}
+
+/** PURE, FAIL-CLOSED: the test feature runs only when EVERY lane the tenant's
+ *  active numbers need is carrier-registered. No numbers → not ready. */
+export function assessPhoneTestReadiness(state: A2pState, numbers: ReadonlyArray<{ phone_number: string }>): PhoneTestReadiness {
+  if (!numbers.length) return { ready: false, lanes: [], reason: "No active phone number — provision or port one first." }
+  const needTollfree = numbers.some((n) => isTollFreeNumber(n.phone_number))
+  const needLocal = numbers.some((n) => !isTollFreeNumber(n.phone_number))
+  const lanes: PhoneTestReadiness["lanes"] = []
+  if (needLocal) lanes.push({ lane: "10dlc", registered: a2pCampaignApproved(state), statusLine: describeA2pState(state) })
+  if (needTollfree) lanes.push({ lane: "tollfree", registered: (state.tollfree_status ?? "").toUpperCase() === "TWILIO_APPROVED", statusLine: describeTollfreeState(state) })
+  const blocked = lanes.filter((l) => !l.registered)
+  return { ready: blocked.length === 0, lanes, reason: blocked.length ? `Registration not complete — ${blocked.map((l) => `${l.lane}: ${l.statusLine}`).join(" · ")}` : null }
 }

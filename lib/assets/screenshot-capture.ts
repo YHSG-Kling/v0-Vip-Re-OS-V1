@@ -122,8 +122,64 @@ export function demoStillSurface(id: string): DemoStillSurface | null {
 }
 
 /** Public property-page hosts a capture may target (subdomains included). The
- *  search tool is restricted to the same list. */
-export const PUBLIC_PAGE_HOSTS = ["zillow.com", "redfin.com", "realtor.com", "trulia.com", "homes.com"] as const
+ *  search tool is restricted to the same list.
+ *
+ *  TOMBSTONE (§1.3, wave 81D, owner verbatim: "the zestimate screenshot is the
+ *  only property page screenshot so get rid of the other site mentions"):
+ *  redfin.com, realtor.com, trulia.com and homes.com left this allowlist on
+ *  2026-09-24. The ONLY property-page still the OS captures is the Zillow
+ *  property page with the property photo and the Zestimate showing; the
+ *  vocabulary that names it is lib/marketing/estimate-sources.ts (one source,
+ *  zillow_zestimate) and its readiness rule is PUBLIC_PAGE_READY_RULES below. */
+export const PUBLIC_PAGE_HOSTS = ["zillow.com"] as const
+
+/**
+ * READINESS RULE — what a public-page capture MUST show before a pixel is kept
+ * (wave 81D, owner: "the picture of the property on zillow with the zestimate
+ * showing"). Per host, an ordered list of {label, selector}; every rule must be
+ * satisfied (each `selector` is a CSS selector LIST — any one match satisfies
+ * that rule). The provider waits for each and reports which it satisfied; the
+ * seam REFUSES a capture whose provider did not confirm every label — a page
+ * that loaded without its Zestimate (off-market shell, sign-in wall, a bot
+ * interstitial) is never stored as a still. The rule is selector-based on
+ * purpose: nothing here reads text off the page (the door proof forbids
+ * evaluate/$eval/innerText), so the figure is never parsed, only seen.
+ */
+export interface PublicPageReadyRule { label: string; selector: string }
+export const PUBLIC_PAGE_READY_RULES: Readonly<Record<string, readonly PublicPageReadyRule[]>> = {
+  "zillow.com": [
+    // The property photo: Zillow serves listing photography from its static
+    // photo host; the media wall / hero carousel is the first thing on the page.
+    { label: "property_photo", selector: 'img[src*="zillowstatic.com"], picture source[srcset*="zillowstatic.com"], [data-testid*="media" i] img, [data-testid*="hero" i] img' },
+    // The Zestimate: the figure block links to Zillow's own "What's a Zestimate"
+    // explainer and carries a zestimate-named test id / class in every layout
+    // Zillow has shipped; any of these confirms the figure is on screen.
+    { label: "zestimate", selector: '[data-testid*="zestimate" i], [class*="zestimate" i], a[href*="zestimate" i], [id*="zestimate" i]' },
+  ],
+}
+
+/** PURE: the readiness rules for a host (subdomains included); empty when the
+ *  host has none — an os_surface capture never has any. */
+export function readyRulesForHost(hostname: string): readonly PublicPageReadyRule[] {
+  const h = hostname.toLowerCase()
+  const key = Object.keys(PUBLIC_PAGE_READY_RULES).find((d) => h === d || h.endsWith(`.${d}`))
+  return key ? PUBLIC_PAGE_READY_RULES[key] : []
+}
+
+/** PURE: a single CSS selector that is satisfied only when EVERY rule is —
+ *  `body:has(<rule 1>):has(<rule 2>)…` — for providers that accept one
+ *  wait-for selector (the hosted adapter). Chromium ≥105 supports :has(). */
+export function combinedReadySelector(rules: readonly PublicPageReadyRule[]): string | null {
+  if (!rules.length) return null
+  return `body${rules.map((r) => `:has(${r.selector})`).join("")}`
+}
+
+/** PURE, FAIL-CLOSED: the labels a provider did not confirm. An undefined
+ *  report with any rule present is "nothing confirmed". */
+export function unsatisfiedReadyLabels(rules: readonly PublicPageReadyRule[], satisfied: readonly string[] | undefined | null): string[] {
+  const have = new Set(satisfied ?? [])
+  return rules.map((r) => r.label).filter((l) => !have.has(l))
+}
 
 /** Identified, honest UA — robots.txt rules for this token are honoured. */
 export const SCREENSHOT_USER_AGENT = "VipReOS-DemoStillBot/1.0 (demo/training material capture; honours robots.txt)"
@@ -163,6 +219,9 @@ export interface ScreenshotRequest {
    * public_page only — an os_surface capture stays demo-tenant-only.
    */
   owner?: ScreenshotOwner
+  /** public_page: override the host's PUBLIC_PAGE_READY_RULES (tests / a
+   *  narrower rule). Omit → the host's rules apply. */
+  readyWhen?: readonly PublicPageReadyRule[]
 }
 
 export interface ScreenshotOwner {
@@ -190,6 +249,9 @@ export interface ScreenshotPlan {
   label: string
   host: string
   dayIso: string
+  /** What the provider must confirm on screen before the still is kept
+   *  (PUBLIC_PAGE_READY_RULES for the host; empty for an OS surface). */
+  readyWhen: readonly PublicPageReadyRule[]
 }
 export interface ScreenshotRefusal { ok: false; reason: string }
 
@@ -232,6 +294,7 @@ export function planScreenshotCapture(
       redactSelectors: Array.from(new Set([...DEFAULT_REDACT_SELECTORS, ...(req.redact ?? [])])),
       viewport, cacheKey, storagePath: `screenshots/os_surface/${slug}/${dayIso}-${cacheKey}.png`,
       label: req.label ?? surface?.label ?? `OS surface ${route}`, host, dayIso,
+      readyWhen: [],
     }
   }
 
@@ -250,6 +313,7 @@ export function planScreenshotCapture(
     redactSelectors: [], viewport, cacheKey,
     storagePath: `screenshots/public_page/${slug}/${dayIso}-${cacheKey}.png`,
     label: req.label ?? `${u.hostname} ${u.pathname}`.slice(0, 160), host: u.hostname, dayIso,
+    readyWhen: req.readyWhen ?? readyRulesForHost(u.hostname),
   }
 }
 
@@ -320,13 +384,18 @@ export interface ProviderCaptureInput {
   cookies?: Array<{ name: string; value: string; domain: string; path: string; secure: boolean; httpOnly: boolean; sameSite: "Lax" | "Strict" | "None" }>
   /** CSS selectors to blur before the shot. */
   redactSelectors: string[]
+  /** Readiness rules the provider must confirm on screen (each label reported
+   *  back in `satisfied`); empty = no rule. */
+  readyWhen: readonly PublicPageReadyRule[]
   userAgent: string
   timeoutMs: number
 }
 
 export interface ScreenshotProvider {
   name: "puppeteer" | "hosted"
-  capture(input: ProviderCaptureInput): Promise<{ png: Buffer }>
+  /** `satisfied` = the readyWhen labels the provider CONFIRMED on screen. The
+   *  seam refuses a capture that leaves any label unconfirmed (fail closed). */
+  capture(input: ProviderCaptureInput): Promise<{ png: Buffer; satisfied?: string[] }>
 }
 
 /** PURE: the stylesheet injected to blur redacted selectors. */
@@ -354,10 +423,17 @@ export const puppeteerScreenshotProvider: ScreenshotProvider = {
       await page.setViewport({ width: input.viewport.width, height: input.viewport.height, deviceScaleFactor: input.viewport.deviceScaleFactor ?? 1 })
       if (input.cookies?.length) await browser.setCookie(...input.cookies.map((c) => ({ ...c, expires: -1 })))
       await page.goto(input.url, { waitUntil: "networkidle2", timeout: input.timeoutMs })
+      // Readiness: each rule must be VISIBLE before the shot. A rule that never
+      // appears is reported unsatisfied (the seam refuses) — never guessed.
+      const satisfied: string[] = []
+      for (const rule of input.readyWhen) {
+        const el = await page.waitForSelector(rule.selector, { visible: true, timeout: Math.min(15_000, input.timeoutMs) }).catch(() => null)
+        if (el) satisfied.push(rule.label)
+      }
       const css = redactionCss(input.redactSelectors)
       if (css) await page.addStyleTag({ content: css })
       const png = Buffer.from(await page.screenshot({ type: "png", fullPage: false }))
-      return { png }
+      return { png, satisfied }
     } finally {
       await browser.close().catch(() => {})
     }
@@ -386,9 +462,14 @@ export function hostedScreenshotProvider(env: NodeJS.ProcessEnv = process.env): 
         block_cookie_banners: "true", block_ads: "true", cache: "true", cache_ttl: "86400",
         user_agent: input.userAgent,
       })
+      // ONE wait-for selector is all the hosted API takes, so every rule is
+      // folded into a single `body:has(a):has(b)` — the request fails (and the
+      // seam refuses) unless ALL of them are on screen; a success confirms all.
+      const combined = combinedReadySelector(input.readyWhen)
+      if (combined) q.set("wait_for_selector", combined)
       const res = await fetch(`${base.replace(/\/$/, "")}?${q.toString()}`, { signal: AbortSignal.timeout(input.timeoutMs) })
-      if (!res.ok) throw new Error(`[screenshot-capture] hosted provider refused (${res.status})`)
-      return { png: Buffer.from(await res.arrayBuffer()) }
+      if (!res.ok) throw new Error(`[screenshot-capture] hosted provider refused (${res.status})${combined ? ` — page did not show ${input.readyWhen.map((r) => r.label).join(" + ")}` : ""}`)
+      return { png: Buffer.from(await res.arrayBuffer()), satisfied: input.readyWhen.map((r) => r.label) }
     },
   }
 }
@@ -533,6 +614,8 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
         provider: providerName,
         usage: "marketing_material_never_customer_value",
         uses,
+        /** The labels the provider confirmed on screen before the shot. */
+        shows: plan.readyWhen.map((r) => r.label),
         customer_facing_value: false,
         license_note: `Third-party page (${plan.host}) captured as this brokerage's own marketing material; source and capture time recorded; shown whole as the portal's own figure; never redistributed as stock and never spoken as a value.`,
         ...(owner.provenance ?? {}),
@@ -570,6 +653,7 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
       provider: providerName,
       usage: "demo_training_video_only",
       uses,
+      shows: plan.readyWhen.map((r) => r.label),
       license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)." : `Third-party page (${plan.host}) captured for internal demo/training/video use; source and capture time recorded; not redistributable as stock.`,
     },
   }
@@ -661,13 +745,22 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
   const provider = deps.provider ?? resolveScreenshotProvider()
   const capturedAt = (deps.now ?? new Date()).toISOString()
   let png: Buffer
+  let satisfied: string[] | undefined
   try {
-    ;({ png } = await provider.capture({
+    ;({ png, satisfied } = await provider.capture({
       url: plan.targetUrl, viewport: plan.viewport, cookies, redactSelectors: plan.redactSelectors,
+      readyWhen: plan.readyWhen,
       userAgent: SCREENSHOT_USER_AGENT, timeoutMs: deps.timeoutMs ?? 45_000,
     }))
   } catch (e) {
     return { ok: false, reason: `screenshot provider ${provider.name} failed: ${(e as Error).message}` }
+  }
+  // FAIL CLOSED on readiness: a public page that loaded without what the still
+  // must show (the property photo + the Zestimate on zillow.com) is refused —
+  // never stored, never cached, never a pending row a human might approve.
+  const missing = unsatisfiedReadyLabels(plan.readyWhen, satisfied)
+  if (missing.length) {
+    return { ok: false, reason: `REFUSED: ${plan.host} page did not show ${missing.join(" + ")} — a still must show ${plan.readyWhen.map((r) => r.label).join(" + ")} (not captured)` }
   }
 
   // ONE host (media-host throws on refusal — surfaced, never swallowed).

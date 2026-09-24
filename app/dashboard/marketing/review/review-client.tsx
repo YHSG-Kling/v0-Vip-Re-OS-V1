@@ -330,12 +330,14 @@ export function MarketingReviewClient({ snapshot, role }: Props) {
                 <CardContent className="py-4">
                   <div className="flex items-start gap-3">
                     <div className="bg-muted rounded p-2 flex-shrink-0">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(trackedScanUrl(q.slug))}`}
-                        alt={`QR for ${q.label}`}
-                        className="w-20 h-20"
-                      />
+                      {/* Server-rendered PNG of the tracked scan URL (lib/marketing/tracked-qr.ts renderQrPng —
+                          the ONE QR image source). No third-party renderer ever sees the scan link (wave 81D). */}
+                      {q.image_data_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={q.image_data_url} alt={`QR for ${q.label}`} className="w-20 h-20" />
+                      ) : (
+                        <a className="text-xs underline" href={trackedScanUrl(q.slug)} target="_blank" rel="noreferrer">scan link</a>
+                      )}
                     </div>
                     <div className="flex-1 min-w-0 space-y-1">
                       <p className="text-sm font-medium truncate">{q.label}</p>

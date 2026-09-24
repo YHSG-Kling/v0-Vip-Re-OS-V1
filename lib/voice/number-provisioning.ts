@@ -17,6 +17,7 @@
 
 import { searchAvailableLocalNumbers, purchaseIncomingPhoneNumber, releaseIncomingPhoneNumber } from "@/lib/providers/twilio/client"
 import { ensureTenantSubaccount, resolveTenantTwilioCreds, type TwilioCreds } from "@/lib/voice/twilio-tenancy"
+import type { CarrierKickoffResult } from "@/lib/voice/a2p-registration"
 
 const NOT_CONFIGURED = "Twilio not configured (missing TWILIO_ACCOUNT_SID / AUTH_TOKEN)"
 
@@ -132,7 +133,7 @@ export interface ProvisionNumberParams {
 }
 
 export type ProvisionNumberResult =
-  | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; credTier: TwilioCreds["tier"]; bound: boolean; bindNote?: string; billing?: "included" | "overage"; monthlyOverageCents?: number }
+  | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; credTier: TwilioCreds["tier"]; bound: boolean; bindNote?: string; billing?: "included" | "overage"; monthlyOverageCents?: number; /** wave 81D: the automatic carrier-registration kickoff outcome (honest; may be "not kicked" with the reason). */ registration?: CarrierKickoffResult }
   | { ok: false; error: string; notConfigured?: boolean; capReached?: boolean }
 
 /** The full purchase pipeline — the ONE implementation both the tenant action
@@ -229,7 +230,20 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
     bindNote = "Purchased + saved, but the row id was not returned — bind the number from its row later"
   }
 
-  return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote, billing, monthlyOverageCents }
+  // 6. AUTOMATIC BUSINESS REGISTRATION (wave 81D — owner: "automatic
+  //    registering business after phone number purchase/port over so can use
+  //    the phone/test feature"). Best-effort, never undoes the purchase; the
+  //    lane (10DLC vs toll-free) follows the number; the outcome is audited on
+  //    phone_number_events and reported here so the caller can show it.
+  let registration: CarrierKickoffResult | undefined
+  try {
+    const { kickCarrierRegistration } = await import("@/lib/voice/a2p-registration")
+    registration = await kickCarrierRegistration(svc, { brokerageId: params.brokerageId, phoneNumber: targetNumber, trigger: "purchased" })
+  } catch (err) {
+    console.warn("[number-provisioning] carrier registration kickoff failed (the number is purchased and bound):", (err as Error)?.message)
+  }
+
+  return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote, billing, monthlyOverageCents, registration }
 }
 
 // ─── Release (Twilio release → deactivate row → event) ───────────────────────

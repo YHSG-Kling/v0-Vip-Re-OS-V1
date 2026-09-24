@@ -61,6 +61,8 @@ export interface MarketingReviewSnapshot {
     listing_id:   string | null
     scan_count:   number
     created_at:   string
+    /** Server-rendered PNG of the tracked scan link (wave 81D) — null when the render failed. */
+    image_data_url: string | null
   }>
 }
 
@@ -184,9 +186,15 @@ export async function loadMarketingReview(params: {
       created_at:    m.created_at,
     }))
 
-  const recentQrCodes = (qrRes.data ?? [])
+  // The PNG is rendered here by the ONE QR image source (renderQrPng) and encodes
+  // the tracked scan URL. The review board used to point an <img> at
+  // api.qrserver.com with that URL in the query string — the lead-bearing scan
+  // link handed to a third party on every page view (wave 81D).
+  const { renderQrPng, normalizeOrigin } = await import("@/lib/marketing/tracked-qr")
+  const scanOrigin = normalizeOrigin()
+  const recentQrCodes = await Promise.all((qrRes.data ?? [])
     .filter((q: any) => !params.isAgentScope || q.agent_id === agentRowId)
-    .map((q: any) => ({
+    .map(async (q: any) => ({
       id:         q.id,
       label:      q.label,
       slug:       q.slug,
@@ -195,7 +203,8 @@ export async function loadMarketingReview(params: {
       listing_id: q.listing_id ?? null,
       scan_count: q.scan_count ?? 0,
       created_at: q.created_at,
-    }))
+      image_data_url: await renderQrPng(`${scanOrigin}/api/qr/scan?slug=${q.slug}`, 240).catch(() => null),
+    })))
 
   return { drafts, socialPosts, pendingMedia, recentQrCodes }
 }

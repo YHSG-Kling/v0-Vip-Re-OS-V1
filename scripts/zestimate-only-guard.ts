@@ -1,0 +1,160 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/zestimate-only-guard.ts   (npm run test:zestimate-only)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE ZESTIMATE IS THE ONLY PROPERTY-PAGE STILL (wave 81, lane 81D — owner
+ * verbatim: "the zestimate screenshot is the only property page screenshot so
+ * get rid of the other site mentions because the zestimate marketing strategy
+ * only uses zillow zestimate property page screenshots with the picture of the
+ * property on zillow with the zestimate showing … there can be many uses for
+ * the screenshots").
+ *
+ * Asserts the RULE (never a waypoint):
+ *   1. VOCABULARY — lib/marketing/estimate-sources.ts holds exactly one source,
+ *      zillow_zestimate, on host zillow.com, with mustShow property_photo +
+ *      zestimate; the three portal siblings are tombstoned, not merely removed.
+ *   2. NO OTHER SITE MENTIONS — the seam's PUBLIC_PAGE_HOSTS is zillow.com only
+ *      and no live code token in the vocabulary / door / card / seam names
+ *      redfin, realtor, trulia or homes.com (stripped source; a tombstone is
+ *      not a mention). Positive control: a specimen is caught.
+ *   3. READINESS — a public_page plan on zillow.com carries the host's rules
+ *      (photo + Zestimate); an OS-surface plan carries none; the seam REFUSES a
+ *      capture whose provider confirmed nothing (nothing hosted, nothing
+ *      inserted), refuses one that confirmed only the photo (names the missing
+ *      Zestimate), and keeps one that confirmed both (metadata.shows = both).
+ *      combinedReadySelector folds the rules into ONE body:has() selector for
+ *      the hosted adapter; the puppeteer adapter waits per rule, visible.
+ *   4. USES STAY MANY — SCREENSHOT_USES is unchanged (≥4, campaign + video).
+ *   5. SURFACES — the tenant card has no source picker and names Zillow; the
+ *      door's refusal is derived from the vocabulary, not restated.
+ *
+ * No network, no browser, no DB (counting stubs).
+ * Run: npx tsx --conditions=react-server scripts/zestimate-only-guard.ts
+ */
+import { readFileSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+import { stripComments } from "./strip-comments"
+import { ESTIMATE_SOURCES, ESTIMATE_SOURCE_KEYS, DEFAULT_ESTIMATE_SOURCE, ZESTIMATE_STILL_MUST_SHOW } from "../lib/marketing/estimate-sources"
+import {
+  PUBLIC_PAGE_HOSTS, PUBLIC_PAGE_READY_RULES, readyRulesForHost, combinedReadySelector, unsatisfiedReadyLabels,
+  planScreenshotCapture, captureScreenshot, SCREENSHOT_USES,
+  type ScreenshotProvider, type ProviderCaptureInput,
+} from "../lib/assets/screenshot-capture"
+import { planTenantStill } from "../lib/marketing/tenant-screenshot-door"
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..")
+let passed = 0, failed = 0
+const failures: string[] = []
+function check(name: string, cond: boolean, detail?: string) {
+  if (cond) { passed++; console.log(`  ✓ ${name}`) }
+  else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
+}
+const src = (p: string) => readFileSync(join(root, p), "utf8")
+const stripped = (p: string) => stripComments(src(p))
+
+const VOCAB = "lib/marketing/estimate-sources.ts"
+const DOOR = "lib/marketing/tenant-screenshot-door.ts"
+const SEAM = "lib/assets/screenshot-capture.ts"
+const CARD = "app/settings/campaign-bundles/estimate-stills-card.tsx"
+const TENANT = "11111111-1111-4111-8111-111111111111"
+
+process.env.NEXT_PUBLIC_APP_URL = "https://os.example.test"
+delete process.env.VERCEL; delete process.env.AWS_LAMBDA_FUNCTION_NAME; delete process.env.SCREENSHOT_PROVIDER
+
+// ── Stubs ────────────────────────────────────────────────────────────────────
+function providerConfirming(labels: (input: ProviderCaptureInput) => string[] | undefined): ScreenshotProvider & { calls: ProviderCaptureInput[] } {
+  const calls: ProviderCaptureInput[] = []
+  return { name: "puppeteer", calls, async capture(input) { calls.push(input); const s = labels(input); return s ? { png: Buffer.from("png"), satisfied: s } : { png: Buffer.from("png") } } }
+}
+function makeSvc(opts: { insertId?: string } = {}) {
+  const calls: string[] = []
+  const inserted: Array<Record<string, unknown>> = []
+  const chain = (table: string) => {
+    const q: any = {}
+    for (const m of ["select", "eq", "is", "lt", "in", "order", "limit", "not", "or", "gte", "neq"]) q[m] = () => q
+    q.insert = (row: Record<string, unknown>) => { inserted.push(row); return q }
+    q.update = () => q
+    q.maybeSingle = async () => ({ data: null, error: null })
+    q.single = async () => ({ data: { id: opts.insertId ?? "row-new" }, error: null })
+    q.then = (res: any, rej: any) => Promise.resolve({ data: [], error: null }).then(res, rej)
+    void table
+    return q
+  }
+  return {
+    calls, inserted,
+    from: (t: string) => { calls.push(`from:${t}`); return chain(t) },
+    storage: { from: (b: string) => ({
+      upload: async (p: string) => { calls.push(`upload:${b}/${p}`); return { error: null } },
+      getPublicUrl: (p: string) => ({ data: { publicUrl: `https://cdn.example.test/${b}/${p}` } }),
+    }) },
+  }
+}
+const robotsAllow = async () => "User-agent: *\nAllow: /"
+const ZILLOW = "https://www.zillow.com/homedetails/123-Main-St-Austin-TX-78701/1_zpid/"
+
+async function main() {
+  console.log("\n[1 · ONE source — the Zillow Zestimate property page]")
+  check("ESTIMATE_SOURCE_KEYS is exactly [zillow_zestimate] and the default is that key", ESTIMATE_SOURCE_KEYS.length === 1 && ESTIMATE_SOURCE_KEYS[0] === "zillow_zestimate" && DEFAULT_ESTIMATE_SOURCE === "zillow_zestimate")
+  const z = ESTIMATE_SOURCES[0]
+  check("the source rides zillow.com and must show property_photo + zestimate", ESTIMATE_SOURCES.length === 1 && z.host === "zillow.com" && z.mustShow.join("+") === "property_photo+zestimate" && ZESTIMATE_STILL_MUST_SHOW.join("+") === "property_photo+zestimate")
+  const vocabRaw = src(VOCAB)
+  check("the three portal siblings are TOMBSTONED (named in a comment with the ruling), not silently dropped", /TOMBSTONE/.test(vocabRaw) && /realtor_estimate/.test(vocabRaw) && /redfin_estimate/.test(vocabRaw) && /homes_estimate/.test(vocabRaw) && /is the only[\s/]*property page screenshot/.test(vocabRaw))
+  check("the ToS note says the still is shown WHOLE — photo and Zestimate together, as the portal's figure", /whole/i.test(z.tosNote) && /photo/i.test(z.tosNote) && /Zestimate/.test(z.tosNote) && /approv/i.test(z.tosNote))
+
+  console.log("\n[2 · no other site mentions in live code]")
+  const OTHER_SITES_RE = /\b(redfin|realtor|trulia|homes)\.com\b|\b(realtor|redfin|homes)_estimate\b/i
+  check("PUBLIC_PAGE_HOSTS is zillow.com only", PUBLIC_PAGE_HOSTS.length === 1 && PUBLIC_PAGE_HOSTS[0] === "zillow.com")
+  const offenders = [VOCAB, DOOR, SEAM, CARD].filter((p) => OTHER_SITES_RE.test(stripped(p)))
+  check("no live code token in the vocabulary / door / seam / card names another portal (stripped source — tombstones are comments)", offenders.length === 0, offenders.join(", "))
+  check("CONTROL: the other-site finder catches a specimen host and a specimen key", OTHER_SITES_RE.test(stripComments(`const hosts = ["zillow.com", "redfin.com"]`)) && OTHER_SITES_RE.test(stripComments(`key: "homes_estimate"`)) && !OTHER_SITES_RE.test(stripComments(`// redfin.com was retired\nconst h = "zillow.com"`)))
+
+  console.log("\n[3 · readiness — the still must show the photo AND the Zestimate]")
+  const rules = readyRulesForHost("www.zillow.com")
+  check("readyRulesForHost(zillow subdomain) = the host's rules: property_photo + zestimate, each a CSS selector", rules.map((r) => r.label).join("+") === "property_photo+zestimate" && rules.every((r) => r.selector.length > 10) && readyRulesForHost("example.com").length === 0)
+  check("every mustShow label of the source is covered by the seam's rule for its host", z.mustShow.every((l) => readyRulesForHost(z.host).some((r) => r.label === l)) && Object.keys(PUBLIC_PAGE_READY_RULES).every((h) => (PUBLIC_PAGE_HOSTS as readonly string[]).includes(h)))
+  const pub = planScreenshotCapture({ kind: "public_page", url: ZILLOW }, { siteOrigin: "" })
+  const os = planScreenshotCapture({ kind: "os_surface", surfaceId: "command_center" }, { siteOrigin: "https://os.example.test" })
+  check("a public_page plan on zillow carries the rules; an os_surface plan carries none", pub.ok && pub.readyWhen.length === 2 && os.ok && os.readyWhen.length === 0)
+  const combined = combinedReadySelector(rules)
+  check("combinedReadySelector folds every rule into ONE body:has() chain (hosted adapter)", !!combined && combined.startsWith("body:has(") && (combined.match(/:has\(/g) ?? []).length === 2 && combinedReadySelector([]) === null)
+  check("unsatisfiedReadyLabels: no report = every label missing; a full report = none (fail closed)", unsatisfiedReadyLabels(rules, undefined).join("+") === "property_photo+zestimate" && unsatisfiedReadyLabels(rules, ["property_photo"]).join() === "zestimate" && unsatisfiedReadyLabels(rules, ["property_photo", "zestimate"]).length === 0)
+  {
+    const provider = providerConfirming(() => undefined); const svc = makeSvc()
+    const r = await captureScreenshot({ kind: "public_page", url: ZILLOW }, { svc, provider, fetchRobots: robotsAllow })
+    check("a provider that confirms NOTHING → refused naming both labels; nothing hosted, nothing inserted", !r.ok && /did not show property_photo \+ zestimate/.test(r.reason) && provider.calls.length === 1 && svc.inserted.length === 0 && !svc.calls.some((c) => c.startsWith("upload:")))
+  }
+  {
+    const provider = providerConfirming(() => ["property_photo"]); const svc = makeSvc()
+    const r = await captureScreenshot({ kind: "public_page", url: ZILLOW, dayIso: "2026-09-24" }, { svc, provider, fetchRobots: robotsAllow })
+    check("a page with the photo but NO Zestimate on screen → refused naming zestimate; nothing inserted", !r.ok && /did not show zestimate/.test(r.reason) && svc.inserted.length === 0)
+  }
+  {
+    const provider = providerConfirming((i) => i.readyWhen.map((r) => r.label)); const svc = makeSvc({ insertId: "still-z" })
+    const r = await captureScreenshot({ kind: "public_page", url: ZILLOW, dayIso: "2026-09-25", owner: { brokerageId: TENANT, createdBy: null, uses: ["marketing_campaign", "product_video"] } }, { svc, provider, fetchRobots: robotsAllow, now: new Date("2026-09-25T00:00:00Z") })
+    const row = svc.inserted[0] as any
+    check("both confirmed → captured once; the row records shows=[property_photo, zestimate], pending, tenant-owned", r.ok && provider.calls.length === 1 && provider.calls[0].readyWhen.length === 2 && !!row && Array.isArray(row.metadata?.shows) && row.metadata.shows.join("+") === "property_photo+zestimate" && row.approval_status === "pending" && row.brokerage_id === TENANT)
+  }
+  const seam = stripped(SEAM)
+  check("puppeteer adapter waits per rule, VISIBLE, and reports satisfied; hosted adapter sends wait_for_selector", /waitForSelector\(rule\.selector,\s*\{\s*visible:\s*true/.test(seam) && /satisfied\.push\(rule\.label\)/.test(seam) && /wait_for_selector/.test(seam))
+  check("the seam still reads nothing off the page (no evaluate/$eval/innerText/textContent/content())", !/page\.evaluate\(|\$eval\(|innerText|textContent|page\.content\(/.test(seam))
+
+  console.log("\n[4 · uses stay many]")
+  check("SCREENSHOT_USES unchanged — ≥4 uses incl. marketing_campaign + product_video", SCREENSHOT_USES.length >= 4 && SCREENSHOT_USES.includes("marketing_campaign") && SCREENSHOT_USES.includes("product_video"))
+  const plan = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "123 Main St, Austin TX", alsoForVideo: true })
+  check("a tenant plan tags marketing_campaign + product_video and carries mustShow", plan.ok && plan.uses.join() === "marketing_campaign,product_video" && plan.mustShow.join("+") === "property_photo+zestimate")
+
+  console.log("\n[5 · surfaces]")
+  const card = stripped(CARD)
+  check("the tenant card has NO source picker (<select>) and shows the one source as a fixed line", !/<select/.test(card) && /DEFAULT_ESTIMATE_SOURCE/.test(card) && /sourceDef\.label/.test(card))
+  const bad = planTenantStill({ brokerageId: TENANT, userId: "u", source: "redfin_estimate", address: "123 Main St, Austin TX" })
+  check("the door refuses a retired key and its message is DERIVED from the vocabulary (names zillow_zestimate only)", !bad.ok && /\(zillow_zestimate\)/.test(bad.reason) && /ESTIMATE_SOURCE_KEYS\.join/.test(stripped(DOOR)))
+
+  console.log("\n──────────────────────────────────────────────────")
+  console.log(` RESULT: ${passed} passed, ${failed} failed`)
+  console.log(" blind spots: no live navigation (the sandbox cannot reach zillow.com) — the selector rule is exercised on stubs that report what a real page would; Zillow can rename its test ids, in which case a live capture REFUSES (fail closed) rather than storing a still without the figure; the hosted adapter's :has() wait is asserted by source, not by a request.")
+  if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
+  console.log(" ✅ ZESTIMATE_ONLY_PASS")
+}
+
+main().catch((e) => { console.error(e); process.exit(1) })

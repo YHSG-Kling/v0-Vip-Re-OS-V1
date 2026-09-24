@@ -338,6 +338,19 @@ export async function createListingWithSellerContact(params: {
     console.error("[createListingWithSellerContact] provider container step failed (non-fatal):", err)
   }
 
+  // THE PROPERTY PAGE, BY CONSTRUCTION (wave 81D): app/listing/[slug] serves
+  // the listing only through listings.slug, and nothing wrote that column on a
+  // real listing. ensureListingSlug is idempotent + tenant-predicated + counted;
+  // a refusal is logged with the listing, never a reason to fail the intake.
+  try {
+    const { ensureListingSlug } = await import("@/lib/listings/listing-slug")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const slugOut = await ensureListingSlug(createServiceClient(), { listingId: newListingId, brokerageId: ctx.brokerageId })
+    if (!slugOut.ok) console.error("[createListingWithSellerContact] listing page slug NOT provisioned:", slugOut.reason, { listingId: newListingId })
+  } catch (err) {
+    console.error("[createListingWithSellerContact] listing page slug step threw:", (err as Error)?.message, { listingId: newListingId })
+  }
+
   revalidatePath("/dashboard/listings")
   revalidatePath("/dashboard/transactions")
 
@@ -667,6 +680,17 @@ export async function launchListingAction(params: {
       }
 
       if (listing) {
+        // THE PROPERTY PAGE (wave 81D): a launched listing must have its public
+        // /listing/[slug] page — idempotent (an existing slug is kept so every
+        // printed QR still resolves), tenant-predicated, counted.
+        try {
+          const { ensureListingSlug } = await import("@/lib/listings/listing-slug")
+          const slugOut = await ensureListingSlug(svc, { listingId: params.listingId, brokerageId: ctx.brokerageId })
+          if (!slugOut.ok) console.error("[launchListing] listing page slug NOT provisioned:", slugOut.reason, { listingId: params.listingId })
+        } catch (err) {
+          console.error("[launchListing] listing page slug step threw:", (err as Error)?.message, { listingId: params.listingId })
+        }
+
         // THE PACKET THE WHOLE MODULE IS NAMED FOR. app/actions/ai-listing-packet.ts
         // opens with "GENERATES COMPREHENSIVE PROPERTY PACKETS FOR DISPLAY AFTER
         // LISTING GOES LIVE ON MLS" and ends with autoGeneratePacketOnLive — which

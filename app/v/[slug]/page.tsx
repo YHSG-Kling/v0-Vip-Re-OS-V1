@@ -33,6 +33,35 @@ import { siteUrl } from "@/lib/platform/site-url"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 import { VideoPlayer } from "./video-player"
 import { usdOrNull } from "@/lib/format/money"
+import { renderQrPng, normalizeOrigin } from "@/lib/marketing/tracked-qr"
+import { videoLandingQrLabel } from "@/lib/geo/publish-video-landing"
+
+/**
+ * THE PAGE'S QR + LEAD CAPTURE (wave 81D — owner: "automatic video landing
+ * pages for when a new video is created"). The tracked QR is the one the
+ * publish helper REGISTERED for this page (qr_codes, label
+ * video_landing:<rail>:<id>) — read back here, never minted by a page view;
+ * its PNG encodes the tracked /api/qr/scan link. The lead CTA points at the
+ * listing's own public page (its showing-request form and session capture)
+ * when the reel is listing-tied, else the brokerage storefront (its site chat
+ * + lead magnets) — both existing capture rails, no second form.
+ */
+async function loadLandingExtras(svc: ReturnType<typeof createServiceClient>, data: PageData): Promise<{ qrDataUrl: string | null; ctaHref: string | null; ctaLabel: string; brokeragePhone: string | null }> {
+  const rail = data.projectId ? "project" : "render"
+  const [{ data: qr }, { data: b }, listingRow] = await Promise.all([
+    svc.from("qr_codes").select("slug").eq("brokerage_id", data.render.brokerage_id).eq("label", videoLandingQrLabel(rail, data.render.id)).eq("is_active", true).maybeSingle(),
+    svc.from("brokerages").select("slug, phone").eq("id", data.render.brokerage_id).maybeSingle(),
+    data.render.entity_type === "listing" && data.render.entity_id
+      ? svc.from("listings").select("slug").eq("id", data.render.entity_id).eq("brokerage_id", data.render.brokerage_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
+  const slug = (qr as { slug?: string } | null)?.slug ?? null
+  const qrDataUrl = slug ? await renderQrPng(`${normalizeOrigin()}/api/qr/scan?slug=${slug}`, 240).catch(() => null) : null
+  const listingSlug = (listingRow as { data?: { slug?: string | null } | null }).data?.slug ?? null
+  const brokerage = b as { slug?: string | null; phone?: string | null } | null
+  const ctaHref = listingSlug ? `/listing/${listingSlug}` : brokerage?.slug ? `/site/${brokerage.slug}` : null
+  return { qrDataUrl, ctaHref, ctaLabel: listingSlug ? "Request a showing" : "Talk to us", brokeragePhone: brokerage?.phone ?? null }
+}
 
 interface RenderRow {
   id:             string
@@ -285,6 +314,7 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
 
   const url = `${siteUrl()}/v/${slug}`
   const priceStr = data.listing ? usd(data.listing.price) : null
+  const extras = await loadLandingExtras(createServiceClient(), data)
 
   const videoLd = buildVideoObjectJsonLd({
     name:          data.title,
@@ -339,6 +369,29 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
               <li key={f} style={{ background: "#f1f5f9", borderRadius: 999, padding: "4px 12px", fontSize: 14, color: "#0f172a" }}>{f}</li>
             ))}
           </ul>
+        )}
+
+        {(extras.ctaHref || extras.brokeragePhone || extras.qrDataUrl) && (
+          <section aria-label="Next step" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, padding: "16px", margin: "0 0 16px", borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+            <div style={{ flex: "1 1 240px" }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Interested in this home?</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {extras.ctaHref && (
+                  <a href={extras.ctaHref} style={{ background: "#0f172a", color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 14, textDecoration: "none" }}>{extras.ctaLabel}</a>
+                )}
+                {extras.brokeragePhone && (
+                  <a href={`tel:${extras.brokeragePhone.replace(/[^\d+]/g, "")}`} style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 14px", fontSize: 14, color: "#0f172a", textDecoration: "none" }}>Call {extras.brokeragePhone}</a>
+                )}
+              </div>
+            </div>
+            {extras.qrDataUrl && (
+              <figure style={{ margin: 0, textAlign: "center" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={extras.qrDataUrl} alt="Scan to open this video page" width={96} height={96} />
+                <figcaption style={{ fontSize: 11, color: "#64748b" }}>Scan to share</figcaption>
+              </figure>
+            )}
+          </section>
         )}
 
         {(data.agentName || data.brokerageName) && (

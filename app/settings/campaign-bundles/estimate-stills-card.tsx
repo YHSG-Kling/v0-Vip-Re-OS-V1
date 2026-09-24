@@ -2,11 +2,14 @@
 
 // app/settings/campaign-bundles/estimate-stills-card.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// "ZESTIMATE & CO." — the tenant's still picker (wave 80, lane 80D). Sits
-// beside the Strategy Playbooks because the still is the Zestimate
-// Challenge's own material (lib/marketing/creative-playbooks.ts). The tenant
-// picks a source + address; the OS captures the public estimate page through
-// the ONE seam (ToS-aware) into this brokerage's marketing assets, PENDING;
+// THE ZESTIMATE STILL — the tenant's capture card (wave 80D; narrowed to ONE
+// source at wave 81D, owner: "the zestimate screenshot is the only property
+// page screenshot … the picture of the property on zillow with the zestimate
+// showing"). Sits beside the Strategy Playbooks because the still is the
+// Zestimate Challenge's own material (lib/marketing/creative-playbooks.ts).
+// The tenant enters an address; the OS captures the Zillow property page
+// (photo + Zestimate confirmed on screen, else refused) through the ONE seam
+// (ToS-aware) into this brokerage's marketing assets, PENDING;
 // a human approves or rejects here through the EXISTING marketing_assets rail
 // (app/actions/marketing-studio.ts approveAsset / rejectAsset). An approved
 // still is what the next playbook install consumes, and it is already in the
@@ -16,7 +19,7 @@ import { approveAsset, rejectAsset } from "@/app/actions/marketing-studio"
 import {
   captureEstimateStillAction, listEstimateSourcesAction, listTenantScreenshotStillsAction, setTenantScreenshotUsesAction,
 } from "@/app/actions/marketing/tenant-screenshots"
-import { ESTIMATE_SOURCES, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey } from "@/lib/marketing/estimate-sources"
+import { ESTIMATE_SOURCES, ESTIMATE_STILL_DISCLAIMER, DEFAULT_ESTIMATE_SOURCE } from "@/lib/marketing/estimate-sources"
 
 // Mirrors SCREENSHOT_USES in lib/assets/screenshot-capture.ts (a server-only
 // module a client component cannot import); the action refuses any other value.
@@ -25,7 +28,10 @@ type Use = (typeof USES)[number]
 type Still = { id: string; url: string; label: string; uses: string[]; approvalStatus: string | null; estimateSource?: string | null; address?: string | null; capturedAt: string | null }
 
 export function EstimateStillsCard() {
-  const [source, setSource] = useState<EstimateSourceKey>(ESTIMATE_SOURCES[0].key)
+  // ONE source — the Zillow property page (wave 81D). No picker: the vocabulary
+  // holds exactly one key and the card shows it as a fixed line.
+  const source = DEFAULT_ESTIMATE_SOURCE
+  const sourceDef = ESTIMATE_SOURCES.find((s) => s.key === source) ?? ESTIMATE_SOURCES[0]
   const [tosNotes, setTosNotes] = useState<Record<string, string>>(Object.fromEntries(ESTIMATE_SOURCES.map((s) => [s.key, s.tosNote])))
   const [address, setAddress] = useState("")
   const [alsoForVideo, setAlsoForVideo] = useState(true)
@@ -72,15 +78,13 @@ export function EstimateStillsCard() {
   return (
     <section className="border border-purple-200 bg-white rounded-lg p-4 space-y-3">
       <div>
-        <h3 className="text-sm font-semibold text-gray-900">Zestimate &amp; co. stills — the Zestimate Challenge&apos;s own material</h3>
+        <h3 className="text-sm font-semibold text-gray-900">Zestimate stills — the Zestimate Challenge&apos;s own material</h3>
         <p className="text-xs text-gray-600 mt-1">
-          Pick the estimate source and an address. The OS captures the public estimate page (robots.txt honoured, rate-limited, source and capture date recorded) into your marketing assets, pending your approval. An approved still is used by the next Zestimate Challenge install and appears in your image picker. {ESTIMATE_STILL_DISCLAIMER}
+          Enter an address. The OS captures the Zillow property page — the property photo and the Zestimate together, refused if either is not on screen — (robots.txt honoured, rate-limited, source and capture date recorded) into your marketing assets, pending your approval. An approved still is used by the next Zestimate Challenge install, appears in your image picker, and can carry as many uses as you tick. {ESTIMATE_STILL_DISCLAIMER}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <select className="rounded border bg-background px-2 py-1 text-sm" value={source} onChange={(e) => setSource(e.target.value as EstimateSourceKey)} disabled={pending}>
-          {ESTIMATE_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-        </select>
+        <span className="rounded border bg-muted px-2 py-1 text-sm" title={`Source: ${sourceDef.host} — must show ${sourceDef.mustShow.join(" + ")}`}>{sourceDef.label}</span>
         <input className="min-w-[18rem] rounded border bg-background px-2 py-1 text-sm" placeholder="Street address, city, state" value={address} onChange={(e) => setAddress(e.target.value)} disabled={pending} />
         <label className="flex items-center gap-1 text-xs text-gray-700">
           <input type="checkbox" checked={alsoForVideo} onChange={(e) => setAlsoForVideo(e.target.checked)} disabled={pending} />

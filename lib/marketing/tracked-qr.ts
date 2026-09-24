@@ -87,6 +87,38 @@ export function isQrPurpose(v: unknown): v is QrPurpose {
   return typeof v === "string" && (QR_PURPOSES as readonly string[]).includes(v)
 }
 
+// ─── OWNER: PLATFORM vs TENANT (wave 81D) ────────────────────────────────────
+// Owner verbatim: "the qrcode system agent needs to make sure that any qrcode
+// that gets created for assets are added to the qrcode management which is
+// wired to the platform if used for platform or tenants dashboard."
+//
+// qr_codes IS the QR management registry — THE ONE survivor — and this minter
+// is its only writer, so "added to the management" is satisfied by
+// construction for every emitter that mints here (scripts/qr-registry-guard.ts
+// is the sweep that proves no emitter encodes a QR image outside it). WHO owns
+// a code is the row's brokerage_id: a tenant's code carries its brokerage and
+// shows on that tenant's board (app/dashboard/agent/qr-codes); a PLATFORM code
+// (the platform's own marketing — its prospect funnel, its business cards)
+// carries NO brokerage and shows on the platform board
+// (app/dashboard/superadmin/qr-codes), which also sees every tenant's codes
+// because platform staff see all tenants (CLAUDE.md §4).
+//
+// LIVE FACT (hrvaqgvukzxfskkcrwbt, 2026-09-24): qr_codes.brokerage_id is NOT
+// NULL today, so a platform-owned mint is REFUSED by the database until
+// supabase/migrations/m664-qr-codes-platform-owner.sql is applied (WRITTEN,
+// NOT APPLIED — CLAUDE.md §3). The refusal is honest (null → the caller skips
+// the badge), never a fabricated row under some tenant's id.
+export type QrOwnerKind = "platform" | "tenant"
+/** Every platform-owned label carries this prefix so the idempotency key can
+ *  never collide with a tenant's label of the same text. */
+export const PLATFORM_QR_LABEL_PREFIX = "platform:"
+
+/** PURE: who owns a qr_codes row — the brokerage, or the platform when the row
+ *  carries none. The ONE classifier both boards read. */
+export function qrOwnerKind(row: { brokerage_id?: string | null }): QrOwnerKind {
+  return row.brokerage_id ? "tenant" : "platform"
+}
+
 // ─── CANONICAL IDEMPOTENCY KEYS ──────────────────────────────────────────────
 // The whole point of the merge: two paths minting for the SAME entity must produce the SAME key,
 // or they cannot see each other and both mint. Any new minter for one of these entities MUST use
@@ -105,7 +137,12 @@ export function openHouseQrLabel(eventId: string): string {
 }
 
 export interface MintTrackedQrArgs {
-  brokerageId: string
+  /** The owning tenant. REQUIRED for a tenant code; ignored (written null)
+   *  for a platform code (`owner: "platform"`). */
+  brokerageId: string | null
+  /** Who owns the code (default "tenant"). A platform code carries no
+   *  brokerage and a `platform:`-prefixed label — see the OWNER block above. */
+  owner?: QrOwnerKind
   /** agents.id (qr_codes.agent_id FK → agents.id) — nullable for brokerage-level material. */
   agentId?: string | null
   /** Deterministic idempotency key, e.g. `material:listing_flyer:<listingId>`.
@@ -158,9 +195,15 @@ export async function mintTrackedQr(
   client?: AnyClient,
 ): Promise<MintedTrackedQr | null> {
   try {
-    if (!args.brokerageId || !args.label) return null
+    const owner: QrOwnerKind = args.owner ?? "tenant"
+    if (!args.label) return null
+    if (owner === "tenant" && !args.brokerageId) return null
     if (args.destinationType && !isQrDestinationType(args.destinationType)) return null
     if (args.purpose && !isQrPurpose(args.purpose)) return null
+    // A platform code's key is namespaced so it can never collide with (or be
+    // reused by) a tenant label of the same text.
+    const label = owner === "platform" && !args.label.startsWith(PLATFORM_QR_LABEL_PREFIX) ? `${PLATFORM_QR_LABEL_PREFIX}${args.label}` : args.label
+    const brokerageId = owner === "platform" ? null : args.brokerageId
 
     const svc: AnyClient = client ?? createServiceClient()
     const origin = normalizeOrigin(args.origin)
@@ -169,13 +212,15 @@ export async function mintTrackedQr(
     //    A FAILED lookup must NOT read as "no code yet" — that mints a duplicate on every
     //    re-run, each with its own globally-unique slug, which is exactly the drift this
     //    consolidation exists to end. supabase-js RESOLVES refusals, so destructure the error.
-    const { data: existing, error: lookupError } = await svc
+    //    The owner predicate is EXPLICIT on both branches: a tenant's key is looked up under
+    //    its brokerage, a platform key under brokerage_id IS NULL — never every tenant.
+    let lookup = svc
       .from("qr_codes")
       .select("id, slug, target_url, destination_type, listing_id, marketing_campaign_id, expires_at")
-      .eq("brokerage_id", args.brokerageId)
-      .eq("label", args.label)
+      .eq("label", label)
       .eq("is_active", true)
-      .maybeSingle()
+    lookup = brokerageId ? lookup.eq("brokerage_id", brokerageId) : lookup.is("brokerage_id", null)
+    const { data: existing, error: lookupError } = await lookup.maybeSingle()
 
     if (lookupError) {
       console.error("[mintTrackedQr] idempotency lookup refused — refusing to mint a duplicate:", lookupError.message)
@@ -213,7 +258,7 @@ export async function mintTrackedQr(
       }
     } else {
       // 2. Mint a fresh tracked row.
-      const newSlug = `${args.label
+      const newSlug = `${label
         .toLowerCase()
         .replace(/[^a-z0-9]/g, "-")
         .replace(/-+/g, "-")
@@ -224,9 +269,11 @@ export async function mintTrackedQr(
       const { data: inserted, error } = await svc
         .from("qr_codes")
         .insert({
-          brokerage_id: args.brokerageId,
+          // null ONLY for a platform-owned code (refused by the live NOT NULL until m664 lands —
+          // an honest null result, never a row filed under some tenant).
+          brokerage_id: brokerageId,
           agent_id: args.agentId ?? null,
-          label: args.label,
+          label,
           // target_url is NOT NULL — seed with the semantic URL when we have one, else a
           // placeholder that is patched to the real landing the moment the slug is known.
           target_url: suppliedTarget ?? `${origin}/qr`,

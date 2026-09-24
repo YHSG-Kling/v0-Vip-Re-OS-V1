@@ -38,12 +38,12 @@ import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance } from "@/lib/marketing/qr-asset-linker"
-// ★ ACT-AS SEAM — TWO ENTRY POINTS ★ resolveWriteContext mints QR rows;
-// resolveActingContext renders a preview image (renderQrImageAction).
-import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
+// ★ ACT-AS SEAM ★ resolveWriteContext mints QR rows (createQrCodeAction). The
+// reader-seam import (resolveActingContext) left with renderQrImageAction —
+// see the tombstone below getMarketingStudioDashboard's predecessor block.
+import { resolveWriteContext } from "@/lib/platform/acting-context"
 import {
   mintTrackedQr,
-  renderQrPng,
   isQrDestinationType,
   isQrPurpose,
   type QrDestinationType,
@@ -165,6 +165,10 @@ export interface CreateAssetParams {
   previewText?: string
   tags?: string[]
   visibilityScope?: VisibilityScope
+  /** assetType "qr" only: the SEMANTIC destination the code stands for. The
+   *  action mints a TRACKED code in the QR registry (qr_codes) for it and
+   *  stores that code's PNG as the asset — never a raw-URL QR (wave 81D). */
+  qrTargetUrl?: string
 }
 
 export interface CreateCalendarEventParams {
@@ -502,6 +506,35 @@ export async function createAsset(params: CreateAssetParams) {
 
     const supabase = await createClient()
 
+    // A QR ASSET IS A REGISTERED CODE (wave 81D — owner: "any qrcode that gets
+    // created for assets are added to the qrcode management"). The studio used
+    // to encode the typed URL straight into a PNG on the client, so the asset's
+    // QR existed nowhere but the image: no slug, no scan tracking, invisible to
+    // both QR boards. Now the ONE minter records it (idempotent per asset name
+    // within the tenant, purpose 'general', destination 'other'), the PNG stored
+    // on the asset encodes the TRACKED scan URL, and the code is linked to the
+    // asset row through marketing_asset_qr_links so the board can name it.
+    let assetUrl = params.assetUrl ?? null
+    let mintedQrId: string | null = null
+    if (params.assetType === "qr") {
+      const target = (params.qrTargetUrl ?? "").trim()
+      if (!target) return { success: false, error: "A QR asset needs the destination URL it stands for." }
+      if (!/^https?:\/\//i.test(target)) return { success: false, error: "The QR destination must be an http(s) URL." }
+      if (!brokerageId) return { success: false, error: "No brokerage on your account — QR codes are registered to a brokerage." }
+      const minted = await mintTrackedQr({
+        brokerageId,
+        agentId: agentId ?? null,
+        label: `studio_asset:${params.assetName.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 120)}`,
+        targetUrl: target,
+        destinationType: "other",
+        purpose: "general",
+        marketingCampaignId: params.campaignId ?? null,
+      })
+      if (!minted) return { success: false, error: "The QR code was not registered — the asset was not created." }
+      assetUrl = minted.qrCodeDataUrl
+      mintedQrId = minted.qrCodeId
+    }
+
     const { data: asset, error } = await supabase
       .from("marketing_assets")
       .insert({
@@ -513,7 +546,7 @@ export async function createAsset(params: CreateAssetParams) {
         asset_name: params.assetName,
         source_table: params.sourceTable ?? null,
         source_id: params.sourceId ?? null,
-        asset_url: params.assetUrl ?? null,
+        asset_url: assetUrl,
         thumbnail_url: params.thumbnailUrl ?? null,
         preview_text: params.previewText ?? null,
         tags: params.tags ?? [],
@@ -528,7 +561,20 @@ export async function createAsset(params: CreateAssetParams) {
       return { success: false, error: error.message }
     }
 
-    return { success: true, asset }
+    // Link the registered code to its asset (the board resolves the asset name
+    // through this row). Read the error: a refused link is reported, not lost.
+    // placement_type is the LIVE CHECK vocabulary (scripts/check-vocabularies.ts
+    // marketing_asset_qr_links: flyer | listing_asset | mailer | podcast_landing |
+    // social_landing | video_endcard) — a studio QR asset is print material, so
+    // 'flyer'; 'other' (qr-asset-linker's stale local union) is a refused insert.
+    if (mintedQrId && asset?.id) {
+      const { error: linkError } = await supabase
+        .from("marketing_asset_qr_links")
+        .insert({ brokerage_id: brokerageId, marketing_asset_id: asset.id, qr_code_id: mintedQrId, placement_type: "flyer" })
+      if (linkError) console.error("[MarketingStudio] QR asset registered but the asset link was refused:", linkError.message)
+    }
+
+    return { success: true, asset, qrCodeId: mintedQrId }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create asset"
     console.error("[MarketingStudio] createAsset error:", message)
@@ -1151,30 +1197,15 @@ export async function createQrCodeAction(params: {
   }
 }
 
-/**
- * renderQrImageAction — server-side PNG for any URL, as a data: URI.
- *
- * Exists because the studio's asset-create dialog built its QR preview from api.qrserver.com,
- * which shipped the (lead-bearing) target URL to a third party and put an external host inside a
- * path that has to work offline/in print. The vendored `qrcode` package is the only QR image
- * source in the tree now.
- */
-export async function renderQrImageAction(url: string, size = 300) {
-  try {
-    const trimmed = (url ?? "").trim()
-    if (!trimmed) return { success: false as const, error: "A URL is required." }
-    // READ — renders a PNG in-process. No table, no row, no tenant column: the
-    // gate exists only so an unauthenticated caller cannot use the endpoint as a
-    // free QR renderer. On the WRITER seam a read_only act-as grant was refused a
-    // preview image, which is not a write and not something a grant may exceed
-    // (§5), so this rides the READER seam.
-    const ctx = await resolveActingContext()
-    if (!ctx.ok) return { success: false as const, error: ctx.error }
-    return { success: true as const, dataUrl: await renderQrPng(trimmed, size) }
-  } catch (err) {
-    return { success: false as const, error: err instanceof Error ? err.message : "Failed to render QR image" }
-  }
-}
+// TOMBSTONE (§1.3, wave 81D, 2026-09-24): `renderQrImageAction(url, size)` lived here — a
+// "use server" endpoint that rendered a PNG for ANY typed URL. It existed so the studio's
+// asset-create dialog could preview a QR without api.qrserver.com, but the image it produced was
+// a QR that existed nowhere but the picture: no qr_codes row, no slug, no scan tracking, invisible
+// to both QR boards — the exact "created for an asset but not in the QR management" the owner
+// ruled out. Survivor: createAsset above (assetType "qr" → lib/marketing/tracked-qr.ts
+// mintTrackedQr, the ONE minter, then marketing_asset_qr_links). The only QR image source in the
+// tree remains lib/marketing/tracked-qr.ts renderQrPng, and every caller of it now encodes a
+// REGISTERED code's /api/qr/scan?slug= link (scripts/qr-registry-guard.ts is the sweep).
 
 export async function getMarketingStudioDashboard() {
   try {

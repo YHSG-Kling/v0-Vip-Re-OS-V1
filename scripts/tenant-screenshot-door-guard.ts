@@ -96,7 +96,9 @@ delete process.env.VERCEL; delete process.env.AWS_LAMBDA_FUNCTION_NAME; delete p
 // ── Stubs (no browser, no network, no DB) ────────────────────────────────────
 function countingProvider(): ScreenshotProvider & { calls: ProviderCaptureInput[] } {
   const calls: ProviderCaptureInput[] = []
-  return { name: "puppeteer", calls, async capture(input) { calls.push(input); return { png: Buffer.from("png-bytes") } } }
+  // A stubbed provider CONFIRMS every readiness label (wave 81D: the seam refuses a public page
+  // whose provider did not confirm the property photo + the Zestimate on screen).
+  return { name: "puppeteer", calls, async capture(input) { calls.push(input); return { png: Buffer.from("png-bytes"), satisfied: input.readyWhen.map((r) => r.label) } } }
 }
 interface Row { id: string; brokerage_id: string | null; visibility_scope: string; approval_status: string | null; asset_url: string; asset_name: string | null; tags: string[] | null; metadata: Record<string, unknown> | null; updated_at: string | null }
 function makeSvc(rows: Row[] = [], opts: { insertId?: string } = {}) {
@@ -143,7 +145,8 @@ const redfinHit = "https://www.redfin.com/TX/Austin/123-Main-St-78701/home/1"
 
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[1 · the source vocabulary — closed, on the allowlist, ToS-noted]")
-check("four sources, each key unique and typed", ESTIMATE_SOURCE_KEYS.length === 4 && new Set(ESTIMATE_SOURCE_KEYS).size === 4 && ESTIMATE_SOURCES.every((s) => (ESTIMATE_SOURCE_KEYS as readonly string[]).includes(s.key)))
+// Wave 81D (owner: "the zestimate screenshot is the only property page screenshot"): ONE source.
+check("ONE source — zillow_zestimate — its key unique and typed (the three portal siblings are tombstoned)", ESTIMATE_SOURCE_KEYS.length === 1 && ESTIMATE_SOURCE_KEYS[0] === "zillow_zestimate" && ESTIMATE_SOURCES.length === 1 && ESTIMATE_SOURCES.every((s) => (ESTIMATE_SOURCE_KEYS as readonly string[]).includes(s.key)))
 check("every source host is on the seam's PUBLIC_PAGE_HOSTS (a source can never name a host the seam refuses)", ESTIMATE_SOURCES.every((s) => (PUBLIC_PAGE_HOSTS as readonly string[]).includes(s.host)), ESTIMATE_SOURCES.filter((s) => !(PUBLIC_PAGE_HOSTS as readonly string[]).includes(s.host)).map((s) => s.host).join(","))
 check("CONTROL: the subset check would catch an off-list host", !(PUBLIC_PAGE_HOSTS as readonly string[]).includes("example.com") && !isPublicPageHost("example.com"))
 check("every source carries a ToS note naming the mark and the approval step, and a search hint", ESTIMATE_SOURCES.every((s) => s.tosNote.length > 80 && /approv/i.test(s.tosNote) && s.searchHint.length > 0))
@@ -155,9 +158,9 @@ check("the vocabulary module is PURE (no imports) so the client card and the doo
   const short = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "12" })
   const noTenant = planTenantStill({ brokerageId: "", userId: "u", source: "zillow_zestimate", address: "123 Main St, Austin TX" })
   check("planTenantStill refuses a short address and a missing tenant (fail closed)", !short.ok && !noTenant.ok)
-  const ok = planTenantStill({ brokerageId: TENANT, userId: "u", source: "redfin_estimate", address: "  123  Main St, Austin TX ", alsoForVideo: true })
-  check("a valid plan restricts to the source host, normalises the address, and tags marketing_campaign (+ product_video when chosen)", ok.ok && ok.source.host === "redfin.com" && ok.address === "123 Main St, Austin TX" && ok.uses.join() === "marketing_campaign,product_video" && /redfin estimate/.test(ok.query))
-  const noVideo = planTenantStill({ brokerageId: TENANT, userId: "u", source: "redfin_estimate", address: "123 Main St, Austin TX" })
+  const ok = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "  123  Main St, Austin TX ", alsoForVideo: true })
+  check("a valid plan restricts to the source host, normalises the address, and tags marketing_campaign (+ product_video when chosen)", ok.ok && ok.source.host === "zillow.com" && ok.mustShow.join("+") === "property_photo+zestimate" && ok.address === "123 Main St, Austin TX" && ok.uses.join() === "marketing_campaign,product_video" && /zestimate/.test(ok.query))
+  const noVideo = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "123 Main St, Austin TX" })
   check("without alsoForVideo the still is campaign material only — marketing_campaign is never optional", noVideo.ok && noVideo.uses.join() === "marketing_campaign")
 }
 
@@ -209,8 +212,8 @@ console.log("\n[3 · the stubbed capture — source-restricted search, tenant-ow
   check("an os_surface capture with a tenant owner REFUSES before the provider (OS stills stay demo-tenant-only)", !r.ok && /demo-tenant-only/.test(r.reason) && provider.calls.length === 0)
   const off = await capturePublicPropertyPage("123 Main St Austin", { svc, provider, search: async () => [{ url: zillowHit }] }, { domains: ["example.com"] })
   check("a search domain off PUBLIC_PAGE_HOSTS refuses before searching (fail closed)", !off.ok && /not on PUBLIC_PAGE_HOSTS/.test(off.reason) && provider.calls.length === 0)
-  const none = await captureTenantEstimateStill({ brokerageId: TENANT, userId: null, source: "homes_estimate", address: "9 Nowhere Ln, Austin TX" }, { svc, provider, search: async () => [{ url: zillowHit }] })
-  check("no hit on the chosen source (only an off-source page) → honest refusal, nothing captured", !none.ok && /found no public property page on homes\.com/.test(none.reason) && provider.calls.length === 0)
+  const none = await captureTenantEstimateStill({ brokerageId: TENANT, userId: null, source: "zillow_zestimate", address: "9 Nowhere Ln, Austin TX" }, { svc, provider, search: async () => [{ url: redfinHit }] })
+  check("no Zillow hit (only an off-list portal page) → honest refusal, nothing captured", !none.ok && /found no public property page on zillow\.com/.test(none.reason) && provider.calls.length === 0)
   const pub = planScreenshotCapture({ kind: "public_page", url: zillowHit }, { siteOrigin: "", now: new Date("2026-09-23T00:00:00Z") })
   const platformRow = pub.ok ? screenshotAssetRow(pub, "https://cdn/x.png", "2026-09-23T00:00:00.000Z", "puppeteer") : null
   check("without an owner the seam still writes the PLATFORM row (brokerage_id null, visibility platform) — the platform door is unchanged", !!platformRow && platformRow.brokerage_id === null && platformRow.visibility_scope === "platform" && platformRow.approval_status === "pending")
@@ -302,7 +305,15 @@ console.log("\n[7 · registration]")
   check("the guard chain runs it after test:scrapers (ordering, not adjacency)", pkg.scripts.guard.indexOf("npm run test:scrapers") > 0 && pkg.scripts.guard.indexOf("npm run test:tenant-screenshot-door") > pkg.scripts.guard.indexOf("npm run test:scrapers"))
   const d = MAINTENANCE_DOMAINS.tenant_screenshot_door
   check("MAINTENANCE_DOMAINS.tenant_screenshot_door → campaign_orchestrator, proof test:tenant-screenshot-door, coOwners asset_manager + compliance_officer (the prose names both)", d?.manager === "campaign_orchestrator" && d?.proof === "test:tenant-screenshot-door" && (d?.coOwners ?? []).includes("asset_manager") && (d?.coOwners ?? []).includes("compliance_officer") && /Already existed|ALREADY EXISTED/.test(d?.what ?? ""))
-  check("no migration was written for this lane (uses ride tags + metadata; m664 unused)", !readdirSync(join(root, "supabase/migrations")).some((f) => /^m664/.test(f)))
+  // THE RULE, not the waypoint (CLAUDE.md §2): the door rides the existing tags array +
+  // metadata jsonb, so NO migration may carry its vocabulary. The old form pinned "no m664
+  // file exists" — true only while 80D's reserved number sat unused; wave 81D spent m664 on the
+  // QR registry's platform owner, and the door still needs no migration.
+  const DOOR_VOCAB_RE = /estimate_still|use:marketing_campaign|use:product_video|customer_facing_value|estimate_source/
+  const migrationsDir = join(root, "supabase/migrations")
+  const vocabMigrations = readdirSync(migrationsDir).filter((f) => /\.sql$/.test(f) && DOOR_VOCAB_RE.test(readFileSync(join(migrationsDir, f), "utf8")))
+  check("no migration carries the door's vocabulary (uses ride tags + metadata — a screenshot still needs no schema)", vocabMigrations.length === 0, vocabMigrations.join(", "))
+  check("CONTROL: the vocabulary finder recognises a specimen migration", DOOR_VOCAB_RE.test("ALTER TABLE marketing_assets ADD CONSTRAINT x CHECK (tags @> ARRAY['use:product_video'])"))
   check("SCREENSHOT_USES still carries the two uses the tenant door tags", (SCREENSHOT_USES as readonly string[]).includes("marketing_campaign") && (SCREENSHOT_USES as readonly string[]).includes("product_video"))
 }
 

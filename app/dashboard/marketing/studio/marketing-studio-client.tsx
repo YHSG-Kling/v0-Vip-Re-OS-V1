@@ -1299,25 +1299,16 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
 
   async function handleCreateAsset() {
     try {
-      // The QR preview image is rendered SERVER-SIDE by the vendored `qrcode` package and stored
-      // as a data: URI. It used to be an api.qrserver.com URL persisted onto the asset row, which
-      // shipped the (often lead-bearing) target URL to a third party and left every saved asset
-      // permanently dependent on an outside host to render its own artwork.
-      let qrUrl: string | undefined
-      if (newAsset.assetType === "qr" && newAsset.qrTargetUrl.trim()) {
-        const { renderQrImageAction } = await import("@/app/actions/marketing-studio")
-        const rendered = await renderQrImageAction(newAsset.qrTargetUrl.trim())
-        if (!rendered.success) {
-          toast({ title: "Failed to create asset", description: rendered.error, variant: "destructive" })
-          return
-        }
-        qrUrl = rendered.dataUrl
-      }
+      // A QR asset is a REGISTERED code (wave 81D): createAsset mints it in the
+      // QR registry (qr_codes, the ONE minter) and stores the tracked code's PNG
+      // as the asset — this client no longer pre-renders a raw-URL image, which
+      // produced a QR that existed nowhere but the picture (no slug, no scans,
+      // invisible to the QR boards). The typed destination rides qrTargetUrl.
       const result = await createAsset({
         ...newAsset,
         assetType: newAsset.assetType as any,
         campaignId: newAsset.campaignId || undefined,
-        assetUrl: qrUrl,
+        qrTargetUrl: newAsset.assetType === "qr" ? newAsset.qrTargetUrl.trim() : undefined,
       })
       if (result.success) {
         setIsCreateAssetOpen(false)
