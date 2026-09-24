@@ -98,6 +98,10 @@ export function compositionHintFor(kind: SituationKind, channel: TargetChannel):
     case "just_sold":     return "JustSoldReelSquare"
     case "open_house":    return "OpenHouseAnnounceReel"
     case "coming_soon":   return "ComingSoonReel"
+    // Wave 81C: a described ("custom") video has no fixed composition — the archetype
+    // decides at plan time (lib/video/custom-video-archetypes.ts planCustomVideo); the
+    // talking-head reel is the informational default until the plan exists.
+    case "custom":        return "AgentTalkingHeadReel"
     case "market_update": return "MarketUpdateReel"
     case "cma":           return "CMAReel"
     case "explainer":     return "AgentExplainerReel"
