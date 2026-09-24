@@ -108,6 +108,21 @@ export async function resolveAgentByRules(
         .eq("team_id", rule.team_id)
         .eq("is_active", true)
       pool = (members ?? []).map((m) => m.id)
+    } else if (pool.length > 0) {
+      // A DEACTIVATED AGENT NEVER COLLECTS A NEW LEAD (wave 81A). The team
+      // branch above already filters is_active; an explicit agent_ids pool
+      // did not, so a rule naming an agent who has since left the brokerage
+      // (agents.is_active=false after executeAgentDeactivation) still routed
+      // to them on the round-robin path. Filter the named pool the same way,
+      // pinned to the tenant; a refused read empties the pool rather than
+      // routing to an agent nobody could verify.
+      const { data: live, error: liveError } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .eq("is_active", true)
+        .in("id", pool)
+      pool = liveError ? [] : ((live ?? []) as Array<{ id: string }>).map((m) => m.id)
     }
     if (pool.length === 0) continue
 

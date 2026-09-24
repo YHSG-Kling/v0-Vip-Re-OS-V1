@@ -43,7 +43,10 @@
 //    WHERE u.brokerage_id = b.id AND u.status IS DISTINCT FROM 'suspended'
 //      AND (   u.user_type IN ('agent', 'team_lead')                       -- PRODUCER_SEAT_ROLES
 //           OR (u.user_type IN ('broker', 'broker_owner')                  -- LICENSED_SEAT_ROLES
-//               AND NOT COALESCE(b.billing_metadata->'non_producing_user_ids', '[]'::jsonb) ? u.id::text)
+//               AND (NOT COALESCE(b.billing_metadata->'non_producing_user_ids', '[]'::jsonb) ? u.id::text
+//                    OR EXISTS (SELECT 1 FROM public.locations l               -- wave 81A: the managing
+//                                WHERE l.brokerage_id = b.id                    -- broker is ALWAYS a seat
+//                                  AND l.managing_broker_user_id = u.id)))     -- (m661)
 //           OR (u.user_type = 'admin' AND a.id IS NOT NULL))              -- SEAT_BY_PRODUCTION_ROLES
 //
 // (user_role_assignments grants are folded in by the TypeScript meter; a SQL
@@ -85,6 +88,17 @@ export interface SeatUsage {
    *  tenant has exempted as non-producing — the ids the meter did NOT bill.
    *  A surface that lets the tenant flip the exemption reads this. */
   nonProducingIds: string[]
+  /** users.id of every MANAGING BROKER (locations.managing_broker_user_id, m661)
+   *  on the tenant's roster — a seat whatever the exemption list says (wave
+   *  81A). A stale exemption on one of these ids is reported in
+   *  `nonProducingIds` no longer: the meter bills them. */
+  managingBrokerIds: string[]
+  /** true when the locations read was refused (or the m661 column is not yet
+   *  applied): no managing broker could be recognised, so the exemption list
+   *  was applied as written. Published rather than folded into `ok` because
+   *  the seat GATE still ran on every fact it needs to refuse an add; the
+   *  exemption WRITER (below) fails closed on the same refusal. */
+  managingBrokerReadRefused: boolean
   /**
    * Every DISTINCT role in use by a non-suspended seat holder, from BOTH sources.
    *
@@ -102,7 +116,7 @@ export interface SeatUsage {
  * rather than a misleading number, and the caller renders an honest empty state.
  */
 export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<SeatUsage> {
-  const [usersRes, rolesRes, agentsRes, tenantRes] = await Promise.all([
+  const [usersRes, rolesRes, agentsRes, tenantRes, locationsRes] = await Promise.all([
     svc.from("users").select("id, user_type, status").eq("brokerage_id", brokerageId),
     svc.from("user_role_assignments").select("user_id, role").eq("brokerage_id", brokerageId),
     // The PRODUCTION fact — an active agents record is what makes an admin a
@@ -112,6 +126,9 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
     // The EXEMPTION fact — the tenant's non_producing_user_ids (wave 80A): a
     // licensed broker / broker_owner is a seat by type unless listed here.
     svc.from("brokerages").select("billing_metadata").eq("id", brokerageId).maybeSingle(),
+    // The MANAGING-BROKER fact (wave 81A, m661) — the broker of record of any
+    // office is a seat whatever the exemption list says.
+    svc.from("locations").select("managing_broker_user_id").eq("brokerage_id", brokerageId).not("managing_broker_user_id", "is", null),
   ])
 
   // ALL FOUR reads must have succeeded for the number to mean anything: the
@@ -125,6 +142,16 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
   const assignments = (rolesRes.data ?? []) as Array<{ user_id: string | null; role: string | null }>
   const agentRows = (agentsRes.data ?? []) as Array<{ user_id: string | null; is_active: boolean | null }>
   const exempt = parseNonProducingUserIds((tenantRes.data as { billing_metadata?: unknown } | null)?.billing_metadata)
+  // A refused locations read (RLS, or m661 not yet applied — 42703 undefined
+  // column) recognises nobody as managing broker. It does NOT flip `ok`: the
+  // gate's refusal facts (users, grants, agents, exemption) were all read, and
+  // an unrecognised managing broker under-bills at worst — the direction the
+  // exemption WRITER closes by refusing on the same read.
+  const managingBrokerReadRefused = !!locationsRes.error
+  const managingBrokers = new Set<string>()
+  for (const l of (locationsRes.data ?? []) as Array<{ managing_broker_user_id: string | null }>) {
+    if (l.managing_broker_user_id) managingBrokers.add(l.managing_broker_user_id)
+  }
 
   // user_id → who produces (an agents row that is not switched off). A row
   // with is_active NULL is treated as active — the column defaults true and a
@@ -137,6 +164,7 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
   // billed by type, an admin is staff).
   const producesFact = (userId: string): boolean | undefined =>
     exempt.has(userId) ? false : producing.has(userId) ? true : undefined
+  const seatOpts = (userId: string) => ({ produces: producesFact(userId), managingBroker: managingBrokers.has(userId) })
 
   // user_id → every role they hold by ASSIGNMENT
   const assignedRoles = new Map<string, string[]>()
@@ -149,7 +177,7 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
 
   const working = users.filter((u) => u.status !== "suspended")
   const holders = working.filter((u) =>
-    rolesOf(u).some((r) => roleConsumesSeat(r, { produces: producesFact(u.id) })),
+    rolesOf(u).some((r) => roleConsumesSeat(r, seatOpts(u.id))),
   )
   const holderIds = new Set(holders.map((u) => u.id))
   // Free staff: working people who hold a WORKSPACE role but no seat.
@@ -159,7 +187,10 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
   // working licensed user (left the tenant, changed type, was suspended) is
   // stale and is not reported — the list is read for who it frees, not kept.
   const licensed = new Set<string>(LICENSED_SEAT_ROLES as readonly string[])
-  const nonProducingIds = working.filter((u) => exempt.has(u.id) && rolesOf(u).some((r) => licensed.has(r))).map((u) => u.id)
+  // …and an exemption listed against a MANAGING BROKER is not in force either:
+  // the meter billed them (wave 81A), so the list is not reported as freeing them.
+  const nonProducingIds = working.filter((u) => exempt.has(u.id) && !managingBrokers.has(u.id) && rolesOf(u).some((r) => licensed.has(r))).map((u) => u.id)
+  const managingBrokerIds = working.filter((u) => managingBrokers.has(u.id)).map((u) => u.id)
 
   // Roles actually in use across both sources, restricted to seat holders — a
   // suspended user's role is not "in use", and a partner's never was. A holder
@@ -179,6 +210,8 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
     peopleCount: users.length,
     freeStaffCount: freeStaff.length,
     nonProducingIds,
+    managingBrokerIds,
+    managingBrokerReadRefused,
     rolesInUse: [...rolesInUse].sort(),
   }
 }
@@ -198,7 +231,7 @@ export async function resolveSeatUsage(svc: Svc, brokerageId: string): Promise<S
 
 export type LicensedProducerExemptionResult =
   | { ok: true; nonProducing: boolean; nonProducingIds: string[] }
-  | { ok: false; reason: "not_licensed" | "user_not_in_tenant" | "tenant_unreadable" | "write_refused"; error: string }
+  | { ok: false; reason: "not_licensed" | "user_not_in_tenant" | "tenant_unreadable" | "write_refused" | "managing_broker"; error: string }
 
 /**
  * Mark (or unmark) ONE licensed user of `brokerageId` as non-producing.
@@ -220,6 +253,24 @@ export async function setLicensedProducerExemption(
   const role = String((user as { user_type?: string | null }).user_type ?? "")
   if (!(LICENSED_SEAT_ROLES as readonly string[]).includes(role)) {
     return { ok: false, reason: "not_licensed", error: `Only a broker or broker owner can be marked non-producing (this person is '${role || "untyped"}'). Agents and team leads are always a seat; an admin is a seat while they hold an agents record.` }
+  }
+  // THE MANAGING BROKER CANNOT BE EXEMPTED (wave 81A, owner: "a broker who is
+  // the broker of record for a brokerage location has to be producing since
+  // that person manages the agents of the brokerage"). Only the EXEMPTING
+  // direction is gated — clearing an exemption is always allowed — and it FAILS
+  // CLOSED: an office row that cannot be read (RLS, or m661 not yet applied)
+  // refuses the exemption rather than granting a free seat to a person who may
+  // be the broker of record. Same id class as the column: users.id.
+  if (nonProducing) {
+    const { data: offices, error: officesErr } = await svc
+      .from("locations").select("id, name").eq("brokerage_id", brokerageId).eq("managing_broker_user_id", userId)
+    if (officesErr) {
+      return { ok: false, reason: "tenant_unreadable", error: `Could not check whether this person is an office's managing broker (${officesErr.message}); a managing broker must stay a producing seat, so the exemption was not changed.` }
+    }
+    const names = ((offices ?? []) as Array<{ id: string; name: string | null }>).map((o) => o.name || o.id.slice(0, 8))
+    if (names.length > 0) {
+      return { ok: false, reason: "managing_broker", error: `This person is the managing broker (broker of record) of ${names.join(", ")} and manages that office's agents, so they must hold a producing seat — they cannot be marked non-producing. Assign another broker as managing broker first.` }
+    }
   }
   const { data: tenant, error: tenantErr } = await svc.from("brokerages").select("billing_metadata").eq("id", brokerageId).maybeSingle()
   if (tenantErr || !tenant) return { ok: false, reason: "tenant_unreadable", error: `This workspace's billing record could not be read${tenantErr ? ` (${tenantErr.message})` : ""}; the exemption was not changed.` }

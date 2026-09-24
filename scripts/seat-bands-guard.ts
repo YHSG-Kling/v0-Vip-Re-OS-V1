@@ -255,7 +255,10 @@ const tenantFx: Fixture = { data: [{ billing_metadata: { non_producing_user_ids:
   control("a catalogue that capped brokerage BELOW the band WOULD refuse an add one under it", !(await seatGate(fakeSvc({ brokerages: { data: [{ plan_tier: "brokerage", billing_metadata: {} }], error: null }, users: many, agents: { data: [], error: null }, user_role_assignments: { data: [], error: null }, subscription_tiers: { data: [{ tier_name: "brokerage", max_agents: BRK_BAND - 5 }], error: null } }), "b1", "agent")).allowed)
   check("multi_location (custom, nothing negotiated) is never refused", seatDecision("multi_location", 5000).withinLimit)
   check("the catalogue reader and the gate rely on the SAME predicate (roleConsumesSeat) — the meter and the refusal cannot disagree about who is billed",
-    /roleConsumesSeat\(r, \{ produces: producesFact\(u\.id\) \}\)/.test(code(USAGE)) && /roleConsumesSeat\(role, \{ produces \}\)/.test(code(USAGE)) && /from\("agents"\)/.test(code(USAGE)) && /parseNonProducingUserIds\(/.test(code(USAGE)))
+    // Re-anchored (wave 81A): the meter hands the predicate BOTH facts — the
+    // production/exemption fact and the managing-broker fact — through ONE
+    // options builder (seatOpts), so the assertion is on the rule, not a spelling.
+    /roleConsumesSeat\(r, seatOpts\(u\.id\)\)/.test(code(USAGE)) && /produces: producesFact\(userId\), managingBroker: managingBrokers\.has\(userId\)/.test(code(USAGE)) && /roleConsumesSeat\(role, \{ produces \}\)/.test(code(USAGE)) && /from\("agents"\)/.test(code(USAGE)) && /parseNonProducingUserIds\(/.test(code(USAGE)))
   check("the retired SEAT_ROLES identifier is gone from runtime code (tombstone kept in prose)", !/\bSEAT_ROLES\b/.test(code(MATRIX)) && !/\bSEAT_ROLES\b/.test(code(USAGE)) && /TOMBSTONE — `SEAT_ROLES`/.test(raw(MATRIX)))
 }
 

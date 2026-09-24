@@ -15,6 +15,15 @@ import {
   type DeactivationPlan,
   type DeactivationResult,
 } from '@/lib/agents/agent-deactivation'
+import {
+  reassignAgentBooks,
+  revertBookTransfer,
+  listBookTransfers,
+  type BookTransferScope,
+  type BookTransferRow,
+  type ReassignAgentBooksResult,
+  type RevertBookTransferResult,
+} from '@/lib/agents/agent-books'
 
 const ADMIN_ROLES = new Set(['broker', 'broker_owner', 'broker_admin', 'admin', 'superadmin'])
 
@@ -63,5 +72,54 @@ export async function deactivateAgent(input: {
     actorUserId: auth.actorUserId,
   })
   if (!result.ok) return { ok: false, reason: result.reason ?? 'deactivation failed' }
+  return { ok: true, result }
+}
+
+// ─── BOOKS REASSIGNMENT (wave 81A, owner: "make sure the tenant can assign
+//     temporarily or permanently another agents books in case an agent leaves
+//     or temporarily leaves.") — same admin gate, tenant from the session, the
+//     kernel does the counted writes (lib/agents/agent-books.ts). ───────────
+
+/** Reassign an agent's whole book: temporary (auto-reverts on the daily sweep)
+ *  or permanent (the deactivation survivor with disposition "reassign"). */
+export async function reassignAgentBooksAction(input: {
+  fromAgentId: string
+  toAgentId: string
+  scope: BookTransferScope
+  until?: string | null
+  reason?: string | null
+}): Promise<{ ok: true; result: ReassignAgentBooksResult } | { ok: false; reason: string }> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return { ok: false, reason: auth.reason }
+  const result = await reassignAgentBooks(createServiceClient(), {
+    brokerageId: auth.brokerageId,
+    fromAgentId: String(input?.fromAgentId ?? ''),
+    toAgentId: String(input?.toAgentId ?? ''),
+    scope: input?.scope,
+    until: input?.until ?? null,
+    reason: input?.reason ? String(input.reason).slice(0, 500) : null,
+    actorUserId: auth.actorUserId,
+  })
+  if (!result.ok) return { ok: false, reason: result.error ?? 'books reassignment refused' }
+  return { ok: true, result }
+}
+
+/** The tenant's transfers (active temporary first) for the revert door. */
+export async function listBookTransfersAction(): Promise<{ ok: true; transfers: BookTransferRow[] } | { ok: false; reason: string }> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return { ok: false, reason: auth.reason }
+  const res = await listBookTransfers(createServiceClient(), auth.brokerageId)
+  if (!res.ok) return { ok: false, reason: res.error ?? 'transfers could not be read' }
+  return { ok: true, transfers: res.transfers }
+}
+
+/** Revert an open temporary transfer early (the sweep would revert it at its end date). */
+export async function revertBookTransferAction(transferId: string): Promise<{ ok: true; result: RevertBookTransferResult } | { ok: false; reason: string }> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return { ok: false, reason: auth.reason }
+  const result = await revertBookTransfer(createServiceClient(), {
+    brokerageId: auth.brokerageId, transferId: String(transferId ?? ''), actorUserId: auth.actorUserId,
+  })
+  if (!result.ok) return { ok: false, reason: result.error ?? 'revert refused' }
   return { ok: true, result }
 }

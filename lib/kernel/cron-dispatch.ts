@@ -311,7 +311,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   // the runner spends an AI call per flagged property, so six-hourly + capped.
   { path: "/api/cron/deal-killer-radar"                   , schedule: "40 */6 * * *" },
   // Agent workload is a daily-grain fact; the output is a gated rebalance
-  // recommendation a broker reads once a day.
+  // recommendation a broker reads once a day. Wave 81A: the same tick reverts
+  // expired TEMPORARY books transfers first (lib/agents/agent-books.ts
+  // revertExpiredBookTransfers) — the returning agent's book is theirs again
+  // before their workload is read.
   { path: "/api/cron/capacity-guardian"                   , schedule: "50 6 * * *" },
   // The cross-lane "about to be dropped" digest — one gated card per tenant per day.
   { path: "/api/cron/nothing-dropped-sweep"               , schedule: "8 13 * * *" },

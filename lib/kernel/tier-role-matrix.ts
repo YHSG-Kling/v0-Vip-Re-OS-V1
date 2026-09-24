@@ -470,11 +470,31 @@ export function tierAllowsRole(tier: string | null | undefined, role: UserDomain
  * over; it is never inferred here from the role alone, because that is the
  * inference the retired SEAT_ROLES made.
  */
-export function roleConsumesSeat(role: UserDomainRole | string, opts?: { produces?: boolean }): boolean {
+export function roleConsumesSeat(role: UserDomainRole | string, opts?: { produces?: boolean; managingBroker?: boolean }): boolean {
   if ((PRODUCER_SEAT_ROLES as readonly string[]).includes(role)) return true
-  if ((LICENSED_SEAT_ROLES as readonly string[]).includes(role)) return opts?.produces !== false
+  // THE MANAGING BROKER IS ALWAYS A SEAT (wave 81A, owner verbatim 2026-09-24:
+  // "a broker who is the broker of record for a brokerage location has to be
+  // producing since that person manages the agents of the brokerage"). The
+  // fact is locations.managing_broker_user_id (m661), supplied by the meter;
+  // it outranks the tenant's exemption, and the exemption writer refuses to
+  // record one for them (lib/kernel/seat-usage.ts setLicensedProducerExemption).
+  if ((LICENSED_SEAT_ROLES as readonly string[]).includes(role)) return opts?.managingBroker === true || opts?.produces !== false
   if ((SEAT_BY_PRODUCTION_ROLES as readonly string[]).includes(role)) return opts?.produces === true
   return false
+}
+
+/**
+ * PURE: may this user type be a location's managing broker (broker of record)?
+ * The licensed roles and nothing else — an agent, an admin or staff cannot be
+ * the broker of record however the tenant is organised (TX designates a
+ * licensed individual broker; CA appoints a branch manager under the
+ * responsible broker; FL registers a broker per office). Same list as
+ * LICENSED_SEAT_ROLES by IDENTITY so the seat rule and the eligibility rule
+ * cannot drift (§6).
+ */
+export const MANAGING_BROKER_ELIGIBLE_ROLES: readonly UserDomainRole[] = LICENSED_SEAT_ROLES
+export function canBeManagingBroker(role: UserDomainRole | string | null | undefined): boolean {
+  return (MANAGING_BROKER_ELIGIBLE_ROLES as readonly string[]).includes(String(role ?? ""))
 }
 
 /**

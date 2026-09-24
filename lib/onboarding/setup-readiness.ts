@@ -11,6 +11,7 @@
 // Pure spec + resolver here (unit-testable); loadSetupReadiness does the I/O.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { managingBrokerReadiness } from "@/lib/kernel/managing-broker"
 import type { Tier } from "@/lib/education/onboarding-curriculum"
 
 export type SetupRole =
@@ -98,6 +99,7 @@ export interface SetupSnapshot {
   hasAccountingSync: boolean
   hasRecruitingPitch: boolean
   hasOfficeLocations: boolean   // multi-location: ≥1 office set up
+  hasManagingBroker: boolean    // wave 81A: EVERY office has its managing broker (broker of record) on file — lib/kernel/managing-broker.ts managingBrokerReadiness
   // team
   hasTeamConfig: boolean
   hasTeamBrand: boolean         // team logo/colors (teams.logo_url / primary_color)
@@ -112,7 +114,7 @@ const EMPTY_SNAPSHOT: SetupSnapshot = {
   hasFinance: false, hasAdManager: false, hasGoogleBusiness: false,
   hasBrokerageLicense: false, hasBrokerageContact: false, hasBranding: false, hasCommissionStructure: false,
   hasEmailProvider: false, hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false,
-  hasAccountingSync: false, hasRecruitingPitch: false, hasOfficeLocations: false,
+  hasAccountingSync: false, hasRecruitingPitch: false, hasOfficeLocations: false, hasManagingBroker: false,
   hasTeamConfig: false, hasTeamBrand: false,
 }
 
@@ -264,6 +266,15 @@ export const SETUP_ITEMS: SetupItem[] = [
   { key: "office_locations", label: "Set up your office locations", roles: ["broker", "admin"], required: true, category: "brokerage", tiers: ["multi_location"],
     why: "Multi-location brokerages scope agents, teams, and roll-ups per office — set them up so per-office reporting works.",
     href: "/dashboard/admin/users", detect: (s) => s.hasOfficeLocations },
+  // Wave 81A (owner: "there can only be one managing broker per brokerage
+  // location" … "has to be producing"). A brokerage-tier tenant is a brokerage
+  // and must name its broker of record; a multi-office tenant names one per
+  // office. Solo and team tiers are not brokerages on this platform (the team
+  // plan "doesn't have a broker in the subscription"), so the item does not
+  // apply to them. Detected from locations.managing_broker_user_id (m661).
+  { key: "managing_broker", label: "Name the managing broker of each office", roles: ["broker", "admin"], required: true, category: "brokerage", tiers: ["brokerage", "multi_location"],
+    why: "State license law puts one broker of record in charge of each office. That broker manages the office's agents and always holds a producing seat; until one is named, the brokerage has nobody on file as responsible for its licensees.",
+    href: "/dashboard/admin/billing", detect: (s) => s.hasManagingBroker },
   { key: "isa_phone", label: "Provision an AI ISA phone number", roles: ["broker", "admin"], required: false, category: "ai",
     why: "A dedicated number lets the AI ISA call and qualify leads around the clock.",
     href: "/dashboard/settings/isa-calling", detect: (s) => s.hasIsaPhone },
@@ -542,7 +553,7 @@ export async function loadSetupReadiness(params: {
         svc.from("tenant_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
         svc.from("brokerage_integrations").select("id").eq("brokerage_id", brokerageId).eq("provider_type", "accounting").limit(1),
         svc.from("users").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).not("user_type", "in", "(contact,vendor,system,admin)"),
-        svc.from("locations").select("id").eq("brokerage_id", brokerageId).limit(1),
+        svc.from("locations").select("id, managing_broker_user_id").eq("brokerage_id", brokerageId).limit(200),
       ])
       const b = (brk.data ?? {}) as any, g = (gs.data ?? {}) as any
       snap.hasBrokerageLicense = !!b.license_number
@@ -557,6 +568,9 @@ export async function loadSetupReadiness(params: {
       snap.hasAccountingSync = has(acct)
       snap.hasTeamMembers = (team.count ?? 0) > 0
       snap.hasOfficeLocations = has(locs)
+      // A refused offices read (or m661 not yet applied) reads as NOT ready —
+      // "nobody checked" must never render as "checked and fine" (§4).
+      snap.hasManagingBroker = !locs.error && managingBrokerReadiness(((locs.data ?? []) as Array<{ managing_broker_user_id?: string | null }>).map((l) => ({ managing_broker_user_id: l.managing_broker_user_id ?? null }))).ready
     }
 
     // Team-lead team config + brand.

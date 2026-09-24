@@ -25,7 +25,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { ACTIVE_DEAL_STATUSES } from "@/lib/agents/agent-deactivation"
+import { ACTIVE_DEAL_STATUSES, CLOSED_TASK_STATUSES } from "@/lib/agents/agent-deactivation"
 import { revalidatePath } from "next/cache"
 
 /** Same manager set the bulk deactivation flow admits.
@@ -231,7 +231,8 @@ export async function reassignContactAction(input: {
   // ── 4. This contact's OPEN tasks owed by the old agent (closed/cancelled
   //       stay as history — same exclusion set as the bulk flow) ──
   if (fromAgentId) {
-    const OPEN_TASK_EXCLUDE = "(completed,cancelled,done,closed)"
+    // ONE spelling of "this task is done" (wave 81A, §6) — the bulk move set's list.
+    const OPEN_TASK_EXCLUDE = `(${CLOSED_TASK_STATUSES.join(",")})`
     const { count } = await svc
       .from("tasks")
       .update({ assigned_to_agent_id: input.toAgentId }, { count: "exact" })

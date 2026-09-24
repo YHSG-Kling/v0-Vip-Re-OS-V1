@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { runCapacityGuardian } from "@/lib/kernel/capacity-guardian-runner"
+import { revertExpiredBookTransfers } from "@/lib/agents/agent-books"
 
 /**
  * CAPACITY GUARDIAN sweep — daily
@@ -33,6 +34,16 @@ import { runCapacityGuardian } from "@/lib/kernel/capacity-guardian-runner"
  *
  * Tenant: platform cron on the service client, gated by the cron secret; every
  * signal is written under the scanned brokerage's own id (§4).
+ *
+ * WAVE 81A — THE TEMPORARY BOOKS REVERT RIDES THIS TICK. A temporary books
+ * transfer (lib/agents/agent-books.ts, owner: "assign temporarily … another
+ * agents books in case an agent … temporarily leaves") keeps the original
+ * owner on the agent_book_transfers ledger and must move the book back when
+ * its window ends. That is a daily-grain workload fact about the same agents
+ * this guardian scans, so the sweep runs FIRST here (before the workload
+ * read, so the returning agent's book counts against the returning agent)
+ * rather than on a second daily cron. Each revert is written under the
+ * transfer's own brokerage_id.
  */
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -60,6 +71,10 @@ export async function GET(request: Request) {
   try {
     const supabase = createServiceClient()
     const suppressSince = new Date(Date.now() - SUPPRESS_HOURS * 3_600_000).toISOString()
+
+    // Wave 81A — expired temporary books transfers revert BEFORE the workload scan.
+    const booksRevert = await revertExpiredBookTransfers(supabase)
+    if (booksRevert.readRefused) console.warn("[CapacityGuardian] books-transfer ledger read refused:", booksRevert.readRefused)
 
     const { data: brokerages, error: brokeragesError } = await supabase
       .from("brokerages")
@@ -124,6 +139,10 @@ export async function GET(request: Request) {
       proposals,
       suppressed_signalled_within_hours: SUPPRESS_HOURS,
       suppressed_recent: suppressedRecent,
+      books_transfers_due: booksRevert.due,
+      books_transfers_reverted: booksRevert.reverted,
+      books_transfers_failed: booksRevert.failed.slice(0, 20),
+      books_transfers_read_refused: booksRevert.readRefused,
       errors: errors.slice(0, 20),
       error_count: errors.length,
     }

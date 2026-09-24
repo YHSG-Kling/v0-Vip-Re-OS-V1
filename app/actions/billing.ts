@@ -595,6 +595,10 @@ export interface LicensedSeatRow {
   role: string
   /** false = the tenant exempted them (billing_metadata.non_producing_user_ids). */
   producing: boolean
+  /** The offices this person is the MANAGING BROKER of (wave 81A, m661) —
+   *  non-empty means a seat that cannot be exempted; the card shows the
+   *  office names and hides the toggle. */
+  managingBrokerOf: string[]
 }
 
 /** What the tenant is offered when the next producer would cross the limit
@@ -610,17 +614,31 @@ export async function getSeatDoorAction(): Promise<SeatDoor> {
   // the ONE count so this list and the seat number come from the same facts.
   const usage = await resolveSeatUsage(svc, auth.brokerageId)
   const exempt = new Set(usage.nonProducingIds)
-  const { data: people, error: peopleErr } = await svc
-    .from("users").select("id, first_name, last_name, email, user_type, status")
-    .eq("brokerage_id", auth.brokerageId).in("user_type", [...LICENSED_SEAT_ROLES])
+  const [{ data: people, error: peopleErr }, { data: offices, error: officesErr }] = await Promise.all([
+    svc.from("users").select("id, first_name, last_name, email, user_type, status")
+      .eq("brokerage_id", auth.brokerageId).in("user_type", [...LICENSED_SEAT_ROLES]),
+    // The offices each licensed person is the managing broker of (wave 81A) —
+    // read here so the row and the seat number come from the same tick.
+    svc.from("locations").select("id, name, managing_broker_user_id")
+      .eq("brokerage_id", auth.brokerageId).not("managing_broker_user_id", "is", null),
+  ])
   if (peopleErr) console.warn("[seat-door] licensed roster read refused:", peopleErr.message)
+  if (officesErr) console.warn("[seat-door] managing-broker offices read refused:", officesErr.message)
+  const officesOf = new Map<string, string[]>()
+  for (const o of (offices ?? []) as Array<{ id: string; name: string | null; managing_broker_user_id: string | null }>) {
+    if (!o.managing_broker_user_id) continue
+    officesOf.set(o.managing_broker_user_id, [...(officesOf.get(o.managing_broker_user_id) ?? []), o.name || o.id.slice(0, 8)])
+  }
   const licensed: LicensedSeatRow[] = ((people ?? []) as Array<{ id: string; first_name?: string | null; last_name?: string | null; email?: string | null; user_type?: string | null; status?: string | null }>)
     .filter((p) => p.status !== "suspended")
     .map((p) => ({
       userId: p.id,
       label: [p.first_name, p.last_name].filter(Boolean).join(" ") || p.email || p.id.slice(0, 8),
       role: p.user_type ?? "",
-      producing: !exempt.has(p.id),
+      // A managing broker is billed whatever the list says (the meter already
+      // dropped them from nonProducingIds); say so on the row.
+      producing: !exempt.has(p.id) || officesOf.has(p.id),
+      managingBrokerOf: officesOf.get(p.id) ?? [],
     }))
   return { ok: true, tier: verdict.tier, seatCount: verdict.seatCount, decision: verdict.decision, message: verdict.message, paths: verdict.decision.paths, licensed }
 }
@@ -631,6 +649,8 @@ export async function getSeatDoorAction(): Promise<SeatDoor> {
  * seat; this is the tenant's exemption for the broker of record who runs the
  * shop and never sells. Tenant from the SESSION, commerce-admin gate (it
  * moves the bill), the ONE writer (setLicensedProducerExemption), audited.
+ * The writer itself REFUSES an office's managing broker (wave 81A: the broker
+ * of record is always a producing seat) — the refusal names the office.
  */
 export async function setLicensedProducerAction(userId: string, producing: boolean): Promise<
   | { ok: true; producing: boolean; seatCount: number | null }
