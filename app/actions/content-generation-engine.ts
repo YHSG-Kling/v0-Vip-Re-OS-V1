@@ -315,7 +315,7 @@ export async function generateVideo(params: {
       transaction_id: params.transaction_id,
     })
 
-    const complianceWarnings = await NOT_postcheckScript(actor, content.raw_content, "buyer")
+    const complianceWarnings = await postcheckScript(actor, content.raw_content, "buyer")
 
     const content_id = uuidv4()
 

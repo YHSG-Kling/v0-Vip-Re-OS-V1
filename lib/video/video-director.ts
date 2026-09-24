@@ -359,14 +359,14 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       // Wave 81C — the format comes from the PLAN the archetype rule derived
       // (lib/video/custom-video-archetypes.ts planCustomVideo), never from a
       // hand table here. No plan → no format: fail loudly rather than pick.
-      const plan = customPlanOf(situation)
-      if (!plan) throw new Error("custom situation has no facts.customPlan — plan it first with planCustomVideo (lib/video/custom-video-archetypes.ts)")
-      const verdict = plan.rule.broll.verdict
+      const customPlan = customPlanOf(situation)
+      if (!customPlan) throw new Error("custom situation has no facts.customPlan — customPlan it first with planCustomVideo (lib/video/custom-video-archetypes.ts)")
+      const verdict = customPlan.rule.broll.verdict
       return {
-        compositionId: plan.compositionId,
-        needsAvatar: plan.host === "avatar",
+        compositionId: customPlan.compositionId,
+        needsAvatar: customPlan.host === "avatar",
         needsBroll: verdict === "needed" || verdict === "optional",
-        needsCharts: plan.rule.required.includes("chart"),
+        needsCharts: customPlan.rule.required.includes("chart"),
         needsSlides: false,
         aspect: aspectForChannel(targetChannel),
         targetChannels: [targetChannel],
