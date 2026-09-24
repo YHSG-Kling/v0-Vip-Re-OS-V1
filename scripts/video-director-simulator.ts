@@ -24,7 +24,9 @@ import {
   type SituationKind,
   type TargetChannel,
   type MusicMood,
+  type VideoSituation,
 } from "../lib/video/video-director"
+import { planCustomVideo } from "../lib/video/custom-video-archetypes"
 
 let passed = 0, failed = 0
 const fails: string[] = []
@@ -43,8 +45,20 @@ const ALL_KINDS: SituationKind[] = [
   "new_listing", "price_drop", "just_sold", "open_house", "coming_soon",
   "market_update", "cma", "explainer", "presentation", "anniversary",
   "testimonial", "neighborhood", "photo_walkthrough", "lead_intro",
-  "concept_animation",
+  "concept_animation", "custom",
 ]
+
+// Wave 81C — `custom` is the ONE kind whose format comes from the situation
+// itself (facts.customPlan, derived by lib/video/custom-video-archetypes.ts);
+// the loops below hand it a planned fixture the way a caller must, and a
+// custom situation WITHOUT a plan is asserted to fail loudly.
+const CUSTOM_FIXTURE = planCustomVideo({
+  audience: "first-time buyers", goal: "explain closing costs in three steps", host: "avatar",
+  assets: { avatarClip: true, brollClips: 0, propertyPhotos: 0, screenshots: 0 },
+})
+if (!CUSTOM_FIXTURE.ok) throw new Error(`custom fixture could not be planned: ${CUSTOM_FIXTURE.reason}`)
+const sit = (kind: SituationKind, targetChannel: TargetChannel): VideoSituation =>
+  kind === "custom" ? { kind, tier: "solo_agent", targetChannel, facts: { customPlan: CUSTOM_FIXTURE.plan } } : { kind, tier: "solo_agent" as const, targetChannel }
 
 /**
  * The union is a TYPE — erased at runtime — so this list cannot be derived by
@@ -81,7 +95,7 @@ async function main() {
   // No mapper may fall through to undefined — tsc cannot catch this (noImplicitReturns off).
   check("every situation resolves a defined format, mood, QR kind and hook",
     ALL_KINDS.every((k) =>
-      selectVideoFormat({ kind: k, tier: "solo_agent", targetChannel: "instagram" })?.compositionId !== undefined &&
+      selectVideoFormat(sit(k, "instagram"))?.compositionId !== undefined &&
       musicMoodForSituation(k) !== undefined &&
       qrKindForSituation(k) !== undefined &&
       defaultHookForSituation(k) !== undefined))
@@ -90,7 +104,7 @@ async function main() {
   let combos = 0
   for (const kind of ALL_KINDS) {
     for (const targetChannel of ALL_CHANNELS) {
-      const f = selectVideoFormat({ kind, tier: "solo_agent", targetChannel })
+      const f = selectVideoFormat(sit(kind, targetChannel))
       combos++
       if (!f.compositionId || f.targetChannels.length === 0) {
         check(`${kind}×${targetChannel} resolves a composition + channels`, false, JSON.stringify(f))
@@ -130,7 +144,7 @@ async function main() {
 
   console.log("\n[Layer 1b · intro→outro assembly + QR destination]")
   for (const kind of ALL_KINDS) {
-    const spec = assemblySpec({ kind, tier: "solo_agent", targetChannel: "instagram" }, selectVideoFormat({ kind, tier: "solo_agent", targetChannel: "instagram" }))
+    const spec = assemblySpec(sit(kind, "instagram"), selectVideoFormat(sit(kind, "instagram")))
     if (!(spec.intro.brand && spec.intro.agentPhoto && spec.intro.hook.fallback)) check(`${kind} intro = brand+photo+hook`, false)
     if (!(spec.outro.brand && spec.outro.agentContact && spec.outro.qr.kind)) check(`${kind} outro = brand+contact+QR`, false)
   }
@@ -141,7 +155,7 @@ async function main() {
   console.log("\n[Layer 1c · music mood (the Director scores the moment)]")
   const VALID_MOODS: MusicMood[] = ["none", "energetic", "sophisticated", "calm", "upbeat"]
   check("every situation maps to a valid music mood", ALL_KINDS.every((k) => VALID_MOODS.includes(musicMoodForSituation(k))))
-  check("every situation's assembly spec carries the mood", ALL_KINDS.every((k) => assemblySpec({ kind: k, tier: "solo_agent", targetChannel: "instagram" }, selectVideoFormat({ kind: k, tier: "solo_agent", targetChannel: "instagram" })).music.mood === musicMoodForSituation(k)))
+  check("every situation's assembly spec carries the mood", ALL_KINDS.every((k) => assemblySpec(sit(k, "instagram"), selectVideoFormat(sit(k, "instagram"))).music.mood === musicMoodForSituation(k)))
   // The creative-director scoring the owner asked for:
   check("just_sold + testimonial → energetic", musicMoodForSituation("just_sold") === "energetic" && musicMoodForSituation("testimonial") === "energetic")
   check("new_listing (luxury feel) → sophisticated", musicMoodForSituation("new_listing") === "sophisticated")

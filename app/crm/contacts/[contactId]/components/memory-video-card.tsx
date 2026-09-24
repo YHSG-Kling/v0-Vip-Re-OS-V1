@@ -37,6 +37,11 @@ import { MEMORY_VIDEO_MODES, type MemoryVideoMode } from "@/lib/video/memory-vid
 import { Badge } from "@/components/ui/badge"
 import { MEMORY_VIDEO_PROMPTS, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
 import { offerMemoryVideoAction, saveMemoryVideoDictationAction, renderMemoryVideoAction } from "@/app/actions/video/memory-video"
+// Wave 81C — the in-card file picker (lane 80C's open item) rides the ONE
+// signed-upload survivor: the tenant prefix comes from the SESSION at mint
+// time (lib/storage/signed-upload-url.ts UPLOAD_PURPOSES.memory_video_media),
+// never from anything this card sends.
+import { uploadViaSignedUrl } from "@/lib/storage/browser-upload"
 
 interface Props {
   contactId: string
@@ -72,6 +77,59 @@ export function MemoryVideoCard({
   const [pending, startTransition] = useTransition()
 
   const dictatedCount = MEMORY_VIDEO_PROMPTS.filter((p) => (words[p.id] ?? "").trim().length > 0).length
+  const [uploading, setUploading] = useState<Record<string, boolean>>({})
+
+  /** The recording's REAL length, read from the browser's own decoder
+   *  (loadedmetadata) — the plan weights each chapter by measured frames
+   *  (memoryChapterSegments), so a typed guess is the thing this replaces. */
+  function measureSeconds(file: File, kind: "audio" | "video"): Promise<number | null> {
+    return new Promise((resolve) => {
+      try {
+        const el = document.createElement(kind)
+        const url = URL.createObjectURL(file)
+        el.preload = "metadata"
+        el.onloadedmetadata = () => { const d = el.duration; URL.revokeObjectURL(url); resolve(Number.isFinite(d) && d > 0 ? Math.round(d * 10) / 10 : null) }
+        el.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+        el.src = url
+      } catch { resolve(null) }
+    })
+  }
+
+  /** Upload the seller's recording for one chapter and fill the URL + seconds. */
+  async function pickRecording(promptId: string, file: File | null) {
+    if (!file) return
+    setError(null)
+    const kind: "audio" | "video" = mode === "seller_walkthrough" ? "video" : "audio"
+    if (!file.type.startsWith(`${kind}/`)) { setError(`This chapter needs ${kind === "video" ? "the seller's video clip" : "the seller's audio recording"} (got ${file.type || "an unknown type"}).`); return }
+    setUploading((u) => ({ ...u, [promptId]: true }))
+    try {
+      const [seconds, up] = await Promise.all([measureSeconds(file, kind), uploadViaSignedUrl({ purpose: "memory_video_media", file })])
+      if (!up.ok) { setError(up.error); return }
+      setMedia((m) => ({ ...m, [promptId]: { url: up.url, seconds: seconds != null ? String(seconds) : (m[promptId]?.seconds ?? "") } }))
+      if (seconds == null) setMessage("Uploaded — the browser could not read the recording's length; type the seconds.")
+    } finally {
+      setUploading((u) => ({ ...u, [promptId]: false }))
+    }
+  }
+
+  /** Upload the home's photos (one or many) and append their URLs to the list. */
+  async function pickPhotos(files: FileList | null) {
+    if (!files || files.length === 0) return
+    setError(null)
+    setUploading((u) => ({ ...u, photos: true }))
+    try {
+      const urls: string[] = []
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) { setError(`${file.name} is not an image.`); continue }
+        const up = await uploadViaSignedUrl({ purpose: "memory_video_media", file })
+        if (!up.ok) { setError(up.error); continue }
+        urls.push(up.url)
+      }
+      if (urls.length) setPhotoText((t) => [t.trim(), ...urls].filter(Boolean).join("\n"))
+    } finally {
+      setUploading((u) => ({ ...u, photos: false }))
+    }
+  }
 
   function offer() {
     setError(null); setMessage(null)
@@ -196,6 +254,15 @@ export function MemoryVideoCard({
                   onChange={(e) => setMedia((m) => ({ ...m, [p.id]: { url: m[p.id]?.url ?? "", seconds: e.target.value } }))}
                 />
               </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>{uploading[p.id] ? "Uploading…" : `Or pick the seller's ${mode === "seller_walkthrough" ? "clip" : "recording"} file (length is measured on upload)`}</span>
+                <input
+                  type="file"
+                  accept={mode === "seller_walkthrough" ? "video/*" : "audio/*"}
+                  disabled={pending || !!uploading[p.id]}
+                  onChange={(e) => { void pickRecording(p.id, e.target.files?.[0] ?? null); e.target.value = "" }}
+                />
+              </label>
             </div>
           ))}
         </div>
@@ -204,6 +271,10 @@ export function MemoryVideoCard({
           <div className="space-y-1">
             <label htmlFor="mv-photos" className="text-sm font-medium">Photos of the home (one URL per line — these are the visuals)</label>
             <Textarea id="mv-photos" rows={4} placeholder="https://…" value={photoText} onChange={(e) => setPhotoText(e.target.value)} />
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>{uploading.photos ? "Uploading…" : "Or pick photo files (they are uploaded and added above)"}</span>
+              <input type="file" accept="image/*" multiple disabled={pending || !!uploading.photos} onChange={(e) => { void pickPhotos(e.target.files); e.target.value = "" }} />
+            </label>
           </div>
         ) : null}
 

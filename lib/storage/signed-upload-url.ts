@@ -206,6 +206,21 @@ export const UPLOAD_PURPOSES = {
     contentTypePrefixes: ["video/"],
   },
   /**
+   * Wave 81C — the memory video's media (lane 80C's open item: "an in-card
+   * file picker is the next surface"). The seller's own recording per chapter
+   * (audio or video) and the home's photos, uploaded by the AGENT from the
+   * contact's memory-video card. `video-assets` because remotion/MemoryVideoReel
+   * fetches every clip and photo BY URL from a render worker that holds no
+   * session (document-buckets.ts: the bucket for media the Remotion workers
+   * fetch by URL). Tenant + uploading user in the prefix, like the other three.
+   */
+  memory_video_media: {
+    bucket: "video-assets",
+    why: "The seller's own chapter recordings and the home's photos for the memory video, fetched by URL by the Remotion render worker.",
+    prefix: (id) => `${id.brokerageId}/memory-video/${id.userId}`,
+    contentTypePrefixes: ["audio/", "video/", "image/"],
+  },
+  /**
    * PLATFORM-owned, not tenant-owned — see PLATFORM_CONTRACT_TENANT_SENTINEL
    * above for why its identity.brokerageId is a fixed literal rather than a real
    * tenant. Bucket `documents` is the existing "universal document lane"

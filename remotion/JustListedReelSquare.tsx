@@ -32,6 +32,7 @@ import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -73,6 +74,8 @@ export interface JustListedReelSquareProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
+  mlsClean?: boolean
 }
 
 const FPS    = 30
@@ -95,7 +98,7 @@ function kenBurnsScale(localFrame: number, span: number): number {
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
-  captionsCues, captionScript,
+  captionsCues, captionScript, mlsClean,
 }) => {
   const frame      = useCurrentFrame()
   const { durationInFrames } = useVideoConfig()
@@ -104,7 +107,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   const images     = imageUrls.slice(0, 4)
   const perPhoto   = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho    = brand.showEhoMark ?? true
-  const finalCta   = ctaLabel ?? "Tour this listing"
+  const finalCta   = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -138,7 +141,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             position: "absolute", top: 40, left: 40, color: "#fff", opacity: 0.85,
             fontSize: 22, fontWeight: 600, letterSpacing: 2,
           }}>
-            {brand.logoUrl ? <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
+            {!mlsClean && brand.logoUrl ? <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
           </div>
         </AbsoluteFill>
       </Sequence>
@@ -197,10 +200,10 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
           }}>
             {finalCta}
           </div>
-          {brand.agentName && (
+          {!mlsClean && brand.agentName && (
             <div style={{ fontSize: 40, color: brand.accentColor, fontWeight: 700 }}>{brand.agentName}</div>
           )}
-          {brand.agentPhone && (
+          {!mlsClean && brand.agentPhone && (
             <div style={{ fontSize: 32, color: "#fff", opacity: 0.85, marginTop: 12 }}>
               {brand.agentPhone}
             </div>
@@ -214,6 +217,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             </div>
           )}
           <QrOutroBadge
+            mlsClean={mlsClean}
             qrCodeDataUrl={qrCodeDataUrl}
             caption={qrCaption ?? "Scan to tour"}
             primaryColor={brand.primaryColor}

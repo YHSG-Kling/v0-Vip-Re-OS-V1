@@ -45,6 +45,7 @@ import { KenBurnsPhoto } from "./components/KenBurnsPhoto"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface PhotoWalkthroughReelProps {
@@ -161,7 +162,8 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
 
 // ─── Cover ───────────────────────────────────────────────────────────────────
 
-const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, cityState, brand }) => {
+// Wave 81C — on the MLS cut the cover paints no logo and the address instead of the hook.
+const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, cityState, brand, mlsClean }) => {
   const frame = useCurrentFrame()
   const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.92], {
     extrapolateLeft: "clamp",
@@ -183,11 +185,11 @@ const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, citySt
           translate: `0 ${rise}px`,
         }}
       >
-        {brand.logoUrl && (
+        {!mlsClean && brand.logoUrl && (
           <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 92, margin: 0, fontWeight: 800, letterSpacing: -1, fontFamily: FONT }}>
-          {hook}
+          {mlsClean ? mlsNeutralTitle(address) : hook}
         </h1>
         {address && (
           <p style={{ color: "white", fontSize: 52, marginTop: 24, opacity: 0.92, fontFamily: FONT }}>{address}</p>
@@ -231,17 +233,20 @@ const PhotoTour: React.FC<{ clips: KenBurnsClip[]; brand: PhotoWalkthroughReelPr
 // <EqualHousingMark>) was MERGED onto remotion/components/EndCard.tsx — the
 // ONE end card the four outros in this fleet now share. The outro window is
 // still whatever computeAssemblyTimeline derives.
-const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel }) => (
+// Wave 81C — THE MLS CUT: the end card prints the address and the fair-housing
+// mark only (no CTA, no name, no phone, no logo — lib/video/render-cut.ts).
+const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel, address, cityState, mlsClean }) => (
   <EndCard
-    brand={brand}
-    headline={ctaLabel || "DM me to tour."}
-    subline={brand.agentName ?? null}
-    detail={brand.agentPhone ?? null}
+    brand={mlsClean ? { ...brand, logoUrl: undefined } : brand}
+    headline={mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel || "DM me to tour.")}
+    subline={mlsClean ? null : (brand.agentName ?? null)}
+    detail={mlsClean ? (brand.showEhoMark !== false ? "Equal Housing Opportunity" : null) : (brand.agentPhone ?? null)}
     footer={null}
     align="start"
     logoHeight={56}
     fontFamily={FONT}
     showQr={false}
+    mlsClean={mlsClean}
   />
 )
 

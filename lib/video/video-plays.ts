@@ -134,7 +134,9 @@ export async function runTestimonialReels(svc: any): Promise<Pick<VideoPlaysResu
 export async function runWalkthroughPremieres(svc: any): Promise<Pick<VideoPlaysResult, "walkthroughs" | "errors">> {
   const out = { walkthroughs: 0, errors: 0 }
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
-  const { commissionVideo } = await import("@/lib/video/video-director")
+  // Wave 81C — ONE plan, TWO cuts: the ads cut and the MLS cut of the same
+  // walkthrough (lib/video/render-cut.ts; PhotoWalkthroughReel has an MLS cut).
+  const { commissionListingCuts } = await import("@/lib/video/video-director")
   const { data: listings } = await svc.from("listings")
     .select("id, brokerage_id, agent_id, address, lifecycle_stage, photos")
     .in("lifecycle_stage", ["COMING_SOON_ACTIVE", "MLS_ACTIVE", "OPEN_HOUSE_MARKETING"])
@@ -145,7 +147,7 @@ export async function runWalkthroughPremieres(svc: any): Promise<Pick<VideoPlays
       const { data: agent } = await svc.from("agents").select("user_id").eq("id", l.agent_id).maybeSingle()
       const agentUserId = (agent as any)?.user_id
       if (!agentUserId) continue
-      const res = await commissionVideo(
+      const res = await commissionListingCuts(
         { kind: "photo_walkthrough", tier: "brokerage", targetChannel: "instagram", facts: { address: l.address } },
         { brokerageId: l.brokerage_id, agentUserId, listingId: l.id, idempotencyDiscriminator: "walkthrough" },
         svc,

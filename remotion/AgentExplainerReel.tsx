@@ -40,6 +40,7 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } 
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { fitBodyVisualPlan, panelWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { SegmentBackdrop } from "./components/SegmentBackdrop"
 import { explainerPanelSplit } from "../lib/video/pip-panel-split"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
@@ -214,6 +215,8 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
       {panels.map((p, i) => (
         <Sequence key={`bullet-${i}`} from={COVER + p.from} durationInFrames={p.durationInFrames}>
           <AbsoluteFill>
+            {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
+            <SegmentBackdrop plan={plan} primaryColor={brand.primaryColor} accentColor={brand.accentColor} frameOffset={COVER + p.from} />
             <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
               accentColor: brand.accentColor, primaryColor: brand.primaryColor,
               avatarDurationSeconds, avatarVideoTransparent, fps: FPS, size: 360, position: "top-left", ringWidth: 6,

@@ -626,9 +626,11 @@ export const COMPOSITION_TREATMENTS: Record<string, BodyTreatment[]> = {
  */
 export const COMPOSITION_BACKGROUNDS: Record<string, BackgroundKind[]> = {
   AgentTalkingHeadReel:      ["solid_brand", "subtle_motion"],
-  MarketUpdateReel:          ["solid_brand"],
-  EquityReportReel:          ["solid_brand"],
-  AgentExplainerReel:        ["solid_brand"],
+  // Wave 81C — the three PiP reels mount remotion/components/SegmentBackdrop.tsx
+  // behind their panels and switch per segment (the mark is the mount).
+  MarketUpdateReel:          ["solid_brand", "brand_gradient", "subtle_motion"],
+  EquityReportReel:          ["solid_brand", "brand_gradient", "subtle_motion"],
+  AgentExplainerReel:        ["solid_brand", "brand_gradient", "subtle_motion"],
   ExplainerAnimReel:         ["brand_gradient"],
   TeammateExplainerReel:     ["solid_brand"],
   MemoryVideoReel:           ["blurred_photo", "brand_gradient", "solid_brand"],
@@ -679,11 +681,15 @@ export const TREATMENT_MARKS: Record<BodyTreatment, RegExp> = {
 }
 
 /** The source mark that proves a composition can paint a background kind. */
+/** A composition that mounts the ONE per-segment backdrop (wave 81C,
+ *  remotion/components/SegmentBackdrop.tsx) can paint every kind the backdrop
+ *  paints: a gradient and a slow drift always; a blurred photo only when it
+ *  hands the backdrop a photo, so that mark stays the composition's own. */
 export const BACKGROUND_MARKS: Record<BackgroundKind, RegExp> = {
   solid_brand:    /backgroundColor: brand(Colors)?\.primaryColor/,
-  brand_gradient: /gradient\(/,
+  brand_gradient: /gradient\(|<SegmentBackdrop\b/,
   blurred_photo:  /blur\(/,
-  subtle_motion:  /handheldDrift|filmGrain|kenBurns|KenBurns/,
+  subtle_motion:  /handheldDrift|filmGrain|kenBurns|KenBurns|<SegmentBackdrop\b/,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

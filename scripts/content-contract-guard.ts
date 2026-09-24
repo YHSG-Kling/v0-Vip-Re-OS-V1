@@ -1050,6 +1050,9 @@ console.log("\n═══ 18. every companion-card producer supplies a seoHint (t
   const CARD_READERS = new Set([
     "lib/remotion/render-decision.ts",
     "lib/geo/video-landing.ts",
+    // Wave 81C — names `thumbnail_props` only to STRIP it from the MLS cut
+    // (MLS_CUT_STRIP share_thumbnail); it never stages a card.
+    "lib/video/render-cut.ts",
   ])
 
   // TOMBSTONE (orphan doctrine §1.1) — the private depth-capped `walkSrc()`

@@ -38,6 +38,7 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } 
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { fitBodyVisualPlan, panelWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { SegmentBackdrop } from "./components/SegmentBackdrop"
 import { thirdsPanelSplit } from "../lib/video/pip-panel-split"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
@@ -293,6 +294,8 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
       {panels.map((p, i) => (
         <Sequence key={`stat-${i}`} from={COVER + p.from} durationInFrames={p.durationInFrames}>
           <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
+            {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
+            <SegmentBackdrop plan={plan} primaryColor={brand.primaryColor} accentColor={brand.accentColor} frameOffset={COVER + p.from} />
             <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
             {/* `startFrame`/`endFrame` are relative to the avatar track's own
                 start, not the composition's — the panel's BODY-relative window. */}

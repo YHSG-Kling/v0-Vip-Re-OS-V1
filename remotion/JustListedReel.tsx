@@ -31,6 +31,7 @@ import { CaptionLayer } from "./components/CaptionLayer"
 import { EqualHousingMark } from "./components/EqualHousingMark"
 import { computeAssemblyTimeline, evenShotSlots } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelProps {
@@ -70,6 +71,13 @@ export interface JustListedReelProps {
   /** SOUND-OFF CAPTIONS fallback — the raw VO script text; the CaptionLayer
    *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
   captionScript?: string | null
+  /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts). True → the cover prints
+   *  the address instead of the hook and no logo, the outro prints the address
+   *  and the fair-housing mark instead of "DM me to tour" + name + phone, and
+   *  the QR badge renders nothing. The staged props are already stripped by
+   *  mlsCutProps; this flag is the composition's own guard so a branded prop
+   *  that somehow rode along still cannot paint. */
+  mlsClean?: boolean
 }
 
 // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts). A
@@ -112,6 +120,7 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
           caption={props.qrCaption ?? "Scan to tour"}
           primaryColor={props.brand.primaryColor}
           accentColor={props.brand.accentColor}
+          mlsClean={props.mlsClean}
         />
       </Sequence>
 
@@ -130,17 +139,17 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
 
 // ─── Frames ─────────────────────────────────────────────────────────────────
 
-const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, brand }) => {
+const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, brand, mlsClean }) => {
   const frame = useCurrentFrame()
   const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, opacity, padding: 80 }}>
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
-        {brand.logoUrl && (
+        {!mlsClean && brand.logoUrl && (
           <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 96, margin: 0, fontWeight: 800, letterSpacing: -1 }}>
-          {hook}
+          {mlsClean ? mlsNeutralTitle(address) : hook}
         </h1>
         <p style={{ color: "white", fontSize: 56, marginTop: 24, opacity: 0.9 }}>{address}</p>
         <p style={{ color: brand.accentColor, fontSize: 36, marginTop: 8 }}>{cityState}</p>
@@ -245,9 +254,22 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
   )
 }
 
-const CTAFrame: React.FC<JustListedReelProps> = ({ brand }) => {
+const CTAFrame: React.FC<JustListedReelProps> = ({ brand, address, cityState, mlsClean }) => {
   const frame = useCurrentFrame()
   const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  // THE MLS CUT'S END CARD is neutral: the address (descriptive of the
+  // property — IRMLS §1.19 f) and the fair-housing mark. No CTA, no name, no
+  // phone, no logo — the unbranded end card the MLS field allows.
+  if (mlsClean) {
+    return (
+      <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
+        <h1 style={{ color: "white", fontSize: 72, margin: 0, fontWeight: 800 }}>{mlsNeutralTitle(address, cityState)}</h1>
+        {brand.showEhoMark !== false && (
+          <p style={{ color: "white", fontSize: 28, opacity: 0.7, marginTop: 32, letterSpacing: 1 }}>Equal Housing Opportunity</p>
+        )}
+      </AbsoluteFill>
+    )
+  }
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (

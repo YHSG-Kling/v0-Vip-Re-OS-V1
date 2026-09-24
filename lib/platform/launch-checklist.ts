@@ -238,6 +238,22 @@ const ROWS: RowDef[] = [
     tier: "launch-degraded",
   },
   {
+    // Wave 81C — lane 80C's flagged blind spot, kept flagged: the Videos V4
+    // `TransparentBackground` discriminator is TRANSCRIBED from the schema
+    // name (lib/did/contract.ts transparentPresenterConfig sends
+    // `{ type: "transparent" }`); the literal was not visible in the fetched
+    // reference. The same key gates it, so this row reads as configured the
+    // moment D-ID is — the LIVE CHECK is the first keyed V4 submit: the
+    // poller (app/api/cron/poll-did-videos) must host a .webm and record
+    // `transparent: true` on provider_metadata; an mp4 back means the field
+    // was ignored and the PiP reels fall to the opaque ring card.
+    key: "did_v4_transparent_background",
+    capability: "D-ID Videos V4 keyed (transparent) presenter — LIVE CHECK on first submit",
+    envVars: ["DID_API_KEY"],
+    whatLightsUp: "Keyed avatar PiP over content (webm with alpha) on MarketUpdateReel / AgentExplainerReel / EquityReportReel / AgentTalkingHeadReel. Verify: the first V4 result_format is webm and provider_metadata.transparent is true; otherwise the opaque card renders (by design) and the discriminator literal needs correcting in lib/did/contract.ts.",
+    tier: "optional",
+  },
+  {
     key: "zoom_oauth",
     capability: "Zoom connection (meetings + transcripts)",
     envVars: ["ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET"],

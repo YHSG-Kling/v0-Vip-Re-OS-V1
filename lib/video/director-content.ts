@@ -621,6 +621,18 @@ export async function resolveDirectorContentProps(
 
   const listing = args.listingId ? await readListing(svc, args.listingId) : null
 
+  // Wave 81C — a DESCRIBED video: the brief's own content (script, bullets,
+  // title, photos, stats — whatever the describer supplied) is the fact set;
+  // the brand block and the agent identity ride under it like every other
+  // kind, and the composition's contract still refuses what is missing.
+  // Nothing is authored here for it.
+  if (situation.kind === "custom") {
+    const plan = facts.customPlan as { content?: Record<string, unknown> } | undefined
+    const content = plan && typeof plan === "object" && plan.content && typeof plan.content === "object" ? plan.content : {}
+    const listingProps = listing ? listingReelProps(listing, args.hookLine) : {}
+    return { ...base, agentName: id.agentName, hook: args.hookLine, ...listingProps, ...content }
+  }
+
   try {
     switch (compositionId) {
       case "JustListedReel":

@@ -61,6 +61,7 @@ import { toLibraryScriptType } from "@/app/types/video-generation"
 import { BrollPicker } from "../components/BrollPicker"
 import { listImageLibraryAction, type LibraryAssetRow } from "@/app/actions/marketing/image-library"
 import { TeammateExplainerCard } from "./teammate-explainer-card"
+import { DescribeVideoCard } from "./describe-video-card"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -1338,6 +1339,11 @@ export default function VideoCreatePage() {
                     app/actions/avatar-video onto the existing Director rail +
                     unified approval queue. */}
                 <TeammateExplainerCard />
+
+                {/* DESCRIBE A VIDEO (wave 81C) — any real-estate video, planned
+                    by archetype rule and commissioned through the Director
+                    rail (app/actions/custom-video). */}
+                <DescribeVideoCard />
 
                 {/* Purpose Picker */}
                 <VideoBusinessPurposePicker

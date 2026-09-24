@@ -247,8 +247,13 @@ export async function generateListingVideo(params: {
       }
     }
 
-    const { commissionVideo } = await import('@/lib/video/video-director')
-    const commission = await commissionVideo(situation, commissionOpts)
+    // Wave 81C — OWNER: "the listing videos have to be mls compliant. you can
+    // create one for mls and one for posting/ads." ONE plan, TWO cuts through
+    // the ONE Director rail (lib/video/render-cut.ts): the ads cut and, on a
+    // composition with an MLS cut, the unbranded MLS cut as its own row.
+    const { commissionListingCuts } = await import('@/lib/video/video-director')
+    const cuts = await commissionListingCuts(situation, commissionOpts)
+    const commission = cuts.ads
 
     if (!commission.ok) {
       return { success: false, error: commission.reason ?? 'The video could not be commissioned' }
@@ -261,6 +266,9 @@ export async function generateListingVideo(params: {
       // 'already_staged' means the walkthrough premiere (button or autonomous
       // play) exists — surfaced so the caller can say so instead of "created".
       status: commission.status,
+      mlsProjectId: cuts.mls?.videoProjectId,
+      mlsStatus: cuts.mls ? cuts.mls.status : 'no_mls_cut',
+      mlsReason: cuts.mls && !cuts.mls.ok ? cuts.mls.reason : undefined,
     }
   } catch (error) {
     console.error('Generate listing video error:', error)

@@ -41,6 +41,7 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } 
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { fitBodyVisualPlan, panelWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { SegmentBackdrop } from "./components/SegmentBackdrop"
 // The ONE thirds split (§6) — shared with MarketUpdateReel, not a second copy.
 import { thirdsPanelSplit } from "../lib/video/pip-panel-split"
 import { SafeImg } from "./components/SafeImg"
@@ -344,6 +345,8 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       {/* STAT 1 — estimated current value + the basis bars. */}
       <Sequence from={COVER + panels[0].from} durationInFrames={panels[0].durationInFrames}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
+          {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
+          <SegmentBackdrop plan={plan} primaryColor={brandColors.primaryColor} accentColor={brandColors.accentColor} frameOffset={COVER + panels[0].from} />
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
           <AvatarPIP {...pipFor(panels[0])} />
           <div style={{
@@ -373,6 +376,8 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
       {/* STAT 2 — appreciation since purchase (honest about negative). */}
       <Sequence from={COVER + panels[1].from} durationInFrames={panels[1].durationInFrames}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
+          {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
+          <SegmentBackdrop plan={plan} primaryColor={brandColors.primaryColor} accentColor={brandColors.accentColor} frameOffset={COVER + panels[1].from} />
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
           <AvatarPIP {...pipFor(panels[1])} />
           <StatCard
@@ -391,6 +396,8 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
           thirdsPanelSplit), so no endFrame override is needed. */}
       <Sequence from={COVER + panels[2].from} durationInFrames={panels[2].durationInFrames}>
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
+          {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
+          <SegmentBackdrop plan={plan} primaryColor={brandColors.primaryColor} accentColor={brandColors.accentColor} frameOffset={COVER + panels[2].from} />
           <SceneChip label={chip} accentColor={brandColors.accentColor} />
           <AvatarPIP {...pipFor(panels[2])} />
           {mode === "value_minus_balance" && estimatedEquity != null ? (

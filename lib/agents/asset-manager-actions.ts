@@ -465,8 +465,26 @@ async function runHandler(
       const kind = String(input.kind ?? "")
       const targetChannel = String(input.target_channel ?? "instagram")
       const agentUserId = (input.agent_user_id as string | null) ?? null
-      if (!VALID_KINDS.has(kind)) return { status: "failed", result: { error: "valid kind required", kind } }
       if (!agentUserId) return { status: "failed", result: { error: "agent_user_id required" } }
+
+      // Wave 81C — ANY TYPE OF VIDEO, autonomously: a manager may commission a
+      // DESCRIBED video through the SAME door the studio's "Describe a video"
+      // card uses (commissionCustomVideo → the archetype rule → the Director
+      // rail). input.brief is the CustomVideoBrief; an unplannable brief is a
+      // refusal with the reason, never a silent default kind.
+      if (kind === "custom") {
+        const brief = input.brief as import("@/lib/video/custom-video-archetypes").CustomVideoBrief | undefined
+        if (!brief || typeof brief !== "object" || typeof brief.goal !== "string") return { status: "failed", result: { error: "custom kind requires input.brief (CustomVideoBrief: audience, goal, host, assets)" } }
+        const { commissionCustomVideo } = await import("@/lib/video/video-director")
+        const c = await commissionCustomVideo(brief, {
+          brokerageId, agentUserId,
+          listingId: (input.listing_id as string | null) ?? null, contactId: (input.contact_id as string | null) ?? null,
+          targetChannel: targetChannel as Parameters<typeof commissionCustomVideo>[1]["targetChannel"],
+        })
+        if (!c.ok) return { status: c.status === "already_staged" ? "skipped" : "failed", result: { error: c.reason, status: c.status, violations: c.violations } }
+        return { status: "succeeded", result: { video_project_id: c.videoProjectId, composition_id: c.compositionId, archetype: c.plan?.archetype, purpose: c.plan?.purpose, mls_video_project_id: c.mls?.videoProjectId ?? null, note: "Planned by archetype rule (lib/video/custom-video-archetypes.ts) and staged through the Director; the composition-render cron drains it." } }
+      }
+      if (!VALID_KINDS.has(kind)) return { status: "failed", result: { error: "valid kind required", kind } }
 
       const { commissionVideo } = await import("@/lib/video/video-director")
       const r = await commissionVideo(

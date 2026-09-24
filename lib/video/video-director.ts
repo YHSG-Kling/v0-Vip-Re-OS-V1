@@ -63,6 +63,14 @@ import { recommendFormatAdjustment, type ScoredFormats } from "@/lib/video/forma
 import { finishForVideo } from "@/lib/video/finish-spec"
 import { COMPOSITION_DURATION_RULES, compositionPurposes, type VideoPurpose } from "@/lib/video/duration-model"
 import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+// Wave 81C — THE CUT DIMENSION (lib/video/render-cut.ts): one plan, two
+// renders. `mlsClean` stays the flag the compositions read; `cut` derives it.
+import {
+  CUT_USAGE_INTENT, assertMlsCutClean, compositionHasMlsCut, cutDiscriminator, cutsForComposition, finishForCut, mlsCutProps,
+  type RenderCut,
+} from "@/lib/video/render-cut"
+// Wave 81C — ANY TYPE OF VIDEO: a described video planned by archetype rule.
+import { planCustomVideo, type CustomVideoBrief, type CustomVideoPlan } from "@/lib/video/custom-video-archetypes"
 
 // ============================================================================
 // SITUATION + FORMAT CONTRACTS (pure)
@@ -95,6 +103,12 @@ export type SituationKind =
   // Distinct kind rather than a flag on "explainer" because the treatment differs at every
   // layer (no avatar, charts on, no b-roll) — the same reason lead_intro is its own kind.
   | "concept_animation"
+  // Wave 81C — ANY TYPE OF VIDEO (owner: "not just the ones we listed"). A
+  // DESCRIBED video: situation.facts.customPlan carries the CustomVideoPlan
+  // that lib/video/custom-video-archetypes.ts derived by rule (archetype →
+  // base purpose → band + body-visual rule → registered composition). The
+  // selector reads the plan; a custom situation with no plan FAILS LOUDLY.
+  | "custom"
 
 export type CompositionTierLite =
   | "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
@@ -340,7 +354,31 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
         aspect: "square",
         targetChannels: socialFeed,
       }
+
+    case "custom": {
+      // Wave 81C — the format comes from the PLAN the archetype rule derived
+      // (lib/video/custom-video-archetypes.ts planCustomVideo), never from a
+      // hand table here. No plan → no format: fail loudly rather than pick.
+      const plan = customPlanOf(situation)
+      if (!plan) throw new Error("custom situation has no facts.customPlan — plan it first with planCustomVideo (lib/video/custom-video-archetypes.ts)")
+      const verdict = plan.rule.broll.verdict
+      return {
+        compositionId: plan.compositionId,
+        needsAvatar: plan.host === "avatar",
+        needsBroll: verdict === "needed" || verdict === "optional",
+        needsCharts: plan.rule.required.includes("chart"),
+        needsSlides: false,
+        aspect: aspectForChannel(targetChannel),
+        targetChannels: [targetChannel],
+      }
+    }
   }
+}
+
+/** The CustomVideoPlan a custom situation carries (facts.customPlan), or null. */
+function customPlanOf(situation: VideoSituation): CustomVideoPlan | null {
+  const p = situation.facts?.customPlan
+  return p && typeof p === "object" && typeof (p as CustomVideoPlan).compositionId === "string" ? (p as CustomVideoPlan) : null
 }
 
 // ============================================================================
@@ -482,6 +520,7 @@ export function musicMoodForSituation(kind: SituationKind): MusicMood {
     case "explainer":
     case "concept_animation":  // teaching cut — music must never fight the narration
     case "lead_intro":    return "calm"
+    case "custom":        return "calm" // a described video: the bed must never fight whatever it says
     case "cma":
     case "presentation":  return "none"
   }
@@ -562,6 +601,7 @@ export function defaultHookForSituation(kind: SituationKind): string {
     case "testimonial":   return "What Clients Say"
     case "neighborhood":  return "Inside The Neighborhood"
     case "lead_intro":    return "A Quick Hello"
+    case "custom":        return "A Word From Your Agent"
   }
 }
 
@@ -724,16 +764,20 @@ type AnyClient = ReturnType<typeof createServiceClient>
  * default and the composition is registered to serve it; null otherwise (the
  * default stands, nothing is staged).
  */
-export function videoPurposeForSituation(kind: SituationKind, compositionId: string): VideoPurpose | null {
-  const wanted: VideoPurpose | null = kind === "lead_intro" ? "lead_reel" : null
+export function videoPurposeForSituation(kind: SituationKind, compositionId: string, customPurpose?: VideoPurpose | null): VideoPurpose | null {
+  // Wave 81C — a custom situation's purpose is the archetype's base purpose
+  // (facts.customPlan.purpose), staged only when the composition alsoServes it.
+  const wanted: VideoPurpose | null = kind === "lead_intro" ? "lead_reel" : kind === "custom" ? (customPurpose ?? null) : null
   if (!wanted) return null
   const served = compositionPurposes(compositionId)
   const spec = COMPOSITION_DURATION_RULES[compositionId]
   return spec && spec.purpose !== wanted && served.includes(wanted) ? wanted : null
 }
 
-function videoTypeForSituation(kind: SituationKind): string {
+function videoTypeForSituation(kind: SituationKind, situation?: VideoSituation): string {
   switch (kind) {
+    // Wave 81C — the archetype names the storable CHECK value (no new literal).
+    case "custom":        return (situation && customPlanOf(situation)?.videoType) ?? "social_reel"
     case "new_listing":   return "just_listed"
     case "price_drop":    return "listing_promo"
     case "just_sold":     return "just_sold"
@@ -862,8 +906,18 @@ export interface CommissionOpts {
    *  moment — a home anniversary). Fair-Housing-safe, no fabrication; appended to
    *  the situation facts. Omitted → situation facts only (unchanged behavior). */
   extraFacts?: string[]
-  /** MLS-clean cut → the outro carries NO agent QR (mirrors QrOutroBadge). */
+  /** MLS-clean cut → the outro carries NO agent QR (mirrors QrOutroBadge).
+   *  Wave 81C: DERIVED from `cut` when that is given; kept for the callers
+   *  that already pass it (§6 — `mlsClean` is the render flag, `cut` the intent). */
   mlsClean?: boolean
+  /**
+   * Wave 81C — THE CUT (lib/video/render-cut.ts). "ads" (default) is the
+   * posting / ads render with full branding; "mls" is the MLS render of the
+   * SAME plan with every branded element stripped, the fair-housing scan
+   * required, usage_intent 'mls', its own idempotency row. Refused on a
+   * composition with no MLS cut (compositionHasMlsCut).
+   */
+  cut?: RenderCut
   /**
    * SELF-IMPROVING seam — now ON BY DEFAULT so every Director commission consults the
    * brokerage's REAL video outcomes (qr_scan_events + social engagement). It stays
@@ -974,7 +1028,20 @@ export async function commissionVideo(
   // runtime, so the QR was minted for compositions the spec says carry none
   // (TeammateExplainerReel bakes its own; internal report shows skip it) and a
   // music mood was staged for narrated slide decks the spec keeps silent.
-  const finish = finishForVideo(format.compositionId)
+  // Wave 81C — THE CUT. The finish is refined by the cut (the MLS cut drops
+  // the brand bookends, the tracked QR and the branded share card; keeps the
+  // licensed music bed, the captions and the b-roll). A composition with no
+  // MLS cut refuses one BEFORE any spend — registry-derived, never a list.
+  const cut: RenderCut = opts.cut ?? "ads"
+  if (cut === "mls" && !compositionHasMlsCut(format.compositionId)) {
+    return {
+      ok: false, status: "blocked", compositionId: format.compositionId,
+      reason: `${format.compositionId} has no MLS cut — only presenter-less property compositions (lib/video/render-cut.ts compositionHasMlsCut) render one`,
+      violations: ["mls_cut_unavailable"],
+    }
+  }
+  const mlsClean = cut === "mls" || (opts.mlsClean ?? false)
+  const finish = finishForCut(finishForVideo(format.compositionId), cut)
 
   // 2. Read the composition's capabilities from the registry (source of truth).
   //    When the row is absent (e.g. EquityReportReel mid-registration by the
@@ -1025,7 +1092,8 @@ export async function commissionVideo(
   //    campaign, then the brokerage. Stamped into video_metadata.director_key so a
   //    re-run for the same situation reuses the staged row instead of duplicating.
   const entity = opts.listingId ?? opts.contactId ?? opts.leadId ?? opts.campaignId ?? opts.brokerageId
-  const directorKey = `director:${situation.kind}:${entity}${opts.idempotencyDiscriminator ? `:${opts.idempotencyDiscriminator}` : ""}`
+  // The MLS cut is its OWN row (cut:mls) beside the ads cut of the same plan.
+  const directorKey = `director:${situation.kind}:${entity}${opts.idempotencyDiscriminator ? `:${opts.idempotencyDiscriminator}` : ""}${cut === "mls" ? `:${cutDiscriminator(cut)}` : ""}`
 
   const { data: existing } = await svc
     .from("ai_video_projects")
@@ -1047,7 +1115,7 @@ export async function commissionVideo(
   //    compositions whose finish spec carries no QR — minting one there filed a
   //    qr_codes row the reel never rendered.
   let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
-  if (!opts.mlsClean && finish.qr) {
+  if (!mlsClean && finish.qr) {
     try {
       const { mintVideoQr } = await import("@/lib/video/video-qr")
       qr = await mintVideoQr({
@@ -1181,7 +1249,7 @@ export async function commissionVideo(
     qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
     qrDestinationType: qr?.destinationType ?? null,
     qrSlug: qr?.slug ?? null,
-    mlsClean: opts.mlsClean ?? false,
+    mlsClean,
   }
 
   // The effective music mood: the learned override when the gate fired, else the
@@ -1190,6 +1258,9 @@ export async function commissionVideo(
 
   const videoMetadata = {
     director_key: directorKey,
+    // Wave 81C — which cut this row IS (lib/video/render-cut.ts); the ads and
+    // MLS rows of one plan share director_key up to the cut discriminator.
+    render_cut: cut,
     // The situation that produced this reel — stamped so the autonomous repurpose loop can
     // replay it for platform-short VARIANTS (same kind/tier/entity, a different target channel).
     situation: { kind: situation.kind, tier: situation.tier, target_channel: situation.targetChannel },
@@ -1340,10 +1411,27 @@ export async function commissionVideo(
   const { stageBodyVisualPlan, gateVisualPlanForDispatch, assetsFromProps, bodyVisualStamp } = await import("@/lib/video/body-visual-model")
   const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
   const visualOverrides = await loadBodyVisualRuleOverrides(opts.brokerageId, svc)
-  const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId)
+  const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId, customPlanOf(situation)?.purpose ?? null)
   const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
     .map((k) => (contentProps as Record<string, unknown>)[k])
     .find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? hookLine
+  // Wave 81C — THE MLS CUT REQUIRES THE FAIR-HOUSING SCAN TO PASS. The ads cut
+  // already rides the compliance-first author + evaluateOutbound on the hook;
+  // the MLS cut is syndicated listing content (NAR 7.9), so the narration it
+  // speaks and captions is scanned here and a RED FLAG blocks the row — the
+  // same detector the studio's post-check uses (lib/video/script-compliance.ts),
+  // never a second spelling.
+  if (cut === "mls") {
+    const { detectFairHousingRedFlags } = await import("@/lib/video/script-compliance")
+    const redFlags = detectFairHousingRedFlags(narrationForVisual, "seller")
+    if (redFlags.length > 0) {
+      return {
+        ok: false, status: "blocked", compositionId: format.compositionId,
+        reason: `the MLS cut's narration failed the fair-housing scan: ${redFlags.join("; ")}`,
+        violations: ["mls_cut_fair_housing", ...redFlags],
+      }
+    }
+  }
   // The Director's b-roll comes from the stock library (pickBrollClips) — the
   // verdict-aware planner needs to know it is not the home's own media.
   const visualProps: Record<string, unknown> = {
@@ -1378,7 +1466,9 @@ export async function commissionVideo(
     }
   }
 
-  const providerMetadata = {
+  // The ads cut's props — the ONE plan. The MLS cut is DERIVED from these
+  // below (mlsCutProps), never staged from a second resolver.
+  const providerMetadataAds = {
     composition_id: format.compositionId,
     // music_mood rides input_props so buildRenderIntent threads it to the
     // coordinator's mood-matched music pick. brollClips rides input_props so the
@@ -1405,10 +1495,28 @@ export async function commissionVideo(
       // render on a Director-commissioned reel (the nested outro alone never reached the badge).
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption: qrCaptionForSituation(situation.kind),
-      mlsClean: opts.mlsClean ?? false,
+      mlsClean,
+      renderCut: cut,
       music_mood: finish.music ? effectiveMood : null,
       ...(format.needsBroll ? { brollClips, brollSource: "stock" } : {}),
     },
+  }
+  // Wave 81C — THE MLS CUT: the same props with every branded element
+  // stripped (lib/video/render-cut.ts MLS_CUT_STRIP), then PROVEN clean before
+  // the row exists. A branded element that survives the strip is a bug in the
+  // strip list, and it blocks — it never reaches the MLS field.
+  let providerMetadata: Record<string, unknown> = providerMetadataAds
+  if (cut === "mls") {
+    const derived = mlsCutProps(providerMetadataAds.input_props as Record<string, unknown>)
+    const clean = assertMlsCutClean(derived.props)
+    if (!clean.ok) {
+      return {
+        ok: false, status: "blocked", compositionId: format.compositionId,
+        reason: clean.reason,
+        violations: ["mls_cut_branded", ...clean.found],
+      }
+    }
+    providerMetadata = { ...providerMetadataAds, input_props: derived.props, render_cut: cut, mls_stripped: derived.stripped }
   }
 
   // 7. STAGE the row — mirrors createVideoProject's shape, compliance-gated,
@@ -1425,9 +1533,13 @@ export async function commissionVideo(
       title: opts.title ?? `${hookLine} — ${format.compositionId}`,
       script_content: hookLine,
       status: "queued",
-      video_type: videoTypeForSituation(situation.kind),
+      video_type: videoTypeForSituation(situation.kind, situation),
       format: formatForAspect(format.aspect),
       audience_type: audienceType,
+      // Wave 81C — the cut names the intent (scripts/check-vocabularies.ts:
+      // mls | public_marketing); verbal-disclosure.ts and brand-compliance.ts
+      // read this column to leave the MLS cut unattributed and to expect it so.
+      usage_intent: CUT_USAGE_INTENT[cut],
       is_ai_generated: true,
       approval_status: "pending_review", // gated — a human approves before send
       compliance_status: "passed",       // hook pre-cleared the gate above
@@ -1441,7 +1553,7 @@ export async function commissionVideo(
       outro_video_url: null,
       b_roll_urls: format.needsBroll ? brollClips.map((c) => c.url) : null,
       // Wave 80C — the audit stamp the learning loop reads back (format-learning.ts).
-      video_metadata: { ...videoMetadata, body_visual: bodyVisualStamp(visual.plan) },
+      video_metadata: { ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan) },
       provider_metadata: providerMetadata,
       created_at: now,
       updated_at: now,
@@ -1591,6 +1703,11 @@ export async function commissionVideoExperiment(
 ): Promise<CommissionExperimentResult> {
   if (!opts.brokerageId || !opts.agentUserId) {
     return { ok: false, status: "failed", reason: "brokerageId + agentUserId required" }
+  }
+  // Wave 81C — a hook A/B is a POSTING experiment; the MLS cut has no hook
+  // (the opening is the address) so it is never a variant. Refuse, never ignore.
+  if (opts.cut === "mls") {
+    return { ok: false, status: "blocked", reason: "the MLS cut is not an A/B variant — commission it through commissionListingCuts (ads + mls of one plan)" }
   }
 
   const { createServiceClient } = await import("@/lib/supabase/service")
@@ -1906,4 +2023,103 @@ export async function commissionVideoExperiment(
   }
 
   return { ok: true, status: "staged", experimentId, compositionId: format.compositionId, variants: staged }
+}
+
+// ============================================================================
+// WAVE 81C — ONE PLAN, TWO CUTS (listing videos) + THE "DESCRIBE A VIDEO" DOOR
+// ============================================================================
+
+export interface ListingCutsResult {
+  ok: boolean
+  /** The posting / ads cut (always attempted). */
+  ads: CommissionResult
+  /** The MLS cut — null when the composition has none (compositionHasMlsCut). */
+  mls: CommissionResult | null
+  compositionId?: string
+  /** The cuts the composition renders, from the registry. */
+  cuts: RenderCut[]
+}
+
+/**
+ * commissionListingCuts — OWNER (2026-09-24): "the listing videos have to be
+ * mls compliant. you can create one for mls and one for posting/ads."
+ *
+ * ONE call, TWO rows of ONE plan: the ads cut first (full branding), then the
+ * MLS cut of the same situation when the selected composition has one
+ * (lib/video/render-cut.ts — presenter-less property compositions whose
+ * content contract needs no branded key). The MLS cut carries its own
+ * idempotency discriminator, usage_intent 'mls', the strip proven clean and
+ * the fair-housing scan passed — all inside commissionVideo, so a caller that
+ * only ever wanted the ads cut is byte-identical to before. `ok` is the ADS
+ * cut's verdict; an MLS refusal is reported beside it, never hidden.
+ */
+export async function commissionListingCuts(
+  situation: VideoSituation,
+  opts: Omit<CommissionOpts, "cut" | "mlsClean">,
+  client?: AnyClient,
+): Promise<ListingCutsResult> {
+  const ads = await commissionVideo(situation, { ...opts, cut: "ads" }, client)
+  const compositionId = ads.compositionId ?? selectVideoFormat(situation).compositionId
+  const cuts = cutsForComposition(compositionId)
+  if (!cuts.includes("mls")) return { ok: ads.ok, ads, mls: null, compositionId, cuts }
+  const mls = await commissionVideo(situation, { ...opts, cut: "mls" }, client)
+  return { ok: ads.ok, ads, mls, compositionId, cuts }
+}
+
+export interface CustomVideoCommissionOpts extends Omit<CommissionOpts, "cut" | "mlsClean" | "idempotencyDiscriminator"> {
+  tier?: CompositionTierLite
+  targetChannel?: TargetChannel
+}
+
+export interface CustomVideoCommissionResult extends CommissionResult {
+  plan?: CustomVideoPlan
+  /** The MLS cut, when the plan named a listing and the composition has one. */
+  mls?: CommissionResult | null
+}
+
+/**
+ * commissionCustomVideo — THE "DESCRIBE A VIDEO" DOOR (owner: "make sure user
+ * can create any type of video to use with real estate not just the ones we
+ * listed"). A person in the studio or an AI manager hands in a CustomVideoBrief;
+ * the archetype rule (lib/video/custom-video-archetypes.ts) derives the
+ * purpose band, the body-visual rule and the composition; a brief that maps
+ * to no archetype is REFUSED with the reason. The commission then rides the
+ * ONE Director rail (hook gate, content contract, plan-before-send gate,
+ * pending_review) exactly like every listed kind — and, when the brief names
+ * a listing and the composition has an MLS cut, the MLS cut too.
+ */
+export async function commissionCustomVideo(
+  brief: CustomVideoBrief,
+  opts: CustomVideoCommissionOpts,
+  client?: AnyClient,
+): Promise<CustomVideoCommissionResult> {
+  if (!opts.brokerageId || !opts.agentUserId) {
+    return { ok: false, status: "failed", reason: "brokerageId + agentUserId required" }
+  }
+  let overrides: import("@/lib/video/body-visual-model").BodyVisualRuleOverride[] | null = null
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
+    overrides = await loadBodyVisualRuleOverrides(opts.brokerageId, client ?? createServiceClient())
+  } catch { overrides = null }
+  const planned = planCustomVideo(brief, { overrides })
+  if (!planned.ok) {
+    return { ok: false, status: "blocked", reason: planned.reason, violations: ["custom_video_unplanned"] }
+  }
+  const plan = planned.plan
+  const situation: VideoSituation = {
+    kind: "custom",
+    tier: opts.tier ?? "solo_agent",
+    targetChannel: opts.targetChannel ?? "instagram",
+    facts: { customPlan: plan, goal: brief.goal, audience: brief.audience, ...(brief.content ?? {}) },
+  }
+  const { tier: _t, targetChannel: _c, ...rest } = opts
+  void _t; void _c
+  const base: CommissionOpts = { ...rest, listingId: brief.listingId ?? rest.listingId ?? null, idempotencyDiscriminator: plan.key }
+  const ads = await commissionVideo(situation, { ...base, cut: "ads" }, client)
+  let mls: CommissionResult | null = null
+  if (ads.ok && plan.cuts.includes("mls")) {
+    mls = await commissionVideo(situation, { ...base, cut: "mls" }, client)
+  }
+  return { ...ads, plan, mls }
 }
