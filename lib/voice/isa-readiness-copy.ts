@@ -21,6 +21,14 @@ export interface IsaCallingReadiness {
   reason: string | null
   ctaLabel: string | null
   ctaHref: string | null
+  /** The pre-dial gate stack EVERY AI call passes, in the order it runs —
+   *  lib/voice/outbound-call-gates.ts::OUTBOUND_CALL_GATE_ORDER, read (never
+   *  re-spelled) so the readiness surface shows the same order the executor
+   *  enforces (lane 81E, 2026-09-24). Readiness says "can this brokerage
+   *  call?"; the stack says what still stands between a ready line and one
+   *  particular person — the per-contact refusals readiness deliberately
+   *  does not report. */
+  dialGates: readonly string[]
 }
 
 /**
@@ -28,7 +36,7 @@ export interface IsaCallingReadiness {
  * these strings are what an agent acts on, and the previous ones sent them to
  * configure a vendor that no longer exists.
  */
-export function describeIsaBlocker(blocker: IsaBlocker): Omit<IsaCallingReadiness, "canPlaceAiCalls" | "blocker"> {
+export function describeIsaBlocker(blocker: IsaBlocker): Omit<IsaCallingReadiness, "canPlaceAiCalls" | "blocker" | "dialGates"> {
   switch (blocker) {
     case "no_brokerage":
       return {

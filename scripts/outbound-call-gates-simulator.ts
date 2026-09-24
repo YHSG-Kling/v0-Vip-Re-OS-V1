@@ -101,6 +101,14 @@ console.log("\n═══ 1. There is ONE gate stack, and it is a value ═══
   for (const key of ["autonomy", "suppression", "tcpa", "deconflict", "vendor_budget"] as const) {
     check(`the stack carries the '${key}' gate`, OUTBOUND_CALL_GATE_ORDER.includes(key))
   }
+
+  // The declared order has a RUNTIME reader (lane 81E): the ISA readiness
+  // surface renders it, read from this list rather than re-spelled.
+  const readiness = code("lib/voice/isa-readiness.ts")
+  check("OUTBOUND_CALL_GATE_ORDER is read by the readiness resolver (IsaCallingReadiness.dialGates), not re-spelled there",
+    /OUTBOUND_CALL_GATE_ORDER/.test(readiness) && /dialGates: OUTBOUND_CALL_GATE_ORDER/.test(readiness))
+  check("…and /dashboard/voice/isa renders dialGates in order",
+    /callingReadiness\.dialGates\.map\(/.test(code("app/dashboard/voice/isa/page.tsx")))
 }
 
 console.log("\n═══ 2. Cheap consumer-protection refusals before the money ═══")

@@ -18,6 +18,7 @@ import { checkStripeWebhookEventsAction, registerStripeWebhookEventsAction } fro
 import type { GoLiveReadiness } from "@/lib/platform/go-live-readiness"
 import type { LaunchChecklist } from "@/lib/platform/launch-checklist"
 import type { StripeWebhookRegistrationResult } from "@/lib/billing/stripe-webhook-registration"
+import type { StripeWebhookEndpoint } from "@/lib/billing/stripe-account-scope"
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   ready: { label: "Ready", variant: "default" },
@@ -173,7 +174,8 @@ export function LaunchChecklistCard({ checklist }: { checklist: LaunchChecklist 
               <li key={d.key} className="text-xs">
                 <span className="font-medium">{d.capability}</span>
                 <span className="text-muted-foreground"> — {d.whatDrifts}</span>
-                {d.key === "stripe_webhook_events" && <StripeWebhookEventsDrift />}
+                {d.key === "stripe_webhook_events" && <StripeWebhookEventsDrift endpoint="tenant_billing" />}
+                {d.key === "stripe_vendor_webhook_events" && <StripeWebhookEventsDrift endpoint="vendor_marketplace" />}
               </li>
             ))}
           </ul>
@@ -189,13 +191,16 @@ export function LaunchChecklistCard({ checklist }: { checklist: LaunchChecklist 
  * list the platform account's endpoint for /api/billing/webhook and diff its
  * enabled_events against what the route handles; Register = write the UNION
  * through stripe.webhookEndpoints.update. Publishes nothing else in Stripe.
+ * `endpoint` names WHICH of the platform account's two endpoints (lane 81E
+ * added the vendor marketplace one; its vocabulary is derived from the route's
+ * two data maps — lib/vendors/vendor-webhook-events.ts).
  */
-function StripeWebhookEventsDrift() {
+function StripeWebhookEventsDrift({ endpoint }: { endpoint: StripeWebhookEndpoint }) {
   const [busy, setBusy] = useState<"check" | "register" | null>(null)
   const [r, setR] = useState<StripeWebhookRegistrationResult | { ok: false; reason: "forbidden"; error: string } | null>(null)
   const run = async (mode: "check" | "register") => {
     setBusy(mode)
-    setR(mode === "check" ? await checkStripeWebhookEventsAction() : await registerStripeWebhookEventsAction())
+    setR(mode === "check" ? await checkStripeWebhookEventsAction(endpoint) : await registerStripeWebhookEventsAction(endpoint))
     setBusy(null)
   }
   const read = r && r.ok ? r : null

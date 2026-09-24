@@ -490,6 +490,32 @@ function layerSource() {
   check("…and a refused paid-door read refuses rather than serving a short list as the whole answer",
     /paid-door contact read failed/.test(raw(ACTION)))
 
+  // DOOR 2 HAS A WRITER (lane 81E, 2026-09-24). vendors.access_level had three
+  // readers and no writer under app/ + lib/ — the paid door could only be
+  // opened by hand in the database. The writer admits a level by MEMBERSHIP in
+  // the CHECK roster, refuses a level no gate reads, counts its UPDATE, audits.
+  check("vendors.access_level HAS a writer: setVendorAccessLevelAction is exported from the contact-access action",
+    /export async function setVendorAccessLevelAction\(/.test(action))
+  check("…it admits the level by membership in VENDOR_ACCESS_LEVELS (the CHECK) before touching the row",
+    /VENDOR_ACCESS_LEVELS as readonly string\[\]\)\.includes\(input\.accessLevel\)/.test(action))
+  check("…and refuses a level no gate reads (GATED_VENDOR_ACCESS_LEVELS) by name rather than storing a promise",
+    /GATED_VENDOR_ACCESS_LEVELS\.includes\(accessLevel\)/.test(action) && /no access gate reads it/.test(raw(ACTION)))
+  check("…the UPDATE is tenant-scoped and COUNTED (an update matching nothing resolves as success)",
+    /\.update\(\{ access_level: accessLevel[\s\S]{0,200}\.eq\("brokerage_id", auth\.brokerageId\)[\s\S]{0,40}\.select\("id"\)/.test(action)
+    && /\(updated\?\.length \?\? 0\) === 0/.test(action))
+  check("…opening/closing the bench-wide door is audited with before/after",
+    /vendor_contact_access\.bench_wide_opened/.test(action) && /vendor_contact_access\.bench_wide_closed/.test(action))
+  check("…and the same roster that may REVOKE may move the door (never an agent)",
+    /setVendorAccessLevelAction[\s\S]{0,400}requireBrokerageMember\(REVOKE_ALLOWED_ROLES\)/.test(action))
+  const panel = src("app/dashboard/vendors/vendor-access-panel.tsx")
+  check("the vendor access panel is the human door onto the writer (no orphan action) and offers ONLY the gated levels",
+    /setVendorAccessLevelAction\(\{ vendorId, accessLevel/.test(panel) && /GATED_VENDOR_ACCESS_LEVELS\.map\(/.test(panel))
+  const gateSrc = src(GATE)
+  check("GATED_VENDOR_ACCESS_LEVELS ⊂ VENDOR_ACCESS_LEVELS and names the paid door, never team_full_access (no gate reads it)",
+    /GATED_VENDOR_ACCESS_LEVELS: readonly VendorAccessLevel\[\] = \["transaction_only", PAID_CONTACT_ACCESS_LEVEL\]/.test(gateSrc))
+  check("POSITIVE CONTROL: the writer finder would go red on the old file (no setVendorAccessLevelAction)",
+    !/export async function setVendorAccessLevelAction\(/.test(action.replace(/setVendorAccessLevelAction/g, "x")))
+
   const gate = src(GATE)
   check("the access gate filters revoked/expired IN THE RULE, where it can be tested",
     /a\.status !== "active"/.test(gate) && /Date\.parse\(a\.expires_at\)/.test(gate))

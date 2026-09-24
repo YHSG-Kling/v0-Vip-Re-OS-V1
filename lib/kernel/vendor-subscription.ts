@@ -108,6 +108,27 @@ export function tierAllows(tier: string | null | undefined, status: string | nul
  * should be suspended. Payment failure → past_due (features off, listing kept); cancellation/unpaid →
  * canceled + suspend the account. The webhook applies this; nothing else interprets Stripe events.
  */
+/**
+ * THE SUBSCRIPTION-LANE EVENT VOCABULARY of the vendor marketplace webhook —
+ * every Stripe event type mapStripeEventToStatus is written to receive: its
+ * five `case` labels plus customer.subscription.updated, which carries no
+ * short-circuit and resolves through normalizeStripeStatus on the object's
+ * own status (app/api/webhooks/stripe/vendor/route.ts header names all six).
+ * Frozen and read by lib/vendors/vendor-webhook-events.ts, which unions it
+ * with the payout-completion map so the SDK registration
+ * (lib/billing/stripe-webhook-registration.ts) can enable exactly what the
+ * endpoint handles — one vocabulary, derived, never re-typed (lane 81E).
+ * scripts/stripe-webhook-events-guard.ts holds the switch's labels ⊆ this list.
+ */
+export const VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS: readonly string[] = Object.freeze([
+  "checkout.session.completed",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.payment_succeeded",
+  "invoice.payment_failed",
+])
+
 export function mapStripeEventToStatus(eventType: string, stripeStatus?: string | null): { status: SubscriptionStatus; suspendAccount: boolean } {
   // Event-shaped short-circuits, then the SHARED canonical status normalizer so the
   // vendor path can't drift from the tenant path's Stripe-status vocabulary.

@@ -133,7 +133,9 @@ export default async function VendorsPage({
       // directory reads it so the bench itself distinguishes insured / expiring
       // / lapsed / never-checked — before an agent refers the vendor to a client,
       // not the morning after the nightly sweep suspends them.
-      .select("id, name, phone, email, website, category, notes, rating, brokerage_id, preferred, display_priority, visible_in_portal, compliance_credentials")
+      // access_level: DOOR 2 (bench-wide contact access) — read here so the
+      // access panel can show and change it (lane 81E built the writer).
+      .select("id, name, phone, email, website, category, notes, rating, brokerage_id, preferred, display_priority, visible_in_portal, compliance_credentials, access_level")
       .eq("brokerage_id", profile.brokerage_id)
       .order("display_priority", { ascending: false })
       .order("rating", { ascending: false, nullsFirst: false })
@@ -268,6 +270,8 @@ export default async function VendorsPage({
   const vendorOptions = (preferredVendors ?? []).map((v: any) => ({
     id: v.id as string,
     name: (v.name as string) ?? "Unnamed vendor",
+    // null = never set; the panel renders it as the assignment-only default.
+    accessLevel: (v.access_level as string | null) ?? null,
   }))
   const canRevokeAccess = isAdminOrBroker({ user_type: profile.user_type ?? "" })
 

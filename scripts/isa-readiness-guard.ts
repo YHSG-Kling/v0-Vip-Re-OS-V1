@@ -87,6 +87,22 @@ console.log("\n═══ 3. Readiness mirrors the gates the executor really enfo
     !/tcpa|enforceTCPACompliance|checkVendorBudget/i.test(helper))
 }
 
+console.log("\n═══ 3b. The surface shows the pre-dial order the executor runs (lane 81E) ═══")
+{
+  const helper = code("lib/voice/isa-readiness.ts")
+  const copy = code("lib/voice/isa-readiness-copy.ts")
+  const page = code("app/dashboard/voice/isa/page.tsx")
+  ok("readiness carries dialGates READ from OUTBOUND_CALL_GATE_ORDER — never a hand-typed copy of the stack",
+    /import \{ OUTBOUND_CALL_GATE_ORDER \} from "\.\/outbound-call-gates"/.test(helper) && /dialGates: OUTBOUND_CALL_GATE_ORDER/.test(helper)
+    && /dialGates: readonly string\[\]/.test(copy))
+  ok("…and no readiness module re-spells a gate key as a literal list",
+    !/\["autonomy"|"vendor_budget"\]/.test(helper) && !/\["autonomy"|"vendor_budget"\]/.test(copy))
+  ok("/dashboard/voice/isa renders the order (dialGates joined with →) beside the readiness answer",
+    /callingReadiness\.dialGates\.map\(/.test(page) && /join\(" → "\)/.test(page))
+  ok("POSITIVE CONTROL: the re-spelling finder sees a hand-typed stack",
+    /\["autonomy"|"vendor_budget"\]/.test('const dialGates = ["autonomy", "tcpa", "vendor_budget"]'))
+}
+
 console.log("\n═══ 4. An unknown answer fails OPEN, not into a false alarm ═══")
 {
   const helper = code("lib/voice/isa-readiness.ts")

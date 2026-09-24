@@ -44,6 +44,9 @@ export type { IsaBlocker, IsaCallingReadiness } from "./isa-readiness-copy"
 
 import { describeIsaBlocker } from "./isa-readiness-copy"
 import type { IsaBlocker, IsaCallingReadiness } from "./isa-readiness-copy"
+// The declared pre-dial order, READ from the one stack (never re-spelled here)
+// so the readiness surface can render what the executor actually runs.
+import { OUTBOUND_CALL_GATE_ORDER } from "./outbound-call-gates"
 
 type AnyClient = { from: (t: string) => any }
 
@@ -61,6 +64,7 @@ export async function resolveIsaCallingReadiness(
 ): Promise<IsaCallingReadiness> {
   const ready = (blocker: IsaBlocker): IsaCallingReadiness => ({
     canPlaceAiCalls: blocker === null, blocker, ...describeIsaBlocker(blocker),
+    dialGates: OUTBOUND_CALL_GATE_ORDER,
   })
 
   if (!brokerageId) return ready("no_brokerage")

@@ -299,8 +299,13 @@ export const OUTBOUND_CALL_GATES: readonly OutboundCallGate[] = [
   { key: "vendor_budget",       consumerProtection: false, run: runVendorBudgetGate },
 ]
 
-/** The declared order, for readiness surfaces and proofs.
- *  @proofSeam runOutboundCallGates iterates OUTBOUND_CALL_GATES itself; this key list is what scripts/outbound-call-gates-simulator.ts, conversion-finality-simulator.ts and voice-lane-simulator.ts assert (consumer-protection gates before spend, short-circuit order). Unresolved: no readiness surface renders the order yet. */
+/** The declared order, for readiness surfaces and proofs. READER (lane 81E,
+ *  2026-09-24): lib/voice/isa-readiness.ts carries it as
+ *  IsaCallingReadiness.dialGates, and /dashboard/voice/isa renders it beside
+ *  the readiness answer — so the surface shows the order the executor runs
+ *  rather than a hand-typed copy. scripts/outbound-call-gates-simulator.ts,
+ *  conversion-finality-simulator.ts and voice-lane-simulator.ts assert the
+ *  ordering property (consumer-protection gates before spend) on it. */
 export const OUTBOUND_CALL_GATE_ORDER: readonly OutboundCallGateKey[] =
   OUTBOUND_CALL_GATES.map((g) => g.key)
 

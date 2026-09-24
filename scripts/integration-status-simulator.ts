@@ -105,6 +105,28 @@ console.log("\n── the two silent fallbacks now find their integration ──
   check("it no longer asks for 'active'", !/"status", "active"/.test(showing))
 }
 
+console.log("\n── the 'error' WRITER and the health board read the one vocabulary (lane 81E) ──")
+{
+  // The provider-test route is the health writer that stamps 'error' on a
+  // failing integration. It spelled both values as literals, so a grep for the
+  // constant found no writer and the vocabulary module recorded one as missing.
+  const testRoute = src("app/api/integrations/test/[provider]/route.ts")
+  check("the provider-test route stamps connected/error through the constants",
+    /status: result\.pass \? INTEGRATION_STATUS_CONNECTED : INTEGRATION_STATUS_ERROR/.test(testRoute))
+  check("…and carries no literal status on that upsert", !/status: result\.pass \? "connected" : "error"/.test(testRoute))
+  check("POSITIVE CONTROL: the literal finder sees the retired spelling",
+    /status: result\.pass \? "connected" : "error"/.test('status: result.pass ? "connected" : "error",'))
+
+  // The cron health board compared against 'active' — a value no row can hold —
+  // so every brokerage integration it inspected scored 'degraded'.
+  const health = src("app/api/cron/health-check/route.ts")
+  check("the health board scores an integration through isIntegrationConnected",
+    /isIntegrationConnected\(integration\.status\) \? "healthy" : "degraded"/.test(health))
+  check("…and no longer asks brokerage_integrations for 'active'", !/integration\.status === "active"/.test(health))
+  check("POSITIVE CONTROL: the 'active' finder sees the defect it was written for",
+    /integration\.status === "active"/.test('status: integration.status === "active" ? "healthy" : "degraded",'))
+}
+
 console.log("\n── the inline copy of the union is gone ──")
 {
   const tech = src("app/actions/onboarding/tech-stack.ts")

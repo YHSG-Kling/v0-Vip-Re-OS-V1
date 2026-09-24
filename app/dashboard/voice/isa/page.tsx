@@ -279,6 +279,16 @@ export default async function VoiceISAPage() {
         </div>
       )}
 
+      {/* THE PRE-DIAL STACK, in the order the executor runs it (readiness
+          carries OUTBOUND_CALL_GATE_ORDER — never a hand-typed copy). A ready
+          line still refuses a particular person on any of these; naming them
+          here is what stops "AI calling is ready" from reading as "the AI
+          will call anyone". */}
+      <p className="text-xs text-muted-foreground">
+        Before any AI call dials it passes {callingReadiness.dialGates.length} gates, in order:{" "}
+        {callingReadiness.dialGates.map((g) => g.replace(/_/g, " ")).join(" → ")}. A refusal on any of them stops the call before the next runs and before a cent is spent.
+      </p>
+
       {/* Summary KPI Row — 2 columns on mobile, 4 on md+ */}
       <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
         <Card>

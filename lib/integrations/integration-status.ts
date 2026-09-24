@@ -22,6 +22,18 @@
 // The rest of the codebase already spelled it 'connected' — the OAuth callback
 // writes it, and onboarding's tech-stack surface even had the right union typed
 // inline. That union now comes from here.
+//
+// A FOURTH 'active' surface, found 2026-09-24 (lane 81E):
+//
+//   app/api/cron/health-check/route.ts   integration.status === "active"
+//                                        ? "healthy" : "degraded"
+//
+// No row can hold 'active', so the platform health board scored EVERY
+// brokerage integration it inspected as degraded. It reads through
+// isIntegrationConnected now. The provider-test route
+// (app/api/integrations/test/[provider]/route.ts) is the 'error' WRITER — it
+// spelled both values as literals, which is how the vocabulary module came to
+// record "no writer stamps 'error'" while one did.
 
 /** Every value the CHECK admits. */
 export const INTEGRATION_STATUSES = ["connected", "error", "not_configured"] as const
@@ -32,8 +44,12 @@ export type IntegrationStatus = (typeof INTEGRATION_STATUSES)[number]
 export const INTEGRATION_STATUS_CONNECTED: IntegrationStatus = "connected"
 /** Never configured, or deliberately disconnected. */
 export const INTEGRATION_STATUS_NOT_CONFIGURED: IntegrationStatus = "not_configured"
-/** Configured but failing — credentials rejected, provider unreachable. */
-/** @proofSeam no writer stamps brokerage_integrations.status = 'error' today (re-verified 2026-09-23: the CRM sync and connectors report failures through their own results, never onto the row), so there is no write to import this from; scripts/integration-status-simulator.ts holds the three-value vocabulary complete. Unresolved: a health writer that marks a failing integration on the row itself. */
+/** Configured but failing — credentials rejected, provider unreachable.
+ *  WRITER: app/api/integrations/test/[provider]/route.ts stamps it (with
+ *  last_error) when a provider test fails — the health writer lane 80E's tag
+ *  recorded as missing had been there all along, spelled as the literal
+ *  "error" (lane 81E, 2026-09-24). The cron health board reads the row back
+ *  through isIntegrationConnected below. */
 export const INTEGRATION_STATUS_ERROR: IntegrationStatus = "error"
 
 /** PURE — is this integration usable right now? */

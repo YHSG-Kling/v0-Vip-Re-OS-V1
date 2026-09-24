@@ -28,8 +28,11 @@ import { PLATFORM_STAFF_ROLES, type PlatformStaffRole } from "@/lib/platform/pla
 /** The sales bench, in preference order — PLATFORM_STAFF_ROLES minus `support`. */
 export const SALES_REP_ROLE_ORDER: readonly PlatformStaffRole[] = ["marketing", "admin", "superadmin"]
 
-/** PURE guard used by the proof: the bench is a strict subset of the roster,
- *  and `support` is the ONLY role left out. */
+/** PURE: the bench is a strict subset of the roster, and `support` is the ONLY
+ *  role left out. Read at RUNTIME by resolvePlatformSalesRep (below) — a bench
+ *  that drifted off the roster would make the `.in("platform_role", …)` query
+ *  match nobody and read as "no staff", so the resolver refuses BY NAME first —
+ *  and by scripts/platform-prospect-funnel-simulator.ts. */
 export function salesBenchDerivesFromRoster(): boolean {
   const roster = new Set<string>(PLATFORM_STAFF_ROLES)
   const bench = new Set<string>(SALES_REP_ROLE_ORDER)
@@ -66,6 +69,18 @@ export function rankSalesRepCandidates<T extends { platformRole: string; calenda
  * Null = no platform staff with a brokerage_id at all (fail closed).
  */
 export async function resolvePlatformSalesRep(svc: any): Promise<PlatformSalesRep | null> {
+  // FAIL CLOSED, BY NAME (lane 81E): the query below selects `.in("platform_role",
+  // SALES_REP_ROLE_ORDER)`. A bench holding a role the roster does not (or one
+  // that swallowed `support`) would match nobody — or the wrong people — and
+  // report "no sales rep is set up", which is a data defect wearing an outage's
+  // clothes. Say which it is before asking the database anything.
+  if (!salesBenchDerivesFromRoster()) {
+    console.error(
+      `[sales-rep] REFUSED — SALES_REP_ROLE_ORDER (${SALES_REP_ROLE_ORDER.join(", ")}) is not PLATFORM_STAFF_ROLES ` +
+      `(${PLATFORM_STAFF_ROLES.join(", ")}) minus support; no rep resolved until the bench derives from the roster.`,
+    )
+    return null
+  }
   const { data, error } = await svc.from("users")
     .select("id, brokerage_id, email, first_name, last_name, platform_role")
     .in("platform_role", SALES_REP_ROLE_ORDER as unknown as string[])

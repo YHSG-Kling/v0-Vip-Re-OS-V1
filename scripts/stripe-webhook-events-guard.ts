@@ -76,6 +76,43 @@ check("the const is frozen, and it is the ONLY literal event list for this endpo
 control("the stale checklist literal would be caught", /customer\.subscription\.updated, customer\.subscription\.deleted, account\.updated\)/.test("(events: checkout.session.completed, invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted, account.updated)"))
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[1b · THE VENDOR ENDPOINT'S VOCABULARY IS DERIVED — payout map ∪ subscription lane (lane 81E)]")
+const VENDOR_ROUTE = "app/api/webhooks/stripe/vendor/route.ts"
+const VENDOR_EVENTS_MOD = "lib/vendors/vendor-webhook-events.ts"
+const SUBS = "lib/kernel/vendor-subscription.ts"
+const { VENDOR_MARKETPLACE_WEBHOOK_EVENTS } = await import("../lib/vendors/vendor-webhook-events")
+const { VENDOR_PAYOUT_COMPLETION_EVENTS } = await import("../lib/vendors/vendor-payout-events")
+const { VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS } = await import("../lib/kernel/vendor-subscription")
+{
+  const payoutKeys = Object.keys(VENDOR_PAYOUT_COMPLETION_EVENTS).sort()
+  const union = [...new Set([...payoutKeys, ...VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS])].sort()
+  console.log(`    vendor endpoint handles ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.length}: ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.join(", ")}`)
+  check("VENDOR_MARKETPLACE_WEBHOOK_EVENTS EQUALS payout-map keys ∪ VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS (derived, never a third spelling)",
+    [...VENDOR_MARKETPLACE_WEBHOOK_EVENTS].sort().join() === union.join(), `derived: ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.join(",")}; expected: ${union.join(",")}`)
+  check("the module derives from BOTH data maps in code (no literal event in the derivation file)",
+    /Object\.keys\(VENDOR_PAYOUT_COMPLETION_EVENTS\)/.test(code(VENDOR_EVENTS_MOD)) && /VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS/.test(code(VENDOR_EVENTS_MOD))
+    && !/"[a-z_]+\.[a-z_.]+"/.test(code(VENDOR_EVENTS_MOD)))
+  // The subscription list ⊇ mapStripeEventToStatus's `case` labels; the one
+  // event it carries beyond the switch is customer.subscription.updated, which
+  // the route header names and the mapper resolves on the object's status.
+  const subsSwitch = handledEvents(raw(SUBS))
+  check(`the subscription list (${VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS.length}) carries every case label of mapStripeEventToStatus (${subsSwitch.length}) and exactly customer.subscription.updated beyond them`,
+    subsSwitch.length > 0 && subsSwitch.every((e) => VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS.includes(e))
+    && VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS.filter((e) => !subsSwitch.includes(e)).join() === "customer.subscription.updated",
+    `switch: ${subsSwitch.join(",")}; list-only: ${VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS.filter((e) => !subsSwitch.includes(e)).join(",")}`)
+  check("the subscription list is frozen in the mapper's own module", /VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS: readonly string\[\] = Object\.freeze\(/.test(code(SUBS)))
+  control("a case the subscription list lacks is seen", handledEvents(raw(SUBS) + '\ncase "charge.refunded": { break }').some((e) => !VENDOR_SUBSCRIPTION_WEBHOOK_EVENTS.includes(e)))
+  check("the vendor route dispatches the payout lane through the SAME map the derivation reads, and its subscription lane through mapStripeEventToStatus's applier",
+    /VENDOR_PAYOUT_COMPLETION_EVENTS\[String\(event\.type\)\]/.test(code(VENDOR_ROUTE)) && /applyVendorSubscriptionEvent\(/.test(code(VENDOR_ROUTE)))
+  // The resolution is module-private (an exported resolver with no product
+  // reader is an orphan export); its behaviour is proven by the injected-client
+  // runs in section 3, and its SOURCE is held here so a third list cannot creep in.
+  check("the registration module resolves each endpoint to ITS list (tenant → TENANT_BILLING_WEBHOOK_EVENTS, vendor → VENDOR_MARKETPLACE_WEBHOOK_EVENTS) and plans the union from that resolution",
+    /case "tenant_billing": return TENANT_BILLING_WEBHOOK_EVENTS/.test(code(REG)) && /case "vendor_marketplace": return VENDOR_MARKETPLACE_WEBHOOK_EVENTS/.test(code(REG))
+    && /const required = requiredWebhookEvents\(endpoint\)/.test(code(REG)) && /planWebhookEventUnion\(before, required\)/.test(code(REG)))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[2 · THE UNION IS PURE]")
 {
   const empty = planWebhookEventUnion([], ["a.b", "c.d"])
@@ -155,8 +192,26 @@ const OURS = `${APP}${STRIPE_WEBHOOK_ROUTES.tenant_billing}`
   const s5 = fakeStripe([{ id: "we_1", url: OURS, enabled_events: [] }], { updateThrows: "rate_limit" })
   const refusedUpd = await syncStripeWebhookEvents({ apply: true, stripe: s5, appUrl: APP })
   check("a Stripe refusal on update is reported and says how many events the endpoint STILL enables", !refusedUpd.ok && refusedUpd.reason === "stripe_refused" && /still enables 0 event/.test(refusedUpd.error))
-  const vendor = await syncStripeWebhookEvents({ apply: true, stripe: s2, appUrl: APP, endpoint: "vendor_marketplace" })
-  check("the vendor endpoint is refused by name (its vocabulary is not derivable from a switch) — no guess, no write", !vendor.ok && /vendor_marketplace/.test(vendor.error))
+  // THE VENDOR ENDPOINT (lane 81E): same SDK path, its own URL, its own derived list.
+  const VOURS = `${APP}${STRIPE_WEBHOOK_ROUTES.vendor_marketplace}`
+  const s6 = fakeStripe([{ id: "we_1", url: OURS, enabled_events: ["*"] }, { id: "we_v", url: `${VOURS}/`, enabled_events: ["transfer.created", "charge.refunded"] }])
+  const vdry = await syncStripeWebhookEvents({ apply: false, stripe: s6, appUrl: APP, endpoint: "vendor_marketplace" })
+  check("VENDOR dry run matches the VENDOR url (through its trailing slash), plans its OWN missing list, never touches the billing endpoint, no update",
+    vdry.ok && vdry.endpoint === "vendor_marketplace" && vdry.webhookEndpointId === "we_v" && vdry.plan.missing.length === VENDOR_MARKETPLACE_WEBHOOK_EVENTS.length - 1
+    && vdry.plan.extra.join() === "charge.refunded" && !vdry.applied && vdry.otherEndpointUrls.join() === OURS && !s6.calls.some((c: { op: string }) => c.op === "webhookEndpoints.update"))
+  const vapplied = await syncStripeWebhookEvents({ apply: true, stripe: s6, appUrl: APP, endpoint: "vendor_marketplace" })
+  const vupd = s6.calls.filter((c: { op: string; args?: unknown }) => c.op === "webhookEndpoints.update")
+  check("VENDOR apply → exactly ONE update on we_v with current ∪ VENDOR_MARKETPLACE_WEBHOOK_EVENTS (charge.refunded kept)",
+    vapplied.ok && vapplied.applied && vupd.length === 1 && (vupd[0]!.args[0] as string) === "we_v"
+    && [...(vupd[0]!.args[1] as { enabled_events: string[] }).enabled_events].sort().join() === [...new Set(["transfer.created", "charge.refunded", ...VENDOR_MARKETPLACE_WEBHOOK_EVENTS])].sort().join())
+  const s7 = fakeStripe([{ id: "we_1", url: OURS, enabled_events: ["*"] }])
+  const vabsent = await syncStripeWebhookEvents({ apply: true, stripe: s7, appUrl: APP, endpoint: "vendor_marketplace" })
+  check("VENDOR endpoint absent → endpoint_not_registered naming the VENDOR url and ITS env var (STRIPE_VENDOR_WEBHOOK_SECRET), never created",
+    !vabsent.ok && vabsent.reason === "endpoint_not_registered" && vabsent.expectedUrl === VOURS && /STRIPE_VENDOR_WEBHOOK_SECRET/.test(vabsent.error) && !s7.calls.some((c: { op: string }) => /create$/.test(c.op)))
+  const s8 = fakeStripe([{ id: "we_1", url: OURS, enabled_events: [] }])
+  const unknown = await syncStripeWebhookEvents({ apply: true, stripe: s8, appUrl: APP, endpoint: "made_up" as unknown as "tenant_billing" })
+  check("an endpoint outside STRIPE_WEBHOOK_ROUTES is refused BY NAME before Stripe is listed (the name arrives over HTTP)", !unknown.ok && /Unknown webhook endpoint "made_up"/.test(unknown.error) && s8.calls.length === 0)
+  check("NOTHING IS PUBLISHED on the vendor runs either", [s6, s7, s8].every((s) => !s.calls.some((c: { op: string }) => /create$/.test(c.op))))
   check("without an injected client the module resolves the PLATFORM client (getPlatformStripe) and turns a throw into stripe_unconfigured — fail closed when Stripe is unconfigured",
     /opts\.stripe \?\? \(await getPlatformStripe\(\)\)/.test(code(REG)) && /reason: "stripe_unconfigured"/.test(code(REG)))
 }
@@ -179,9 +234,14 @@ console.log("\n[5 · MOUNTS — the platform action, the card, the checklist ite
   check("the action file is 'use server', exports exactly the check + register actions (both async), gates on the providers capability, audits the register",
     /^"use server"/.test(raw(ACTION)) && /export async function checkStripeWebhookEventsAction\(/.test(action) && /export async function registerStripeWebhookEventsAction\(/.test(action)
     && (action.match(/^export /gm) ?? []).length === 2 && /platformStaffCan\(role, "providers"\)/.test(action) && /"stripe_webhook\.events_registered"/.test(action)
-    && /syncStripeWebhookEvents\(\{ apply: false \}\)/.test(action) && /syncStripeWebhookEvents\(\{ apply: true \}\)/.test(action))
-  check("the go-live card imports BOTH actions and renders the drift widget under the checklist's driftChecks (no orphan action)",
-    /checkStripeWebhookEventsAction, registerStripeWebhookEventsAction/.test(code(CARD)) && /checklist\.driftChecks\.map/.test(code(CARD)) && /function StripeWebhookEventsDrift/.test(code(CARD)))
+    && /syncStripeWebhookEvents\(\{ apply: false, endpoint: ep \}\)/.test(action) && /syncStripeWebhookEvents\(\{ apply: true, endpoint: ep \}\)/.test(action))
+  check("both actions take the endpoint BY NAME and admit it by membership in STRIPE_WEBHOOK_ROUTES (fail closed — the argument arrives over HTTP)",
+    /checkStripeWebhookEventsAction\(endpoint: StripeWebhookEndpoint = "tenant_billing"\)/.test(action) && /registerStripeWebhookEventsAction\(endpoint: StripeWebhookEndpoint = "tenant_billing"\)/.test(action)
+    && /endpoint in STRIPE_WEBHOOK_ROUTES/.test(action) && (action.match(/if \(!ep\) return \{ ok: false, reason: "forbidden"/g) ?? []).length === 2)
+  check("the go-live card imports BOTH actions and renders the drift widget under the checklist's driftChecks for BOTH endpoints (no orphan action)",
+    /checkStripeWebhookEventsAction, registerStripeWebhookEventsAction/.test(code(CARD)) && /checklist\.driftChecks\.map/.test(code(CARD)) && /function StripeWebhookEventsDrift\(\{ endpoint \}/.test(code(CARD))
+    && /<StripeWebhookEventsDrift endpoint="tenant_billing" \/>/.test(code(CARD)) && /<StripeWebhookEventsDrift endpoint="vendor_marketplace" \/>/.test(code(CARD))
+    && /checkStripeWebhookEventsAction\(endpoint\)/.test(code(CARD)) && /registerStripeWebhookEventsAction\(endpoint\)/.test(code(CARD)))
   check("the connectors page still mounts <LaunchChecklistCard checklist={buildLaunchChecklist()} /> — the drift item rides the existing mount", /<LaunchChecklistCard checklist=\{buildLaunchChecklist\(\)\} \/>/.test(code(PAGE)))
   const { buildLaunchChecklist } = await import("../lib/platform/launch-checklist")
   const cl = buildLaunchChecklist()
@@ -191,6 +251,11 @@ console.log("\n[5 · MOUNTS — the platform action, the card, the checklist ite
   check("the drift item and the stripe_webhook env row both quote every handled event (derived, one vocabulary)",
     !!drift && TENANT_BILLING_WEBHOOK_EVENTS.every((e) => drift.whatDrifts.includes(e)) && TENANT_BILLING_WEBHOOK_EVENTS.every((e) => (cl.items.find((i) => i.key === "stripe_webhook")?.whatLightsUp ?? "").includes(e)))
   check("the drift item carries no value-bearing field (metadata only: key/capability/whatDrifts/checkAction/repairAction/tier)", !!drift && Object.keys(drift).sort().join() === "capability,checkAction,key,repairAction,tier,whatDrifts")
+  const vdrift = cl.driftChecks.find((d) => d.key === "stripe_vendor_webhook_events")
+  check("the checklist carries the VENDOR drift item too, naming the same two real actions, and quoting every derived vendor event (one vocabulary)",
+    !!vdrift && vdrift.checkAction === drift!.checkAction && vdrift.repairAction === drift!.repairAction
+    && VENDOR_MARKETPLACE_WEBHOOK_EVENTS.every((e) => vdrift.whatDrifts.includes(e)) && vdrift.whatDrifts.includes(STRIPE_WEBHOOK_ROUTES.vendor_marketplace)
+    && Object.keys(vdrift).sort().join() === "capability,checkAction,key,repairAction,tier,whatDrifts")
   check("the stripe-account-scope importer roster names the registration module as connect_admin (it may import the platform client and must move no money)",
     /"lib\/billing\/stripe-webhook-registration\.ts": \{ kind: "connect_admin"/.test(raw(ROSTER_PROOF)))
 }
@@ -213,4 +278,4 @@ if (failed > 0) {
   console.log("\n❌ STRIPE_WEBHOOK_EVENTS — see failures above")
   process.exit(1)
 }
-console.log(`\n✅ STRIPE_WEBHOOK_EVENTS — the route handles ${handled.length} events, the SDK registration writes exactly their union onto the existing endpoint, and nothing is published`)
+console.log(`\n✅ STRIPE_WEBHOOK_EVENTS — the billing route handles ${handled.length} events and the vendor route ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.length} (derived); the SDK registration writes exactly each union onto the existing endpoint, and nothing is published`)

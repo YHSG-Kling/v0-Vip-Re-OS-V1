@@ -297,7 +297,9 @@ export interface PersonaQuestionGuide {
 
 /** The owner's five follow-up offers (wave 74/79) — the set every persona's
  *  `offers` must draw at least two from, and the sphere/seller pair must
- *  include the no-number value review. One list; the proof holds it. */
+ *  include the no-number value review. One list; the proof holds it, and
+ *  personaGuideBlock READS it (lane 81E) to tell the model which of the
+ *  persona's tools are the closing offer the ladder's last rung means. */
 export const OWNER_FOLLOW_UP_OFFERS: readonly string[] = [
   "schedule_callback",           // call them again when they are ready
   "send_matching_listings",      // the list of properties matching the criteria they just gave
@@ -463,6 +465,13 @@ function personaGuideBlock(persona: ToolPersona | null | undefined): string {
   g.ladder.forEach((rung, i) => lines.push(`${i + 1}. ${rung}`))
   lines.push(`BEFORE THE AGENT TAKES OVER, record_qualification should hold: ${g.infoNeeded.join(", ")}.`)
   lines.push(`Follow-ups that fit this persona: ${g.offers.join(", ")}.`)
+  // Lane 81E — the CLOSING offers, read from the owner's five (never a second
+  // spelling): the ladder's last rung is "the offer", and this names which of
+  // the persona's tools ARE that offer, so the model closes on a callback /
+  // matching listings / value review / listing appointment / showing rather
+  // than on a market report. The proof holds every persona to ≥ 2 of them.
+  const closing = g.offers.filter((t) => OWNER_FOLLOW_UP_OFFERS.includes(t))
+  if (closing.length > 0) lines.push(`Close on ONE of these follow-ups (offer it last, as the ladder says): ${closing.join(", ")}.`)
   if (persona === "buyer") lines.push("Note: 'buyer' is also the default for an unknown contact — confirm early whether they are buying, selling, or both.")
   return lines.join("\n")
 }

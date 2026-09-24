@@ -34,7 +34,23 @@ import { ShieldCheck, ShieldOff, Loader2, KeyRound } from "lucide-react"
 import {
   assignVendorToContactAction,
   revokeVendorContactAccessAction,
+  setVendorAccessLevelAction,
 } from "@/app/actions/vendor-contact-access"
+import { GATED_VENDOR_ACCESS_LEVELS, PAID_CONTACT_ACCESS_LEVEL } from "@/lib/vendor/assignment-access"
+
+/** DOOR 2 in words — the two levels a gate reads (lib/vendor/assignment-access.ts
+ *  GATED_VENDOR_ACCESS_LEVELS). team_full_access is in the CHECK but opens
+ *  nothing, so the writer refuses it and this control never offers it. */
+const ACCESS_LEVEL_COPY: Record<string, { label: string; hint: string }> = {
+  transaction_only: {
+    label: "Assigned clients only",
+    hint: "The default. The vendor sees a client only through a grant above.",
+  },
+  [PAID_CONTACT_ACCESS_LEVEL]: {
+    label: "Every client in this brokerage",
+    hint: "Bench-wide contact access (name, email, phone on every client record). Documents and financials still need a per-client grant.",
+  },
+}
 
 /** Mirrors the vendor_contact_assignments.scope CHECK constraint. */
 const SCOPES = [
@@ -67,7 +83,8 @@ export interface VendorAccessAssignmentRow {
 
 export interface VendorAccessPanelProps {
   assignments: VendorAccessAssignmentRow[]
-  vendors:  Array<{ id: string; name: string }>
+  /** accessLevel = vendors.access_level (DOOR 2); null when never set. */
+  vendors:  Array<{ id: string; name: string; accessLevel: string | null }>
   contacts: Array<{ id: string; name: string }>
   /** Server-rendered load error, surfaced instead of an empty list that would
    *  read as "no grants exist". */
@@ -83,6 +100,30 @@ export function VendorAccessPanel({ assignments, vendors, contacts, loadError, c
   const [expiresAt, setExpiresAt] = useState("")
   const [granting, setGranting] = useState(false)
   const [revokingId, setRevokingId] = useState<string | null>(null)
+  const [levelBusyId, setLevelBusyId] = useState<string | null>(null)
+
+  async function handleAccessLevel(vendorId: string, accessLevel: string) {
+    setLevelBusyId(vendorId)
+    try {
+      const res = await setVendorAccessLevelAction({ vendorId, accessLevel, reason: "Set from the vendor access panel" })
+      // The server COUNTS the update and refuses a level no gate reads, so a
+      // green toast means the door genuinely moved — never merely that the call returned.
+      if (!res.ok) {
+        toast.error(res.error ?? "Could not change the access level")
+        return
+      }
+      toast.success(res.changed
+        ? (res.accessLevel === PAID_CONTACT_ACCESS_LEVEL
+          ? "Bench-wide access opened — this vendor can now see every client's contact details."
+          : "Bench-wide access closed — this vendor sees assigned clients only.")
+        : "Already at that level — nothing changed.")
+      router.refresh()
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not change the access level")
+    } finally {
+      setLevelBusyId(null)
+    }
+  }
 
   const active  = assignments.filter((a) => a.status === "active")
   const revoked = assignments.filter((a) => a.status !== "active")
@@ -267,6 +308,52 @@ export function VendorAccessPanel({ assignments, vendors, contacts, loadError, c
           )}
         </CardContent>
       </Card>
+
+      {/* DOOR 2 — the bench-wide level (vendors.access_level). Readers existed
+          for years (the access verdict, the vendor portal list, RLS); the WRITER
+          is setVendorAccessLevelAction (lane 81E). Broker/admin only, like revoke:
+          opening every client record to an outside party is wider than any grant. */}
+      {canRevoke && vendors.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <KeyRound className="h-4 w-4" />
+              Bench-wide access
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Per-vendor: assigned clients only (the default), or contact details on every client in the brokerage.
+              Documents and financials never ride this door — they stay per-client grants above.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {vendors.map((v) => {
+              const current = v.accessLevel && ACCESS_LEVEL_COPY[v.accessLevel] ? v.accessLevel : "transaction_only"
+              return (
+                <div key={v.id} className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between rounded-md border px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{v.name}</p>
+                    <p className="text-[11px] text-muted-foreground">{ACCESS_LEVEL_COPY[current]?.hint}</p>
+                  </div>
+                  <Select
+                    value={current}
+                    onValueChange={(next) => { if (next !== current) void handleAccessLevel(v.id, next) }}
+                    disabled={levelBusyId === v.id}
+                  >
+                    <SelectTrigger className="h-8 w-full sm:w-64 text-xs">
+                      {levelBusyId === v.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SelectValue />}
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GATED_VENDOR_ACCESS_LEVELS.map((lvl) => (
+                        <SelectItem key={lvl} value={lvl}>{ACCESS_LEVEL_COPY[lvl]?.label ?? lvl}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       {revoked.length > 0 && (
         <Card>

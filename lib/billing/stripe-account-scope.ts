@@ -357,9 +357,10 @@ export const STRIPE_WEBHOOK_ROUTES: Record<StripeWebhookEndpoint, string> = {
  *     from the instruction, so an operator following it registered an
  *     endpoint Stripe would never send that event to).
  *
- * The VENDOR endpoint's vocabulary is not here: its route dispatches through
- * lib/billing/vendor-payout-completion's event map rather than a switch, and a
- * list this module cannot derive from that route would be a second spelling.
+ * The VENDOR endpoint's vocabulary is not here either — it is DERIVED in
+ * lib/vendors/vendor-webhook-events.ts (payout-completion map ∪ the
+ * subscription lane's list) so it can never be a second spelling; the
+ * registration module resolves both through requiredWebhookEvents(endpoint).
  */
 export const TENANT_BILLING_WEBHOOK_EVENTS: readonly string[] = Object.freeze([
   "checkout.session.completed",

@@ -3,9 +3,11 @@
 /**
  * Vendor contact-scoped access management.
  *
- * Two write paths:
+ * Three write paths:
  *   - assignVendorToContactAction:    agent grants vendor access to a contact
  *   - revokeVendorContactAccessAction: any tenant admin revokes
+ *   - setVendorAccessLevelAction:     tenant admin opens/closes DOOR 2 (the
+ *                                     bench-wide vendors.access_level — lane 81E)
  *
  * Two read paths for the scoped vendor portal:
  *   - listVendorAssignedContactsAction: contacts the vendor can see this session
@@ -56,7 +58,10 @@ import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
   PAID_CONTACT_ACCESS_LEVEL,
+  VENDOR_ACCESS_LEVELS,
+  GATED_VENDOR_ACCESS_LEVELS,
   type VendorAccessDoor,
+  type VendorAccessLevel,
 } from "@/lib/vendor/assignment-access"
 
 // SCOPE LADDER (kept inline — admits agent/tc tiers): 'superadmin' removed —
@@ -314,6 +319,92 @@ export async function revokeVendorContactAccessAction(params: {
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")
   return { ok: true }
+}
+
+// ── DOOR 2: THE BENCH-WIDE ACCESS LEVEL (lane 81E, 2026-09-24) ───────────────
+//
+// vendors.access_level had READERS (the verdict, the list below, RLS's
+// vendor_has_contact_access) and NO WRITER anywhere under app/ or lib/ — so
+// the paid door could only be opened by hand in the database, and the
+// vocabulary module carried a tag saying so. This is the writer.
+//
+// WHO: the same roster that may REVOKE (tenant admins + the explicit platform
+// lane) — opening every client record in the tenant to an outside party is a
+// wider grant than any single assignment, so it is never an agent's call.
+// WHAT: a level admitted by MEMBERSHIP in VENDOR_ACCESS_LEVELS (the live CHECK,
+// so the refusal is a sentence rather than a check_violation supabase-js would
+// resolve silently) AND in GATED_VENDOR_ACCESS_LEVELS (a level no gate reads —
+// team_full_access — is refused by name rather than stored as a promise).
+// The BILLING for this door is still not built here: what a tenant may charge
+// a vendor for bench-wide access awaits the owner's sign-off on price shape
+// (see the header) — this action records the entitlement a tenant chose to
+// grant, audited with the reason they typed.
+
+export interface SetVendorAccessLevelInput {
+  vendorId:    string
+  accessLevel: string
+  reason?:     string
+}
+
+export async function setVendorAccessLevelAction(
+  input: SetVendorAccessLevelInput,
+): Promise<{ ok: true; accessLevel: VendorAccessLevel; changed: boolean } | { ok: false; error: string }> {
+  const auth = await requireBrokerageMember(REVOKE_ALLOWED_ROLES)
+  if (!auth.ok) return auth
+
+  // Vocabulary gate — the roster is the CHECK.
+  if (!(VENDOR_ACCESS_LEVELS as readonly string[]).includes(input.accessLevel)) {
+    return { ok: false, error: `Unknown access level "${input.accessLevel}" — must be one of: ${VENDOR_ACCESS_LEVELS.join(", ")}` }
+  }
+  const accessLevel = input.accessLevel as VendorAccessLevel
+  // Reader gate — a level nothing opens on is not stored as if it did.
+  if (!GATED_VENDOR_ACCESS_LEVELS.includes(accessLevel)) {
+    return {
+      ok: false,
+      error: `"${accessLevel}" is in the database vocabulary but no access gate reads it — storing it would record a door nothing opens. Choose ${GATED_VENDOR_ACCESS_LEVELS.join(" or ")}.`,
+    }
+  }
+
+  const svc = createServiceClient()
+  // TENANT: the vendor must be this brokerage's. Service client, so the tenant
+  // boundary is this comparison; the read error is destructured (§3).
+  const { data: vendor, error: vendorErr } = await svc
+    .from("vendors")
+    .select("id, brokerage_id, access_level, status")
+    .eq("id", input.vendorId)
+    .maybeSingle()
+  if (vendorErr) return { ok: false, error: vendorErr.message }
+  if (!vendor) return { ok: false, error: "Vendor not found" }
+  if (vendor.brokerage_id !== auth.brokerageId) return { ok: false, error: "Vendor belongs to another brokerage" }
+
+  const before = (vendor.access_level as string | null) ?? null
+  if (before === accessLevel) return { ok: true, accessLevel, changed: false }
+
+  // COUNTED (§3): an UPDATE that matches nothing resolves as success.
+  const { data: updated, error: updErr } = await svc
+    .from("vendors")
+    .update({ access_level: accessLevel, updated_at: new Date().toISOString() })
+    .eq("id", input.vendorId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+  if (updErr) return { ok: false, error: updErr.message }
+  if ((updated?.length ?? 0) === 0) {
+    return { ok: false, error: "No vendor row matched — the access level was NOT changed. It may belong to another brokerage." }
+  }
+
+  // Opening (or closing) every client record to an outside party is auditable.
+  await svc.from("audit_log").insert({
+    before:      { access_level: before },
+    after:       { brokerage_id: auth.brokerageId, vendor_id: input.vendorId, access_level: accessLevel, reason: input.reason ?? null },
+    user_id:     auth.userId,
+    action:      accessLevel === PAID_CONTACT_ACCESS_LEVEL ? "vendor_contact_access.bench_wide_opened" : "vendor_contact_access.bench_wide_closed",
+    entity_type: "vendor",
+    entity_id:   input.vendorId,
+  })
+
+  revalidatePath("/dashboard/vendors")
+  revalidatePath("/portal/vendor")
+  return { ok: true, accessLevel, changed: true }
 }
 
 // ── READ (vendor side) ───────────────────────────────────────────────────────

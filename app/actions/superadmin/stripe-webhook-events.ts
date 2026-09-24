@@ -14,6 +14,14 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { syncStripeWebhookEvents, type StripeWebhookRegistrationResult } from "@/lib/billing/stripe-webhook-registration"
+import { STRIPE_WEBHOOK_ROUTES, type StripeWebhookEndpoint } from "@/lib/billing/stripe-account-scope"
+
+/** Both endpoints are the PLATFORM account's (lane 81E added the vendor one).
+ *  The argument arrives over HTTP ("use server" — every export is a public
+ *  endpoint), so it is admitted by MEMBERSHIP in the route table, never trusted. */
+function resolveEndpoint(endpoint: unknown): StripeWebhookEndpoint | null {
+  return typeof endpoint === "string" && endpoint in STRIPE_WEBHOOK_ROUTES ? (endpoint as StripeWebhookEndpoint) : null
+}
 
 async function requireProvidersStaff(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -38,19 +46,23 @@ async function audit(actor: { userId: string; email: string }, action: string, d
 
 /** DRY RUN — the launch checklist's "webhook events drift" item. Lists the
  *  endpoint and plans the union; never calls update. */
-export async function checkStripeWebhookEventsAction(): Promise<StripeWebhookRegistrationResult | { ok: false; reason: "forbidden"; error: string }> {
+export async function checkStripeWebhookEventsAction(endpoint: StripeWebhookEndpoint = "tenant_billing"): Promise<StripeWebhookRegistrationResult | { ok: false; reason: "forbidden"; error: string }> {
   const auth = await requireProvidersStaff()
   if (!auth.ok) return { ok: false, reason: "forbidden", error: auth.error }
-  return syncStripeWebhookEvents({ apply: false })
+  const ep = resolveEndpoint(endpoint)
+  if (!ep) return { ok: false, reason: "forbidden", error: `Unknown webhook endpoint "${String(endpoint)}" — this app registers ${Object.keys(STRIPE_WEBHOOK_ROUTES).join(" and ")}.` }
+  return syncStripeWebhookEvents({ apply: false, endpoint: ep })
 }
 
 /** REGISTER — current ∪ handled events, through stripe.webhookEndpoints.update. */
-export async function registerStripeWebhookEventsAction(): Promise<StripeWebhookRegistrationResult | { ok: false; reason: "forbidden"; error: string }> {
+export async function registerStripeWebhookEventsAction(endpoint: StripeWebhookEndpoint = "tenant_billing"): Promise<StripeWebhookRegistrationResult | { ok: false; reason: "forbidden"; error: string }> {
   const auth = await requireProvidersStaff()
   if (!auth.ok) return { ok: false, reason: "forbidden", error: auth.error }
-  const result = await syncStripeWebhookEvents({ apply: true })
+  const ep = resolveEndpoint(endpoint)
+  if (!ep) return { ok: false, reason: "forbidden", error: `Unknown webhook endpoint "${String(endpoint)}" — this app registers ${Object.keys(STRIPE_WEBHOOK_ROUTES).join(" and ")}.` }
+  const result = await syncStripeWebhookEvents({ apply: true, endpoint: ep })
   await audit(auth, "stripe_webhook.events_registered", result.ok
-    ? { endpoint: result.webhookEndpointId, url: result.url, before: result.before, after: result.after, added: result.plan.missing, applied: result.applied, livemode: result.livemode }
-    : { refused: result.reason, error: result.error })
+    ? { endpoint: ep, webhookEndpointId: result.webhookEndpointId, url: result.url, before: result.before, after: result.after, added: result.plan.missing, applied: result.applied, livemode: result.livemode }
+    : { endpoint: ep, refused: result.reason, error: result.error })
   return result
 }

@@ -18,6 +18,12 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 // longer hand-rolls the key lookup and the /v1/balance request.
 import { getStripeBalance } from "@/lib/providers/payment"
 import { DECOMMISSIONED_PROVIDERS } from "@/lib/platform/provider-posture"
+// brokerage_integrations.status is connected | error | not_configured — there
+// is NO 'active' (lib/integrations/integration-status.ts). This board compared
+// against "active", a value no row can hold, so EVERY integration it looked at
+// reported 'degraded' — a fourth surface of the bug that module was written
+// to close (lane 81E, 2026-09-24). It reads through the one predicate now.
+import { isIntegrationConnected } from "@/lib/integrations/integration-status"
 
 // Service check configuration
 const SERVICE_CHECKS: Record<
@@ -332,7 +338,7 @@ export async function POST(request: NextRequest) {
             .eq("id", integration.id)
 
           checkResult = {
-            status: integration.status === "active" ? "healthy" : "degraded",
+            status: isIntegrationConnected(integration.status) ? "healthy" : "degraded",
             responseTimeMs: 0,
             errorMessage: integration.last_error || undefined,
           }

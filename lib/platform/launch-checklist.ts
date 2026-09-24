@@ -28,6 +28,7 @@
 //                      direct mail, social/accounting OAuth apps).
 
 import { STRIPE_WEBHOOK_ROUTES, TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
+import { VENDOR_MARKETPLACE_WEBHOOK_EVENTS } from "@/lib/vendors/vendor-webhook-events"
 
 export type LaunchTier = "launch-blocking" | "launch-degraded" | "optional"
 
@@ -385,6 +386,17 @@ const DRIFT_CHECKS: LaunchDriftCheck[] = [
     checkAction: "checkStripeWebhookEventsAction",
     repairAction: "registerStripeWebhookEventsAction",
     tier: "launch-blocking",
+  },
+  {
+    // Lane 81E: the vendor endpoint's vocabulary is DERIVED now (payout map ∪
+    // subscription lane — lib/vendors/vendor-webhook-events.ts), so the same
+    // check/register pair covers it; the actions take the endpoint by name.
+    key: "stripe_vendor_webhook_events",
+    capability: "Stripe webhook events — PLATFORM account (vendor marketplace: vendor tier billing + payout completion)",
+    whatDrifts: `The endpoint registered at ${STRIPE_WEBHOOK_ROUTES.vendor_marketplace} must enable every event its route handles (${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.length}: ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.join(", ")}). Without transfer.created / transfer.reversed no vendor payout ever leaves 'processing'; without the subscription events a vendor's tier never moves. In sync = enabled_events ⊇ the handled list (or the wildcard). Register writes the UNION through the Stripe SDK and creates nothing.`,
+    checkAction: "checkStripeWebhookEventsAction",
+    repairAction: "registerStripeWebhookEventsAction",
+    tier: "launch-degraded",
   },
 ]
 

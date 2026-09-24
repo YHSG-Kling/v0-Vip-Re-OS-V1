@@ -25,6 +25,12 @@ import { createClient } from "@/lib/supabase/server"
 import { testIntegration, type ProviderName, PROVIDER_METADATA } from "@/lib/onboarding/integration-tester"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+// THE ONE brokerage_integrations.status vocabulary (lib/integrations/
+// integration-status.ts). This route is the health WRITER that stamps 'error'
+// on a failing integration — it spelled both values as literals, so the
+// vocabulary module recorded "no writer stamps 'error'" while this one did
+// (lane 81E, 2026-09-24: a writer the census could not see is still a writer).
+import { INTEGRATION_STATUS_CONNECTED, INTEGRATION_STATUS_ERROR } from "@/lib/integrations/integration-status"
 
 export async function POST(
   request: NextRequest,
@@ -123,7 +129,7 @@ export async function POST(
         brokerage_id: targetBrokerageId,
         provider_type: PROVIDER_METADATA[provider].providerType,
         provider_name: provider,
-        status: result.pass ? "connected" : "error",
+        status: result.pass ? INTEGRATION_STATUS_CONNECTED : INTEGRATION_STATUS_ERROR,
         last_health_check_at: new Date().toISOString(),
         last_error: result.pass ? null : result.detail,
         updated_at: new Date().toISOString(),

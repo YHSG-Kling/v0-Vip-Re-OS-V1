@@ -7,10 +7,11 @@
 // packages yet in stripe until we are ready to push production rollout."
 //
 // So this module does ONE thing and publishes NOTHING: it finds the PLATFORM
-// account's webhook endpoint whose URL is this app's /api/billing/webhook
-// (STRIPE_WEBHOOK_ROUTES.tenant_billing under NEXT_PUBLIC_APP_URL), reads its
-// enabled_events, and writes current ∪ TENANT_BILLING_WEBHOOK_EVENTS back
-// through `stripe.webhookEndpoints.update` — the SDK, never a raw fetch. No
+// account's webhook endpoint whose URL is this app's route for the endpoint
+// asked about (STRIPE_WEBHOOK_ROUTES[endpoint] under NEXT_PUBLIC_APP_URL —
+// /api/billing/webhook, or since lane 81E /api/webhooks/stripe/vendor too),
+// reads its enabled_events, and writes current ∪ requiredWebhookEvents(endpoint)
+// back through `stripe.webhookEndpoints.update` — the SDK, never a raw fetch. No
 // product, no price, no endpoint is CREATED: an endpoint that does not exist
 // is reported by name (the operator registers the URL once in the dashboard
 // or a later, separately-ruled action creates it), because minting a live
@@ -34,11 +35,34 @@ import type Stripe from "stripe"
 import { getPlatformStripe } from "@/lib/stripe"
 import {
   STRIPE_WEBHOOK_ROUTES,
+  PLATFORM_WEBHOOK_ENV,
   TENANT_BILLING_WEBHOOK_EVENTS,
   planWebhookEventUnion,
   type StripeWebhookEndpoint,
   type WebhookEventUnionPlan,
 } from "./stripe-account-scope"
+import { VENDOR_MARKETPLACE_WEBHOOK_EVENTS } from "@/lib/vendors/vendor-webhook-events"
+
+/**
+ * PURE: the events each endpoint's route handles — the list the registration
+ * writes. tenant_billing is the frozen TENANT_BILLING_WEBHOOK_EVENTS; the
+ * vendor endpoint's list is DERIVED (lib/vendors/vendor-webhook-events.ts) from
+ * the two data maps its route dispatches through, which is why lane 80A's
+ * by-name refusal of that endpoint is gone (lane 81E, 2026-09-24). Both
+ * endpoints belong to the PLATFORM account: the vendor marketplace is money
+ * the vendor pays the platform, and connect-mode tenants' transfer events also
+ * arrive on the platform's endpoint (route header). Module-private: the only
+ * caller is syncStripeWebhookEvents below (the guard reads the resolution from
+ * source and proves it through the injected-client runs, so exporting it would
+ * be an export with no product reader — orphan-export-guard went red on exactly
+ * that, 2026-09-24).
+ */
+function requiredWebhookEvents(endpoint: StripeWebhookEndpoint): readonly string[] {
+  switch (endpoint) {
+    case "tenant_billing": return TENANT_BILLING_WEBHOOK_EVENTS
+    case "vendor_marketplace": return VENDOR_MARKETPLACE_WEBHOOK_EVENTS
+  }
+}
 
 export type StripeWebhookRegistrationResult =
   | {
@@ -100,9 +124,13 @@ export async function syncStripeWebhookEvents(opts: {
   appUrl?: string | null
 }): Promise<StripeWebhookRegistrationResult> {
   const endpoint = opts.endpoint ?? "tenant_billing"
-  if (endpoint !== "tenant_billing") {
-    return { ok: false, reason: "stripe_refused", error: `The ${endpoint} endpoint's event vocabulary is not derivable from its route (it dispatches through an event map, not a switch); only tenant_billing is registered here.` }
+  // FAIL CLOSED on an endpoint this module has no vocabulary for: `endpoint`
+  // reaches here from a server action's argument, so an unknown spelling must
+  // be refused by name, never matched to a URL by accident.
+  if (!(endpoint in STRIPE_WEBHOOK_ROUTES)) {
+    return { ok: false, reason: "stripe_refused", error: `Unknown webhook endpoint "${String(endpoint)}" — this app registers ${Object.keys(STRIPE_WEBHOOK_ROUTES).join(" and ")}. Nothing was read or written.` }
   }
+  const required = requiredWebhookEvents(endpoint)
   const expected = expectedWebhookUrl(opts.appUrl === undefined ? process.env.NEXT_PUBLIC_APP_URL : opts.appUrl, endpoint)
   if (!expected) {
     return { ok: false, reason: "app_url_unset", error: "NEXT_PUBLIC_APP_URL is not set, so which of the account's webhook endpoints is this app's cannot be known. Nothing was read or written." }
@@ -128,14 +156,14 @@ export async function syncStripeWebhookEvents(opts: {
     return {
       ok: false,
       reason: "endpoint_not_registered",
-      error: `No webhook endpoint on the platform's Stripe account delivers to ${expected}. Register that URL once (Stripe dashboard → Developers → Webhooks) and set its signing secret as STRIPE_WEBHOOK_SECRET; this action does not create endpoints (nothing is published in Stripe before production rollout). ${endpoints.length} endpoint(s) exist on the account.`,
+      error: `No webhook endpoint on the platform's Stripe account delivers to ${expected}. Register that URL once (Stripe dashboard → Developers → Webhooks) and set its signing secret as ${PLATFORM_WEBHOOK_ENV[endpoint]}; this action does not create endpoints (nothing is published in Stripe before production rollout). ${endpoints.length} endpoint(s) exist on the account.`,
       expectedUrl: expected,
       otherEndpointUrls,
     }
   }
 
   const before = [...(ours.enabled_events ?? [])]
-  const plan = planWebhookEventUnion(before, TENANT_BILLING_WEBHOOK_EVENTS)
+  const plan = planWebhookEventUnion(before, required)
   let after = before
   let applied = false
   if (opts.apply && !plan.inSync) {

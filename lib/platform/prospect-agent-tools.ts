@@ -73,10 +73,18 @@ export const PLATFORM_PROSPECT_TOOL_NAMES = [
 type PlatformProspectToolName = (typeof PLATFORM_PROSPECT_TOOL_NAMES)[number]
 void (null as unknown as PlatformProspectToolName)
 
-/** PURE guard used by the proof: every exit the playbook names is a tool this
- *  bundle registers (playbook wording ↔ registered tools, §6). */
+/** PURE: every exit the playbook names is a tool this bundle registers
+ *  (playbook wording ↔ registered tools, §6). Read at RUNTIME by
+ *  buildPlatformProspectTools (below), which refuses to mount a bundle the
+ *  prompt would contradict — and by the proofs. */
 export function platformExitMenuMatchesTools(): boolean {
   return PLATFORM_EXIT_MENU.every((o) => (PLATFORM_PROSPECT_TOOL_NAMES as readonly string[]).includes(o.tool))
+}
+
+/** The exits the playbook names that this bundle does NOT register — the
+ *  sentence the refusal carries, so an operator reads the drift, not a stack. */
+function unregisteredPlatformExits(): string[] {
+  return PLATFORM_EXIT_MENU.map((o) => o.tool).filter((t) => !(PLATFORM_PROSPECT_TOOL_NAMES as readonly string[]).includes(t))
 }
 
 export interface PlatformProspectToolContext {
@@ -111,6 +119,18 @@ const WINDOWS = ["morning", "afternoon", "evening"] as const
 /** Build the bundle. Async because the AI SDK `tool` helper and zod load lazily
  *  like the rest of the voice lane (lib/voice/platform-reception.ts). */
 export async function buildPlatformProspectTools(ctx: PlatformProspectToolContext): Promise<Record<string, unknown>> {
+  // FAIL CLOSED (§4), by name: the qualification prompt tells the model to end
+  // the conversation on one of PLATFORM_EXIT_MENU's tools. If an exit names a
+  // tool this bundle does not register, the model would be told to call a tool
+  // that does not exist and the conversation would end in "someone will follow
+  // up" — the exact failure the bundle exists to prevent. Refusing here makes
+  // that drift loud at mount time instead of silent per call (lane 81E).
+  if (!platformExitMenuMatchesTools()) {
+    throw new Error(
+      `platform prospect tools REFUSED to mount: PLATFORM_EXIT_MENU names ${unregisteredPlatformExits().join(", ")} ` +
+      `but PLATFORM_PROSPECT_TOOL_NAMES does not register it — the playbook and the bundle disagree (lib/ai-isa/qualification-playbook.ts ↔ lib/platform/prospect-agent-tools.ts).`,
+    )
+  }
   const { tool } = await import("ai")
   const { z } = await import("zod")
   const { createServiceClient } = await import("@/lib/supabase/service")

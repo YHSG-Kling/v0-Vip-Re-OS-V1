@@ -72,13 +72,29 @@ import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 
 export type VendorAccessScope = "pii_basic" | "pii_full" | "transaction_docs" | "financial"
 
-/** The live `vendors_access_level_check` list, verbatim.
- *  @proofSeam the verdict compares against ONE member (PAID_CONTACT_ACCESS_LEVEL) and no app code WRITES vendors.access_level today (re-verified 2026-09-23: zero writers under app/ + lib/), so there is no write to validate against the roster; it exists so scripts/vendor-service-area-simulator.ts can hold PAID_CONTACT_ACCESS_LEVEL inside the live CHECK. Unresolved: the action that flips the paid door is not built. */
+/** The live `vendors_access_level_check` list, verbatim. WRITER (lane 81E,
+ *  2026-09-24): app/actions/vendor-contact-access.ts::setVendorAccessLevelAction
+ *  admits a requested level by MEMBERSHIP here before it touches the row — the
+ *  roster is the write gate, so a spelling outside the CHECK is refused by name
+ *  instead of being a check_violation supabase-js resolves silently. */
 export const VENDOR_ACCESS_LEVELS = ["transaction_only", "team_full_access", "brokerage_full_access"] as const
+
+export type VendorAccessLevel = (typeof VENDOR_ACCESS_LEVELS)[number]
 
 /** The access_level that IS the paid contact-access door. Named once so a
  *  string literal cannot drift away from the CHECK. */
-export const PAID_CONTACT_ACCESS_LEVEL = "brokerage_full_access"
+export const PAID_CONTACT_ACCESS_LEVEL: VendorAccessLevel = "brokerage_full_access"
+
+/**
+ * The levels a GATE actually distinguishes — the only ones the writer may
+ * store. `team_full_access` is in the CHECK but no reader (this verdict, the
+ * list action, RLS's vendor_has_contact_access) opens anything on it: storing
+ * it would promise a team-wide door that nothing grants, and a tenant would
+ * believe they had widened access when they had not. So the writer refuses it
+ * by name (fail closed, CLAUDE.md §4) until a team-scoped door exists; the
+ * CHECK roster above stays complete because the database admits it.
+ */
+export const GATED_VENDOR_ACCESS_LEVELS: readonly VendorAccessLevel[] = ["transaction_only", PAID_CONTACT_ACCESS_LEVEL]
 
 /**
  * What DOOR 2 confers. PII only, by CLAUDE.md §5 — a bought bench-wide

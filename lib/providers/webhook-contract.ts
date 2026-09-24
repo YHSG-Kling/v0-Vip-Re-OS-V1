@@ -380,7 +380,10 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
       "(the Transfer initiateVendorPayout creates on the BROKERAGE's account; tenant-signed deliveries are scoped to the " +
       "signing tenant's own vendor_payouts rows) and payout.paid/payout.failed (po_… ids on vendor_payouts.stripe_payout_id). " +
       "There is NO transfer.paid/transfer.failed in current Stripe API versions — completion IS transfer.created, " +
-      "failure IS transfer.reversed. Proof: test:vendor-payout-completion.",
+      "failure IS transfer.reversed. Proof: test:vendor-payout-completion. " +
+      "REGISTRATION (lane 81E): the endpoint's enabled_events are derived in lib/vendors/vendor-webhook-events.ts " +
+      "(payout map ∪ subscription lane, incl. checkout.session.completed) and written through the Stripe SDK from the " +
+      "superadmin connectors page (launch checklist drift item stripe_vendor_webhook_events; proof test:stripe-webhook-events).",
   },
 
   // ── Ops / content providers ────────────────────────────────────────────────
