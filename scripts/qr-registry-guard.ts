@@ -34,7 +34,7 @@
  * Plus: the studio's QR asset registers (createAsset mints + links); the
  * platform/tenant owner model and the platform mint path on a stub client
  * (label namespaced, brokerage null, honest null on refusal); both boards and
- * the home link exist; m664 is written (not applied) and names the same
+ * the home link exist; m664 is applied live (2026-09-24) and names the same
  * prefix the code uses; registration in package.json + MAINTENANCE_DOMAINS.
  *
  * No network, no DB. Run: npx tsx --conditions=react-server scripts/qr-registry-guard.ts
@@ -169,7 +169,7 @@ async function main() {
   {
     const c = stubClient({ refuseInsert: true })
     const r = await mintTrackedQr({ brokerageId: null, owner: "platform", label: "prospect_funnel", targetUrl: "https://x/y", purpose: "campaign" }, c)
-    check("a platform mint the database REFUSES (live NOT NULL until m664) returns null — honest, never a row under some tenant", r === null && c.inserts.length === 1 && (c.inserts[0] as any).brokerage_id === null)
+    check("a platform mint the database REFUSES (the pre-m664 NOT NULL shape, or any future refusal) returns null — honest, never a row under some tenant", r === null && c.inserts.length === 1 && (c.inserts[0] as any).brokerage_id === null)
   }
   {
     const c = stubClient()
@@ -188,10 +188,10 @@ async function main() {
   check("the platform board exports only Next page fields (no stray export)", !/^export (async )?function (?!SuperadminQrRegistryPage)/m.test(pb) && /export default async function SuperadminQrRegistryPage/.test(pb))
   check("the superadmin home links the platform board (no orphan route)", /\/dashboard\/superadmin\/qr-codes/.test(stripped("app/dashboard/superadmin/home/page.tsx")))
 
-  console.log("\n[5 · migration m664 — written, not applied; consistent with the code]")
+  console.log("\n[5 · migration m664 — applied live 2026-09-24; consistent with the code]")
   const mig = "supabase/migrations/m664-qr-codes-platform-owner.sql"
   const migSrc = existsSync(join(root, mig)) ? src(mig) : ""
-  check("m664 exists with the WRITTEN, NOT APPLIED header, relaxes qr_codes + qr_scan_events brokerage_id, and CHECKs the platform label prefix the code uses", /WRITTEN, NOT APPLIED/.test(migSrc) && /qr_codes ALTER COLUMN brokerage_id DROP NOT NULL/.test(migSrc) && /qr_scan_events ALTER COLUMN brokerage_id DROP NOT NULL/.test(migSrc) && migSrc.includes(`label LIKE '${PLATFORM_QR_LABEL_PREFIX}%'`))
+  check("m664 exists, states its status once (APPLIED LIVE — never a waypoint pin on the pre-apply header), relaxes qr_codes + qr_scan_events brokerage_id, and CHECKs the platform label prefix the code uses", /APPLIED LIVE/.test(migSrc) && !/WRITTEN, NOT APPLIED/.test(migSrc) && /qr_codes ALTER COLUMN brokerage_id DROP NOT NULL/.test(migSrc) && /qr_scan_events ALTER COLUMN brokerage_id DROP NOT NULL/.test(migSrc) && migSrc.includes(`label LIKE '${PLATFORM_QR_LABEL_PREFIX}%'`))
 
   console.log("\n[6 · registration]")
   const pkg = JSON.parse(src("package.json"))

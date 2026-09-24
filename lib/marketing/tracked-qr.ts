@@ -103,11 +103,11 @@ export function isQrPurpose(v: unknown): v is QrPurpose {
 // (app/dashboard/superadmin/qr-codes), which also sees every tenant's codes
 // because platform staff see all tenants (CLAUDE.md §4).
 //
-// LIVE FACT (hrvaqgvukzxfskkcrwbt, 2026-09-24): qr_codes.brokerage_id is NOT
-// NULL today, so a platform-owned mint is REFUSED by the database until
-// supabase/migrations/m664-qr-codes-platform-owner.sql is applied (WRITTEN,
-// NOT APPLIED — CLAUDE.md §3). The refusal is honest (null → the caller skips
-// the badge), never a fabricated row under some tenant's id.
+// LIVE FACT (hrvaqgvukzxfskkcrwbt, 2026-09-24): qr_codes.brokerage_id was NOT
+// NULL until supabase/migrations/m664-qr-codes-platform-owner.sql was APPLIED
+// LIVE the same day (nullable now, CHECK brokerage_id IS NOT NULL OR label LIKE
+// 'platform:%'). A refused platform mint (any future refusal) stays honest
+// (null → the caller skips the badge), never a fabricated row under some tenant's id.
 export type QrOwnerKind = "platform" | "tenant"
 /** Every platform-owned label carries this prefix so the idempotency key can
  *  never collide with a tenant's label of the same text. */
@@ -269,8 +269,8 @@ export async function mintTrackedQr(
       const { data: inserted, error } = await svc
         .from("qr_codes")
         .insert({
-          // null ONLY for a platform-owned code (refused by the live NOT NULL until m664 lands —
-          // an honest null result, never a row filed under some tenant).
+          // null ONLY for a platform-owned code (label platform:… — m664 applied 2026-09-24;
+          // a refusal stays an honest null result, never a row filed under some tenant).
           brokerage_id: brokerageId,
           agent_id: args.agentId ?? null,
           label,

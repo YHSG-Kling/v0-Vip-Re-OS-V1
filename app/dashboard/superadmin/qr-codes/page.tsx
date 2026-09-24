@@ -19,7 +19,7 @@
  * tenant board (app/dashboard/agent/qr-codes, scoped agent/team/brokerage by
  * the session); THIS board is the platform's view — every tenant's codes
  * (platform staff see all tenants, CLAUDE.md §4) plus the PLATFORM-OWNED codes
- * (brokerage_id null, label `platform:*` — legal once m664 is applied).
+ * (brokerage_id null, label `platform:*` — legal since m664 was applied 2026-09-24).
  *
  * Read-only. Gated on the `marketing` platform capability before the service
  * client (§4 gate first). No tenant predicate BY DESIGN — this is the platform
@@ -98,8 +98,7 @@ export default async function SuperadminQrRegistryPage() {
 
       {summary.platform === 0 && (
         <p className="text-xs text-muted-foreground">
-          No platform-owned codes yet. A platform code carries no brokerage (label <code>platform:…</code>) and needs migration m664 applied before the registry accepts one; until then a platform mint returns an honest refusal.
-        </p>
+          No platform-owned codes yet. A platform code carries no brokerage (label <code>platform:…</code>) and is registered here the moment a platform surface mints one (m664 applied 2026-09-24).</p>
       )}
 
       <div className="overflow-x-auto rounded border">

@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-24 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 -- m664 — qr_codes: a PLATFORM-OWNED code carries no brokerage (wave 81, lane 81D)
 --
 -- Owner verbatim: "the qrcode system agent needs to make sure that any qrcode

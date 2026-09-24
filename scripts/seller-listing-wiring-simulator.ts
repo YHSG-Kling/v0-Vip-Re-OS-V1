@@ -129,7 +129,11 @@ function sourceLayer() {
   // A listing id from another brokerage must be refused before it can burn paid
   // inference, not after.
   const gateIdx  = intake.indexOf("listing.brokerage_id !== ctx.brokerageId")
-  const modelIdx = intake.indexOf("generateObject({", intake.indexOf("aiCheckListingCompliance"))
+  // Wave 81B routed every model call in this file (generateObjectRouted); the RULE is that the
+  // tenant gate precedes whichever spelling of the object call follows the compliance entry.
+  const afterCompliance = intake.indexOf("aiCheckListingCompliance")
+  const modelMatch = /generateObject(Routed)?\(\{/.exec(intake.slice(afterCompliance))
+  const modelIdx = modelMatch ? afterCompliance + modelMatch.index : -1
   check("the brokerage check on listingId precedes the generateObject call",
     gateIdx > 0 && modelIdx > 0 && gateIdx < modelIdx)
   check("   ↳ negative test is real (both anchors were found)", gateIdx > 0 && modelIdx > 0)
