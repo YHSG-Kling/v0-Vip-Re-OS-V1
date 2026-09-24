@@ -354,7 +354,37 @@ jobs:
       # headroom, where 11264 gave ~0% and lost it. If THIS aborts twice at one
       # commit, the lever is the runner (costed above), not 13312.
       # vercel.json still carries 10240 deliberately (no swap there).
-      NODE_OPTIONS: "--max-old-space-size=12288"
+      # ── 2026-09-24, run 35963710912 attempts 1+2+3 (commit 83a26b75): 12288 RAN
+      # OUT. THREE consecutive heap aborts at ONE commit, all "Ineffective
+      # mark-compacts near heap limit" / SIGABRT from the build worker:
+      #   attempt 1 — died ~9m15s in, last GC 10226.4 used / 11156.7 committed = 90.8% of cap
+      #   attempt 2 — died ~10m in, same message (log tail only)
+      #   attempt 3 — died ~10m26s in, last GC 10221.5 used / 11038.0 committed = 89.8% of cap
+      # Commit 2f4ed0fe (one wave earlier, 2026-09-23) went GREEN on this exact
+      # config at attempt 1. Between them wave 81 added 4,994 lines across 105
+      # files under lib/ app/ remotion/, but first-party TS on disk moved only
+      # 54.3 → 54.6 MB (+0.6%) — so 2f4ed0fe was already on the knife edge and
+      # this wave did not move demand, it removed the last of the GC-timing luck.
+      # The 2026-09-17 remedy (externalise bundled server SDKs) is EXHAUSTED: the
+      # five SDKs added since (@hubspot/api-client 50 MB, facebook-nodejs-business-sdk
+      # 33 MB, intuit-oauth, peopledatalabs, @remotion/google-fonts) are already
+      # in serverExternalPackages + the externals pin; two of them have no
+      # importer at all. What remains in the graph is first-party TSX.
+      # The 2026-09-11 entry said "if this aborts twice at one commit, the lever
+      # is the runner, not 13312". That still stands as the DURABLE answer — the
+      # runner is a cost decision for the repo owner (costed above) — but with
+      # production pressure and no owner decision yet, 13312 is taken as ONE
+      # measured step for the same reason 11264→12288 was: the compile runs in
+      # ONE sequential build worker and the swap step below mounts 8 GiB beside
+      # the runner's own 3 GiB, so the post-compile RSS spike (worker RSS ≈
+      # committed heap + ~5 GB off-heap ≈ 16-17 GB) has ~11 GiB of swap to land
+      # in. 13312 gives an effective abort ceiling of ~12.0 GB against 11.0-11.2 GB
+      # committed ≈ 7-8% headroom, where 12288 gave ~0% and lost it three times.
+      # If 13312 aborts at one commit, STOP re-tuning: the next lever is the
+      # larger runner or a first-party graph cut (a route/page census — 996 entry
+      # points), and either is an owner decision.
+      # vercel.json still carries 10240 deliberately (no swap there).
+      NODE_OPTIONS: "--max-old-space-size=13312"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
       # It read: "NO max-old-space-size override: `next build` uses Turbopack
