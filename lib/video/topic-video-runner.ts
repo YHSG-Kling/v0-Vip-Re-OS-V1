@@ -158,6 +158,20 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       }
       const flags = detectFairHousingRedFlags(`${object.title}\n${object.bullets.join("\n")}\n${object.script}`, persona === "seller" ? "seller" : "buyer")
       if (flags.length > 0) { bump(out, "fair_housing_red_flag"); console.warn("[topic-video-runner] script refused:", flags.join("; ")); continue }
+      // COMPLIANCE-FIRST IS BOTH HALVES (CLAUDE.md §5; test:video-script-compliance
+      // GATE-ROSTER-EVERY-CALLER-POSTCHECKS): the compliance blocks rode the writing prompt
+      // above; the written script is now post-checked against the tenant's brand voice and
+      // prohibited phrases. Warnings PASS THROUGH (the Director stages pending_review, a
+      // person approves) and are PERSISTED on the staged row below — never a silent audit.
+      // The service client: this runner is cron-reached with no session (same reason as
+      // chapter-video-generator.ts's postcheck).
+      const { postcheckScript } = await import("./script-compliance")
+      const complianceWarnings = await postcheckScript(
+        { userId: agent.user_id, brokerageId: t.id },
+        object.script,
+        persona === "seller" ? "seller" : "buyer",
+        { client: svc },
+      )
 
       const { brief } = topicVideoBrief({
         topic, persona, host, assets,
@@ -165,6 +179,15 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       })
       const r = await commissionCustomVideo(brief, { brokerageId: t.id, agentUserId: agent.user_id, targetChannel: "instagram" }, svc)
       if (!r.ok || !r.videoProjectId || r.status !== "staged") { bump(out, `director_${r.status}`); continue }
+      if (complianceWarnings && complianceWarnings.length > 0) {
+        const { data: noted, error: noteErr } = await svc.from("ai_video_projects")
+          .update({ compliance_violations: complianceWarnings })
+          .eq("id", r.videoProjectId).eq("brokerage_id", t.id).select("id")
+        if (noteErr || !noted || noted.length !== 1) {
+          console.warn("[topic-video-runner] compliance warnings not recorded on the staged row:", noteErr?.message ?? `matched ${noted?.length ?? 0}`)
+          bump(out, "compliance_warnings_unrecorded")
+        } else bump(out, "compliance_warnings_recorded")
+      }
 
       await logTopicUses({ topicIds: [topic.id], brokerageId: t.id, assetType: "situational_reel", assetId: r.videoProjectId, agentId: agent.id })
       out.topicVideos += 1

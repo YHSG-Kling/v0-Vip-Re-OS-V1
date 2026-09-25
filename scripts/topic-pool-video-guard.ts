@@ -64,7 +64,14 @@ console.log("\n── §one-pool · pickTopics is the only door ──")
   check("the runner picks through pickTopics (freshness · territory · persona performance · office claim)", /pickTopics\(\{/.test(runner))
   check("the runner never queries content_topic_bank directly", !fromTables(runner).includes("content_topic_bank"), fromTables(runner).join(", "))
   check("POSITIVE CONTROL: the table detector sees a direct bank read", fromTables(`svc.from("content_topic_bank").select("*")`).includes("content_topic_bank"))
-  check(`the runner reads only brokerages + agents (${fromTables(runner).join(", ")})`, fromTables(runner).every((t) => t === "brokerages" || t === "agents"))
+  // Wave 82 integration: the runner now post-checks its script (compliance-first is both halves)
+  // and PERSISTS any warnings on the row the Director staged — its one write, tenant-scoped and
+  // counted. The RULE: it reads only brokerages + agents, and writes nothing but that note.
+  check(`the runner reads only brokerages + agents, and its only other table is the counted compliance note on the Director-staged ai_video_projects row (${fromTables(runner).join(", ")})`,
+    fromTables(runner).every((t) => t === "brokerages" || t === "agents" || t === "ai_video_projects")
+    && (runner.match(/\.from\(\s*"ai_video_projects"\s*\)/g) ?? []).length === 1
+    && /\.from\("ai_video_projects"\)\s*\.update\(\{ compliance_violations: complianceWarnings \}\)\s*\.eq\("id", r\.videoProjectId\)\.eq\("brokerage_id", t\.id\)\.select\("id"\)/.test(runner)
+    && /await postcheckScript\(/.test(runner))
   check("the rule module is PURE (no supabase, no server-only, no model)", !/supabase|server-only|generateObjectRouted|fetch\(/.test(rule))
   const migrations = readdirSync(join(root, "supabase/migrations")).filter((f) => /^m66[2-9]/.test(f))
   const newPool = migrations.filter((f) => /create table[^;]*topic/i.test(read(`supabase/migrations/${f}`)))

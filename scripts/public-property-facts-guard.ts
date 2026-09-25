@@ -144,7 +144,7 @@ const calcStr = stripped("app/actions/calculators.ts")
 check("POSITIVE CONTROL: a comment-only phrase is absent from stripped calculators.ts", !calcStr.includes("that was the regression"))
 check("calculateHomeValue + getPublicPropertyFacts ride lookupPublicPropertyFacts (×2) and never the customer-conversation reach",
   (calcStr.match(/lookupPublicPropertyFacts\(\{/g) ?? []).length === 2 && !/lookupPropertyForConversation\(/.test(calcStr))
-check("calculators.ts imports no BatchData module", !/batchdata/i.test(calcStr.replace(/\/\/.*$/gm, "")))
+check("calculators.ts imports no BatchData module", !/batchdata/i.test(stripComments(calcStr)))
 const gfn = calcStr.slice(calcStr.indexOf("export async function getPublicPropertyFacts"))
 check("getPublicPropertyFacts rate-limits BEFORE resolving the tenant and BEFORE the lookup",
   gfn.indexOf('publicCalcRateVerdict("propertyFacts")') >= 0
