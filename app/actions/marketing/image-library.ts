@@ -164,9 +164,20 @@ export async function listImageLibraryAction(): Promise<
   const { data, error } = await q
   if (error) return { ok: false, error: error.message }
 
+  // WAVE 82D — the library is CAMPAIGN material; an estimate still enters it
+  // only when the ONE rule admits it (lib/marketing/estimate-sources.ts
+  // estimateStillUseVerdict): the Zestimate still yes, a comparison-only
+  // portal capture (realtor / redfin / homes evidence) never.
+  const { estimateStillUseVerdict, IMAGE_LIBRARY_USE } = await import("@/lib/marketing/estimate-sources")
+  const admitted = ((data ?? []) as any[]).filter((r) => {
+    const src = r.metadata?.estimate_source
+    if (r.metadata?.comparison_only === true) return false
+    return typeof src === "string" ? estimateStillUseVerdict(src, IMAGE_LIBRARY_USE, []).ok : true
+  })
+
   return {
     ok: true,
-    assets: ((data ?? []) as any[]).map((r) => ({
+    assets: admitted.map((r) => ({
       id: r.id,
       name: r.asset_name,
       url: r.asset_url,

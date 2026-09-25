@@ -13,10 +13,15 @@
  *   1. VOCABULARY — lib/marketing/estimate-sources.ts holds exactly one source,
  *      zillow_zestimate, on host zillow.com, with mustShow property_photo +
  *      zestimate; the three portal siblings are tombstoned, not merely removed.
- *   2. NO OTHER SITE MENTIONS — the seam's PUBLIC_PAGE_HOSTS is zillow.com only
- *      and no live code token in the vocabulary / door / card / seam names
- *      redfin, realtor, trulia or homes.com (stripped source; a tombstone is
- *      not a mention). Positive control: a specimen is caught.
+ *   2. ZILLOW ALONE FOR CAMPAIGNS (re-anchored wave 82D) — the seam's
+ *      PUBLIC_PAGE_HOSTS is zillow.com only; the campaign door and card name no
+ *      other portal; in the vocabulary and the seam another portal appears ONLY
+ *      inside a marked COMPARISON-ONLY block (the 82D estimate comparison piece,
+ *      proven by scripts/estimate-comparison-guard.ts). Positive controls.
+ *   2b. NEVER AN ESTIMATE OF VALUE (wave 82D owner: "the zillow zestimate
+ *      screenshot should only be used for campaigns and not other estimate of
+ *      value") — estimateStillUseVerdict admits campaign uses, refuses every
+ *      estimate-of-value use and any unknown use.
  *   3. READINESS — a public_page plan on zillow.com carries the host's rules
  *      (photo + Zestimate); an OS-surface plan carries none; the seam REFUSES a
  *      capture whose provider confirmed nothing (nothing hosted, nothing
@@ -35,7 +40,7 @@ import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
-import { ESTIMATE_SOURCES, ESTIMATE_SOURCE_KEYS, DEFAULT_ESTIMATE_SOURCE, ZESTIMATE_STILL_MUST_SHOW } from "../lib/marketing/estimate-sources"
+import { ESTIMATE_SOURCES, ESTIMATE_SOURCE_KEYS, DEFAULT_ESTIMATE_SOURCE, ZESTIMATE_STILL_MUST_SHOW, ESTIMATE_OF_VALUE_USES, estimateStillUseVerdict } from "../lib/marketing/estimate-sources"
 import {
   PUBLIC_PAGE_HOSTS, PUBLIC_PAGE_READY_RULES, readyRulesForHost, combinedReadySelector, unsatisfiedReadyLabels,
   planScreenshotCapture, captureScreenshot, SCREENSHOT_USES,
@@ -105,9 +110,37 @@ async function main() {
   console.log("\n[2 · no other site mentions in live code]")
   const OTHER_SITES_RE = /\b(redfin|realtor|trulia|homes)\.com\b|\b(realtor|redfin|homes)_estimate\b/i
   check("PUBLIC_PAGE_HOSTS is zillow.com only", PUBLIC_PAGE_HOSTS.length === 1 && PUBLIC_PAGE_HOSTS[0] === "zillow.com")
-  const offenders = [VOCAB, DOOR, SEAM, CARD].filter((p) => OTHER_SITES_RE.test(stripped(p)))
-  check("no live code token in the vocabulary / door / seam / card names another portal (stripped source — tombstones are comments)", offenders.length === 0, offenders.join(", "))
+  // RE-ANCHORED (wave 82D — owner: "the zillow zestimate screenshot should only be used for
+  // campaigns" + the multi-site estimate COMPARISON piece). The rule is now: Zillow ALONE for
+  // campaign stills; the other portals live ONLY inside the marked COMPARISON-ONLY blocks of the
+  // vocabulary and the seam (scripts/estimate-comparison-guard.ts owns what those blocks may do).
+  // The campaign door and the Zestimate card still name no other portal at all.
+  const outsideComparisonBlock = (p: string): number[] => {
+    const raw = src(p).split("\n"); const code = stripped(p).split("\n")
+    let inside = false; const hits: number[] = []
+    raw.forEach((line, i) => {
+      if (/BEGIN COMPARISON-ONLY BLOCK/.test(line)) inside = true
+      if (/END COMPARISON-ONLY BLOCK/.test(line)) inside = false
+      if (!inside && OTHER_SITES_RE.test(code[i] ?? "")) hits.push(i + 1)
+    })
+    return hits
+  }
+  const doorCardOffenders = [DOOR, CARD].filter((p) => OTHER_SITES_RE.test(stripped(p)))
+  check("the campaign door and the Zestimate card name no other portal in live code (stripped source)", doorCardOffenders.length === 0, doorCardOffenders.join(", "))
+  const blockLeaks = [VOCAB, SEAM].map((p) => ({ p, lines: outsideComparisonBlock(p) })).filter((x) => x.lines.length)
+  check("in the vocabulary and the seam, another portal appears ONLY inside a COMPARISON-ONLY block", blockLeaks.length === 0, blockLeaks.map((x) => `${x.p}:${x.lines.join(",")}`).join("; "))
+  check("the campaign vocabulary ESTIMATE_SOURCES names no other portal (Zillow alone for campaigns)", ESTIMATE_SOURCES.every((s) => !OTHER_SITES_RE.test(`${s.host} ${s.key}`)))
   check("CONTROL: the other-site finder catches a specimen host and a specimen key", OTHER_SITES_RE.test(stripComments(`const hosts = ["zillow.com", "redfin.com"]`)) && OTHER_SITES_RE.test(stripComments(`key: "homes_estimate"`)) && !OTHER_SITES_RE.test(stripComments(`// redfin.com was retired\nconst h = "zillow.com"`)))
+  check("CONTROL: a portal token OUTSIDE a comparison block is a leak; inside one it is not", (() => {
+    const spec = ["const a = \"zillow.com\"", "// ── BEGIN COMPARISON-ONLY BLOCK", "const b = \"redfin.com\"", "// ── END COMPARISON-ONLY BLOCK", "const c = \"homes.com\""]
+    let inside = false; const hits: number[] = []
+    spec.forEach((l, i) => { if (/BEGIN COMPARISON-ONLY BLOCK/.test(l)) inside = true; if (/END COMPARISON-ONLY BLOCK/.test(l)) inside = false; if (!inside && OTHER_SITES_RE.test(stripComments(l))) hits.push(i + 1) })
+    return hits.join() === "5"
+  })())
+
+  console.log("\n[2b · a Zestimate still is campaign material — never an estimate of value]")
+  check("estimateStillUseVerdict admits every campaign use for the Zestimate and REFUSES every estimate-of-value use", SCREENSHOT_USES.every((u) => estimateStillUseVerdict("zillow_zestimate", u, SCREENSHOT_USES).ok) && ESTIMATE_OF_VALUE_USES.every((u) => { const v = estimateStillUseVerdict("zillow_zestimate", u, SCREENSHOT_USES); return !v.ok && /never an estimate of value/.test(v.reason) }))
+  check("CONTROL: an unknown non-campaign use is refused for the Zestimate (fail closed)", !estimateStillUseVerdict("zillow_zestimate", "seller_portal_value", SCREENSHOT_USES).ok)
 
   console.log("\n[3 · readiness — the still must show the photo AND the Zestimate]")
   const rules = readyRulesForHost("www.zillow.com")

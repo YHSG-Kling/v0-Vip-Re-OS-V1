@@ -135,13 +135,15 @@ async function main() {
     const PASSTHROUGH_RE = /^(args|params|input|opts|preset|presetArgs)\.|^null\b|^string\b/
     const producers = files.map((f) => ({ f, code: stripped(f) })).filter((x) =>
       [...x.code.matchAll(/\bqrScanUrl:\s*([^\n,]+)/g)].some((m) => !PASSTHROUGH_RE.test(m[1].trim())))
-    // FINDING, published (2026-09-24): ZERO producers exist — orchestrate-send / -bundle-send /
-    // -preset-send all pass args.qrScanUrl through and every caller (agent-client-messages,
-    // campaign-bundle-dispatch) omits it, so a PRINTED postcard carries no tracked QR even though
-    // ai-direct-mail minted one for the campaign (direct_mail_campaigns.qr_code_id). Not an
-    // unregistered QR (the registry is intact) — a registered QR that never reaches print. Open
-    // item for the direct-mail lane; this check holds the rule for the day a producer appears.
-    console.log(`    qrScanUrl producers (non-passthrough, non-null): ${producers.length} — ${producers.map((x) => rel(x.f)).join(", ") || "none (printed postcards carry no tracked QR today — open item)"}`)
+    // FINDING, published (2026-09-24): ZERO producers existed — orchestrate-send / -bundle-send /
+    // -preset-send all pass args.qrScanUrl through and every caller omitted it, so a PRINTED
+    // postcard carried no tracked QR even though ai-direct-mail minted one for the campaign
+    // (direct_mail_campaigns.qr_code_id). CLOSED (wave 82D): the approved-campaign drain
+    // (lib/direct-mail/campaign-drain.ts) and the CRM bundle send (app/actions/
+    // campaign-bundle-dispatch.ts) now mint/reuse the campaign's code through mintTrackedQr and
+    // pass its scanUrl — the count moved 0 → 2 BECAUSE the defect was fixed. scripts/
+    // estimate-comparison-guard.ts holds the producers ≥ the two drains (a rule, not a count).
+    console.log(`    qrScanUrl producers (non-passthrough, non-null): ${producers.length} — ${producers.map((x) => rel(x.f)).join(", ") || "none (printed postcards carry no tracked QR — a regression of the 82D fix)"}`)
     return producers.every((x) => /scan_url|scanUrl|mintTrackedQr\(/.test(x.code))
   })())
   check("the registry is the ONLY writer of qr_codes (no other live file inserts into it)", files.filter((f) => rel(f) !== REGISTRY && /from\("qr_codes"\)[\s\S]{0,200}\.insert\(/.test(blankStrings(stripped(f)))).length === 0)

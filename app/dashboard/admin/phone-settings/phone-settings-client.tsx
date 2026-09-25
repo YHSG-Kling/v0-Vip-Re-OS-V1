@@ -16,6 +16,7 @@ import {
   updateBrokeragePhoneSettings,
   getPhoneAllowanceStatusAction,
   searchBrokerageNumbersAction,
+  suggestLocalNumbersAction,
   purchaseBrokerageNumberAction,
   type BrokeragePhoneSettings,
   type PhoneAllowanceStatus,
@@ -39,7 +40,11 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
   // ── Add-a-Number state ──
   const [allowance, setAllowance] = useState<PhoneAllowanceStatus | null>(allowanceStatus)
   const [areaCode, setAreaCode] = useState("")
-  const [candidates, setCandidates] = useState<NumberCandidateView[]>([])
+  // Wave 82D — a candidate may carry WHY it was suggested (your area code /
+  // nearby / toll-free secondary) and the carrier-registration lane it kicks.
+  const [candidates, setCandidates] = useState<Array<NumberCandidateView & { rungLabel?: string; tollFree?: boolean; registrationLane?: "10dlc" | "tollfree" }>>([])
+  const [includeTollFree, setIncludeTollFree] = useState(false)
+  const [searchAnchor, setSearchAnchor] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
   const [buying, setBuying] = useState<string | null>(null)
   const [addNoteOk, setAddNoteOk] = useState<string | null>(null)
@@ -47,8 +52,32 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
 
   const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`
 
+  // PRIMARY (wave 82D): local numbers nearest the brokerage — its own area
+  // code first (the office phone on file, or the one typed), then nearby;
+  // toll-free only when ticked (the secondary option).
+  async function handleSuggestLocal() {
+    setAddError(null); setAddNoteOk(null); setSearching(true); setCandidates([]); setSearchAnchor(null)
+    try {
+      const res = await suggestLocalNumbersAction({ areaCode: areaCode.trim() || undefined, includeTollFree })
+      if (res.success) {
+        setCandidates(res.candidates)
+        setSearchAnchor(res.anchor || null)
+        if (res.candidates.length === 0) setAddError("No local numbers are available near your office right now — try another area code, or tick toll-free.")
+      } else {
+        setAddError(
+          res.notConfigured
+            ? "Telephony isn't connected for your brokerage yet. Once your carrier is set up, you can search and buy numbers here."
+            : res.error,
+        )
+      }
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  // EXACT area code only (no nearby fallback).
   async function handleSearchNumbers() {
-    setAddError(null); setAddNoteOk(null); setSearching(true); setCandidates([])
+    setAddError(null); setAddNoteOk(null); setSearching(true); setCandidates([]); setSearchAnchor(null)
     try {
       const res = await searchBrokerageNumbersAction({ areaCode: areaCode.trim() || undefined })
       if (res.success) {
@@ -72,7 +101,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
       const res = await purchaseBrokerageNumberAction({ phoneNumber })
       if (res.success) {
         setAddNoteOk(
-          `${res.phoneNumber} added${res.billing === "overage" ? ` (+${dollars(res.monthlyOverageCents)}/mo overage)` : " — included in your plan"}.`,
+          `${res.phoneNumber} added${res.billing === "overage" ? ` (+${dollars(res.monthlyOverageCents)}/mo overage)` : " — included in your plan"}.${res.registration ? ` ${res.registration}` : ""}`,
         )
         setCandidates((cs) => cs.filter((c) => c.phoneNumber !== phoneNumber))
         const refreshed = await getPhoneAllowanceStatusAction()
@@ -285,11 +314,19 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
                     className="w-32"
                   />
                 </div>
-                <Button onClick={handleSearchNumbers} disabled={searching} variant="outline" className="gap-1.5">
+                <Button onClick={handleSuggestLocal} disabled={searching} className="gap-1.5">
                   {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                  Search
+                  Find local numbers
+                </Button>
+                <Button onClick={handleSearchNumbers} disabled={searching || areaCode.trim().length !== 3} variant="outline" className="gap-1.5">
+                  Exact area code only
                 </Button>
               </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input type="checkbox" checked={includeTollFree} onChange={(e) => setIncludeTollFree(e.target.checked)} />
+                Also show toll-free numbers (secondary — local numbers answer better and register through A2P 10DLC)
+              </label>
+              {searchAnchor && <p className="text-xs text-muted-foreground">Searching near: {searchAnchor}</p>}
 
               {candidates.length > 0 && (
                 <div className="divide-y rounded-md border">
@@ -301,6 +338,9 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
                           <span className="text-xs text-muted-foreground ml-2">
                             {[c.locality, c.region].filter(Boolean).join(", ")}
                           </span>
+                        )}
+                        {c.rungLabel && (
+                          <Badge variant={c.tollFree ? "outline" : "secondary"} className="ml-2 text-[10px]">{c.rungLabel}</Badge>
                         )}
                       </div>
                       <Button

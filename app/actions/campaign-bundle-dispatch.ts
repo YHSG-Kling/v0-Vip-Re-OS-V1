@@ -124,6 +124,17 @@ export async function sendCampaignBundleToContactAction(params: {
   const { resolveMailingAddressForContact } = await import("@/lib/contacts/resolve-mailing-address")
   const address = await resolveMailingAddressForContact({ contactId: params.contactId, brokerageId })
 
+  // WAVE 82D — the bundle's printed postcard carries a TRACKED QR (81D open
+  // item). One registered code per bundle through THE ONE minter (idempotent
+  // per label, tenant-owned); a refused mint sends without a QR, honestly null.
+  let bundleQr: { scanUrl: string } | null = null
+  try {
+    const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+    bundleQr = await mintTrackedQr({ brokerageId, agentId: ctx.agentId ?? null, label: `campaign_bundle:${params.bundleId}`, purpose: "campaign" })
+  } catch (err) {
+    console.error("[campaign-bundle-dispatch] tracked QR unavailable:", (err as Error)?.message)
+  }
+
   const { orchestrateBundleSend } = await import("@/lib/direct-mail/orchestrate-bundle-send")
   const result = await orchestrateBundleSend({
     brokerageId,
@@ -144,6 +155,7 @@ export async function sendCampaignBundleToContactAction(params: {
     recipientLastName:  contact.last_name ?? null,
     recipientEmail:     contact.email ?? null,
     recipientPhone:     contact.phone ?? null,
+    qrScanUrl:          bundleQr?.scanUrl ?? null,
     systemSource:       "crm_contact_bundle_send",
   })
 

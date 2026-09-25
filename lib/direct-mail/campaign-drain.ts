@@ -183,6 +183,37 @@ export async function runDirectMailCampaignDrain(
       }
     }
 
+    // WAVE 82D — THE PRINTED PIECE CARRIES ITS CAMPAIGN'S TRACKED QR (81D open
+    // item: "printed direct-mail postcards carry NO tracked QR" — the chain took
+    // `qrScanUrl` and every caller omitted it). The campaign's registered code
+    // is reused through THE ONE minter (idempotent per label): the code
+    // ai-direct-mail already minted (direct_mail_campaigns.qr_code_id → its
+    // label), else a fresh `direct_mail_campaign:<id>` code stamped back onto the
+    // row. Best-effort: a refused mint mails the piece without a QR (the CTA
+    // still prints) and says so — never a raw URL encoded outside the registry.
+    let printedQr: { scanUrl: string } | null = null
+    try {
+      let label = `direct_mail_campaign:${row.id}`
+      if (row.qr_code_id) {
+        const { data: code, error: codeErr } = await svc.from("qr_codes").select("label").eq("id", row.qr_code_id).eq("brokerage_id", input.brokerageId).maybeSingle()
+        if (codeErr) console.error(`[campaign-drain] campaign QR read refused for ${row.id}: ${codeErr.message}`)
+        if ((code as { label?: string } | null)?.label) label = (code as { label: string }).label
+      }
+      const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+      const minted = await mintTrackedQr({ brokerageId: input.brokerageId, agentId: row.agent_id ?? null, label, purpose: "campaign" }, svc as any)
+      if (minted) {
+        printedQr = { scanUrl: minted.scanUrl }
+        if (!row.qr_code_id) {
+          const { error: stampErr } = await svc.from("direct_mail_campaigns").update({ qr_code_id: minted.qrCodeId }).eq("id", row.id).eq("brokerage_id", input.brokerageId)
+          if (stampErr) console.error(`[campaign-drain] qr_code_id stamp refused for ${row.id}: ${stampErr.message}`)
+        }
+      } else {
+        console.error(`[campaign-drain] no tracked QR for campaign ${row.id} — the piece mails without one`)
+      }
+    } catch (err) {
+      console.error(`[campaign-drain] tracked QR unavailable for campaign ${row.id}:`, (err as Error)?.message)
+    }
+
     // ONE real dispatch through the shared rail — every gate applies.
     try {
       // The staged play resolved the agent as agents.id on the row; the
@@ -218,6 +249,9 @@ export async function runDirectMailCampaignDrain(
         // not satisfy on its own: the resolver and the public surface existed,
         // and nothing put the code where the person could reach it.
         unsubscribeToken,
+        // The campaign's REGISTERED code (minted above) — /api/qr/scan?slug=…,
+        // so every scan of the printed piece lands in qr_scan_events.
+        qrScanUrl: printedQr?.scanUrl ?? null,
         systemSource: `campaign_drain:${row.target_audience ?? "approved"}`,
       })
 

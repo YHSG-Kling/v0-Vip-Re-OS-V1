@@ -91,6 +91,56 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
     ],
   },
   {
+    // WAVE 82D (owner verbatim: "finding out what your home is worth in todays
+    // market can make you feel overwhelmed when comparing all of these
+    // sites...we can help"). The creative itself (cards + spread + hook + CTA)
+    // is composed by lib/marketing/estimate-comparison.ts from APPROVED
+    // captures with human-confirmed figures; the channel copy below stays
+    // AI-authored from briefs (the catalog's owner rule).
+    key: "estimate_comparison",
+    title: "The Estimate Comparison",
+    strategy: "Show the homeowner that the big home-value websites disagree about the same house — then offer the local, human read.",
+    whyItWorks:
+      "Homeowners already check two or three sites and feel overwhelmed when the numbers don't match. Putting every site's figure side by side, with the spread, names that confusion out loud — you're not arguing with an estimate, you're resolving a contradiction they already felt. The QR lands on your home-value review page.",
+    ridesOn: "The home-value websites every homeowner has already checked (Zillow, Realtor.com, Redfin, Homes.com)",
+    steps: [
+      {
+        kind: "lead_magnet",
+        label: "Estimate Comparison — home-value review page",
+        brief:
+          "A home-value REVIEW request page for homeowners who saw that the big websites disagree about their home. Angle: every site runs its own model on its own data and none has been inside the home; a local review looks at condition, updates and what buyers are actually paying nearby. Promise a no-obligation review conversation; no specific or instant figure is promised on the page. Tone: calm, respectful, zero hype.",
+      },
+      { kind: "qr", label: "Estimate Comparison QR", brief: "lead_capture" },
+      {
+        kind: "direct_mail_postcard",
+        label: "Estimate Comparison — postcard",
+        brief:
+          "A postcard whose art is the estimate comparison (each website's figure on its own card, the spread between highest and lowest). Headline options to pick from or sharpen: 'Four websites. Four different prices. Which one is right?' / 'Your home has four online prices. It only sells for one.' / 'The internet can't agree on what your home is worth.' Body: it's normal to feel overwhelmed comparing these sites — each uses different data and none has walked through the home. CTA: scan for a free, no-obligation home-value review. Never promise a number; the figures are the websites', not the agent's.",
+      },
+      {
+        kind: "social_post",
+        sendAfterMinutes: 0,
+        label: "Estimate Comparison — social carousel",
+        brief:
+          "A carousel caption for the comparison graphic: open with a pattern-interrupt hook about the websites disagreeing on the same home; one honest sentence on why (different data, none has seen inside); invite a DM with the word VALUE for a no-obligation home-value review. No address, no promise of a number, no people or neighborhood descriptions (fair housing).",
+      },
+      {
+        kind: "email",
+        sendAfterMinutes: 4320,
+        label: "Estimate Comparison — follow-up email",
+        brief:
+          "A 3-day follow-up email. Subject along the lines of 'Why four websites can't agree on your home's value' — curiosity, not clickbait. Body: validate that the mismatch is confusing; explain in one sentence why the sites disagree; invite a no-obligation home-value review via {{magnet_url}}. Short, personal, no pressure, no number promised.",
+      },
+      {
+        kind: "video",
+        label: "Why the websites disagree",
+        brief:
+          "A 45-60 second spoken presentation over the comparison graphic (screenshot treatment): open with the hook that the big home-value websites show different prices for the same home; walk the figures one at a time and land the spread; explain that each site uses its own data and none has been inside the home; close by inviting a free, no-obligation home-value review through the page. Warm, first person, no jargon, never state a value.",
+      },
+      { kind: "bundle", label: "The Estimate Comparison", brief: "" },
+    ],
+  },
+  {
     key: "neighbor_brag",
     title: "The Neighbor Brag (Just-Sold Radius)",
     strategy: "Ride the just-sold sign every neighbor watched — their comps just changed.",

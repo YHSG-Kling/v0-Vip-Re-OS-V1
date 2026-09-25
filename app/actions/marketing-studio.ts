@@ -566,7 +566,7 @@ export async function createAsset(params: CreateAssetParams) {
     // placement_type is the LIVE CHECK vocabulary (scripts/check-vocabularies.ts
     // marketing_asset_qr_links: flyer | listing_asset | mailer | podcast_landing |
     // social_landing | video_endcard) — a studio QR asset is print material, so
-    // 'flyer'; 'other' (qr-asset-linker's stale local union) is a refused insert.
+    // 'flyer'. (qr-asset-linker's QrPlacementType now IS this vocabulary — wave 82D.)
     if (mintedQrId && asset?.id) {
       const { error: linkError } = await supabase
         .from("marketing_asset_qr_links")

@@ -125,13 +125,51 @@ export interface NumberCandidateData {
   locality: string | null
   region: string | null
   postalCode: string | null
+  /** Wave 82D — geography + capability, as Twilio returns them. */
+  rateCenter?: string | null
+  latitude?: number | null
+  longitude?: number | null
+  smsCapable?: boolean | null
+  voiceCapable?: boolean | null
+}
+
+/** The geographic search Twilio's AvailablePhoneNumbers Local resource takes
+ *  (US/CA only): AreaCode, InLocality, InRegion, InPostalCode, NearNumber /
+ *  NearLatLong + Distance (miles, ≤500, default 25). Wave 82D — local numbers
+ *  nearest the tenant's location. */
+export interface LocalNumberSearchParams {
+  areaCode?: string
+  inLocality?: string
+  inRegion?: string
+  inPostalCode?: string
+  nearNumber?: string
+  nearLatLong?: string
+  distance?: number
+  smsEnabled?: boolean
+  voiceEnabled?: boolean
+  limit?: number
+}
+
+function toCandidates(rows: Array<{ phoneNumber: string; friendlyName?: string; locality?: string; region?: string; postalCode?: string; rateCenter?: string; latitude?: number; longitude?: number; capabilities?: { SMS?: boolean; sms?: boolean; voice?: boolean } }>): NumberCandidateData[] {
+  return rows.map((n) => ({
+    phoneNumber: n.phoneNumber,
+    friendlyName: n.friendlyName ?? null,
+    locality: n.locality ?? null,
+    region: n.region ?? null,
+    postalCode: n.postalCode ?? null,
+    rateCenter: n.rateCenter ?? null,
+    latitude: typeof n.latitude === "number" ? n.latitude : n.latitude != null ? Number(n.latitude) : null,
+    longitude: typeof n.longitude === "number" ? n.longitude : n.longitude != null ? Number(n.longitude) : null,
+    smsCapable: n.capabilities ? Boolean(n.capabilities.SMS ?? n.capabilities.sms) : null,
+    voiceCapable: n.capabilities ? Boolean(n.capabilities.voice) : null,
+  }))
 }
 
 /** `GET /AvailablePhoneNumbers/US/Local.json` — used by
  *  number-provisioning.ts::searchAvailableNumbers. */
 export async function searchAvailableLocalNumbers(
   creds: TwilioCreds,
-  opts: { areaCode?: string; inLocality?: string; limit?: number },
+  opts: LocalNumberSearchParams,
 ): Promise<AdapterResult<NumberCandidateData[]>> {
   try {
     const rows = await client(creds)
@@ -139,16 +177,38 @@ export async function searchAvailableLocalNumbers(
       .local.list({
         ...(opts.areaCode ? { areaCode: Number(opts.areaCode) } : {}),
         ...(opts.inLocality ? { inLocality: opts.inLocality } : {}),
+        ...(opts.inRegion ? { inRegion: opts.inRegion } : {}),
+        ...(opts.inPostalCode ? { inPostalCode: opts.inPostalCode } : {}),
+        ...(opts.nearNumber ? { nearNumber: opts.nearNumber } : {}),
+        ...(opts.nearLatLong ? { nearLatLong: opts.nearLatLong } : {}),
+        ...(opts.distance ? { distance: opts.distance } : {}),
+        ...(opts.smsEnabled != null ? { smsEnabled: opts.smsEnabled } : {}),
+        ...(opts.voiceEnabled != null ? { voiceEnabled: opts.voiceEnabled } : {}),
         limit: opts.limit ?? 10,
       })
-    const candidates: NumberCandidateData[] = rows.map((n) => ({
-      phoneNumber: n.phoneNumber,
-      friendlyName: n.friendlyName ?? null,
-      locality: n.locality ?? null,
-      region: n.region ?? null,
-      postalCode: n.postalCode ?? null,
-    }))
-    return { ok: true, status: 200, data: candidates, error: null }
+    return { ok: true, status: 200, data: toCandidates(rows as any), error: null }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+/** `GET /AvailablePhoneNumbers/US/TollFree.json` — the SECONDARY option
+ *  (wave 82D: "the phone numbers most likely will not be toll free numbers").
+ *  Toll-free leases at $2.15/mo vs $1.15 local (twilio.com/en-us/voice/pricing/us)
+ *  and needs Toll-Free Verification instead of A2P 10DLC. */
+export async function searchAvailableTollFreeNumbers(
+  creds: TwilioCreds,
+  opts: { contains?: string; smsEnabled?: boolean; limit?: number } = {},
+): Promise<AdapterResult<NumberCandidateData[]>> {
+  try {
+    const rows = await client(creds)
+      .availablePhoneNumbers("US")
+      .tollFree.list({
+        ...(opts.contains ? { contains: opts.contains } : {}),
+        ...(opts.smsEnabled != null ? { smsEnabled: opts.smsEnabled } : {}),
+        limit: opts.limit ?? 10,
+      })
+    return { ok: true, status: 200, data: toCandidates(rows as any), error: null }
   } catch (err) {
     return mapError(err)
   }

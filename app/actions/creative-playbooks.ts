@@ -130,20 +130,44 @@ export async function installCreativePlaybook(
   //      the postcard art and the video's screenshot slot consume below.
   let approvedStillUrl: string | null = null
   let approvedStillId: string | null = null
-  if (playbook.key === "zestimate_challenge") {
-    const { ensureZestimateChallengeStill } = await import("@/lib/marketing/tenant-screenshot-door")
-    // Address: the named listing, else the tenant's most recent listing (own
-    // DB — the cheapest rail; no provider is asked for an address).
-    let address: string | null = null
+  // Address: the named listing, else the tenant's most recent listing (own
+  // DB — the cheapest rail; no provider is asked for an address). Shared by
+  // the Zestimate Challenge and the Estimate Comparison (wave 82D).
+  const resolvePlayAddress = async (): Promise<string | null> => {
     if (opts.listingId) {
       const { data: l, error: lErr } = await svc.from("listings").select("address, city, state").eq("id", opts.listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
       if (lErr) notes.push(`Still: listing read refused — ${lErr.message}`)
-      address = l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
-    } else {
-      const { data: l, error: lErr } = await svc.from("listings").select("address, city, state").eq("brokerage_id", ctx.brokerageId).not("address", "is", null).order("updated_at", { ascending: false }).limit(1).maybeSingle()
-      if (lErr) notes.push(`Still: listing read refused — ${lErr.message}`)
-      address = l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
+      return l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
     }
+    const { data: l, error: lErr } = await svc.from("listings").select("address, city, state").eq("brokerage_id", ctx.brokerageId).not("address", "is", null).order("updated_at", { ascending: false }).limit(1).maybeSingle()
+    if (lErr) notes.push(`Still: listing read refused — ${lErr.message}`)
+    return l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
+  }
+  if (playbook.key === "estimate_comparison") {
+    // WAVE 82D — the comparison piece: an APPROVED composite is the postcard
+    // art and the video's screenshot slot; otherwise the OS captures every
+    // source (pending) and says exactly what the human still has to do.
+    const address = await resolvePlayAddress()
+    if (!address) notes.push("Comparison: no listing address on file — enter one under Estimate Comparison.")
+    else {
+      const { approvedComparisonCreative, listComparisonEvidence, captureEstimateComparisonStills } = await import("@/lib/marketing/estimate-comparison")
+      const postcard = await approvedComparisonCreative(svc, ctx.brokerageId, address, "postcard_6x9")
+      const square = await approvedComparisonCreative(svc, ctx.brokerageId, address, "social_square")
+      if (postcard) { approvedStillUrl = postcard.url; approvedStillId = postcard.id; notes.push("Comparison: using your approved estimate comparison as the postcard art.") }
+      if (square && !approvedStillUrl) { approvedStillUrl = square.url; approvedStillId = square.id }
+      if (!postcard && !square) {
+        const have = await listComparisonEvidence(svc, ctx.brokerageId, address)
+        if (have.length === 0) {
+          const cap = await captureEstimateComparisonStills({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null })
+          if (!cap.ok) notes.push(`Comparison: not captured — ${cap.reason}`)
+          else notes.push(`Comparison: captured ${cap.outcomes.filter((o) => o.ok).length}/${cap.outcomes.length} websites for ${address} — approve each, confirm the figure it shows, then compose under Estimate Comparison. ${cap.outcomes.filter((o) => !o.ok).map((o) => `${o.source}: ${(o as { reason: string }).reason}`).join("; ")}`.trim())
+        } else notes.push(`Comparison: ${have.length} capture(s) on file for ${address} — approve, confirm figures and compose under Estimate Comparison (the QR stays the postcard art until then).`)
+      }
+    }
+  }
+  if (playbook.key === "zestimate_challenge") {
+    const { ensureZestimateChallengeStill } = await import("@/lib/marketing/tenant-screenshot-door")
+    const address = await resolvePlayAddress()
     const still = await ensureZestimateChallengeStill({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null, source: opts.estimateSource ?? null })
     if (still.state === "approved") { approvedStillUrl = still.url; approvedStillId = still.assetId; notes.push(`Still: using your approved ${still.source.replace(/_/g, " ")} still as the postcard art and the video's screenshot slot.`) }
     else if (still.state === "captured") notes.push(`Still: captured a ${still.source.replace(/_/g, " ")} still for ${address} — awaiting your approval under Zestimate & co. stills (the QR stays the postcard art until then).`)

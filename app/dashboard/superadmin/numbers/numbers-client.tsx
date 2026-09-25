@@ -9,12 +9,13 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   searchNumbersForTenant,
+  suggestLocalNumbersForTenant,
   provisionNumberForTenant,
   releaseNumberForTenant,
 } from "@/app/actions/superadmin/number-provisioning"
 
 interface TenantOption { id: string; name: string }
-interface Candidate { phoneNumber: string; friendlyName: string | null; locality: string | null; region: string | null; postalCode: string | null }
+interface Candidate { phoneNumber: string; friendlyName?: string | null; locality: string | null; region: string | null; postalCode?: string | null; /** wave 82D */ rungLabel?: string; tollFree?: boolean }
 
 // ─── Tenant picker → area-code search → candidates → provision ───────────────
 
@@ -28,6 +29,23 @@ export function ProvisionPanel({ tenants }: { tenants: TenantOption[] }) {
   const [candidates, setCandidates] = useState<Candidate[] | null>(null)
   const [credTier, setCredTier] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [includeTollFree, setIncludeTollFree] = useState(false)
+
+  // Wave 82D — the tenant's own area code first (its office phone on file, or
+  // the one typed), nearby fallback, toll-free only when ticked.
+  const suggestLocal = async () => {
+    if (!brokerageId) { setMessage("Pick a tenant first."); return }
+    setBusy(true); setMessage(null); setCandidates(null); setCredTier(null)
+    const r = await suggestLocalNumbersForTenant({ brokerageId, areaCode: areaCode.trim() || undefined, includeTollFree })
+    if (r.ok) {
+      setCandidates(r.candidates)
+      setCredTier(r.credTier)
+      setMessage(r.candidates.length === 0 ? `No local numbers available near ${r.anchor || "this tenant"} — try another area code or tick toll-free.` : `Searching near: ${r.anchor || "—"}`)
+    } else {
+      setMessage(r.error)
+    }
+    setBusy(false)
+  }
 
   const search = async () => {
     if (!brokerageId) { setMessage("Pick a tenant first."); return }
@@ -49,7 +67,8 @@ export function ProvisionPanel({ tenants }: { tenants: TenantOption[] }) {
     if (r.ok) {
       setMessage(
         `Provisioned ${r.phoneNumber} (${r.credTier} creds)${r.twilioSid ? ` · ${r.twilioSid}` : ""} — ` +
-        (r.bound ? "webhooks bound to the AI lane." : r.bindNote ?? "webhooks not bound."),
+        (r.bound ? "webhooks bound to the AI lane." : r.bindNote ?? "webhooks not bound.") +
+        (r.registration ? `\n${r.registration}` : ""),
       )
       setCandidates(null)
       router.refresh()
@@ -63,9 +82,9 @@ export function ProvisionPanel({ tenants }: { tenants: TenantOption[] }) {
     <div className="rounded-lg border p-4 space-y-3">
       <h2 className="text-lg font-semibold">Provision a number</h2>
       <p className="text-xs text-muted-foreground">
-        Search purchasable US local numbers with the tenant&apos;s canonical Twilio credentials
+        Find LOCAL numbers nearest the tenant (its area code first, then nearby; toll-free only when ticked), or run an exact search, with the tenant&apos;s canonical Twilio credentials
         (BYO → subaccount → platform master), then provision: purchase, save to the tenant&apos;s
-        inventory (brokerage scope), audit line, AI-lane webhook binding.
+        inventory (brokerage scope), audit line, AI-lane webhook binding, carrier registration kicked (A2P 10DLC for local).
       </p>
       <div className="flex flex-wrap items-end gap-2 text-sm">
         <label className="flex flex-col gap-1">
@@ -83,9 +102,16 @@ export function ProvisionPanel({ tenants }: { tenants: TenantOption[] }) {
           <span className="text-xs text-muted-foreground">Locality (optional)</span>
           <input value={locality} onChange={(e) => setLocality(e.target.value)} placeholder="Austin" className="rounded-md border px-2 py-1 bg-background w-40" />
         </label>
-        <button onClick={search} disabled={busy || !brokerageId} className="rounded-md border px-3 py-1 font-medium disabled:opacity-40">
-          {busy ? "Searching…" : "Search"}
+        <button onClick={suggestLocal} disabled={busy || !brokerageId} className="rounded-md border px-3 py-1 font-medium disabled:opacity-40">
+          {busy ? "Searching…" : "Find local numbers"}
         </button>
+        <button onClick={search} disabled={busy || !brokerageId} className="rounded-md border px-3 py-1 disabled:opacity-40">
+          Exact search
+        </button>
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <input type="checkbox" checked={includeTollFree} onChange={(e) => setIncludeTollFree(e.target.checked)} />
+          toll-free too (secondary)
+        </label>
       </div>
 
       {message && <div className="rounded-md border bg-muted/40 p-2 text-xs whitespace-pre-wrap">{message}</div>}
@@ -101,6 +127,7 @@ export function ProvisionPanel({ tenants }: { tenants: TenantOption[] }) {
               <span className="text-xs text-muted-foreground">
                 {[c.locality, c.region, c.postalCode].filter(Boolean).join(", ") || "—"}
               </span>
+              {c.rungLabel && <span className={`rounded border px-1.5 text-[10px] ${c.tollFree ? "text-amber-700" : "text-emerald-700"}`}>{c.rungLabel}</span>}
               <button
                 onClick={() => provision(c.phoneNumber)}
                 disabled={provisioning !== null}

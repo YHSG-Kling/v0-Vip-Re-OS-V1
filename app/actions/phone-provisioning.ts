@@ -16,7 +16,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
-import { provisionNumber, logPhoneNumberEvent, searchAvailableNumbers } from "@/lib/voice/number-provisioning"
+import { provisionNumber, logPhoneNumberEvent, searchAvailableNumbers, suggestLocalNumbers } from "@/lib/voice/number-provisioning"
 import { evaluateTenantNumberProvisioning } from "@/lib/billing/phone-plan-resolve"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
@@ -533,6 +533,41 @@ export async function searchBrokerageNumbersAction(params: {
   }
 }
 
+export interface LocalNumberSuggestionView {
+  phoneNumber: string
+  locality: string | null
+  region: string | null
+  rungLabel: string
+  inAreaCode: boolean
+  tollFree: boolean
+  registrationLane: "10dlc" | "tollfree"
+}
+
+/** Wave 82D — LOCAL numbers nearest the tenant: its own area code first (from
+ *  the office phone on file, a named location, or a typed area code), nearby
+ *  fallback, toll-free only when asked. READ (nothing bought), same reader
+ *  seam + broker-role gate as searchBrokerageNumbersAction; the tenant is the
+ *  session's. */
+export async function suggestLocalNumbersAction(params: {
+  areaCode?: string
+  locationId?: string
+  includeTollFree?: boolean
+}): Promise<{ success: true; candidates: LocalNumberSuggestionView[]; anchor: string; areaCode: string | null } | { success: false; error: string; notConfigured?: boolean }> {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!isBrokerRole(ctx.userType)) return { success: false, error: "Only broker / admin can search numbers" }
+
+  const svc = createServiceClient()
+  const res = await suggestLocalNumbers(svc, ctx.brokerageId, {
+    areaCode: params.areaCode ?? null, locationId: params.locationId ?? null, includeTollFree: params.includeTollFree === true, limit: 12,
+  })
+  if (!res.ok) return { success: false, error: res.error, notConfigured: res.notConfigured }
+  return {
+    success: true, anchor: res.anchor, areaCode: res.areaCode,
+    candidates: res.candidates.map((c) => ({ phoneNumber: c.phoneNumber, locality: c.locality, region: c.region, rungLabel: c.rungLabel, inAreaCode: c.inAreaCode, tollFree: c.tollFree, registrationLane: c.registrationLane })),
+  }
+}
+
 /** Purchase a specific number for the brokerage (or a named agent). Runs the ONE
  *  provisioning core with the plan-allowance gate ON, so the buy is bundled or
  *  metered-overage, and blocked only at the hard cap. */
@@ -541,7 +576,7 @@ export async function purchaseBrokerageNumberAction(params: {
   /** Optional: assign to a specific agent (agents.id); else brokerage-scoped inventory. */
   agentId?: string
 }): Promise<
-  | { success: true; phoneNumber: string; billing: "included" | "overage"; monthlyOverageCents: number }
+  | { success: true; phoneNumber: string; billing: "included" | "overage"; monthlyOverageCents: number; /** wave 82D: the carrier-registration kickoff line (10DLC for local, toll-free verification for 8xx). */ registration: string | null }
   | { success: false; error: string; capReached?: boolean }
 > {
   const ctx = await resolveWriteContextForTenant()
@@ -576,6 +611,7 @@ export async function purchaseBrokerageNumberAction(params: {
     phoneNumber: result.phoneNumber,
     billing: result.billing ?? "included",
     monthlyOverageCents: result.monthlyOverageCents ?? 0,
+    registration: result.registration ? `${result.registration.lane === "10dlc" ? "A2P 10DLC" : "Toll-free verification"}: ${result.registration.statusLine}${result.registration.reason ? ` — ${result.registration.reason}` : ""}` : null,
   }
 }
 

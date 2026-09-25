@@ -18,16 +18,27 @@ import { KernelEvent, processKernelEvent } from "@/lib/kernel"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
+/** marketing_asset_qr_links.placement_type — EXACTLY the live CHECK
+ *  (scripts/check-vocabularies.ts marketing_asset_qr_links.placement_type).
+ *
+ *  TOMBSTONE (§6, wave 82D — the 81D open item): this union used to read
+ *  flyer | postcard | sign_rider | business_card | brochure | social_post |
+ *  email | website | other — a local vocabulary the database refuses for 6 of
+ *  its 9 values (only "flyer" was ever insertable). One vocabulary per
+ *  function: the CHECK is the survivor. A printed postcard/brochure is a
+ *  "mailer", a social post a "social_landing", a video outro a "video_endcard".
+ *  scripts/estimate-comparison-guard.ts holds this list equal to the cache. */
 export type QrPlacementType =
   | "flyer"
-  | "postcard"
-  | "sign_rider"
-  | "business_card"
-  | "brochure"
-  | "social_post"
-  | "email"
-  | "website"
-  | "other"
+  | "listing_asset"
+  | "mailer"
+  | "podcast_landing"
+  | "social_landing"
+  | "video_endcard"
+
+// Module-private ("use server" files export only async functions): the same
+// list as the type, for the fail-closed check below.
+const QR_PLACEMENT_TYPES: readonly QrPlacementType[] = ["flyer", "listing_asset", "mailer", "podcast_landing", "social_landing", "video_endcard"]
 
 /** Wave 36 — canonical semantic of where a QR scan lands. This enum is what analytics aggregates
  *  over; the CHECK constraint on qr_codes.destination_type (m148) is the source of truth for the
@@ -73,6 +84,11 @@ export interface QrLinkInfo {
 export async function linkQrToAsset(
   params: QrLinkParams
 ): Promise<{ success: boolean; linkId?: string; error?: string }> {
+  // Fail closed BEFORE any read: a placement outside the live CHECK would be a
+  // refused insert (supabase-js resolves it) — name it instead.
+  if (!(QR_PLACEMENT_TYPES as readonly string[]).includes(String(params.placementType))) {
+    return { success: false, error: `placement "${String(params.placementType)}" is not one of ${QR_PLACEMENT_TYPES.join(" | ")}` }
+  }
   const { brokerageId } = await getAgentContext()
   const supabase = await createClient()
 

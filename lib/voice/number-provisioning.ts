@@ -18,6 +18,7 @@
 import { searchAvailableLocalNumbers, purchaseIncomingPhoneNumber, releaseIncomingPhoneNumber } from "@/lib/providers/twilio/client"
 import { ensureTenantSubaccount, resolveTenantTwilioCreds, type TwilioCreds } from "@/lib/voice/twilio-tenancy"
 import type { CarrierKickoffResult } from "@/lib/voice/a2p-registration"
+import type { LocalNumberCandidate, TenantLocationAnchor } from "@/lib/voice/local-number-search"
 
 const NOT_CONFIGURED = "Twilio not configured (missing TWILIO_ACCOUNT_SID / AUTH_TOKEN)"
 
@@ -109,6 +110,62 @@ export async function searchAvailableNumbers(
   return { ok: true, candidates, credTier: creds.tier }
 }
 
+// ─── Local numbers nearest the tenant (wave 82D) ─────────────────────────────
+// Owner: "the phone numbers most likely will not be toll free numbers, build
+// non toll free provisioning and selection numbers which will most likely be
+// area codes that start with their location." The LADDER is pure
+// (lib/voice/local-number-search.ts); this is its one DB + carrier caller.
+// The tenant is the CALLER's (session gate in both actions) — never a body.
+
+type LocalNumberSuggestion =
+  | { ok: true; candidates: LocalNumberCandidate[]; anchor: string; areaCode: string | null; tried: Array<{ rung: string; found: number; error?: string }>; credTier: TwilioCreds["tier"] }
+  | { ok: false; error: string; notConfigured?: boolean }
+
+/** Read the tenant's location anchor: the named location (tenant-predicated)
+ *  else the brokerage's own address + office phone. */
+async function tenantLocationAnchor(
+  svc: any, brokerageId: string, opts: { locationId?: string | null; areaCode?: string | null } = {},
+): Promise<{ ok: true; anchor: TenantLocationAnchor } | { ok: false; error: string }> {
+  const { data: b, error: bErr } = await svc.from("brokerages").select("phone, city, state, zip").eq("id", brokerageId).maybeSingle()
+  if (bErr) return { ok: false, error: `brokerage location read refused: ${bErr.message}` }
+  if (!b) return { ok: false, error: "Tenant not found" }
+  let city: string | null = (b as any).city ?? null
+  let state: string | null = (b as any).state ?? null
+  let zip: string | null = (b as any).zip ?? null
+  if (opts.locationId) {
+    const { data: loc, error: lErr } = await svc.from("locations").select("city, state").eq("id", opts.locationId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (lErr) return { ok: false, error: `location read refused: ${lErr.message}` }
+    if (!loc) return { ok: false, error: "Location not found for this tenant" }
+    city = (loc as any).city ?? city; state = (loc as any).state ?? state
+    if ((loc as any).city && (loc as any).city !== (b as any).city) zip = null // the brokerage ZIP is not this location's
+  }
+  return { ok: true, anchor: { areaCode: opts.areaCode ?? null, phone: (b as any).phone ?? null, city, state, zip } }
+}
+
+/** Suggest purchasable LOCAL numbers nearest the tenant — area code first,
+ *  nearby fallback, toll-free only when asked (the secondary option). */
+export async function suggestLocalNumbers(
+  svc: any, brokerageId: string,
+  opts: { locationId?: string | null; areaCode?: string | null; includeTollFree?: boolean; limit?: number } = {},
+): Promise<LocalNumberSuggestion> {
+  const { planLocalNumberSearch, runLocalNumberSearch } = await import("@/lib/voice/local-number-search")
+  const loc = await tenantLocationAnchor(svc, brokerageId, opts)
+  if (!loc.ok) return { ok: false, error: loc.error }
+  const plan = planLocalNumberSearch(loc.anchor, { includeTollFree: opts.includeTollFree === true })
+  if (!plan.ok) return { ok: false, error: plan.reason }
+  const creds = await resolveCreds(svc, brokerageId)
+  if (!creds) return { ok: false, error: NOT_CONFIGURED, notConfigured: true }
+  const { searchAvailableTollFreeNumbers } = await import("@/lib/providers/twilio/client")
+  const res = await runLocalNumberSearch(plan, async (step, limit) => {
+    const r = step.rung === "toll_free"
+      ? await searchAvailableTollFreeNumbers(creds, { limit })
+      : await searchAvailableLocalNumbers(creds, { ...step.params, limit })
+    return r.ok ? { ok: true as const, rows: r.data ?? [] } : { ok: false as const, error: `(${r.status ?? "—"}) ${r.error ?? "unknown"}` }
+  }, { limit: opts.limit ?? 10 })
+  if (!res.ok) return { ok: false, error: res.reason }
+  return { ok: true, candidates: res.candidates, anchor: res.anchor, areaCode: res.areaCode, tried: res.tried, credTier: creds.tier }
+}
+
 // ─── Provision (search-or-exact → purchase → persist → event → bind) ─────────
 
 export interface ProvisionNumberParams {
@@ -160,6 +217,15 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
 
   // 1. Target number: exact candidate, else first search match.
   let targetNumber = params.phoneNumber?.trim() || null
+  if (!targetNumber && !params.areaCode) {
+    // Wave 82D — no number and no area code (the auto-provision path) used to
+    // buy whatever US number Twilio listed first. Now: the first LOCAL number
+    // nearest the tenant (area code → nearby ladder), never toll-free here.
+    const near = await suggestLocalNumbers(svc, params.brokerageId, { limit: 1 })
+    if (!near.ok) return near
+    targetNumber = near.candidates[0]?.phoneNumber ?? null
+    if (!targetNumber) return { ok: false, error: `No available local numbers found near ${near.anchor || "the tenant's location"}` }
+  }
   if (!targetNumber) {
     const search = await searchAvailableNumbers(svc, params.brokerageId, { areaCode: params.areaCode, limit: 1 })
     if (!search.ok) return search
