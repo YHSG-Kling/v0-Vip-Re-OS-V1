@@ -36,6 +36,8 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
   const [booksScope, setBooksScope] = useState<BookTransferScope>("temporary")
   const [booksUntil, setBooksUntil] = useState<string>("")
   const [booksReason, setBooksReason] = useState<string>("")
+  // Permanent without off-boarding (wave 82E): role change / restructure — the agent stays.
+  const [booksKeepActive, setBooksKeepActive] = useState<boolean>(false)
   const [transfers, setTransfers] = useState<BookTransferRow[] | null>(null)
   const [transfersError, setTransfersError] = useState<string | null>(null)
 
@@ -55,15 +57,16 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
         fromAgentId: booksFrom, toAgentId: booksTo, scope: booksScope,
         until: booksScope === "temporary" ? new Date(`${booksUntil}T23:59:59`).toISOString() : null,
         reason: booksReason || null,
+        keepActive: booksScope === "permanent" && booksKeepActive,
       })
       if (r.ok) {
         const x = r.result
         toast({
           title: booksScope === "temporary" ? `${nameOf(booksFrom)}'s book is covered by ${nameOf(booksTo)}` : `${nameOf(booksFrom)}'s book moved to ${nameOf(booksTo)}`,
-          description: `${x.contacts} contact(s) · ${x.leads} lead(s) · ${x.dealRoles} deal role(s) · ${x.tasks} task(s) · ${x.listings} listing(s) · ${x.calendarEvents} event(s) · ${x.propertyAlerts} alert(s)${x.coverageSet ? " · new leads redirect while away" : ""}${x.agentDeactivated ? " · agent deactivated" : ""}${x.refused.length ? ` · ${x.refused.length} refusal(s): ${x.refused.join("; ")}` : ""}.`,
+          description: `${x.contacts} contact(s) · ${x.leads} lead(s) · ${x.dealRoles} deal role(s) · ${x.tasks} task(s) · ${x.listings} listing(s) · ${x.calendarEvents} event(s) · ${x.propertyAlerts} alert(s)${x.coverageSet ? " · new leads redirect while away" : ""}${x.agentDeactivated ? " · agent deactivated" : ""}${x.introductionsProposed > 0 ? ` · ${x.introductionsProposed} client introduction(s) queued for approval` : ""}${x.refused.length ? ` · ${x.refused.length} refusal(s): ${x.refused.join("; ")}` : ""}.`,
         })
         if (x.agentDeactivated) setAgents((cur) => cur.map((a) => (a.id === booksFrom ? { ...a, isActive: false } : a)))
-        setBooksFrom(""); setBooksTo(""); setBooksUntil(""); setBooksReason("")
+        setBooksFrom(""); setBooksTo(""); setBooksUntil(""); setBooksReason(""); setBooksKeepActive(false)
         await loadTransfers()
       } else {
         toast({ title: "Books not reassigned", description: r.reason, variant: "destructive" })
@@ -77,7 +80,7 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
       if (r.ok) {
         const restored = Object.values(r.result.restored).reduce((a, b) => a + b, 0)
         const skipped = Object.values(r.result.skipped).reduce((a, b) => a + b, 0)
-        toast({ title: "Books reverted", description: `${restored} row(s) moved back${skipped ? ` · ${skipped} left where they were re-pointed during the window` : ""}${r.result.coverageCleared ? " · coverage cleared" : ""}.` })
+        toast({ title: "Books reverted", description: `${restored} row(s) moved back${skipped ? ` · ${skipped} left where they were re-pointed during the window` : ""}${r.result.coverageCleared ? " · coverage cleared" : ""}${r.result.introductionsWithdrawn > 0 ? ` · ${r.result.introductionsWithdrawn} unapproved cover intro(s) withdrawn` : ""}.` })
         await loadTransfers()
       } else {
         toast({ title: "Not reverted", description: r.reason, variant: "destructive" })
@@ -155,7 +158,7 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
           <CardTitle className="text-base flex items-center gap-2"><CalendarClock className="h-5 w-5" /> Reassign an agent&apos;s books</CardTitle>
           <CardDescription>
             Temporarily (leave, illness — the book comes back automatically on the end date and new leads redirect meanwhile)
-            or permanently (the agent leaves — their whole book moves and the agent is deactivated).
+            or permanently (the agent leaves and is deactivated — or, for a role change or restructure, the book moves for good and the agent stays active).
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -184,6 +187,12 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
               <Button type="button" size="sm" variant={booksScope === "temporary" ? "default" : "outline"} onClick={() => setBooksScope("temporary")}>Temporary</Button>
               <Button type="button" size="sm" variant={booksScope === "permanent" ? "default" : "outline"} onClick={() => setBooksScope("permanent")}>Permanent</Button>
             </div>
+            {booksScope === "permanent" && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={booksKeepActive} onChange={(e) => setBooksKeepActive(e.target.checked)} />
+                Keep the agent active (role change, not a departure)
+              </label>
+            )}
             {booksScope === "temporary" && (
               <div className="space-y-1">
                 <Label htmlFor="books-until">Until</Label>
@@ -201,8 +210,10 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
           </div>
           <p className="text-xs text-muted-foreground">
             {booksScope === "temporary"
-              ? "Contacts, leads, in-flight deal roles, open tasks, active listings, upcoming events and alerts move to the covering agent and are recorded so they come back on the end date. Anything you re-point during the window stays where you put it."
-              : "Runs the off-boarding flow with the agent's own book reassigned (not archived): the successor inherits everything, a warm re-introduction is queued for approval, and the agent is deactivated."}
+              ? "Contacts, leads, in-flight deal roles, open tasks, active listings, upcoming events and alerts move to the covering agent and are recorded so they come back on the end date. The covering agent's introduction to each client is queued for their approval (withdrawn if still unapproved when the book comes back). Anything you re-point during the window stays where you put it. Drip sequences follow the contact: the next step goes out from whoever holds the contact."
+              : booksKeepActive
+                ? "The whole book moves for good to the receiving agent, a warm re-introduction is queued for approval, and the agent stays active with their login and seat — use this for a role change or restructure, not a departure."
+                : "Runs the off-boarding flow with the agent's own book reassigned (not archived): the successor inherits everything, a warm re-introduction is queued for approval, and the agent is deactivated."}
           </p>
           {transfersError && <p className="text-xs text-destructive">{transfersError}</p>}
           {transfers && transfers.length > 0 && (

@@ -96,9 +96,18 @@ const FN = "checkVendorBudget"
 const DEFECT = "const { data: brokerage } = await supabase"
 
 const failures: string[] = []
+/** True while a NEGATIVE CONTROL runs its mutated assertion (wave 82E). The
+ *  assertion's red is the control WORKING, so it must not print the same `✗` a
+ *  real failure prints: a reader (or a `grep ✗`) of a green run saw three E10
+ *  "failures" that were the controls proving the finder still bites. Printed
+ *  as "expected red" under the control; `failures` handling is unchanged. */
+let insideControl = false
 function check(label: string, ok: boolean, detail = ""): boolean {
   if (ok) console.log(`  ✓ ${label}`)
-  else {
+  else if (insideControl) {
+    console.log(`    ↳ expected red under the control: ${label}${detail ? ` — ${detail}` : ""}`)
+    failures.push(label)
+  } else {
     console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`)
     failures.push(label)
   }
@@ -583,11 +592,14 @@ function controlled(label: string, c: Control, fn: () => boolean): void {
   let wentRed = false
   try {
     const mark = failures.length
+    insideControl = true
     try {
       wentRed = !fn()
     } catch (e) {
       // A slice that can no longer be taken is still the check going red.
       wentRed = true
+    } finally {
+      insideControl = false
     }
     while (failures.length > mark) failures.pop()
   } finally {

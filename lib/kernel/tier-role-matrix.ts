@@ -516,6 +516,29 @@ export function roleProducesOnTier(role: UserDomainRole | string, tier: string |
 }
 
 /**
+ * PURE: the invite forms' "non-producing" question (wave 82E — lane 81A's open
+ * item: both invite ACTIONS accepted `produces` since 79A/80A, but neither FORM
+ * could send it, so a broker seated as staff was billed by type and a
+ * non-producing brokerage admin could not be declared at the door).
+ *
+ * Asked ONLY where the answer moves a seat: the licensed roles (a seat by type
+ * unless the tenant exempts them) and the seat-by-production admin (a seat only
+ * while producing). Never for agent / team_lead (always a seat) or free staff
+ * (never one) — a checkbox there would be a control that changes nothing.
+ * `defaultProduces` is roleProducesOnTier — the same inference the gate makes
+ * when the form says nothing, so an untouched box and an absent field agree.
+ */
+export function inviteProductionQuestion(
+  role: UserDomainRole | string,
+  tier: string | null | undefined,
+): { asked: boolean; defaultProduces: boolean } {
+  const asked =
+    (LICENSED_SEAT_ROLES as readonly string[]).includes(role) ||
+    (SEAT_BY_PRODUCTION_ROLES as readonly string[]).includes(role)
+  return { asked, defaultProduces: asked ? roleProducesOnTier(role, tier) : roleConsumesSeat(role) }
+}
+
+/**
  * PURE: the tenant's NON-PRODUCING exemptions out of brokerages.billing_metadata
  * ({ ..., non_producing_user_ids: [<users.id>, …] }). The ids are users.id —
  * NEVER agents.id (the two classes are disjoint, CLAUDE.md §3; the meter joins

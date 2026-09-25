@@ -27,7 +27,7 @@
 //   optional         — nice-to-have rails (osint/research, stock media,
 //                      direct mail, social/accounting OAuth apps).
 
-import { STRIPE_WEBHOOK_ROUTES, TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
+import { STRIPE_WEBHOOK_ROUTES, TENANT_BILLING_WEBHOOK_EVENTS, PLATFORM_WEBHOOK_ENV, PLATFORM_ONLY_STRIPE_ENV, TENANT_MONEY_ON_PLATFORM_KEY } from "@/lib/billing/stripe-account-scope"
 import { VENDOR_MARKETPLACE_WEBHOOK_EVENTS } from "@/lib/vendors/vendor-webhook-events"
 
 export type LaunchTier = "launch-blocking" | "launch-degraded" | "optional"
@@ -142,13 +142,21 @@ const ROWS: RowDef[] = [
     capability: "Stripe billing — the PLATFORM's own account (secret key)",
     envVars: ["STRIPE_SECRET_KEY"],
     whatLightsUp:
-      "The money the PLATFORM is the payee on: signup checkout, subscriptions, dunning, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints tenant acct_… ids. A platform-owned platform_credentials row (owner_type='platform', platform='stripe') overrides this var and is the preferred home once one exists. It does NOT cover tenant-side money — a brokerage's vendor bills, client payments and agent payouts run on that brokerage's OWN Stripe account, connected per tenant in Settings → Connections.",
+      "The money the PLATFORM is the payee on: signup checkout, subscriptions, dunning, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints tenant acct_… ids. A platform-owned platform_credentials row (owner_type='platform', platform='stripe') overrides this var and is the preferred home once one exists. It does NOT cover tenant-side money — a brokerage's vendor bills, client payments and agent payouts run on that brokerage's OWN Stripe account, connected per tenant in Settings → Connections. " +
+      // The residual ledger's RUNTIME reader (wave 82E): TENANT_MONEY_ON_PLATFORM_KEY
+      // is the declared list of tenant-money call sites still on this key
+      // (scripts/stripe-account-scope-simulator.ts C8 holds it equal to the
+      // scanned source). The operator reading this row is who must know if it
+      // is ever non-empty — a launch on it settles a tenant's money here.
+      (TENANT_MONEY_ON_PLATFORM_KEY.length === 0
+        ? "Tenant-money call sites still on this key: 0 — every tenant-side path resolves the tenant's own account."
+        : `WARNING — ${TENANT_MONEY_ON_PLATFORM_KEY.length} tenant-money call site(s) still settle on this key: ${TENANT_MONEY_ON_PLATFORM_KEY.map((r) => `${r.file} (${r.pathId})`).join(", ")}.`),
     tier: "launch-blocking",
   },
   {
     key: "stripe_webhook",
     capability: "Stripe webhook verification — PLATFORM account (tenant billing)",
-    envVars: ["STRIPE_WEBHOOK_SECRET"],
+    envVars: [PLATFORM_WEBHOOK_ENV.tenant_billing],
     // THE URL WAS WRONG, AND IT IS THE ONLY INSTRUCTION AN OPERATOR GETS.
     // This row said "register https://<app>/api/webhooks/stripe". No such route
     // exists — app/api/webhooks/stripe/ contains ONLY vendor/route.ts, so
@@ -175,9 +183,27 @@ const ROWS: RowDef[] = [
     // cancellation → suspend never arrive).
     key: "stripe_vendor_webhook",
     capability: "Stripe webhook verification — PLATFORM account (vendor marketplace)",
-    envVars: ["STRIPE_VENDOR_WEBHOOK_SECRET"],
-    whatLightsUp: "Vendor subscription status stays true — register https://<app>/api/webhooks/stripe/vendor as a SEPARATE endpoint on the PLATFORM's Stripe account (events: customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed) and set its own signing secret. The vendor marketplace tier is money the vendor pays the PLATFORM (VENDOR_PLATFORM_TIER), so this endpoint accepts platform-signed deliveries only. Without a secret — here or on the platform credential's config.vendor_webhook_secret — the route refuses every delivery with a 500 naming what is missing.",
+    envVars: [PLATFORM_WEBHOOK_ENV.vendor_marketplace],
+    // DERIVED (wave 82E). The route and the event list were hand-typed here
+    // ("customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed")
+    // after 81E derived the vendor vocabulary — so the one instruction an operator
+    // reads omitted transfer.created / transfer.reversed, and a vendor endpoint
+    // registered from it never lets a payout leave 'processing'.
+    whatLightsUp: `Vendor subscription status and vendor payouts stay true — register https://<app>${STRIPE_WEBHOOK_ROUTES.vendor_marketplace} as a SEPARATE endpoint on the PLATFORM's Stripe account (events: ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.join(", ")} — the "Stripe webhook events" drift check below registers any that are missing through the Stripe SDK) and set its own signing secret. The vendor marketplace tier is money the vendor pays the PLATFORM (VENDOR_PLATFORM_TIER), so this endpoint accepts platform-signed deliveries only. Without a secret — here or on the platform credential's config.vendor_webhook_secret — the route refuses every delivery with a 500 naming what is missing.`,
     tier: "launch-blocking",
+  },
+  {
+    // The PLATFORM's browser-public Stripe key (wave 82E). It is one of the four
+    // names PLATFORM_ONLY_STRIPE_ENV admits and the ONLY one no row gated: the
+    // in-app upgrade modal (app/settings/billing/upgrade-modal.tsx loadStripe)
+    // mounts Stripe Elements with it, so without it the card form never renders
+    // while every secret-key row reads green. Derived from the one list — the
+    // browser-public subset — so a renamed key cannot leave this row stale.
+    key: "stripe_publishable_key",
+    capability: "Stripe card form — PLATFORM account (publishable key)",
+    envVars: PLATFORM_ONLY_STRIPE_ENV.filter((n) => n.startsWith("NEXT_PUBLIC_")),
+    whatLightsUp: "The in-app plan upgrade card form (Stripe Elements on the billing page). Hosted Checkout (signup, seat packages) does not need it; the embedded upgrade form does.",
+    tier: "launch-degraded",
   },
   {
     key: "ai_gateway",

@@ -21,6 +21,8 @@
 // Everything runs on Vercel serverless — no tenant-hosted infrastructure; all
 // egress via the connector gateway; every key in env or platform_credentials.
 
+import { PLATFORM_ONLY_STRIPE_ENV } from "@/lib/billing/stripe-account-scope"
+
 export type TenancyModel =
   | "platform_metered" | "platform_subaccount" | "user_oauth"
   | "tenant_optional_key" | "byo_top_tier"
@@ -125,7 +127,11 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
     // GREEN on one global key while every tenant's money settled into it.
     models: ["tenant_optional_key", "platform_metered"],
     why: "PER TENANT **AND** PLATFORM (owner ruling) — the account is whoever COLLECTS, never whoever triggered the call, and the rule is stated once as data in lib/billing/stripe-account-scope.ts. (1) PLATFORM account: money the platform is the payee on — tenant subscriptions, setup fees, Stripe Tax, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints acct_… ids. Its credential resolves from a platform-owned platform_credentials row first and falls back to STRIPE_SECRET_KEY, which is the platform's own credential and is NOT a tenant default. (2) TENANT account: money a brokerage/team/agent is the payee or payer on — vendor package fees, vendor job bills, client payments, agent payouts — resolved through the SAME ownership cascade every other connector uses (lib/connections/resolve-scoped.ts: agent → team → brokerage), in either shape (their own Stripe secret key, or an acct_… Connect account addressed with a Stripe-Account header). A tenant with no Stripe credential REFUSES; it never descends to the platform's account, because a charge on the wrong account is a receipt naming the wrong merchant, a refund from the wrong balance and a 1099 from the wrong entity — and it looks exactly like success. Per-tenant accounts mean per-tenant WEBHOOK SECRETS too: both endpoints identify the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) instead of verifying against one env secret.",
-    envVars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_VENDOR_WEBHOOK_SECRET"],
+    // DERIVED (wave 82E): the platform account's SECRET env names = the one list
+    // (lib/billing/stripe-account-scope.ts PLATFORM_ONLY_STRIPE_ENV) minus the
+    // browser-public key, which is not a credential the posture board should read
+    // as "configured". Was a hand copy of three of its four names (§6).
+    envVars: PLATFORM_ONLY_STRIPE_ENV.filter((n) => !n.startsWith("NEXT_PUBLIC_")),
   },
   {
     provider: "quickbooks",

@@ -482,6 +482,11 @@ export async function executeAgentDeactivation(
 /** Subject the warm hand-off re-introduction uses (also the idempotency key per contact). */
 const SUCCESSOR_REINTRO_SUBJECT = "A quick introduction from your new point of contact"
 
+/** Subject the TEMPORARY cover introduction uses (wave 82E) — its own idempotency
+ *  key, so a cover intro never suppresses a later permanent re-introduction and
+ *  the revert can withdraw exactly the cover intros still unapproved. */
+export const COVER_INTRO_SUBJECT = "Your point of contact while your agent is away"
+
 /**
  * proposeSuccessorReintroductions — for every CONTACT inherited by the successor, propose a
  * GATED warm re-introduction so the relationship is RE-ESTABLISHED, not silently re-pointed.
@@ -493,21 +498,71 @@ async function proposeSuccessorReintroductions(
   svc: Svc,
   params: { brokerageId: string; successorAgentId: string; contactIds: string[] },
 ): Promise<number> {
-  const { brokerageId, successorAgentId, contactIds } = params
+  return proposeSuccessorIntroductions(svc, params)
+}
+
+/** The same successor re-introduction, for the books door's permanent-but-agent-stays
+ *  path (lib/agents/agent-books.ts, wave 82E) — one wording, one idempotency key. */
+export async function proposeSuccessorIntroductions(
+  svc: Svc,
+  params: { brokerageId: string; successorAgentId: string; contactIds: string[] },
+): Promise<number> {
+  return proposeBookIntroductions(svc, {
+    brokerageId: params.brokerageId, introducingAgentId: params.successorAgentId, contactIds: params.contactIds, cover: null,
+  })
+}
+
+/**
+ * proposeCoverIntroductions — the TEMPORARY half (wave 82E; lane 81A left it open:
+ * "temporary covers queue no re-introductions"). A client whose agent is away for
+ * weeks and who writes in hears from a stranger unless someone says who is covering.
+ * Same gated rail as the permanent hand-off (proposeClientMessage → the approval
+ * queue → evaluateOutbound again at dispatch): the covering agent approves before
+ * anything sends. The wording is the TEMPORARY one — the away agent is named as
+ * coming back, with the return date — so a cover never reads as a hand-off.
+ * Idempotent per contact on COVER_INTRO_SUBJECT. Returns how many were proposed.
+ */
+export async function proposeCoverIntroductions(
+  svc: Svc,
+  params: { brokerageId: string; coveringAgentId: string; awayAgentId: string; untilIso: string | null; contactIds: string[] },
+): Promise<number> {
+  return proposeBookIntroductions(svc, {
+    brokerageId: params.brokerageId, introducingAgentId: params.coveringAgentId, contactIds: params.contactIds,
+    cover: { awayAgentId: params.awayAgentId, untilIso: params.untilIso },
+  })
+}
+
+/** An agent's display name through agents.user_id → users (the two ids are disjoint, §3). */
+async function agentDisplayName(svc: Svc, agentId: string): Promise<string | null> {
+  const { data: a } = await svc.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+  const uid = (a as { user_id: string | null } | null)?.user_id ?? null
+  if (!uid) return null
+  const { data: u } = await svc.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+  const nm = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+  return nm || null
+}
+
+/** ONE introduction engine for both hand-offs (permanent successor, temporary cover). */
+async function proposeBookIntroductions(
+  svc: Svc,
+  params: {
+    brokerageId: string
+    introducingAgentId: string
+    contactIds: string[]
+    cover: { awayAgentId: string; untilIso: string | null } | null
+  },
+): Promise<number> {
+  const { brokerageId, introducingAgentId, contactIds, cover } = params
   if (contactIds.length === 0) return 0
 
-  // Successor's display name + the brokerage trade name (best-effort; the message still
+  // Introducer's display name + the brokerage trade name (best-effort; the message still
   // reads cleanly without them).
-  const { data: succAgent } = await svc.from("agents").select("user_id").eq("id", successorAgentId).maybeSingle()
-  const succUserId = (succAgent as { user_id: string | null } | null)?.user_id ?? null
-  let successorName = "your new agent"
-  if (succUserId) {
-    const { data: su } = await svc.from("users").select("first_name, last_name").eq("id", succUserId).maybeSingle()
-    const nm = [(su as any)?.first_name, (su as any)?.last_name].filter(Boolean).join(" ").trim()
-    if (nm) successorName = nm
-  }
+  const introducerName = (await agentDisplayName(svc, introducingAgentId)) ?? (cover ? "a colleague on the team" : "your new agent")
+  const awayName = cover ? ((await agentDisplayName(svc, cover.awayAgentId))?.split(" ")[0] ?? "your agent") : null
   const { data: brk } = await svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
   const brokerageName = (brk as { name: string | null } | null)?.name?.trim() || "our team"
+  const subject = cover ? COVER_INTRO_SUBJECT : SUCCESSOR_REINTRO_SUBJECT
+  const back = cover?.untilIso ? ` until ${new Date(cover.untilIso).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}` : " for a little while"
 
   const { data: contactRows } = await svc.from("contacts")
     .select("id, first_name, contact_type").in("id", contactIds).eq("brokerage_id", brokerageId)
@@ -516,27 +571,57 @@ async function proposeSuccessorReintroductions(
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   let proposed = 0
   for (const c of contacts) {
-    // Idempotency — skip a contact that already has an open/approved re-intro.
+    // Idempotency — skip a contact that already has an open/approved intro of THIS kind.
     const { data: dup } = await svc.from("agent_client_messages").select("id")
       .eq("brokerage_id", brokerageId).eq("recipient_contact_id", c.id)
-      .eq("subject", SUCCESSOR_REINTRO_SUBJECT).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+      .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
     if (dup) continue
 
     const isSeller = c.contact_type === "seller"
     const audience: "seller" | "buyer" = isSeller ? "seller" : "buyer"
     const agentKind = isSeller ? "listing_concierge" : "shopping_agent"
     const firstName = c.first_name || "there"
-    const body =
-      `Hi ${firstName}, I'm ${successorName} with ${brokerageName} — I'll be your point of contact going forward. ` +
-      `Nothing about your plans changes; you've still got the whole team behind you, and I'm here for anything you need. ` +
-      `Reply anytime and I'll take it from there.`
+    const body = cover
+      ? `Hi ${firstName}, I'm ${introducerName} with ${brokerageName}. ${awayName} is away${back} and asked me to look after you in the meantime. ` +
+        `Nothing about your plans changes, and ${awayName} will pick things back up when they return. ` +
+        `If anything comes up before then, reply here and I'll take care of it.`
+      : `Hi ${firstName}, I'm ${introducerName} with ${brokerageName} — I'll be your point of contact going forward. ` +
+        `Nothing about your plans changes; you've still got the whole team behind you, and I'm here for anything you need. ` +
+        `Reply anytime and I'll take it from there.`
     const res = await proposeClientMessage({
       brokerageId, agentKind, entityType: "contact", entityId: c.id,
-      recipientContactId: c.id, audience, subject: SUCCESSOR_REINTRO_SUBJECT, body,
-      rationale: "Warm hand-off — the successor re-introduces themselves to an inherited client (agent off-boarding).",
+      recipientContactId: c.id, audience, subject, body,
+      rationale: cover
+        ? "Temporary cover — the covering agent introduces themselves to the away agent's client for the cover window (agent books transfer)."
+        : "Warm hand-off — the successor re-introduces themselves to an inherited client (agent off-boarding).",
       channel: "portal",
     }, svc)
     if (res.ok) proposed += 1
   }
   return proposed
+}
+
+/**
+ * withdrawCoverIntroductions — the revert's other half: a cover intro still
+ * waiting for approval when the away agent returns would tell the client
+ * someone else is covering AFTER the cover ended. Withdrawn (status 'rejected',
+ * the CHECK's closed-without-sending value) for exactly the contacts handed
+ * back; approved/sent ones are history and stay. COUNTED from `.select("id")`
+ * (§3 — an update matching nothing resolves like one that worked).
+ */
+export async function withdrawCoverIntroductions(
+  svc: Svc,
+  params: { brokerageId: string; contactIds: string[] },
+): Promise<{ withdrawn: number; error: string | null }> {
+  let withdrawn = 0
+  for (let i = 0; i < params.contactIds.length; i += 200) {
+    const { data, error } = await svc.from("agent_client_messages")
+      .update({ status: "rejected" })
+      .eq("brokerage_id", params.brokerageId).eq("subject", COVER_INTRO_SUBJECT).eq("status", "proposed")
+      .in("recipient_contact_id", params.contactIds.slice(i, i + 200))
+      .select("id")
+    if (error) return { withdrawn, error: error.message }
+    withdrawn += ((data ?? []) as unknown[]).length
+  }
+  return { withdrawn, error: null }
 }

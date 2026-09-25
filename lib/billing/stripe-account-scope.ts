@@ -283,6 +283,8 @@ export const TENANT_MONEY_ON_PLATFORM_KEY: readonly StripeAccountResidual[] = []
  * Account ADMIN calls are deliberately absent: `accounts.create`,
  * `accountLinks.create` and `accounts.retrieve` administer the Connect platform
  * and move nothing.
+ *
+ * @proofSeam a SOURCE-SCANNER vocabulary: its reader is scripts/stripe-account-scope-simulator.ts C8, which hunts these spellings in comment-stripped product source. A running server has no source to scan, so there is no runtime half to build (lane 82E, 2026-09-25); its declared-residual sibling TENANT_MONEY_ON_PLATFORM_KEY is read at runtime by lib/platform/launch-checklist.ts (the platform Stripe row).
  */
 export const MONEY_MOVING_STRIPE_CALLS = [
   "transfers.create",

@@ -21,7 +21,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Plus, CheckCircle2 } from "lucide-react"
-import { seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
+import {
+  seatableUserTypes, inviteProductionQuestion, TIER_SEAT_LIMITS, TIER_ORDER, TIER_LABELS, isCanonicalTier,
+} from "@/lib/kernel/tier-role-matrix"
 
 interface InviteUserButtonProps {
   callerRole: string
@@ -59,20 +61,21 @@ const ROLE_LABELS: Record<string, string> = {
   // flow with a lender category. Owner model, round 16.)
 }
 
-// EVERY tier seats EVERY user type — the tier's only say is HOW MANY (owner,
-// 2026-08-22: a broker on a team plan "takes up 3 of 5 seats"). So these notes
-// quote seats and never claim a role is withheld. The canonical matrix + caps
-// live in lib/kernel/tier-role-matrix.ts and the server action enforces them, so
-// these notes are honest, not just cosmetic.
-const TIER_LOCK_NOTES: Record<string, string> = {
-  solo_agent:
-    "Your Solo plan includes 2 seats — spend them on any roles you like. Vendors never use a seat. Upgrade to Team for 5.",
-  team:
-    "Your Team plan includes 5 seats — spend them on any roles you like. Vendors never use a seat. Upgrade to Brokerage for 50.",
-  brokerage:
-    "Your Brokerage plan includes 50 seats — spend them on any roles you like. Vendors never use a seat. Upgrade to Multi-Location for unlimited.",
-  multi_location:
-    "Your Multi-Location plan includes unlimited seats. Vendors never use a seat.",
+// EVERY tier seats EVERY user type — the tier's only say is HOW MANY producer
+// seats. Staff (admin assistants, TC, ISA, compliance) and vendors never use one.
+// DERIVED from TIER_SEAT_LIMITS (= lib/billing/plan-catalog.ts TIER_SEAT_BANDS)
+// — wave 82E: this was a hand table still quoting 5 / 50 / unlimited after the
+// bands moved to 2 / 10 / 30 / custom (wave 79), and told the tenant to "spend
+// them on any roles you like" though staff stopped consuming seats in 78A.
+function tierLockNote(tier: string | null | undefined): string | null {
+  if (!isCanonicalTier(tier)) return null
+  const band = TIER_SEAT_LIMITS[tier]
+  const next = TIER_ORDER[TIER_ORDER.indexOf(tier) + 1]
+  const upgrade = next
+    ? ` Upgrade to ${TIER_LABELS[next]} for ${TIER_SEAT_LIMITS[next] ?? "a custom number of"} seats, or buy a seat package.`
+    : ""
+  const count = band === null ? "a custom number of producer seats" : `${band} producer seats`
+  return `Your ${TIER_LABELS[tier]} plan includes ${count}. Only producing members (agents, team leads, producing brokers) use a seat — staff and vendors never do.${upgrade}`
 }
 
 export function InviteUserButton({ callerRole, brokerageId, tier, storableUserTypes }: InviteUserButtonProps) {
@@ -88,16 +91,22 @@ export function InviteUserButton({ callerRole, brokerageId, tier, storableUserTy
     userType: "",
     brokerageIdOverride: "",
   })
+  // The "non-producing" box (wave 82E). Only rendered where it moves a seat
+  // (inviteProductionQuestion); re-defaulted from the tier on every role pick
+  // so an untouched box sends exactly what the gate would have inferred.
+  const [nonProducing, setNonProducing] = useState(false)
+  const productionQuestion = inviteProductionQuestion(form.userType, tier)
 
   const isSuperadmin = callerRole === "superadmin"
   const availableRoles = seatableUserTypes(tier, storableUserTypes).map((role) => ({
     value: role,
     label: ROLE_LABELS[role] ?? role,
   }))
-  const tierLockNote = tier ? (TIER_LOCK_NOTES[tier] ?? null) : null
+  const lockNote = tierLockNote(tier)
 
   function updateForm(field: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
+    if (field === "userType") setNonProducing(!inviteProductionQuestion(value, tier).defaultProduces)
   }
 
   function handleOpen() {
@@ -105,6 +114,7 @@ export function InviteUserButton({ callerRole, brokerageId, tier, storableUserTy
     setSuccess(false)
     setError(null)
     setForm({ email: "", firstName: "", lastName: "", userType: "", brokerageIdOverride: "" })
+    setNonProducing(false)
   }
 
   async function handleSubmit() {
@@ -115,6 +125,8 @@ export function InviteUserButton({ callerRole, brokerageId, tier, storableUserTy
       firstName: form.firstName,
       lastName: form.lastName,
       userType: form.userType,
+      // Sent only where the question was asked; elsewhere the gate's own rule stands.
+      ...(productionQuestion.asked ? { produces: !nonProducing } : {}),
       brokerageId: isSuperadmin
         ? form.brokerageIdOverride || brokerageId || undefined
         : brokerageId || undefined,
@@ -236,10 +248,28 @@ export function InviteUserButton({ callerRole, brokerageId, tier, storableUserTy
                       ))}
                     </SelectContent>
                   </Select>
-                  {tierLockNote && (
-                    <p className="text-xs text-muted-foreground mt-1">{tierLockNote}</p>
+                  {lockNote && (
+                    <p className="text-xs text-muted-foreground mt-1">{lockNote}</p>
                   )}
                 </div>
+
+                {productionQuestion.asked && (
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={nonProducing}
+                      onChange={(e) => setNonProducing(e.target.checked)}
+                    />
+                    <span>
+                      Non-producing (does not list or sell)
+                      <span className="block text-xs text-muted-foreground">
+                        Non-producing members are staff and never use a seat. A location&apos;s
+                        managing broker is always producing and cannot be exempted.
+                      </span>
+                    </span>
+                  </label>
+                )}
 
                 {isSuperadmin && (
                   <div>

@@ -30,6 +30,11 @@ function check(name: string, cond: boolean, detail?: string) {
   if (cond) { passed++; console.log(`  ✓ ${name}`) }
   else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
+/** A positive control: `defectSeen` must be TRUE — the finder recognises the defect it hunts. */
+function control(name: string, defectSeen: boolean) {
+  if (defectSeen) { passed++; console.log(`  ↺ control: ${name}`) }
+  else { failed++; failures.push(`CONTROL DID NOT GO RED: ${name}`); console.log(`  ✗ CONTROL DID NOT GO RED: ${name}`) }
+}
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (rel: string) => readFileSync(join(root, rel), "utf8")
@@ -115,6 +120,26 @@ async function main() {
   const envTouches = src.match(/process\.env(\[|\.[A-Z])/g) ?? []
   check("module touches process.env exactly once (the presence helper)", envTouches.length === 1, `${envTouches.length} touches`)
   check("no template interpolation of env values", !/\$\{[^}]*process\.env/.test(src))
+
+  // ── 3b. Stripe rows are DERIVED from the one Stripe vocabulary (wave 82E) ──
+  console.log("\nstripe rows derive from lib/billing/stripe-account-scope.ts")
+  {
+    const scope = await import("../lib/billing/stripe-account-scope")
+    const { VENDOR_MARKETPLACE_WEBHOOK_EVENTS } = await import("../lib/vendors/vendor-webhook-events")
+    const gated = new Set(checklist.items.flatMap((i) => i.envVars))
+    const ungated = scope.PLATFORM_ONLY_STRIPE_ENV.filter((n) => !gated.has(n))
+    check(`every platform Stripe env name (${scope.PLATFORM_ONLY_STRIPE_ENV.length}) is gated by a row — the publishable key the upgrade modal mounts Elements with included`,
+      ungated.length === 0, ungated.join(", "))
+    const vendorRow = checklist.items.find((i) => i.key === "stripe_vendor_webhook")
+    const missingEvents = VENDOR_MARKETPLACE_WEBHOOK_EVENTS.filter((e) => !(vendorRow?.whatLightsUp ?? "").includes(e))
+    check(`the vendor webhook row names every event the vendor route handles (${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.length}) and its route — no hand-typed subset`,
+      !!vendorRow && missingEvents.length === 0 && vendorRow.whatLightsUp.includes(scope.STRIPE_WEBHOOK_ROUTES.vendor_marketplace)
+      && vendorRow.envVars.join() === scope.PLATFORM_WEBHOOK_ENV.vendor_marketplace, missingEvents.join(", "))
+    control("the event finder catches the pre-82E hand-typed subset (it lacked the payout events)",
+      VENDOR_MARKETPLACE_WEBHOOK_EVENTS.some((e) => !"customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed".includes(e)))
+    check("the platform Stripe row reports the declared tenant-money residual count (TENANT_MONEY_ON_PLATFORM_KEY — its runtime reader)",
+      (stripeRow?.whatLightsUp ?? "").includes(`Tenant-money call sites still on this key: ${scope.TENANT_MONEY_ON_PLATFORM_KEY.length}`) || (scope.TENANT_MONEY_ON_PLATFORM_KEY.length > 0 && /WARNING/.test(stripeRow?.whatLightsUp ?? "")))
+  }
 
   // ── 4. Board mount ────────────────────────────────────────────────────────
   console.log("\ngo-live board mount")

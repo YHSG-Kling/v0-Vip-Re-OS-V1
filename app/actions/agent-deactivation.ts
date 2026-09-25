@@ -88,6 +88,8 @@ export async function reassignAgentBooksAction(input: {
   scope: BookTransferScope
   until?: string | null
   reason?: string | null
+  /** permanent only: keep the agent active (role change / restructure) — wave 82E. */
+  keepActive?: boolean
 }): Promise<{ ok: true; result: ReassignAgentBooksResult } | { ok: false; reason: string }> {
   const auth = await requireAdmin()
   if (!auth.ok) return { ok: false, reason: auth.reason }
@@ -99,6 +101,7 @@ export async function reassignAgentBooksAction(input: {
     until: input?.until ?? null,
     reason: input?.reason ? String(input.reason).slice(0, 500) : null,
     actorUserId: auth.actorUserId,
+    keepActive: input?.keepActive === true,
   })
   if (!result.ok) return { ok: false, reason: result.error ?? 'books reassignment refused' }
   return { ok: true, result }

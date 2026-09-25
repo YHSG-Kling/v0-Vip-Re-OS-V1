@@ -24,6 +24,12 @@
  *   8 · the assignment engine drops a deactivated agent from a rule's named
  *       pool (control: the pre-81A engine routed to them)
  *   9 · wiring: the cron tick, the actions, the UI mount, registration
+ *  10 · wave 82E (lane 81A's open items): a temporary cover QUEUES the
+ *       covering agent's introduction to each client through the gated
+ *       approval rail and the revert WITHDRAWS the still-unapproved ones; a
+ *       permanent move may KEEP the agent active (role change); sequences
+ *       follow the contact (the step executor resolves the sender from the
+ *       contact's CURRENT agent at send time — nothing to move)
  */
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
@@ -45,6 +51,7 @@ const raw = (p: string) => (existsSync(join(root, p)) ? readFileSync(join(root, 
 const code = (p: string) => stripComments(raw(p))
 
 const { reassignAgentBooks, revertBookTransfer, revertExpiredBookTransfers, validateBookTransferRequest, listBookTransfers, MAX_TEMPORARY_TRANSFER_DAYS } = await import("../lib/agents/agent-books")
+const { COVER_INTRO_SUBJECT } = await import("../lib/agents/agent-deactivation")
 
 const NOW = new Date("2026-09-24T12:00:00Z")
 const DAY = 86_400_000
@@ -116,6 +123,7 @@ function tenantSeed() {
       { id: "pa2", brokerage_id: "b1", agent_user_id: "uA", is_active: false },
     ],
     agent_book_transfers: [] as any[],
+    agent_client_messages: [] as any[],
     lifecycle_events: [] as any[],
     notifications: [] as any[],
     manager_signals: [] as any[],
@@ -158,6 +166,15 @@ let transferId = ""
   check("the Deal Coordinator is signalled on the EXISTING agent_book_reassigned wire (temporary flagged)",
     svc.tables.manager_signals.some((s: any) => s.from_manager === "recruiting_manager" && s.to_manager === "deal_coordinator" && s.signal_type === "agent_book_reassigned" && s.payload.temporary === true))
   check("no refusals", r.refused.length === 0, r.refused.join("; "))
+  // Wave 82E — the cover introduces themselves (gated, one per moved client).
+  const intros = svc.tables.agent_client_messages.filter((m: any) => m.subject === COVER_INTRO_SUBJECT)
+  check("COVER INTRODUCTIONS: one PROPOSED (not sent) intro per moved client (c1, c2), from the covering agent, naming the return date — and none to B's own c4",
+    r.introductionsProposed === 2 && intros.length === 2 && intros.every((m: any) => m.status === "proposed" && /Bo with Kling Realty/.test(m.body) && /October 1/.test(m.body))
+    && intros.map((m: any) => m.recipient_contact_id).sort().join() === "c1,c2", JSON.stringify(intros.map((m: any) => [m.recipient_contact_id, m.status, m.body])))
+  check("…side-aware (seller c2 → listing_concierge, buyer c1 → shopping_agent) and worded as TEMPORARY, never as a hand-off",
+    intros.find((m: any) => m.recipient_contact_id === "c2")?.agent_kind === "listing_concierge" && intros.find((m: any) => m.recipient_contact_id === "c1")?.agent_kind === "shopping_agent"
+    && intros.every((m: any) => /is away/.test(m.body) && !/going forward/.test(m.body)))
+  check("the ledger records how many intros were queued", svc.tables.agent_book_transfers[0]?.moved?.introductions_proposed === 2)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,11 +213,21 @@ console.log("\n[5 · THE REVERT — only rows the cover still holds; the right c
   check("transactions restored PER COLUMN: t4.agent_id back to A while t4.buyer_agent_id (B's own role before the transfer) stays B; t3 both columns back; t1 back",
     owner(svc, "transactions", "t4") === "A" && owner(svc, "transactions", "t4", "buyer_agent_id") === "B" && owner(svc, "transactions", "t3") === "A" && owner(svc, "transactions", "t3", "seller_agent_id") === "A" && owner(svc, "transactions", "t1") === "A")
   control("a revert that restored ANY column equal to the cover would have flipped t4.buyer_agent_id to A — that reads as a defect here", owner(svc, "transactions", "t4", "buyer_agent_id") !== "A")
+  control("an APPROVED cover intro is history and is NOT withdrawn (the withdraw is pinned to status 'proposed')", await (async () => {
+    const ap = memSupabase(tenantSeed())
+    const t2 = await reassignAgentBooks(ap, { brokerageId: "b1", fromAgentId: "A", toAgentId: "B", scope: "temporary", until: plus(7), actorUserId: null })
+    ap.tables.agent_client_messages.find((m: any) => m.recipient_contact_id === "c1")!.status = "approved"
+    const rv = await revertBookTransfer(ap, { brokerageId: "b1", transferId: t2.transferId!, actorUserId: null })
+    return rv.introductionsWithdrawn === 1 && ap.tables.agent_client_messages.find((m: any) => m.recipient_contact_id === "c1")!.status === "approved"
+  })())
   const a = agentRow(svc, "A")
   check("coverage cleared on the away agent", r.coverageCleared && a.covering_agent_id === null && a.coverage_until === null)
   const ledger = svc.tables.agent_book_transfers[0]
   check("ledger closed: status reverted, reverted_by, reverted counts recorded", ledger.status === "reverted" && ledger.reverted_by === "uAdmin" && ledger.reverted.restored.contacts === 1 && ledger.reverted.skipped.contacts === 1 && ledger.reverted.expired === false)
   check("audited (agent_books_reverted)", svc.tables.lifecycle_events.some((e: any) => e.event_type === "agent_books_reverted"))
+  const introsAfter = svc.tables.agent_client_messages.filter((m: any) => m.subject === COVER_INTRO_SUBJECT)
+  check("wave 82E: the still-unapproved cover intros are WITHDRAWN on revert (status rejected) — c2 too, though the tenant re-pointed it (the cover ended for it as well)",
+    r.introductionsWithdrawn === 2 && introsAfter.every((m: any) => m.status === "rejected") && ledger.reverted.introductions_withdrawn === 2, JSON.stringify(introsAfter.map((m: any) => m.status)))
   const again = await revertBookTransfer(svc, { brokerageId: "b1", transferId, actorUserId: "uAdmin" })
   check("reverting twice is refused (already reverted) — idempotent", !again.ok && /already reverted/.test(again.error ?? ""))
   const foreign = await revertBookTransfer(svc, { brokerageId: "b2", transferId, actorUserId: "uAdmin" })
@@ -254,6 +281,28 @@ console.log("\n[7 · PERMANENT — the deactivation survivor runs, plus a ledger
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[7b · PERMANENT, AGENT STAYS — a role change moves the book for good without off-boarding (wave 82E)]")
+{
+  const ka = memSupabase(tenantSeed())
+  const r = await reassignAgentBooks(ka, { brokerageId: "b1", fromAgentId: "A", toAgentId: "B", scope: "permanent", keepActive: true, reason: "promoted to managing broker", actorUserId: "uAdmin" })
+  check("ok; the agent stays ACTIVE (no deactivation), the whole book moved through the same move set",
+    r.ok && !r.agentDeactivated && agentRow(ka, "A").is_active === true && r.contacts === 2 && r.leads === 1 && r.dealRoles === 4 && r.tasks === 2 && r.listings === 1 && r.calendarEvents === 1 && r.propertyAlerts === 1, JSON.stringify(r))
+  check("no coverage (nothing reverts) and the ledger row is permanent with agent_kept_active",
+    !r.coverageSet && agentRow(ka, "A").covering_agent_id === null && ka.tables.agent_book_transfers[0]?.status === "permanent" && ka.tables.agent_book_transfers[0]?.moved?.agent_kept_active === true)
+  const re = ka.tables.agent_client_messages
+  check("the SUCCESSOR re-introduction (hand-off wording, not the cover wording) is queued for approval per moved client",
+    r.introductionsProposed === 2 && re.length === 2 && re.every((m: any) => m.status === "proposed" && m.subject === "A quick introduction from your new point of contact" && /going forward/.test(m.body)))
+  control("the default permanent move (keepActive omitted) still DEACTIVATES — the new path is opt-in, 81A's off-boarding unchanged",
+    await (async () => { const d = memSupabase({ ...tenantSeed(), contacts: [] as any[] }); const x = await reassignAgentBooks(d, { brokerageId: "b1", fromAgentId: "A", toAgentId: "B", scope: "permanent", actorUserId: null }); return x.ok && x.agentDeactivated && agentRow(d, "A").is_active === false })())
+  const exec = code("lib/campaign-sequences/step-executor.ts")
+  check("SEQUENCES FOLLOW THE CONTACT: the step executor resolves the sender from contacts.agent_id at SEND time (agents.user_id crossing), so a moved contact's next step goes out from whoever holds it — sequence_enrollments carries no agent owner to move",
+    /zip_code, agent_id"\)/.test(exec) && /agentId = data\.agent_id/.test(exec) && /from\("agents"\)\.select\("user_id"\)\.eq\("id", data\.agent_id\)/.test(exec)
+    && !/sequence_enrollments/.test(code("lib/agents/agent-books.ts")))
+  control("the sequence finder recognises a sender pinned at ENROLMENT (enrolled_by as the from-agent) — the shape that would NOT follow the contact",
+    !/agentId = data\.agent_id/.test('const agentUserId = enrollment.enrolled_by'))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[8 · NEW LEADS FOLLOW — a deactivated agent is dropped from a rule's named pool; an away agent is redirected]")
 {
   const { resolveAgentByRules } = await import("../lib/lead-assignment/assignment-engine")
@@ -292,6 +341,8 @@ console.log("\n[9 · WIRING — the cron tick, the actions, the UI mount, regist
   const ui = code("app/dashboard/admin/agents/agent-offboarding-client.tsx")
   check("the tenant admin agents page mounts all three (no orphan action): temporary with end date / permanent, the transfer list with revert",
     /reassignAgentBooksAction\(\{/.test(ui) && /listBookTransfersAction\(\)/.test(ui) && /revertBookTransferAction\(id\)/.test(ui) && /type="date"/.test(ui) && /setBooksScope\("permanent"\)/.test(ui))
+  check("wave 82E: the permanent door offers 'keep the agent active' and the action passes it through (default off)",
+    /keepActive: booksScope === "permanent" && booksKeepActive/.test(ui) && /keepActive: input\?\.keepActive === true/.test(actions))
   const sql = raw("supabase/migrations/m661-one-managing-broker-per-location-and-agent-book-transfers.sql").split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
   check("m661 creates agent_book_transfers with the scope/status CHECKs, a distinct-agents CHECK and ONE open transfer per away agent (partial unique index)",
     /CREATE TABLE IF NOT EXISTS public\.agent_book_transfers/.test(sql) && /scope IN \('temporary', 'permanent'\)/.test(sql) && /from_agent_id <> to_agent_id/.test(sql) && /CREATE UNIQUE INDEX[^;]*agent_book_transfers \(brokerage_id, from_agent_id\)\s*WHERE status = 'active'/.test(sql))
@@ -306,6 +357,6 @@ console.log("\n[9 · WIRING — the cron tick, the actions, the UI mount, regist
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
-console.log(" Denominator: validator, temporary move (7 kinds), ledger-first, one-open, revert, sweep, permanent, engine, wiring. Blind spot: agent_book_transfers is WRITTEN NOT APPLIED until the integrator applies m661 — live, the temporary door refuses (ledger first) and the sweep reports readRefused until then.")
+console.log(" Denominator: validator, temporary move (7 kinds) + cover intros, ledger-first, one-open, revert + intro withdraw, sweep, permanent, permanent-agent-stays, sequences-follow-contact, engine, wiring. Blind spots: in-memory client only (m661 is applied live since 2026-09-24; a refused ledger still refuses the temporary door first and the sweep reports readRefused); the cover-intro wording is asserted on this seed's names, not on every locale; sequence ownership is read from the step executor's source (sender resolved at send time), not executed.")
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
 console.log(" AGENT_BOOKS_REASSIGNMENT_PASS — temporary covers and auto-reverts, permanent leaves through the survivor, new leads follow")

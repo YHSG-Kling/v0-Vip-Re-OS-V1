@@ -17,6 +17,7 @@ import {
   type TenantUserRow, type TenantInviteRow, type TenantTeamRow, type CrossTenantUserHit,
 } from "@/app/actions/superadmin/tenant-users"
 import { enterTenantAction } from "@/app/actions/superadmin/impersonation"
+import { inviteProductionQuestion } from "@/lib/kernel/tier-role-matrix"
 
 // Mirrors TENANT_CREATABLE_ROLES in app/actions/superadmin/tenant-users.ts — a menu
 // offering a role the action refuses is a dead end. 'lender' removed with it (owner
@@ -43,7 +44,7 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
   const [pending, startTransition] = useTransition()
   const [showAdd, setShowAdd] = useState(false)
   const [addOk, setAddOk] = useState<string | null>(null)
-  const [addForm, setAddForm] = useState({ email: "", firstName: "", lastName: "", userType: "agent" })
+  const [addForm, setAddForm] = useState({ email: "", firstName: "", lastName: "", userType: "agent", nonProducing: false })
   const [searchQ, setSearchQ] = useState("")
   const [searchHits, setSearchHits] = useState<CrossTenantUserHit[] | null>(null)
   const [searchErr, setSearchErr] = useState<string | null>(null)
@@ -95,10 +96,13 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
     setErr(null); setAddOk(null)
     if (!addForm.email.includes("@")) { setErr("Valid email required"); return }
     startTransition(async () => {
-      const r = await createTenantUserAction({ brokerageId, email: addForm.email, firstName: addForm.firstName, lastName: addForm.lastName, userType: addForm.userType })
+      // produces: sent only where the question is asked (inviteProductionQuestion,
+      // wave 82E) — the action has read it since 79A/80A; the form never sent it.
+      const q = inviteProductionQuestion(addForm.userType, planTier)
+      const r = await createTenantUserAction({ brokerageId, email: addForm.email, firstName: addForm.firstName, lastName: addForm.lastName, userType: addForm.userType, ...(q.asked ? { produces: !addForm.nonProducing } : {}) })
       if (!r.ok) { setErr(r.error ?? "Failed to create user") } else {
         setAddOk(`Invited ${addForm.email} as ${addForm.userType}`)
-        setAddForm({ email: "", firstName: "", lastName: "", userType: "agent" })
+        setAddForm({ email: "", firstName: "", lastName: "", userType: "agent", nonProducing: false })
         setShowAdd(false)
       }
       refresh()
@@ -125,9 +129,15 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
               <input className="rounded border px-2 py-1 text-sm col-span-2" type="email" placeholder="email@tenant.com" value={addForm.email} onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))} />
               <input className="rounded border px-2 py-1 text-sm" placeholder="First name" value={addForm.firstName} onChange={(e) => setAddForm((f) => ({ ...f, firstName: e.target.value }))} />
               <input className="rounded border px-2 py-1 text-sm" placeholder="Last name" value={addForm.lastName} onChange={(e) => setAddForm((f) => ({ ...f, lastName: e.target.value }))} />
-              <select className="rounded border px-2 py-1 text-sm col-span-2" value={addForm.userType} onChange={(e) => setAddForm((f) => ({ ...f, userType: e.target.value }))}>
+              <select className="rounded border px-2 py-1 text-sm col-span-2" value={addForm.userType} onChange={(e) => { const userType = e.target.value; setAddForm((f) => ({ ...f, userType, nonProducing: !inviteProductionQuestion(userType, planTier).defaultProduces })) }}>
                 {CREATABLE_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
+              {inviteProductionQuestion(addForm.userType, planTier).asked && (
+                <label className="col-span-2 flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={addForm.nonProducing} onChange={(e) => setAddForm((f) => ({ ...f, nonProducing: e.target.checked }))} />
+                  Non-producing (staff — no seat; a location&apos;s managing broker is always producing)
+                </label>
+              )}
             </div>
             <Button size="sm" disabled={pending} onClick={addUser}>{pending ? "Creating…" : "Send invite"}</Button>
           </div>

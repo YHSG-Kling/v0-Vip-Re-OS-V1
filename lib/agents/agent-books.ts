@@ -43,6 +43,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
   executeAgentDeactivation, moveAgentWork, emptyMovedWork, TRANSACTION_AGENT_ROLE_COLUMNS,
+  proposeCoverIntroductions, proposeSuccessorIntroductions, withdrawCoverIntroductions,
   type MovedWork,
 } from "./agent-deactivation"
 
@@ -67,6 +68,11 @@ export interface ReassignAgentBooksInput {
   until?: string | null
   reason?: string | null
   actorUserId: string | null
+  /** PERMANENT only (wave 82E): move the whole book for good but KEEP the agent
+   *  active — a role change (producer → manager / managing broker / staff), a
+   *  team restructure, a reduced book. Default false: permanent = "the agent
+   *  leaves" and runs the deactivation survivor, as 81A shipped it. */
+  keepActive?: boolean
 }
 
 export interface ReassignAgentBooksResult {
@@ -85,6 +91,9 @@ export interface ReassignAgentBooksResult {
   coverageSet: boolean
   /** permanent: the agent was deactivated (the deactivation survivor ran). */
   agentDeactivated: boolean
+  /** Gated client introductions queued for approval (wave 82E): the covering
+   *  agent's temporary intro, or the successor's permanent re-introduction. */
+  introductionsProposed: number
   refused: string[]
 }
 
@@ -134,7 +143,7 @@ async function readTenantAgent(svc: Svc, brokerageId: string, agentId: string) {
 export async function reassignAgentBooks(svc: Svc, input: ReassignAgentBooksInput): Promise<ReassignAgentBooksResult> {
   const base: ReassignAgentBooksResult = {
     ok: false, transferId: null, scope: input.scope, contacts: 0, leads: 0, dealRoles: 0, tasks: 0, listings: 0,
-    calendarEvents: 0, propertyAlerts: 0, coverageSet: false, agentDeactivated: false, refused: [],
+    calendarEvents: 0, propertyAlerts: 0, coverageSet: false, agentDeactivated: false, introductionsProposed: 0, refused: [],
   }
   const { brokerageId, actorUserId } = input
   if (!brokerageId) return { ...base, error: "brokerageId is required (the caller's session tenant)." }
@@ -148,6 +157,60 @@ export async function reassignAgentBooks(svc: Svc, input: ReassignAgentBooksInpu
   if (!to.agent) return { ...base, error: "The receiving agent is not in your brokerage; nothing moved." }
   if (to.agent.is_active === false) return { ...base, error: "The receiving agent is not active; nothing moved." }
   const nowIso = new Date().toISOString()
+
+  // ── PERMANENT, AGENT STAYS (wave 82E) — the same move set as a temporary cover
+  //    (contacts whole + moveAgentWork), no coverage, no revert, the SUCCESSOR's
+  //    warm re-introduction, and the agent keeps their seat and login. ──
+  if (input.scope === "permanent" && input.keepActive === true) {
+    const moved: BookTransferMoved = { ...emptyMovedWork(), contacts: [] }
+    {
+      const { data, error } = await svc.from("contacts")
+        .update({ agent_id: to.agent.id, updated_at: nowIso })
+        .eq("brokerage_id", brokerageId).eq("agent_id", from.agent.id).is("deleted_at", null)
+        .select("id")
+      if (error) moved.refused.push(`contacts: ${error.message}`); else moved.contacts = idsOf(data)
+    }
+    const work = await moveAgentWork(svc, {
+      brokerageId, fromAgentId: from.agent.id, fromUserId: from.agent.user_id, toAgentId: to.agent.id, toUserId: to.agent.user_id, nowIso,
+    })
+    Object.assign(moved, work, { contacts: moved.contacts, refused: [...moved.refused, ...work.refused] })
+    const introductionsProposed = await proposeSuccessorIntroductions(svc, {
+      brokerageId, successorAgentId: to.agent.id, contactIds: moved.contacts,
+    })
+    const { data: ledger, error: ledgerErr } = await svc.from("agent_book_transfers").insert({
+      brokerage_id: brokerageId, from_agent_id: from.agent.id, to_agent_id: to.agent.id, scope: "permanent", status: "permanent",
+      reason: input.reason ?? null, until_at: null, created_by: actorUserId,
+      moved: { ...moved, agent_kept_active: true, introductions_proposed: introductionsProposed },
+    }).select("id")
+    const transferId = idsOf(ledger)[0] ?? null
+    if (ledgerErr) moved.refused.push(`agent_book_transfers: ${ledgerErr.message}`)
+    await audit(svc, brokerageId, from.agent.id, "agent_books_reassigned", actorUserId, {
+      scope: "permanent", agent_kept_active: true, to_agent_id: to.agent.id, transfer_id: transferId, reason: input.reason ?? null,
+      contacts: moved.contacts.length, leads: moved.leads.length, deal_roles: moved.transactionRoleMoves,
+    })
+    if (to.agent.user_id && (moved.contacts.length > 0 || moved.leads.length > 0)) {
+      await sentinelWrite(svc, svc.from("notifications").insert({
+        user_id: to.agent.user_id, brokerage_id: brokerageId, type: "book_reassigned",
+        title: "You've inherited a colleague's book",
+        body: `${moved.contacts.length} contact(s) and ${moved.leads.length} lead(s) are now yours for good${moved.transactionRoleMoves > 0 ? `, including ${moved.transactionRoleMoves} in-flight deal role(s) — review those first` : ""}.${introductionsProposed > 0 ? ` ${introductionsProposed} introduction(s) are waiting for your approval.` : ""}`,
+        entity_type: "agent", entity_id: from.agent.id, priority: moved.transactionRoleMoves > 0 ? "high" : "medium", is_read: false,
+      }), { table: "notifications", flow: "agent_books_permanent_notify", brokerageId, reason: "in-app notification — a lost row is a missed bell, never the transfer it follows" })
+    }
+    if (moved.transactionRoleMoves > 0) {
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      await publishManagerSignal({
+        brokerageId, fromManager: "recruiting_manager", toManager: "deal_coordinator", signalType: "agent_book_reassigned",
+        message: `An agent's ${moved.transactionRoleMoves} in-flight deal role(s) moved permanently to a colleague (the agent stays active) — realign the transaction team so nothing slips.`,
+        entityType: "agent", entityId: from.agent.id,
+        payload: { successor_agent_id: to.agent.id, active_deals: moved.transactionRoleMoves, temporary: false, agent_kept_active: true },
+      }, svc)
+    }
+    return {
+      ...base, ok: true, transferId, contacts: moved.contacts.length, leads: moved.leads.length, dealRoles: moved.transactionRoleMoves,
+      tasks: moved.tasks.length + moved.transactionTasks.length, listings: moved.listings.length, calendarEvents: moved.calendarEvents.length,
+      propertyAlerts: moved.propertyAlerts.length, agentDeactivated: false, introductionsProposed, refused: moved.refused,
+    }
+  }
 
   // ── PERMANENT = the deactivation survivor ("an agent leaves") + a ledger row ──
   if (input.scope === "permanent") {
@@ -175,7 +238,8 @@ export async function reassignAgentBooks(svc: Svc, input: ReassignAgentBooksInpu
     return {
       ...base, ok: true, transferId, contacts: res.reassignedContacts, leads: res.reassignedLeads, dealRoles: res.reassignedDealRoles,
       tasks: res.reassignedOpenTasks, listings: res.reassignedListings, calendarEvents: res.reassignedCalendarEvents,
-      propertyAlerts: res.reassignedPropertyAlerts, agentDeactivated: res.agentDeactivated, refused,
+      propertyAlerts: res.reassignedPropertyAlerts, agentDeactivated: res.agentDeactivated,
+      introductionsProposed: res.reintroductionsProposed, refused,
     }
   }
 
@@ -218,10 +282,16 @@ export async function reassignAgentBooks(svc: Svc, input: ReassignAgentBooksInpu
     if (!error && !coverageSet) moved.refused.push("agents.coverage: 0 rows updated")
   }
 
+  // COVER INTRODUCTIONS (wave 82E) — the covering agent introduces themselves to
+  // every client they now hold for the window, through the gated approval rail.
+  const introductionsProposed = await proposeCoverIntroductions(svc, {
+    brokerageId, coveringAgentId: to.agent.id, awayAgentId: from.agent.id, untilIso: valid.untilIso, contactIds: moved.contacts,
+  })
+
   // Record what moved on the ledger (counted).
   {
     const { data, error } = await svc.from("agent_book_transfers")
-      .update({ moved: { ...moved, coverage_set: coverageSet } })
+      .update({ moved: { ...moved, coverage_set: coverageSet, introductions_proposed: introductionsProposed } })
       .eq("id", transferId).eq("brokerage_id", brokerageId)
       .select("id")
     if (error) moved.refused.push(`agent_book_transfers.moved: ${error.message}`)
@@ -231,6 +301,7 @@ export async function reassignAgentBooks(svc: Svc, input: ReassignAgentBooksInpu
   await audit(svc, brokerageId, from.agent.id, "agent_books_reassigned", actorUserId, {
     scope: "temporary", to_agent_id: to.agent.id, transfer_id: transferId, until: valid.untilIso, reason: input.reason ?? null,
     contacts: moved.contacts.length, leads: moved.leads.length, deal_roles: moved.transactionRoleMoves, coverage_set: coverageSet,
+    introductions_proposed: introductionsProposed,
   })
   if (to.agent.user_id && (moved.contacts.length > 0 || moved.leads.length > 0)) {
     await sentinelWrite(svc, svc.from("notifications").insert({
@@ -253,7 +324,7 @@ export async function reassignAgentBooks(svc: Svc, input: ReassignAgentBooksInpu
   return {
     ...base, ok: true, transferId, contacts: moved.contacts.length, leads: moved.leads.length, dealRoles: moved.transactionRoleMoves,
     tasks: moved.tasks.length + moved.transactionTasks.length, listings: moved.listings.length, calendarEvents: moved.calendarEvents.length,
-    propertyAlerts: moved.propertyAlerts.length, coverageSet, refused: moved.refused,
+    propertyAlerts: moved.propertyAlerts.length, coverageSet, introductionsProposed, refused: moved.refused,
   }
 }
 
@@ -266,6 +337,8 @@ export interface RevertBookTransferResult {
   /** Rows the tenant re-pointed during the window — left alone, reported. */
   skipped: Record<string, number>
   coverageCleared: boolean
+  /** Cover introductions still awaiting approval, withdrawn for the handed-back clients (wave 82E). */
+  introductionsWithdrawn: number
   refused: string[]
 }
 
@@ -280,7 +353,7 @@ export async function revertBookTransfer(
   params: { brokerageId: string; transferId: string; actorUserId: string | null; expired?: boolean },
 ): Promise<RevertBookTransferResult> {
   const { brokerageId, transferId, actorUserId } = params
-  const out: RevertBookTransferResult = { ok: false, transferId, restored: {}, skipped: {}, coverageCleared: false, refused: [] }
+  const out: RevertBookTransferResult = { ok: false, transferId, restored: {}, skipped: {}, coverageCleared: false, introductionsWithdrawn: 0, refused: [] }
   const { data: row, error: rowErr } = await svc.from("agent_book_transfers")
     .select("id, from_agent_id, to_agent_id, scope, status, moved, until_at")
     .eq("id", transferId).eq("brokerage_id", brokerageId).maybeSingle()
@@ -326,6 +399,15 @@ export async function revertBookTransfer(
   await restore("calendar_events", "calendar_events", "agent_user_id", toUserId, fromUserId, moved.calendarEvents)
   await restore("property_alerts", "property_alerts", "agent_user_id", toUserId, fromUserId, moved.propertyAlerts, { updated_at: nowIso })
 
+  // A cover intro still unapproved must not reach a client after the cover ends —
+  // for EVERY client the cover was introduced to, including one the tenant
+  // re-pointed during the window ("B is covering for A" is wrong for them too).
+  {
+    const w = await withdrawCoverIntroductions(svc, { brokerageId, contactIds: moved.contacts ?? [] })
+    out.introductionsWithdrawn = w.withdrawn
+    if (w.error) out.refused.push(`agent_client_messages.withdraw: ${w.error}`)
+  }
+
   // Clear coverage only if it still points at this cover (an admin may have re-covered since).
   {
     const { data, error } = await svc.from("agents")
@@ -337,7 +419,7 @@ export async function revertBookTransfer(
   }
 
   const { data: closed, error: closeErr } = await svc.from("agent_book_transfers")
-    .update({ status: "reverted", reverted_at: nowIso, reverted_by: actorUserId, reverted: { restored: out.restored, skipped: out.skipped, expired: !!params.expired, refused: out.refused } })
+    .update({ status: "reverted", reverted_at: nowIso, reverted_by: actorUserId, reverted: { restored: out.restored, skipped: out.skipped, expired: !!params.expired, introductions_withdrawn: out.introductionsWithdrawn, refused: out.refused } })
     .eq("id", transferId).eq("brokerage_id", brokerageId).eq("status", "active")
     .select("id")
   if (closeErr) return { ...out, error: `The rows moved back but the ledger could not be closed (${closeErr.message}).` }

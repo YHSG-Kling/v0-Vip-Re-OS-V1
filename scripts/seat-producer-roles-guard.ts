@@ -52,11 +52,13 @@ const STAFF_DOOR = "app/actions/superadmin/tenant-users.ts"
 const BILLING = "app/actions/billing.ts"
 const CARD = "app/dashboard/admin/billing/seat-door-card.tsx"
 const CATALOG = "lib/billing/plan-catalog.ts"
+const INVITE_FORM = "app/dashboard/admin/users/invite-user-button.tsx"
+const STAFF_FORM = "app/dashboard/superadmin/brokerages/[id]/tenant-users-panel.tsx"
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[1 · THE PREDICATE — four rosters, one rule]")
 const {
-  roleConsumesSeat, roleProducesOnTier, parseNonProducingUserIds,
+  roleConsumesSeat, roleProducesOnTier, parseNonProducingUserIds, inviteProductionQuestion,
   PRODUCER_SEAT_ROLES, LICENSED_SEAT_ROLES, SEAT_BY_PRODUCTION_ROLES, FREE_STAFF_ROLES, WORKSPACE_STAFF_ROLES, PARTNER_ROLES, TIER_ORDER,
 } = await import("../lib/kernel/tier-role-matrix")
 
@@ -227,6 +229,29 @@ console.log("\n[5 · EVERY ADMIT ON produces:false RECORDS IT; the tenant can fl
     /setLicensedProducerAction\(p\.userId, !p\.producing\)/.test(card) && /Mark non-producing/.test(raw(CARD)) && /brokers and broker owners are producer seats/.test(raw(CARD)) && !/non-producing brokers never take a seat/.test(raw(CARD)))
   check("the catalogue prose names the four rosters and the ruling", /LICENSED_SEAT_ROLES/.test(raw(CATALOG)) && /brokers and broker owners/.test(raw(CATALOG)))
   check("the gate's `produces` doc says the caller that admits must also record (the drift this wave closes)", /must also RECORD it \(setLicensedProducerExemption\)/.test(raw(USAGE)))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 82E — lane 81A's open item: both ACTIONS read `produces` (79A/80A) but
+// neither FORM sent it, so "non-producing" could only be set after the fact
+// from the billing page. The question is asked exactly where it moves a seat.
+console.log("\n[5b · BOTH INVITE FORMS ASK THE NON-PRODUCING QUESTION — where, and only where, it moves a seat]")
+{
+  const asked = TIER_ORDER.flatMap((t) => [...WORKSPACE_STAFF_ROLES, ...PARTNER_ROLES].filter((r) => inviteProductionQuestion(r, t).asked).map((r) => r)).filter((r, i, a) => a.indexOf(r) === i).sort()
+  check("asked for exactly the licensed roles + the seat-by-production admin on every tier (derived from the rosters, not typed)",
+    asked.join() === [...LICENSED_SEAT_ROLES, ...SEAT_BY_PRODUCTION_ROLES].sort().join(), asked.join())
+  check("never asked for agent / team_lead (always a seat) or free staff / vendor (never one) — a box there would change nothing",
+    [...PRODUCER_SEAT_ROLES, ...FREE_STAFF_ROLES, ...PARTNER_ROLES].every((r) => TIER_ORDER.every((t) => !inviteProductionQuestion(r, t).asked)))
+  check("an untouched box sends what the gate would infer: defaultProduces === roleProducesOnTier (broker produces everywhere; admin per tier)",
+    TIER_ORDER.every((t) => [...LICENSED_SEAT_ROLES, ...SEAT_BY_PRODUCTION_ROLES].every((r) => inviteProductionQuestion(r, t).defaultProduces === roleProducesOnTier(r, t))))
+  const form = code(INVITE_FORM), panel = code(STAFF_FORM)
+  check("the TENANT invite form renders the box only when asked and sends `produces: !nonProducing` only then",
+    /inviteProductionQuestion\(form\.userType, tier\)/.test(form) && /productionQuestion\.asked \? \{ produces: !nonProducing \} : \{\}/.test(form) && /\{productionQuestion\.asked && \(/.test(form) && /type="checkbox"/.test(form))
+  check("the PLATFORM staff door (god console) does the same against the target tenant's tier",
+    /inviteProductionQuestion\(addForm\.userType, planTier\)/.test(panel) && /q\.asked \? \{ produces: !addForm\.nonProducing \} : \{\}/.test(panel) && /type="checkbox"/.test(panel))
+  control("the finder sees a form that never sends `produces` (the pre-82E shape)", !/produces:/.test(form.replace(/produces: !nonProducing/g, "")))
+  check("the tenant form's seat note is DERIVED from TIER_SEAT_LIMITS (the 5/50 hand table that outlived the 2/10/30 bands is gone)",
+    /TIER_SEAT_LIMITS\[tier\]/.test(form) && !/includes 5 seats|includes 50 seats|Upgrade to Brokerage for 50/.test(form))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
