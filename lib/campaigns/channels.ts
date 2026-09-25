@@ -59,6 +59,9 @@ export interface CampaignChannelSpec {
   requiresActivation?: boolean
   /** This channel can carry a rendered video as its payload (see VIDEO_DELIVERY_CHANNELS). */
   carriesVideo?: boolean
+  /** The public platforms a BROADCAST channel publishes to (the Director's targetChannel
+   *  spelling). The union over broadcast channels is BROADCAST_PLATFORMS below. */
+  platforms?: readonly string[]
 }
 
 export const CAMPAIGN_CHANNELS: readonly CampaignChannelSpec[] = [
@@ -72,7 +75,7 @@ export const CAMPAIGN_CHANNELS: readonly CampaignChannelSpec[] = [
   // by having an account, and the cheapest touch the OS owns end to end.
   { key: "in_app",      label: "In-App / Portal",    scope: "outreach",  adapterChannel: "in_app",      carriesVideo: true },
   { key: "direct_mail", label: "Direct Mail",        scope: "outreach",  adapterChannel: "direct_mail", requiresActivation: true },
-  { key: "social",      label: "Social",             scope: "broadcast", adapterChannel: "social_post", carriesVideo: true },
+  { key: "social",      label: "Social",             scope: "broadcast", adapterChannel: "social_post", carriesVideo: true, platforms: ["tiktok", "instagram", "youtube", "facebook"] },
   { key: "ads",         label: "Ads",                scope: "broadcast", adapterChannel: "ad_campaign", carriesVideo: true },
   { key: "newsletter",  label: "Newsletter",         scope: "broadcast", adapterChannel: "newsletter",  carriesVideo: true },
   { key: "blog",        label: "Blog",               scope: "broadcast", adapterChannel: null,          carriesVideo: true },
@@ -132,9 +135,15 @@ export const OUTREACH_CHANNELS: readonly CampaignChannelSpec[] =
   CAMPAIGN_CHANNELS.filter((c) => c.scope === "outreach")
 
 /** Broadcast/content channels — the marketing-campaign surface (campaign_orchestrator).
- *  @proofSeam the outreach half (OUTREACH_CHANNELS) has live readers (EngagementFeed, sanitizeOutreachChannels); the broadcast half is held by scripts/campaign-channels-simulator.ts. DUPLICATE SPELLING RECORDED, NOT MERGED HERE: lib/video/repurpose-planner.ts:18 keeps a private `BROADCAST_CHANNELS` Set — that file is lane 80C's (lib/video/*), so the §1.1 merge onto this survivor is theirs (lane 80E notes, 2026-09-23). */
+ *  @proofSeam the outreach half (OUTREACH_CHANNELS) has live readers (EngagementFeed, sanitizeOutreachChannels); the broadcast half is held by scripts/campaign-channels-simulator.ts. The former private duplicate (lib/video/repurpose-planner.ts's own `BROADCAST_CHANNELS` Set of platform names) was MERGED onto this survivor by lane 82C (2026-09-25): the platforms ride the broadcast channel specs and BROADCAST_PLATFORMS below is the one spelling. */
 export const BROADCAST_CHANNELS: readonly CampaignChannelSpec[] =
   CAMPAIGN_CHANNELS.filter((c) => c.scope === "broadcast")
+
+/** DERIVED: every public platform a broadcast channel publishes to (lower-case, the
+ *  Director's targetChannel spelling). A video targeting one of these is a BROADCAST asset —
+ *  read by lib/video/repurpose-planner.ts isRepurposableVideo. */
+export const BROADCAST_PLATFORMS: readonly string[] =
+  Array.from(new Set(BROADCAST_CHANNELS.flatMap((c) => c.platforms ?? [])))
 
 const CHANNEL_KEYS = new Set<string>(CAMPAIGN_CHANNELS.map((c) => c.key))
 const OUTREACH_KEYS = new Set<string>(OUTREACH_CHANNELS.map((c) => c.key))

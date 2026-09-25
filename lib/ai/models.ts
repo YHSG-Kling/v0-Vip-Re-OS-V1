@@ -206,6 +206,7 @@ export const AI_TASK_ROUTING: Record<string, {
   import_value_normalization:{ model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Data Steward: map imported CRM values to canonical vocabulary — one batched call per import" },
   deal_health_check:         { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Transaction health score — runs every 4 hours on all deals" },
   onboarding_step_suggest:   { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Next onboarding action recommendation — internal only" },
+  video_brief_guide:         { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Describe-a-video guide — plain-language needs + debounced wording suggestions per text box (app/actions/custom-video.ts); high volume, short output" },
   coaching_insight:          { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Agent performance nudge — internal, runs nightly" },
 
   // ── SIMPLE DECISIONS + ROUTING (cheapest path) ────────────────────────────

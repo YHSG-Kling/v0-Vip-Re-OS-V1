@@ -25,6 +25,12 @@ export type AssetType =
   | "social_post"
   | "blog_post"
   | "marketing_plan_item"
+  // Wave 82C — the TS union had drifted from the live CHECK
+  // (scripts/check-vocabularies.ts content_topic_uses.asset_type): both literals
+  // below were already storable and already written (manager-signals.ts writes
+  // situational_reel; farm mail writes direct_mail_postcard) but not typeable.
+  | "situational_reel"
+  | "direct_mail_postcard"
 
 /**
  * Log that a topic was used to seed an asset. The producer calls this

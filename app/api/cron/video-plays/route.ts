@@ -41,18 +41,24 @@ export async function GET(request: NextRequest) {
     const { runTestimonialReels, runWalkthroughPremieres, runListingFlyers, runDoorHangers } = await import("@/lib/video/video-plays")
     const { runListingCarousels } = await import("@/lib/marketing/social-carousel")
     const { runListingBrochures } = await import("@/lib/documents/listing-brochure")
-    const [testimonials, walkthroughs, flyers, hangers, carousels, brochures] = await Promise.all([
+    // Wave 82C — TOPIC POOL → VIDEO: each tenant, on its own weekday(s), gets one
+    // broadcast video built on a topic from the ONE pool (content_topic_bank via
+    // pickTopics), staged pending_review through the Director. See
+    // lib/video/topic-video-runner.ts.
+    const { runTopicPoolVideos } = await import("@/lib/video/topic-video-runner")
+    const [testimonials, walkthroughs, flyers, hangers, carousels, brochures, topicVideos] = await Promise.all([
       runTestimonialReels(svc),
       runWalkthroughPremieres(svc),
       runListingFlyers(svc),
       runDoorHangers(svc),
       runListingCarousels(svc),
       runListingBrochures(svc),
+      runTopicPoolVideos(svc),
     ])
-    const summary = { ...testimonials, ...walkthroughs, ...flyers, ...hangers, ...carousels, ...brochures }
+    const summary = { ...testimonials, ...walkthroughs, ...flyers, ...hangers, ...carousels, ...brochures, topicPool: topicVideos }
     await recordCronSuccessAction({
       context_id: contextId,
-      records_processed: testimonials.testimonialReels + walkthroughs.walkthroughs,
+      records_processed: testimonials.testimonialReels + walkthroughs.walkthroughs + topicVideos.topicVideos,
       metadata: summary as any,
     })
     return NextResponse.json({ message: "Video plays complete", summary })

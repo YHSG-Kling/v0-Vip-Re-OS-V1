@@ -56,8 +56,26 @@
  * not have.
  */
 import React from "react"
-import { Composition } from "remotion"
+import { Composition as RemotionComposition } from "remotion"
 import { durationMetadata } from "../lib/video/duration-model"
+import { withCinemaFinish } from "./components/CinemaFinish"
+
+// ── THE CINEMA FINISH, INHERITED BY REGISTRATION (wave 82, lane 82C) ─────────
+// Every `<Composition>` below is this local wrapper, which registers the entry
+// with its component wrapped in the ONE finish layer
+// (remotion/components/CinemaFinish.tsx — grade, eased cut dips, brand-colour
+// head/tail; stills pass through by rule). A composition added here inherits the
+// finish by being registered; nothing per reel is hand-timed. The id, the
+// durations, calculateMetadata and the props are forwarded untouched, so every
+// proof that reads these registrations textually (test:remotion-setup,
+// test:video-duration-model, …) reads the same shape it always did.
+const RegisteredComposition = RemotionComposition as unknown as React.FC<Record<string, unknown>>
+const Composition = ((props: Record<string, unknown>) => (
+  <RegisteredComposition
+    {...props}
+    component={withCinemaFinish(props.component as React.ComponentType<Record<string, unknown>>, String(props.id))}
+  />
+)) as unknown as typeof RemotionComposition
 import { JustListedReel } from "./JustListedReel"
 import { JustListedReelSquare } from "./JustListedReelSquare"
 import { PhotoWalkthroughReel } from "./PhotoWalkthroughReel"

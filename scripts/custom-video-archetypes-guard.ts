@@ -166,13 +166,14 @@ console.log("\n── §director · the custom kind rides the ONE rail ──")
   check("the manager door: direct_video kind 'custom' takes input.brief through commissionCustomVideo (same door, autonomous)", /if \(kind === "custom"\) \{/.test(ama) && /commissionCustomVideo\(brief,/.test(ama))
   const action = read("app/actions/custom-video.ts")
   const actionStripped = stripComments(action)
-  check("app/actions/custom-video.ts is a \"use server\" file whose two exports are async and resolve the tenant from the SESSION (never input.brokerageId)",
-    /^"use server"/.test(action) && (actionStripped.match(/^export async function/gm) ?? []).length === 2 && /supabase\.auth\.getUser\(\)/.test(actionStripped) && !/input\.brokerageId|input\.agentUserId/.test(actionStripped))
+  // Re-anchored wave 82C: the RULE is "every export is async" (a use-server file has no private helpers), not a count of two — 82C added the topic-pool and guide actions.
+  check("app/actions/custom-video.ts is a \"use server\" file whose exports are ALL async and resolve the tenant from the SESSION (never input.brokerageId)",
+    /^"use server"/.test(action) && (actionStripped.match(/^export async function/gm) ?? []).length >= 2 && (actionStripped.match(/^export function/gm) ?? []).length === 0 && /supabase\.auth\.getUser\(\)/.test(actionStripped) && !/input\.brokerageId|input\.agentUserId/.test(actionStripped))
   check("the action refuses a bad host / hint / goal before planning and previews the plan without staging", /previewDescribedVideoAction/.test(actionStripped) && /planCustomVideo\(b\.brief\)/.test(actionStripped) && /host must be one of/.test(actionStripped))
   const card = readStripped("app/dashboard/videos/create/describe-video-card.tsx")
   const client = readStripped("app/dashboard/videos/create/video-create-client.tsx")
   check("the studio's 'Describe a video' card imports BOTH actions (no orphan) and is mounted beside the teammate card", /previewDescribedVideoAction, createDescribedVideoAction/.test(card) && /<DescribeVideoCard \/>/.test(client) && /import \{ DescribeVideoCard \} from "\.\/describe-video-card"/.test(client))
-  check("the card offers the closed archetype set as an optional hint (the rule decides when blank)", /CUSTOM_VIDEO_ARCHETYPES\.map/.test(card) && /Let the rule decide/.test(card))
+  check("the card offers the closed archetype set as an optional hint (the rule decides when blank)", /CUSTOM_VIDEO_ARCHETYPES\.map/.test(card) && /<option value="">/.test(card)) // re-anchored 82C: the blank option (the rule decides), not its wording
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

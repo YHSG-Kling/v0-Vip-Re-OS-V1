@@ -162,3 +162,40 @@ export function buildMusicDuckFilterGraph(input: MusicDuckFilterGraphInput): str
     `[0:a][a1d]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
   ].join(";")
 }
+
+// ── THE MASTER (wave 82, lane 82C — the cinema finish) ───────────────────────
+// Nothing in the audio rail measured LOUDNESS: the narration mux and the music
+// pass level voice against bed, but the finished file left at whatever level the
+// sources summed to — two reels in the same feed could differ by 6-10 LU, which
+// is the "amateur" tell a viewer hears before they see anything. The platforms
+// normalise short-form playback around -14 LUFS integrated (EBU R128 s1 short-
+// form supplement, tech.ebu.ch/publications/r128s1; the streaming convention);
+// a conservative true-peak ceiling below 0 dBTP survives the platform's lossy
+// re-encode (bchillmix.com 2026-09 "leave true-peak safety for platform
+// processing"). loudnorm up-samples internally (to 192 kHz), so the stage ends
+// with an explicit aresample to 48 kHz — the AAC/video convention.
+// Single-pass loudnorm (dynamic mode) is used — a two-pass measured normalise
+// would need a second spawn per render; recorded as the upgrade path.
+
+export const MASTER_LOUDNESS = {
+  integratedLufs: -14,
+  truePeakDbtp: -1,
+  loudnessRange: 11,
+  sampleRate: 48000,
+} as const
+
+/** The master stage alone: `<in>loudnorm=I=-14:TP=-1:LRA=11,aresample=48000<out>`. PURE. */
+export function buildMasterLoudnessStage(inputLabel = "[premaster]", outputLabel = "[aout]"): string {
+  const m = MASTER_LOUDNESS
+  return `${inputLabel}loudnorm=I=${m.integratedLufs}:TP=${m.truePeakDbtp}:LRA=${m.loudnessRange},aresample=${m.sampleRate}${outputLabel}`
+}
+
+/**
+ * Append the master to a mix graph whose final label is `[aout]` — the label is
+ * KEPT (the mixer maps `[aout]`), the pre-master mix is relabelled `[premaster]`.
+ * A graph with no trailing `[aout]` is returned unchanged (nothing to master).
+ */
+export function withMasterLoudness(graph: string): string {
+  if (!/\[aout\]$/.test(graph)) return graph
+  return `${graph.replace(/\[aout\]$/, "[premaster]")};${buildMasterLoudnessStage("[premaster]", "[aout]")}`
+}

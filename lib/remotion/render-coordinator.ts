@@ -48,6 +48,7 @@ import { computeArtifactKey, type FinishInputs } from "./composition-cache"
 import { stagesVoiceover } from "./content-contract"
 import { shouldApplyBookends, outputExtension, outputContentType } from "./render-decision"
 import { MUSIC_DUCK_VOLUME_PCT } from "@/lib/video/realism-profile"
+import { cinemaMusicFades } from "@/lib/video/cinema-finish"
 
 export interface RenderIntent {
   brokerageId:     string
@@ -308,6 +309,12 @@ export async function finalizeCoordinatedRender(
           // constant MUSIC_DUCK_VOLUME_PCT level stays the fallback there —
           // see lib/remotion/music-mixer.ts's duckToNarration doc.
           duckToNarration:    usedVoiceover,
+          // Wave 82C (the cinema finish): the bed's fades are DERIVED from the
+          // composition's own intro/outro — it swells under the cover card and
+          // resolves across the outro (lib/video/cinema-finish.ts
+          // cinemaMusicFades); the pass ends in the loudness master.
+          ...cinemaMusicFades(composition.composition_id, (composition as { fps?: number }).fps ?? 30),
+          master:             true,
         })
         if (mixed.ok && mixed.outputBuffer.length > 0) {
           working = mixed.outputBuffer
@@ -324,6 +331,22 @@ export async function finalizeCoordinatedRender(
       } catch (e) {
         console.warn("[render-coordinator] music mix failed; continuing:", (e as Error).message)
       }
+    }
+  }
+
+  // ─── Master (wave 82C, the cinema finish) ───
+  // A render that carried a voice but got no music pass (finish music:false, a
+  // "none" mood, or no bed in the library) is levelled here to the SAME master
+  // target the music pass ends in (MASTER_LOUDNESS, -14 LUFS / -1 dBTP), so every
+  // finished file leaves at one loudness. A failure keeps the unmastered buffer.
+  if (!musicAssetId && usedVoiceover) {
+    try {
+      const { masterAudioLoudness } = await import("./music-mixer")
+      const mastered = await masterAudioLoudness({ videoBuffer: working })
+      if (mastered.ok && mastered.outputBuffer.length > 0) working = mastered.outputBuffer
+      else console.warn("[render-coordinator] loudness master skipped:", mastered.skippedReason ?? mastered.error)
+    } catch (e) {
+      console.warn("[render-coordinator] loudness master failed; continuing:", (e as Error).message)
     }
   }
 

@@ -33,7 +33,8 @@
  * does not mount it renders exactly as before.
  */
 import React from "react"
-import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { CINEMA_EASING } from "../../lib/video/cinema-finish"
 
 export interface SceneFadeProps {
   /** Fade length at each edge, in frames. Default 8 (~0.27s @ 30fps). */
@@ -51,8 +52,8 @@ export const SceneFade: React.FC<SceneFadeProps> = ({ frames = 8, children }) =>
     <AbsoluteFill
       style={{
         opacity: Math.min(
-          interpolate(frame, [0, ramp], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-          interpolate(frame, [durationInFrames - ramp, durationInFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+          interpolate(frame, [0, ramp], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(...CINEMA_EASING.enter) }),
+          interpolate(frame, [durationInFrames - ramp, durationInFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(...CINEMA_EASING.exit) }),
         ),
       }}
     >

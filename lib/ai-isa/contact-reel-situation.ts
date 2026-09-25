@@ -157,13 +157,19 @@ export function buildOfferCompsSituation(args: {
 
 /** content_topic_bank categories that pertain to each persona's SITUATION — the follow-up
  *  reel pulls a POPULAR KEYWORD topic from these (the first touch is the welcome avatar reel;
- *  every follow-up rides a fresh, persona-relevant informational topic). */
+ *  every follow-up rides a fresh, persona-relevant informational topic).
+ *
+ *  §6 (wave 82C): the WRITERS of content_topic_bank.categories (lib/content-intel/*-scraper.ts
+ *  inferCategories*) spell the market bucket `market_education` and the place bucket
+ *  `neighborhood`; `market_update` / `home_value` / `homeownership` are written by no scraper,
+ *  so `both` and `lifetime` could only ever overlap on one category. The writer spellings are
+ *  ADDED (the legacy ones stay — a manual source may still use them). */
 export function personaTopicCategories(persona: ContactReelPersona): string[] {
   switch (persona) {
-    case "buyer":    return ["buyer_advice", "home_buying", "finance", "first_time_buyer"]
-    case "seller":   return ["seller_advice", "home_selling", "pricing", "staging"]
-    case "both":     return ["buyer_advice", "seller_advice", "finance", "market_update"]
-    case "lifetime": return ["home_improvement", "home_value", "market_update", "homeownership"]
+    case "buyer":    return ["buyer_advice", "home_buying", "finance", "first_time_buyer", "neighborhood"]
+    case "seller":   return ["seller_advice", "home_selling", "pricing", "staging", "home_improvement"]
+    case "both":     return ["buyer_advice", "seller_advice", "finance", "market_update", "market_education"]
+    case "lifetime": return ["home_improvement", "home_value", "market_update", "homeownership", "market_education"]
   }
 }
 

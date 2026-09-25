@@ -62,6 +62,7 @@ import {
 } from "./body-visual-model"
 import { finishForVideo } from "./finish-spec"
 import { cutsForComposition, type RenderCut } from "./render-cut"
+import { geometryFor } from "../remotion/composition-geometry"
 
 export const CUSTOM_VIDEO_ARCHETYPES = [
   "talking_head_message",
@@ -173,6 +174,31 @@ export interface CustomVideoBrief {
   content?: Record<string, unknown>
   /** A listing the video is about (photo_story / event_promo may cut an MLS version). */
   listingId?: string | null
+  /** Wave 82C (81C open item) — where it will play. Picks the composition whose registered
+   *  ORIENTATION suits the channel (youtube → horizontal; tiktok/instagram → vertical) among
+   *  those serving the purpose on the host; absent or no match → the registry's first. */
+  targetChannel?: string | null
+}
+
+/** Orientation a channel prefers — the Director's vertical-social vs long-form split. */
+export function channelOrientation(channel: string | null | undefined): "vertical" | "horizontal" | null {
+  const c = String(channel ?? "").toLowerCase()
+  if (c === "tiktok" || c === "instagram") return "vertical"
+  if (c === "youtube") return "horizontal"
+  return null
+}
+
+/** Pick among candidate compositions by the channel's orientation (registered geometry), else the first. */
+export function pickCompositionForChannel(candidates: readonly string[], channel: string | null | undefined): string | null {
+  if (candidates.length === 0) return null
+  const want = channelOrientation(channel)
+  if (!want) return candidates[0]
+  const match = candidates.find((id) => {
+    const g = geometryFor(id)
+    if (!g) return false
+    return want === "vertical" ? g.height > g.width : g.width > g.height
+  })
+  return match ?? candidates[0]
 }
 
 export type ArchetypeClassification =
@@ -305,7 +331,7 @@ export function planCustomVideo(brief: CustomVideoBrief, opts: { overrides?: rea
   const durationRule = PURPOSE_DURATION_RULES[purpose]
   const compositions = compositionsForPurposeAndHost(purpose, brief.host)
   if (compositions.length === 0) return { ok: false, reason: `archetype ${cls.archetype} derives purpose ${purpose}, but no registered composition serves ${purpose} on the ${brief.host} host (lib/video/duration-model.ts COMPOSITION_DURATION_RULES)` }
-  const compositionId = compositions[0]
+  const compositionId = pickCompositionForChannel(compositions, brief.targetChannel) ?? compositions[0]
   const rule = resolvePurposeRule(purpose, opts.overrides ?? null)
   const clamp = clampLengthWish(durationRule, brief.lengthWishSeconds)
   const cuts = brief.listingId ? cutsForComposition(compositionId) : ["ads" as RenderCut]

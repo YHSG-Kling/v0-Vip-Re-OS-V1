@@ -42,6 +42,10 @@ export interface TopicCandidate {
  */
 export const OFFICE_CLAIM_WINDOW_DAYS = 30
 
+/** Wave 82C — the lift an in-season topic gets (below the +10 fresh / +15 local /
+ *  +20 geo boosts: the season nudges ties, it never outranks a local story). */
+export const SEASONAL_BOOST = 8
+
 export interface RecipientLocation {
   city?:     string | null
   state?:    string | null
@@ -79,6 +83,10 @@ export async function pickTopics(args: {
   /** agents.id of whoever is generating. Recorded on the claim so the office
    *  can see WHICH agent took a topic, not merely that someone did. */
   agentId?: string | null
+  /** Wave 82C — SEASONALITY. Categories in season right now (lib/video/topic-video.ts
+   *  seasonalCategories): a topic overlapping them gets SEASONAL_BOOST. A lift, never a
+   *  filter — an off-season topic that is winning still surfaces. */
+  boostCategories?: string[]
 }): Promise<TopicCandidate[]> {
   const svc   = createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
@@ -223,9 +231,11 @@ export async function pickTopics(args: {
     const perfBoost = (args.recipientPersona && personaPerfMap.has(r.id))
       ? personaPerfMap.get(r.id)!
       : (r.performance_score ?? 0)
+    const seasonal = (args.boostCategories ?? []).length > 0 && (r.categories ?? []).some((c) => (args.boostCategories ?? []).includes(c))
+    const seasonBoost = seasonal ? SEASONAL_BOOST : 0
     return {
       ...r,
-      adjusted_score: r.engagement_score + localBoost + freshBoost + staleDecay + geoBoost + perfBoost,
+      adjusted_score: r.engagement_score + localBoost + freshBoost + staleDecay + geoBoost + perfBoost + seasonBoost,
       is_brokerage_local: isLocal,
       geo_match: geoMatch,
     }
