@@ -17,6 +17,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ListingHero } from "@/app/components/listing-landing/ListingHero"
 import { NeighborhoodWidget } from "@/app/components/listing-landing/NeighborhoodWidget"
 import { ShowingRequestForm } from "@/app/components/listing-landing/ShowingRequestForm"
+import { PropertyPaymentCard } from "@/app/components/listing-landing/PropertyPaymentCard"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -361,6 +362,9 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
                 )}
               </CardContent>
             </Card>
+
+            {/* Section 3b: Payment estimate from this property's own tax bill + HOA (wave 82 lane A) */}
+            <PropertyPaymentCard listingSlug={listing.id} />
 
             {/* Section 4: Neighborhood Widget */}
             <Suspense fallback={<Skeleton className="h-64 w-full" />}>

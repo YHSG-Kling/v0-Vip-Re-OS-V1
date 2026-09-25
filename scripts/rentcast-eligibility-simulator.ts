@@ -322,6 +322,11 @@ const RENTCAST_EXPORTS = [
   // thin reader over it.
   "getRentcastAvmAndComps",
   "getRentcastComps",
+  // Wave 82 lane A — the property-RECORD reader (tax bill / assessed basis / HOA for the public
+  // calculators). Added here the moment it landed: the negative control below rewrites the FIRST
+  // `const { apiKey } = await gateRentcast(params)` in the file, which is now this reader's — an
+  // export missing from this list let that control stay green with the defect present.
+  "getRentcastPropertyRecord",
 ]
 
 /**
@@ -340,8 +345,13 @@ const RENTCAST_EXPORTS = [
  * `rentcastGet(` without a gate is still an offender no matter what else it
  * calls, so "delegating" cannot be used to smuggle an ungated request in.
  */
+// The NETWORK token. Wave 82 lane A: the readers reach RentCast through the typed facade
+// (callRentcastGet / callRentcastGetById, lib/external/rentcast-typed.ts); the old bare
+// `rentcastGet(` spelling matched nothing since the 2026-08-31 migration, so "gate BEFORE network"
+// could only ever test that a gate EXISTED. Both spellings are the network now.
+const NET_RE = /\b(?:callRentcastGet(?:ById)?|rentcastGet)\(/
 function delegateTargetOf(body: string): string | null {
-  if (body.includes("rentcastGet(")) return null
+  if (NET_RE.test(body)) return null
   for (const fn of RENTCAST_EXPORTS) {
     if (new RegExp(`\\b${fn}\\s*\\(`).test(body)) return fn
   }
@@ -364,7 +374,7 @@ function assertGatedBeforeNetwork(): boolean {
       continue
     }
     const gate = body.indexOf("gateRentcast(")
-    const net = body.indexOf("rentcastGet(")
+    const net = body.search(NET_RE)
     if (gate !== -1 && (net === -1 || gate < net)) { clean.add(fn); continue }
     if (gate !== -1) { offenders.push(`${fn}(spends-then-checks)`); continue }
     const target = delegateTargetOf(body)

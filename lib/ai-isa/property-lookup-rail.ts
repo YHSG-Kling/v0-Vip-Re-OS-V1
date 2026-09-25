@@ -169,8 +169,9 @@
  * capability, and resolveContactProviderRoute picks the order for ONE record by
  * what it carries: a record with a property address is traced by BatchData FIRST
  * and reaches PeopleData ONLY when BatchData returns nothing; a record keyed by
- * email/phone/handle alone has no BatchData rail in this repo (reverse skip trace
- * is an MCP tool, unbuilt — open item) and goes to PeopleData. DNC/TCPA, property
+ * email/phone alone rides BatchData REVERSE skip trace first (wave 82 lane A —
+ * lib/enrichment/reverse-skip-trace.ts, capability "reverse_contact"), PeopleData on a
+ * miss; a name/handle alone still goes to PeopleData. DNC/TCPA, property
  * facts, motivated-seller lists and email validation do not overlap (one provider
  * each). The BatchData leg still declares purpose "skip_trace" through
  * resolveBatchDataAccess — this resolver chooses the ORDER, the gate stays ONE.
@@ -189,13 +190,31 @@ import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@
 import { MCP_TOOL_CALL_COST_USD } from "@/lib/external/batchdata-ai-tools"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 
-export type PropertyLookupPurpose = "conversation" | "listing_intake" | "acquisition" | "skip_trace" | "dnc" | "valuation"
+/**
+ * public_facts (wave 82 lane A) — owner verbatim: "the calculator was giving the property facts so
+ * the calculator was calculating the correct property taxes, etc for the property landing pages".
+ * The PUBLIC calculators (app/actions/calculators.ts — home value, the listing-page payment
+ * estimate) need the tax bill, the county's assessed tax basis, HOA dues and the structure facts
+ * for an ANONYMOUS visitor. Rungs: cache → tenant IDX → RentCast PROPERTY RECORD (/properties —
+ * the one rung that carries tax bills + HOA) → public records. NEVER BatchData (not in
+ * BATCHDATA_ELIGIBLE_PURPOSES). The ladder does not stop at the first answer for this purpose: a
+ * hit without a tax bill continues to the next rung and fills only the missing fields
+ * (PURPOSE_REQUIRED_FACTS). Output leaves the rail ONLY through toPublicPropertyFacts — a
+ * WHITELIST that carries no owner identity, no contact point and no valuation figure.
+ */
+export type PropertyLookupPurpose = "conversation" | "listing_intake" | "acquisition" | "skip_trace" | "dnc" | "valuation" | "public_facts"
 // Module-private (wave 79 integration, opposite-missing C3: the exported list had no
 // reader). Its ONE reader is the entry gate below — a "use server" caller can hand the
 // rail any string, and an unknown purpose must fail CLOSED, never fall to a rung.
 const PROPERTY_LOOKUP_PURPOSES: readonly PropertyLookupPurpose[] = [
-  "conversation", "listing_intake", "acquisition", "skip_trace", "dnc", "valuation",
+  "conversation", "listing_intake", "acquisition", "skip_trace", "dnc", "valuation", "public_facts",
 ]
+
+/** Facts a purpose is not answered WITHOUT — the ladder keeps walking (filling gaps only) until
+ *  they arrive or the rungs run out. Every other purpose stops at the first answer. */
+const PURPOSE_REQUIRED_FACTS: Partial<Record<PropertyLookupPurpose, ReadonlyArray<keyof PropertyLookupFacts>>> = {
+  public_facts: ["annualPropertyTax"],
+}
 function isPropertyLookupPurpose(v: unknown): v is PropertyLookupPurpose {
   return typeof v === "string" && (PROPERTY_LOOKUP_PURPOSES as readonly string[]).includes(v)
 }
@@ -214,6 +233,7 @@ export type ContactDataProvider = "batchdata" | "peopledata"
 /** The capabilities the two providers sell, named by the QUESTION a caller asks. */
 export type ProviderCapability =
   | "owner_contact"          // phone / email / mailing append for a person or a property owner
+  | "reverse_contact"        // PERSON-keyed (phone/email [+ name]) → who it is + contact points + linked property (wave 82 lane A)
   | "person_profile"         // demographics, employment, socials, life events for a known person
   | "dnc_tcpa"               // DNC / TCPA-litigator / line-type scrub of a phone number
   | "email_validation"       // is this address deliverable / role / disposable
@@ -238,6 +258,14 @@ export interface ProviderRouteEntry {
 export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readonly ProviderRouteEntry[]>> = {
   owner_contact: [
     { provider: "batchdata", unitCostUsd: BATCHDATA_SKIP_TRACE_COST_USD, keyedBy: "property_address" },
+    { provider: "peopledata", unitCostUsd: PEOPLEDATA_MATCH_COST_USD, keyedBy: "person_identifier" },
+  ],
+  // Wave 82 lane A ("build a reverse skip trace wrapper"): BatchData reverse skip trace bills
+  // "by matched records, not by API calls" (batchdata.io/reverse-skip-trace-api) at the SAME
+  // pay-per-match floor as the V3 skip trace — one constant, no second spelling (§6). PeopleData
+  // stays the fallback on a miss. Wrapper: lib/enrichment/reverse-skip-trace.ts.
+  reverse_contact: [
+    { provider: "batchdata", unitCostUsd: BATCHDATA_SKIP_TRACE_COST_USD, keyedBy: "phone" },
     { provider: "peopledata", unitCostUsd: PEOPLEDATA_MATCH_COST_USD, keyedBy: "person_identifier" },
   ],
   person_profile: [
@@ -267,19 +295,32 @@ export interface ContactRouteInput {
 }
 
 export interface ContactProviderRoute {
-  capability: "owner_contact"
+  /** owner_contact = property-keyed (V3 skip trace); reverse_contact = person-keyed (phone/email →
+   *  BatchData REVERSE skip trace). The BatchData SHAPE follows the capability. */
+  capability: "owner_contact" | "reverse_contact"
   /** Providers to try IN ORDER; the next runs only when the previous returned nothing. */
   providers: readonly ContactDataProvider[]
   reason: string
 }
 
 /**
- * PURE — the owner-contact route for ONE record. Cheapest adequate provider first;
- * the dearer one only as a fallback when the cheaper one cannot be asked (input
- * shape) or returned nothing (the caller's job to fall through). Empty = refused.
+ * PURE — the contact route for ONE record. Cheapest adequate provider first; the dearer one only
+ * as a fallback when the cheaper one cannot be asked (input shape) or returned nothing (the
+ * caller's job to fall through). Empty = refused.
+ *   property address          → owner_contact:   BatchData V3 skip trace → PeopleData
+ *   no address, phone/email   → reverse_contact: BatchData REVERSE skip trace → PeopleData (wave 82 A)
+ *   name / profile URL only   → owner_contact:   PeopleData (BatchData has nothing to be asked with)
  */
 export function resolveContactProviderRoute(input: ContactRouteInput): ContactProviderRoute {
   const pdlUsable = input.hasName || input.hasEmailOrPhone || input.hasProfileUrl
+  if (!input.hasPropertyAddress && input.hasEmailOrPhone) {
+    const providers = CONTACT_PROVIDER_ROUTES.reverse_contact.map((e) => e.provider)
+    return {
+      capability: "reverse_contact",
+      providers,
+      reason: `no property address but a phone/email → BatchData REVERSE skip trace first ($${BATCHDATA_SKIP_TRACE_COST_USD}/match); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) only when BatchData returns nothing`,
+    }
+  }
   const bdUsable = input.hasPropertyAddress // V3 skip trace is property-keyed; owner name optional
   const ordered = CONTACT_PROVIDER_ROUTES.owner_contact
     .filter((e) => (e.provider === "batchdata" ? bdUsable : pdlUsable))
@@ -289,11 +330,15 @@ export function resolveContactProviderRoute(input: ContactRouteInput): ContactPr
   }
   const reason = ordered[0] === "batchdata"
     ? `property address present → BatchData first ($${BATCHDATA_SKIP_TRACE_COST_USD}/match)${ordered.length > 1 ? `; PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) only when BatchData returns nothing` : "; no PeopleData identifier"}`
-    : `no property address → BatchData V3 skip trace cannot be asked (reverse skip trace by email/phone is MCP-only, unbuilt); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) is the only adequate provider`
+    : `no property address and no phone/email → BatchData cannot be asked (V3 is property-keyed, reverse is phone/email-keyed); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) is the only adequate provider`
   return { capability: "owner_contact", providers: ordered, reason }
 }
 
-export type PropertyLookupAudience = "customer" | "staff"
+/** "public" (wave 82 lane A) — an anonymous visitor on a public page (calculators, listing
+ *  landing pages). Keeps the county's assessed TAX BASIS (the calculators need it and it is a
+ *  public record), strips every valuation-shaped figure; the public projection
+ *  (toPublicPropertyFacts) then whitelists what may leave. */
+export type PropertyLookupAudience = "customer" | "staff" | "public"
 
 export type PropertyLookupRung = "cache" | "tenant_idx" | "rentcast" | "public_records" | "batchdata"
 
@@ -341,8 +386,14 @@ export interface PropertyLookupFacts {
   listPrice: number | null
   /** A valuation-shaped figure. STRIPPED for a customer audience. */
   estimatedValue: number | null
-  /** County assessed value. STRIPPED for a customer audience (it reads as a value). */
+  /** County assessed value. STRIPPED for a customer audience (it reads as a value); kept for a
+   *  public audience as the labelled TAX BASIS the calculators need. */
   taxAssessedValue: number | null
+  /** Most recent annual property-tax bill in dollars (public record) and its year — wave 82 lane A. */
+  annualPropertyTax: number | null
+  propertyTaxYear: number | null
+  /** Monthly HOA dues in dollars when known (own listing's hoa_dues, RentCast hoa.fee, public records). */
+  hoaMonthly: number | null
   mlsNumber: string | null
   listingUrl: string | null
   /** Geocode (free, Nominatim survivor) — filled on the listing_intake path; null elsewhere. */
@@ -397,7 +448,43 @@ export function isBatchDataRungAllowed(purpose: PropertyLookupPurpose, policy: P
 /** PURE — a customer never sees a valuation-shaped figure (CLAUDE.md §5). */
 export function redactFactsForAudience(facts: PropertyLookupFacts, audience: PropertyLookupAudience): PropertyLookupFacts {
   if (audience === "staff") return facts
+  if (audience === "public") return { ...facts, estimatedValue: null }
   return { ...facts, estimatedValue: null, taxAssessedValue: null }
+}
+
+// ─── PUBLIC FACTS PROJECTION (wave 82 lane A) ───────────────────────────────
+
+/** The ONLY fields that may leave the rail for an anonymous public page. A WHITELIST, so a field
+ *  added to PropertyLookupFacts later (or an owner/contact/value field a rung ever carries) cannot
+ *  reach a visitor by default — scripts/public-property-facts-guard.ts holds the list. */
+export const PUBLIC_PROPERTY_FACT_FIELDS = [
+  "address", "city", "state", "zip", "beds", "baths", "sqft", "yearBuilt", "lotSize", "propertyType",
+  "listingStatus", "listPrice", "annualPropertyTax", "propertyTaxYear", "hoaMonthly", "source", "sourceNote",
+] as const satisfies ReadonlyArray<keyof PropertyLookupFacts>
+
+export type PublicPropertyFacts = Pick<PropertyLookupFacts, (typeof PUBLIC_PROPERTY_FACT_FIELDS)[number]> & {
+  /** The county's assessed value — the TAX BASIS, labelled so it can never be read as a market value. */
+  assessedValueForTax: number | null
+}
+
+/** PURE — the whitelist projection. Nothing outside PUBLIC_PROPERTY_FACT_FIELDS is copied. */
+export function toPublicPropertyFacts(facts: PropertyLookupFacts): PublicPropertyFacts {
+  const out = {} as Record<string, unknown>
+  for (const k of PUBLIC_PROPERTY_FACT_FIELDS) out[k] = facts[k] ?? null
+  out.assessedValueForTax = facts.taxAssessedValue ?? null
+  return out as PublicPropertyFacts
+}
+
+/** PURE — fill ONLY the null fields of `base` from `more` (first rung's source is kept). */
+function fillMissingFacts(base: PropertyLookupFacts, more: PropertyLookupFacts): PropertyLookupFacts {
+  const merged = { ...base } as Record<string, unknown>
+  const extra = more as unknown as Record<string, unknown>
+  for (const [k, v] of Object.entries(extra)) {
+    if (k === "source" || k === "sourceNote" || k === "isEstimate") continue
+    if (merged[k] == null && v != null) merged[k] = v
+  }
+  merged.sourceNote = `${base.sourceNote} Gaps filled from ${more.source}.`
+  return merged as unknown as PropertyLookupFacts
 }
 
 /** PURE — one normalised street line for a case-insensitive own-DB match. */
@@ -438,7 +525,8 @@ function emptyFacts(source: PropertyLookupSource, sourceNote: string): PropertyL
   return {
     address: null, city: null, state: null, zip: null, beds: null, baths: null, sqft: null, yearBuilt: null,
     lotSize: null, propertyType: null, listingStatus: null, listPrice: null, estimatedValue: null,
-    taxAssessedValue: null, mlsNumber: null, listingUrl: null, lat: null, lon: null, isEstimate: false, source, sourceNote,
+    taxAssessedValue: null, annualPropertyTax: null, propertyTaxYear: null, hoaMonthly: null,
+    mlsNumber: null, listingUrl: null, lat: null, lon: null, isEstimate: false, source, sourceNote,
   }
 }
 
@@ -495,7 +583,7 @@ async function cacheRung(req: PropertyLookupRequest): Promise<PropertyLookupFact
   // (1) Our own listings — authoritative and free.
   const { data: own, error: ownErr } = await svc
     .from("listings")
-    .select("address, city, state, zip, bedrooms, bathrooms, sqft, year_built, lot_size, property_type, status, list_price, mls_number")
+    .select("address, city, state, zip, bedrooms, bathrooms, sqft, year_built, lot_size, property_type, status, list_price, mls_number, hoa_dues")
     .eq("brokerage_id", req.brokerageId)
     .is("deleted_at", null)
     .ilike("address", needle)
@@ -509,6 +597,8 @@ async function cacheRung(req: PropertyLookupRequest): Promise<PropertyLookupFact
       beds: num(l.bedrooms), baths: num(l.bathrooms), sqft: num(l.sqft), yearBuilt: num(l.year_built),
       lotSize: num(l.lot_size), propertyType: str(l.property_type), listingStatus: str(l.status),
       listPrice: num(l.list_price), mlsNumber: str(l.mls_number),
+      // listings.hoa_dues is MONTHLY (app/actions/portal-seller.ts reads it as hoaDuesMonthly).
+      hoaMonthly: num(l.hoa_dues),
     }
   }
 
@@ -555,6 +645,26 @@ async function tenantIdxRung(req: PropertyLookupRequest): Promise<PropertyLookup
 }
 
 async function rentcastRung(req: PropertyLookupRequest): Promise<PropertyLookupFacts | null> {
+  if (req.purpose === "public_facts") {
+    // The PROPERTY RECORD endpoint (/properties) — the one RentCast shape that carries the tax
+    // bill, the assessed tax basis and the HOA fee. Same gate, same meter, same price per request
+    // as the listing search below; its reader is a whitelist that never maps the owner block.
+    const { getRentcastPropertyRecord } = await import("@/lib/property/rentcast")
+    const p = await getRentcastPropertyRecord({
+      brokerageId: req.brokerageId, systemSource: "public_calculator", contactId: req.contactId ?? null,
+      address: formatFullAddress(req.address),
+    })
+    if (!p) return null
+    return {
+      ...emptyFacts("rentcast", "From RentCast's public property record (county assessor data; platform-metered)."),
+      address: p.address, city: p.city, state: p.state, zip: p.zip,
+      beds: p.bedrooms, baths: p.bathrooms, sqft: p.squareFeet, yearBuilt: p.yearBuilt,
+      // RentCast reports lotSize in SQUARE FEET; the rail's lotSize is acres (address-lookup's unit).
+      lotSize: p.lotSizeSqft != null ? Math.round((p.lotSizeSqft / 43560) * 100) / 100 : null,
+      propertyType: p.propertyType, taxAssessedValue: p.assessedValue,
+      annualPropertyTax: p.annualPropertyTax, propertyTaxYear: p.taxYear, hoaMonthly: p.hoaMonthly,
+    }
+  }
   const { searchRentcastSaleListings } = await import("@/lib/property/rentcast")
   const r = await searchRentcastSaleListings({
     brokerageId: req.brokerageId,
@@ -579,12 +689,13 @@ async function publicRecordsRung(req: PropertyLookupRequest): Promise<PropertyLo
     address: req.address.street, city: req.address.city ?? "", state: req.address.state ?? "", zip: req.address.zip ?? undefined,
     brokerageId: req.brokerageId, userId: req.userId ?? null,
   })
-  if (r.beds == null && r.sqft == null && r.yearBuilt == null) return null
+  if (r.beds == null && r.sqft == null && r.yearBuilt == null && r.annualPropertyTax == null) return null
   return {
     ...emptyFacts("public_records", `From public records (${r.sources.join(", ") || "county/public pages"}; confidence ${r.dataConfidence}).`),
     address: req.address.street, city: req.address.city ?? null, state: req.address.state ?? null, zip: req.address.zip ?? null,
     beds: r.beds, baths: r.baths, sqft: r.sqft, yearBuilt: r.yearBuilt, lotSize: r.lotSizeAcres,
     propertyType: r.propertyType, taxAssessedValue: r.taxAssessedValue,
+    annualPropertyTax: num(r.annualPropertyTax), hoaMonthly: num(r.hoaMonthlyFee),
   }
 }
 
@@ -755,8 +866,12 @@ export async function lookupPropertyForConversation(
       const facts = await rungs[rung](req)
       if (facts) {
         result.found = true
-        result.facts = redactFactsForAudience(facts, req.audience)
-        break
+        const redacted = redactFactsForAudience(facts, req.audience)
+        result.facts = result.facts ? fillMissingFacts(result.facts, redacted) : redacted
+        // Stop at the first answer — unless this purpose names facts it is not answered without
+        // (public_facts needs the tax bill): then keep walking, filling gaps only.
+        const required = PURPOSE_REQUIRED_FACTS[req.purpose] ?? []
+        if (required.every((k) => result.facts?.[k] != null)) break
       }
     } catch (e) {
       result.skipped.push({ rung, reason: `rung failed: ${e instanceof Error ? e.message : String(e)}` })
@@ -789,4 +904,31 @@ export async function lookupPropertyForConversation(
     } catch { /* a failed free geocode costs nothing and changes nothing */ }
   }
   return result
+}
+
+// ─── THE PUBLIC ENTRY (wave 82 lane A) ──────────────────────────────────────
+
+export interface PublicPropertyFactsResult {
+  found: boolean
+  facts: PublicPropertyFacts | null
+  rungsTried: PropertyLookupRung[]
+  skipped: Array<{ rung: PropertyLookupRung; reason: string }>
+}
+
+/**
+ * THE one door a public page (anonymous visitor) uses for property facts: purpose
+ * "public_facts", audience "public", output through the toPublicPropertyFacts WHITELIST only.
+ * The caller supplies the tenant it RESOLVED (session, an agent's public slug, or the listing
+ * row a public listing slug names — never a body uuid, §4); a tenant-less call is refused by
+ * the rail. BatchData is never reached (public_facts is not an eligible purpose).
+ */
+export async function lookupPublicPropertyFacts(
+  req: { brokerageId: string; address: PropertyLookupAddress; contactId?: string | null },
+  deps: PropertyLookupDeps = {},
+): Promise<PublicPropertyFactsResult> {
+  const r = await lookupPropertyForConversation(
+    { brokerageId: req.brokerageId, purpose: "public_facts", audience: "public", address: req.address, contactId: req.contactId ?? null },
+    deps,
+  )
+  return { found: r.found, facts: r.facts ? toPublicPropertyFacts(r.facts) : null, rungsTried: r.rungsTried, skipped: r.skipped }
 }

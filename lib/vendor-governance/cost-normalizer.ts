@@ -57,6 +57,17 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     costPerUnit: 0.01, // $0.01 per request
     notes: 'Property search and social scraping',
   },
+  // Wave 82 lane A — Exa now books under its OWN name (it used to ride the composite
+  // "apify_social" row). exa.ai/docs/reference/pricing (Exa 2026-09-25): /search $7 per 1k
+  // requests (≤10 results), +$1/1k results above 10, +$1/1k pages per content type; $10/mo
+  // free-tier credit. Callers book the SDK-reported `costDollars.total`; this row only prices a
+  // unitCount booking so Exa can never fall to the unknown-vendor fallback.
+  'exa': {
+    vendorName: 'Exa',
+    unitType: 'api_calls',
+    costPerUnit: 0.007, // $7 per 1,000 /search requests
+    notes: 'Neural web search — intent acquisition, permit/pre-listing, search enrichment',
+  },
   'apify': {
     vendorName: 'Apify',
     unitType: 'credits',

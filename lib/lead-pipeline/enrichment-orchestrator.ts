@@ -509,7 +509,13 @@ export async function processEnrichmentQueue(
       })
       console.info('[enrichment-orchestrator] owner-contact route:', route.providers.join(' → ') || 'none', '—', route.reason)
 
-      let batchDataFallback: { phones: string[]; emails: string[] } | null = null
+      let batchDataFallback: {
+        phones: string[]
+        emails: string[]
+        /** Set on the REVERSE leg (person-keyed row): who the phone/email resolved to (name-checked). */
+        person?: { firstName: string | null; lastName: string | null } | null
+        via: 'v3' | 'reverse'
+      } | null = null
       let batchDataFallbackCost = 0
       // Captured (not just logged) so the Step 7 no-match path below can classify it
       // instead of always defaulting to "transient" — a BatchData token/provisioning
@@ -526,7 +532,29 @@ export async function processEnrichmentQueue(
       if (skipTraceAccess && !skipTraceAccess.allowed) {
         console.info('[enrichment-orchestrator] batchdata skip trace skipped:', skipTraceAccess.reason)
       }
-      if (skipTraceAccess?.allowed) {
+      if (skipTraceAccess?.allowed && route.capability === 'reverse_contact') {
+        // ── PERSON-KEYED ROW (no property address, a phone/email): the REVERSE skip trace
+        // (wave 82 lane A, owner: "build a reverse skip trace wrapper") — $0.07/match through
+        // the ONE wrapper lib/enrichment/reverse-skip-trace.ts, handed the gate verdict above so
+        // the gate runs once. The wrapper books its own platform-ledger row; `peopleData: null`
+        // because Step 5b below is this drain's PeopleData leg (it builds the rich profile).
+        const { reverseSkipTracePerson } = await import('@/lib/enrichment/reverse-skip-trace')
+        const rev = await reverseSkipTracePerson({
+          brokerageId, ref: entityId,
+          firstName: (entity.first_name as string | null) ?? null,
+          lastName: (entity.last_name as string | null) ?? null,
+          phone: (entity.phone as string | null) ?? null,
+          email: (entity.email as string | null) ?? null,
+          city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? null,
+          state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? null,
+        }, { access: skipTraceAccess, peopleData: null, metadata: { entityType, entityId, queueEntryId: entry.id } })
+        batchDataFallbackCost = rev.costUsd
+        if (rev.status === 'matched' && rev.provider === 'batchdata') {
+          batchDataFallback = { phones: rev.phones, emails: rev.emails, person: rev.person, via: 'reverse' }
+        } else if (rev.status !== 'matched') {
+          console.info('[enrichment-orchestrator] reverse skip trace miss:', rev.reason)
+        }
+      } else if (skipTraceAccess?.allowed) {
         try {
           const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
           const { matches, cost: btCost } = await skipTraceBatchDataV3Batch([{
@@ -540,7 +568,7 @@ export async function processEnrichmentQueue(
           }])
           batchDataFallbackCost = btCost
           const m = matches[0]
-          if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails }
+          if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails, via: 'v3' }
         } catch (e) {
           batchDataFallbackErrorMessage = e instanceof Error ? e.message : String(e)
           console.warn('[enrichment-orchestrator] batchdata skip trace failed (non-blocking):', e)
@@ -1041,13 +1069,24 @@ export async function processEnrichmentQueue(
                 ? { ...(scrub.patch.phone !== undefined && { phone: scrub.patch.phone }), phone_secondary: scrub.patch.phone_secondary ?? null }
                 : scrub.patch)
             : (batchDataFallback.phones[0] ? { phone: batchDataFallback.phones[0] } : {})
+          // NAME BACKFILL on the REVERSE leg (same rule as the PeopleData path's namePatch: fill
+          // a gap, never overwrite). The wrapper already refused a person whose last name
+          // disagrees with the record's, so a backfilled name is the person the phone/email names.
+          const reversePerson = batchDataFallback.via === 'reverse' ? batchDataFallback.person ?? null : null
+          const reverseNamePatch: Record<string, unknown> =
+            reversePerson && !(entity.first_name || entity.last_name) && reversePerson.firstName
+              ? { first_name: reversePerson.firstName, ...(reversePerson.lastName && { last_name: reversePerson.lastName }) }
+              : {}
           const patch: Record<string, unknown> = {
             ...phonePatch,
-            ...(batchDataFallback.emails[0] && { email: batchDataFallback.emails[0] }),
+            // The reverse leg was ASKED with the row's own email — never replace it with another.
+            ...(batchDataFallback.emails[0] && !(batchDataFallback.via === 'reverse' && entity.email) && { email: batchDataFallback.emails[0] }),
+            ...reverseNamePatch,
             last_enriched_at: new Date().toISOString(),
             // 'batchdata_skip_trace' (was 'batchdata_skip_trace_fallback' — it is the
             // FIRST provider now; no reader of the old spelling existed: grepped lane 81B).
-            enrichment_provider: 'batchdata_skip_trace',
+            // 'batchdata_reverse_skip_trace' names the person-keyed leg (wave 82 lane A).
+            enrichment_provider: batchDataFallback.via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace',
             ...(entityType === 'lead' && { enrichment_status: 'complete' }),
           }
           const { error: fallbackWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
@@ -1060,10 +1099,10 @@ export async function processEnrichmentQueue(
               status: 'completed',
               enrichment_cost: cost + batchDataFallbackCost,
               enrichment_results: {
-                lane: 'batchdata_skip_trace',
+                lane: batchDataFallback.via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace',
                 person_enrichment: 'batchdata_match',
                 free_osint: free ? freeLaneProfileBlock(free) : null,
-                note: `BatchData V3 skip trace (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData not asked`,
+                note: `BatchData ${batchDataFallback.via === 'reverse' ? 'REVERSE' : 'V3'} skip trace (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData not asked`,
               },
               completed_at: new Date().toISOString(),
             })

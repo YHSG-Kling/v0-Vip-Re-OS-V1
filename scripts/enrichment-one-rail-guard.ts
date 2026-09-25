@@ -114,7 +114,7 @@ type Rung = import("../lib/ai-isa/property-lookup-rail").PropertyLookupRung
 type Purpose = import("../lib/ai-isa/property-lookup-rail").PropertyLookupPurpose
 const facts = (source: Rung, extra: Partial<Facts> = {}): Facts => ({
   address: "123 Main St", city: "Austin", state: "TX", zip: "78701", beds: 3, baths: 2, sqft: 1800, yearBuilt: 1998, lotSize: null,
-  propertyType: "single_family", listingStatus: null, listPrice: null, estimatedValue: 450000, taxAssessedValue: 390000,
+  propertyType: "single_family", listingStatus: null, listPrice: null, estimatedValue: 450000, taxAssessedValue: 390000, annualPropertyTax: null, propertyTaxYear: null, hoaMonthly: null,
   mlsNumber: null, listingUrl: null, lat: null, lon: null, isEstimate: false, source, sourceNote: "fixture", ...extra,
 })
 const calls: string[] = []
@@ -198,7 +198,7 @@ check("the facts rung's own gate is unchanged (isBatchDataRungAllowed: acquisiti
 const BD_IMPORT = /["']@\/lib\/external\/batchdata-[a-z-]+["']|["']@\/lib\/batchdata-client["']|["']\.\/batchdata-[a-z-]+["']|["']@\/lib\/external["']/
 // batchDataPreferMcp is generic — `batchDataPreferMcp<T>(` — so the reach token admits a type argument
 // (the first run reported the rail and public-record-preload as NOT reaching: the finder was blind).
-const BD_REACH = /callBatchDataMcp\(|batchDataPreferMcp(?:<[^(]*?>)?\(|skipTraceBatchDataV3Batch\(|enrichPropertyDatasetsBatchData\(|fetchIncrementalPropertySearch\(|checkDncStatus\(|checkTcpaStatus\(|verifyPhone\(|searchProperties\(|fetchMotivatedSellers\(|enrichPropertyWithBatchData\(|fetchBatchDataComps\(|investorBuybox\w+\(|verifyAddressBatchData\(|fetchBatchRankPropensity\(|lookupBatchDataPropertiesByIds\(|new BatchDataClient\(/
+const BD_REACH = /callBatchDataMcp\(|batchDataPreferMcp(?:<[^(]*?>)?\(|skipTraceBatchDataV3Batch\(|enrichPropertyDatasetsBatchData\(|fetchIncrementalPropertySearch\(|checkDncStatus\(|checkTcpaStatus\(|verifyPhone\(|searchProperties\(|fetchMotivatedSellers\(|enrichPropertyWithBatchData\(|fetchBatchDataComps\(|investorBuybox\w+\(|verifyAddressBatchData\(|fetchBatchRankPropensity\(|lookupBatchDataPropertiesByIds\(|reverseSkipTraceBatchData\(|new BatchDataClient\(/
 const GATE = /resolveBatchDataAccess\(/
 const GATED = [
   "lib/lead-pipeline/enrichment-orchestrator.ts",
@@ -214,6 +214,8 @@ const GATED = [
   "lib/offers/public-record-preload.ts",
   "app/actions/investor-buybox-preview.ts",
   "app/actions/lead-intelligence.ts",
+  // Wave 82 lane A — the reverse skip trace wrapper (person-keyed, purpose "skip_trace").
+  "lib/enrichment/reverse-skip-trace.ts",
 ]
 // (a) transports / registries / probes / re-exports — they ARE the seam, not a caller.
 const TRANSPORT = new Set([

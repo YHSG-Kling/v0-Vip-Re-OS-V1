@@ -1518,3 +1518,67 @@ async function dispatchVideoViaDID({
 
   return { success: true, providerKey: "did", messageId: didData.id }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WEB SEARCH — search enrichment + intent discovery (wave 82 lane A)
+// ─────────────────────────────────────────────────────────────────────────────
+// Owner verbatim (wave 82): "osint is supposed to be a free provider for intent behavior
+// acquisition and a free search enrichment. exa can also be used for these". Not a send — a
+// PROVIDER dispatch like the others: one door, a tenant to attribute to, the spend booked.
+// Exa is the rung (exa.ai/docs/reference/pricing, 2026-09-25: /search $7 per 1k requests up to
+// 10 results + $1/1k pages per content type; $10/month free-tier credit ≈ 1,400 searches — so
+// low-volume enrichment is effectively free, and never unmetered). The KEYLESS free OSINT lane
+// (Nominatim / Overpass / Census, lib/external/osint-free.ts) answers PLACE questions and runs
+// first in the enrichment drain; it holds no people index, so a person-mention search starts
+// here. PLATFORM-PAID: booked to vendor_usage_tracking via meterVendorSpend (vendor "exa"),
+// brokerage-attributed for telemetry, never a tenant meter.
+
+export interface DispatchWebSearchParams {
+  /** Tenant the spend is attributed to — resolved server-side by the caller (§4). */
+  brokerageId: string | null
+  query: string
+  numResults?: number
+  startPublishedDate?: string
+  includeDomains?: string[]
+  purpose: "search_enrichment" | "intent_acquisition"
+  metadata?: Record<string, unknown>
+}
+
+export interface DispatchWebSearchResult {
+  ok: boolean
+  provider: "exa" | "none"
+  results: import("@/lib/external/exa-client").ExaResult[]
+  costUsd: number
+  reason: string
+}
+
+export async function dispatchWebSearch(params: DispatchWebSearchParams): Promise<DispatchWebSearchResult> {
+  if (!params.brokerageId) {
+    return { ok: false, provider: "none", results: [], costUsd: 0, reason: "no tenant — a tenant-less billed web search is refused (§4)" }
+  }
+  if (!params.query?.trim()) {
+    return { ok: false, provider: "none", results: [], costUsd: 0, reason: "empty query" }
+  }
+  if (!process.env.EXA_API_KEY) {
+    return { ok: false, provider: "none", results: [], costUsd: 0, reason: "Exa not configured (EXA_API_KEY unset) — no search provider" }
+  }
+  const { exaSearch } = await import("@/lib/external/exa-client")
+  const r = await exaSearch({
+    query: params.query.trim(),
+    numResults: Math.max(1, Math.min(params.numResults ?? 10, 25)),
+    startPublishedDate: params.startPublishedDate,
+    includeDomains: params.includeDomains,
+  })
+  if (r.cost > 0) {
+    const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+    await meterVendorSpend({
+      vendorName: "exa",
+      usageType: params.purpose,
+      cost: r.cost,
+      brokerageId: params.brokerageId,
+      systemSource: params.purpose,
+      metadata: { results: r.results.length, ...(params.metadata ?? {}) },
+    }).catch(() => false)
+  }
+  return { ok: true, provider: "exa", results: r.results, costUsd: r.cost, reason: `${r.results.length} result(s) from Exa` }
+}

@@ -39,6 +39,14 @@ import type { paths } from "./_generated/rentcast-openapi"
 // the rent AVM). This module aliases only the endpoints the product actually calls, so "typed
 // façade" keeps meaning "the wire we use", not "the vendor's whole catalog".
 
+/** GET /properties — public property RECORDS (assessor facts: structure, lot, tax assessments,
+ *  tax bills, HOA fee, owner). Alias RESTORED lane 82A, exactly as the tombstone above said it would
+ *  be "the day a caller lands": lib/property/rentcast.ts::getRentcastPropertyRecord reads it for the
+ *  public calculators' tax/HOA facts (the rail's `public_facts` purpose). The owner block on this
+ *  response is NEVER mapped out of that reader. */
+type RentcastPropertiesResponse = paths["/properties"]["get"]["responses"][200]["content"]["application/json"]
+export type RentcastPropertyRecord    = RentcastPropertiesResponse extends Array<infer T> ? T : never
+
 /** GET /listings/sale — sale listings index (motivation + price + photos). */
 export type RentcastSaleListingsQuery    = paths["/listings/sale"]["get"]["parameters"]["query"]
 export type RentcastSaleListingsResponse = paths["/listings/sale"]["get"]["responses"][200]["content"]["application/json"]

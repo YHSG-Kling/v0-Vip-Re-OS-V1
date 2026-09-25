@@ -386,8 +386,11 @@ check("enrichWithPeopleData derives a profile URL ONLY when name/phone/email are
   /!hasNamePhoneEmail\s*\n\s*\? deriveSocialProfileUrl/.test(ewpdBody))
 check("enrichWithPeopleData meters the NEW profile-identify spend via meterVendorSpend (never a second unmetered PeopleData path)",
   /meterVendorSpend\(\{/.test(ewpdBody) && /vendorName:\s*'peopledata'/.test(ewpdBody))
-check("the meter call reuses the EXISTING per-match constant (0.25 matched / 0.10 no-match) documented in peopledata-client.ts — never a second invented price",
-  /cost:\s*matched \? 0\.25 : 0\.10,/.test(ewpdBody))
+// Re-anchored wave 82 lane A (assert the RULE, not the literal): the booking READS the transport's
+// constants — the old pin required the literal `0.25 : 0.10`, i.e. it could only pass while the
+// no-match half over-billed a free PDL miss at $0.10 (lane 81B's finding).
+check("the meter call reads the transport's per-match constants (PEOPLEDATA_MATCH_COST_USD / PEOPLEDATA_NO_MATCH_COST_USD from peopledata-client.ts) — never a second invented price",
+  /cost:\s*matched \? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,/.test(ewpdBody) && !/cost:\s*matched \? 0\.\d+ : 0\.\d+/.test(ewpdBody))
 
 // 8g — ORDERING (task 2 requirement): the second (post-enrichment) dedup still
 // runs AFTER enrichment — unaffected by this lane's change, re-asserted here

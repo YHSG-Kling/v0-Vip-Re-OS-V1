@@ -1111,6 +1111,153 @@ export async function skipTraceBatchDataV3Batch(
   return { matches: allMatches, cost }
 }
 
+// ─── REVERSE SKIP TRACE — person-keyed (phone / email → the person + property) ─────────
+// Wave 82 lane A, owner verbatim: "build a reverse skip trace wrapper." CONFIRMED
+// (batchdata.io/reverse-skip-trace-api, Exa 2026-09-25): "Hand the API a phone number or
+// email and it returns the person behind it — their identity, contact records, and the
+// property linked to them"; response fields name.first/last/full, phones[].number/dnc/tcpa,
+// emails[].email, addresses[], property.address; billed "By matched records, not by API
+// calls. A lookup that resolves to no one isn't counted." The official BatchData MCP server
+// exposes it as `reverse_skip_trace` ({ requests: [{ phone?, email?, requestId? }] }) — this
+// transport asks MCP FIRST (batchDataPreferMcp, the seam every agentic BatchData read rides)
+// and falls back to REST. UNRESOLVED: the REST path segment ("property/skip-trace/reverse",
+// after developer.batchdata.com's "Reverse Property Skip Trace" operation under V3) could not
+// be executed from this lane (Stoplight SPA) — the MCP leg is the confirmed one.
+// Access is provisioned separately from standard skip trace (same page), so an unprovisioned
+// account returns an error → every input reads unmatched (fail closed, never fabricated).
+// THE GATE IS NOT HERE: callers pass lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess
+// (purpose "skip_trace") first — lib/enrichment/reverse-skip-trace.ts is the one wrapper.
+
+export interface BatchDataReverseSkipTraceInput {
+  ref: string
+  phone?: string | null
+  email?: string | null
+}
+
+export interface BatchDataReversePerson {
+  firstName: string | null
+  lastName: string | null
+  fullName: string | null
+  phones: string[]
+  emails: string[]
+  /** Addresses the provider links to the person (most relevant first). */
+  addresses: Array<{ street: string | null; city: string | null; state: string | null; zip: string | null }>
+  /** The property BatchData verified to the person, when it could. */
+  propertyAddress: { street: string | null; city: string | null; state: string | null; zip: string | null } | null
+}
+
+export interface BatchDataReverseMatch {
+  ref: string
+  matched: boolean
+  /** Every person the provider returned for this input (a shared line can resolve to several). */
+  persons: BatchDataReversePerson[]
+}
+
+const strOrNull = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
+
+function readReverseAddress(a: Record<string, any> | null | undefined): BatchDataReversePerson["propertyAddress"] {
+  if (!a || typeof a !== "object") return null
+  const street = strOrNull(a.street) ?? strOrNull(a.fullAddress) ?? strOrNull(a.addressLine1)
+  if (!street) return null
+  return { street, city: strOrNull(a.city), state: strOrNull(a.state), zip: strOrNull(a.zip) ?? strOrNull(a.zipCode) }
+}
+
+/** PURE — one raw person object from the reverse response → BatchDataReversePerson. */
+function readReversePerson(p: Record<string, any>): BatchDataReversePerson {
+  const contact = readSkipTraceMatch("_", p)
+  const name = (p.name ?? {}) as Record<string, any>
+  const addresses = (Array.isArray(p.addresses) ? p.addresses : [])
+    .map((a: Record<string, any>) => readReverseAddress(a))
+    .filter((a: BatchDataReversePerson["propertyAddress"]): a is NonNullable<BatchDataReversePerson["propertyAddress"]> => !!a)
+  return {
+    firstName: strOrNull(name.first) ?? strOrNull(p.firstName),
+    lastName: strOrNull(name.last) ?? strOrNull(p.lastName),
+    fullName: strOrNull(name.full) ?? strOrNull(p.fullName),
+    phones: contact.phones,
+    emails: contact.emails,
+    addresses,
+    propertyAddress: readReverseAddress(p.property?.address) ?? readReverseAddress(p.propertyAddress),
+  }
+}
+
+/**
+ * PURE — the reverse response → one BatchDataReverseMatch per input ref. Correlates by the echoed
+ * `requestId` / `meta.requestId` when the provider returns one; otherwise POSITIONALLY, and only
+ * when the result count equals the request count (a drifted response fails every ref closed
+ * rather than attaching a stranger's phone to the wrong person).
+ */
+export function readReverseSkipTraceResponse(
+  data: unknown,
+  inputs: readonly BatchDataReverseSkipTraceInput[],
+): BatchDataReverseMatch[] {
+  const miss = (ref: string): BatchDataReverseMatch => ({ ref, matched: false, persons: [] })
+  const root = (data ?? {}) as Record<string, any>
+  const rows: any[] = Array.isArray(root) ? root
+    : Array.isArray(root.results) ? root.results
+    : Array.isArray(root.results?.persons) ? root.results.persons
+    : Array.isArray(root.results?.results) ? root.results.results
+    : Array.isArray(root.persons) ? root.persons
+    : []
+  const toMatch = (ref: string, row: Record<string, any> | undefined): BatchDataReverseMatch => {
+    if (!row) return miss(ref)
+    const people: any[] = Array.isArray(row.persons) ? row.persons : [row]
+    const persons = people.filter((p) => p && typeof p === "object").map(readReversePerson)
+      .filter((p) => p.phones.length > 0 || p.emails.length > 0 || !!p.fullName || !!p.lastName)
+    return { ref, matched: persons.length > 0, persons }
+  }
+  const idOf = (r: any): string | null => strOrNull(r?.requestId) ?? strOrNull(r?.meta?.requestId) ?? strOrNull(r?.input?.requestId)
+  if (rows.some((r) => idOf(r))) {
+    return inputs.map((i) => toMatch(i.ref, rows.find((r) => idOf(r) === i.ref)))
+  }
+  if (rows.length !== inputs.length) return inputs.map((i) => miss(i.ref))
+  return inputs.map((i, k) => toMatch(i.ref, rows[k]))
+}
+
+/**
+ * reverseSkipTraceBatchData — MCP `reverse_skip_trace` first, REST fallback. FAIL CLOSED: no
+ * resolvable BatchData credential, an unprovisioned account or any error → every input unmatched,
+ * cost 0. `cost` is PER MATCHED INPUT at BATCHDATA_SKIP_TRACE_COST_USD — the reverse product's own
+ * page says a lookup that resolves to no one is not counted; reconcileBatchDataWalletSpend stays
+ * the corrector if the invoice ever says otherwise.
+ */
+export async function reverseSkipTraceBatchData(
+  inputs: readonly BatchDataReverseSkipTraceInput[],
+): Promise<{ matches: BatchDataReverseMatch[]; cost: number; via: "mcp" | "rest" | "none"; error: string | null }> {
+  const usable = inputs.filter((i) => strOrNull(i.phone) || strOrNull(i.email)).slice(0, SKIP_TRACE_BATCH_LIMIT)
+  const unmatched = inputs.map((i) => ({ ref: i.ref, matched: false, persons: [] as BatchDataReversePerson[] }))
+  if (usable.length === 0) return { matches: unmatched, cost: 0, via: "none", error: "no phone or email to reverse-trace" }
+  const requests = usable.map((i) => ({
+    requestId: i.ref,
+    ...(strOrNull(i.phone) ? { phone: String(i.phone).replace(/\D/g, "").slice(-10) } : {}),
+    ...(strOrNull(i.email) ? { email: String(i.email).trim().toLowerCase() } : {}),
+  }))
+  const { batchDataPreferMcp } = await import("@/lib/external/batchdata-mcp")
+  const r = await batchDataPreferMcp<unknown>(
+    "reverse_skip_trace",
+    { requests },
+    async () => {
+      const token = resolveBatchDataToken("skip_trace") ?? BATCHDATA_API_KEY
+      if (!token) return null
+      const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+      const res = await callConnector<Record<string, any>>({
+        connector: "batchdata_skip_trace",
+        baseUrl: BATCHDATA_API_V3_URL,
+        path: "property/skip-trace/reverse",
+        method: "POST",
+        auth: { style: "bearer", token },
+        body: { requests },
+      })
+      return res.ok ? res.data : null
+    },
+  )
+  if (!r.data) return { matches: unmatched, cost: 0, via: r.via, error: r.error ?? "no reverse skip-trace data returned" }
+  const read = readReverseSkipTraceResponse(r.data, usable)
+  const byRef = new Map(read.map((m) => [m.ref, m]))
+  const matches = inputs.map((i) => byRef.get(i.ref) ?? { ref: i.ref, matched: false, persons: [] })
+  const cost = matches.filter((m) => m.matched).length * BATCHDATA_SKIP_TRACE_COST_USD
+  return { matches, cost, via: r.via, error: null }
+}
+
 // ─── ADDRESS VERIFY — fallback ONLY when Lob is unconfigured ──────────────────────────
 // Lob stays the survivor for mailing-address verification (lib/external/lob-address-
 // verify.ts, wired through lib/lead-pipeline/promotion-address-verification.ts — CLAUDE.md

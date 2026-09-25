@@ -750,35 +750,58 @@ export async function runLifeChangeCheck(params: {
     })
     if (gate.blocked) return { success: true, changesFound: 0, skipped: gate.skipped, error: gate.error }
 
-    const osintData = await osint.searchPerson({
-      firstName: contact.first_name as string,
-      lastName: contact.last_name as string,
-      city: (contact.city as string) ?? undefined,
-      state: (contact.state as string) ?? undefined,
+    // ── SEARCH-ENRICHMENT RUNG FIRST (wave 82 lane A) ──────────────────────
+    // lib/enrichment/web-mention-search.ts: ONE provider door (dispatchWebSearch, Exa, booked
+    // as vendor "exa"), ~$0.007/search inside Exa's free monthly credit, and an event is kept
+    // only when the contact's FULL NAME and the event term share a result — with its URL as
+    // evidence. The ZenRows people-search scrape below (~$0.06, keyword-anywhere flags) runs
+    // ONLY when that rung could not run (Exa unconfigured / refused).
+    type FoundEvent = { event: string; details: string; confidence: number; url?: string | null; publishedDate?: string | null }
+    let found: FoundEvent[] = []
+    const { searchPersonMentions } = await import("@/lib/enrichment/web-mention-search")
+    const mentions = await searchPersonMentions({
+      brokerageId, contactId,
+      firstName: contact.first_name as string, lastName: contact.last_name as string,
+      city: (contact.city as string) ?? null, state: (contact.state as string) ?? null,
     })
+    if (mentions.ran) {
+      found = mentions.events.map((e) => ({
+        event: e.event, details: e.evidence, confidence: 70, url: e.url, publishedDate: e.publishedDate,
+      }))
+    } else {
+      const osintData = await osint.searchPerson({
+        firstName: contact.first_name as string,
+        lastName: contact.last_name as string,
+        city: (contact.city as string) ?? undefined,
+        state: (contact.state as string) ?? undefined,
+      })
 
-    await trackVendorUsageService({
-      vendor: "zenrows",
-      systemSource: "osint_search",
-      unitCount: OSINT_REQUESTS_PER_SEARCH,
-      brokerageId,
-      contactId,
-      metadata: { lane: "life_change_check", trigger: params.trigger ?? "scheduled" },
-    })
+      await trackVendorUsageService({
+        vendor: "zenrows",
+        systemSource: "osint_search",
+        unitCount: OSINT_REQUESTS_PER_SEARCH,
+        brokerageId,
+        contactId,
+        metadata: { lane: "life_change_check", trigger: params.trigger ?? "scheduled", exa_rung: mentions.reason },
+      })
+      found = (osintData?.life_events ?? []).map((e) => ({ event: e.event, details: e.source, confidence: 50 }))
+    }
 
     let changesFound = 0
     const existingEvents: any[] = Array.isArray(contact.life_events) ? (contact.life_events as any[]) : []
     const existingTypes = new Set(existingEvents.map((e: any) => e?.type))
     const merged = [...existingEvents]
 
-    for (const event of osintData?.life_events ?? []) {
+    for (const event of found) {
       if (existingTypes.has(event.event)) continue
       existingTypes.add(event.event)
       merged.push({
         type: event.event,
-        details: event.source,
+        details: event.details,
         detected_at: new Date().toISOString(),
-        confidence: 50,
+        confidence: event.confidence,
+        ...(event.url ? { source_url: event.url } : {}),
+        ...(event.publishedDate ? { source_date: event.publishedDate } : {}),
       })
       changesFound++
     }

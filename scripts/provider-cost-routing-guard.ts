@@ -82,8 +82,13 @@ const { VENDOR_PRICING } = await import("../lib/vendor-governance/cost-normalize
 const { CONTACT_PROVIDER_ROUTES, resolveContactProviderRoute } = rail
 type Capability = keyof typeof CONTACT_PROVIDER_ROUTES
 const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
-check("six capabilities are routed (owner_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list)",
-  caps.sort().join(",") === "dnc_tcpa,email_validation,motivated_seller_list,owner_contact,person_profile,property_facts")
+// Wave 82 lane A: + reverse_contact (person-keyed BatchData REVERSE skip trace, PeopleData on a miss).
+check("seven capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list)",
+  caps.sort().join(",") === "dnc_tcpa,email_validation,motivated_seller_list,owner_contact,person_profile,property_facts,reverse_contact")
+const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
+check("reverse_contact overlaps like owner_contact: BatchData FIRST at the SAME skip-trace constant (no second spelling), PeopleData on a miss",
+  rc.length === 2 && rc[0].provider === "batchdata" && rc[1].provider === "peopledata"
+  && rc[0].unitCostUsd === bd.BATCHDATA_SKIP_TRACE_COST_USD && rc[1].unitCostUsd === pdl.PEOPLEDATA_MATCH_COST_USD)
 for (const cap of caps) {
   const list = CONTACT_PROVIDER_ROUTES[cap]
   const sorted = list.every((e, i) => i === 0 || list[i - 1].unitCostUsd <= e.unitCostUsd)
@@ -118,7 +123,12 @@ const route = (i: Partial<Parameters<typeof resolveContactProviderRoute>[0]>) =>
   resolveContactProviderRoute({ hasName: false, hasPropertyAddress: false, hasEmailOrPhone: false, hasProfileUrl: false, ...i }).providers.join(",")
 check("name + property address → batchdata, then peopledata (fallback only)", route({ hasName: true, hasPropertyAddress: true }) === "batchdata,peopledata")
 check("property address alone → batchdata only (PeopleData has nothing to be asked with)", route({ hasPropertyAddress: true }) === "batchdata")
-check("email/phone without an address → peopledata only (no BatchData reverse skip trace in this repo)", route({ hasEmailOrPhone: true }) === "peopledata")
+check("email/phone without an address → BatchData REVERSE skip trace, then PeopleData (wave 82 lane A)",
+  route({ hasEmailOrPhone: true }) === "batchdata,peopledata"
+  && resolveContactProviderRoute({ hasName: true, hasPropertyAddress: false, hasEmailOrPhone: true, hasProfileUrl: false }).capability === "reverse_contact")
+check("a property address still routes the V3 (property-keyed) shape, even with a phone on the record",
+  resolveContactProviderRoute({ hasName: true, hasPropertyAddress: true, hasEmailOrPhone: true, hasProfileUrl: false }).capability === "owner_contact")
+check("name alone (no phone/email/address) → peopledata only", route({ hasName: true }) === "peopledata")
 check("social profile URL alone → peopledata", route({ hasProfileUrl: true }) === "peopledata")
 check("no identifier at all → refused (empty route, reason given)", route({}) === "" && /no identifier/.test(resolveContactProviderRoute({ hasName: false, hasPropertyAddress: false, hasEmailOrPhone: false, hasProfileUrl: false }).reason))
 check("the reason names the prices it chose between", /\$0\.07/.test(resolveContactProviderRoute({ hasName: true, hasPropertyAddress: true, hasEmailOrPhone: false, hasProfileUrl: false }).reason))
@@ -185,8 +195,12 @@ for (const b of FORMER_BLIND_SPOTS) {
     check(`${b.file}: no longer reaches BatchData at all (no reach token, no bare BatchDataClient)`, ri < 0 && !/BatchDataClient/.test(src), `reach@${ri}`)
   }
 }
-check("app/actions/calculators.ts rides the rail as a CUSTOMER conversation (facts redacted) — never a raw BatchData row to a public visitor",
-  /lookupPropertyForConversation\(\{[\s\S]{0,80}brokerageId,[\s\S]{0,40}purpose: "conversation",[\s\S]{0,40}audience: "customer"/.test(stripped("app/actions/calculators.ts")))
+// Re-anchored wave 82 lane A: the calculators ride the rail's PUBLIC door (purpose public_facts,
+// whitelist projection) — the owner's ruling restored the tax/HOA facts 81B's customer-conversation
+// reach had stripped. scripts/public-property-facts-guard.ts proves the whitelist.
+check("app/actions/calculators.ts rides the rail's PUBLIC facts door (lookupPublicPropertyFacts — facts only) — never a raw BatchData row to a public visitor",
+  /lookupPublicPropertyFacts\(\{[\s\S]{0,40}brokerageId,/.test(stripped("app/actions/calculators.ts"))
+  && !/lookupPropertyForConversation\(/.test(stripped("app/actions/calculators.ts")))
 check("lib/kernel/offer-net-sheet.ts hands the listing's OWN tenant to the preload (the gate refuses a tenant-less reach)",
   /preloadPublicRecordCosts\([\s\S]{0,400}brokerageId: \(lst as any\)\.brokerage_id/.test(stripped("lib/kernel/offer-net-sheet.ts")))
 const DEF_RESOLVER = /function decideBatchDataAccess\(|function resolveBatchDataAccess\(|CONTACT_PROVIDER_ROUTES\s*[:=]|function resolveContactProviderRoute\(/

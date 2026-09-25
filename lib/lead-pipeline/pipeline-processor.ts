@@ -5,6 +5,7 @@ import { isTerminalRawProcessingStatus, type RawProcessingStatus, type DedupeSta
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
 import { extractPropertySpecs, leadSpecPatch, contactSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
+import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_NO_MATCH_COST_USD } from '@/lib/external/peopledata-client'
 import { deriveSocialProfileUrl } from './social-identity-resolve'
 import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
@@ -842,7 +843,11 @@ async function enrichWithPeopleData(fields: {
     void meterVendorSpend({
       vendorName: 'peopledata',
       usageType: 'social_identity_resolve',
-      cost: matched ? 0.25 : 0.10,
+      // Wave 82 lane A (scraping unfrozen): the transport's constants, never literals — the old
+      // `0.25 : 0.10` billed a MISS at $0.10 while PDL charges nothing for a 404 no-match
+      // (support.peopledatalabs.com Pricing & credits; lane 81B). A $0 miss books no row
+      // (meterVendorSpend skips cost <= 0), which is the truth.
+      cost: matched ? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,
       brokerageId: fields.brokerageId,
       systemSource: 'lead_scraping',
       metadata: { profileUrl, source: fields.source ?? null, matched },

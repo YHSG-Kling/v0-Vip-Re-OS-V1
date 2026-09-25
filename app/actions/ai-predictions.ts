@@ -2667,6 +2667,11 @@ export async function findMarketArbitrage(data: { city: string; state: string; a
   // list (scripts/enrichment-one-rail-guard.ts blind spots). The arbitrage sweep reads the
   // IDX feed + market_data only; a property-facts need here rides
   // lib/ai-isa/property-lookup-rail.ts (never a bare BatchData client).
+  // WAVE 82 lane A (owner: "is there another capability that takes the ai predictions place?
+  // you can't just remove a capability"): NOTHING was removed — the deleted line was an unused
+  // variable (no `batchData.` call existed at 2f4ed0fe). All 23 exports of this file are
+  // byte-identical in signature before and after wave 81 and still reach 18 UI importers; this
+  // file IS the survivor, and findMarketArbitrage keeps its IDX + market_data sweep unchanged.
 
   // `data.agentId` is a caller-supplied parameter and is NOT the tenant: it is
   // only used to narrow the investor sweep below. The IDX account — and the

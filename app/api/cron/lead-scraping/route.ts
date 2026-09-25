@@ -231,6 +231,108 @@ export async function GET(request: Request) {
       results.markets_processed++
       console.log(`[Lead Scraping Cron] Processing market: ${market.name} (${market.city}, ${market.state})`)
 
+      // STEP 4 — Resolve the set of enabled sources for this territory. Expanded
+      // through GATE_TOKEN so the gate matches whether the DB stored short names
+      // ("facebook"), canonical keys ("facebook_group"), or aliases ("zillow").
+      const enabledSources = expandEnabledSources(market.enabled_sources ?? ["batchdata_motivated"])
+
+      // ── FREE RUNGS FIRST (wave 82 lane A) ───────────────────────────────────
+      // Owner verbatim (wave 82): "osint is supposed to be a free provider for intent behavior
+      // acquisition". The three $0 first-party intent lanes (site visitor, email engagement,
+      // rental graduation) used to sit AFTER every paid lane and BEHIND the territory budget
+      // gate — so a territory whose paid budget was spent (or a run that hit maxDuration in a
+      // slow paid scraper) never read its own free behaviour signals at all. They now run
+      // BEFORE the budget gate and before any paid rung: a spent budget stops the SPEND, never
+      // the free lanes. Each still runs once per brokerage (the *BrokeragesRun sets above).
+      // ── SITE VISITOR INTENT — wave 70 behavioral lane, $0 marginal cost ─────
+      // Own first-party website/portal traffic (website_visitors, already written by the
+      // pixel/dwell beacons) — an unidentified, high-dwell visitor is buyer-intent this repo
+      // already collected and never read for acquisition. Runs ONCE per brokerage (see the
+      // siteVisitorBrokeragesRun set above this loop) — brokerage_id passed EXPLICITLY
+      // (never platform pool: this is the tenant's own site, not a scraped third-party page),
+      // so it lands as source_origin='brokerage' immediately, the same shape a
+      // brokerage-triggered scrape would.
+      if (enabledSources.has("site_visitor_intent") && market.brokerage_id && !siteVisitorBrokeragesRun.has(market.brokerage_id)) {
+        siteVisitorBrokeragesRun.add(market.brokerage_id)
+        try {
+          const { records, rowsExamined } = await sourceSiteVisitorIntent(supabase, market.brokerage_id)
+          const { inserted: siteVisitorInserted } = await insertRawBatch({
+            records, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "site_visitor_intent", sourceFamily: "site_behavior", sourceChannel: "site_visitor_intent",
+            brokerageId: market.brokerage_id,
+            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
+            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
+            // rather than silently inheriting a stale estimate.
+            batchCostUsd: 0,
+          })
+          results.total_leads_created += siteVisitorInserted
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Site visitor intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${siteVisitorInserted}`)
+          }
+        } catch (err) {
+          results.errors.push(`Site visitor intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── EMAIL ENGAGEMENT INTENT — lane 71C behavioral lane, $0 marginal cost ─
+      // Own first-party outbound-email engagement (email_tracking, already written by the
+      // SendGrid events webhook) — a contact who repeatedly opens/clicks the brokerage's own
+      // mail is a renewed-intent signal this repo already collected and never read for
+      // acquisition. Runs ONCE per brokerage (see emailEngagementBrokeragesRun above this
+      // loop), same shape as site_visitor_intent immediately above: brokerage_id passed
+      // EXPLICITLY (never platform pool — this is the tenant's own send history), so it lands
+      // as source_origin='brokerage' immediately.
+      if (enabledSources.has("email_engagement_intent") && market.brokerage_id && !emailEngagementBrokeragesRun.has(market.brokerage_id)) {
+        emailEngagementBrokeragesRun.add(market.brokerage_id)
+        try {
+          // WAVE 72A (owner: "contacts coming in from the tenants website or email
+          // come in as contacts not raw leads."): `records` is now ALWAYS empty —
+          // every email_tracking row is already a CONTACT (see the sourcer's header)
+          // — so this never mints a raw lead. `contactsNotified` counts the manager
+          // signals (campaign_orchestrator → ai_isa) sent directly onto those
+          // contacts instead. `insertRawBatch` still no-ops safely on the empty array.
+          const { records, rowsExamined, contactsNotified } = await sourceEmailEngagementIntent(supabase, market.brokerage_id)
+          const { inserted: emailEngagementInserted } = await insertRawBatch({
+            records, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "email_engagement_intent", sourceFamily: "email_behavior", sourceChannel: "email_engagement_intent",
+            brokerageId: market.brokerage_id,
+            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
+            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
+            // rather than silently inheriting a stale estimate.
+            batchCostUsd: 0,
+          })
+          results.total_leads_created += emailEngagementInserted
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Email engagement intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${emailEngagementInserted} contactsNotified=${contactsNotified}`)
+          }
+        } catch (err) {
+          results.errors.push(`Email engagement intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // ── RENTAL-TO-BUYER GRADUATION (tenant side) — lane 74D, $0 marginal cost ─
+      // A renter already in this brokerage's own `contacts` whose tenure crosses the
+      // graduation bar (lib/lead-pipeline/rental-graduation-sourcer.ts). NEVER a raw lead —
+      // the person is already a contact — a manager signal (shopping_agent, who owns the buyer
+      // journey → ai_isa) carries the buy-vs-renew moment instead. Runs ONCE per brokerage (see
+      // rentalGraduationBrokeragesRun above this loop), same shape as email_engagement_intent
+      // immediately above.
+      if (enabledSources.has("rental_to_buyer_graduation") && market.brokerage_id && !rentalGraduationBrokeragesRun.has(market.brokerage_id)) {
+        rentalGraduationBrokeragesRun.add(market.brokerage_id)
+        try {
+          const { rowsExamined, contactsNotified } = await sourceRentalToBuyerGraduation(supabase, market.brokerage_id)
+          if (rowsExamined > 0) {
+            console.log(`[Lead Scraping Cron] Rental-to-buyer graduation ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} notified=${contactsNotified}`)
+          }
+        } catch (err) {
+          results.errors.push(`Rental-to-buyer graduation error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
       // STEP 3 — Budget gate: skip this territory if monthly budget is exhausted.
       if ((market.spend_this_month ?? 0) >= (market.monthly_budget_usd ?? 100)) {
         const reason = `Skipped ${market.name}: monthly budget reached ($${market.spend_this_month ?? 0} / $${market.monthly_budget_usd ?? 100})`
@@ -239,10 +341,6 @@ export async function GET(request: Request) {
         continue
       }
 
-      // STEP 4 — Resolve the set of enabled sources for this territory. Expanded
-      // through GATE_TOKEN so the gate matches whether the DB stored short names
-      // ("facebook"), canonical keys ("facebook_group"), or aliases ("zillow").
-      const enabledSources = expandEnabledSources(market.enabled_sources ?? ["batchdata_motivated"])
 
       // Track spend accumulated across all sources in this territory run.
       let territorySpendUsd = 0
@@ -671,6 +769,16 @@ export async function GET(request: Request) {
         // tracked SEPARATELY from sourceCostUsd (which feeds the single composite "apify_social"
         // ledger entry after this block) — see the realty_chatter block for why.
         let realtyChatterCostUsd = 0
+        // Exa spend (buyer-intent + permit/pre-listing lanes). Wave 82 integration: lanes 82A and
+        // 82B both fixed Exa being filed under Apify's name — 82A with a per-call meter here,
+        // 82B through the per-source ledger (insertSocial → addSocialSpend → bookSourceSpend,
+        // where SOURCE_VENDOR maps exa_buyer_intent / permit_prelisting_intent → exa). The
+        // per-source ledger is the survivor (the lead-cost reconcile reads it); this only COUNTS
+        // Exa spend for the execution row and the territory budget, so it is never booked twice.
+        let exaCostUsd = 0
+        const meterExa = async (cost: number, _usageType: string) => {
+          if (cost > 0) exaCostUsd += cost
+        }
         // Review-acquisition (ZenRows/Zyte) spend, same reason realtyChatterCostUsd is tracked
         // separately: metered per-provider inline in that block, not folded into sourceCostUsd's
         // composite "apify_social" ledger entry.
@@ -855,7 +963,7 @@ export async function GET(request: Request) {
           // ── Exa neural search (AI-native) — buyer-intent content across the web ─
           if (enabledSources.has("exa")) {
             const { records, cost } = await sourceExaBuyerIntent(socialMarket)
-            sourceCostUsd += cost
+            await meterExa(cost, "exa_buyer_intent")
             await insertSocial(records, "exa", "social_intent", cost)
           }
 
@@ -912,7 +1020,7 @@ export async function GET(request: Request) {
           // BEFORE insertSocial ever sees the matched records.
           if (enabledSources.has("permit_prelisting_intent")) {
             const { records, cost } = await sourcePermitPrelistingIntent(socialMarket)
-            sourceCostUsd += cost
+            await meterExa(cost, "exa_permit_prelisting")
             const routed = await routePermitPrelistingHits({
               supabase, brokerageId: market.brokerage_id, records,
             })
@@ -998,7 +1106,7 @@ export async function GET(request: Request) {
           completed_at: new Date().toISOString(),
           total_items_found: socialLeadsCreated,
           leads_created: socialLeadsCreated,
-          api_cost: sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd,
+          api_cost: sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd + exaCostUsd,
           error_message: sourceErr?.message ?? null,
         }).eq("id", execRecord?.id).then(() => {}, () => {})
 
@@ -1017,7 +1125,7 @@ export async function GET(request: Request) {
         // realtyChatterCostUsd / reviewAcquisitionCostUsd were already metered per-provider above
         // (ZenRows/Zyte, not Apify) — add them to the territory total here so budget tracking
         // still sees the full spend.
-        territorySpendUsd += sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd
+        territorySpendUsd += sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd + exaCostUsd
       }
 
       // ── OSINT public-records source — distressed-seller filings ─────────────
@@ -1043,95 +1151,6 @@ export async function GET(request: Request) {
           results.total_leads_created += osintInserted
         } catch (err) {
           results.errors.push(`OSINT source error for ${market.name}: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-
-      // ── SITE VISITOR INTENT — wave 70 behavioral lane, $0 marginal cost ─────
-      // Own first-party website/portal traffic (website_visitors, already written by the
-      // pixel/dwell beacons) — an unidentified, high-dwell visitor is buyer-intent this repo
-      // already collected and never read for acquisition. Runs ONCE per brokerage (see the
-      // siteVisitorBrokeragesRun set above this loop) — brokerage_id passed EXPLICITLY
-      // (never platform pool: this is the tenant's own site, not a scraped third-party page),
-      // so it lands as source_origin='brokerage' immediately, the same shape a
-      // brokerage-triggered scrape would.
-      if (enabledSources.has("site_visitor_intent") && market.brokerage_id && !siteVisitorBrokeragesRun.has(market.brokerage_id)) {
-        siteVisitorBrokeragesRun.add(market.brokerage_id)
-        try {
-          const { records, rowsExamined } = await sourceSiteVisitorIntent(supabase, market.brokerage_id)
-          const { inserted: siteVisitorInserted } = await insertRawBatch({
-            records, marketId: market.id,
-            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
-            executionId: null,
-            source: "site_visitor_intent", sourceFamily: "site_behavior", sourceChannel: "site_visitor_intent",
-            brokerageId: market.brokerage_id,
-            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
-            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
-            // rather than silently inheriting a stale estimate.
-            batchCostUsd: 0,
-          })
-          results.total_leads_created += siteVisitorInserted
-          if (rowsExamined > 0) {
-            console.log(`[Lead Scraping Cron] Site visitor intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${siteVisitorInserted}`)
-          }
-        } catch (err) {
-          results.errors.push(`Site visitor intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-
-      // ── EMAIL ENGAGEMENT INTENT — lane 71C behavioral lane, $0 marginal cost ─
-      // Own first-party outbound-email engagement (email_tracking, already written by the
-      // SendGrid events webhook) — a contact who repeatedly opens/clicks the brokerage's own
-      // mail is a renewed-intent signal this repo already collected and never read for
-      // acquisition. Runs ONCE per brokerage (see emailEngagementBrokeragesRun above this
-      // loop), same shape as site_visitor_intent immediately above: brokerage_id passed
-      // EXPLICITLY (never platform pool — this is the tenant's own send history), so it lands
-      // as source_origin='brokerage' immediately.
-      if (enabledSources.has("email_engagement_intent") && market.brokerage_id && !emailEngagementBrokeragesRun.has(market.brokerage_id)) {
-        emailEngagementBrokeragesRun.add(market.brokerage_id)
-        try {
-          // WAVE 72A (owner: "contacts coming in from the tenants website or email
-          // come in as contacts not raw leads."): `records` is now ALWAYS empty —
-          // every email_tracking row is already a CONTACT (see the sourcer's header)
-          // — so this never mints a raw lead. `contactsNotified` counts the manager
-          // signals (campaign_orchestrator → ai_isa) sent directly onto those
-          // contacts instead. `insertRawBatch` still no-ops safely on the empty array.
-          const { records, rowsExamined, contactsNotified } = await sourceEmailEngagementIntent(supabase, market.brokerage_id)
-          const { inserted: emailEngagementInserted } = await insertRawBatch({
-            records, marketId: market.id,
-            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
-            executionId: null,
-            source: "email_engagement_intent", sourceFamily: "email_behavior", sourceChannel: "email_engagement_intent",
-            brokerageId: market.brokerage_id,
-            // Always 0 — first-party data, no vendor call. Passed explicitly (never omitted) so
-            // the kernel writer's cost_per_record stays null-not-fabricated per its own contract
-            // rather than silently inheriting a stale estimate.
-            batchCostUsd: 0,
-          })
-          results.total_leads_created += emailEngagementInserted
-          if (rowsExamined > 0) {
-            console.log(`[Lead Scraping Cron] Email engagement intent ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} inserted=${emailEngagementInserted} contactsNotified=${contactsNotified}`)
-          }
-        } catch (err) {
-          results.errors.push(`Email engagement intent error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-
-      // ── RENTAL-TO-BUYER GRADUATION (tenant side) — lane 74D, $0 marginal cost ─
-      // A renter already in this brokerage's own `contacts` whose tenure crosses the
-      // graduation bar (lib/lead-pipeline/rental-graduation-sourcer.ts). NEVER a raw lead —
-      // the person is already a contact — a manager signal (shopping_agent, who owns the buyer
-      // journey → ai_isa) carries the buy-vs-renew moment instead. Runs ONCE per brokerage (see
-      // rentalGraduationBrokeragesRun above this loop), same shape as email_engagement_intent
-      // immediately above.
-      if (enabledSources.has("rental_to_buyer_graduation") && market.brokerage_id && !rentalGraduationBrokeragesRun.has(market.brokerage_id)) {
-        rentalGraduationBrokeragesRun.add(market.brokerage_id)
-        try {
-          const { rowsExamined, contactsNotified } = await sourceRentalToBuyerGraduation(supabase, market.brokerage_id)
-          if (rowsExamined > 0) {
-            console.log(`[Lead Scraping Cron] Rental-to-buyer graduation ${market.brokerage_id.slice(0, 8)}…: examined=${rowsExamined} notified=${contactsNotified}`)
-          }
-        } catch (err) {
-          results.errors.push(`Rental-to-buyer graduation error for brokerage ${market.brokerage_id}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
 

@@ -47,6 +47,9 @@ const PUBLIC_CALC_LIMITS = {
   emailResults: { limit: 5, windowMs: 60_000 },
   /** Paid comp providers + an LLM call per invocation. Tight for spend, not for abuse alone. */
   homeValue: { limit: 5, windowMs: 60_000 },
+  /** Property facts for a public calculator (wave 82 lane A) — at most one metered RentCast
+   *  property-record read + one public-records lookup per call. */
+  propertyFacts: { limit: 10, windowMs: 60_000 },
 } as const
 
 /**
@@ -990,11 +993,16 @@ export async function calculateHomeValue(
   // returned a RAW BatchData property row (owner name, valuation, mortgage) to an ANONYMOUS
   // public visitor as `propertyIntelligence`. A public calculator is a CUSTOMER audience:
   // the owner's carve-out (BatchData = acquisition / skip-trace / DNC / staff valuation)
-  // never admits it, and §5 says a customer sees no financials. SURVIVOR:
-  // lib/ai-isa/property-lookup-rail.ts::lookupPropertyForConversation (purpose
-  // "conversation", audience "customer") — cache → IDX → RentCast → public records, facts
-  // only, valuation-shaped fields stripped.
-  const { lookupPropertyForConversation } = await import("@/lib/ai-isa/property-lookup-rail")
+  // never admits it, and §5 says a customer sees no financials.
+  // WAVE 82 lane A — the FACTS the old row carried are RESTORED (owner: "the calculator was
+  // giving the property facts so the calculator was calculating the correct property taxes").
+  // SURVIVOR: lib/ai-isa/property-lookup-rail.ts::lookupPublicPropertyFacts (purpose
+  // "public_facts", audience "public") — cache → IDX → RentCast PROPERTY RECORD → public
+  // records, walking on until the tax bill arrives; the output is the toPublicPropertyFacts
+  // WHITELIST (tax bill + year, assessed tax basis, HOA, beds/baths/sqft/year/lot/type) — no
+  // owner, no contact point, no valuation figure. 81B's "conversation"/"customer" reach
+  // stripped the assessed value and never asked for the tax bill; that was the regression.
+  const { lookupPublicPropertyFacts } = await import("@/lib/ai-isa/property-lookup-rail")
   const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
 
   const vid = opts.visitorId || generateVisitorId()
@@ -1058,10 +1066,8 @@ export async function calculateHomeValue(
   try {
     const [property, propertyFacts, cma] = await Promise.all([
       idxClient.searchProperties(address),
-      lookupPropertyForConversation({
+      lookupPublicPropertyFacts({
         brokerageId,
-        purpose: "conversation",
-        audience: "customer",
         address: { street: address, city: opts.city ?? null, state: opts.state, zip: opts.zipCode ?? null },
       }),
       runAiCma({
@@ -1132,7 +1138,8 @@ export async function calculateHomeValue(
     return {
       success: true,
       property: property?.[0],
-      // Customer-redacted facts from the rail (beds/baths/sqft/year; no valuation fields).
+      // Public facts from the rail (tax bill, assessed tax basis, HOA, structure) — whitelist,
+      // no owner identity, no valuation figure beyond the comps-based estimate above.
       propertyIntelligence: propertyFacts.facts,
       valuation: {
         estimated_value: Math.round(cma.estimatedValueMid),
@@ -1169,6 +1176,128 @@ export async function calculateHomeValue(
       success: false,
       error: "Unable to calculate home value. Please verify the address and try again.",
     }
+  }
+}
+
+// ============================================
+// PROPERTY FACTS + PAYMENT FOR A PUBLIC PAGE (wave 82 lane A)
+// ============================================
+//
+// Owner verbatim (wave 82): "the calculator was giving the property facts so the calculator was
+// calculating the correct property taxes, etc for the property landing pages, etc." These two
+// actions restore that: the FACTS come from the ONE rail's public door
+// (lib/ai-isa/property-lookup-rail.ts::lookupPublicPropertyFacts — whitelist, no owner, no
+// valuation), and the PAYMENT is the existing survivor lib/buyer-offers/affordability.ts::
+// estimateMonthlyPayment, now fed the property's own tax bill + HOA instead of a flat rate.
+//
+// TENANT (§4): resolved, never asserted — a listing slug (the listing row's brokerage_id; the
+// ADDRESS then comes from that row, so a visitor cannot aim a metered lookup at any address
+// under a tenant's name), else the session, else an agent's public slug. Neither → refused.
+// SPEND BOUND: the same per-IP limiter the home-value calculator uses, BEFORE any paid rung.
+
+/** File-local (not an endpoint): who a public calculator call is FOR, and the listing when the
+ *  caller named one by its public slug. */
+async function resolvePublicCalculatorTenant(opts: { listingSlug?: string | null; agentSlug?: string | null }): Promise<{
+  brokerageId: string | null
+  listing: { address: string; city: string | null; state: string | null; zip: string | null; listPrice: number | null } | null
+}> {
+  if (opts.listingSlug?.trim()) {
+    const { getListingBySlug } = await import("@/app/actions/listing-landing")
+    const l = await getListingBySlug(opts.listingSlug.trim())
+    if (!l || !l.brokerage_id || !l.address) return { brokerageId: null, listing: null }
+    return {
+      brokerageId: l.brokerage_id,
+      listing: { address: l.address, city: l.city ?? null, state: l.state ?? null, zip: l.zip ?? null, listPrice: l.list_price ?? null },
+    }
+  }
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  if (session.isAuthenticated && session.brokerageId) return { brokerageId: session.brokerageId, listing: null }
+  if (opts.agentSlug?.trim()) {
+    const { getAgentBySlug } = await import("@/app/actions/home-value")
+    const agent = await getAgentBySlug(opts.agentSlug.trim())
+    return { brokerageId: agent?.brokerage_id ?? null, listing: null }
+  }
+  return { brokerageId: null, listing: null }
+}
+
+/**
+ * The PUBLIC property facts a calculator needs (tax bill, assessed tax basis, HOA, beds/baths/
+ * sqft/year/lot). Facts only — never owner identity, never a valuation number.
+ */
+export async function getPublicPropertyFacts(input: {
+  listingSlug?: string
+  agentSlug?: string
+  address?: string
+  city?: string | null
+  state?: string | null
+  zipCode?: string | null
+}) {
+  const rate = await publicCalcRateVerdict("propertyFacts")
+  if (!rate.allowed) {
+    return { success: false as const, error: `Too many property lookups from this connection. Please try again in ${rate.retryAfterSeconds} seconds.` }
+  }
+  const tenant = await resolvePublicCalculatorTenant({ listingSlug: input.listingSlug, agentSlug: input.agentSlug })
+  if (!tenant.brokerageId) {
+    return { success: false as const, error: "This calculator must be opened from a listing or an agent's page." }
+  }
+  const street = tenant.listing?.address ?? boundPublicText(input.address)
+  if (!street) return { success: false as const, error: "Enter the property's street address." }
+  const { lookupPublicPropertyFacts } = await import("@/lib/ai-isa/property-lookup-rail")
+  const r = await lookupPublicPropertyFacts({
+    brokerageId: tenant.brokerageId,
+    address: {
+      street,
+      city: tenant.listing?.city ?? boundPublicText(input.city ?? null),
+      state: tenant.listing?.state ?? boundPublicText(input.state ?? null),
+      zip: tenant.listing?.zip ?? boundPublicText(input.zipCode ?? null),
+    },
+  })
+  return { success: true as const, found: r.found, facts: r.facts }
+}
+
+/**
+ * Monthly payment for ONE property, with the property's OWN tax bill and HOA dues when the
+ * public record carries them (else the labelled rate default, and the result says which).
+ * Price: the listing's list price when opened from a listing, else the visitor's number.
+ */
+export async function calculatePropertyPayment(input: {
+  listingSlug?: string
+  agentSlug?: string
+  address?: string
+  city?: string | null
+  state?: string | null
+  zipCode?: string | null
+  price?: number
+  downPaymentPercent?: number
+  annualInterestRatePct?: number
+  loanTermYears?: number
+}) {
+  const factsResult = await getPublicPropertyFacts(input)
+  if (!factsResult.success) return factsResult
+  const facts = factsResult.facts
+  const listingPrice = facts?.listPrice ?? null
+  const price = input.listingSlug ? listingPrice ?? input.price ?? 0 : input.price ?? listingPrice ?? 0
+  if (!(price > 0)) return { success: false as const, error: "Enter a purchase price to estimate the payment." }
+  const { estimateMonthlyPayment } = await import("@/lib/buyer-offers/affordability")
+  const payment = estimateMonthlyPayment({
+    price,
+    downPaymentPercent: input.downPaymentPercent,
+    annualInterestRatePct: input.annualInterestRatePct,
+    loanTermYears: input.loanTermYears,
+    annualPropertyTax: facts?.annualPropertyTax ?? null,
+    hoaMonthly: facts?.hoaMonthly ?? undefined,
+  })
+  const taxNote = payment.taxBasis === "county_tax_bill"
+    ? `Property tax uses this home's ${facts?.propertyTaxYear ?? "most recent"} county tax bill ($${Math.round(facts?.annualPropertyTax ?? 0).toLocaleString()}/yr). Taxes can be reassessed after a sale, so a buyer's bill may differ.`
+    : "No county tax bill was found for this address, so property tax is estimated at a typical rate — ask us for the exact figure."
+  return {
+    success: true as const,
+    price,
+    payment,
+    facts,
+    taxNote,
+    disclaimer: "Estimate only — not a loan offer. Rate, insurance and PMI are adjustable assumptions.",
   }
 }
 

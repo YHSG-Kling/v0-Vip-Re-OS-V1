@@ -37,6 +37,7 @@ import {
   type RentcastAvmValueResponse,
   type RentcastMarketsQuery,
   type RentcastMarketsResponse,
+  type RentcastPropertyRecord,
 } from "@/lib/external/rentcast-typed"
 import {
   resolveRentcastEligibility,
@@ -474,6 +475,102 @@ export async function searchRentcastSaleListings(
     return { success: true, listings }
   } catch (err: any) {
     return { success: false, listings: [], error: err?.message ?? "Rentcast fetch failed" }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Property RECORD facts (lane 82A) — the tax/HOA facts the public calculators need
+// ---------------------------------------------------------------------------
+
+/**
+ * FACTS ONLY from one RentCast property record. A WHITELIST projection: the
+ * response also carries `owner` (names, mailing address), `ownerOccupied`,
+ * `history` and `lastSalePrice`, and none of them is copied here — this reader
+ * serves the anonymous calculators on public pages (owner verbatim, wave 82: "the
+ * calculator was giving the property facts so the calculator was calculating the
+ * correct property taxes, etc for the property landing pages"), and a visitor is
+ * never handed an owner's identity or a sale figure. scripts/public-property-facts-
+ * guard.ts feeds this a record WITH an owner block and asserts none of it survives.
+ */
+export interface RentcastPropertyFacts {
+  address: string | null
+  city: string | null
+  state: string | null
+  zip: string | null
+  bedrooms: number | null
+  bathrooms: number | null
+  squareFeet: number | null
+  lotSizeSqft: number | null
+  yearBuilt: number | null
+  propertyType: string | null
+  /** Most recent tax-assessment year's total assessed value (the county's TAX BASIS). */
+  assessedValue: number | null
+  /** Most recent annual property-tax bill (dollars) and its year. */
+  annualPropertyTax: number | null
+  taxYear: number | null
+  /** Monthly HOA fee (dollars) when the record carries one. */
+  hoaMonthly: number | null
+}
+
+/** PURE — latest year's entry of a `{ "2023": {year, ...}, "2024": {...} }` map. */
+function latestByYear<T extends { year?: number }>(m: Record<string, T | undefined> | null | undefined): T | null {
+  if (!m || typeof m !== "object") return null
+  const rows = Object.values(m).filter((v): v is T => !!v && typeof v === "object")
+  if (rows.length === 0) return null
+  return rows.reduce((a, b) => ((b.year ?? 0) > (a.year ?? 0) ? b : a))
+}
+
+const posNum = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null)
+
+/** PURE — one raw /properties row → RentcastPropertyFacts (whitelist; the owner block is never read). */
+export function normalizeRentcastPropertyRecord(r: RentcastPropertyRecord | Record<string, unknown>): RentcastPropertyFacts {
+  const row = r as Record<string, any>
+  const assess = latestByYear<{ year?: number; value?: number }>(row.taxAssessments)
+  const tax = latestByYear<{ year?: number; total?: number }>(row.propertyTaxes)
+  return {
+    address: typeof row.formattedAddress === "string" ? row.formattedAddress : typeof row.addressLine1 === "string" ? row.addressLine1 : null,
+    city: typeof row.city === "string" ? row.city : null,
+    state: typeof row.state === "string" ? row.state : null,
+    zip: typeof row.zipCode === "string" ? row.zipCode : null,
+    bedrooms: posNum(row.bedrooms),
+    bathrooms: posNum(row.bathrooms),
+    squareFeet: posNum(row.squareFootage),
+    lotSizeSqft: posNum(row.lotSize),
+    yearBuilt: posNum(row.yearBuilt),
+    propertyType: typeof row.propertyType === "string" ? row.propertyType : null,
+    assessedValue: posNum(assess?.value),
+    annualPropertyTax: posNum(tax?.total),
+    taxYear: posNum(tax?.year),
+    hoaMonthly: posNum(row.hoa?.fee),
+  }
+}
+
+/**
+ * ONE property record by full address (`GET /properties?address=…`, the documented
+ * single-property mode: address alone, no other params). Gated + metered exactly
+ * like every reader in this file (gateRentcast → meterCall at RENTCAST_USD_PER_REQUEST).
+ * Returns null — never throws — when refused, not found or failed.
+ */
+export async function getRentcastPropertyRecord(
+  params: RentcastCaller & { address: string },
+): Promise<RentcastPropertyFacts | null> {
+  const { apiKey } = await gateRentcast(params)
+  if (!apiKey || !params.address?.trim()) return null
+  try {
+    const res = await callRentcastGet("/properties", { address: params.address.trim() }, apiKey)
+    meterCall({
+      brokerageId: params.brokerageId,
+      usageType: "api_call",
+      cost: RENTCAST_USD_PER_REQUEST,
+      endpoint: "/properties",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
+      metadata: { ok: res.ok, status: res.status },
+    })
+    if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) return null
+    return normalizeRentcastPropertyRecord(res.data[0])
+  } catch {
+    return null
   }
 }
 

@@ -476,8 +476,20 @@ check("no bare 0.15 literal remains at the skip-trace cost accumulation site",
   !/cost \+= chunk\.length \* 0\.15/.test(batchdataClientSrc))
 check("the skip-trace cost accumulation site now derives from the named constant",
   /cost \+= chunk\.length \* BATCHDATA_SKIP_TRACE_COST_USD/.test(batchdataClientSrc))
-check("skipTraceBatchDataV3Batch is the ONLY reader of the skip-trace unit cost in this file (one vocabulary, §6)",
-  (batchdataClientSrc.match(/BATCHDATA_SKIP_TRACE_COST_USD/g) ?? []).length === 2) // the const decl + its one use site
+// Re-anchored wave 82 lane A (assert the RULE, not the count): the reverse skip trace bills per
+// match at the SAME constant, so the rule is "every reader of the unit cost is a function that
+// bills a skip trace (V3 or reverse) and no bare price literal stands beside it" — a second
+// spelling, or a reader outside the two billing sites, still fails.
+check("only the skip-trace BILLING sites (skipTraceBatchDataV3Batch, reverseSkipTraceBatchData) read the skip-trace unit cost in this file, and no bare 0.07 literal exists (one vocabulary, §6)",
+  (() => {
+    const src = batchdataClientSrc
+    const region = (fn: string) => { const s = src.indexOf(`export async function ${fn}(`); const e = s < 0 ? -1 : src.indexOf("\nexport ", s + 1); return [s, e < 0 ? src.length : e] as const }
+    const sites = [region("skipTraceBatchDataV3Batch"), region("reverseSkipTraceBatchData")]
+    const decl = src.indexOf("export const BATCHDATA_SKIP_TRACE_COST_USD")
+    const uses = [...src.matchAll(/BATCHDATA_SKIP_TRACE_COST_USD/g)].map((m) => m.index ?? -1).filter((i) => i !== decl + "export const ".length)
+    return sites.every(([s]) => s >= 0) && uses.length >= 2 && uses.every((i) => sites.some(([s, e]) => i > s && i < e))
+      && !/\*\s*0\.07\b/.test(src)
+  })())
 
 const envExampleSrc = readFileSync(".env.example", "utf8")
 check(".env.example's documented skip-trace price agrees with the code constant — no second, disagreeing figure",
