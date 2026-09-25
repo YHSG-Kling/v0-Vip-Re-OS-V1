@@ -463,6 +463,8 @@ export async function processEnrichmentQueue(
             enrichment_results: {
               lane: plan.free.run ? 'osint_free' : 'none',
               person_enrichment: 'withheld_budget',
+              // Lane 82B — the person-keyed questions left UNANSWERED by the withheld paid lane.
+              withheld_answers: plan.paid.answers,
               free_osint: free ? freeLaneProfileBlock(free) : null,
               note: plan.paid.reason,
             },
@@ -688,6 +690,9 @@ export async function processEnrichmentQueue(
         const freeBlock = free ? freeLaneProfileBlock(free) : (priorFreeBlock ?? null)
         if (freeBlock) profile.osint_free = freeBlock
         profile.lane = plan.label
+        // Lane 82B — WHICH person-keyed questions the paid lane was bought for (PAID_ONLY_ANSWERS
+        // partition from planEnrichmentLane), so the lineage view shows what the spend answered.
+        profile.paid_answers = plan.paid.answers
 
         // Step 6a: Update entity table
         if (entityType === 'lead') {

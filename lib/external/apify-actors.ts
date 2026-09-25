@@ -10,7 +10,7 @@
 
 import { actorExists } from "@/lib/providers/apify/client"
 
-export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin"
+export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin" | "facebook_marketplace"
 
 /**
  * Ordered candidate actors per task — primary first. Multiple public actors
@@ -32,6 +32,12 @@ export const ACTOR_REGISTRY: Record<ApifyTask, string[]> = {
   craigslist: ["solidcode/craigslist-scraper", "epctex/craigslist-scraper", "ivanvs/craigslist-scraper", "lukaskrivka/craigslist-scraper"],
   google:     ["apify/google-search-scraper", "scraping-fish/google-search-results-scraper"],
   linkedin:   ["apimaestro/linkedin-posts-search-scraper-no-cookies", "harvestapi/linkedin-post-search", "curious_coder/linkedin-post-search-scraper", "apimaestro/linkedin-posts-search-scraper"],
+  // Lane 82B (Exa, 2026-09-25): Marketplace PROPERTY-FOR-SALE listings — the FSBO seller lane the
+  // facebook_marketplace SourceKey defined since wave 55 with no collector. Primary is Apify's own
+  // actor (apify.com/apify/facebook-marketplace-scraper — pay-per-result $5/1k, "from $2.60/1k",
+  // location/category/search Marketplace URLs, no login); fallback is the property-specific
+  // vivid-softwares/facebook-property-scraper ($18/1k, `forSaleOnly`, seller + beds/baths parsed).
+  facebook_marketplace: ["apify/facebook-marketplace-scraper", "vivid-softwares/facebook-property-scraper"],
 }
 
 export type ActorRunner = (actorId: string, input: Record<string, any>) => Promise<{ data: any[]; cost: number }>

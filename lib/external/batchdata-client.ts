@@ -24,13 +24,24 @@ export class BatchDataClient {
    * Returns the records array directly so callers can iterate without unwrapping.
    */
   async getMotivatedSellerData(location: string, motivationTypes?: string[]): Promise<BatchDataRecord[]> {
+    return this.getMotivatedSellerDataWithCost(location, motivationTypes).then(r => r.records)
+  }
+  /**
+   * Lane 82B — the SAME pull, keeping fetchMotivatedSellers' `cost` (records × the per-record
+   * search price) instead of dropping it. The lead-scraping cron used the records-only alias above,
+   * so every motivated-seller / expired pull reached raw_scraped_leads with cost_per_record NULL
+   * and booked NOTHING on vendor_usage_tracking — the platform ledger's BatchData line was the
+   * wallet reconcile's drift, never a per-source cost. The cron now books this figure per source.
+   */
+  async getMotivatedSellerDataWithCost(location: string, motivationTypes?: string[]): Promise<{ records: BatchDataRecord[]; cost: number }> {
     const [city, state] = location.includes(',')
       ? location.split(',').map(s => s.trim())
       : ['', location]
     // motivationTypes lets a caller target a SPECIFIC trigger as its own search (e.g. ['expired'] for
     // expired listings) — fetchMotivatedSellers labels every returned record with types[0], so each
     // trigger must be pulled trigger-by-trigger. Omitted → the default motivated-seller trio.
-    return fetchMotivatedSellers({ state: state || location, city: city || undefined, motivationTypes }).then(r => r.records)
+    const r = await fetchMotivatedSellers({ state: state || location, city: city || undefined, motivationTypes })
+    return { records: r.records, cost: r.cost }
   }
 }
 
@@ -101,6 +112,9 @@ export interface BatchDataRecord {
   // equity), divorce, foreclosure / pre-foreclosure, tax lien, expired listings,
   // investor/absentee owners, vacant, and tired landlords.
   motivationType: 'probate' | 'divorce' | 'foreclosure' | 'tax_lien' | 'pre_foreclosure' | 'distressed' | 'high_equity' | 'absentee' | 'expired' | 'vacant' | 'tired_landlord'
+    // Lane 82B (owner, wave 82: "motivated sellers (fsbo, expired, probate/divorce, etc.)") — the
+    // quickLists BatchData publishes that no trigger reached before (see QUICKLIST_SLUG below).
+    | 'fsbo' | 'senior_owner' | 'canceled_listing' | 'lis_pendens' | 'notice_of_default' | 'involuntary_lien'
   motivationConfidence: number
 }
 
@@ -110,6 +124,13 @@ export interface BatchDataRecord {
 export const BATCHDATA_MOTIVATION_TYPES = [
   'probate', 'foreclosure', 'pre_foreclosure', 'tax_lien',
   'high_equity', 'absentee', 'expired', 'vacant', 'tired_landlord',
+  // Lane 82B — six published quickLists (BATCHDATA_QUICKLISTS below) no trigger mapped to before:
+  // FSBO owners ('for-sale-by-owner'), downsizers ('senior-owner' — the life-stage mismatch
+  // SmartZip/Offrs score on), withdrawn/cancelled listings ('canceled-listing' — the expired
+  // playbook's sibling), and the two EARLY pre-foreclosure filings plus involuntary liens
+  // ('notice-of-lis-pendens', 'notice-of-default', 'involuntary-lien'). Divorce STILL has no
+  // quickList — it stays on the OSINT court-records lane (osint_signal).
+  'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien',
 ] as const
 
 /** The default high-intent seller trio used when no explicit triggers are given (API caps at 3). */
@@ -122,6 +143,13 @@ const TRIGGER_ALIASES: Record<string, string> = {
   inherited: 'probate', 'notice-of-sale': 'foreclosure',
   'absentee-owner': 'absentee', 'expired-listing': 'expired', 'tired-landlord': 'tired_landlord',
   'high-equity': 'high_equity', highequity: 'high_equity',
+  // Lane 82B — config/UI spellings for the six new triggers.
+  'for-sale-by-owner': 'fsbo', for_sale_by_owner: 'fsbo', by_owner: 'fsbo',
+  'senior-owner': 'senior_owner', downsizer: 'senior_owner', empty_nester: 'senior_owner',
+  'canceled-listing': 'canceled_listing', cancelled_listing: 'canceled_listing', withdrawn: 'canceled_listing', withdrawn_listing: 'canceled_listing',
+  'notice-of-lis-pendens': 'lis_pendens', 'lis-pendens': 'lis_pendens',
+  'notice-of-default': 'notice_of_default', nod: 'notice_of_default',
+  'involuntary-lien': 'involuntary_lien',
 }
 function canonicalTrigger(t: string): string {
   const k = String(t).trim().toLowerCase().replace(/\s+/g, '_')
@@ -184,6 +212,16 @@ const QUICKLIST_SLUG: Record<string, string> = {
   vacant:          'vacant',
   tired_landlord:  'tired-landlord',
   distressed:      'preforeclosure',
+  // Lane 82B
+  fsbo:              'for-sale-by-owner',
+  senior_owner:      'senior-owner',
+  canceled_listing:  'canceled-listing',
+  lis_pendens:       'notice-of-lis-pendens',
+  notice_of_default: 'notice-of-default',
+  involuntary_lien:  'involuntary-lien',
+  // Lane 82B — BUYER-side (investor) list, deliberately NOT in BATCHDATA_MOTIVATION_TYPES so a
+  // seller pull can never reach it; pulled only by the cron's batchdata_cash_buyer step.
+  cash_buyer:        'cash-buyer',
 }
 
 /**

@@ -85,13 +85,24 @@ export type AgentCapability =
 // Expand AgentType to include short aliases used in coordination dashboard
 export type AgentType = keyof typeof AGENT_REGISTRY | 'human' | 'none' | 'isa' | 'tc' | 'coach' | 'coordinator'
 
+/** The dashboard's short aliases → their canonical conversation-routing spelling. */
+const AGENT_TYPE_ALIASES: Record<string, string> = { isa: 'isa_agent', tc: 'tc_agent', coordinator: 'tc_agent', coach: 'coaching_agent' }
+
+/**
+ * Lane 82B — the BOUNDARY NORMALIZER for an agent_type read off a session/handoff row (the
+ * session-status shape the coordination dashboard renders). Alias → canonical, then admitted only
+ * by MEMBERSHIP in VALID_AGENT_TYPES (the m178 CHECK roster); anything else is null, never a guess.
+ */
+export function canonicalAgentType(agentType: string | null | undefined): (typeof VALID_AGENT_TYPES)[number] | null {
+  const raw = String(agentType ?? '').trim()
+  const canonical = AGENT_TYPE_ALIASES[raw] ?? raw
+  return (VALID_AGENT_TYPES as readonly string[]).includes(canonical) ? (canonical as (typeof VALID_AGENT_TYPES)[number]) : null
+}
+
 export function getAgentConfig(agentType: AgentType) {
-  if (agentType === 'human' || agentType === 'none') return null
-  if (agentType === 'isa') return AGENT_REGISTRY.isa_agent
-  if (agentType === 'tc' || agentType === 'coordinator') return AGENT_REGISTRY.tc_agent
-  if (agentType === 'coach') return AGENT_REGISTRY.coaching_agent
-  const key = agentType as keyof typeof AGENT_REGISTRY
-  return AGENT_REGISTRY[key] ?? null
+  const canonical = canonicalAgentType(agentType)
+  if (!canonical || canonical === 'human' || canonical === 'none' || canonical === 'router') return null
+  return AGENT_REGISTRY[canonical] ?? null
 }
 
 export function getAgentColor(agentType: AgentType): string {
@@ -104,6 +115,7 @@ export function getAgentColor(agentType: AgentType): string {
 export function getAgentDisplayName(agentType: AgentType): string {
   if (agentType === 'human') return 'Human Agent'
   if (agentType === 'none') return 'Unassigned'
+  if (canonicalAgentType(agentType) === 'router') return 'Router'
   // Through getAgentConfig, not a raw index (orphan burn-down, lane O). The raw
   // lookup could not resolve the four short aliases this type exists to admit —
   // 'isa', 'tc', 'coach', 'coordinator' — and returned the bare enum value for
@@ -126,7 +138,7 @@ export function getAgentDisplayName(agentType: AgentType): string {
  *   human          — a human real-estate agent (handoff target)
  *   none           — unassigned
  */
-/** @proofSeam the CHECK roster (m178, three tables) held by scripts/agent-governance-simulator.ts; runtime writers reach these values through the router's typed handoffs and never enumerate the roster. Unresolved: a boundary normalizer for an externally supplied agent_type (the session-status shape) does not exist — no external source writes one today. */
+/** The CHECK roster (m178, three tables), held equal by scripts/agent-governance-simulator.ts and READ AT RUNTIME since lane 82B by canonicalAgentType above — the boundary normalizer getAgentConfig/getAgentDisplayName route every session-row agent_type through (an off-roster value renders as unknown, never as a registry entry). */
 export const VALID_AGENT_TYPES = [
   'isa_agent', 'tc_agent', 'coaching_agent', 'content_agent', 'router', 'human', 'none',
 ] as const

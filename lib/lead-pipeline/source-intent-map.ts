@@ -26,6 +26,11 @@ export type SourceKey =
   | 'reddit_intent'
   | 'instagram_intent'
   | 'craigslist_fsbo'
+  // Lane 82B — Craigslist "housing wanted" / ISO posts. The cron has written this sourceChannel since
+  // wave 65 (sourceCraigslistWanted) but no SourceKey existed, so every record scored as a STRANGER
+  // (FALLBACK_DEFINITION) and its spend had no vendor to attribute to. DISTINCT from craigslist_fsbo
+  // (a SELLER listing) — this is a BUYER asking for a home; never merged (CLAUDE.md §6).
+  | 'craigslist_wanted'
   | 'google_phrase_intent'
   | 'rental_listing'
   | 'expired_listing'
@@ -78,6 +83,10 @@ export type SourceKey =
   // genuinely new person) alongside routing matched-contact hits as a signal — see that file's
   // attach-vs-mint split.
   | 'review_acquisition_intent'
+  // Lane 82B — INVESTOR buyers from BatchData's published 'cash-buyer' quickList: owners in the
+  // territory who bought for CASH (the investor list PropStream/BatchData users build). BUYER-side,
+  // DISTINCT from batchdata_buybox (demand matched to ONE listing) and from every seller lane.
+  | 'batchdata_cash_buyer'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -125,7 +134,7 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     behaviorType:              'motivated_seller',
     scoreRange:                [55, 95],
     baseScore:                 70,
-    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant'],
+    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant', 'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien'],
     dampSignals:               ['low_confidence', 'incomplete'],
     identityPolicy:            'immediate',
     canPromoteBeforeEnrichment: true,
@@ -271,6 +280,21 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     dampSignals:               ['agent_listed', 'rental', 'no_price'],
     identityPolicy:            'property_required',
     canPromoteBeforeEnrichment: true,
+  },
+
+  // ── Craigslist housing-wanted / ISO post (lane 82B) — BUYER asking for a home ───
+  // A reply-to address is usually on the post; identity still resolves through enrichment.
+  craigslist_wanted: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'housing_wanted_buyer',
+    behaviorType:              'housing_wanted_post',
+    scoreRange:                [40, 70],
+    baseScore:                 50,
+    boostSignals:              ['looking_to_buy', 'pre_approved', 'cash_buyer', 'relocating', 'timeline'],
+    dampSignals:               ['rental', 'roommate', 'no_timeline'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
   },
 
   // ── Google phrase / search intent ────────────────────────────────────────────
@@ -463,7 +487,7 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     behaviorType:              'batchdata_smart_search_match',
     scoreRange:                [50, 90],
     baseScore:                 65,
-    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant'],
+    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant', 'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien'],
     dampSignals:               ['low_confidence', 'incomplete'],
     identityPolicy:            'immediate',
     canPromoteBeforeEnrichment: true,
@@ -652,6 +676,20 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // pages). identityPolicy 'enrichment_first' — a display name alone (no email/phone) is what a
   // public review carries; PeopleData enrichment resolves the rest downstream, same posture every
   // social/search lane with a name-only identity anchor already takes.
+  // ── BatchData cash buyers (lane 82B) — INVESTOR buyer list, owner identity on the record ──
+  batchdata_cash_buyer: {
+    intentType:                'buyer',
+    leadType:                  'buyer',
+    motivationType:            'investor_cash_buyer',
+    behaviorType:              'investor_cash_purchase',
+    scoreRange:                [45, 80],
+    baseScore:                 55,
+    boostSignals:              ['cash_buyer', 'investor', 'absentee', 'corporate_owned', 'portfolio'],
+    dampSignals:               ['owner_occupied_only', 'low_confidence'],
+    identityPolicy:            'immediate',
+    canPromoteBeforeEnrichment: true,
+  },
+
   review_acquisition_intent: {
     intentType:                'unknown',
     leadType:                  'unknown',
@@ -765,6 +803,14 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   reddit: "reddit_intent",
   instagram: "instagram_intent",
   craigslist: "craigslist_fsbo",
+  // Lane 82B — the channel spelling the cron writes, plus UI spellings.
+  housing_wanted: "craigslist_wanted",
+  // Lane 82B — the incremental Search-Session channel (lib/kernel/listings-batchdata-feed.ts) pulls
+  // the SAME motivated-seller quickList universe; it scored as a stranger and its ledger vendor was
+  // unresolvable. The CHANNEL stays distinct on raw_scraped_leads — only scoring/vendor resolve here.
+  batchdata_incremental: "batchdata_motivated",
+  cash_buyer: "batchdata_cash_buyer",
+  craigslist_iso: "craigslist_wanted",
   google: "google_phrase_intent",
   rental: "rental_listing",
   expired: "expired_listing",
@@ -826,7 +872,16 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
 // beacons; no vendor call, $0 marginal cost, never appears in vendor_usage_tracking.
 export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'zyte' | 'internal'
 
-/** @proofSeam the per-source vendor CONTRACT: each sourcer attributes its own vendor_usage_tracking rows at the call site (scraping code, FROZEN since wave 55 — lane 80E may not repoint them), so no runtime reader walks this map; it exists so the sourcer simulators (rental-graduation, expired-listing, lead-email-conversion) can assert a lane's declared vendor matches the rail it actually calls. Unresolved: a ledger-side reader that derives attribution from this map instead of per-sourcer literals — a scraping-lane change. */
+/**
+ * The per-source vendor CONTRACT, READ AT RUNTIME since lane 82B (scraping unfrozen, wave 82):
+ * `vendorForSource` below resolves a channel/alias through this map, and
+ * lib/lead-pipeline/source-cost-ledger.ts::bookSourceSpend books every scrape's spend on the
+ * platform ledger (vendor_usage_tracking) under the vendor THIS map names and usage_type = the
+ * SourceKey — replacing the composite "apify_social" row that lumped Apify, Exa, Tavily and the
+ * ZenRows Nextdoor pull into one line no lead-cost report could split. The same map drives the
+ * ledger-side READER (source-cost-ledger.ts::leadCostBySource, surfaced by
+ * app/actions/source-analytics.ts::getSourcePerformance as each source's `vendor`).
+ */
 export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   zenrows_zillow:       'zenrows',
   zenrows_realtor:      'zenrows',
@@ -837,6 +892,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   instagram_intent:     'apify',
   reddit_intent:        'apify',
   craigslist_fsbo:      'apify',
+  craigslist_wanted:    'apify',   // lane 82B — same Craigslist actor task as craigslist_fsbo
   google_phrase_intent: 'apify',
   rental_listing:       'apify',   // Craigslist apartments section
   linkedin_relocation:  'apify',
@@ -869,6 +925,18 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   // run that actually fell back, without this contract map pretending to know which provider
   // serves any given call.
   review_acquisition_intent: 'zenrows',
+  batchdata_cash_buyer:      'batchdata', // lane 82B — Property Search on the 'cash-buyer' quickList
+}
+
+/**
+ * Lane 82B — THE ledger-side reader of SOURCE_VENDOR. Resolves any spelling the scrapers write
+ * (canonical key, alias, or cron channel such as "zillow" / "craigslist_wanted") to the vendor the
+ * contract names; null when the channel has no SourceKey at all (the caller books it under its own
+ * name and flags it, never under a guessed vendor).
+ */
+export function vendorForSource(source: string): ScrapeVendor | null {
+  const key = resolveSourceKey(source)
+  return key in SOURCE_VENDOR ? SOURCE_VENDOR[key] : null
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -893,10 +961,14 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   zenrows_homes:        'zillow_behavior',
   nextdoor_intent:      'nextdoor',
   facebook_group:       'facebook',
-  facebook_marketplace: 'facebook',
+  // Lane 82B — its OWN gate token: the Marketplace property-for-sale lane (social-sourcer.ts::
+  // sourceFacebookMarketplace) is a DISTINCT Apify task from group-post monitoring, so a market
+  // opts into it by name rather than inheriting it from "facebook" (never merge look-alike lanes).
+  facebook_marketplace: 'facebook_marketplace',
   instagram_intent:     'instagram',
   reddit_intent:        'reddit',
   craigslist_fsbo:      'craigslist',
+  craigslist_wanted:    'craigslist', // lane 82B — runs inside the same Craigslist block
   google_phrase_intent: 'google_phrase_intent',
   rental_listing:       'rental',
   linkedin_relocation:  'linkedin',
@@ -919,6 +991,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   permit_prelisting_intent:  'permit_prelisting_intent',
   rental_to_buyer_graduation: 'rental_to_buyer_graduation',
   review_acquisition_intent: 'review_acquisition_intent',
+  batchdata_cash_buyer:      'batchdata_cash_buyer',
 }
 
 /**

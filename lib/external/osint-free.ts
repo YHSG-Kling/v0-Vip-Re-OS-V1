@@ -69,7 +69,14 @@ export const FREE_OSINT_ANSWERS: readonly FreeOsintAnswer[] = [
  * FREE_OSINT_ANSWERS so the boundary is one readable pair, not folklore spread
  * across call sites.
  */
-/** @proofSeam the free lane selects its work by the FreeOsintAnswer TYPE (runFreeOsintLane's `answers`); the paid-only list is the other half of the boundary, kept as data so scripts/enrichment-suppression-simulator.ts can assert no free connector ever claims a person-keyed answer. A runtime planner that partitions questions between lanes does not exist yet — recorded, not papered over. */
+/**
+ * The paid-only half of the boundary. READ AT RUNTIME since lane 82B (scraping unfrozen, wave 82):
+ * planEnrichmentLane partitions each enrichment TYPE's questions between the lanes and returns
+ * `paid.answers` — every one validated against this list (PAID_ANSWERS_BY_TYPE below may only name
+ * members of it) — so the orchestrator's ledger stamp says WHICH person-keyed questions the paid
+ * lane was bought for, and scripts/enrichment-suppression-simulator.ts still asserts no free
+ * connector ever claims one of them.
+ */
 export const PAID_ONLY_ANSWERS = [
   "person_identity",
   "contact_points",
@@ -80,6 +87,15 @@ export const PAID_ONLY_ANSWERS = [
   "owner_property_records",
   "life_events",
 ] as const
+
+export type PaidOnlyAnswer = (typeof PAID_ONLY_ANSWERS)[number]
+
+/** Which person-keyed questions each enrichment TYPE buys from the paid lane (lane 82B). */
+const PAID_ANSWERS_BY_TYPE: Record<string, readonly PaidOnlyAnswer[]> = {
+  skip_trace:       ["person_identity", "contact_points", "owner_property_records"],
+  phone_validation: ["phone_line_status"],
+  osint_profile:    ["person_social_profiles", "person_public_records", "person_court_records", "life_events"],
+}
 
 export interface FreeOsintInput {
   address?: string | null
@@ -174,6 +190,8 @@ export interface EnrichmentLanePlan {
     required: boolean
     /** Will it actually run right now? (false when required but withheld.) */
     run: boolean
+    /** Lane 82B — the person-keyed questions the paid lane answers for this TYPE (empty when not required). */
+    answers: PaidOnlyAnswer[]
     reason: string
   }
   /** The stamp written to the ledger so a reader can see which lane produced the row. */
@@ -257,6 +275,11 @@ export function planEnrichmentLane(params: {
 
   const freeRun = freeServes && answers.length > 0
   const paidRun = paidRequired && paidAllowed
+  // The paid half of the partition — only members of PAID_ONLY_ANSWERS survive (a typo in the
+  // per-type table can never claim a question the boundary does not name).
+  const paidAnswers: PaidOnlyAnswer[] = paidRequired
+    ? (PAID_ANSWERS_BY_TYPE[enrichmentType] ?? []).filter((a) => (PAID_ONLY_ANSWERS as readonly string[]).includes(a))
+    : []
 
   const freeReason = !freeServes
     ? typeNote
@@ -275,7 +298,7 @@ export function planEnrichmentLane(params: {
 
   return {
     free: { run: freeRun, answers, reason: freeReason },
-    paid: { required: paidRequired, run: paidRun, reason: paidReason },
+    paid: { required: paidRequired, run: paidRun, answers: paidAnswers, reason: paidReason },
     label,
   }
 }

@@ -213,24 +213,51 @@ export interface SiteHtmlResult {
   error: string | null
 }
 
+// LANE 82B — ORDER BY HOST, CHEAPEST SUCCESSFUL PROVIDER FIRST (research 2026-09-25, Exa):
+// the ScrapeOps Zillow benchmark cited by brightdata.com/blog/web-data/best-zillow-scrapers
+// (2026-09-24) records Zyte at 100% success on Zillow ($430/M pages; PAYG from $0.13/1k HTTP,
+// $1.01/1k browser) and ZenRows at 45% — and scrapeway.com's Aug-2026 run (docs/lead-acquisition-
+// coverage-2026-09.md) reported ZenRows 0% on zillow.com AND realtor.com. ZenRows' own June-2026
+// benchmarks still lead on everything ELSE (96–99% vs Zyte 65–75%). So the real-estate PORTAL hosts
+// try Zyte first; every other host keeps ZenRows first. Either way the other configured provider is
+// the fallback, and neither key ⇒ fail closed — the configured-key contract is unchanged.
+const ZYTE_FIRST_HOSTS = /(^|\.)(zillow|realtor|homes|redfin|trulia)\.com$/i
+
+/** PURE. The provider order scrapeSiteWithBestProvider walks for this URL. */
+export function scrapeProviderOrder(url: string): Array<"zenrows" | "zyte"> {
+  let host = ""
+  try { host = new URL(url).hostname } catch { host = "" }
+  return ZYTE_FIRST_HOSTS.test(host) ? ["zyte", "zenrows"] : ["zenrows", "zyte"]
+}
+
 export async function scrapeSiteWithBestProvider(
   url: string,
   options: { jsRender?: boolean; premiumProxy?: boolean } = {},
 ): Promise<SiteHtmlResult> {
-  if (process.env.ZENROWS_API_KEY) {
-    try {
-      const r = await scrapeWithZenRows(url, { jsRender: options.jsRender, premiumProxy: options.premiumProxy })
-      if (r.body) return { ok: true, html: r.body, provider: "zenrows", cost: r.cost, error: null }
-    } catch (err) {
-      console.warn("[scrapeSiteWithBestProvider] ZenRows failed, trying Zyte:", err instanceof Error ? err.message : err)
+  const { scrapeWithZyte, zyteConfigured } = await import("./zyte-client")
+  let lastError: string | null = null
+  let lastProvider: "zenrows" | "zyte" | null = null
+  for (const provider of scrapeProviderOrder(url)) {
+    if (provider === "zenrows") {
+      if (!process.env.ZENROWS_API_KEY) continue
+      lastProvider = "zenrows"
+      try {
+        const r = await scrapeWithZenRows(url, { jsRender: options.jsRender, premiumProxy: options.premiumProxy })
+        if (r.body) return { ok: true, html: r.body, provider: "zenrows", cost: r.cost, error: null }
+        lastError = "ZenRows returned an empty body"
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err)
+        console.warn("[scrapeSiteWithBestProvider] ZenRows failed, trying the next provider:", lastError)
+      }
+    } else {
+      if (!zyteConfigured()) continue
+      lastProvider = "zyte"
+      const z = await scrapeWithZyte(url, { jsRender: options.jsRender })
+      if (z.ok) return { ok: true, html: z.html, provider: "zyte", cost: z.cost, error: null }
+      lastError = z.error
     }
   }
-  const { scrapeWithZyte, zyteConfigured } = await import("./zyte-client")
-  if (zyteConfigured()) {
-    const z = await scrapeWithZyte(url, { jsRender: options.jsRender })
-    if (z.ok) return { ok: true, html: z.html, provider: "zyte", cost: z.cost, error: null }
-    return { ok: false, html: "", provider: "zyte", cost: 0, error: z.error }
-  }
+  if (lastProvider) return { ok: false, html: "", provider: lastProvider, cost: 0, error: lastError }
   return { ok: false, html: "", provider: null, cost: 0, error: "no scrape provider configured (ZENROWS_API_KEY / ZYTE_API_KEY both unset)" }
 }
 

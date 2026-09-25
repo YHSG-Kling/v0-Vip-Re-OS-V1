@@ -56,6 +56,11 @@ import {
   type DerivedSellerSignal,
 } from "@/lib/external/batchdata-seller-signals"
 import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+import { bookSourceSpend } from "@/lib/lead-pipeline/source-cost-ledger"
+
+/** Buy Box has no independently-confirmed per-call price; metered at the comps-pull rate (one
+ *  address lookup against a named MCP tool) so the spend is VISIBLE rather than unmetered. */
+const BUYBOX_MATCH_COST_USD = 0.05
 // Wave 68 — cost gate: this pull bills per RECORD (docs/lead-acquisition-coverage-2026-09.md),
 // so it only runs for a brokerage whose resolved order names "batchdata_on_market" (default
 // excludes it — see lib/buyer-search/listing-source-order.ts, the SAME resolver market-watch.ts
@@ -356,6 +361,8 @@ async function ingestIncrementalRecords(
     records,
     executionId: null,
     marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+    // Lane 82B — the metered pull cost reaches cost_per_record (was null → $0 per lead).
+    batchCostUsd: pull.cost,
   })
   return { inserted: res.inserted, sessionUnsupported: false, errors }
 }
@@ -414,15 +421,18 @@ export async function runBuyBoxMatchingForMarket(
       records,
       executionId: null,
       marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+      batchCostUsd: BUYBOX_MATCH_COST_USD, // lane 82B — the metered match cost reaches cost_per_record
     })
     investorLeadsCreated += res.inserted
     // Buy Box has no independently-confirmed per-call price; metered at the same
     // conservative rate as the comps dataset pull (both are one address lookup
     // against a named MCP tool) so the spend is at least VISIBLE in the ledger
     // rather than silently unmetered.
-    await meterVendorSpend({
-      vendorName: "batchdata", usageType: "investor_buybox_match", cost: 0.05,
-      brokerageId: market.brokerage_id, metadata: { listing_id: listing.id },
+    // Lane 82B — booked PER SOURCE (usage_type 'batchdata_buybox', vendor from SOURCE_VENDOR) so the
+    // lead-cost reconcile (source-cost-ledger.ts::leadCostBySource) can see it.
+    await bookSourceSpend({
+      source: "batchdata_buybox", cost: BUYBOX_MATCH_COST_USD,
+      brokerageId: market.brokerage_id, marketId: market.id,
     })
   }
 

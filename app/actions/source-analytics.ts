@@ -11,12 +11,18 @@ export type SourceFamily = "raw" | "lead" | "contact_direct"
 
 // The wording-vs-quality discriminator (pure).
 import { diagnoseSource } from "@/lib/lead-pipeline/source-wording-diagnostic"
+// Lane 82B — lead cost by source: SOURCE_VENDOR's runtime reader + the ledger reconcile.
+import { ALL_SOURCE_KEYS, vendorForSource, type ScrapeVendor } from "@/lib/lead-pipeline/source-intent-map"
+import { leadCostBySource, type LeadCostLedger } from "@/lib/lead-pipeline/source-cost-ledger"
 
 export interface SourceMetrics {
   source: string
   source_family: SourceFamily
   source_channel: string | null
   source_subtype: string | null
+  /** Lane 82B — the scraping vendor SOURCE_VENDOR names for this source (null = not a scraped
+   *  source, e.g. a website form or a manual entry). Platform-paid; shown for lead-cost tracking. */
+  vendor: ScrapeVendor | null
 
   // Stage counts — populated per source family
   raw_record_count: number    // raw only
@@ -76,6 +82,9 @@ export interface SourcePerformanceResult {
     top_volume_source: string | null
     top_direct_source: string | null
   }
+  /** Lane 82B — per-source recorded lead cost reconciled to the platform vendor ledger
+   *  (vendor_usage_tracking rows booked per SourceKey by source-cost-ledger.ts::bookSourceSpend). */
+  lead_cost_ledger?: LeadCostLedger
   error?: string
 }
 
@@ -281,6 +290,7 @@ export async function getSourcePerformance(
           source_family: family,
           source_channel: channel ?? null,
           source_subtype: subtype ?? null,
+          vendor: vendorForSource(source || "unknown"),
           raw_record_count: 0,
           lead_count: 0,
           contact_count: 0,
@@ -525,7 +535,25 @@ export async function getSourcePerformance(
         .sort((a, b) => b.close_rate - a.close_rate)[0]?.source ?? null,
     }
 
-    return { success: true, sources, summary }
+    // ── Lead cost by source, reconciled to the platform vendor ledger (lane 82B) ──
+    // Rows booked by bookSourceSpend carry usage_type = the SourceKey, so the ledger read is
+    // scoped to scraping spend only (skip-trace/AI/etc. never enter this reconcile).
+    const { data: ledgerRows, error: ledgerErr } = await supabase
+      .from("vendor_usage_tracking")
+      .select("vendor_name, total_cost")
+      .eq("brokerage_id", brokerageId)
+      .in("usage_type", ALL_SOURCE_KEYS as string[])
+      .gte("created_at", fromDate)
+      .lte("created_at", toDate)
+    if (ledgerErr) console.warn("[source-analytics] vendor ledger read refused — lead cost shows recorded cost only:", ledgerErr.message)
+    const lead_cost_ledger = leadCostBySource(
+      [
+        ...((leads ?? []) as Array<{ source: string | null; source_channel: string | null; cost_per_record: number | null; acquisition_cost?: number | null }>),
+      ],
+      (ledgerRows ?? []) as Array<{ vendor_name: string | null; total_cost: number | null }>,
+    )
+
+    return { success: true, sources, summary, lead_cost_ledger }
   } catch (err) {
     console.error("[source-analytics] getSourcePerformance error:", err)
     return {
@@ -843,7 +871,7 @@ export async function exportSourceCSV(
     if (!result.success) return { success: false, csv: "", error: result.error }
 
     const headers = [
-      "Source", "Source Family", "Channel", "Subtype",
+      "Source", "Source Family", "Channel", "Subtype", "Vendor",
       "Raw Records", "Leads", "Contacts", "Appointments", "Transactions", "Closed",
       "Lead→Contact Rate", "Contact→Appt Rate", "Close Rate",
       "Total Spend", "Revenue Attributed", "ROI Multiple", "Cost Per Contact", "Cost Per Conversion",
@@ -851,7 +879,7 @@ export async function exportSourceCSV(
     ]
 
     const rows = result.sources.map(s => [
-      s.source, s.source_family, s.source_channel ?? "", s.source_subtype ?? "",
+      s.source, s.source_family, s.source_channel ?? "", s.source_subtype ?? "", s.vendor ?? "",
       s.raw_record_count, s.lead_count, s.contact_count, s.appointment_count, s.transaction_count, s.closed_count,
       `${s.lead_to_contact_rate}%`, `${s.contact_to_appt_rate}%`, `${s.close_rate}%`,
       `$${s.total_spend.toFixed(2)}`, `$${s.revenue_attributed.toFixed(2)}`, `${s.roi_multiple}x`, `$${s.cost_per_contact.toFixed(2)}`, `$${s.cost_per_conversion.toFixed(2)}`,

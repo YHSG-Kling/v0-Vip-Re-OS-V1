@@ -42,7 +42,7 @@ import { normalizeBatchDataRecord } from "@/lib/lead-pipeline/scraper-parsers"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { recordMatchesTerritory } from "@/lib/lead-pipeline/source-intent-map"
 import { lookupBatchDataPropertiesByIds } from "@/lib/external/batchdata-client"
-import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+import { bookSourceSpend } from "@/lib/lead-pipeline/source-cost-ledger"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 
 /** One documented Property Monitoring push event. `addedToSubscriptionIds`
@@ -195,12 +195,16 @@ export async function POST(request: Request) {
       records,
       executionId: null,
       marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+      // Lane 82B — the hydrate spend reaches cost_per_record (was null → a pushed lead read $0).
+      batchCostUsd: perMarketHydrateCost,
     })
     inserted += res.inserted
     if (perMarketHydrateCost > 0) {
-      void meterVendorSpend({
-        vendorName: "batchdata", usageType: "property_lookup_hydrate", cost: perMarketHydrateCost,
-        brokerageId: market.brokerage_id, metadata: { market_id: market.id, requested: additionIds.length },
+      // Platform ledger, per SOURCE (lane 82B): vendor from SOURCE_VENDOR ('batchdata'), usage_type
+      // = 'batchdata_smart_search' so the lead-cost reconcile can see it.
+      void bookSourceSpend({
+        source: "batchdata_smart_search", cost: perMarketHydrateCost,
+        brokerageId: market.brokerage_id, marketId: market.id,
       }).catch(() => null)
     }
   }

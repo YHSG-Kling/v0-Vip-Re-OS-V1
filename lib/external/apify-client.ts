@@ -140,6 +140,28 @@ export async function scrapeLinkedInPosts(params: {
   return { posts: result.data, cost: result.cost }
 }
 
+/**
+ * Lane 82B — Facebook Marketplace property-for-sale listings for ONE territory city. The URL is
+ * the location-scoped Marketplace category page (`/marketplace/<city>/propertyforsale`), so the
+ * actor never sweeps outside the active territory. Input carries both candidates' field names
+ * (`startUrls` + `resultsLimit` for apify/facebook-marketplace-scraper, `forSaleOnly` for the
+ * vivid-softwares fallback) — runApifyTask hands every candidate the same input.
+ */
+export async function scrapeFacebookMarketplaceListings(params: {
+  city: string
+  limit?: number
+}): Promise<{ listings: any[]; cost: number }> {
+  const slug = params.city.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!slug) return { listings: [], cost: 0 }
+  const result = await runApifyTask('facebook_marketplace', {
+    startUrls: [{ url: `https://www.facebook.com/marketplace/${slug}/propertyforsale` }],
+    resultsLimit: params.limit || 50,
+    includeListingDetails: true,
+    forSaleOnly: true,
+  })
+  return { listings: result.data, cost: result.cost }
+}
+
 export async function scrapeGoogleSearchResults(params: {
   queries: string[]
   resultsPerQuery?: number

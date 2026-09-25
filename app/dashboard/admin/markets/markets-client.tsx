@@ -37,6 +37,7 @@ import type { ActiveListingSource } from "@/lib/buyer-search/listing-source-orde
 // SOURCE_MAP itself (CLAUDE.md §6 — never a hand-copied second list), so a newly-added
 // SourceKey is toggleable here the moment source-intent-map.ts defines it, no second edit.
 import { ALL_SOURCE_KEYS, type SourceKey } from "@/lib/lead-pipeline/source-intent-map"
+import { acquisitionIntentLabel } from "@/lib/lead-pipeline/acquisition-coverage"
 
 export interface PropertyParamsRow {
   id: string
@@ -547,6 +548,8 @@ export function MarketsSetupClient({
                               onChange={(e) => toggleSource(m, key, e.target.checked)}
                             />
                             <span className={busy ? "text-muted-foreground" : undefined}>{labelSourceKey(key)}</span>
+                            {/* Lane 82B — who this source finds (acquisition-coverage.ts). */}
+                            <span className="text-[10px] text-muted-foreground">{acquisitionIntentLabel(key)}</span>
                           </label>
                         )
                       })}

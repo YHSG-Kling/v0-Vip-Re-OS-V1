@@ -35,6 +35,7 @@ import {
   sourceAgentSeekingPhraseIntent,
   sourceRealtySiteChatter,
   sourceNewConstructionIntent,
+  sourceFacebookMarketplace,
 } from "@/lib/lead-pipeline/social-sourcer"
 import { sourcePermitPrelistingIntent, routePermitPrelistingHits } from "@/lib/lead-pipeline/permit-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
@@ -54,7 +55,11 @@ import {
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { buildTerritoryPhrases, expandEnabledSources } from "@/lib/lead-pipeline/source-intent-map"
-import { meterVendorSpend, scraperTypeToVendor } from "@/lib/vendor-governance/meter-vendor"
+// Lane 82B — every scrape's spend books PER SOURCE on the platform ledger through the ONE
+// source→vendor contract (source-intent-map.ts::SOURCE_VENDOR via source-cost-ledger.ts), which
+// itself rides meterVendorSpend. The composite "apify_social" row is gone (see the social block).
+import { bookSourceSpend } from "@/lib/lead-pipeline/source-cost-ledger"
+import { scrapeSiteWithBestProvider } from "@/lib/external/zenrows-client"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
 import {
@@ -290,10 +295,17 @@ export async function GET(request: Request) {
             // a buyer record OR a seller record depending on which scored highest.
             for (const site of propertyParams.target_sites || ["zillow", "realtor", "redfin"]) {
               const searchUrl = buildPropertySearchUrl(site, market, propertyParams)
-              const scraped = await zenrows.scrape(searchUrl, { js_render: true, premium_proxy: true })
+              // Lane 82B — the portal hosts go through the ONE provider picker (Zyte first on
+              // zillow/realtor/homes/redfin per the 2026 benchmarks, ZenRows fallback) instead of a
+              // hard-wired ZenRows call, and each site's spend books under its OWN source.
+              const scraped = await scrapeSiteWithBestProvider(searchUrl, { jsRender: true, premiumProxy: true })
               sourceCostUsd += scraped.cost ?? 0
+              await bookSourceSpend({
+                source: site, cost: scraped.cost ?? 0, brokerageId: market.brokerage_id,
+                marketId: market.id, providerOverride: scraped.provider,
+              })
 
-              if (scraped.success && scraped.html) {
+              if (scraped.ok && scraped.html) {
                 // Same page yields BOTH online behaviors: FSBO sellers
                 // (parsePropertySearchResults) AND saved-search/favorited buyers
                 // (parseBuyerSavedSearches). Both are filtered by the viability gate.
@@ -381,15 +393,8 @@ export async function GET(request: Request) {
             await escalateScraperFailureIfNeeded(supabase, { scraperType: "zillow_behavior", errorMessage: sourceErr.message })
           }
 
-          // Unified vendor-spend ledger (one gateway for all data-vendor cost).
-          await meterVendorSpend({
-            vendorName: scraperTypeToVendor("zillow_behavior"),
-            usageType: "property_scrape",
-            cost: sourceCostUsd,
-            brokerageId: market.brokerage_id,
-            metadata: { market_id: market.id, scraper_type: "zillow_behavior" },
-          })
-
+          // Platform ledger: booked PER SITE inside the loop above (bookSourceSpend) — one row per
+          // source with the provider that actually served it, never one lump "zenrows" row.
           territorySpendUsd += sourceCostUsd
         }
       }
@@ -422,6 +427,8 @@ export async function GET(request: Request) {
           let sourceItemsFound = 0
           let leadsCreated = 0
           let sourceErr: Error | null = null
+          let motivatedCostUsd = 0
+          let expiredCostUsd = 0
 
           try {
             await updateScrapingJob(job.job?.id, {
@@ -439,10 +446,18 @@ export async function GET(request: Request) {
             const motivatedTriggers = enabledSources.has("batchdata_motivated")
               ? batchDataTriggersFor(motivatedParams.signal_types)
               : []
-            const rawSellers = [
-              ...(await Promise.all(motivatedTriggers.map((t) => batchdata.getMotivatedSellerData(location, [t])))).flat(),
-              ...(enabledSources.has("expired_listing") ? await batchdata.getMotivatedSellerData(location, ["expired"]) : []),
-            ]
+            // Lane 82B — the cost-carrying pull: each trigger's records × the per-record search
+            // price, booked per SOURCE below (batchdata_motivated vs expired_listing) and spread
+            // across the batch as raw_scraped_leads.cost_per_record — both were missing (null / no
+            // ledger row), so a BatchData lead's cost-per-lead read $0 and the wallet reconcile's
+            // estimate for 'batchdata' never included the platform's biggest scrape.
+            const motivatedPulls = await Promise.all(motivatedTriggers.map((t) => batchdata.getMotivatedSellerDataWithCost(location, [t])))
+            const expiredPull = enabledSources.has("expired_listing")
+              ? await batchdata.getMotivatedSellerDataWithCost(location, ["expired"])
+              : { records: [], cost: 0 }
+            motivatedCostUsd = motivatedPulls.reduce((sum, r) => sum + (r.cost ?? 0), 0)
+            expiredCostUsd = expiredPull.cost ?? 0
+            const rawSellers = [...motivatedPulls.flatMap((r) => r.records), ...expiredPull.records]
             // Normalize to canonical shape and filter by viability gate
             const sellers = rawSellers
               .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
@@ -470,11 +485,10 @@ export async function GET(request: Request) {
               source:       "batchdata_motivated",
               sourceFamily: "motivated_seller",
               sourceChannel: "batchdata",
-              // No per-batch figure exists at this call site: getMotivatedSellerData
-              // returns records only and BatchData's spend is reconciled from the
-              // provider's own wallet consumption report at the end of this tick
-              // (reconcileBatchDataWalletSpend), never estimated here. null = unknown.
-              batchCostUsd: null,
+              // Lane 82B — the pulls' own cost (records × BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD),
+              // spread per record by the kernel writer. The wallet reconcile at the end of the tick
+              // still compares the ledger total against BatchData's own consumption report.
+              batchCostUsd: motivatedCostUsd + expiredCostUsd,
               })
             leadsCreated = batchInserted
 
@@ -503,9 +517,14 @@ export async function GET(request: Request) {
             completed_at: new Date().toISOString(),
             total_items_found: sourceItemsFound,
             leads_created: leadsCreated,
-            api_cost: 0, // BatchData cost tracked separately via vendor_usage_tracking
+            api_cost: motivatedCostUsd + expiredCostUsd,
             error_message: sourceErr?.message ?? null,
           }).eq("id", execRecord?.id)
+
+          // Platform ledger, per source (lane 82B).
+          await bookSourceSpend({ source: "batchdata_motivated", cost: motivatedCostUsd, brokerageId: market.brokerage_id, marketId: market.id })
+          await bookSourceSpend({ source: "expired_listing", cost: expiredCostUsd, brokerageId: market.brokerage_id, marketId: market.id })
+          territorySpendUsd += motivatedCostUsd + expiredCostUsd
 
           // Data Steward owns scraping health: a sustained source outage escalates to the broker.
           if (sourceErr) {
@@ -559,6 +578,34 @@ export async function GET(request: Request) {
       }
 
       // ============================================
+      // 2d'. CASH BUYERS (lane 82B) — INVESTOR buyers on BatchData's 'cash-buyer' quickList
+      // ============================================
+      // Territory-centric (the market's own city/state), buyer-side, its OWN gate token. The owner
+      // on each record is the investor (mailing address = where they live/operate); records keep
+      // their batch cost and book per source like every other lane.
+      if (enabledSources.has("batchdata_cash_buyer") && market.city && market.state) {
+        try {
+          const pull = await batchdata.getMotivatedSellerDataWithCost(`${market.city}, ${market.state}`, ["cash_buyer"])
+          const buyers = pull.records
+            .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
+            .map((r) => ({ ...r, source: "batchdata_cash_buyer", intentType: "buyer" as const, behaviorType: "investor_cash_purchase", intentSignals: ["cash_buyer", "investor"] }))
+            .filter(isViableRecord)
+          const { inserted } = await insertRawBatch({
+            records: buyers, marketId: market.id,
+            marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
+            executionId: null,
+            source: "batchdata_cash_buyer", sourceFamily: "investor_demand", sourceChannel: "batchdata_cash_buyer",
+            batchCostUsd: pull.cost,
+          })
+          results.total_leads_created += inserted
+          await bookSourceSpend({ source: "batchdata_cash_buyer", cost: pull.cost, brokerageId: market.brokerage_id, marketId: market.id })
+          territorySpendUsd += pull.cost
+        } catch (e) {
+          results.errors.push(`Cash-buyer pull error for ${market.name}: ${e}`)
+        }
+      }
+
+      // ============================================
       // 2e. BUY BOX MATCHING (wave 66, task 4) — investor demand per active listing
       // ============================================
       if (enabledSources.has("batchdata_buybox")) {
@@ -591,9 +638,15 @@ export async function GET(request: Request) {
         enabledSources.has("realty_chatter") ||
         enabledSources.has("new_construction_intent") ||
         enabledSources.has("permit_prelisting_intent") ||
-        enabledSources.has("review_acquisition_intent")
+        enabledSources.has("review_acquisition_intent") ||
+        enabledSources.has("facebook_marketplace")
 
-      if (socialSourcesEnabled && keywords && keywords.length > 0) {
+      // Lane 82B — AUTONOMY FIX: this block used to require configured lead_scraping_keywords, so a
+      // platform with no keyword rows silently ran NONE of the territory-derived lanes below that
+      // never read a keyword (Exa, Tavily, reddit_relocation, agent_seeking, new_construction,
+      // permit, review, realty_chatter, LinkedIn, Google, rental, Marketplace). Keyword lanes still
+      // gate on their own keywordsBySource entry; everything else runs on the territory alone.
+      if (socialSourcesEnabled) {
         // STEP 5 — open scraper_executions record
         const { data: execRecord } = await supabase
           .from("scraper_executions")
@@ -622,6 +675,12 @@ export async function GET(request: Request) {
         // separately: metered per-provider inline in that block, not folded into sourceCostUsd's
         // composite "apify_social" ledger entry.
         let reviewAcquisitionCostUsd = 0
+        // Lane 82B — spend PER SOURCE for the platform ledger (booked after the block through
+        // bookSourceSpend → SOURCE_VENDOR). Replaces the composite "apify_social" row.
+        const socialSpendBySource = new Map<string, number>()
+        const addSocialSpend = (source: string, cost: number) => {
+          if (cost > 0) socialSpendBySource.set(source, (socialSpendBySource.get(source) ?? 0) + cost)
+        }
         let sourceErr: Error | null = null
 
         try {
@@ -632,7 +691,7 @@ export async function GET(request: Request) {
 
           // Group keywords by source
           const keywordsBySource: Record<string, string[]> = {}
-          for (const kw of keywords) {
+          for (const kw of keywords ?? []) {
             for (const source of kw.sources || []) {
               if (!keywordsBySource[source]) keywordsBySource[source] = []
               keywordsBySource[source].push(kw.keyword)
@@ -650,10 +709,11 @@ export async function GET(request: Request) {
 
             const scraped = await zenrows.scrapeNextdoor(nextdoorUrl)
             sourceCostUsd += scraped.cost ?? 0
+            addSocialSpend("nextdoor", scraped.cost ?? 0)
             if (scraped.success && scraped.posts) {
               const ndRecords: NormalizedScrapedRecord[] = []
               for (const post of scraped.posts) {
-                const matchedKeyword = keywords.find(
+                const matchedKeyword = (keywords ?? []).find(
                   (kw) =>
                     kw.sources?.includes("nextdoor") && post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
                 )
@@ -689,7 +749,10 @@ export async function GET(request: Request) {
           const socialMarket = { city: market.city, state: market.state }
           // ONE batch call per sub-source — routes through the kernel's canonical writer
           // (ingestRawSourceBatch) instead of one insert per record.
-          const insertSocial = async (records: NormalizedScrapedRecord[], channel: string, sourceFamily = "social_intent", batchCostUsd: number | null = null) => {
+          const insertSocial = async (records: NormalizedScrapedRecord[], channel: string, sourceFamily = "social_intent", batchCostUsd: number | null = null, bookedInline = false) => {
+            // Every sub-source's spend reaches the per-source ledger map unless the caller already
+            // booked it inline with the provider that served it (realty chatter / review lanes).
+            if (!bookedInline) addSocialSpend(channel, batchCostUsd ?? 0)
             const { inserted } = await insertRawBatch({
               records, marketId: market.id,
               marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
@@ -712,6 +775,15 @@ export async function GET(request: Request) {
               sourceCostUsd += cost
               await insertSocial(records, "facebook", "social_intent", cost)
             }
+          }
+
+          // ── Facebook Marketplace property-for-sale (Apify) — FSBO sellers, lane 82B ──
+          // Territory-centric by construction: the actor is handed the market city's own
+          // Marketplace category URL; no city ⇒ no scrape.
+          if (enabledSources.has("facebook_marketplace") && market.city) {
+            const { records, cost } = await sourceFacebookMarketplace(market.city, socialMarket)
+            sourceCostUsd += cost
+            await insertSocial(records, "facebook_marketplace", "social_intent", cost)
           }
 
           // ── Instagram (Apify) — real-estate hashtags, buyer + seller intent ──
@@ -875,15 +947,12 @@ export async function GET(request: Request) {
               console.log(`[Lead Scraping Cron] Review acquisition ${market.name}: signaled=${routed.signaled} minting=${routed.toMint.length}`)
             }
             if (cost > 0 && provider) {
-              await meterVendorSpend({
-                vendorName: provider,
-                usageType: "review_acquisition_intent",
-                cost,
-                brokerageId: market.brokerage_id,
-                metadata: { market_id: market.id, scraper_type: "review_acquisition_intent" },
+              await bookSourceSpend({
+                source: "review_acquisition_intent", cost, brokerageId: market.brokerage_id,
+                marketId: market.id, providerOverride: provider,
               })
             }
-            await insertSocial(routed.toMint, "review_acquisition_intent", "social_intent", cost)
+            await insertSocial(routed.toMint, "review_acquisition_intent", "social_intent", cost, true)
           }
 
           // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────
@@ -896,14 +965,11 @@ export async function GET(request: Request) {
             for (const site of ["zillow", "realtor", "homes"] as const) {
               const chatter = await sourceRealtySiteChatter(site, { city: market.city, state: market.state })
               realtyChatterCostUsd += chatter.cost
-              await insertSocial(chatter.records, `${site}_chatter`, "social_intent", chatter.cost)
+              await insertSocial(chatter.records, `${site}_chatter`, "social_intent", chatter.cost, true)
               if (chatter.cost > 0) {
-                await meterVendorSpend({
-                  vendorName: chatter.provider ?? "zenrows",
-                  usageType: "realty_site_chatter",
-                  cost: chatter.cost,
-                  brokerageId: market.brokerage_id,
-                  metadata: { market_id: market.id, site, scraper_type: "realty_chatter" },
+                await bookSourceSpend({
+                  source: `${site}_chatter`, cost: chatter.cost, brokerageId: market.brokerage_id,
+                  marketId: market.id, providerOverride: chatter.provider ?? "zenrows",
                 })
               }
             }
@@ -941,14 +1007,12 @@ export async function GET(request: Request) {
           await escalateScraperFailureIfNeeded(supabase, { scraperType: "social_intent", errorMessage: sourceErr.message })
         }
 
-        // Unified vendor-spend ledger (Apify + Exa + Tavily social scrape).
-        await meterVendorSpend({
-          vendorName: scraperTypeToVendor("social_intent"),
-          usageType: "social_scrape",
-          cost: sourceCostUsd,
-          brokerageId: market.brokerage_id,
-          metadata: { market_id: market.id, scraper_type: "social_intent" },
-        })
+        // Platform ledger, PER SOURCE (lane 82B): each sub-source books under the vendor
+        // SOURCE_VENDOR names for it (Apify / Exa / Tavily / ZenRows-Nextdoor) with usage_type =
+        // its SourceKey. Was ONE composite "apify_social" row that no lead-cost report could split.
+        for (const [source, cost] of socialSpendBySource) {
+          await bookSourceSpend({ source, cost, brokerageId: market.brokerage_id, marketId: market.id })
+        }
 
         // realtyChatterCostUsd / reviewAcquisitionCostUsd were already metered per-provider above
         // (ZenRows/Zyte, not Apify) — add them to the territory total here so budget tracking
@@ -967,18 +1031,14 @@ export async function GET(request: Request) {
             county: market.counties?.[0] ?? null,
           })
           territorySpendUsd += cost
-          await meterVendorSpend({
-            vendorName: scraperTypeToVendor("osint_signal"),
-            usageType: "public_records",
-            cost,
-            brokerageId: market.brokerage_id,
-            metadata: { market_id: market.id, scraper_type: "osint_signal" },
-          })
+          await bookSourceSpend({ source: "osint_signal", cost, brokerageId: market.brokerage_id, marketId: market.id })
           const { inserted: osintInserted } = await insertRawBatch({
             records, marketId: market.id,
             marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
             executionId: null,
             source: "osint_signal", sourceFamily: "distressed_signal", sourceChannel: "osint_signal",
+            // Lane 82B — the public-records call's cost reaches cost_per_record (was left null).
+            batchCostUsd: cost,
           })
           results.total_leads_created += osintInserted
         } catch (err) {

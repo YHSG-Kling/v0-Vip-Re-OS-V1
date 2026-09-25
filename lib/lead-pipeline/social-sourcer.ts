@@ -16,6 +16,7 @@ import {
   scrapeCraigslistPosts,
   scrapeGoogleSearchResults,
   scrapeLinkedInPosts,
+  scrapeFacebookMarketplaceListings,
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
 import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter } from "./scraper-parsers"
@@ -245,6 +246,57 @@ export async function sourceCraigslistWanted(city: string, market: SocialMarket)
 export async function sourceGoogle(queries: string[], market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
   const r = await scrapeGoogleSearchResults({ queries, resultsPerQuery: 10 }).catch(() => ({ results: [], cost: 0 }))
   return { records: (r.results ?? []).map((x) => normalizeGoogleResult(x, market)).filter(isViableRecord), cost: r.cost ?? 0 }
+}
+
+// ── Facebook Marketplace property-for-sale (lane 82B) → FSBO SELLER ─────────
+// The facebook_marketplace SourceKey (SOURCE_MAP: seller, property_required) existed with no
+// collector. A Marketplace home listing is an owner (or an agent) listing a property; agent/
+// brokerage posts are damped, never dropped here (the scorer's dampSignals decide). Identity:
+// the seller's public display name + the listing's location — property_required, so a listing
+// with no usable location text is not viable (isViableRecord).
+const MARKETPLACE_AGENT = /\b(realtor|broker(age)?|real estate agent|listing agent|mls|realty)\b/i
+const MARKETPLACE_RENTAL = /\b(for rent|rental|lease|per month|\/mo)\b/i
+
+export function normalizeFacebookMarketplaceListing(item: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  const title = `${item.marketplace_listing_title ?? item.title ?? ""}`
+  const description = `${item.description ?? item.redacted_description?.text ?? ""}`
+  const text = `${title} ${description}`
+  const sellerName = item.marketplace_listing_seller?.name ?? item.seller?.name ?? null
+  const { firstName, lastName } = nameFromHandle(sellerName)
+  const geo = item.location?.reverse_geocode ?? {}
+  const agentPosted = MARKETPLACE_AGENT.test(text)
+  const rental = MARKETPLACE_RENTAL.test(text) || item.listingIntent === "rent"
+  const signals = [
+    agentPosted ? "agent_listing" : "owner",
+    ...(rental ? ["rental"] : []),
+    ...(/\b(fsbo|by owner)\b/i.test(text) ? ["fsbo"] : []),
+    ...(/\b(motivated|must sell|price (reduced|drop))\b/i.test(text) ? ["motivated"] : []),
+  ]
+  const price = Number(item.listing_price?.amount ?? item.final_price ?? NaN)
+  return {
+    sourceRecordId: `fbm-${item.id ?? item.listingUrl ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+    source: "facebook_marketplace",
+    behaviorType: "property_listing",
+    intentType: "seller",
+    intentSignals: signals,
+    firstName,
+    lastName,
+    username: item.marketplace_listing_seller?.id ?? item.seller?.profileId ?? undefined,
+    propertyAddress: `${item.address ?? title}`.slice(0, 120) || null,
+    city: geo.city ?? item.city ?? market.city,
+    state: geo.state ?? item.region ?? market.state,
+    sourceUrl: item.listingUrl ?? item.url ?? null,
+    motivationScore: agentPosted ? 40 : 60,
+    rawPayload: { ...item, parsed_price: Number.isFinite(price) ? price : null },
+  }
+}
+
+export async function sourceFacebookMarketplace(city: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const r = await scrapeFacebookMarketplaceListings({ city, limit: 50 }).catch(() => ({ listings: [], cost: 0 }))
+  return {
+    records: (r.listings ?? []).map((x) => normalizeFacebookMarketplaceListing(x, market)).filter(isViableRecord),
+    cost: r.cost ?? 0,
+  }
 }
 
 // ── Rental listings (Craigslist apartments) → landlord/investor SELLER ───────

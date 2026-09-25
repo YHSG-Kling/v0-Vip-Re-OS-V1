@@ -226,8 +226,13 @@ const overage = stripped("lib/billing/ai-overage.ts")
 check("the AI overage (lib/billing/ai-overage.ts) derives from usage_counters only — vendor_usage_tracking never reaches an invoice item",
   /from\("usage_counters"\)/.test(overage) && !/vendor_usage_tracking/.test(overage))
 const cron = stripped("app/api/cron/lead-scraping/route.ts")
-check("scraping acquisition (app/api/cron/lead-scraping/route.ts) books through meterVendorSpend and writes no tenant meter",
-  (cron.match(/meterVendorSpend\(/g) ?? []).length >= 3 && !TENANT_METER_WRITE.test(cron))
+// Re-anchored lane 82B: the cron now books PER SOURCE through source-cost-ledger.ts::bookSourceSpend,
+// which is itself a meterVendorSpend call — assert the RULE (the cron's bookings reach the ONE
+// gateway), not the spelling of the call site.
+check("scraping acquisition (app/api/cron/lead-scraping/route.ts) books through meterVendorSpend (directly or via bookSourceSpend → meterVendorSpend) and writes no tenant meter",
+  (cron.match(/\b(?:meterVendorSpend|bookSourceSpend)\(/g) ?? []).length >= 3
+  && /\bmeterVendorSpend\(/.test(code("lib/lead-pipeline/source-cost-ledger.ts"))
+  && !TENANT_METER_WRITE.test(cron) && !TENANT_METER_WRITE.test(stripped("lib/lead-pipeline/source-cost-ledger.ts")))
 check("the BatchData platform-wide tier cap sums vendor_usage_tracking for vendor 'batchdata' — the SAME ledger these bookings land on",
   /vendor_usage_tracking/.test(stripped("lib/ai-isa/persona-tool-policy.ts")) && /"vendor_name", "batchdata"/.test(stripped("lib/ai-isa/persona-tool-policy.ts")))
 check("POSITIVE CONTROL: a fixture booking BatchData into usage_events IS flagged; a bare vendor literal with no booker IS flagged",

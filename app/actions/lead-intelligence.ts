@@ -704,6 +704,7 @@ export async function scrapeSocialSignalsWithZenRows(
         sourceFamily: "social_intent", sourceChannel: "nextdoor_chatter",
         sourceSubtype: "nextdoor_post", records: rawRecords, executionId: null,
         marketGeo: { city: territory.city, state: territory.state, zip_codes: territory.zip_codes },
+        batchCostUsd: ZENROWS_CALL_COST_USD, // lane 82B — the metered ZenRows call reaches cost_per_record
       })
     }
 
@@ -2792,6 +2793,9 @@ export async function scrapeExternalBehavior(
         sourceFamily: "property_search", sourceChannel: "external_behavior",
         sourceSubtype: "off_site_property_view", records: rawRecords, executionId: null,
         marketGeo: { city: territory.city, state: territory.state, zip_codes: territory.zip_codes },
+        // Lane 82B — the three discovery actor calls metered above reach cost_per_record (was null,
+        // so an external_behavior lead read $0 in the lead-cost report).
+        batchCostUsd: 3 * APIFY_ACTOR_CALL_COST_USD,
       })
     }
 

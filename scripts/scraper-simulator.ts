@@ -1902,13 +1902,29 @@ async function testZyteClientAndProviderPicker() {
   const zyteOnly = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/", { jsRender: true })
   check("ZYTE_API_KEY alone ⇒ Zyte provider used", zyteOnly.ok && zyteOnly.provider === "zyte" && zyteOnly.html.includes("zyte-only"))
 
-  // Both keys set, ZenRows succeeds ⇒ ZenRows is primary (Zyte never called).
+  // Both keys set, ZenRows succeeds ⇒ ZenRows is primary on a NON-portal host (Zyte never called).
+  // Re-anchored lane 82B: the real-estate PORTAL hosts (zillow/realtor/homes/redfin/trulia) now try
+  // Zyte first (2026 benchmarks: Zyte 100% on Zillow vs ZenRows 45%/0%) — assert the ORDER RULE per host.
   process.env.ZENROWS_API_KEY = "sim-test-zenrows-key"
   globalThis.fetch = (async () => ({
     ok: true, status: 200, statusText: "OK", text: async () => "<html>zenrows-primary</html>",
   })) as unknown as typeof fetch
-  const zenrowsPrimary = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/", { jsRender: true })
-  check("both keys set + ZenRows succeeds ⇒ ZenRows stays primary", zenrowsPrimary.ok && zenrowsPrimary.provider === "zenrows" && zenrowsPrimary.html.includes("zenrows-primary"))
+  const zenrowsPrimary = await scrapeSiteWithBestProvider("https://www.biggerpockets.com/forums/austin", { jsRender: true })
+  check("both keys set + ZenRows succeeds on a non-portal host ⇒ ZenRows stays primary", zenrowsPrimary.ok && zenrowsPrimary.provider === "zenrows" && zenrowsPrimary.html.includes("zenrows-primary"))
+  const { scrapeProviderOrder } = await import("../lib/external/zenrows-client")
+  check("lane 82B: portal hosts order Zyte first (zillow, www.realtor.com, homes.com, redfin, trulia)",
+    ["https://zillow.com/austin-tx/", "https://www.realtor.com/x", "https://www.homes.com/x", "https://www.redfin.com/x", "https://www.trulia.com/x"].every((u) => scrapeProviderOrder(u)[0] === "zyte"))
+  check("lane 82B POSITIVE CONTROL: non-portal hosts (nextdoor, craigslist, a look-alike zillow.com.evil.io) keep ZenRows first",
+    ["https://nextdoor.com/x", "https://austin.craigslist.org/x", "https://zillow.com.evil.io/x"].every((u) => scrapeProviderOrder(u)[0] === "zenrows"))
+  // Both keys set on a PORTAL host ⇒ Zyte serves it (ZenRows never called).
+  let zenrowsCalled = false
+  globalThis.fetch = (async (input: any) => {
+    const u = typeof input === "string" ? input : (input?.url ?? input?.href ?? String(input))
+    if (!String(u).includes("zyte")) { zenrowsCalled = true; return { ok: true, status: 200, statusText: "OK", text: async () => "<html>zenrows</html>" } }
+    return { ok: true, status: 200, statusText: "OK", json: async () => ({ url: "https://zillow.com/austin-tx/", statusCode: 200, browserHtml: "<html>zyte-portal</html>" }), text: async () => "" }
+  }) as unknown as typeof fetch
+  const portal = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/", { jsRender: true })
+  check("lane 82B: both keys + a portal host ⇒ Zyte serves it and ZenRows is never called", portal.ok && portal.provider === "zyte" && portal.html.includes("zyte-portal") && !zenrowsCalled)
 
   globalThis.fetch = realFetch
   // restore env

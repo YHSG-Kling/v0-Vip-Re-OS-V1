@@ -261,6 +261,8 @@ function CompareDialog({
   if (!open || sources.length === 0) return null
   const metrics: Array<{ label: string; fn: (s: SourceMetrics) => string }> = [
     { label: "Source Family", fn: s => s.source_family },
+    // Lane 82B — the platform-paid scraping vendor behind this source (SOURCE_VENDOR).
+    { label: "Vendor", fn: s => s.vendor ?? "—" },
     { label: "Raw Records", fn: s => s.raw_record_count > 0 ? s.raw_record_count.toLocaleString() : "—" },
     { label: "Leads", fn: s => s.lead_count > 0 ? s.lead_count.toLocaleString() : "—" },
     { label: "Contacts", fn: s => s.contact_count.toLocaleString() },
