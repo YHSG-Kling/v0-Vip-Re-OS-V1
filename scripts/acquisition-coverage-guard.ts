@@ -24,6 +24,10 @@
  *   L7  AUTONOMY + NO COMPLIANCE GATE ON ACQUISITION.
  *   L8  the lane-82B builds (Marketplace, BatchData triggers, SOURCE_VENDOR / PAID_ONLY_ANSWERS /
  *       VALID_AGENT_TYPES runtime readers) + registration.
+ *   L9  lane 83A (wave 83) — the OWNER'S intents per source (OWNER_REQUIRED_INTENTS: site chatter
+ *       sells; Marketplace buys / relocates / seeks a realtor, and still sells) are DECLARED and
+ *       PRODUCED by the source's own parser on a fixture (recordAcquisitionIntents — rule-derived);
+ *       the TikTok lane (two Apify hops, territory-scoped, booked per source).
  * Every absence assertion carries a POSITIVE CONTROL fixture (CLAUDE.md §2).
  */
 import { readFileSync, existsSync } from "fs"
@@ -31,7 +35,10 @@ import { stripComments, blankStrings } from "./strip-comments"
 import {
   ALL_SOURCE_KEYS, SOURCE_VENDOR, expandEnabledSources, vendorForSource, resolveSourceKey, type SourceKey,
 } from "../lib/lead-pipeline/source-intent-map"
-import { SOURCE_ACQUISITION, acquisitionIntentLabel, type AcquisitionIntent } from "../lib/lead-pipeline/acquisition-coverage"
+import { SOURCE_ACQUISITION, acquisitionIntentLabel, OWNER_REQUIRED_INTENTS, recordAcquisitionIntents, type AcquisitionIntent } from "../lib/lead-pipeline/acquisition-coverage"
+import { parseSellerChatter, parseContactAgentChatter } from "../lib/lead-pipeline/scraper-parsers"
+import { sourceTikTokIntent, normalizeTikTokComment } from "../lib/lead-pipeline/social-sourcer"
+import { DEFAULT_SCRAPE_KEYWORDS } from "../lib/lead-pipeline/scrape-keywords"
 import { planSourceSpendBooking, bookSourceSpend, leadCostBySource } from "../lib/lead-pipeline/source-cost-ledger"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import { normalizeFacebookMarketplaceListing, sourceFacebookMarketplace } from "../lib/lead-pipeline/social-sourcer"
@@ -71,7 +78,9 @@ check("every SourceKey names ≥1 population", KEYS.every((k) => SOURCE_ACQUISIT
 const byIntent = new Map<AcquisitionIntent, SourceKey[]>(INTENTS.map((i) => [i, KEYS.filter((k) => SOURCE_ACQUISITION[k].intents.includes(i))]))
 for (const i of INTENTS) check(`population "${i}" has ≥2 wired sources (${byIntent.get(i)!.length}: ${byIntent.get(i)!.join(", ")})`, byIntent.get(i)!.length >= 2)
 check("POSITIVE CONTROL: an intent nobody declares reads as uncovered", KEYS.filter((k) => (SOURCE_ACQUISITION[k].intents as readonly string[]).includes("time_travel")).length === 0)
-check("runtime reader: acquisitionIntentLabel renders the populations (markets panel)", acquisitionIntentLabel("facebook_marketplace") === "sellers" && acquisitionIntentLabel("reddit_relocation") === "relocators · agent-seekers")
+// Lane 83A — the label is DERIVED from the registry (was pinned to Marketplace's old "sellers" — a waypoint).
+check("runtime reader: acquisitionIntentLabel renders the populations (markets panel)",
+  acquisitionIntentLabel("facebook_marketplace").split(" · ").length === SOURCE_ACQUISITION.facebook_marketplace.intents.length && acquisitionIntentLabel("reddit_relocation") === "relocators · agent-seekers")
 check("the markets panel reads acquisitionIntentLabel", /acquisitionIntentLabel\(key\)/.test(code("app/dashboard/admin/markets/markets-client.tsx")))
 
 console.log("\n  COVERAGE MATRIX (source · populations · vendor · door)")
@@ -117,7 +126,7 @@ function writesChannel(src: string, ch: string): boolean {
 const channelled = cronKeys.filter((k) => SOURCE_ACQUISITION[k].routeChannel)
 const unwritten = channelled.filter((k) => !writesChannel(route, SOURCE_ACQUISITION[k].routeChannel!))
 check(`every cron source's records reach the raw writer under its channel — ${channelled.length - unwritten.length}/${channelled.length}`, unwritten.length === 0, unwritten.join(", "))
-check("POSITIVE CONTROL: a channel the route never writes is flagged", !writesChannel(route, '"tiktok_intent"'))
+check("POSITIVE CONTROL: a channel the route never writes is flagged", !writesChannel(route, '"myspace_intent"'))
 const feed = stripped("lib/kernel/listings-batchdata-feed.ts")
 check("batchdata_buybox (cron → listings-batchdata-feed) writes through ingestRawSourceBatch", /sourceChannel: "batchdata_buybox"/.test(feed) && /runBuyBoxMatchingForMarket\(/.test(route))
 check("signal-only first-party lane (rental_to_buyer_graduation) is gated per brokerage and never mints a raw lead", SOURCE_ACQUISITION.rental_to_buyer_graduation.routeChannel === null && /sourceRentalToBuyerGraduation\(/.test(route))
@@ -250,6 +259,44 @@ await (async () => {
     rows.length === 2 && rows[0].vendorName === "apify" && rows[0].usageType === "facebook_marketplace" && rows[1].vendorName === "exa" && rows[1].usageType === "exa_buyer_intent" && rows[0].metadata.market_id === "m1")
 })()
 
+// ── L9 · lane 83A — the owner's intents per source + TikTok ───────────────────
+console.log("\n[L9 · owner-named intents are declared AND produced; TikTok lane]")
+const SM9 = { city: "Austin", state: "TX" }
+const fx = (t: string) => t.replace(/\{city\}/g, SM9.city)
+// One producer per owner-named source: its REAL parser on a fixture carrying that intent's evidence
+// (the source's own default keyword when it reads keywords; the portal CTA marker when it does not).
+const OWNER_PRODUCERS: Partial<Record<SourceKey, (i: AcquisitionIntent) => Array<{ intentType?: string | null; intentSignals?: string[] }>>> = {
+  realty_site_chatter: (i) => i === "sell"
+    ? parseSellerChatter(`<div class="make-me-move" data-user="Jane Roe"><span class="address">1 Main St</span></div>`, "zillow", { city: "Austin", state: "TX" } as any)
+    : parseContactAgentChatter(`<div class="contact-agent" data-user="Jane Roe"></div>`, "zillow", { city: "Austin", state: "TX" } as any),
+  facebook_marketplace: (i) => [normalizeFacebookMarketplaceListing({ id: `m-${i}`, marketplace_listing_title: fx(DEFAULT_SCRAPE_KEYWORDS.facebook_marketplace?.[i]?.[0] ?? ""), marketplace_listing_seller: { name: "Jane Roe" } }, SM9)],
+}
+const ownerPairs = (Object.entries(OWNER_REQUIRED_INTENTS) as Array<[SourceKey, readonly AcquisitionIntent[]]>).flatMap(([k, is]) => is.map((i) => [k, i] as const))
+const undeclared = ownerPairs.filter(([k, i]) => !SOURCE_ACQUISITION[k].intents.includes(i))
+check(`every owner-named (source, intent) is DECLARED in SOURCE_ACQUISITION — ${ownerPairs.length - undeclared.length}/${ownerPairs.length}`, undeclared.length === 0, undeclared.map(([k, i]) => `${k}.${i}`).join(", "))
+const unproducedOwner = ownerPairs.filter(([k, i]) => !(OWNER_PRODUCERS[k]?.(i) ?? []).some((r) => recordAcquisitionIntents(r).includes(i)))
+check(`every owner-named (source, intent) is PRODUCED by the source's own parser — ${ownerPairs.length - unproducedOwner.length}/${ownerPairs.length}`, unproducedOwner.length === 0, unproducedOwner.map(([k, i]) => `${k}.${i}`).join(", "))
+check("owner: site chatter carries SELL", SOURCE_ACQUISITION.realty_site_chatter.intents.includes("sell") && (OWNER_REQUIRED_INTENTS.realty_site_chatter ?? []).includes("sell"))
+check("owner: Marketplace carries buy + relocate + realtor_seeking (and keeps FSBO sell)", (["buy", "relocate", "realtor_seeking", "sell"] as AcquisitionIntent[]).every((i) => SOURCE_ACQUISITION.facebook_marketplace.intents.includes(i)))
+check("POSITIVE CONTROL: the buyer-only contact-agent parser does NOT produce sell (the old chatter could not)",
+  !parseContactAgentChatter(`<div class="contact-agent" data-user="Jane Roe"></div>`, "zillow", { city: "Austin", state: "TX" } as any).some((r) => recordAcquisitionIntents(r).includes("sell")))
+check("POSITIVE CONTROL: an anonymous seller CTA (no handle) mints nothing", parseSellerChatter(`<div class="make-me-move">Make Me Move</div>`, "zillow", { city: "Austin", state: "TX" } as any).length === 0)
+check("POSITIVE CONTROL: an agent-posted Marketplace listing is still damped, never read as a seeker",
+  (() => { const r = normalizeFacebookMarketplaceListing({ id: "x", marketplace_listing_title: "Just listed — call your Realtor", marketplace_listing_seller: { name: "Sam Agent" } }, SM9); return r.intentSignals.includes("agent_listing") && r.intentType === "seller" })())
+// TikTok lane
+check("TikTok: two Apify tasks with ≥2 candidates each (search → comments)", (ACTOR_REGISTRY.tiktok_search?.length ?? 0) >= 2 && (ACTOR_REGISTRY.tiktok_comments?.length ?? 0) >= 2)
+check("TikTok: SourceKey wired (vendor apify, own gate token, channel written, cost carried)",
+  SOURCE_VENDOR.tiktok_intent === "apify" && expandEnabledSources(["tiktok_intent"]).has("tiktok") && writesChannel(route, '"tiktok_intent"') && /enabledSources\.has\("tiktok"\) && market\.city/.test(route))
+{
+  const c = normalizeTikTokComment({ cid: "1", text: "we're moving to Austin next spring, need a realtor!", author: { uniqueId: "janeroe", nickname: "Jane Roe" } }, SM9)
+  check("TikTok comment → buyer-side relocator + realtor-seeker anchored on the handle", !!c && c.username === "janeroe" && recordAcquisitionIntents(c).includes("relocate") && recordAcquisitionIntents(c).includes("realtor_seeking"))
+  check("POSITIVE CONTROL: a no-intent comment mints nothing", normalizeTikTokComment({ cid: "2", text: "love this song 😍", author: { uniqueId: "x" } }, SM9) === null)
+}
+await (async () => {
+  const r = await sourceTikTokIntent({ city: null, state: "TX" }, ["moving to Austin"])
+  check("POSITIVE CONTROL: TikTok with no territory city makes no call and costs $0", r.records.length === 0 && r.cost === 0)
+})()
+
 // ── registration ─────────────────────────────────────────────────────────────
 console.log("\n[registration]")
 const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> }
@@ -259,7 +306,7 @@ check("guard runs it AFTER test:scrapers (ordering only)", guard.indexOf("npm ru
 check("MAINTENANCE_DOMAINS owns it with coOwners", /acquisition_coverage:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:acquisition-coverage",\s*coOwners:/.test(read("lib/kernel/manager-registry.ts")))
 
 console.log(`\n  denominators: ${KEYS.length} SourceKeys · ${cronKeys.length} cron · ${paidKeys.length} paid · ${channelled.length} channel-checked · ${paidCron.length} cost-checked`)
-console.log("  blind spots: route-shape checks are text over comment-stripped source (a renamed insertSocial helper would read as unwritten — fails LOUD, never silent); lead-intelligence's own meterVendorSpend rows keep descriptive usage_types (external_behavior_*), outside the SourceKey reconcile")
+console.log("  blind spots: route-shape checks are text over comment-stripped source (a renamed insertSocial helper would read as unwritten — fails LOUD, never silent); the owner-intent producers run the real parsers on fixtures, not live pages (lead-intelligence's acquisition rows joined the SourceKey reconcile in lane 83A — test:lead-demographics D6)")
 console.log(`\n${"─".repeat(50)}\n RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ❌ ACQUISITION_COVERAGE_FAIL"); process.exit(1) }
 console.log(" ✅ ACQUISITION_COVERAGE_PASS")

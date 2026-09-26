@@ -55,6 +55,12 @@ import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-terri
 import { recordMatchesTerritory } from "@/lib/lead-pipeline/source-intent-map"
 import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
 import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
+// Lane 83A — closes 82B's open item: lead intelligence's ACQUISITION spend (Nextdoor chatter, Google
+// intent, off-site property-view discovery) books through the per-source ledger (usage_type =
+// SourceKey), so the lead-cost reconcile (source-cost-ledger.ts::leadCostBySource) sees it instead
+// of descriptive usage_types outside every SourceKey. Enrichment reads (property_intelligence,
+// person_profile) are not acquisition sources and stay on meterVendorSpend.
+import { bookSourceSpend } from "@/lib/lead-pipeline/source-cost-ledger"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { collectError } from "@/lib/errors/collect-error"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
@@ -631,9 +637,9 @@ export async function scrapeSocialSignalsWithZenRows(
       customHeaders: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
     })
 
-    await meterVendorSpend({
-      vendorName: "zenrows", usageType: "nextdoor_chatter", cost: ZENROWS_CALL_COST_USD,
-      brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id, city: location.city, state: location.state },
+    await bookSourceSpend({
+      source: "nextdoor_intent", cost: ZENROWS_CALL_COST_USD, brokerageId, providerOverride: "zenrows",
+      systemSource: "lead_intelligence", metadata: { territoryId: territory.id, city: location.city, state: location.state },
     })
 
     if (!response.ok || response.data == null) {
@@ -2183,9 +2189,9 @@ export async function analyzeGoogleSearchIntent(
         num: 20,
       }) as any
 
-      await meterVendorSpend({
-        vendorName: "zenrows", usageType: "google_intent", cost: ZENROWS_CALL_COST_USD,
-        brokerageId: auth.brokerageId, systemSource: "lead_intelligence",
+      await bookSourceSpend({
+        source: "google_phrase_intent", cost: ZENROWS_CALL_COST_USD, brokerageId: auth.brokerageId,
+        providerOverride: "zenrows", systemSource: "lead_intelligence",
         metadata: { territoryId: territoryResult.territory.id, query },
       })
 
@@ -2702,15 +2708,15 @@ export async function scrapeExternalBehavior(
   try {
     // Scrape Zillow using Apify
     const zillowData = await apify.scrapeZillow(`${targetLocation.city}, ${targetLocation.state}`)
-    await meterVendorSpend({ vendorName: "apify", usageType: "external_behavior_zillow", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id } })
+    await bookSourceSpend({ source: "external_behavior", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, providerOverride: "apify", systemSource: "lead_intelligence", metadata: { territoryId: territory.id, site: "zillow" } })
 
     // Scrape Realtor.com using Apify
     const realtorData = await apify.scrapeRealtorDotCom(`${targetLocation.city}, ${targetLocation.state}`)
-    await meterVendorSpend({ vendorName: "apify", usageType: "external_behavior_realtor", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id } })
+    await bookSourceSpend({ source: "external_behavior", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, providerOverride: "apify", systemSource: "lead_intelligence", metadata: { territoryId: territory.id, site: "realtor" } })
 
     // Scrape Redfin using Apify
     const redfinData = await apify.scrapeRedfin(`${targetLocation.city}, ${targetLocation.state}`)
-    await meterVendorSpend({ vendorName: "apify", usageType: "external_behavior_redfin", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id } })
+    await bookSourceSpend({ source: "external_behavior", cost: APIFY_ACTOR_CALL_COST_USD, brokerageId: auth.brokerageId, providerOverride: "apify", systemSource: "lead_intelligence", metadata: { territoryId: territory.id, site: "redfin" } })
 
     // Track most viewed properties across all sites
     const allProperties = [...(zillowData || []), ...(realtorData || []), ...(redfinData || [])]
@@ -2731,7 +2737,7 @@ export async function scrapeExternalBehavior(
         ? await batchData.searchByAddress(property.address || "", targetLocation.city, targetLocation.state)
         : []
       if (behaviorAccess.allowed) {
-        await meterVendorSpend({ vendorName: "batchdata", usageType: "external_behavior_enrich", cost: BATCHDATA_LOOKUP_COST_USD, brokerageId: auth.brokerageId, systemSource: "lead_intelligence", metadata: { territoryId: territory.id, address: property.address } })
+        await bookSourceSpend({ source: "external_behavior", cost: BATCHDATA_LOOKUP_COST_USD, brokerageId: auth.brokerageId, providerOverride: "batchdata", systemSource: "lead_intelligence", metadata: { territoryId: territory.id, address: property.address, step: "enrich" } })
       }
 
       const propertyDetails = enrichedData[0] || {}

@@ -87,6 +87,14 @@ export type SourceKey =
   // territory who bought for CASH (the investor list PropStream/BatchData users build). BUYER-side,
   // DISTINCT from batchdata_buybox (demand matched to ONE listing) and from every seller lane.
   | 'batchdata_cash_buyer'
+  // Lane 83A (wave 83, owner verbatim: "since you are the social media expert, add tiktok scraping if
+  // you think it would be beneficial"). TikTok is a SEARCH ENGINE for movers and first-time buyers
+  // (Pew: ~6 in 10 adults under 30 use it; Realtor.com 2025: Gen Z/millennials research neighborhoods
+  // there before contacting an agent). The signal is in the COMMENTS under territory videos ("moving
+  // here in June, need a realtor", "how much would my house sell for?") — a two-hop Apify lane
+  // (territory keyword search → comments → commenter profile) in social-sourcer.ts::sourceTikTokIntent.
+  // DISTINCT from instagram_intent (hashtag posts by the poster) — never merged (CLAUDE.md §6).
+  | 'tiktok_intent'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -221,15 +229,20 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // ── Facebook Marketplace listing ─────────────────────────────────────────────
   // Structured listing with property details — higher quality than group posts.
   facebook_marketplace: {
-    intentType:                'seller',
-    leadType:                  'seller',
+    // Lane 83A (owner verbatim: "facebook marketplace include intent buy, relocate, realtor
+    // seeking") — no longer seller-only: the lane now also runs territory Marketplace SEARCHES for
+    // ISO / "looking to buy" / relocation / "need a realtor" posts, and the normalizer classifies
+    // each listing per record (social-sourcer.ts::classifyMarketplaceIntent). FSBO owner listings
+    // stay SELLER. identityPolicy enrichment_first: a buyer's ISO post carries no property address.
+    intentType:                'unknown',
+    leadType:                  'unknown',
     motivationType:            'marketplace_listing',
     behaviorType:              'property_listing',
     scoreRange:                [40, 70],
     baseScore:                 55,
-    boostSignals:              ['price_reduced', 'motivated', 'fsbo', 'owner', 'must_sell'],
+    boostSignals:              ['price_reduced', 'motivated', 'fsbo', 'owner', 'must_sell', 'iso', 'looking_to_buy', 'relocating', 'need_a_realtor', 'pre_approved'],
     dampSignals:               ['agent_listing', 'rental'],
-    identityPolicy:            'property_required',
+    identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
 
@@ -419,7 +432,10 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     behaviorType:              'contact_agent_chatter',
     scoreRange:                [40, 75],
     baseScore:                 55,
-    boostSignals:              ['contact_agent', 'request_info', 'saved_search', 'schedule_tour', 'get_pre_approved', 'buyer_alert_profile'],
+    // Lane 83A (owner verbatim: "site chatter includes intent seller") — the SELL-side CTAs the same
+    // portal pages expose (Zillow "Make Me Move", owner-claimed homes, home-valuation requests,
+    // "sell with an agent" forms) are read by scraper-parsers.ts::parseSellerChatter.
+    boostSignals:              ['contact_agent', 'request_info', 'saved_search', 'schedule_tour', 'get_pre_approved', 'buyer_alert_profile', 'make_me_move', 'home_valuation_request', 'owner_claimed_home', 'sell_with_agent', 'coming_soon'],
     dampSignals:               ['agent_landing_page', 'no_form'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
@@ -703,6 +719,23 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── TikTok intent (lane 83A) — territory video COMMENTS classified per comment ───────────
+  // buyer / relocation / seller / realtor-seeking, resolved per record by
+  // social-sourcer.ts::normalizeTikTokComment. The commenter's handle is the identity anchor
+  // (social-identity-resolve.ts builds https://www.tiktok.com/@handle for PDL's profile match).
+  tiktok_intent: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'social_intent',
+    behaviorType:              'social_comment_intent',
+    scoreRange:                [30, 60],
+    baseScore:                 40,
+    boostSignals:              ['moving_to', 'relocating', 'looking_to_buy', 'first_home', 'pre_approved', 'need_a_realtor', 'selling', 'how_much_is_my_home_worth'],
+    dampSignals:               ['just_browsing', 'agent_promo', 'no_location'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
 }
 
 /**
@@ -810,6 +843,9 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   // unresolvable. The CHANNEL stays distinct on raw_scraped_leads — only scoring/vendor resolve here.
   batchdata_incremental: "batchdata_motivated",
   cash_buyer: "batchdata_cash_buyer",
+  // Lane 83A — TikTok comment intent.
+  tiktok: "tiktok_intent",
+  tiktok_comments: "tiktok_intent",
   craigslist_iso: "craigslist_wanted",
   google: "google_phrase_intent",
   rental: "rental_listing",
@@ -926,6 +962,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   // serves any given call.
   review_acquisition_intent: 'zenrows',
   batchdata_cash_buyer:      'batchdata', // lane 82B — Property Search on the 'cash-buyer' quickList
+  tiktok_intent:             'apify',     // lane 83A — Apify TikTok search + comments actors (apify-actors.ts)
 }
 
 /**
@@ -992,7 +1029,19 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   rental_to_buyer_graduation: 'rental_to_buyer_graduation',
   review_acquisition_intent: 'review_acquisition_intent',
   batchdata_cash_buyer:      'batchdata_cash_buyer',
+  tiktok_intent:             'tiktok',
 }
+
+/**
+ * Lane 83A (wave 83, owner verbatim: "marketplace and cashbuyer should be turned on.") — THE ONE
+ * default source list a market runs when it has never been configured. Read by the cron's fallback
+ * (app/api/cron/lead-scraping/route.ts), the admin markets panel (DEFAULT_ENABLED_SOURCES display),
+ * and createScrapingMarket (app/actions/lead-scraping-config.ts) which stamps it on every new market.
+ * The DB column default carries the same list once m662 is applied
+ * (supabase/migrations/m662-marketplace-and-cash-buyer-on-by-default.sql) — the guard
+ * (scripts/scrape-keywords-guard.ts) holds the two in agreement.
+ */
+export const DEFAULT_MARKET_SOURCES: readonly SourceKey[] = ['batchdata_motivated', 'facebook_marketplace', 'batchdata_cash_buyer']
 
 /**
  * Builds the set the cron tests with `enabledSources.has(...)`. For each configured

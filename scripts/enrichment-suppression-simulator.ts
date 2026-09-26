@@ -695,8 +695,10 @@ function freeOsintLaneLayer() {
 
   console.log("\n[source · every result says which lane produced it]")
   check("the queue result carries a lane stamp", /lane:\s*plan\.label/.test(drain))
+  // Lane 83A: when BatchData supplied the contact points and PeopleData the profile, the label names
+  // both legs (`batchdata_skip_trace+peopledata`) — still the lane, never a hardcoded vendor.
   check("leads.enrichment_provider records the lane, not a hardcoded vendor",
-    /enrichment_provider:\s*plan\.label/.test(drain))
+    /enrichment_provider:\s*(contactPointsProvider \? `\$\{contactPointsProvider\}\+\$\{plan\.label\}` : )?plan\.label/.test(drain))
   check("a budget-withheld row is marked withheld, NOT completed",
     /person_enrichment:\s*'withheld_budget'/.test(drain) && /status:\s*'skipped'/.test(drain))
   check("a free-only row states the person lane was not applicable",

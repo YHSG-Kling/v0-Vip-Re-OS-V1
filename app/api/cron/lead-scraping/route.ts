@@ -36,7 +36,12 @@ import {
   sourceRealtySiteChatter,
   sourceNewConstructionIntent,
   sourceFacebookMarketplace,
+  sourceTikTokIntent,
+  normalizeNextdoorPost,
 } from "@/lib/lead-pipeline/social-sourcer"
+// Lane 83A — the ONE keyword resolver: code defaults per population per territory + the market's own
+// brokerage's lead_scraping_keywords rows (scrape-keywords.ts).
+import { resolveSourceKeywords, renderKeywordQuery, type ScrapeKeywordRow } from "@/lib/lead-pipeline/scrape-keywords"
 import { sourcePermitPrelistingIntent, routePermitPrelistingHits } from "@/lib/lead-pipeline/permit-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
@@ -54,7 +59,7 @@ import {
   isViableRecord,
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { buildTerritoryPhrases, expandEnabledSources } from "@/lib/lead-pipeline/source-intent-map"
+import { buildTerritoryPhrases, expandEnabledSources, DEFAULT_MARKET_SOURCES } from "@/lib/lead-pipeline/source-intent-map"
 // Lane 82B — every scrape's spend books PER SOURCE on the platform ledger through the ONE
 // source→vendor contract (source-intent-map.ts::SOURCE_VENDOR via source-cost-ledger.ts), which
 // itself rides meterVendorSpend. The composite "apify_social" row is gone (see the social block).
@@ -176,8 +181,16 @@ export async function GET(request: Request) {
     }
     const markets = territoryResolution.territories
 
-    // Get active keywords
-    const { data: keywords } = await supabase.from("lead_scraping_keywords").select("*").eq("is_active", true)
+    // Brokerage keyword rows (lane 83A). Each territory reads ONLY its own brokerage's rows, ON TOP of
+    // the code defaults (scrape-keywords.ts::resolveSourceKeywords) — so a platform with zero rows
+    // (measured live 2026-09-26: 0) still runs every keyword lane with a correct, intent-specific set.
+    // A refused read is reported, never read as "no keywords" silently; the defaults still run.
+    const { data: keywordRows, error: keywordReadError } = await supabase
+      .from("lead_scraping_keywords")
+      .select("brokerage_id, keyword, keyword_type, sources, weight, is_active")
+      .eq("is_active", true)
+    if (keywordReadError) results.errors.push(`lead_scraping_keywords read refused (code defaults still run): ${keywordReadError.message}`)
+    const keywords = (keywordRows ?? []) as ScrapeKeywordRow[]
 
     // ── SMART SEARCH ACCOUNT-WIDE CAP (wave 66 fix) ───────────────────────────
     // BatchData caps Property Subscription at 5 PER ACCOUNT, not per market — the
@@ -234,7 +247,7 @@ export async function GET(request: Request) {
       // STEP 4 — Resolve the set of enabled sources for this territory. Expanded
       // through GATE_TOKEN so the gate matches whether the DB stored short names
       // ("facebook"), canonical keys ("facebook_group"), or aliases ("zillow").
-      const enabledSources = expandEnabledSources(market.enabled_sources ?? ["batchdata_motivated"])
+      const enabledSources = expandEnabledSources(market.enabled_sources ?? [...DEFAULT_MARKET_SOURCES])
 
       // ── FREE RUNGS FIRST (wave 82 lane A) ───────────────────────────────────
       // Owner verbatim (wave 82): "osint is supposed to be a free provider for intent behavior
@@ -737,13 +750,14 @@ export async function GET(request: Request) {
         enabledSources.has("new_construction_intent") ||
         enabledSources.has("permit_prelisting_intent") ||
         enabledSources.has("review_acquisition_intent") ||
-        enabledSources.has("facebook_marketplace")
+        enabledSources.has("facebook_marketplace") ||
+        enabledSources.has("tiktok")
 
       // Lane 82B — AUTONOMY FIX: this block used to require configured lead_scraping_keywords, so a
       // platform with no keyword rows silently ran NONE of the territory-derived lanes below that
       // never read a keyword (Exa, Tavily, reddit_relocation, agent_seeking, new_construction,
       // permit, review, realty_chatter, LinkedIn, Google, rental, Marketplace). Keyword lanes still
-      // gate on their own keywordsBySource entry; everything else runs on the territory alone.
+      // gate on their own resolved keyword set (lane 83A: code defaults per territory — scrape-keywords.ts); everything else runs on the territory alone.
       if (socialSourcesEnabled) {
         // STEP 5 — open scraper_executions record
         const { data: execRecord } = await supabase
@@ -797,51 +811,40 @@ export async function GET(request: Request) {
             started_at: new Date().toISOString(),
           })
 
-          // Group keywords by source
-          const keywordsBySource: Record<string, string[]> = {}
-          for (const kw of keywords ?? []) {
-            for (const source of kw.sources || []) {
-              if (!keywordsBySource[source]) keywordsBySource[source] = []
-              keywordsBySource[source].push(kw.keyword)
-            }
+          // Lane 83A — per-territory keyword sets (defaults ∪ this brokerage's rows), one per
+          // keyword-reading source. Replaces `keywordsBySource`, which grouped EVERY brokerage's rows
+          // and gated each lane on a row existing (0 rows live ⇒ none of these lanes ever ran).
+          const kwMarket = { city: market.city, state: market.state, brokerage_id: market.brokerage_id }
+          const kw = {
+            nextdoor:    resolveSourceKeywords("nextdoor_intent", kwMarket, keywords),
+            facebook:    resolveSourceKeywords("facebook_group", kwMarket, keywords),
+            marketplace: resolveSourceKeywords("facebook_marketplace", kwMarket, keywords),
+            instagram:   resolveSourceKeywords("instagram_intent", kwMarket, keywords),
+            reddit:      resolveSourceKeywords("reddit_intent", kwMarket, keywords),
+            clForSale:   resolveSourceKeywords("craigslist_fsbo", kwMarket, keywords),
+            clWanted:    resolveSourceKeywords("craigslist_wanted", kwMarket, keywords),
+            tiktok:      resolveSourceKeywords("tiktok_intent", kwMarket, keywords),
           }
 
           // motivatedParams carries facebook_group_urls and reddit_subreddits from DB
           const motivatedParams = market.lead_scraping_motivated_params?.[0]
 
           // STEP 4 gate + STEP 7 geography from market record
-          if (enabledSources.has("nextdoor") && keywordsBySource["nextdoor"]) {
+          if (enabledSources.has("nextdoor") && kw.nextdoor.terms.length > 0) {
             const nextdoorUrl = `https://nextdoor.com/search/?query=${encodeURIComponent(
-              keywordsBySource["nextdoor"].slice(0, 3).join(" OR "),
+              renderKeywordQuery("nextdoor_intent", kw.nextdoor.terms),
             )}&location=${encodeURIComponent(`${market.city}, ${market.state}`)}`
 
             const scraped = await zenrows.scrapeNextdoor(nextdoorUrl)
             sourceCostUsd += scraped.cost ?? 0
             addSocialSpend("nextdoor", scraped.cost ?? 0)
             if (scraped.success && scraped.posts) {
+              // The population comes from the MATCHED keyword (social-sourcer.ts::normalizeNextdoorPost);
+              // was `keyword_type === "buying_intent" ? "buyer" : "seller"` — a value the CHECK refuses.
               const ndRecords: NormalizedScrapedRecord[] = []
               for (const post of scraped.posts) {
-                const matchedKeyword = (keywords ?? []).find(
-                  (kw) =>
-                    kw.sources?.includes("nextdoor") && post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
-                )
-                if (matchedKeyword && matchedKeyword.weight >= 3) {
-                  const nameParts = ((post as any).author_name ?? "").split(" ")
-                  ndRecords.push({
-                    sourceRecordId:  `nextdoor-${(post as any).post_id ?? `${Date.now()}-${Math.random()}`}`,
-                    source:          "nextdoor",
-                    behaviorType:    "social_intent",
-                    intentType:      matchedKeyword.keyword_type === "buying_intent" ? "buyer" : "seller",
-                    intentSignals:   [matchedKeyword.keyword],
-                    firstName:       nameParts[0] || null,
-                    lastName:        nameParts.slice(1).join(" ") || null,
-                    city:            market.city,
-                    state:           market.state,
-                    motivationScore: matchedKeyword.weight * 20,
-                    sourceUrl:       nextdoorUrl,
-                    rawPayload:      { post, matched_keyword: matchedKeyword.keyword },
-                  })
-                }
+                const rec = normalizeNextdoorPost(post as Record<string, any>, { city: market.city, state: market.state }, kw.nextdoor, nextdoorUrl)
+                if (rec) ndRecords.push(rec)
               }
               const { inserted: ndInserted } = await insertRawBatch({
                 records: ndRecords, marketId: market.id,
@@ -874,12 +877,12 @@ export async function GET(request: Request) {
           }
 
           // ── Facebook groups (Apify) ──────────────────────────────────────────
-          if (enabledSources.has("facebook") && keywordsBySource["facebook"]) {
+          if (enabledSources.has("facebook") && kw.facebook.terms.length > 0) {
             const groupUrls: string[] = motivatedParams?.facebook_group_urls?.length
               ? motivatedParams.facebook_group_urls
               : [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, "")}realestate`]
             for (const groupUrl of groupUrls) {
-              const { records, cost } = await sourceFacebook(groupUrl, keywordsBySource["facebook"], socialMarket)
+              const { records, cost } = await sourceFacebook(groupUrl, kw.facebook.terms, socialMarket)
               sourceCostUsd += cost
               await insertSocial(records, "facebook", "social_intent", cost)
             }
@@ -889,24 +892,26 @@ export async function GET(request: Request) {
           // Territory-centric by construction: the actor is handed the market city's own
           // Marketplace category URL; no city ⇒ no scrape.
           if (enabledSources.has("facebook_marketplace") && market.city) {
-            const { records, cost } = await sourceFacebookMarketplace(market.city, socialMarket)
+            // Lane 83A — property-for-sale category (FSBO sellers) + the territory's buyer / relocation /
+            // realtor-seeking Marketplace searches in the SAME actor run.
+            const { records, cost } = await sourceFacebookMarketplace(market.city, socialMarket, kw.marketplace.terms)
             sourceCostUsd += cost
             await insertSocial(records, "facebook_marketplace", "social_intent", cost)
           }
 
           // ── Instagram (Apify) — real-estate hashtags, buyer + seller intent ──
-          if (enabledSources.has("instagram") && keywordsBySource["instagram"]) {
-            const { records, cost } = await sourceInstagram(keywordsBySource["instagram"], socialMarket)
+          if (enabledSources.has("instagram") && kw.instagram.terms.length > 0) {
+            const { records, cost } = await sourceInstagram(kw.instagram.terms, socialMarket)
             sourceCostUsd += cost
             await insertSocial(records, "instagram", "social_intent", cost)
           }
 
           // ── Reddit communities (Apify) ───────────────────────────────────────
-          if (enabledSources.has("reddit") && keywordsBySource["reddit"]) {
+          if (enabledSources.has("reddit") && kw.reddit.terms.length > 0) {
             const subreddits: string[] = motivatedParams?.reddit_subreddits?.length
               ? motivatedParams.reddit_subreddits
               : [`${market.city.toLowerCase().replace(/\s+/g, "")}realestate`, "FirstTimeHomeBuyer", "moving"]
-            const { records, cost } = await sourceReddit(subreddits, keywordsBySource["reddit"], socialMarket)
+            const { records, cost } = await sourceReddit(subreddits, kw.reddit.terms, socialMarket)
             sourceCostUsd += cost
             await insertSocial(records, "reddit", "social_intent", cost)
           }
@@ -914,14 +919,16 @@ export async function GET(request: Request) {
           // ── Craigslist (Apify) — for-sale (seller FSBO) + housing-wanted (buyer) ─
           // Two DISTINCT capabilities (owner ruling: never fold two sources into one) —
           // separate channels so each keeps its own attribution downstream.
-          if (enabledSources.has("craigslist") && keywordsBySource["craigslist"] && market.city) {
+          if (enabledSources.has("craigslist") && market.city) {
+            // Lane 83A — Craigslist ANDs space-joined words; each lane now sends its own OR query
+            // (`"by owner" | "fsbo" | …`) built from its resolved per-population keyword set.
             const forSale = await sourceCraigslist(
-              market.city, keywordsBySource["craigslist"].slice(0, 3).join(" "), socialMarket,
+              market.city, renderKeywordQuery("craigslist_fsbo", kw.clForSale.terms), socialMarket,
             )
             sourceCostUsd += forSale.cost
             await insertSocial(forSale.records, "craigslist", "social_intent", forSale.cost)
             // Buyer intent: "housing wanted" / ISO posts.
-            const wanted = await sourceCraigslistWanted(market.city, socialMarket)
+            const wanted = await sourceCraigslistWanted(market.city, socialMarket, renderKeywordQuery("craigslist_wanted", kw.clWanted.terms))
             sourceCostUsd += wanted.cost
             await insertSocial(wanted.records, "craigslist_wanted", "social_intent", wanted.cost)
           }
@@ -972,6 +979,15 @@ export async function GET(request: Request) {
             const { records, cost } = await sourceTavilyIntent(socialMarket)
             sourceCostUsd += cost
             await insertSocial(records, "tavily", "social_intent", cost)
+          }
+
+          // ── TikTok intent (Apify, lane 83A) — territory video search → comment intent ──────
+          // Two hops (social-sourcer.ts::sourceTikTokIntent), territory keyword set only; spend
+          // books per source (insertSocial → addSocialSpend → bookSourceSpend, SOURCE_VENDOR apify).
+          if (enabledSources.has("tiktok") && market.city && kw.tiktok.terms.length > 0) {
+            const { records, cost } = await sourceTikTokIntent(socialMarket, kw.tiktok.terms)
+            sourceCostUsd += cost
+            await insertSocial(records, "tiktok_intent", "social_intent", cost)
           }
 
           // ── WAVE 65 LANES (owner ruling 2026-09-15) — each a DISTINCT capability with its
@@ -1214,7 +1230,7 @@ export async function GET(request: Request) {
       const geosByQuicklist = new Map<string, Array<{ marketId: string; priority: number; city: string | null; state: string; zip: string | null }>>()
       for (const m of markets) {
         if ((m.spend_this_month ?? 0) >= (m.monthly_budget_usd ?? 100)) continue
-        const mSources = expandEnabledSources(m.enabled_sources ?? ["batchdata_motivated"])
+        const mSources = expandEnabledSources(m.enabled_sources ?? [...DEFAULT_MARKET_SOURCES])
         if (!mSources.has("batchdata_motivated")) continue
         const mMotivated = m.lead_scraping_motivated_params?.[0]
         if (!mMotivated?.is_active) continue

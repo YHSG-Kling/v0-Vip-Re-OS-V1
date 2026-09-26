@@ -33,6 +33,10 @@ export interface BookSourceSpendInput {
   /** The provider that actually served the call, when the caller knows it (ZenRows vs Zyte). */
   providerOverride?: string | null
   unitCount?: number
+  /** Lane 83A — the door that spent (default "lead_scraping"; lead intelligence books "lead_intelligence"). */
+  systemSource?: string
+  /** Lane 83A — extra audit context kept beside the source keys (territory id, query, site). */
+  metadata?: Record<string, unknown>
 }
 
 /** PURE — the ledger row bookSourceSpend would write (exported for the coverage guard). */
@@ -60,8 +64,9 @@ export async function bookSourceSpend(
       cost: input.cost,
       unitCount: input.unitCount,
       brokerageId: input.brokerageId,
-      systemSource: "lead_scraping",
+      systemSource: input.systemSource ?? "lead_scraping",
       metadata: {
+        ...(input.metadata ?? {}),
         market_id: input.marketId ?? null,
         source: input.source,
         source_key: plan.usageType,

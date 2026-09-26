@@ -55,7 +55,17 @@ export interface PeopleDataEnrichment {
   workPhone?: string
   age?: number
   ageRange?: string
+  /** Lane 83A — PDL birth_year (the source of age / ageRange). */
+  birthYear?: number
   gender?: string
+  /** Lane 83A — PDL inferred_salary (the person's salary band, NOT household income). */
+  inferredSalary?: string
+  jobTitleRole?: string
+  jobTitleLevels?: string[]
+  jobStartDate?: string
+  metro?: string
+  locationHistory?: string[]
+  interests?: string[]
   city?: string
   state?: string
   country?: string
@@ -161,14 +171,48 @@ export async function skipTraceWithPeopleData(params: {
     }
   }
 
-  const person = data.data
+  return {
+    // PDL returns `likelihood` on the RESPONSE envelope, beside `data` — not inside the person.
+    data: mapPeopleDataPerson(data.data, { name: params.name, likelihood: (data as any).likelihood }),
+    cost: PEOPLEDATA_MATCH_COST_USD,
+  }
+}
 
+/** PURE — PDL birth_year / birth_date → whole years at `now` (null when PDL returned neither). */
+export function pdlAgeFromBirth(birthYear: unknown, birthDate: unknown, now: Date = new Date()): number | null {
+  const y = typeof birthYear === 'number' ? birthYear
+    : typeof birthDate === 'string' && /^\d{4}/.test(birthDate) ? Number(birthDate.slice(0, 4))
+    : null
+  if (!y || y < 1900 || y > now.getUTCFullYear()) return null
+  return now.getUTCFullYear() - y
+}
+
+/** PURE — the cohort band the persona / reel-brief readers parse ("35-44"). */
+export function ageRangeForAge(age: number | null | undefined): string | undefined {
+  if (age == null || !Number.isFinite(age)) return undefined
+  const bands: Array<[number, number]> = [[18, 24], [25, 34], [35, 44], [45, 54], [55, 64], [65, 74]]
+  for (const [lo, hi] of bands) if (age >= lo && age <= hi) return `${lo}-${hi}`
+  return age >= 75 ? '75+' : undefined
+}
+
+/**
+ * PURE — one PDL person record → PeopleDataEnrichment. Lane 83A: reads the fields PDL's person
+ * schema ACTUALLY carries (docs.peopledatalabs.com person-data-field-bundles, 2026-09-26):
+ * birth_year / birth_date (→ age, age_range), sex (→ gender), inferred_salary, location_locality /
+ * location_region / location_postal_code / location_street_address / location_metro /
+ * location_names, inferred_years_experience, job_title_role / job_title_levels / job_start_date,
+ * interests. The old mapping read age / age_range / gender / location_city / location_state /
+ * experience_years — names the PDL schema does not have — so those "demographics" were always
+ * empty; they stay as fallbacks for a payload that does carry them.
+ */
+export function mapPeopleDataPerson(person: any, params: { name?: string; likelihood?: number } = {}, now: Date = new Date()): PeopleDataEnrichment {
   // Derive verification flags up-front so callers (canonical lead-eligibility gate, AI-ISA channel
   // resolver) have what they need. PDL returns `likelihood` 1-10 — treat ≥7 as a strong identity
   // match. Email is "verified-as-real-person-email" when a matching/personal email surfaces on the
   // matched profile; mailing address is verified when PDL returns a structured street address with
   // city + state (street_addresses[0] preferred, location_* fallback).
-  const likelihood = typeof person.likelihood === 'number' ? person.likelihood : 0
+  const likelihood = typeof params.likelihood === 'number' ? params.likelihood
+    : typeof person.likelihood === 'number' ? person.likelihood : 0
   const pdlEmailList: any[] = Array.isArray(person.emails) ? person.emails : []
   const pdlPersonalEmails = pdlEmailList
     .map(e => typeof e === 'string' ? { address: e, type: undefined } : e)
@@ -184,9 +228,10 @@ export async function skipTraceWithPeopleData(params: {
     ?? undefined
   const hasStructuredAddress =
     !!streetAddress &&
-    !!(person.location_city  ?? primaryStreet?.locality)  &&
-    !!(person.location_state ?? primaryStreet?.region)
+    !!(person.location_locality ?? person.location_city  ?? primaryStreet?.locality)  &&
+    !!(person.location_region   ?? person.location_state ?? primaryStreet?.region)
   const mailingAddressVerified = likelihood >= 6 && hasStructuredAddress
+  const age = pdlAgeFromBirth(person.birth_year, person.birth_date, now)
 
   const enrichment: PeopleDataEnrichment = {
     peopledataId: person.id ?? undefined,
@@ -198,18 +243,29 @@ export async function skipTraceWithPeopleData(params: {
     phones: person.phone_numbers || [],
     mobilePhone: person.mobile_phone,
     workPhone: person.work_phone,
-    age: person.age,
-    ageRange: person.age_range,
-    gender: person.gender,
-    city: person.location_city,
-    state: person.location_state,
+    age: typeof person.age === 'number' ? person.age : (age ?? undefined),
+    ageRange: person.age_range ?? ageRangeForAge(typeof person.age === 'number' ? person.age : age),
+    birthYear: typeof person.birth_year === 'number' ? person.birth_year : undefined,
+    gender: person.sex ?? person.gender,
+    city: person.location_locality ?? person.location_city,
+    state: person.location_region ?? person.location_state,
     country: person.location_country,
     zipCode: person.location_postal_code,
-    address: person.location_address,
+    address: person.location_street_address ?? person.location_address,
+    metro: person.location_metro ?? undefined,
+    // location_names = every place PDL has seen the person — a mover's history (relocation signal).
+    locationHistory: Array.isArray(person.location_names) ? person.location_names : undefined,
     currentEmployer: person.job_company_name,
     currentTitle: person.job_title,
+    jobTitleRole: person.job_title_role ?? undefined,
+    jobTitleLevels: Array.isArray(person.job_title_levels) ? person.job_title_levels : undefined,
+    jobStartDate: person.job_start_date ?? undefined,
     currentIndustry: person.industry,
-    yearsOfExperience: person.experience_years,
+    yearsOfExperience: person.inferred_years_experience ?? person.experience_years,
+    // PDL's inferred_salary is the PERSON's salary band ("70,000-85,000"), never a household income —
+    // kept under its own name; household_income stays whatever a payload actually labels household.
+    inferredSalary: person.inferred_salary ?? undefined,
+    interests: Array.isArray(person.interests) ? person.interests : undefined,
     education: person.education?.map((edu: any) => ({
       school: edu.school?.name,
       degree: edu.degree,
@@ -232,17 +288,14 @@ export async function skipTraceWithPeopleData(params: {
     facebookUrl: person.facebook_url,
     twitterUrl: person.twitter_url,
     githubUrl: person.github_url,
-    enrichmentConfidence: person.likelihood / 10,
+    enrichmentConfidence: likelihood / 10,
     dataQualityScore: person.data_quality_score || 75,
     emailVerified,
     mailingAddressVerified,
     streetAddress,
   }
 
-  return {
-    data: enrichment,
-    cost: PEOPLEDATA_MATCH_COST_USD,
-  }
+  return enrichment
 }
 
 /**

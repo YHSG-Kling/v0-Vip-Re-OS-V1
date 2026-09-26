@@ -403,6 +403,63 @@ export function parseContactAgentChatter(html: string, site: string, market: Mar
   return records.filter(isViableRecord)
 }
 
+/**
+ * Lane 83A (owner verbatim: "on the acquisition coverage.ts site chatter includes intent seller") —
+ * the SELL-side chatter the same portal market page exposes, a DISTINCT DOM signal from the buyer
+ * CTAs above: Zillow "Make Me Move" / owner-claimed ("owner updated") homes, "what's my home worth"
+ * valuation requests, "sell with an agent" / seller-consult forms, and owner-posted "coming soon"
+ * cards. Same honesty rule: a block is a record only when it carries a usable handle or an owner
+ * name; an anonymous CTA is page furniture, never a person.
+ */
+const SELLER_CHATTER_SIGNAL: Array<[RegExp, string]> = [
+  [/make[- ]?me[- ]?move|makeMeMove/i, "make_me_move"],
+  [/home[- ]?value|home[- ]?valuation|zestimate[- ]?request|what'?s[- ]my[- ]home[- ]worth/i, "home_valuation_request"],
+  [/owner[- ]?(claimed|updated|dashboard)|claim[- ]?(your|this)?[- ]?home/i, "owner_claimed_home"],
+  [/sell[- ]?(with|your)[- ]?(an[- ]?agent|home)|seller[- ]?(consult|lead|form)/i, "sell_with_agent"],
+  [/coming[- ]?soon/i, "coming_soon"],
+]
+
+export function parseSellerChatter(html: string, site: string, market: MarketGeo): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+  $(
+    '[class*="make-me-move"], [class*="makeMeMove"], [class*="home-value"], [class*="homeValue"], ' +
+    '[class*="home-valuation"], [class*="owner-claimed"], [class*="owner-updated"], [class*="claim-home"], ' +
+    '[class*="sell-with"], [class*="seller-consult"], [class*="seller-lead"], [class*="coming-soon"], ' +
+    '[data-testid*="make-me-move"], [data-testid*="home-value"], [data-testid*="owner"]',
+  ).each((i, el) => {
+    const block = $(el)
+    const marker = `${block.attr("class") ?? ""} ${block.attr("data-testid") ?? ""} ${block.text().slice(0, 200)}`
+    const signals = SELLER_CHATTER_SIGNAL.filter(([re]) => re.test(marker)).map(([, s]) => s)
+    if (signals.length === 0) return
+    const handle =
+      block.attr("data-user") ||
+      block.attr("data-owner") ||
+      block.find('[class*="owner"], [class*="user"], [class*="member"], [class*="author"], [class*="name"]').first().text().trim() ||
+      ""
+    if (!handle) return
+    const propertyAddress = block.find('[class*="address"], [class*="home-address"]').first().text().trim() || null
+    const nameParts = handle.split(/\s+/).filter(Boolean)
+    records.push({
+      sourceRecordId: `${site}-seller-chatter-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      source: site,
+      behaviorType: "seller_chatter",
+      intentType: "seller",
+      intentSignals: ["selling", ...signals],
+      firstName: nameParts.length >= 2 ? nameParts[0] : null,
+      lastName: nameParts.length >= 2 ? nameParts.slice(1).join(" ") : null,
+      username: handle || undefined,
+      propertyAddress,
+      city: market.city,
+      state: market.state,
+      motivationScore: signals.includes("make_me_move") ? 62 : 55,
+      sourceUrl: null,
+      rawPayload: { handle, propertyAddress, signals },
+    })
+  })
+  return records.filter(isViableRecord)
+}
+
 // NOTE: expired/withdrawn listings are now sourced from BatchData (the 'expired' motivation
 // trigger → quickList 'expired-listing'), tagged by normalizeBatchDataRecord above. The old
 // portal-HTML expired parser was consolidated away so expired has a single, structured source.

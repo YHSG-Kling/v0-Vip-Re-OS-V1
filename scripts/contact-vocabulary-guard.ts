@@ -460,7 +460,12 @@ check("POSITIVE CONTROL — the tier finder rejects a tier the vocabulary does n
   check("POSITIVE CONTROL — a write naming only one column is NOT flagged", controlGood === false)
 
   const bandWriter = join(ROOT, "app/actions/credit-copilot.ts")
-  const rangeWriter = join(ROOT, "lib/lead-pipeline/enrichment-orchestrator.ts")
+  // Lane 83A: the PeopleData profile object moved to THE ONE builder
+  // (enrichment-column-map.ts::buildPeopleDataProfile), which the orchestrator and the raw-record
+  // path both call — the writer of credit_score_range is that builder now.
+  const rangeWriter = join(ROOT, "lib/lead-pipeline/enrichment-column-map.ts")
+  check("the orchestrator builds its PeopleData profile through that builder",
+    /buildPeopleDataProfile\(enriched\)/.test(stripComments(readFileSync(join(ROOT, "lib/lead-pipeline/enrichment-orchestrator.ts"), "utf8"))))
   const bandSrc = stripComments(readFileSync(bandWriter, "utf8"))
   const rangeSrc = stripComments(readFileSync(rangeWriter, "utf8"))
   check("the AGENT-TRACKED writer (credit-copilot.ts) writes credit_score_band",

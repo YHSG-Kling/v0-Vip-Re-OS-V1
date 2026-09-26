@@ -149,17 +149,62 @@ export async function scrapeLinkedInPosts(params: {
  */
 export async function scrapeFacebookMarketplaceListings(params: {
   city: string
+  /** Lane 83A — territory searches (buyer / relocation / realtor-seeking terms), same city slug. */
+  queries?: readonly string[]
   limit?: number
 }): Promise<{ listings: any[]; cost: number }> {
   const slug = params.city.toLowerCase().replace(/[^a-z0-9]/g, '')
   if (!slug) return { listings: [], cost: 0 }
+  const searchUrls = (params.queries ?? [])
+    .map((q) => q.trim()).filter(Boolean)
+    .map((q) => ({ url: `https://www.facebook.com/marketplace/${slug}/search?query=${encodeURIComponent(q)}` }))
   const result = await runApifyTask('facebook_marketplace', {
-    startUrls: [{ url: `https://www.facebook.com/marketplace/${slug}/propertyforsale` }],
+    startUrls: [{ url: `https://www.facebook.com/marketplace/${slug}/propertyforsale` }, ...searchUrls],
     resultsLimit: params.limit || 50,
     includeListingDetails: true,
     forSaleOnly: true,
   })
   return { listings: result.data, cost: result.cost }
+}
+
+/**
+ * Lane 83A — TikTok hop 1: territory keyword search → videos. Both candidates' input names are
+ * sent (`keywords` + `maxResultsPerKeyword` for memo23, `searchQueries` + `maxVideosPerQuery` for
+ * devcake/xmolodtsov). Comments are NOT scraped here (the dearer hop runs only on the top videos).
+ */
+export async function scrapeTikTokSearch(params: {
+  queries: readonly string[]
+  perQuery?: number
+}): Promise<{ videos: any[]; cost: number }> {
+  const queries = params.queries.map((q) => q.trim()).filter(Boolean)
+  if (queries.length === 0) return { videos: [], cost: 0 }
+  const per = params.perQuery || 10
+  const result = await runApifyTask('tiktok_search', {
+    keywords: queries,
+    maxResultsPerKeyword: per,
+    searchQueries: queries,
+    maxVideosPerQuery: per,
+    scrapeComments: false,
+  })
+  return { videos: result.data, cost: result.cost }
+}
+
+/** Lane 83A — TikTok hop 2: comments on the territory's top videos (`videoUrls` / `postUrls`). */
+export async function scrapeTikTokComments(params: {
+  videoUrls: readonly string[]
+  perVideo?: number
+}): Promise<{ comments: any[]; cost: number }> {
+  const urls = params.videoUrls.filter(Boolean)
+  if (urls.length === 0) return { comments: [], cost: 0 }
+  const per = params.perVideo || 100
+  const result = await runApifyTask('tiktok_comments', {
+    videoUrls: urls,
+    maxCommentsPerVideo: per,
+    postUrls: urls,
+    maxCommentsPerPost: per,
+    includeReplies: false,
+  })
+  return { comments: result.data, cost: result.cost }
 }
 
 export async function scrapeGoogleSearchResults(params: {

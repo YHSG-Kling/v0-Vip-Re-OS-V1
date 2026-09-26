@@ -8,7 +8,7 @@ import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
 import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
 import {
-  peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns,
+  peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns, buildPeopleDataProfile,
   batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
 } from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
@@ -34,6 +34,13 @@ import {
 } from '@/lib/external/osint-free'
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+/**
+ * Lane 83A (wave 83, owner verbatim: "we need the richer demographics for raw leads and leads,
+ * etc") — a row whose CONTACT POINTS BatchData matched still buys the PeopleData person PROFILE
+ * (demographics). Reverses lane 81B's profile-skip. scripts/lead-demographics-guard.ts pins it on.
+ */
+export const DEMOGRAPHICS_AFTER_CONTACT_MATCH = true
+
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
 // clients), and a static import here would pull that into every module graph
 // that reaches this file — including the plain `tsx` guard simulators, which are
@@ -496,9 +503,10 @@ export async function processEnrichmentQueue(
       // only provider that can be asked by name/email/phone). Before this wave the
       // order was the reverse (PeopleData first, BatchData as the no-match fallback),
       // which paid the dearer provider on every address-bearing row.
-      // BEHAVIOUR CHANGE, published: a row BatchData matches no longer buys the
-      // PeopleData person profile (demographics / employment / socials) — the persona
-      // builder below runs only on the PeopleData path. Cost-down was the ruling.
+      // 81B had a row BatchData matched skip the PeopleData person profile (cost-down), which left
+      // the persona builder without demographics for every address-bearing lead. REVERSED in lane
+      // 83A (owner verbatim, wave 83: "we need the richer demographics for raw leads and leads,
+      // etc") — see DEMOGRAPHICS_AFTER_CONTACT_MATCH at Step 5b below.
       const { resolveBatchDataAccess, resolveContactProviderRoute } = await import('@/lib/ai-isa/property-lookup-rail')
       const propertyStreet = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
       const route = resolveContactProviderRoute({
@@ -588,17 +596,43 @@ export async function processEnrichmentQueue(
         }
       }
 
-      // Step 5b: PeopleData — the dearer provider, asked ONLY when the route names it and
-      // BatchData found nothing (or could not be asked). Its no-match is free (PDL bills
-      // per successful match), so a fall-through here costs nothing extra.
+      // Step 5b: PeopleData. Two jobs, one call:
+      //   • CONTACT POINTS when BatchData found nothing (or could not be asked) — as before;
+      //   • the DEMOGRAPHIC PROFILE (age / cohort, gender, household, occupation, salary band,
+      //     education, interests, location history) even AFTER a BatchData match — lane 83A reversal
+      //     of the 81B profile-skip (DEMOGRAPHICS_AFTER_CONTACT_MATCH). BatchData returns contact
+      //     points only; PeopleData is the only provider in the drain that answers "who is this
+      //     person". Asked with BatchData's phone/email when the row had none (better match rate).
+      // COST, platform-paid: +PEOPLEDATA_MATCH_COST_USD ($0.25) per MATCHED person on top of the
+      // $0.07 BatchData match (≈ $0.32 per fully-enriched person); a PDL no-match is $0. Booked on
+      // vendor_usage_tracking at Step 6c (peopledata) beside the BatchData row booked above.
       const name = [entity.first_name, entity.last_name].filter(Boolean).join(' ') || undefined
-      const { data: enriched, cost } = !batchDataFallback && route.providers.includes('peopledata')
+      const askPeopleData = route.providers.includes('peopledata') && (!batchDataFallback || DEMOGRAPHICS_AFTER_CONTACT_MATCH)
+      const { data: enriched, cost } = askPeopleData
         ? await skipTraceWithPeopleData({
             name,
-            phone: entity.phone ?? undefined,
-            email: entity.email ?? undefined,
+            phone: (entity.phone ?? batchDataFallback?.phones[0]) ?? undefined,
+            email: (entity.email ?? batchDataFallback?.emails[0]) ?? undefined,
+          }).catch((e) => {
+            // After a BatchData match a PDL failure must not undo the match — fall through to the
+            // BatchData write below. Without a match it is the drain's own error, as before.
+            if (batchDataFallback) { console.warn('[enrichment-orchestrator] PeopleData demographics call failed (BatchData match kept):', e); return { data: null, cost: 0 } }
+            throw e
           })
         : { data: null, cost: 0 }
+
+      // Contact points: BatchData's matched (cheaper, DNC/TCPA-flagged) lines lead; PeopleData's
+      // extras follow; the same scrub below elects the clean primary. The reverse leg was asked with
+      // the row's own email — never replaced.
+      if (enriched && batchDataFallback) {
+        enriched.phones = Array.from(new Set([...batchDataFallback.phones, ...(enriched.phones ?? [])]))
+        enriched.emails = batchDataFallback.via === 'reverse' && entity.email
+          ? Array.from(new Set([entity.email as string, ...(enriched.emails ?? [])]))
+          : Array.from(new Set([...batchDataFallback.emails, ...(enriched.emails ?? [])]))
+      }
+      const contactPointsProvider = batchDataFallback
+        ? (batchDataFallback.via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace')
+        : null
 
       result.totalCost += cost + batchDataFallbackCost
 
@@ -665,48 +699,10 @@ export async function processEnrichmentQueue(
         // Rich enrichment profile (downstream — AI-ISA scripts, AI Mesh, dashboards) so the full
         // PDL payload is queryable without re-calling the API. Only includes fields actually
         // returned by the provider; undefined/null are omitted so callers can use coalesce safely.
-        const profile: Record<string, any> = {
-          provider: 'peopledata',
-          peopledata_id: (enriched as any).peopledataId,
-          captured_at: new Date().toISOString(),
-          confidence: enriched.enrichmentConfidence,
-          full_name: enriched.fullName,
-          middle_name: enriched.middleName,
-          emails: enriched.emails,
-          phones: enriched.phones,
-          mobile_phone: enriched.mobilePhone,
-          work_phone: enriched.workPhone,
-          age: enriched.age,
-          age_range: enriched.ageRange,
-          gender: enriched.gender,
-          marital_status: enriched.maritalStatus,
-          children_count: enriched.childrenCount,
-          household_size: enriched.householdSize,
-          employer: enriched.currentEmployer,
-          job_title: enriched.currentTitle,
-          industry: enriched.currentIndustry,
-          years_of_experience: enriched.yearsOfExperience,
-          education: enriched.education,
-          household_income: enriched.householdIncome,
-          net_worth: enriched.netWorth,
-          home_owner_status: enriched.homeOwnerStatus,
-          home_value: enriched.homeValue,
-          credit_score_range: enriched.creditScoreRange,
-          linkedin_url: enriched.linkedinUrl,
-          linkedin_username: enriched.linkedinUsername,
-          facebook_url: enriched.facebookUrl,
-          twitter_url: enriched.twitterUrl,
-          github_url: enriched.githubUrl,
-          skills: enriched.skills,
-          certifications: enriched.certifications,
-          life_events: (enriched as any).life_events ?? (enriched as any).lifeEvents,
-        }
-        // Strip undefined / null / empty arrays so the JSONB blob stays compact.
-        for (const k of Object.keys(profile)) {
-          const v = profile[k]
-          if (v === undefined || v === null) delete profile[k]
-          else if (Array.isArray(v) && v.length === 0) delete profile[k]
-        }
+        // THE ONE profile builder (enrichment-column-map.ts::buildPeopleDataProfile) — the raw-record
+        // path (pipeline-processor.ts) builds the same blob, so scraped and drained leads match.
+        const profile: Record<string, any> = buildPeopleDataProfile(enriched)
+        if (contactPointsProvider) profile.contact_points_provider = contactPointsProvider
 
         // WHICH LANE PRODUCED WHAT — carried on the profile itself, because the
         // writes below REPLACE enrichment_profile wholesale. Without this the
@@ -739,7 +735,7 @@ export async function processEnrichmentQueue(
               // Names the lane(s) that produced this row — 'peopledata' or
               // 'osint_free+peopledata'. The admin lead-lineage view renders it
               // verbatim, so provenance is visible without opening the jsonb.
-              enrichment_provider: plan.label,
+              enrichment_provider: contactPointsProvider ? `${contactPointsProvider}+${plan.label}` : plan.label,
               enrichment_confidence: enriched.enrichmentConfidence,
               enrichment_profile: profile,
               // Verification flags drive the canonical lead-eligibility gate + AI-ISA channel
@@ -849,10 +845,12 @@ export async function processEnrichmentQueue(
           .from('lead_enrichment_queue')
           .update({
             status: 'completed',
-            enrichment_cost: cost,
+            // Both legs when BatchData supplied the contact points and PDL the profile (lane 83A).
+            enrichment_cost: cost + batchDataFallbackCost,
             enrichment_results: {
               lane: plan.label,
               person_enrichment: 'peopledata',
+              ...(contactPointsProvider ? { contact_points: contactPointsProvider } : {}),
               free_osint: free ? freeLaneProfileBlock(free) : null,
               ...(free && free.unavailable.length ? { free_osint_note: describeFreeLane(free) } : {}),
               peopledata: enriched as unknown as Record<string, unknown>,
@@ -966,7 +964,9 @@ export async function processEnrichmentQueue(
                   maritalStatus: enriched.maritalStatus ?? null,
                   childrenCount: enriched.childrenCount ?? null,
                   householdSize: enriched.householdSize ?? null,
-                  householdIncome: enriched.householdIncome ?? null,
+                  // PDL carries a PERSON salary band (inferred_salary), not household income — used
+                  // only when no household figure exists, and labelled so the persona never mistakes it.
+                  householdIncome: enriched.householdIncome ?? (enriched.inferredSalary ? `${enriched.inferredSalary} (individual salary, inferred)` : null),
                   // m640: promoted from the jsonb blob alongside household_income —
                   // see lib/lead-pipeline/enrichment-column-map.ts and the migration header.
                   netWorth: enriched.netWorth ?? null,
@@ -1102,7 +1102,7 @@ export async function processEnrichmentQueue(
                 lane: batchDataFallback.via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace',
                 person_enrichment: 'batchdata_match',
                 free_osint: free ? freeLaneProfileBlock(free) : null,
-                note: `BatchData ${batchDataFallback.via === 'reverse' ? 'REVERSE' : 'V3'} skip trace (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData not asked`,
+                note: `BatchData ${batchDataFallback.via === 'reverse' ? 'REVERSE' : 'V3'} skip trace (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData ${askPeopleData ? 'demographics: no match ($0)' : 'not asked'}`,
               },
               completed_at: new Date().toISOString(),
             })

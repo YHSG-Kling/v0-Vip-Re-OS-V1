@@ -10,7 +10,7 @@
 
 import { actorExists } from "@/lib/providers/apify/client"
 
-export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin" | "facebook_marketplace"
+export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin" | "facebook_marketplace" | "tiktok_search" | "tiktok_comments"
 
 /**
  * Ordered candidate actors per task — primary first. Multiple public actors
@@ -38,6 +38,16 @@ export const ACTOR_REGISTRY: Record<ApifyTask, string[]> = {
   // location/category/search Marketplace URLs, no login); fallback is the property-specific
   // vivid-softwares/facebook-property-scraper ($18/1k, `forSaleOnly`, seller + beds/baths parsed).
   facebook_marketplace: ["apify/facebook-marketplace-scraper", "vivid-softwares/facebook-property-scraper"],
+  // Lane 83A (Exa, 2026-09-26) — TikTok intent lane, two hops, no login/cookies on any candidate.
+  // SEARCH (keyword → videos): memo23/tiktok-search-scraper ($0.49/1k videos, `keywords`,
+  // pages past the ~20-result wall), xmolodtsov/tiktok-search-scraper ($0.15–0.30/1k by plan),
+  // devcake/tiktok-search-video-comments ($0.60/1k, `searchQueries`, optional comments in-run).
+  // COMMENTS (video URL → comments): codescraper/tiktok-comments-scraper ($0.64–0.80/1k, `videoUrls`,
+  // keyword filter so only matching comments are billed), atomus/tiktok-comments-scraper
+  // ($0.50–1.20/1k, `postUrls`, author uniqueId/region on every row). runApifyTask hands every
+  // candidate the same input, so the client passes each candidate's field names side by side.
+  tiktok_search:   ["memo23/tiktok-search-scraper", "xmolodtsov/tiktok-search-scraper", "devcake/tiktok-search-video-comments"],
+  tiktok_comments: ["codescraper/tiktok-comments-scraper", "atomus/tiktok-comments-scraper"],
 }
 
 export type ActorRunner = (actorId: string, input: Record<string, any>) => Promise<{ data: any[]; cost: number }>

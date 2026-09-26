@@ -118,6 +118,133 @@ export function peopleDataProfileToContactColumns(
   return out
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ONE PeopleData → enrichment_profile builder (lane 83A, wave 83; owner verbatim: "we need the
+// richer demographics for raw leads and leads, etc"). Was an inline object literal in
+// enrichment-orchestrator.ts that ONLY the queue drain ran — the raw-record path
+// (pipeline-processor.ts::enrichWithPeopleData) bought the same PDL match and then DROPPED everything
+// but name/email/phone at lead creation, so a lead born from a scrape carried no demographics at all.
+// Both paths now build the profile here, so a scraped lead and a drained lead carry the same blob
+// the persona / outreach readers expect (lead-action-plan, ghost-reengagement, personalize-outreach
+// read enrichment_profile.age / age_range / household_income).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The PDL person fields the profile builder reads (a structural subset of PeopleDataEnrichment). */
+export interface PeopleDataPersonLike {
+  peopledataId?: string
+  enrichmentConfidence?: number
+  fullName?: string
+  middleName?: string
+  emails?: string[]
+  phones?: string[]
+  mobilePhone?: string
+  workPhone?: string
+  age?: number
+  ageRange?: string
+  birthYear?: number
+  gender?: string
+  maritalStatus?: string
+  childrenCount?: number
+  householdSize?: number
+  currentEmployer?: string
+  currentTitle?: string
+  jobTitleRole?: string
+  jobTitleLevels?: string[]
+  jobStartDate?: string
+  currentIndustry?: string
+  yearsOfExperience?: number
+  inferredSalary?: string
+  education?: Array<{ school?: string; degree?: string; major?: string }> | unknown
+  householdIncome?: string
+  netWorth?: string
+  homeOwnerStatus?: string
+  homeValue?: number
+  creditScoreRange?: string
+  metro?: string
+  locationHistory?: string[]
+  interests?: string[]
+  linkedinUrl?: string
+  linkedinUsername?: string
+  facebookUrl?: string
+  twitterUrl?: string
+  githubUrl?: string
+  skills?: string[]
+  certifications?: unknown
+}
+
+/** The DEMOGRAPHIC keys of the profile (persona / segmentation inputs) — the raw row carries these. */
+export const DEMOGRAPHIC_PROFILE_FIELDS = [
+  'age', 'age_range', 'birth_year', 'gender', 'marital_status', 'children_count', 'household_size',
+  'employer', 'job_title', 'job_title_role', 'job_title_levels', 'job_start_date', 'industry',
+  'years_of_experience', 'inferred_salary', 'education', 'household_income', 'net_worth',
+  'home_owner_status', 'home_value', 'credit_score_range', 'metro', 'location_history', 'interests',
+] as const
+
+/**
+ * PURE — the enrichment_profile blob for one PDL match. Only keys the provider actually returned are
+ * kept (undefined / null / empty arrays dropped), so readers can coalesce safely.
+ */
+export function buildPeopleDataProfile(enriched: PeopleDataPersonLike, capturedAt: string = new Date().toISOString()): Record<string, any> {
+  const profile: Record<string, any> = {
+    provider: 'peopledata',
+    peopledata_id: enriched.peopledataId,
+    captured_at: capturedAt,
+    confidence: enriched.enrichmentConfidence,
+    full_name: enriched.fullName,
+    middle_name: enriched.middleName,
+    emails: enriched.emails,
+    phones: enriched.phones,
+    mobile_phone: enriched.mobilePhone,
+    work_phone: enriched.workPhone,
+    age: enriched.age,
+    age_range: enriched.ageRange,
+    birth_year: enriched.birthYear,
+    gender: enriched.gender,
+    marital_status: enriched.maritalStatus,
+    children_count: enriched.childrenCount,
+    household_size: enriched.householdSize,
+    employer: enriched.currentEmployer,
+    job_title: enriched.currentTitle,
+    job_title_role: enriched.jobTitleRole,
+    job_title_levels: enriched.jobTitleLevels,
+    job_start_date: enriched.jobStartDate,
+    industry: enriched.currentIndustry,
+    years_of_experience: enriched.yearsOfExperience,
+    inferred_salary: enriched.inferredSalary,
+    education: enriched.education,
+    household_income: enriched.householdIncome,
+    net_worth: enriched.netWorth,
+    home_owner_status: enriched.homeOwnerStatus,
+    home_value: enriched.homeValue,
+    credit_score_range: enriched.creditScoreRange,
+    metro: enriched.metro,
+    location_history: enriched.locationHistory,
+    interests: enriched.interests,
+    linkedin_url: enriched.linkedinUrl,
+    linkedin_username: enriched.linkedinUsername,
+    facebook_url: enriched.facebookUrl,
+    twitter_url: enriched.twitterUrl,
+    github_url: enriched.githubUrl,
+    skills: enriched.skills,
+    certifications: enriched.certifications,
+    life_events: (enriched as any).life_events ?? (enriched as any).lifeEvents,
+  }
+  for (const k of Object.keys(profile)) {
+    const v = profile[k]
+    if (v === undefined || v === null) delete profile[k]
+    else if (Array.isArray(v) && v.length === 0) delete profile[k]
+  }
+  return profile
+}
+
+/** PURE — the demographic subset of a profile (what a raw_scraped_leads row carries). */
+export function demographicsFromProfile(profile: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (!profile) return out
+  for (const k of DEMOGRAPHIC_PROFILE_FIELDS) if (profile[k] !== undefined && profile[k] !== null) out[k] = profile[k]
+  return out
+}
+
 /**
  * Map an enrichment profile blob to the LEADS first-class columns (m233). Leads carry a SUBSET of
  * the contact columns — only home_owner_status + life_events are promoted here (the rest stay in

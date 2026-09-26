@@ -6,6 +6,10 @@ import { revalidatePath } from "next/cache"
 // Wave 68 — the ONE resolver for a brokerage's active-listing source order (cost ruling on the
 // BatchData on-market pull). getBatchDataFeedStatus surfaces it beside the feed it explains.
 import { resolveActiveListingSources, DEFAULT_ACTIVE_LISTING_SOURCES, type ActiveListingSource } from "@/lib/buyer-search/listing-source-order"
+// Lane 83A — THE ONE default source list (Marketplace + cash buyers ON) and the keyword-reading
+// sources a new keyword row applies to.
+import { DEFAULT_MARKET_SOURCES } from "@/lib/lead-pipeline/source-intent-map"
+import { KEYWORD_SOURCE_KEYS } from "@/lib/lead-pipeline/scrape-keywords"
 
 // ============================================
 // MARKET CONFIGURATION
@@ -169,9 +173,13 @@ export async function createScrapingMarket(marketData: {
         .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
       brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
     }
+    // Lane 83A (owner verbatim: "marketplace and cashbuyer should be turned on.") — every new market
+    // is born with THE ONE default source list stamped explicitly, so it never depends on the column
+    // default having been migrated (m662 carries the same list).
+    const row = { enabled_sources: [...DEFAULT_MARKET_SOURCES], ...marketData }
     const { data, error } = await supabase
       .from("lead_scraping_markets")
-      .insert(brokerageId ? { ...marketData, brokerage_id: brokerageId } : marketData)
+      .insert(brokerageId ? { ...row, brokerage_id: brokerageId } : row)
       .select()
       .single()
 
@@ -326,11 +334,27 @@ export async function createScrapingKeyword(keywordData: {
 }) {
   try {
     const supabase = await createClient()
+    // Lane 83A — lead_scraping_keywords.brokerage_id is NOT NULL and this insert never stamped it (every
+    // row refused); the tenant comes from the SESSION (CLAUDE.md §4), fail closed without one. A row
+    // with no `sources` defaulted to '{}' — applying to NO source — so it now defaults to every
+    // keyword-reading source (scrape-keywords.ts resolves each row onto the lanes that declare its
+    // population).
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Sign in to add a scrape keyword." }
+    const { data: profile, error: profileError } = await supabase
+      .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+    const brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (profileError || !brokerageId) return { success: false, error: "No brokerage on this session — the scrape keyword was not added." }
     // live column is keyword_type, not category
     const { category, ...rest } = keywordData
     const { data, error } = await supabase
       .from("lead_scraping_keywords")
-      .insert({ ...rest, keyword_type: category })
+      .insert({
+        ...rest,
+        sources: rest.sources && rest.sources.length > 0 ? rest.sources : [...KEYWORD_SOURCE_KEYS],
+        keyword_type: category,
+        brokerage_id: brokerageId,
+      })
       .select()
       .single()
 

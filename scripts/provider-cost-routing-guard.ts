@@ -141,8 +141,13 @@ const orchStr = stripped(ORCH)
 const iRoute = orch.indexOf("resolveContactProviderRoute("), iGate = orch.indexOf("resolveBatchDataAccess("), iBd = orch.indexOf("skipTraceBatchDataV3Batch("), iPdl = orch.indexOf("skipTraceWithPeopleData(")
 check("route resolved, then the gate, then the BatchData skip trace, then (and only then) PeopleData — in that source order",
   iRoute >= 0 && iGate > iRoute && iBd > iGate && iPdl > iBd, `route@${iRoute} gate@${iGate} batchdata@${iBd} peopledata@${iPdl}`)
-check("the PeopleData call is guarded on a BatchData miss AND on the route naming it",
-  /!batchDataFallback && route\.providers\.includes\('peopledata'\)\s*\?\s*await skipTraceWithPeopleData\(/.test(orchStr))
+// Lane 83A (owner, wave 83: "we need the richer demographics for raw leads and leads") — the 81B
+// profile-skip is REVERSED: PeopleData is still asked only when the route names it, and on a
+// BatchData miss OR (DEMOGRAPHICS_AFTER_CONTACT_MATCH) for the demographic profile after a match.
+// The rule, not the old spelling: the call sits behind askPeopleData, which requires the route.
+check("the PeopleData call is guarded on the route naming it, and on a BatchData miss OR the demographics ruling (lane 83A)",
+  /const askPeopleData = route\.providers\.includes\('peopledata'\) && \(!batchDataFallback \|\| DEMOGRAPHICS_AFTER_CONTACT_MATCH\)/.test(orchStr)
+  && /askPeopleData\s*\?\s*await skipTraceWithPeopleData\(/.test(orchStr))
 check("the BatchData leg runs only when the route puts it FIRST (route.providers[0] === 'batchdata') and declares purpose 'skip_trace'",
   /route\.providers\[0\] === 'batchdata'[\s\S]{0,120}resolveBatchDataAccess\(\{ brokerageId, purpose: 'skip_trace' \}\)/.test(orchStr))
 const meterPdl = (orchStr.match(/vendorName: 'peopledata'/g) ?? []).length, meterBd = (orchStr.match(/vendorName: 'batchdata'/g) ?? []).length

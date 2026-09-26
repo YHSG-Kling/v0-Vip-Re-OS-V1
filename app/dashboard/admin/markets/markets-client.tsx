@@ -36,7 +36,11 @@ import type { ActiveListingSource } from "@/lib/buyer-search/listing-source-orde
 // Lane 72C — the operator toggle surface wave 71 flagged: every SourceKey, derived from
 // SOURCE_MAP itself (CLAUDE.md §6 — never a hand-copied second list), so a newly-added
 // SourceKey is toggleable here the moment source-intent-map.ts defines it, no second edit.
-import { ALL_SOURCE_KEYS, type SourceKey } from "@/lib/lead-pipeline/source-intent-map"
+import { ALL_SOURCE_KEYS, DEFAULT_MARKET_SOURCES, type SourceKey } from "@/lib/lead-pipeline/source-intent-map"
+// Lane 83A — keyword types are the live CHECK's own vocabulary (generated cache), never a hand list:
+// the old list (buying_intent/selling_intent/life_event/distress/custom) matched NONE of the CHECK's
+// values, so every keyword the operator ever added was refused.
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { acquisitionIntentLabel } from "@/lib/lead-pipeline/acquisition-coverage"
 
 export interface PropertyParamsRow {
@@ -110,7 +114,7 @@ function when(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : "never"
 }
 
-const KEYWORD_TYPES = ["buying_intent", "selling_intent", "life_event", "distress", "custom"]
+const KEYWORD_TYPES: string[] = CHECK_VOCABULARIES.lead_scraping_keywords?.keyword_type ?? []
 
 function num(v: string): number | undefined {
   const n = Number(v)
@@ -124,9 +128,10 @@ function labelSourceKey(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
-/** The cron's own fallback when a market has never been configured
- *  (app/api/cron/lead-scraping/route.ts:231/1031) — shown, never silently assumed "everything". */
-const DEFAULT_ENABLED_SOURCES: SourceKey[] = ["batchdata_motivated"]
+/** The cron's own fallback when a market has never been configured — THE ONE list
+ *  (source-intent-map.ts::DEFAULT_MARKET_SOURCES, lane 83A: Marketplace + cash buyers ON) — shown,
+ *  never silently assumed "everything". */
+const DEFAULT_ENABLED_SOURCES: SourceKey[] = [...DEFAULT_MARKET_SOURCES]
 
 export function MarketsSetupClient({
   initialMarkets,
@@ -174,7 +179,7 @@ export function MarketsSetupClient({
 
   // Keyword composer
   const [kwText, setKwText] = useState("")
-  const [kwType, setKwType] = useState(KEYWORD_TYPES[0])
+  const [kwType, setKwType] = useState(KEYWORD_TYPES[0] ?? "buyer")
   const [kwWeight, setKwWeight] = useState("2")
   const [kwError, setKwError] = useState<string | null>(null)
 

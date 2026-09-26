@@ -8,6 +8,9 @@ import { skipTraceWithPeopleData } from '@/lib/external'
 import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_NO_MATCH_COST_USD } from '@/lib/external/peopledata-client'
 import { deriveSocialProfileUrl } from './social-identity-resolve'
 import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
+// Lane 83A — THE ONE PeopleData profile builder (also used by the enrichment drain), so a lead born
+// from a scrape carries the same demographics blob as a drained one.
+import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns } from './enrichment-column-map'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
@@ -323,6 +326,17 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // anything else.
     username, source: rec.source,
   })
+
+  // ── Raw-lead demographics (lane 83A) — the PDL match lands on the RAW row too, so a record that
+  // stops at a gate (duplicate / identity) still carries who the person is for the next sweep and
+  // for lead intelligence. normalized_preview is the raw layer's jsonb (no new column).
+  if (enriched.peopleDataProfile) {
+    const { error: rawDemoError } = await supabase.from('raw_scraped_leads').update({
+      normalized_preview: { ...(rec.normalized_preview ?? {}), demographics: demographicsFromProfile(enriched.peopleDataProfile) },
+      enriched_at: new Date().toISOString(),
+    }).eq('id', rawRecordId)
+    if (rawDemoError) console.warn('[pipeline-processor] raw demographics write refused:', rawDemoError.message)
+  }
 
   // ── Post-enrichment deduplication — same THREE tables as the pre-enrich pass
   // (raw_scraped_leads + leads + contacts), now with enrichment-filled identity.
@@ -659,6 +673,14 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       enrichment_status:     'completed',
       enrichment_confidence: enriched.enrichmentConfidence,
       last_enriched_at:      new Date().toISOString(),
+      // Lane 83A — the PDL demographics this path already paid for (was dropped here): the
+      // enrichment_profile blob lead-action-plan / ghost-reengagement / personalize-outreach read,
+      // plus the first-class lead columns (home_owner_status, life_events).
+      ...(enriched.peopleDataProfile ? {
+        ...peopleDataProfileToLeadColumns(enriched.peopleDataProfile),
+        enrichment_profile:  enriched.peopleDataProfile,
+        enrichment_provider: 'peopledata',
+      } : {}),
       lead_stage:            'new',
       source_raw_ids:        [rawRecordId],
       // STEP 5 — Kernel OS ISA ownership fields
@@ -838,11 +860,14 @@ async function enrichWithPeopleData(fields: {
   // published in this repo or in docs/real-estate-data-providers-2026-09.md —
   // recorded there as "unpublished" — so this reuses the existing constant
   // rather than inventing a second number for the same endpoint).
-  if (profileUrl && fields.brokerageId) {
+  // Lane 83A — EVERY PeopleData call from this path is booked, not only the profile-identify one:
+  // the name/phone/email match (the common case) was unmetered here and nowhere else (82A's open
+  // item: "booked by the CALLER" — no caller booked it). Platform-paid ledger, per MATCH ($0 miss).
+  if (fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
     const matched = !!enrichmentResult.data
     void meterVendorSpend({
       vendorName: 'peopledata',
-      usageType: 'social_identity_resolve',
+      usageType: profileUrl ? 'social_identity_resolve' : 'skip_trace',
       // Wave 82 lane A (scraping unfrozen): the transport's constants, never literals — the old
       // `0.25 : 0.10` billed a MISS at $0.10 while PDL charges nothing for a 404 no-match
       // (support.peopledatalabs.com Pricing & credits; lane 81B). A $0 miss books no row
@@ -850,7 +875,7 @@ async function enrichWithPeopleData(fields: {
       cost: matched ? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,
       brokerageId: fields.brokerageId,
       systemSource: 'lead_scraping',
-      metadata: { profileUrl, source: fields.source ?? null, matched },
+      metadata: { profileUrl, source: fields.source ?? null, matched, path: 'raw_record_promotion' },
     }).catch(() => null)
   }
 
@@ -858,6 +883,7 @@ async function enrichWithPeopleData(fields: {
   let base: BaseEnrichment & {
     phone_secondary?: string | null
     peopleDataResult?: unknown
+    peopleDataProfile?: Record<string, any>
     email_verified?: boolean
     mailing_address?: string | null
     mailing_address_verified?: boolean
@@ -877,6 +903,8 @@ async function enrichWithPeopleData(fields: {
         mailing_address_verified: (data as any).mailingAddressVerified === true,
         mailing_address_source:   (data as any).mailingAddressVerified ? 'enrichment' : null,
         peopleDataResult:         data,
+        // Lane 83A — the demographic profile the lead insert and the raw row carry forward.
+        peopleDataProfile:        buildPeopleDataProfile(data as any),
       }
     : {
         first_name: fields.first_name,

@@ -17,9 +17,15 @@ import {
   scrapeGoogleSearchResults,
   scrapeLinkedInPosts,
   scrapeFacebookMarketplaceListings,
+  scrapeTikTokSearch,
+  scrapeTikTokComments,
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
-import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter } from "./scraper-parsers"
+import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter, parseSellerChatter } from "./scraper-parsers"
+// Lane 83A — the ONE intent lexicon (scrape-keywords.ts): every social normalizer adds the canonical
+// relocation / realtor-seeking / investor signals a post's text evidences, so a population the
+// coverage registry claims is one the classifier actually produces.
+import { intentSignalsFromText, intentTypeFromText, matchResolvedKeyword, type ResolvedKeywords } from "./scrape-keywords"
 import { buildAgentSeekingPhrases, buildNewConstructionPhrases } from "./source-intent-map"
 
 export interface SocialMarket {
@@ -43,7 +49,14 @@ export function detectIntent(text: string): "buyer" | "seller" | "unknown" {
   const buyer = BUYER_TERMS.some((b) => t.includes(b))
   if (seller && !buyer) return "seller"
   if (buyer && !seller) return "buyer"
-  return "unknown" // ambiguous or both — resolved later at enrichment
+  // Lane 83A — the wider lexicon (relocation / investor read as buyers) settles what the two short
+  // term lists leave open; ambiguous or both stays unknown, resolved later at enrichment.
+  return seller && buyer ? "unknown" : intentTypeFromText(text)
+}
+
+/** Lane 83A — a normalizer's own signals plus the lexicon's canonical ones, de-duplicated. */
+function withTextSignals(own: string[], text: string): string[] {
+  return Array.from(new Set([...own, ...intentSignalsFromText(text)]))
 }
 
 // Real-estate INVESTOR signals — investors are buyers acquiring income/flip
@@ -76,7 +89,7 @@ export function normalizeRedditPost(post: Record<string, any>, market: SocialMar
     source: "reddit_intent",
     behaviorType: "social_intent",
     intentType: intent, // buyer ("looking to buy") OR seller ("selling my home"), per post
-    intentSignals: [intent === "seller" ? "selling" : "looking_to_buy"],
+    intentSignals: withTextSignals(intent === "seller" ? ["selling"] : intent === "buyer" ? ["looking_to_buy"] : [], text),
     city: market.city,
     state: market.state,
     username: (post.author ?? post.username) ?? undefined,
@@ -95,7 +108,7 @@ export function normalizeFacebookPost(post: Record<string, any>, market: SocialM
     source: "facebook_group",
     behaviorType: "social_intent",
     intentType: intent, // buyer + seller both captured; classified per post
-    intentSignals: [intent === "buyer" ? "looking_to_buy" : "selling"],
+    intentSignals: withTextSignals(intent === "buyer" ? ["looking_to_buy"] : intent === "seller" ? ["selling"] : [], text),
     firstName,
     lastName,
     city: market.city,
@@ -114,7 +127,7 @@ export function normalizeInstagramPost(post: Record<string, any>, market: Social
     source: "instagram_intent",
     behaviorType: "social_intent",
     intentType: detectIntent(text), // both buyer + seller; resolved per caption
-    intentSignals: [detectIntent(text) === "seller" ? "selling" : "house_hunting"],
+    intentSignals: withTextSignals([detectIntent(text) === "seller" ? "selling" : "house_hunting"], text),
     firstName,
     lastName,
     username: post.ownerUsername ?? post.username ?? undefined,
@@ -126,20 +139,24 @@ export function normalizeInstagramPost(post: Record<string, any>, market: Social
   }
 }
 
-const CL_WANTED = /\b(wanted|iso|in search of|looking (to|for)|need(ed)? to (buy|rent))\b/i
+// Lane 83A — + cash buyers (an investor's "cash buyer, any condition" post is a BUYER in the wanted section).
+const CL_WANTED = /\b(wanted|iso|in search of|looking (to|for)|need(ed)? to (buy|rent)|cash buyers?)\b/i
 
 export function normalizeCraigslistItem(item: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
   const title = `${item.title ?? item.name ?? ""}`
   const isFsbo = /\b(by owner|fsbo|for sale by owner)\b/i.test(title)
   // Housing-wanted / "ISO" posts are BUYER intent; for-sale-by-owner is SELLER.
-  const isBuyer = CL_WANTED.test(title) || detectIntent(title) === "buyer"
+  // The SHORT buyer list only (never the wider lexicon): in the for-sale section an "investment
+  // property" title is a SELLER listing an income property, not an investor buying one.
+  const lowTitle = title.toLowerCase()
+  const isBuyer = CL_WANTED.test(title) || (BUYER_TERMS.some((b) => lowTitle.includes(b)) && !SELLER_TERMS.some((s) => lowTitle.includes(s)))
   const intentType: "buyer" | "seller" = isBuyer ? "buyer" : "seller"
   return {
     sourceRecordId: `cl-${item.id ?? item.pid ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
     source: "craigslist_fsbo",
     behaviorType: intentType === "buyer" ? "social_intent" : isFsbo ? "fsbo_listing" : "property_listing",
     intentType,
-    intentSignals: intentType === "buyer" ? ["looking_to_buy"] : isFsbo ? ["fsbo", "by_owner"] : ["craigslist_listing"],
+    intentSignals: withTextSignals(intentType === "buyer" ? ["looking_to_buy"] : isFsbo ? ["fsbo", "by_owner"] : ["craigslist_listing"], `${title} ${item.description ?? item.body ?? ""}`),
     // A buyer "wanted" post has no property to sell — don't store its title as a property address.
     propertyAddress: intentType === "seller" ? title.slice(0, 100) || null : null,
     // Craigslist posts carry an (often anonymized) reply email/handle — the viability
@@ -232,9 +249,15 @@ export async function sourceCraigslist(city: string, query: string, market: Soci
   return { records: fallback.records, cost: (r.cost ?? 0) + fallback.cost }
 }
 
-/** Craigslist housing section — surfaces buyer "wanted"/ISO posts (buyer intent). */
-export async function sourceCraigslistWanted(city: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
-  const wantedQuery = "wanted to buy ISO looking to buy home"
+/**
+ * Craigslist housing section — surfaces buyer "wanted"/ISO posts (buyer intent).
+ * Lane 83A: the query is the territory's resolved craigslist_wanted keyword set rendered as a
+ * Craigslist OR query (scrape-keywords.ts::renderKeywordQuery). The old fixed string ANDed eight
+ * words ("wanted to buy ISO looking to buy home") and matched next to nothing; it stays only as
+ * the fallback when a caller passes no query.
+ */
+export async function sourceCraigslistWanted(city: string, market: SocialMarket, query?: string): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const wantedQuery = query?.trim() || '"wanted to buy" | "ISO house" | "looking for a house"'
   const r = await scrapeCraigslistPosts({ city, query: wantedQuery, limit: 100, section: "hhh" }).catch(() => ({ posts: [], cost: 0 }))
   // normalizeCraigslistItem classifies "wanted"/ISO titles as buyer intent.
   const records = (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord)
@@ -248,7 +271,7 @@ export async function sourceGoogle(queries: string[], market: SocialMarket): Pro
   return { records: (r.results ?? []).map((x) => normalizeGoogleResult(x, market)).filter(isViableRecord), cost: r.cost ?? 0 }
 }
 
-// ── Facebook Marketplace property-for-sale (lane 82B) → FSBO SELLER ─────────
+// ── Facebook Marketplace (lane 82B FSBO sellers; lane 83A buyers / relocators / agent-seekers) ──
 // The facebook_marketplace SourceKey (SOURCE_MAP: seller, property_required) existed with no
 // collector. A Marketplace home listing is an owner (or an agent) listing a property; agent/
 // brokerage posts are damped, never dropped here (the scorer's dampSignals decide). Identity:
@@ -256,6 +279,7 @@ export async function sourceGoogle(queries: string[], market: SocialMarket): Pro
 // with no usable location text is not viable (isViableRecord).
 const MARKETPLACE_AGENT = /\b(realtor|broker(age)?|real estate agent|listing agent|mls|realty)\b/i
 const MARKETPLACE_RENTAL = /\b(for rent|rental|lease|per month|\/mo)\b/i
+const MARKETPLACE_SEEKING = /\b(iso|in search of|wanted to (buy|purchase)|looking (to buy|for (a|an) (house|home|condo|townhouse|realtor|real estate agent|agent))|need (a|an) (good )?(realtor|agent|real estate agent)|relocating to|moving to)\b/i
 
 export function normalizeFacebookMarketplaceListing(item: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
   const title = `${item.marketplace_listing_title ?? item.title ?? ""}`
@@ -264,6 +288,30 @@ export function normalizeFacebookMarketplaceListing(item: Record<string, any>, m
   const sellerName = item.marketplace_listing_seller?.name ?? item.seller?.name ?? null
   const { firstName, lastName } = nameFromHandle(sellerName)
   const geo = item.location?.reverse_geocode ?? {}
+  // Lane 83A (owner verbatim: "facebook marketplace include intent buy, relocate, realtor seeking")
+  // — a Marketplace post that SEEKS (ISO / wanted / "looking to buy" / relocating / "need a
+  // realtor") is a person in the market, not a listing. It is classified per record and carries no
+  // property address (there is no property yet); an owner listing stays a SELLER exactly as before.
+  const seeking = MARKETPLACE_SEEKING.test(text) && !/\b(for sale by owner|fsbo|by owner)\b/i.test(text)
+  if (seeking) {
+    const seekerType = intentTypeFromText(text)
+    return {
+      sourceRecordId: `fbm-${item.id ?? item.listingUrl ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+      source: "facebook_marketplace",
+      behaviorType: "marketplace_seeking_post",
+      intentType: seekerType === "seller" ? "unknown" : seekerType,
+      intentSignals: withTextSignals(["iso"], text),
+      firstName,
+      lastName,
+      username: item.marketplace_listing_seller?.id ?? item.seller?.profileId ?? undefined,
+      propertyAddress: null,
+      city: geo.city ?? item.city ?? market.city,
+      state: geo.state ?? item.region ?? market.state,
+      sourceUrl: item.listingUrl ?? item.url ?? null,
+      motivationScore: 50,
+      rawPayload: item,
+    }
+  }
   const agentPosted = MARKETPLACE_AGENT.test(text)
   const rental = MARKETPLACE_RENTAL.test(text) || item.listingIntent === "rent"
   const signals = [
@@ -291,8 +339,13 @@ export function normalizeFacebookMarketplaceListing(item: Record<string, any>, m
   }
 }
 
-export async function sourceFacebookMarketplace(city: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
-  const r = await scrapeFacebookMarketplaceListings({ city, limit: 50 }).catch(() => ({ listings: [], cost: 0 }))
+/**
+ * Lane 83A — `queries` are the territory's resolved facebook_marketplace keywords (buyer / relocation
+ * / realtor-seeking searches; scrape-keywords.ts). The property-for-sale category page still runs
+ * for the FSBO sellers; each query adds one location-scoped Marketplace search URL to the SAME run.
+ */
+export async function sourceFacebookMarketplace(city: string, market: SocialMarket, queries: readonly string[] = []): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const r = await scrapeFacebookMarketplaceListings({ city, queries, limit: 50 }).catch(() => ({ listings: [], cost: 0 }))
   return {
     records: (r.listings ?? []).map((x) => normalizeFacebookMarketplaceListing(x, market)).filter(isViableRecord),
     cost: r.cost ?? 0,
@@ -518,5 +571,99 @@ export async function sourceRealtySiteChatter(
   const { parseBuyerSavedSearches } = await import("./scraper-parsers")
   const savedSearch = parseBuyerSavedSearches(res.html, site, market)
   const contactAgent = parseContactAgentChatter(res.html, site, market)
-  return { records: [...savedSearch, ...contactAgent], cost: res.cost, provider: res.provider }
+  // Lane 83A — SELL-side chatter on the same page (Make Me Move, valuation requests, owner-claimed).
+  const sellerChatter = parseSellerChatter(res.html, site, market)
+  return { records: [...savedSearch, ...contactAgent, ...sellerChatter], cost: res.cost, provider: res.provider }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LANE 83A — Nextdoor keyword match (moved out of the cron) + TikTok comment intent
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * PURE — one Nextdoor post → a raw record ONLY when it contains one of the territory's resolved
+ * nextdoor_intent keywords; the population comes from the MATCHED keyword (then the post text),
+ * never from a keyword_type string. Replaces the cron's inline test
+ * `matchedKeyword.keyword_type === "buying_intent" ? "buyer" : "seller"` — a value the live CHECK
+ * refuses, so every match would have been filed as a seller.
+ */
+export function normalizeNextdoorPost(post: Record<string, any>, market: SocialMarket, resolved: ResolvedKeywords, sourceUrl: string | null = null): NormalizedScrapedRecord | null {
+  const text = `${post.content ?? post.text ?? post.body ?? ""}`
+  const match = matchResolvedKeyword(text, resolved)
+  if (!match) return null
+  const byText = intentTypeFromText(text)
+  const intentType: "buyer" | "seller" | "unknown" =
+    match.intent === "sell" ? "seller" : match.intent === "realtor_seeking" ? byText : "buyer"
+  const { firstName, lastName } = nameFromHandle(post.author_name ?? post.authorName)
+  return {
+    sourceRecordId: `nextdoor-${post.post_id ?? post.id ?? `${Date.now()}-${Math.random()}`}`,
+    source: "nextdoor",
+    behaviorType: "social_intent",
+    intentType,
+    intentSignals: withTextSignals([match.term], `${match.term} ${text}`),
+    firstName,
+    lastName,
+    city: market.city,
+    state: market.state,
+    motivationScore: 55,
+    sourceUrl,
+    rawPayload: { post, matched_keyword: match.term, matched_intent: match.intent },
+  }
+}
+
+/**
+ * PURE — one TikTok comment (under a territory video) → a raw record, or null when the comment
+ * evidences no population (most comments are "love this!"). The commenter's handle is the identity
+ * anchor; social-identity-resolve.ts turns it into https://www.tiktok.com/@handle for PeopleData.
+ */
+export function normalizeTikTokComment(comment: Record<string, any>, market: SocialMarket, video?: Record<string, any> | null): NormalizedScrapedRecord | null {
+  const text = `${comment.text ?? comment.comment ?? comment.content ?? ""}`
+  const signals = intentSignalsFromText(text)
+  if (signals.length === 0) return null
+  const author = comment.author ?? comment.user ?? {}
+  const handle = author.uniqueId ?? author.unique_id ?? comment.uniqueId ?? comment.username ?? comment.authorUsername ?? null
+  const { firstName, lastName } = nameFromHandle(author.nickname ?? comment.nickname ?? null)
+  return {
+    sourceRecordId: `tiktok-${comment.cid ?? comment.id ?? comment.commentId ?? `${Date.now()}-${Math.random()}`}`,
+    source: "tiktok_intent",
+    behaviorType: "social_comment_intent",
+    intentType: intentTypeFromText(text),
+    intentSignals: signals,
+    firstName,
+    lastName,
+    username: handle ?? undefined,
+    city: market.city,
+    state: market.state,
+    sourceUrl: comment.commentUrl ?? video?.webVideoUrl ?? video?.url ?? null,
+    motivationScore: 40,
+    rawPayload: { comment, video_url: video?.webVideoUrl ?? video?.url ?? null, video_desc: video?.text ?? video?.desc ?? null },
+  }
+}
+
+/** Videos per run whose comments are read (the dearer hop) — bounds spend per territory. */
+export const TIKTOK_VIDEOS_PER_RUN = 10
+export const TIKTOK_COMMENTS_PER_VIDEO = 100
+
+/**
+ * TikTok intent lane (lane 83A) — territory-scoped, two hops on Apify:
+ *   1. search the territory's resolved tiktok_intent keywords ("moving to <city>", "<city> homes for
+ *      sale", …) → the most-commented territory videos;
+ *   2. read those videos' comments → classify each (normalizeTikTokComment) → raw records.
+ * The commenter-profile hop is the pipeline's own: processRawRecord → PeopleData by profile URL.
+ * No city ⇒ no call and $0 (never a national sweep).
+ */
+export async function sourceTikTokIntent(market: SocialMarket, queries: readonly string[]): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  if (!market.city || queries.length === 0) return { records: [], cost: 0 }
+  const search = await scrapeTikTokSearch({ queries, perQuery: 10 }).catch(() => ({ videos: [], cost: 0 }))
+  const videos = [...(search.videos ?? [])]
+    .filter((v) => (v.webVideoUrl ?? v.url))
+    .sort((a, b) => Number(b.commentCount ?? b.stats?.commentCount ?? 0) - Number(a.commentCount ?? a.stats?.commentCount ?? 0))
+    .slice(0, TIKTOK_VIDEOS_PER_RUN)
+  if (videos.length === 0) return { records: [], cost: search.cost ?? 0 }
+  const byUrl = new Map(videos.map((v) => [String(v.webVideoUrl ?? v.url), v]))
+  const comments = await scrapeTikTokComments({ videoUrls: [...byUrl.keys()], perVideo: TIKTOK_COMMENTS_PER_VIDEO }).catch(() => ({ comments: [], cost: 0 }))
+  const records = (comments.comments ?? [])
+    .map((c) => normalizeTikTokComment(c, market, byUrl.get(String(c.videoWebUrl ?? c.videoUrl ?? c.postUrl ?? "")) ?? null))
+    .filter((r): r is NormalizedScrapedRecord => !!r && isViableRecord(r))
+  return { records, cost: (search.cost ?? 0) + (comments.cost ?? 0) }
 }
