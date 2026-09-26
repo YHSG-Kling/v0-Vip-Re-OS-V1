@@ -81,7 +81,7 @@
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/application/listing-lifecycle.ts": 1,
-    "lib/assets/screenshot-capture.ts": 22,
+    "lib/assets/screenshot-capture.ts": 21,
     "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
@@ -149,6 +149,7 @@
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
+    "lib/external/peopledata-client.ts": 3,
     "lib/external/permit-signals.ts": 11,
     "lib/external/review-extract.ts": 1,
     "lib/external/socrata-client.ts": 2,
@@ -296,6 +297,7 @@
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-governance/protected-class-signals.ts": 4,
     "lib/lead-governance/seller-signal-strength.ts": 4,
+    "lib/lead-pipeline/acquisition-coverage.ts": 1,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
@@ -309,9 +311,10 @@
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/rental-graduation-sourcer.ts": 1,
     "lib/lead-pipeline/review-acquisition-sourcer.ts": 2,
+    "lib/lead-pipeline/scrape-keywords.ts": 1,
     "lib/lead-pipeline/scraper-health.ts": 2,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 1,
-    "lib/lead-pipeline/social-sourcer.ts": 12,
+    "lib/lead-pipeline/social-sourcer.ts": 13,
     "lib/lead-pipeline/source-cost-ledger.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
@@ -337,7 +340,8 @@
     "lib/managers/eval-scoring.ts": 1,
     "lib/managers/learning-loop.ts": 1,
     "lib/managers/teamwork-metrics.ts": 1,
-    "lib/marketing/estimate-comparison.ts": 6,
+    "lib/marketing/estimate-comparison.ts": 5,
+    "lib/marketing/estimate-web-search.ts": 11,
     "lib/marketing/geo-faq.ts": 1,
     "lib/marketing/guide-booklet-content.ts": 1,
     "lib/marketing/image-library.ts": 2,
@@ -463,14 +467,16 @@
     "lib/video/realism-profile.ts": 5,
     "lib/video/render-cut.ts": 2,
     "lib/video/script-compliance.ts": 1,
-    "lib/video/topic-video.ts": 1,
+    "lib/video/topic-video.ts": 4,
     "lib/video/video-director.ts": 7,
     "lib/video/video-guide.ts": 1,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
-    "lib/voice/a2p-registration.ts": 2,
+    "lib/voice/a2p-registration.ts": 1,
+    "lib/voice/carrier-registration-loop.ts": 3,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/local-number-search.ts": 2,
+    "lib/voice/number-port-in.ts": 2,
     "lib/voice/platform-reception.ts": 1,
     "lib/voice/reception-inventory.ts": 2,
     "lib/voice/studio-session.ts": 7,
@@ -487,7 +493,7 @@
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10069,
+  "census": 10142,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -810,7 +816,7 @@
     "app/actions/marketing/image-library.ts": 6,
     "app/actions/marketing/lead-magnet-copy.ts": 1,
     "app/actions/marketing/publish-guide-to-gbp.ts": 1,
-    "app/actions/marketing/tenant-screenshots.ts": 8,
+    "app/actions/marketing/tenant-screenshots.ts": 9,
     "app/actions/marketing-agent-resolutions.ts": 2,
     "app/actions/marketing-ai-approvals.ts": 3,
     "app/actions/marketing-cadence-policy.ts": 2,
@@ -864,6 +870,7 @@
     "app/actions/partner-orders.ts": 4,
     "app/actions/pattern-actions.ts": 7,
     "app/actions/phone-connect.ts": 3,
+    "app/actions/phone-port-in.ts": 3,
     "app/actions/phone-provisioning.ts": 9,
     "app/actions/phone-test-call.ts": 2,
     "app/actions/photo-management.ts": 13,
@@ -1055,6 +1062,7 @@
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
     "app/actions/video/memory-video.ts": 3,
+    "app/actions/video/topic-video-cadence.ts": 2,
     "app/actions/video-content.ts": 4,
     "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
@@ -1163,6 +1171,7 @@
     "app/api/cron/campaign-sequence-steps/route.ts": 1,
     "app/api/cron/capability-radar/route.ts": 1,
     "app/api/cron/capacity-guardian/route.ts": 1,
+    "app/api/cron/carrier-registration-tick/route.ts": 1,
     "app/api/cron/client-pulse/route.ts": 1,
     "app/api/cron/closing-orchestration/route.ts": 1,
     "app/api/cron/closing-watchtower/route.ts": 1,
@@ -1915,6 +1924,7 @@
     "app/dashboard/admin/phone-settings/agent-port-in-card.tsx": 1,
     "app/dashboard/admin/phone-settings/phone-settings-client.tsx": 1,
     "app/dashboard/admin/phone-settings/phone-test-card.tsx": 1,
+    "app/dashboard/admin/phone-settings/pick-or-port-card.tsx": 1,
     "app/dashboard/admin/phone-settings/twilio-byo-card.tsx": 1,
     "app/dashboard/admin/privacy/requests/dsar-row-actions.tsx": 1,
     "app/dashboard/admin/scrape-diagnostics/intent-phrase-card.tsx": 1,
@@ -2595,6 +2605,7 @@
     "app/settings/campaign-bundles/estimate-comparison-card.tsx": 1,
     "app/settings/campaign-bundles/estimate-stills-card.tsx": 1,
     "app/settings/campaign-bundles/learned-visual-rules-card.tsx": 1,
+    "app/settings/campaign-bundles/topic-video-cadence-card.tsx": 1,
     "app/settings/channel-presets/client.tsx": 1,
     "app/settings/connections/connection-center-client.tsx": 1,
     "app/settings/crm/crm-connect-form.tsx": 1,
@@ -2849,7 +2860,7 @@
     "lib/application/transactions.ts": 55,
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
-    "lib/assets/screenshot-capture.ts": 35,
+    "lib/assets/screenshot-capture.ts": 34,
     "lib/audiences/audience-sync.ts": 3,
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
@@ -3205,7 +3216,7 @@
     "lib/esign-webhooks/finalize-packet.ts": 2,
     "lib/events/event-helpers.ts": 6,
     "lib/external/apify-actors.ts": 3,
-    "lib/external/apify-client.ts": 8,
+    "lib/external/apify-client.ts": 10,
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
@@ -3225,7 +3236,7 @@
     "lib/external/nominatim-geocode.ts": 5,
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 3,
-    "lib/external/peopledata-client.ts": 2,
+    "lib/external/peopledata-client.ts": 5,
     "lib/external/permit-signals.ts": 15,
     "lib/external/rentcast-ai-tools.ts": 1,
     "lib/external/rentcast-mcp.ts": 2,
@@ -3694,12 +3705,12 @@
     "lib/lead-intelligence/signal-extensions.ts": 4,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
     "lib/lead-intent/lead-opt-out.ts": 2,
-    "lib/lead-pipeline/acquisition-coverage.ts": 1,
+    "lib/lead-pipeline/acquisition-coverage.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 3,
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 2,
-    "lib/lead-pipeline/enrichment-column-map.ts": 5,
+    "lib/lead-pipeline/enrichment-column-map.ts": 7,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
@@ -3729,12 +3740,13 @@
     "lib/lead-pipeline/rental-graduation-sourcer.ts": 2,
     "lib/lead-pipeline/review-acquisition-sourcer.ts": 4,
     "lib/lead-pipeline/schedule-followup.ts": 1,
+    "lib/lead-pipeline/scrape-keywords.ts": 7,
     "lib/lead-pipeline/scrape-territories.ts": 3,
     "lib/lead-pipeline/scraper-health.ts": 4,
-    "lib/lead-pipeline/scraper-parsers.ts": 7,
+    "lib/lead-pipeline/scraper-parsers.ts": 8,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 2,
     "lib/lead-pipeline/social-identity-resolve.ts": 1,
-    "lib/lead-pipeline/social-sourcer.ts": 28,
+    "lib/lead-pipeline/social-sourcer.ts": 31,
     "lib/lead-pipeline/source-conversion-learning.ts": 3,
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
     "lib/lead-pipeline/source-cost-ledger.ts": 3,
@@ -3840,6 +3852,7 @@
     "lib/marketing/engagement-rollup.ts": 2,
     "lib/marketing/estimate-comparison.ts": 12,
     "lib/marketing/estimate-sources.ts": 3,
+    "lib/marketing/estimate-web-search.ts": 13,
     "lib/marketing/geo-faq.ts": 3,
     "lib/marketing/guide-booklet-content.ts": 2,
     "lib/marketing/home-value-email.ts": 2,
@@ -3864,7 +3877,7 @@
     "lib/marketing/stuck-campaign-reaper.ts": 1,
     "lib/marketing/stuck-social-post-policy.ts": 1,
     "lib/marketing/stuck-social-post-reaper.ts": 1,
-    "lib/marketing/tenant-screenshot-door.ts": 7,
+    "lib/marketing/tenant-screenshot-door.ts": 6,
     "lib/marketing/touchpoint-recorder.ts": 2,
     "lib/marketing/tracked-qr.ts": 8,
     "lib/marketing/trigger-match.ts": 2,
@@ -4064,7 +4077,7 @@
     "lib/providers/simli/client.ts": 2,
     "lib/providers/simli/faces.ts": 1,
     "lib/providers/tenancy-matrix.ts": 1,
-    "lib/providers/twilio/client.ts": 9,
+    "lib/providers/twilio/client.ts": 14,
     "lib/providers/vibe.ts": 5,
     "lib/providers/web-push.ts": 2,
     "lib/providers/webhook-contract.ts": 2,
@@ -4289,7 +4302,7 @@
     "lib/video/broll-url.ts": 1,
     "lib/video/caption-plan.ts": 7,
     "lib/video/chapter-video-generator.ts": 1,
-    "lib/video/cinema-finish.ts": 10,
+    "lib/video/cinema-finish.ts": 11,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
     "lib/video/composite-attribution.ts": 6,
@@ -4328,7 +4341,7 @@
     "lib/video/script-compliance.ts": 9,
     "lib/video/script-structure.ts": 13,
     "lib/video/topic-video-runner.ts": 1,
-    "lib/video/topic-video.ts": 11,
+    "lib/video/topic-video.ts": 21,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 13,
     "lib/video/video-guide.ts": 7,
@@ -4341,12 +4354,13 @@
     "lib/video/video-status.ts": 2,
     "lib/video/video-thumbnail-embed.ts": 1,
     "lib/video/viral-script-share.ts": 1,
-    "lib/voice/a2p-registration.ts": 14,
+    "lib/voice/a2p-registration.ts": 17,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
     "lib/voice/call-coaching.ts": 1,
     "lib/voice/call-recording.ts": 5,
     "lib/voice/campaign-command.ts": 1,
+    "lib/voice/carrier-registration-loop.ts": 4,
     "lib/voice/command-coverage.ts": 3,
     "lib/voice/conversation-relay.ts": 8,
     "lib/voice/deal-decision.ts": 4,
@@ -4354,8 +4368,9 @@
     "lib/voice/inbound-number-binding.ts": 2,
     "lib/voice/isa-readiness-copy.ts": 1,
     "lib/voice/isa-readiness.ts": 1,
-    "lib/voice/local-number-search.ts": 4,
-    "lib/voice/number-provisioning.ts": 5,
+    "lib/voice/local-number-search.ts": 5,
+    "lib/voice/number-port-in.ts": 9,
+    "lib/voice/number-provisioning.ts": 6,
     "lib/voice/outbound-call-gates.ts": 1,
     "lib/voice/parse-team-command.ts": 1,
     "lib/voice/platform-reception.ts": 7,
@@ -6578,6 +6593,7 @@
       "captureEstimateStillAction",
       "listTenantScreenshotStillsAction",
       "captureEstimateComparisonAction",
+      "typeComparisonFigureAction",
       "listEstimateComparisonAction",
       "confirmComparisonFigureAction",
       "composeEstimateComparisonAction",
@@ -6912,6 +6928,11 @@
       "connectPhoneAction",
       "disconnectPhoneAction",
       "getPhoneStatusAction"
+    ],
+    "app/actions/phone-port-in.ts": [
+      "getPortInStatusAction",
+      "checkPortabilityAction",
+      "submitPortInAction"
     ],
     "app/actions/phone-provisioning.ts": [
       "getBrokeragePhoneSettings",
@@ -8218,6 +8239,10 @@
       "saveMemoryVideoDictationAction",
       "renderMemoryVideoAction"
     ],
+    "app/actions/video/topic-video-cadence.ts": [
+      "getTopicVideoCadenceAction",
+      "setTopicVideoCadenceAction"
+    ],
     "app/actions/video-content.ts": [
       "handleVideoGenerated",
       "approveAndGenerateVideo",
@@ -8630,6 +8655,9 @@
       "GET"
     ],
     "app/api/cron/capacity-guardian/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/carrier-registration-tick/route.ts": [
       "GET"
     ],
     "app/api/cron/client-pulse/route.ts": [
@@ -10931,6 +10959,9 @@
     "app/dashboard/admin/phone-settings/phone-test-card.tsx": [
       "PhoneTestCard"
     ],
+    "app/dashboard/admin/phone-settings/pick-or-port-card.tsx": [
+      "PickOrPortCard"
+    ],
     "app/dashboard/admin/phone-settings/twilio-byo-card.tsx": [
       "TwilioByoCard"
     ],
@@ -13032,6 +13063,9 @@
     "app/settings/campaign-bundles/learned-visual-rules-card.tsx": [
       "LearnedVisualRulesCard"
     ],
+    "app/settings/campaign-bundles/topic-video-cadence-card.tsx": [
+      "TopicVideoCadenceCard"
+    ],
     "app/settings/channel-presets/client.tsx": [
       "ChannelPresetsClient"
     ],
@@ -14266,7 +14300,6 @@
     ],
     "lib/assets/screenshot-capture.ts": [
       "demoStillSurface",
-      "isComparisonOnlyPageHost",
       "readyRulesForHost",
       "combinedReadySelector",
       "unsatisfiedReadyLabels",
@@ -16069,6 +16102,8 @@
       "scrapeCraigslistPosts",
       "scrapeLinkedInPosts",
       "scrapeFacebookMarketplaceListings",
+      "scrapeTikTokSearch",
+      "scrapeTikTokComments",
       "scrapeGoogleSearchResults"
     ],
     "lib/external/arcgis-permits.ts": [
@@ -16211,6 +16246,9 @@
     ],
     "lib/external/peopledata-client.ts": [
       "skipTraceWithPeopleData",
+      "pdlAgeFromBirth",
+      "ageRangeForAge",
+      "mapPeopleDataPerson",
       "validateEmailViaPeopleData"
     ],
     "lib/external/permit-signals.ts": [
@@ -18684,6 +18722,7 @@
       "reopenLeadOnInboundConsent"
     ],
     "lib/lead-pipeline/acquisition-coverage.ts": [
+      "recordAcquisitionIntents",
       "acquisitionIntentLabel"
     ],
     "lib/lead-pipeline/ai-intent-classifier.ts": [
@@ -18710,6 +18749,8 @@
     "lib/lead-pipeline/enrichment-column-map.ts": [
       "deriveEducationLevel",
       "peopleDataProfileToContactColumns",
+      "buildPeopleDataProfile",
+      "demographicsFromProfile",
       "peopleDataProfileToLeadColumns",
       "batchDataPropertyEnrichmentToLeadColumns",
       "batchDataPropertyEnrichmentToContactColumns"
@@ -18830,6 +18871,15 @@
     "lib/lead-pipeline/schedule-followup.ts": [
       "setEntityFollowup"
     ],
+    "lib/lead-pipeline/scrape-keywords.ts": [
+      "classifyIntentText",
+      "intentSignalsFromText",
+      "intentTypeFromText",
+      "resolveSourceKeywords",
+      "renderKeywordQuery",
+      "matchResolvedKeyword",
+      "KEYWORD_SOURCE_KEYS"
+    ],
     "lib/lead-pipeline/scrape-territories.ts": [
       "resolveScrapeTerritoriesFrom",
       "territoryUnion",
@@ -18848,7 +18898,8 @@
       "normalizeBatchDataRecord",
       "parseBuyerSavedSearches",
       "buildRealtySiteChatterUrl",
-      "parseContactAgentChatter"
+      "parseContactAgentChatter",
+      "parseSellerChatter"
     ],
     "lib/lead-pipeline/site-visitor-sourcer.ts": [
       "normalizeSiteVisitorRow",
@@ -18885,7 +18936,10 @@
       "sourceAgentSeekingPhraseIntent",
       "normalizeNewConstructionResult",
       "sourceNewConstructionIntent",
-      "sourceRealtySiteChatter"
+      "sourceRealtySiteChatter",
+      "normalizeNextdoorPost",
+      "normalizeTikTokComment",
+      "sourceTikTokIntent"
     ],
     "lib/lead-pipeline/source-conversion-learning.ts": [
       "computeLeadAcquisitionCost",
@@ -19385,7 +19439,7 @@
       "comparisonCopy",
       "renderComparisonSvg",
       "composeEstimateComparison",
-      "captureEstimateComparisonStills",
+      "gatherEstimateComparisonEvidence",
       "listComparisonEvidence",
       "confirmComparisonFigure",
       "buildEstimateComparisonCreative",
@@ -19395,6 +19449,21 @@
       "estimateSource",
       "estimateStillUseVerdict",
       "comparisonEstimateSource"
+    ],
+    "lib/marketing/estimate-web-search.ts": [
+      "parseAddressGeo",
+      "addressInTerritory",
+      "estimateSearchRequest",
+      "pickSubjectPage",
+      "excerptForExtraction",
+      "extractionPrompt",
+      "verifyExtraction",
+      "figureLabelDetail",
+      "searchPortalEstimate",
+      "webFigureRow",
+      "resolvePropertyTerritory",
+      "stageWebEstimateFigures",
+      "recordTypedComparisonFigure"
     ],
     "lib/marketing/geo-faq.ts": [
       "buildFaqFromTopics",
@@ -19507,7 +19576,6 @@
       "listTenantScreenshotStills",
       "pickApprovedStill",
       "approvedTenantStill",
-      "tenantScreenshotUrlsForVideo",
       "ensureZestimateChallengeStill"
     ],
     "lib/marketing/touchpoint-recorder.ts": [
@@ -20557,6 +20625,11 @@
       "searchAvailableTollFreeNumbers",
       "purchaseIncomingPhoneNumber",
       "releaseIncomingPhoneNumber",
+      "findIncomingPhoneNumber",
+      "checkPortability",
+      "createPortInRequest",
+      "fetchPortInRequest",
+      "uploadPortingUtilityBill",
       "placeCall",
       "hangupCall",
       "startCallRecording"
@@ -21616,6 +21689,7 @@
       "easeInOut",
       "dipOpacityAt",
       "edgeFadeFrames",
+      "cinemaMotionBlurFor",
       "cinemaTypeScale",
       "cinemaFrame",
       "cinemaMusicFades"
@@ -21880,17 +21954,27 @@
       "runTopicPoolVideos"
     ],
     "lib/video/topic-video.ts": [
+      "topicPersonaOf",
+      "personaRotation",
       "isoWeek",
-      "personaForWeek",
+      "personaForSlot",
+      "personaForTopicCategories",
       "seasonalCategories",
+      "resolveTopicVideoCadence",
+      "topicVideosPerWeek",
       "topicVideoWeekdays",
+      "topicVideoSlotToday",
       "isTopicVideoDay",
+      "terminalArchetypeFor",
       "topicArchetypeFor",
       "topicGoal",
       "topicScriptWords",
       "topicVideoBrief",
       "topicCategoriesForPersona",
-      "topicScriptPrompt"
+      "topicPersonaSide",
+      "topicVideoContent",
+      "topicScriptPrompt",
+      "scoreTopicVideoPersona"
     ],
     "lib/video/verbal-disclosure.ts": [
       "applyBrokerageVerbalDisclosure"
@@ -21959,6 +22043,9 @@
     ],
     "lib/voice/a2p-registration.ts": [
       "validateA2pProfile",
+      "deriveA2pProfile",
+      "resolveA2pProfile",
+      "recordLoopPhase",
       "nextA2pStep",
       "describeA2pState",
       "loadA2pState",
@@ -21996,6 +22083,12 @@
     ],
     "lib/voice/campaign-command.ts": [
       "pickLaunchableCampaign"
+    ],
+    "lib/voice/carrier-registration-loop.ts": [
+      "carrierRegistrationPhase",
+      "carrierTickPlan",
+      "advanceTenantCarrier",
+      "runCarrierRegistrationTick"
     ],
     "lib/voice/command-coverage.ts": [
       "coverageByDomain",
@@ -22038,13 +22131,26 @@
       "areaCodeFromPhone",
       "isValidLocalAreaCode",
       "planLocalNumberSearch",
+      "distanceMiles",
       "runLocalNumberSearch"
+    ],
+    "lib/voice/number-port-in.ts": [
+      "normalizePortStatus",
+      "defaultPortDate",
+      "validatePortInInput",
+      "portInNeedsPolling",
+      "describePortIn",
+      "loadPortIns",
+      "checkNumbersPortable",
+      "submitPortIn",
+      "pollPortIns"
     ],
     "lib/voice/number-provisioning.ts": [
       "logPhoneNumberEvent",
       "searchAvailableNumbers",
       "suggestLocalNumbers",
       "provisionNumber",
+      "attachOwnedNumber",
       "releaseNumber"
     ],
     "lib/voice/outbound-call-gates.ts": [
