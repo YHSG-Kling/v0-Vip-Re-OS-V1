@@ -1,17 +1,22 @@
 /**
- * Content-staging — thin wrappers around CANONICAL creator actions.
- *
- * Earlier draft of this file did raw inserts to each table. That bypassed
- * feature gates, brand-voice application, kernel events, compliance checks.
- * REFACTORED: each helper now calls the canonical creator, which keeps
- * `canAccessFeature` + `applyBrandVoice` + `evaluateOutbound` + lifecycle
- * events firing exactly as they do from manual creation.
+ * Content-staging — thin wrappers around the ONE creator per content type.
  *
  * Used by both:
- *   - app/actions/wizard-staging.ts        (auth-resolved, typed Copilot)
- *   - app/api/agent-assistant/tool-call    (ElevenLabs voice webhook)
+ *   - app/api/internal/ai-chat, lib/agents/marketing-agent-actions (typed Copilot / the
+ *     marketing agent — ctx from the cookie session or the agent's verified run)
+ *   - app/api/agent-assistant/tool-call (ElevenLabs voice webhook — ctx from the
+ *     agent_assistant_sessions row the secret-verified conversation id maps to)
  *
- * Each helper takes (brokerageId, userId) explicitly so it works from both.
+ * Each helper takes (brokerageId, userId) explicitly so it works from both, and HANDS THEM TO
+ * A SERVER-ONLY KERNEL CREATOR. None of them may import a "use server" action: those read the
+ * COOKIE session, which the webhook does not have, so every spoken request came back
+ * "Unauthorized" / "Not authenticated" / "Missing agent context" (wave 85D fixed direct mail,
+ * wave 85F the other five). Tool parameters supply content only, never an id: the kernel
+ * resolves agents.id itself, pinned to ctx.brokerageId (never ctx.userId, §3).
+ *
+ * TOMBSTONE (wave 85F): resolveAgentRowId, a users→agents read with NO tenant predicate on the
+ * service client, is deleted. Survivor: lib/kernel/content-creators.ts resolveActorAgentId
+ * (verified-or-crossed through lib/kernel/agent-identity.ts resolveAgentIdInBrokerage).
  */
 
 import "server-only"
@@ -23,6 +28,8 @@ export interface ContentStageResult {
   openUrl?: string
   summary?: string
   error?: string
+  /** Advisory compliance findings (warnings pass through, §5). */
+  complianceWarnings?: string[]
 }
 
 interface AgentCtx {
@@ -30,15 +37,7 @@ interface AgentCtx {
   userId: string
 }
 
-async function resolveAgentRowId(
-  svc: ReturnType<typeof createServiceClient>,
-  userId: string,
-): Promise<string | null> {
-  const { data } = await svc.from("agents").select("id").eq("user_id", userId).maybeSingle()
-  return data?.id ?? null
-}
-
-// ─── 1) Newsletter — calls canonical createNewsletterCampaign ────────────────
+// ─── 1) Newsletter — kernel authorNewsletterContent + createNewsletterCampaign ─
 
 export interface NewsletterIntake {
   title: string
@@ -54,60 +53,51 @@ export async function stageNewsletterDraft(
   if (!intake.title?.trim()) return { success: false, error: "title required" }
 
   try {
-    // Wave 21 — when the marketing agent calls stage_newsletter_draft, run the
-    // full canonical authoring chain instead of stuffing the intake topic into
-    // a single-section stub. aiWriteNewsletterContent pulls top topics from
-    // content_topic_bank, authors multi-section persona+location-targeted
-    // copy, runs the per-section compliance + brand-voice chain, and returns
-    // structured sections plus the seedTopicIds that anchored the issue.
-    // Those flow into createNewsletterCampaign so:
-    //   · the multi-section decomposer (Wave 20) actually has sections to
-    //     decompose (instead of one stub)
-    //   · seedTopicIds get logged to content_topic_uses (Wave 20.1) so the
-    //     performance loop captures which topics produced this draft
-    //   · the video render path (Wave 20.1) reads those same topic IDs back
-    //     for cohesion — video + sections develop the same threads
-    const { aiWriteNewsletterContent, createNewsletterCampaign } = await import("@/app/actions/ai-newsletter")
-    const topicForAuthor = intake.topic?.trim() || intake.title.trim()
-    const authored = await aiWriteNewsletterContent({
-      agentId:        ctx.userId,
-      brokerageId:    ctx.brokerageId,
-      topic:          topicForAuthor,
+    // Wave 21 — the full canonical authoring chain, not a one-section stub: topic-seeded,
+    // persona/location-targeted sections from the compliance-first writer, then the creator
+    // decomposes them and logs the seed topics (the performance loop + the video cohesion).
+    // Wave 85F — both halves are the server-only kernel (lib/kernel/content-creators.ts), fed
+    // the verified ctx; the "use server" pair in app/actions/ai-newsletter.ts refused the
+    // webhook "Unauthorized".
+    const { authorNewsletterContent, createNewsletterCampaign } = await import("@/lib/kernel/content-creators")
+    const actor = { userId: ctx.userId, brokerageId: ctx.brokerageId }
+    const authored = await authorNewsletterContent({
+      ctx: actor,
+      topic: intake.topic?.trim() || intake.title.trim(),
       targetAudience: intake.audience ?? "all",
-      tone:           "friendly",
+      tone: "friendly",
     })
-    const authoredOk = authored as { success: boolean; sections?: unknown[]; seedTopicIds?: string[]; error?: string }
-    if (!authoredOk.success) {
-      return { success: false, error: authoredOk.error ?? "Newsletter content authoring failed" }
-    }
-    const sections = (authoredOk.sections ?? []) as Array<Record<string, unknown>>
-    const seedTopicIds = Array.isArray(authoredOk.seedTopicIds) ? authoredOk.seedTopicIds : []
+    if (!authored.success) return { success: false, error: authored.error ?? "Newsletter content authoring failed" }
+    const sections = authored.sections
+    const seedTopicIds = authored.seedTopicIds
 
     const result = await createNewsletterCampaign({
-      agentId:         ctx.userId,
-      brokerageId:     ctx.brokerageId,
-      title:           intake.title,
-      subjectLine:     intake.subjectLine ?? intake.title,
-      preheaderText:   "",
-      template:        "default",
-      content:         sections as never,
+      ctx: actor,
+      title: intake.title,
+      subjectLine: intake.subjectLine ?? intake.title,
+      preheaderText: "",
+      template: "default",
+      content: sections,
       audienceSegment: intake.audience ?? "all",
       seedTopicIds,
+      // Model-written: stamped for the marketing-ai-approvals queue (pending_review).
+      aiAuthored: true,
     })
     if (!result.success) return { success: false, error: result.error ?? "Newsletter creation failed" }
-    const newsletterId = (result as { newsletter?: { id?: string } }).newsletter?.id
+    const newsletterId = String(result.newsletter.id)
     return {
       success: true,
       draftId: newsletterId,
-      openUrl: newsletterId ? `/newsletters?draft=${newsletterId}` : "/newsletters",
-      summary: `Newsletter draft "${intake.title}" staged via canonical pipeline — ${sections.length} topic-seeded section(s) authored from ${seedTopicIds.length} content_topic_bank thread(s); brand voice + per-section compliance gates intact. Agent opens the newsletter editor to review and schedule.`,
+      openUrl: `/newsletters?draft=${newsletterId}`,
+      summary: `Newsletter draft "${intake.title}" staged for review — ${sections.length} topic-seeded section(s) from ${seedTopicIds.length} content_topic_bank thread(s), written compliance-first with brand voice and a per-section compliance gate. Agent opens the newsletter editor to review and schedule.`,
+      ...(authored.complianceWarnings?.length ? { complianceWarnings: authored.complianceWarnings } : {}),
     }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Newsletter staging failed" }
   }
 }
 
-// ─── 2) Email Campaign — calls canonical createEmailCampaign ─────────────────
+// ─── 2) Email Campaign — kernel createEmailCampaign ──────────────────────────
 
 export interface EmailCampaignIntake {
   campaignName: string
@@ -123,25 +113,23 @@ export async function stageEmailCampaign(
   if (!intake.campaignName?.trim()) return { success: false, error: "campaign_name required" }
 
   try {
-    const { createEmailCampaign } = await import("@/app/actions/email-campaigns")
-    const svc = createServiceClient()
-    const agentId = await resolveAgentRowId(svc, ctx.userId)
+    // Wave 85F: the kernel creator, fed the verified ctx. It crosses users→agents itself,
+    // pinned to ctx.brokerageId (the old unpinned resolveAgentRowId is gone).
+    const { createEmailCampaign } = await import("@/lib/kernel/content-creators")
     const result = await createEmailCampaign({
-      brokerageId: ctx.brokerageId,
-      agentId: agentId ?? undefined,
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
       campaignName: intake.campaignName,
       subjectLine: intake.subjectLine ?? intake.campaignName,
       content: intake.content ?? "",
       sendDate: intake.sendDate,
-      createdBy: ctx.userId,
     })
     if (!result.success) return { success: false, error: result.error ?? "Email campaign creation failed" }
-    const campaignId = (result as { campaign?: { id?: string } }).campaign?.id
+    const campaignId = String(result.campaign.id)
     return {
       success: true,
       draftId: campaignId,
-      openUrl: campaignId ? `/dashboard/marketing/studio?email_draft=${campaignId}` : "/dashboard/marketing/studio",
-      summary: `Email campaign "${intake.campaignName}" staged as draft. Kernel feature gate + compliance pipeline intact.`,
+      openUrl: `/dashboard/marketing/studio?email_draft=${campaignId}`,
+      summary: `Email campaign "${intake.campaignName}" staged as a draft pending approval (feature gate intact). Nothing sends until the agent schedules it.`,
     }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Email staging failed" }
@@ -217,7 +205,7 @@ export async function stageOpenHouse(
   }
 }
 
-// ─── 4) Blog post — calls canonical saveBlogPost when auth, fallback otherwise
+// ─── 4) Blog post — kernel createBlogPostDraft ───────────────────────────────
 
 export interface BlogPostIntake {
   title: string
@@ -231,67 +219,31 @@ export async function stageBlogDraft(
 ): Promise<ContentStageResult> {
   if (!intake.title?.trim()) return { success: false, error: "title required" }
 
-  // saveBlogPost uses getAgentContext() internally — works only when called
-  // from authenticated context (typed Copilot /api/internal/ai-chat). For the
-  // ElevenLabs webhook path we still need a fallback direct insert. We try
-  // the canonical path first and fall through on failure.
+  // TOMBSTONE (wave 85F, §1.1): this used to try the "use server" saveBlogPost (refused on the
+  // webhook: no cookie session) and FALL THROUGH to a raw service-role blog_posts insert that
+  // skipped the feature gate and the usage counter. Both merged onto the one creator.
   try {
-    const { saveBlogPost } = await import("@/app/actions/blog")
-    const result = await saveBlogPost({
+    const { createBlogPostDraft } = await import("@/lib/kernel/content-creators")
+    const result = await createBlogPostDraft({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
       title: intake.title,
       content: intake.topic ? `# ${intake.title}\n\n${intake.topic}` : `# ${intake.title}\n\n`,
       publishStatus: "draft",
       category: intake.category,
     })
-    if (result.success && result.postId) {
-      return {
-        success: true,
-        draftId: result.postId,
-        openUrl: `/dashboard/marketing/blog/${result.postId}`,
-        summary: `Blog draft "${intake.title}" staged via canonical saveBlogPost (feature gate + brand voice intact). Agent opens the editor to expand and publish.`,
-      }
+    if (!result.success) return { success: false, error: result.error ?? "Blog draft creation failed" }
+    return {
+      success: true,
+      draftId: result.postId,
+      openUrl: `/dashboard/marketing/blog/${result.postId}`,
+      summary: `Blog draft "${intake.title}" staged (feature gate intact). Agent opens the editor to expand and publish.`,
     }
-    // fall through to direct insert
-  } catch {
-    // fall through to direct insert
-  }
-
-  // Fallback — direct insert when getAgentContext is unavailable (webhook path)
-  const svc = createServiceClient()
-  const slug =
-    intake.title
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .replace(/\s+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80) || `post-${Date.now()}`
-
-  const { data, error } = await svc
-    .from("blog_posts")
-    .insert({
-      brokerage_id: ctx.brokerageId,
-      agent_user_id: ctx.userId,
-      created_by: ctx.userId,
-      title: intake.title,
-      slug,
-      content: intake.topic ? `# ${intake.title}\n\n${intake.topic}` : `# ${intake.title}\n\n`,
-      publish_status: "draft",
-      visibility_scope: "agent",
-      category: intake.category ?? null,
-    })
-    .select("id, title")
-    .maybeSingle()
-  if (error || !data) return { success: false, error: error?.message ?? "Blog insert failed" }
-
-  return {
-    success: true,
-    draftId: data.id,
-    openUrl: `/dashboard/marketing/blog/${data.id}`,
-    summary: `Blog draft "${data.title}" staged. Agent opens the editor to expand and publish.`,
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Blog staging failed" }
   }
 }
 
-// ─── 5) Podcast episode — canonical createPodcastEpisode, fallback otherwise
+// ─── 5) Podcast episode — kernel createPodcastEpisode ────────────────────────
 
 export interface PodcastEpisodeIntake {
   title: string
@@ -307,63 +259,39 @@ export async function stagePodcastEpisode(
 ): Promise<ContentStageResult> {
   if (!intake.title?.trim()) return { success: false, error: "title required" }
 
-  // createPodcastEpisode uses getAgentContext — works in auth path only.
+  // TOMBSTONE (wave 85F, §1.1): the "use server" createPodcastEpisode was refused on the webhook
+  // ("Missing agent context"), and the raw podcast_episodes fallback insert that followed
+  // skipped the gate, brand voice, the compliance gate and the counter. Both merged onto the
+  // one creator. A spoken "start a podcast on X" with no script is written by the kernel's
+  // compliance-first writer, from the title/description as its topic.
   try {
-    const { createPodcastEpisode } = await import("@/app/actions/podcast-generation")
+    const { createPodcastEpisode } = await import("@/lib/kernel/content-creators")
+    const keywords = intake.keywords?.length
+      ? intake.keywords
+      : intake.script?.trim() ? undefined : [intake.title, intake.description ?? ""].filter((k) => k.trim().length > 0)
     const result = await createPodcastEpisode({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
       title: intake.title,
       description: intake.description,
       script: intake.script,
       category: intake.category,
-      keywords: intake.keywords,
+      keywords,
     })
-    if (result.success && (result as { episodeId?: string; episode?: { id?: string } }).episodeId) {
-      const id = (result as { episodeId?: string }).episodeId
-      return {
-        success: true,
-        draftId: id,
-        openUrl: `/dashboard/marketing/podcast?episode=${id}`,
-        summary: `Podcast episode "${intake.title}" staged via canonical createPodcastEpisode (feature gate + provider resolution intact).`,
-      }
+    if (!result.success) return { success: false, error: result.error ?? "Podcast episode creation failed" }
+    const id = String(result.episode.id)
+    return {
+      success: true,
+      draftId: id,
+      openUrl: `/dashboard/marketing/podcast?episode=${id}`,
+      summary: `Podcast episode "${intake.title}" staged as a draft (feature gate, brand voice and compliance gate intact).`,
+      ...(result.complianceWarnings?.length ? { complianceWarnings: result.complianceWarnings } : {}),
     }
-  } catch {
-    // fall through
-  }
-
-  // Fallback — direct insert
-  const svc = createServiceClient()
-  // podcast_episodes.agent_id is a NOT NULL FK to agents(id). Scoped resolve —
-  // ctx carries the brokerage, and this is the webhook path where the caller is
-  // whichever user the wizard is acting for, who may hold rows in two tenants.
-  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
-  const episodeAgentId = await resolveAgentIdInBrokerage(svc, ctx.userId, ctx.brokerageId)
-  if (!episodeAgentId) {
-    return { success: false, error: "No agent profile for this user in this brokerage — the episode has no owner to file it under." }
-  }
-  const { data, error } = await svc
-    .from("podcast_episodes")
-    .insert({
-      brokerage_id: ctx.brokerageId,
-      agent_id: episodeAgentId,
-      title: intake.title,
-      description: intake.description ?? null,
-      script: intake.script ?? null,
-      category: intake.category ?? "market_update",
-      keywords: intake.keywords ?? [],
-      status: "draft",
-    })
-    .select("id, title")
-    .maybeSingle()
-  if (error || !data) return { success: false, error: error?.message ?? "Podcast insert failed" }
-  return {
-    success: true,
-    draftId: data.id,
-    openUrl: `/dashboard/marketing/podcast?episode=${data.id}`,
-    summary: `Podcast episode "${data.title}" staged as draft.`,
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Podcast staging failed" }
   }
 }
 
-// ─── 6) Video project — calls canonical createVideoProject ───────────────────
+// ─── 6) Video project — kernel createVideoProject ────────────────────────────
 
 export interface VideoProjectIntake {
   title: string
@@ -381,42 +309,34 @@ export async function stageVideoProject(
   if (!intake.title?.trim()) return { success: false, error: "title required" }
 
   try {
-    const { createVideoProject } = await import("@/app/actions/video/create-video-project")
-    const svc = createServiceClient()
-    // IDENTITY CLASS (m363) — INVERTED, not merely loose. createVideoProject
-    // writes ai_video_projects.agent_id, one of the twenty columns that FK
-    // USERS, and uses the same value as actorUserId for brand voice and as
-    // userId for the compliance actor context. It wants ctx.userId. This
-    // resolved users→AGENTS first and passed that, so the correct value was
-    // reachable ONLY through the `??` fallback — i.e. the feature worked only
-    // for users who had no agents row, and was FK-rejected for everyone else.
-    // The resolve is deleted rather than reordered: nothing here needs it.
-    //
-    // The field is `agentUserId`, not `agentId` — it was renamed when the
-    // users->agents resolve moved inside createVideoProject, and the `as never`
-    // cast at the end of this call kept the stale name compiling. The param
-    // arrived undefined, so isValidUUID rejected it and this lane returned
-    // "Invalid brokerage or agent ID" for EVERY user. Named correctly now; the
-    // value was already the right one (users-class ctx.userId).
+    // Wave 85F: the kernel creator, fed the verified ctx. The "use server" createVideoProject
+    // wrote through the cookie client, which is anon on the webhook (RLS refused it). The
+    // creator crosses ctx.userId (users-class, IDENTITY CLASS m363) to the agents row itself,
+    // holds a red-flag or unevaluated script for a human, validates the spoken video type
+    // against the CHECK, and verifies the listing is this tenant's.
+    const { createVideoProject } = await import("@/lib/kernel/content-creators")
     const result = await createVideoProject({
-      brokerageId: ctx.brokerageId,
-      agentUserId: ctx.userId,
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
       title: intake.title,
       script: intake.script ?? "",
-      videoType: (intake.videoType ?? "market_update") as never,
+      // No dictated script → the shell lane (it used to be refused "Script is required"); the
+      // studio writes the script compliance-first later.
+      scriptPending: !intake.script?.trim(),
+      videoType: intake.videoType ?? "market_update",
       format: intake.format ?? "vertical",
       durationSeconds: intake.durationSeconds ?? 45,
       captionsEnabled: true,
-      backgroundType: "office_modern" as never,
+      backgroundType: "branded",
       listingId: intake.listingId,
-    } as never)
+    })
     if (!result.success) return { success: false, error: result.error ?? "Video project creation failed" }
-    const projectId = (result as { project?: { id?: string } }).project?.id
+    const projectId = String(result.project?.id ?? "")
     return {
       success: true,
-      draftId: projectId,
+      draftId: projectId || undefined,
       openUrl: projectId ? `/dashboard/videos/create?project=${projectId}` : "/dashboard/videos",
-      summary: `Video project "${intake.title}" staged via canonical createVideoProject pipeline.`,
+      summary: `Video project "${intake.title}" staged (fair-housing hold checked${intake.script?.trim() ? "" : "; no script yet — the studio writes it"}).`,
+      ...(result.realismWarnings?.length ? { complianceWarnings: result.realismWarnings } : {}),
     }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Video staging failed" }

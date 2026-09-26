@@ -52,6 +52,11 @@ const src = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(jo
 const code = (p: string) => stripComments(src(p))
 
 const SURVIVOR = "app/actions/video/create-video-project.ts"
+// Wave 85F: the survivor's BODY moved to the server-only kernel creator (the voice webhook has
+// no cookie session to reach the "use server" door, which is now its session-gated adapter).
+// Every "the survivor writes …" rule below follows the writer there (§2: the rule, not the
+// waypoint). The contract (CreateVideoProjectParams) still lives on the door.
+const CREATOR = "lib/kernel/content-creators.ts"
 const DUPLICATE = "app/actions/video.ts"
 const ROUTE = "app/api/video/projects/route.ts"
 const KERNEL = "lib/kernel/video.ts"
@@ -60,7 +65,7 @@ const STAGING = "lib/wizard-staging/content-staging.ts"
 /** The survivor's createVideoProject body only — assertions must not be
  *  satisfied by some other function in a 600-line file. */
 function survivorCreateBody(): string {
-  const c = code(SURVIVOR)
+  const c = code(CREATOR)
   const start = c.search(/export\s+async\s+function\s+createVideoProject\s*\(/)
   if (start < 0) return ""
   const next = c.slice(start + 1).search(/\nexport\s+(async\s+)?function\s/)
@@ -174,7 +179,7 @@ function supersetLayer() {
   check("the insert writes marketing_campaign_id as a real column",
     /\.insert\(\{[\s\S]*?\bmarketing_campaign_id\s*:/.test(body))
   check("...from the caller's campaignId, resolved before the insert",
-    /params\.campaignId/.test(body) &&
+    /(params|input)\.campaignId/.test(body) &&
     /marketing_campaign_id\s*:\s*(?!null\b|undefined\b)[A-Za-z_$]/.test(body))
 
   // THE TWO METADATA KEYS. The column is video_metadata; source_type/source_id
@@ -206,13 +211,13 @@ function supersetLayer() {
   check("the video_metadata builder was located", metaBuilder.length > 0)
   for (const [key, param] of [["source_type", "sourceType"], ["source_id", "sourceId"], ["description", "description"]]) {
     check(`video_metadata.${key} comes from params.${param}`,
-      new RegExp(`videoMetadata\\.${key}\\s*=\\s*params\\.${param}\\b`).test(metaBuilder))
+      new RegExp(`videoMetadata\\.${key}\\s*=\\s*(params|input)\\.${param}\\b`).test(metaBuilder))
   }
 
   // background_color was the jsonb's only occupant. A superset ADDS; it must not
   // have replaced the object wholesale and dropped it.
   check("background_color survived the jsonb merge — the object is built, not overwritten",
-    /videoMetadata\.background_color\s*=\s*params\.backgroundColorHex\b/.test(metaBuilder))
+    /videoMetadata\.background_color\s*=\s*(params|input)\.backgroundColorHex\b/.test(metaBuilder))
 
   // THE SCRIPTLESS SHELL LANE. The kernel created status 'setup' projects with
   // no script; POST .../script filled them in later. Without this the survivor
@@ -228,14 +233,17 @@ function supersetLayer() {
     /status\s*:\s*[^,\n]*["']draft["']/.test(body))
   check("...while a script in hand yields 'script_ready', not the same bucket",
     /status\s*:\s*[^,\n]*["']script_ready["']/.test(body) &&
-    /params\.script\?\.trim\(\)\s*\?\s*["']script_ready["']/.test(body))
+    /(params|input)\.script\?\.trim\(\)\s*\?\s*["']script_ready["']/.test(body))
   check("...and an empty script is STILL an error unless scriptPending says so",
-    /!\s*params\.script\??\.?trim\(\)\s*&&\s*!\s*params\.scriptPending/.test(body.replace(/\s+/g, " ")) ||
-    /!params\.script\?\.trim\(\) && !params\.scriptPending/.test(body.replace(/\s+/g, " ")))
+    /!\s*(params|input)\.script\??\.?trim\(\)\s*&&\s*!\s*(params|input)\.scriptPending/.test(body.replace(/\s+/g, " ")))
 
   // The survivor keeps everything it already did MORE of than the kernel.
+  // (Wave 85F: the resolve is the kernel's resolveActorAgentId — a supplied agents id is
+  // verified in-tenant, otherwise resolveAgentIdInBrokerage crosses users→agents.)
+  const creatorCode = code(CREATOR)
   check("the survivor still resolves users->agents for the agents-class column",
-    /resolveAgentIdInBrokerage/.test(body) && /agent_id\s*:\s*projectAgentId/.test(body))
+    (/resolveAgentIdInBrokerage/.test(body) || (/resolveActorAgentId\(/.test(body) && /resolveAgentIdInBrokerage\(client, ctx\.userId, ctx\.brokerageId\)/.test(creatorCode)))
+    && /agent_id\s*:\s*(projectAgentId|agent\.agentId)/.test(body))
   // Both halves named explicitly: the row written to lifecycle_events AND the
   // event handed to processKernelEvent. `VIDEO_GENERATION_REQUESTED` appearing
   // anywhere in the body is not enough — either one alone leaves the other free
@@ -275,9 +283,15 @@ function silentFailureLayer() {
   const body = survivorCreateBody()
 
   check("the ai_video_projects insert destructures error",
-    /const\s*\{\s*data:\s*project,\s*error\s*\}\s*=\s*await\s*supabase[\s\S]{0,60}?ai_video_projects/.test(body))
+    /const\s*\{\s*data:\s*\w+,\s*error\s*\}\s*=\s*await\s*supabase[\s\S]{0,60}?ai_video_projects/.test(body))
+  // Wave 85F: the campaign lookup is the kernel's one in-tenant verifier (verifyInTenant),
+  // which destructures and RETURNS the error; the creator refuses on !ok.
+  const creator = code(CREATOR)
+  const verifier = creator.slice(creator.indexOf("async function verifyInTenant("), creator.indexOf("function exactlyOne("))
   check("the campaign tenant lookup destructures error",
-    /const\s*\{\s*data:\s*campaign,\s*error:\s*campaignError\s*\}/.test(body))
+    /const\s*\{\s*data:\s*campaign,\s*error:\s*campaignError\s*\}/.test(body) ||
+    (/verifyInTenant\(supabase,\s*"marketing_campaigns"/.test(body) && /if\s*\(!v\.ok\)\s*return/.test(body)
+      && /const\s*\{\s*data,\s*error\s*\}\s*=\s*await\s*client\.from\(table\)/.test(verifier) && /if\s*\(error\)\s*return\s*\{\s*ok:\s*false/.test(verifier)))
   check("the lifecycle_events insert destructures error — it used to be a bare await",
     /const\s*\{\s*error:\s*\w+\s*\}\s*=\s*await\s*supabase\s*\.?\s*from\(["']lifecycle_events["']\)/.test(body.replace(/\s*\n\s*/g, " ")))
 }
@@ -352,13 +366,13 @@ function rulingsLayer() {
   // HeyGen in prose to record that it is banned and what was renamed away from
   // it; a comment saying "there is no HeyGen path" is not a HeyGen path. What
   // must not exist is an identifier, a string or a column that reaches a vendor.
-  for (const f of [SURVIVOR, ROUTE, DUPLICATE]) {
+  for (const f of [SURVIVOR, CREATOR, ROUTE, DUPLICATE]) {
     check(`no HeyGen reference in the CODE of ${f}`, !/heygen/i.test(code(f)))
   }
   // Video is a PAYLOAD, not a channel: the creator writes a project row, it does
   // not open a distribution channel.
   check("the creator does not treat video as a channel",
-    !/channel\s*:\s*["']video["']/i.test(code(SURVIVOR)))
+    !/channel\s*:\s*["']video["']/i.test(code(SURVIVOR) + code(CREATOR)))
 }
 
 // ── 6. THE CALLER DEFECT FOUND ON THE WAY PAST ──────────────────────────────
@@ -368,8 +382,10 @@ function callerLayer() {
   const staging = code(STAGING)
   const call = staging.slice(staging.search(/createVideoProject\(\{/))
     .slice(0, 700)
-  check("content-staging calls createVideoProject with agentUserId, not the stale agentId",
-    call.length > 0 && /agentUserId\s*:/.test(call) && !/\bagentId\s*:/.test(call))
+  // Wave 85F: staging now calls the kernel creator with a users-class ctx (ctx.userId); the
+  // rule — a users id, never the stale `agentId` key — is the same.
+  check("content-staging calls createVideoProject with a users-class id, not the stale agentId",
+    call.length > 0 && (/agentUserId\s*:/.test(call) || /ctx:\s*\{\s*userId:\s*ctx\.userId/.test(call)) && !/\bagentId\s*:/.test(call))
 }
 
 // ── 7. LIVE LAYER — creds-gated, read-only, skips loudly ────────────────────

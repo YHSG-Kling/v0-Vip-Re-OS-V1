@@ -8,7 +8,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { convertSpeech } from "@/lib/providers/elevenlabs/client"
-import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -16,7 +15,6 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -30,7 +28,8 @@ import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-polic
  * - canAccessFeature('podcast_generation') before any write
  * - resolveProvider({ providerType: 'video', actorContext }) for voice synthesis via heygen stack
  * - applyBrandVoice() on script/show notes before saving
- * - evaluateOutbound() on script — block if compliance fails
+ * - evaluateOutbound() on script — block if compliance fails (createPodcastEpisode: now inside
+ *   lib/kernel/content-creators.ts, wave 85F)
  * - checkBrandCompliance(contentType='podcast') after episode is saved
  * - processKernelEvent(PODCAST_EPISODE_GENERATED) after status='completed'
  * - processKernelEvent(PODCAST_EPISODE_DISTRIBUTED) for each channel success
@@ -50,269 +49,45 @@ export async function createPodcastEpisode(params: {
   sourceVideoAssetId?: string
   marketingCampaignId?: string
   publishChannels?: string[]
-}) {
-  const supabase = await createClient()
-
-  // Get agent context for proper FK relationships and kernel calls
-  let agentContext: { userId: string; agentId: string; brokerageId: string }
+}): Promise<{
+  success: boolean
+  episode?: Record<string, any>
+  brandVoiceNotes?: string[]
+  complianceWarnings?: string[]
+  violations?: string[]
+  error?: string
+}> {
+  // TOMBSTONE (wave 85F, §1.1). The feature gate, provider/template/voice resolution, the
+  // script writer, brand voice, the outbound compliance gate, the podcast_episodes insert,
+  // the template use counter, the usage counter and the post-save brand check MOVED to the one
+  // creator, lib/kernel/content-creators.ts createPodcastEpisode. The voice webhook has no
+  // cookie session and was refused "Missing agent context" here, then fell back to a raw
+  // service-role insert in lib/wizard-staging/content-staging.ts (merged onto the same
+  // creator). The unwired lib/kernel/marketing.ts createPodcastEpisodeKernel merged onto it
+  // too. Closed in the move: podcast_templates was read by id with no tenant predicate, and
+  // the campaign / source-video ids were written unverified. This door keeps the SESSION.
   try {
     const ctx = await getAgentContext()
-    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
-    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
-    agentContext = {
-      userId: ctx.userId,
-      agentId: ctx.agentId,
-      brokerageId: ctx.brokerageId,
+    if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
     }
-  } catch {
-    return { success: false, error: "Not authenticated" }
-  }
-
-  const { userId, agentId, brokerageId } = agentContext
-
-  try {
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL GATE 1: Feature Access Check
-    // ══════════════════════════════════════════════════════════════════════════
-    const accessCheck = await canAccessFeature(userId, "podcast_generation")
-    if (!accessCheck.allowed) {
-      return { success: false, error: accessCheck.reason || "Feature access denied" }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL: Resolve Provider (video stack for voice synthesis)
-    // ══════════════════════════════════════════════════════════════════════════
-    const provider = await resolveProvider({
-      providerType: "video",
-      actorContext: {
-        userId,
-        brokerageId,
-        teamId: undefined,
-      },
+    const { createPodcastEpisode: fileEpisode } = await import("@/lib/kernel/content-creators")
+    return await fileEpisode({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? undefined },
+      ...params,
     })
-
-    // If template provided, load template settings
-    let templateData: { use_count?: number | null; [k: string]: unknown } | null = null
-    if (params.templateId) {
-      const { data: template } = await supabase
-        .from("podcast_templates")
-        .select("*")
-        .eq("id", params.templateId)
-        .single()
-      templateData = template
-    }
-
-    // Resolve agent's ElevenLabs cloned voice (canonical for podcast audio).
-    // The voice clone lives in agent_voice_profiles keyed by agents.id (agentId) —
-    // it is a customer-facing brand asset. (users has no elevenlabs_voice_id.)
-    const { data: voiceProfile } = await supabase
-      .from("agent_voice_profiles")
-      .select("elevenlabs_voice_id")
-      .eq("agent_id", agentId)
-      .eq("brokerage_id", brokerageId)
-      .order("is_default", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    const agentVoiceId = voiceProfile?.elevenlabs_voice_id ?? null
-
-    // Generate script from keywords if no script provided
-    let finalScript = params.script
-    if (!finalScript && params.keywords && params.keywords.length > 0) {
-      finalScript = await generateScriptFromKeywords(params.keywords, params.category, userId)
-    }
-
-    if (!finalScript) {
-      return { success: false, error: "Script or keywords required" }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL GATE 2: Apply Brand Voice
-    // ══════════════════════════════════════════════════════════════════════════
-    const brandVoiceResult = await applyBrandVoice({
-      brokerageId,
-      actorUserId: userId,
-      actorRole: "agent",
-      journeyType: "buyer",
-      persona: "first_time",
-      messageType: "social",
-      content: finalScript,
-    })
-
-    // Check for brand voice violations (hard block on prohibited words)
-    if (brandVoiceResult.violations.length > 0) {
-      const hasProhibitedWord = brandVoiceResult.violations.some(v => 
-        v.toLowerCase().includes("prohibited")
-      )
-      if (hasProhibitedWord) {
-        return { 
-          success: false, 
-          error: `Brand voice violation: ${brandVoiceResult.violations[0]}`,
-          violations: brandVoiceResult.violations,
-        }
-      }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL GATE 3: Evaluate Outbound Compliance
-    // ══════════════════════════════════════════════════════════════════════════
-    // Create a minimal contact object for compliance check (podcast is broadcast, not 1:1)
-    const complianceResult = await evaluateOutbound({
-      actorContext: {
-        userId,
-        brokerageId,
-        teamId: undefined,
-        role: "agent",
-      },
-      journeyType: "buyer",
-      persona: "first_time",
-      messageType: "social",
-      content: finalScript,
-      contact: {
-        id: agentId, // Use agent as the "contact" for broadcast content
-        first_name: "",
-        last_name: "",
-        contact_type: "buyer" as const,
-        tcpa_consent: true, // Podcast is not direct outreach
-        isa_reengage_allowed: true,
-        dnc_status: false,
-        status: "active",
-      },
-    })
-
-    if (!complianceResult.allowed) {
-      return { 
-        success: false, 
-        error: `Compliance violation: ${complianceResult.blockedReason}`,
-        violations: complianceResult.violations,
-      }
-    }
-
-    // Create episode record with all kernel-required fields
-    const { data: episode, error } = await supabase
-      .from("podcast_episodes")
-      .insert({
-        brokerage_id: brokerageId,
-        agent_id: agentId,
-        template_id: params.templateId || null,
-        marketing_campaign_id: params.marketingCampaignId || null,
-        source_video_project_id: params.sourceVideoProjectId || null,
-        source_video_asset_id: params.sourceVideoAssetId || null,
-        title: params.title,
-        description: params.description || "",
-        script: finalScript,
-        keywords: params.keywords || [],
-        primary_voice_id: params.voiceId || agentVoiceId || templateData?.default_voice_id || provider.config?.default_voice_id || "default",
-        voice_settings: templateData?.voice_settings || provider.config?.voice_settings || {
-          stability: 0.5,
-          similarity_boost: 0.75,
-          style: 0.0,
-          use_speaker_boost: true,
-        },
-        category: params.category || "general",
-        status: "draft",
-        publish_channels: params.publishChannels || [],
-      })
-      .select()
-      .single()
-
-    // ── THE TEMPLATE'S USE COUNTER ─────────────────────────────────────────
-    // `podcast_templates.use_count` is ORDERED BY in getPodcastTemplates
-    // (this file) and RENDERED verbatim — "Used {n} times" —
-    // app/dashboard/marketing/podcast/components/templates-tab.tsx:204. Nothing
-    // incremented it, so every template read "Used 0 times" for ever and the
-    // most-used ordering was arbitrary. Creating an episode FROM a template is
-    // the use.
-    //
-    // Read-then-write: PostgREST cannot express `col = col + 1` and there is no
-    // increment RPC for this table, so two simultaneous generations can cost one
-    // tick. That is acceptable for a popularity counter and is stated rather
-    // than hidden. Never blocks the episode — an unbumped counter must not lose
-    // a podcast the tenant already paid to generate.
-    if (params.templateId && !error) {
-      const { data: bumped, error: bumpErr } = await supabase
-        .from("podcast_templates")
-        .update({ use_count: Number(templateData?.use_count ?? 0) + 1 })
-        .eq("id", params.templateId)
-        .eq("agent_id", agentId)
-        .eq("brokerage_id", brokerageId)
-        .select("id")
-      if (bumpErr) console.error("[podcast] template use_count not bumped:", bumpErr.message)
-      else if ((bumped ?? []).length === 0) {
-        console.error(`[podcast] template ${params.templateId} matched no row in this tenant when bumping use_count`)
-      }
-    }
-
-    if (error) throw error
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL: Increment Feature Usage
-    // ══════════════════════════════════════════════════════════════════════════
-    await incrementFeatureUsage(userId, "podcast_generation")
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL: Check Brand Compliance (post-save)
-    // ══════════════════════════════════════════════════════════════════════════
-    await checkBrandCompliance({
-      contentType: "podcast",
-      contentId: episode.id,
-      brokerageId,
-    }).catch(err => {
-      console.error("[Podcast] Brand compliance check failed (non-blocking):", err)
-    })
-
-    return { 
-      success: true, 
-      episode,
-      brandVoiceNotes: brandVoiceResult.notes,
-    }
   } catch (error: any) {
-    console.error("[v0] Error creating podcast episode:", error)
-    return { success: false, error: error.message }
+    console.error("[podcast] Error creating podcast episode:", error)
+    return { success: false, error: error?.message ?? "Failed to create podcast episode" }
   }
 }
 
-// Generate script from keywords using AI
-async function generateScriptFromKeywords(keywords: string[], category?: string, userId?: string): Promise<string> {
-  if (userId) {
-    const access = await canAccessFeature(userId, "podcast_generation")
-    if (!access.allowed) throw new Error(access.reason ?? "Podcast generation not available")
-  }
-  // Use Grok/OpenAI to generate podcast script
-  const prompt = `Generate a 3-5 minute podcast script for a real estate agent based on these keywords: ${keywords.join(", ")}. 
-  Category: ${category || "general real estate"}
-  
-  The script should:
-  - Have a friendly, conversational tone
-  - Include an intro, main content, and outro
-  - Be engaging and informative
-  - Include transitions between topics
-  - End with a call-to-action
-  
-  Format: Return only the script text, no additional formatting.`
-
-  try {
-    const response = await gatewayChat({
-      model: "xai/grok-beta",
-      temperature: 0.7,
-      maxTokens: 2048,
-      messages: [
-        { role: "system", content: "You are a professional podcast script writer for real estate agents." },
-        { role: "user", content: prompt },
-      ],
-    })
-
-    if (!response.ok) {
-      throw new Error(`Script API request failed: ${response.error}`)
-    }
-    if (!response.content) {
-      throw new Error("Invalid API response: missing content")
-    }
-    return response.content
-  } catch (error) {
-    console.error("[v0] Error generating script:", error)
-    throw new Error("Failed to generate script from keywords")
-  }
-}
+// TOMBSTONE (wave 85F, §1.1/§5): generateScriptFromKeywords (private) MOVED to
+// lib/kernel/content-creators.ts writePodcastScript. It wrote with a bare "podcast script
+// writer" system prompt and no post-check; the survivor puts buildComplianceSystemBlocks in
+// the system prompt, pre-checks the brief for fair housing, and grades the draft with
+// postcheckScript via gradeWrittenCopy (a hard fair-housing or blocking-phrase flag refuses
+// it; warnings pass through).
 
 // Public wrapper: generate a draft script from a topic / keywords for the wizard.
 // Returns the draft script PLUS a brand-voice compliance summary so the UI can
@@ -336,7 +111,15 @@ export async function generatePodcastScriptDraft(params: {
     if (params.keywords?.length) seed.push(...params.keywords)
     if (seed.length === 0) return { success: false, error: "Provide a topic or at least one keyword." }
 
-    const script = await generateScriptFromKeywords(seed, params.category, ctx.userId)
+    // The one compliance-first writer (lib/kernel/content-creators.ts writePodcastScript).
+    const { writePodcastScript } = await import("@/lib/kernel/content-creators")
+    const written = await writePodcastScript({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
+      keywords: seed,
+      category: params.category,
+    })
+    if (!written.success) return { success: false, error: written.error }
+    const script = written.script
 
     // Run brand-voice check so the UI can show pass/fail before the user advances.
     const bv = await applyBrandVoice({

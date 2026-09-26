@@ -498,12 +498,29 @@ function source() {
   ok("stageDirectMailCampaign imports no @/app/actions door", v2.length === 0, v2.join("; "))
   ok("stageDirectMailCampaign imports the kernel creator", /import\(\s*"@\/lib\/kernel\/marketing"\s*\)/.test(sbody ?? ""))
 
-  // Published census (FINDING, not a failure — outside this lane's owner ask): the other
-  // voice stage_* helpers still reach cookie-session doors.
+  // The census 85D published as a FINDING (5/8) is a RULE since wave 85F closed it: every voice
+  // stage_* helper files through a server-only kernel creator (lib/kernel/content-creators.ts
+  // for the other five; behaviour proven by test:voice-stage-doors). Derived, not pinned: the
+  // denominator is whatever stage_* helpers exist.
   const helpers = [...staging.matchAll(/export\s+async\s+function\s+(stage\w+)\s*\(/g)].map((m) => m[1])
   const bound = helpers.filter((h) => sessionBoundDoorViolations(fnBody(staging, h) ?? "").length > 0)
-  console.log(`  · census: ${bound.length} of ${helpers.length} staging helpers still import a cookie-session door: ${bound.join(", ") || "none"}`)
-  if (bound.length > 0) finding(`${bound.length}/${helpers.length} voice stage_* helpers reach a cookie-session "use server" door (${bound.join(", ")}) — same defect class as direct mail; see lane85D notes`)
+  console.log(`  · census: ${bound.length} of ${helpers.length} staging helpers import a cookie-session door: ${bound.join(", ") || "none"}`)
+  ok(`0/${helpers.length} voice stage_* helpers reach a cookie-session "use server" door`, helpers.length > 0 && bound.length === 0, bound.join(", "))
+  if (bound.length > 0) finding(`${bound.length}/${helpers.length} voice stage_* helpers reach a cookie-session "use server" door (${bound.join(", ")})`)
+  // POSITIVE CONTROL for the census itself: a fixture helper that reaches a cookie door is
+  // counted, so the 0 above is a clean tree and not a blind finder.
+  const fixture = stripComments(`export async function stageFixtureDraft(ctx, intake) {
+    const { saveBlogPost } = await import("@/app/actions/blog")
+    return saveBlogPost({ title: intake.title })
+  }
+  export async function stageFixtureClean(ctx, intake) {
+    const { createBlogPostDraft } = await import("@/lib/kernel/content-creators")
+    return createBlogPostDraft({ ctx, title: intake.title })
+  }`)
+  const fixtureHelpers = [...fixture.matchAll(/export\s+async\s+function\s+(stage\w+)\s*\(/g)].map((m) => m[1])
+  const fixtureBound = fixtureHelpers.filter((h) => sessionBoundDoorViolations(fnBody(fixture, h) ?? "").length > 0)
+  ok("control: the census flags exactly the fixture helper that reaches a cookie door (1/2)",
+    fixtureHelpers.length === 2 && fixtureBound.length === 1 && fixtureBound[0] === "stageFixtureDraft", fixtureBound.join(","))
 
   console.log("\n── R3: every kernel-creator call carries ctx; the user-authored doors carry no raw insert ──")
   const DOORS = [

@@ -37,7 +37,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // carries no "server-only" marker and is imported from the marketing surfaces,
 // so it must never pull the service-role resolver into a page bundle.
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
-import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
+import { applyKernelBrandVoice } from "@/lib/kernel/adapters/brand-voice"
 import { evaluateKernelOutbound, isComplianceBlocked, getComplianceReason } from "@/lib/kernel/adapters/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -219,92 +219,18 @@ export async function loadMarketingWorkspace(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. createNewsletterCampaign
+// 2. createNewsletterCampaign — MOVED (wave 85F)
 //
-// Creates a newsletter campaign in draft status.
-// Input:  brokerageId, agentId, campaignName, subjectLine, content?, marketingCampaignId?
-// Output: { campaignId }
-// Tables write: newsletter_campaigns
-// Rules:  canAccessFeature('email_campaigns'); content passes applyBrandVoice
+// TOMBSTONE (§1.1). This unwired duplicate (re-exported from lib/kernel/index.ts, called by
+// nothing) is DELETED. Survivor: lib/kernel/content-creators.ts createNewsletterCampaign, the
+// one newsletter creator every door now uses (the session action in
+// app/actions/ai-newsletter.ts and the voice/copilot staging helper). Merged onto the survivor
+// FIRST: the AI-authored stamp this copy wrote (approval_status 'pending_review' — the
+// marketing-ai-approvals queue — plus is_ai_generated), as the survivor's `aiAuthored` input;
+// the verified umbrella campaign the survivor already had. Not carried: this copy gated on
+// 'email_campaigns' (the newsletter engine's key is 'newsletter_engine', which the survivor
+// gates on) and computed an applyKernelBrandVoice result it never read.
 // ─────────────────────────────────────────────────────────────────────────────
-
-export interface CreateNewsletterCampaignInput {
-  ctx: MarketingActorContext
-  campaignName: string
-  subjectLine: string
-  content?: string
-  /** Optional umbrella marketing_campaigns id — same linkage createBlogDraft
-   *  below already writes onto blog_posts.marketing_campaign_id. Verified
-   *  against ctx.brokerageId before writing: the id is caller data even when
-   *  the ctx is session-derived, and an unverified id would file this tenant's
-   *  issue under another tenant's ROI rollup. */
-  marketingCampaignId?: string
-}
-
-export async function createNewsletterCampaign(
-  input: CreateNewsletterCampaignInput
-): Promise<KernelMarketingResult<{ campaignId: string }>> {
-  const { ctx, campaignName, subjectLine, content } = input
-  if (!campaignName?.trim()) return { success: false, error: "Campaign name is required." }
-  if (!subjectLine?.trim())  return { success: false, error: "Subject line is required." }
-
-  const access = await canAccessFeature(ctx.userId, "email_campaigns")
-  if (!access.allowed) return { success: false, error: access.reason ?? "Feature access denied" }
-
-    const brandVoice = await applyKernelBrandVoice({
-    brokerageId: ctx.brokerageId,
-    actorUserId: ctx.userId,
-    actorRole: "agent",
-    journeyType: "seller",
-    persona: "seller",
-    messageType: "email",
-    content: content ?? subjectLine,
-  })
-
-  const supabase = await createServiceClient()
-
-  // Gate first, then use the service client (§4): this runs on the service
-  // role, so the brokerage predicate below is the ONLY thing standing between
-  // this insert and a cross-tenant campaign link.
-  let marketingCampaignId: string | null = null
-  if (input.marketingCampaignId) {
-    const { data: umbrella, error: umbrellaError } = await supabase
-      .from("marketing_campaigns")
-      .select("id")
-      .eq("id", input.marketingCampaignId)
-      .eq("brokerage_id", ctx.brokerageId)
-      .maybeSingle()
-    if (umbrellaError) return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
-    if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
-    marketingCampaignId = umbrella.id as string
-  }
-
-  const { data, error } = await supabase
-    .from("newsletter_campaigns")
-    .insert({
-      brokerage_id:   ctx.brokerageId,
-      agent_id:       ctx.agentId ?? null,
-      created_by:     ctx.userId,
-      campaign_name:  campaignName.trim(),
-      subject_line:   subjectLine.trim(),
-      content:        content ?? null,
-      status:         "draft",
-      approval_status: "pending_review",
-      brand_compliance_passed: false,
-      // The umbrella link the ROI measurer reads — verified above, never the
-      // raw input id. Same shape as createBlogDraft's
-      // blog_posts.marketing_campaign_id write later in this file.
-      marketing_campaign_id: marketingCampaignId,
-      created_at:     new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-
-  await incrementFeatureUsage(ctx.userId, "email_campaigns")
-  return { success: true, data: { campaignId: data.id } }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. saveNewsletterDraft
@@ -981,7 +907,8 @@ Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
   const supabase = await createServiceClient()
 
   // Gate first, then use the service client (§4) — the same block
-  // createNewsletterCampaign carries above, because it is the same hole: this
+  // newsletter creator carries (now lib/kernel/content-creators.ts createNewsletterCampaign,
+  // verifyInTenant), because it is the same hole: this
   // runs on the service role, so nothing but this predicate stands between the
   // insert and a cross-tenant campaign link. The FK proves a
   // marketing_campaigns row EXISTS; it never proves it is OURS, and an
@@ -1113,121 +1040,20 @@ export async function publishBlogPost(params: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 12. createVideoProject
+// 12. createVideoProject — MOVED (wave 85F)
 //
-// Creates a new AI video project in draft status.
-// Input:  ctx, title, scriptContent, videoType, listingId?
-// Output: { projectId }
-// Tables write: ai_video_projects
-// Rules:  canAccessFeature('video_generation'); content passes evaluateOutbound
-// NOTE:   Video provider config (HeyGen etc.) is superadmin-owned — NOT set here.
+// TOMBSTONE (§1.1). This unwired duplicate (re-exported from lib/kernel/index.ts, called by
+// nothing) is DELETED. Survivor: lib/kernel/content-creators.ts createVideoProject, the one
+// video-project creator (the session action app/actions/video/create-video-project.ts and the
+// voice/copilot staging helper both call it). Merged onto the survivor FIRST: the
+// brand_voice_context stamp (brokerage name/about/bio + brand voice tone — this was its only
+// writer, and app/actions/marketing-ai-approvals.ts reads it), and the audience_type default
+// 'customer_facing' with the 'in_house' spelling (the survivor wrote NULL into that NOT NULL
+// column and spelled the internal kind "internal"). approval_status 'pending_review' and
+// is_ai_generated true are the live column DEFAULTS, so the survivor gets them without writing
+// them. Not carried: the videoType union here ("listing" | "educational" | "brand" are not in
+// ai_video_projects_video_type_check) was a second vocabulary (§6); the survivor validates against AI_VIDEO_PROJECT_TYPES.
 // ─────────────────────────────────────────────────────────────────────────────
-
-export interface CreateVideoProjectInput {
-  ctx:          MarketingActorContext
-  title:        string
-  scriptContent: string
-  videoType:    "listing" | "market_update" | "testimonial" | "educational" | "brand"
-  listingId?:   string
-  templateId?:  string
-  /**
-   * 'in_house' (default for internal training; brand voice only) vs
-   * 'customer_facing' (DNC/TCPA/fair-housing compliance gate applies on
-   * distribute). The publisher infers this from the campaign's audience
-   * but the kernel command lets the caller override.
-   */
-  audienceType?: "in_house" | "customer_facing"
-}
-
-export async function createVideoProject(
-  input: CreateVideoProjectInput
-): Promise<KernelMarketingResult<{ projectId: string }>> {
-  const { ctx } = input
-  if (!input.title?.trim())        return { success: false, error: "Title is required." }
-  if (!input.scriptContent?.trim()) return { success: false, error: "Script content is required." }
-
-  const access = await canAccessFeature(ctx.userId, "video_generation")
-  if (!access.allowed) return { success: false, error: access.reason ?? "Video generation access denied" }
-
-  const supabase = await createServiceClient()
-
-  // Migration 1051: fold brokerage about_text + bio_text + brand voice into
-  // brand_voice_context jsonb so HeyGen prompts (and the admin reviewer)
-  // see what voice flavor the AI generation should carry.
-  const { data: brokerage } = await supabase
-    .from("brokerages")
-    .select("name, about_text, bio_text")
-    .eq("id", ctx.brokerageId)
-    .maybeSingle()
-  let brandVoiceTone: string | null = null
-  try {
-    const { data: bv } = await supabase
-      .from("brand_voice_profile")
-      .select("tone")
-      .eq("brokerage_id", ctx.brokerageId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    brandVoiceTone = (bv?.tone as string | null) ?? null
-  } catch {
-    // brand_voice_profile lookup is best-effort
-  }
-  const brandVoiceContext = {
-    brokerage_name:  (brokerage?.name       as string | null) ?? null,
-    brokerage_about: (brokerage?.about_text as string | null) ?? null,
-    brokerage_bio:   (brokerage?.bio_text   as string | null) ?? null,
-    brand_voice_tone: brandVoiceTone,
-    applied_at:      new Date().toISOString(),
-  }
-
-  // Migration 1052: resolve the actual provider (D-ID default, agent
-  // voice profile override, brokerage global setting override). Was
-  // hardcoded 'heygen' which was wrong — D-ID is the platform primary.
-  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
-  const provider     = await resolveVideoProvider(supabase, {
-    brokerageId: ctx.brokerageId,
-    agentUserId: ctx.userId ?? null,
-  })
-  const providerCols = initialProviderColumns(provider)
-
-  // audience_type: caller passes explicitly when known; otherwise default
-  // to 'customer_facing' (safer — over-restrict by default).
-  const audienceType = input.audienceType ?? "customer_facing"
-
-  // ai_video_projects.agent_id is a NOT NULL FK to agents(id). ctx.agentId is
-  // caller-supplied and optional, so resolve from the authenticated users.id
-  // instead of trusting it — and refuse rather than stage a project nobody owns.
-  const videoAgentId = await resolveAgentIdInBrokerage(supabase, ctx.userId, ctx.brokerageId)
-  if (!videoAgentId) {
-    return { success: false, error: "No agent profile for this user in this brokerage — complete onboarding before generating video." }
-  }
-
-  const { data, error } = await supabase
-    .from("ai_video_projects")
-    .insert({
-      brokerage_id:        ctx.brokerageId,
-      agent_id:            videoAgentId,
-      title:               input.title.trim(),
-      script_content:      input.scriptContent.trim(),
-      video_type:          input.videoType,
-      listing_id:          input.listingId    ?? null,
-      provider_template_id: input.templateId ?? null,
-      status:              "draft",
-      video_provider:      provider,
-      ...providerCols,
-      // Migration 1051: AI videos await admin approval before publish
-      approval_status:     "pending_review",
-      is_ai_generated:     true,
-      audience_type:       audienceType,
-      brand_voice_context: brandVoiceContext,
-      created_at:          new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-  return { success: true, data: { projectId: data.id } }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 13. previewVideoProject
@@ -1415,124 +1241,17 @@ export async function distributeVideoAsset(params: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 15. createPodcastEpisode  (thin kernel wrapper around podcast-generation.ts)
+// 15. createPodcastEpisodeKernel — MOVED (wave 85F)
 //
-// Delegates to the full podcast-generation server action but validates here first.
-// Input:  ctx, title, description?, script?, keywords?, publishChannels?
-// Output: { episodeId }
-// Tables write: podcast_episodes
-// Rules:  canAccessFeature('podcast_generation'); evaluateOutbound on script
+// TOMBSTONE (§1.1). This unwired duplicate (re-exported from lib/kernel/index.ts, called by
+// nothing) is DELETED. Survivor: lib/kernel/content-creators.ts createPodcastEpisode, the one
+// episode creator (the session action app/actions/podcast-generation.ts createPodcastEpisode
+// and the voice/copilot staging helper both call it). Nothing unique was left to merge: the
+// survivor already carried the feature gate, the tenant-pinned agents resolve with refusal,
+// brand voice, the outbound compliance gate, templateId / voiceId / publishChannels /
+// keywords / category and the usage counter, plus the compliance-first script writer this
+// copy never had.
 // ─────────────────────────────────────────────────────────────────────────────
-
-export interface CreatePodcastEpisodeInput {
-  ctx:             MarketingActorContext
-  title:           string
-  description?:    string
-  script?:         string
-  keywords?:       string[]
-  publishChannels?: string[]
-  templateId?:     string
-  voiceId?:        string
-  category?:       string
-}
-
-export async function createPodcastEpisodeKernel(
-  input: CreatePodcastEpisodeInput
-): Promise<KernelMarketingResult<{ episodeId: string }>> {
-  const { ctx } = input
-
-  if (!input.title?.trim()) {
-    return { success: false, error: "Episode title is required." }
-  }
-
-  const access = await canAccessFeature(ctx.userId, "podcast_generation")
-  if (!access.allowed) {
-    return { success: false, error: access.reason ?? "Podcast generation access denied" }
-  }
-
-  if (input.script) {
-    const compliance = await evaluateKernelOutbound({
-      actorContext: {
-        userId: ctx.userId,
-        role: "agent",
-        brokerageId: ctx.brokerageId,
-      },
-      journeyType: "seller",
-      persona: "seller",
-      messageType: "ai",
-      content: input.script,
-      contact: {
-        id: ctx.userId,
-        status: "active",
-      },
-    })
-
-    if (isComplianceBlocked(compliance)) {
-      return {
-        success: false,
-        blockedReason: getComplianceReason(compliance) ?? "Compliance failed",
-        error: "Podcast script failed compliance check.",
-      }
-    }
-
-    const brandVoice = await applyKernelBrandVoice({
-      brokerageId: ctx.brokerageId,
-      actorUserId: ctx.userId,
-      actorRole: "agent",
-      journeyType: "seller",
-      persona: "seller",
-      messageType: "email",
-      content: input.script ?? input.description ?? input.title,
-    })
-
-    if (isBrandVoiceBlocked(brandVoice)) {
-      return {
-        success: false,
-        blockedReason: brandVoice.violations[0] ?? "Brand voice compliance failed",
-        error: "Podcast script failed brand voice check.",
-      }
-    }
-  }
-
-  const supabase = await createServiceClient()
-  // podcast_episodes.agent_id is a NOT NULL FK to agents(id) — same resolve as
-  // the video path, same refusal when the user has no agent profile.
-  const episodeAgentId = await resolveAgentIdInBrokerage(supabase, ctx.userId, ctx.brokerageId)
-  if (!episodeAgentId) {
-    return { success: false, error: "No agent profile for this user in this brokerage — complete onboarding before creating a podcast episode." }
-  }
-
-  const { data, error } = await supabase
-    .from("podcast_episodes")
-    .insert({
-      brokerage_id: ctx.brokerageId,
-      agent_id: episodeAgentId,
-      title: input.title.trim(),
-      description: input.description ?? null,
-      script: input.script ?? null,
-      keywords: input.keywords ?? [],
-      publish_channels: input.publishChannels ?? [],
-      template_id: input.templateId ?? null,
-      primary_voice_id: input.voiceId ?? null,
-      category: input.category ?? null,
-      status: "draft",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (error || !data) {
-    return { success: false, error: error?.message ?? "Insert failed" }
-  }
-
-  await incrementFeatureUsage(ctx.userId, "podcast_generation")
-
-  return {
-    success: true,
-    data: { episodeId: data.id },
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 16. previewPodcastEpisode

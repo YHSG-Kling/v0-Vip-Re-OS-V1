@@ -448,7 +448,11 @@ check(
 
 const CALLERS = [
   "app/actions/social/generate-social-post.ts",
-  "app/actions/ai-newsletter.ts",
+  // Wave 85F: the newsletter writer's evaluateOutbound call moved with its body from
+  // app/actions/ai-newsletter.ts (now a session door that calls nothing of the kind) to the
+  // server-only kernel creator, which also carries the podcast creator's call. The file on the
+  // list follows the CALL, for the reason the create-video-project note below records.
+  "lib/kernel/content-creators.ts",
   "app/actions/blog.ts",
   "app/actions/social-media-automation.ts",
   "lib/video/persona-variant-post-pass.ts",

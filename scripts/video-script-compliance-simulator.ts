@@ -80,6 +80,10 @@ const read = (p: string) => readFileSync(join(root, p), "utf8")
 
 const GENERATE_SCRIPT = "app/actions/video/generate-script.ts"
 const CREATE_PROJECT = "app/actions/video/create-video-project.ts"
+// Wave 85F: the canonical creator's BODY moved to the server-only kernel (the voice webhook has
+// no cookie session to reach the "use server" door). The hold rules follow the writer; the door
+// is pinned to delegate to it (B21b).
+const CREATOR = "lib/kernel/content-creators.ts"
 const GATE = "lib/video/script-compliance.ts"
 const HOLD = "lib/video/video-render-hold.ts"
 const DID_ROUTE = "app/api/did/generate-video/route.ts"
@@ -812,19 +816,15 @@ const SOURCE_CHECKS: SourceCheck[] = [
   },
   {
     id: "B21-CREATOR-ENFORCES-THE-HOLD",
-    file: CREATE_PROJECT,
-    detail: "createVideoProject is the canonical creator (8 callers) — it must run the hold and REFUSE to create a held video",
+    file: CREATOR,
+    detail: "createVideoProject is the canonical creator (8 callers + the voice webhook) — it must run the hold and REFUSE to create a held video",
     // Scoped to createVideoProject's own body — submitAvatarVideoRender below
     // carries the same shape (B30), so an unscoped predicate would keep passing
     // on the OTHER door's copy and this control would never flip.
     predicate: (src) => {
-      // The slice used to end at submitAvatarVideoRender, which was DELETED
-      // 2026-09-03; the next surviving export after createVideoProject is
-      // getVideoProject.
-      const fn = src.slice(
-        src.indexOf("export async function createVideoProject"),
-        src.indexOf("export async function getVideoProject("),
-      )
+      // RE-ANCHORED (wave 85F): createVideoProject is the LAST export of the kernel module,
+      // so the slice runs to the end of the file.
+      const fn = src.slice(src.indexOf("export async function createVideoProject"))
       return (
         /await\s+evaluateVideoRenderHold\s*\(/.test(fn) &&
         /if\s*\(\s*hold\.hold\s*\)\s*\{[\s\S]{0,400}?success:\s*false/.test(fn)
@@ -834,7 +834,7 @@ const SOURCE_CHECKS: SourceCheck[] = [
   },
   {
     id: "B22-CREATOR-HOLDS-BEFORE-IT-INSERTS",
-    file: CREATE_PROJECT,
+    file: CREATOR,
     detail: "the hold must run before the ai_video_projects insert — holding after creation means the row already exists and the queue can pick it up",
     predicate: (src) => {
       // Scope to createVideoProject's own body — the file's FIRST
@@ -846,6 +846,19 @@ const SOURCE_CHECKS: SourceCheck[] = [
       return hold >= 0 && insert >= 0 && hold < insert
     },
     mutate: (src) => src.replace(/await\s+evaluateVideoRenderHold\s*\(/, "await NOTHING_AT_ALL("),
+  },
+  {
+    id: "B21b-DOOR-DELEGATES-TO-THE-HOLDING-CREATOR",
+    file: CREATE_PROJECT,
+    detail: "the session door must hand every create to the kernel creator that holds (and carry no insert of its own) — a door that inserts itself is a second, unheld creator",
+    predicate: (src) => {
+      const fn = src.slice(
+        src.indexOf("export async function createVideoProject"),
+        src.indexOf("export async function getVideoProject("),
+      )
+      return /import\(\s*"@\/lib\/kernel\/content-creators"\s*\)/.test(fn) && !/\.insert\(/.test(fn)
+    },
+    mutate: (src) => src.replace(/@\/lib\/kernel\/content-creators/, "@/lib/kernel/somewhere-else"),
   },
   {
     id: "B23-DID-ROUTE-HOLDS-BEFORE-IT-SPENDS",
@@ -1033,7 +1046,7 @@ async function main() {
 
   const sources = new Map<string, string>()
   for (const f of [
-    GENERATE_SCRIPT, CREATE_PROJECT, GATE,
+    GENERATE_SCRIPT, CREATE_PROJECT, CREATOR, GATE,
     HOLD, DID_ROUTE, KERNEL_VIDEO, VIDEO_GENERATION, CREATE_CLIENT,
   ]) sources.set(f, stripComments(read(f)))
 

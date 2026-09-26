@@ -31,7 +31,8 @@ const sub = (find: string, replace: string) => (src: string) =>
 
 const CALLER_FILES = [
   "app/actions/social/generate-social-post.ts",
-  "app/actions/ai-newsletter.ts",
+  // Wave 85F: the newsletter writer's evaluateOutbound call moved to the kernel creator.
+  "lib/kernel/content-creators.ts",
   "app/actions/blog.ts",
   // create-video-project.ts is off this list: it no longer calls evaluateOutbound
   // (only the tombstone comment mentions it), so the NO-STUB-CONTACT mutation had

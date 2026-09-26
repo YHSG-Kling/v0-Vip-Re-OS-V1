@@ -868,18 +868,29 @@ console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated
   // the survivor resolves the caller's users id → agents id ONCE (projectAgentId)
   // and writes THAT, never the users id, and listing-media no longer inserts the row.
   const lm = code("app/actions/listing-media.ts")
+  // RE-ANCHORED (wave 85F): the canonical video creator's body moved from the "use server"
+  // app/actions/video/create-video-project.ts (now its session door, which writes nothing) to
+  // the server-only lib/kernel/content-creators.ts createVideoProject, so the voice webhook can
+  // reach it. The rule follows the writer.
   const cvp = code("app/actions/video/create-video-project.ts")
+  const cc = code("lib/kernel/content-creators.ts")
   ok("listing-media no longer writes ai_video_projects itself (merged onto the canonical creator)",
     !/from\("ai_video_projects"\)\s*\.insert\(/.test(lm))
   ok("the canonical creator writes the RESOLVED agents id to ai_video_projects, never the users id",
-    /agent_id: projectAgentId,/.test(cvp) && !/agent_id: params\.agentUserId,/.test(cvp))
+    /\.from\("ai_video_projects"\)\s*\.insert\(\{[\s\S]{0,120}agent_id: agent\.agentId,/.test(cc)
+    && !/agent_id: (params\.agentUserId|ctx\.userId|userId),/.test(cc + cvp)
+    && !/\.insert\(/.test(cvp.slice(cvp.indexOf("export async function createVideoProject("), cvp.indexOf("export async function getVideoProject("))))
 
   const mk = code("lib/kernel/marketing.ts")
   // FLIPPED BY m366. Both tables are agents-class now, so ctx.userId is exactly
   // the wrong value — each write resolves through the identity component first.
-  ok("kernel/marketing RESOLVES an agents id for the two video/podcast tables it\n    writes, instead of sending ctx.userId",
-    /agent_id:\s+videoAgentId,/.test(mk) && /agent_id:\s*episodeAgentId,/.test(mk) &&
-    !/agent_id:\s*ctx\.userId,/.test(mk))
+  // RE-ANCHORED (wave 85F): kernel/marketing's unwired video/podcast creators were merged onto
+  // lib/kernel/content-creators.ts and deleted; the resolve rule is asserted where both writes
+  // now live, and kernel/marketing must not have grown a users-id write back.
+  ok("the kernel RESOLVES an agents id for the video/podcast tables it writes, instead of\n    sending ctx.userId",
+    /agent_id: agent\.agentId,/.test(cc) && /\.from\("podcast_episodes"\)\s*\.insert\(\{[\s\S]{0,80}agent_id: agentId,/.test(cc) &&
+    /const agentId = agent\.agentId/.test(cc) &&
+    !/agent_id:\s*ctx\.userId,/.test(mk + cc))
   // WAS 3 (newsletter_campaigns, direct_mail_campaigns, qr_codes). The qr_codes
   // writer left this file when the QR minters were collapsed onto one: kernel
   // marketing's createQrAsset was merged into lib/marketing/tracked-qr.ts and
@@ -889,8 +900,12 @@ console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated
   ok("...and KEEPS ctx.agentId for newsletter_campaigns and direct_mail_campaigns,\n    which genuinely FK agents — the same file, both classes, on purpose",
     // RE-ANCHORED (lane 85D): the direct-mail creator no longer writes ctx.agentId raw. It
     // writes `agentRecordId`, the agents row it VERIFIED in ctx.brokerageId (or crossed from
-    // ctx.userId through resolveAgentIdInBrokerage). Newsletter still carries ctx.agentId.
-    (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length >= 1
+    // ctx.userId through resolveAgentIdInBrokerage). RE-ANCHORED (wave 85F): the newsletter
+    // creator moved to lib/kernel/content-creators.ts and writes `agentsTableId`, which
+    // resolveActorAgentId VERIFIES (a supplied ctx.agentId must be an agents row in
+    // ctx.brokerageId) or crosses from ctx.userId — the same class, no longer written raw.
+    /\.from\("newsletter_campaigns"\)\s*\.insert\(\{[\s\S]{0,700}agent_id: agentsTableId,/.test(cc)
+    && /\.from\("agents"\)\.select\("id"\)\.eq\("id", ctx\.agentId\)\.eq\("brokerage_id", ctx\.brokerageId\)/.test(cc.replace(/\s*\n\s*/g, ""))
     && /agent_id:\s*agentRecordId,/.test(mk) && /resolveAgentIdInBrokerage\(\s*supabase\s*,\s*actorUserId\s*,\s*brokerageId\s*\)/.test(mk))
   ok("...and the qr_codes writer carries that class with it to the ONE surviving\n    minter, which takes an agents id and never a users id",
     /agent_id: args\.agentId \?\? null,/.test(code("lib/marketing/tracked-qr.ts")) &&

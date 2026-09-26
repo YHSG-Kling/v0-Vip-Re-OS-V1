@@ -500,17 +500,33 @@ console.log("\n═══ 10. The INVERTED resolve — where the fallback was the
   // site. It is now scoped to stageVideoProject's own createVideoProject call.
   const svpAt = cs.indexOf("export async function stageVideoProject")
   const svp = svpAt >= 0 ? cs.slice(svpAt, cs.indexOf("\nexport ", svpAt + 10)) : ""
-  ok("stageVideoProject passes ctx.userId to createVideoProject, whose column and\n    actor context are both users-class",
-    /createVideoProject\(\{[\s\S]{0,300}agentUserId: ctx\.userId,/.test(svp) && !/agentId: agentId \?\? ctx\.userId/.test(cs))
-  // INVERTED BY m366. podcast_episodes.agent_id used to FK users(id), so
-  // ctx.userId was the value that fit. It FKs agents(id) now, so the staging
-  // path RESOLVES users->agents first — the resolve this guard once said was
-  // unnecessary is exactly what the column requires today.
+  // RE-ANCHORED (wave 85F) from the staging file's own inserts to the RULE, wherever the
+  // insert lives. The five voice helpers now hand a users-class ctx to the one server-only
+  // creator per type (lib/kernel/content-creators.ts), which is where each agent_id is
+  // written. The old assertions pinned the waypoint (a raw podcast insert and a private
+  // resolveAgentRowId in this file), both merged onto the kernel.
+  const kc = code(read("lib/kernel/content-creators.ts"))
+  const kfn = (name: string) => {
+    const at = kc.indexOf(`export async function ${name}(`)
+    return at >= 0 ? kc.slice(at, kc.indexOf("\nexport ", at + 10)) : ""
+  }
+  ok("stageVideoProject hands the kernel creator a USERS-class ctx (ctx.userId), never an\n    agents id and never the users→agents fallback",
+    /createVideoProject\(\{[\s\S]{0,120}ctx: \{ userId: ctx\.userId,/.test(svp) && !/agentId: agentId \?\? ctx\.userId/.test(cs))
+  ok("...and the video creator writes ai_video_projects.agent_id from the RESOLVED agents id\n    (FK agents since m366), refusing when there is none",
+    /agent_id: agent\.agentId,/.test(kfn("createVideoProject")) && /resolveActorAgentId\(/.test(kfn("createVideoProject")) &&
+    !/agent_id: (ctx\.)?userId,/.test(kfn("createVideoProject")))
+  // INVERTED BY m366. podcast_episodes.agent_id FKs agents(id), so the creator RESOLVES
+  // users->agents first — the resolve this guard once said was unnecessary is exactly what
+  // the column requires today.
   ok("...while the podcast_episodes insert RESOLVES an agents id, because that\n    column FKs agents(id) since m366",
-    /\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: episodeAgentId,/.test(cs) &&
-    !/\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: ctx\.userId,/.test(cs))
+    /\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: agentId,/.test(kfn("createPodcastEpisode")) &&
+    /const agentId = agent\.agentId/.test(kfn("createPodcastEpisode")) &&
+    !/\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: (ctx\.)?userId,/.test(kc + cs))
   ok("...while the email campaign KEEPS its agents-id resolve, because\n    email_campaigns.agent_id genuinely FKs agents — this was not a blanket sweep",
-    /agentId: agentId \?\? undefined,/.test(cs) && /const agentId = await resolveAgentRowId\(svc, ctx\.userId\)/.test(cs))
+    /agent_id: agent\.agentId,/.test(kfn("createEmailCampaign")) && /resolveActorAgentId\(supabase, ctx\)/.test(kfn("createEmailCampaign")))
+  // POSITIVE CONTROL: the pre-85F raw podcast insert with a users id is caught by the negation.
+  ok("control: a raw podcast_episodes insert writing ctx.userId into agent_id is flagged",
+    /\.from\("podcast_episodes"\)[\s\S]{0,160}agent_id: (ctx\.)?userId,/.test(`.from("podcast_episodes").insert({ brokerage_id: ctx.brokerageId, agent_id: ctx.userId, title })`))
 }
 
 console.log("\n═══ 11. The decorative fields are GONE, not merely tolerated ═══")

@@ -2406,8 +2406,12 @@ async function main() {
         // merged onto the survivor per §1.1, so the assertion follows the
         // capability to app/actions/ai-newsletter.ts::aiWriteNewsletterContent
         // rather than pinning to a file that finished its life (§2: assert the
-        // rule, not the waypoint).
-        && src("app/actions/ai-newsletter.ts").includes('from("ai_generated_content")')
+        // rule, not the waypoint). Wave 85F moved the writer's body again, to the
+        // server-only lib/kernel/content-creators.ts authorNewsletterContent (the
+        // voice webhook needed it without a cookie session); the action is its
+        // session door and must still reach it.
+        && src("lib/kernel/content-creators.ts").includes('from("ai_generated_content")')
+        && src("app/actions/ai-newsletter.ts").includes("authorNewsletterContent")
         && src("lib/billing/stripe-subscription-ops.ts").includes("stripeRefundLatestInvoice")
         && src("app/actions/superadmin/brokerage-management.ts").includes("issueRefundAction")
         && src("app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx").includes("issueRefundAction")

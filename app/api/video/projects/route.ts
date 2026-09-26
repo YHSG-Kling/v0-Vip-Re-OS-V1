@@ -4,6 +4,7 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createVideoProject } from "@/app/actions/video/create-video-project"
 import type { CreateVideoProjectParams } from "@/app/actions/video/create-video-project"
+import { AI_VIDEO_PROJECT_TYPES } from "@/lib/kernel/content-creators"
 
 /**
  * DOOR (census 6d, unresolved by design): second HTTP door onto
@@ -18,12 +19,10 @@ import type { CreateVideoProjectParams } from "@/app/actions/video/create-video-
  * and a caller-supplied string reaching the insert turns a bad request into a 500.
  * Checked here because this is where untrusted input enters.
  */
-const VIDEO_TYPES = [
-  "listing_tour", "pre_appointment", "coming_soon", "just_listed", "open_house_promo",
-  "just_sold", "agent_intro", "market_update", "education", "social_reel",
-  "listing_promo", "testimonial", "welcome", "presentation_chapter", "memory_video",
-  "avatar_explainer", "home_anniversary",
-] as const
+// ONE list (§6): lib/kernel/content-creators.ts AI_VIDEO_PROJECT_TYPES, which the creator
+// itself now enforces too (wave 85F — the voice webhook reaches the creator without this
+// route). TOMBSTONE: the copy that lived here moved there verbatim.
+const VIDEO_TYPES: readonly string[] = AI_VIDEO_PROJECT_TYPES
 
 const SOURCE_TYPES = ["property", "campaign", "manual"] as const
 

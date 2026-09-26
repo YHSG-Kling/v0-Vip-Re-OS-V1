@@ -433,7 +433,10 @@ export type {
 //   • No direct DB calls from UI — all writes go through these commands
 export {
   loadMarketingWorkspace,
-  createNewsletterCampaign,
+  // createNewsletterCampaign / createVideoProject / createPodcastEpisodeKernel REMOVED (wave
+  // 85F) — unwired duplicates merged-then-deleted onto the one creator per type in
+  // lib/kernel/content-creators.ts (server-only, so deliberately NOT re-exported from this
+  // barrel, which client code imports types from). See the tombstones in ./marketing.
   saveNewsletterDraft,
   scheduleNewsletterSend,
   sendNewsletterNow,
@@ -443,10 +446,8 @@ export {
   createBlogPost,
   previewBlogPost,
   publishBlogPost,
-  createVideoProject,
   previewVideoProject,
   distributeVideoAsset,
-  createPodcastEpisodeKernel,
   previewPodcastEpisode,
   publishPodcastEpisode,
   createMarketingCampaign,
@@ -460,11 +461,8 @@ export type {
   KernelMarketingResult,
   MarketingActorContext,
   MarketingWorkspaceData,
-  CreateNewsletterCampaignInput,
   CreateDirectMailCampaignInput,
   CreateBlogPostInput,
-  CreateVideoProjectInput,
-  CreatePodcastEpisodeInput,
   CreateMarketingCampaignInput,
 } from "./marketing"
 

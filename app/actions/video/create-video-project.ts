@@ -5,8 +5,6 @@ import { requireCaller } from "@/lib/auth/require-caller"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import type { CanonicalVideoStatus } from "@/lib/video/video-status"
 import {
   buildComplianceSystemBlocks,
@@ -126,7 +124,9 @@ export interface CreateVideoProjectParams {
    *     render hold above, which runs BEFORE the row exists).
    */
   templateId?: string
-  audienceType?: "customer_facing" | "internal"
+  /** ai_video_projects_audience_type_check is in_house | customer_facing. "internal" is the
+   *  old spelling of in_house, folded by the creator (§6); absent → customer_facing. */
+  audienceType?: "customer_facing" | "in_house" | "internal"
   brandComplianceCheck?: boolean
   /**
    * CAMPAIGN ATTRIBUTION — moved here from lib/kernel/video.ts:createVideoProject,
@@ -340,283 +340,44 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   success: boolean
   project?: VideoProject
   error?: string
-  /** True when compliance HELD the video — see the block below. */
+  /** True when compliance HELD the video (red_flag or unknown; advisory passes, §5). */
   complianceHold?: boolean
   /** video_scripts_library.id a human now owns, when a hold was raised. */
   complianceReviewId?: string
   /** Everything the agent needs to be told about the hold. */
   complianceReasons?: string[]
-  /** ADVISORY (never blocking, §5) — scanForAiTells findings on the final script,
-   *  whatever its origin (AI-drafted, AI-drafted-then-rewritten, or hand-typed). */
+  /** ADVISORY (never blocking, §5) — scanForAiTells findings on the final script. */
   realismWarnings?: string[]
 }> {
-  if (!isValidUUID(params.brokerageId) || !isValidUUID(params.agentUserId)) {
-    return { success: false, error: "Invalid brokerage or agent ID" }
+  // TOMBSTONE (wave 85F, §1.1). The fair-housing render HOLD, the realism scan, the in-tenant
+  // campaign / script checks, the provider resolve, the users→agents cross, the
+  // ai_video_projects insert, the lifecycle event and the brand check MOVED to the one creator,
+  // lib/kernel/content-creators.ts createVideoProject (survivor of lib/kernel/marketing.ts
+  // createVideoProject too). The voice webhook's cookie client is anon, so its insert was
+  // refused by RLS. Closed in the move:
+  //   · audience_type was written NULL into a NOT NULL column (23502) for every caller but the
+  //     listing media panel, and this type spelled the internal kind "internal" where the CHECK
+  //     says in_house (§6). The creator folds it and defaults to customer_facing.
+  //   · THIS WAS A "use server" EXPORT THAT TRUSTED `brokerageId` FROM THE BODY (§4), guarded
+  //     only by the cookie client's RLS. It now has a SESSION gate: the tenant is the caller's,
+  //     a foreign `brokerageId` is refused, and `agentUserId` must be a user with an agents row
+  //     in the caller's tenant (the creator's resolve refuses anyone else).
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (params.brokerageId && params.brokerageId !== caller.brokerageId) {
+    return { success: false, error: "That brokerage is not yours — a video project is filed in your own brokerage." }
   }
-  if (!params.title?.trim()) {
-    return { success: false, error: "Title is required" }
-  }
-  if (!params.script?.trim() && !params.scriptPending) {
-    return { success: false, error: "Script is required" }
-  }
-
-  const supabase = await createClient()
-
-  // ── THE HOLD ───────────────────────────────────────────────────────────────
-  //
-  // OWNER RULING (the refinement): "after the script is run then hold up the
-  // video creation if still have a big red flag needed for a human."
-  //
-  // Everything upstream of here GRADED the script and, at most, filed a review
-  // row — and then handed the caller a script this function would turn into a
-  // video anyway, because it had never read that row. That is escalation
-  // without a hold.
-  //
-  // ADVISORY STILL PASSES, and that is asserted in both directions: the gate
-  // holds on `red_flag` and `unknown` ONLY. A ThemFirst pronoun ratio, a
-  // "safe area", a brand-voice drift or a UDAAP pricing phrase renders exactly
-  // as it did before — the first half of the ruling forbids holding those up.
-  //
-  // The scriptless shell lane (scriptPending) has nothing to judge yet; its
-  // script arrives through POST /api/video/projects/[projectId]/script and the
-  // render doors below it are gated, so a shell cannot smuggle a red flag past.
-  if (params.script?.trim()) {
-    const { evaluateVideoRenderHold } = await import("@/lib/video/video-render-hold")
-    const hold = await evaluateVideoRenderHold({
-      supabase,
-      // Tenant and identity are the CALLER'S — createVideoProject's brokerageId
-      // parameter is already the session's at every gated call site, and the
-      // review row RLS (`brokerage_id = current_user_brokerage_id()`) refuses
-      // anything else, so a foreign id cannot file a hold into another tenant.
-      actor: { userId: params.agentUserId, brokerageId: params.brokerageId },
-      script: params.script,
-      scriptId: undefined,
-      videoType: params.videoType,
-      title: params.title,
-    })
-    if (hold.hold) {
-      return {
-        success: false,
-        complianceHold: true,
-        complianceReviewId: hold.reviewId,
-        complianceReasons: hold.reasons,
-        error: hold.reasons[0] ?? "This video is held for human compliance review.",
-      }
-    }
-  }
-
-  // REALISM SCAN — the render-path choke point (lane 74D). app/actions/video/
-  // generate-script.ts already runs scanForAiTells on a FRESHLY AI-drafted
-  // script, but that is only one of three ways a script reaches this function:
-  // (1) AI-drafted and left alone — already scanned upstream, this is a
-  //     harmless re-scan; (2) AI-drafted then rewritten via improveScript
-  //     above ("make it more engaging"/"luxury"/… — a model call with NO
-  //     realism scan of its own); (3) hand-typed by the agent in the wizard —
-  //     NEVER scanned anywhere. Every one of the three ends up here, in
-  //     params.script, on the way to becoming the video's spoken/captioned
-  //     text, so THIS is the one place that can see all three. Same advisory
-  //     posture as every other realism check in this codebase (§5: warnings
-  //     pass through, never a hold) — scanForAiTells never throws and never
-  //     blocks; findings are surfaced on the response the same way
-  //     lib/did/agents.ts::ensureDIDAgent returns `realismWarnings` for a
-  //     live-agent greeting.
-  let realismWarnings: string[] = []
-  if (params.script?.trim()) {
-    const { scanForAiTells } = await import("@/lib/video/realism-profile")
-    realismWarnings = scanForAiTells(params.script)
-    if (realismWarnings.length > 0) {
-      console.warn(`[create-video-project] realism findings on "${params.title}":`, realismWarnings)
-    }
-  }
-
-  // CAMPAIGN ATTRIBUTION, tenant-checked. The kernel path wrote the caller's
-  // campaignId into marketing_campaign_id unverified, so a caller could attribute
-  // its video to ANOTHER brokerage's campaign — the FK only proves the campaign
-  // exists, never that it is ours. Resolve it inside the tenant or refuse.
-  let marketingCampaignId: string | null = null
-  if (params.campaignId) {
-    if (!isValidUUID(params.campaignId)) {
-      return { success: false, error: "Invalid campaign ID" }
-    }
-    const { data: campaign, error: campaignError } = await supabase
-      .from("marketing_campaigns")
-      .select("id")
-      .eq("id", params.campaignId)
-      .eq("brokerage_id", params.brokerageId)
-      .maybeSingle()
-    if (campaignError) {
-      console.error("[create-video-project] Campaign lookup error:", campaignError)
-      return { success: false, error: campaignError.message }
-    }
-    if (!campaign) {
-      return { success: false, error: "Marketing campaign not found in this brokerage" }
-    }
-    marketingCampaignId = campaign.id
-  }
-
-  // SCRIPT PROVENANCE, tenant-checked on exactly the campaign block's reasoning:
-  // ai_video_projects.source_script_id is a foreign key, and a foreign key only
-  // proves the script EXISTS. Writing a caller-supplied id unverified would let
-  // a video attribute itself to another brokerage's script — and since
-  // lib/video/viral-script-share.ts follows this column to decide WHICH script a
-  // viral video promotes, that would be a cross-tenant write dressed up as an
-  // attribution. Resolve it inside the tenant or refuse.
-  //
-  // The `.eq("brokerage_id", …)` here is deliberate and is NOT the recurring
-  // `.eq` -vs- platform-row defect: a platform-catalogue script carries
-  // brokerage_id IS NULL and `NULL = <uuid>` is never true, so this lookup
-  // cannot match one. That is the wanted behaviour — the platform catalogue is
-  // not any tenant's to have promoted on its behalf, and viral-script-share.ts
-  // refuses a NULL-tenant script for the same reason.
-  let sourceScriptId: string | null = null
-  if (params.sourceScriptId) {
-    if (!isValidUUID(params.sourceScriptId)) {
-      return { success: false, error: "Invalid script ID" }
-    }
-    const { data: sourceScript, error: sourceScriptError } = await supabase
-      .from("scripts")
-      .select("id")
-      .eq("id", params.sourceScriptId)
-      .eq("brokerage_id", params.brokerageId)
-      .maybeSingle()
-    if (sourceScriptError) {
-      console.error("[create-video-project] Source script lookup error:", sourceScriptError)
-      return { success: false, error: sourceScriptError.message }
-    }
-    if (!sourceScript) {
-      return { success: false, error: "Script not found in this brokerage" }
-    }
-    sourceScriptId = sourceScript.id
-  }
-
-  // Migration 1052: provider resolved (D-ID default; agent + brokerage
-  // overrides). Hard-coded 'heygen' before — wrong; @d-id/client-sdk is
-  // the primary in package.json and agent_voice_profiles defaults to 'did'.
-  const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
-  const provider = await resolveVideoProvider(supabase, {
-    brokerageId: params.brokerageId,
-    agentUserId: params.agentUserId,
+  const { brokerageId: _ignoredTenant, agentUserId, ...fields } = params
+  const { createVideoProject: fileVideoProject } = await import("@/lib/kernel/content-creators")
+  const result = await fileVideoProject({
+    ctx: { userId: agentUserId || caller.userId, brokerageId: caller.brokerageId },
+    ...fields,
   })
-  const providerCols = initialProviderColumns(provider)
-
-  // ai_video_projects.agent_id FKs agents(id) since m366, so the users id the
-  // caller holds has to be RESOLVED, never substituted. The column is NOT NULL,
-  // so a user with no agent profile cannot own a video project — say so rather
-  // than letting the foreign key phrase it.
-  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
-  const projectAgentId = await resolveAgentIdInBrokerage(supabase, params.agentUserId, params.brokerageId)
-  if (!projectAgentId) {
-    return { success: false, error: "No agent profile for this user in this brokerage — the video project has no owner to file it under." }
+  if (result.success) {
+    revalidatePath("/dashboard/videos")
+    revalidatePath("/dashboard/videos/create")
   }
-
-  // ONE jsonb column, several tenants of it — build it up rather than letting a
-  // later key overwrite an earlier one. background_color was the only occupant;
-  // description / source_type / source_id join it from the kernel path. Written
-  // as null (not {}) when empty, which is what this insert did before.
-  const videoMetadata: Record<string, unknown> = {}
-  if (params.backgroundColorHex) videoMetadata.background_color = params.backgroundColorHex
-  if (params.description !== undefined) videoMetadata.description = params.description
-  if (params.sourceType !== undefined) videoMetadata.source_type = params.sourceType
-  if (params.sourceId !== undefined) videoMetadata.source_id = params.sourceId
-
-  const { data: project, error } = await supabase
-    .from("ai_video_projects")
-    .insert({
-      brokerage_id: params.brokerageId,
-      agent_id: projectAgentId,
-      title: params.title,
-      script_content: params.script ?? null,
-      video_type: params.videoType,
-      provider_avatar_id: params.avatarId ?? null,
-      provider_voice_id: params.voiceId ?? null,
-      provider_template_id: params.templateId ?? null,
-      audience_type: params.audienceType ?? null,
-      background_type: params.backgroundType,
-      background_url: params.backgroundUrl ?? null,
-      video_metadata: Object.keys(videoMetadata).length > 0 ? videoMetadata : null,
-      marketing_campaign_id: marketingCampaignId,
-      source_script_id: sourceScriptId,
-      format: params.format,
-      duration_seconds: params.durationSeconds,
-      captions_enabled: params.captionsEnabled,
-      listing_id: params.listingId ?? null,
-      // TWO LANES, TWO CANONICAL STATES. The kernel used 'setup' for a
-      // scriptless shell (POST .../script fills it in later) and 'draft' when a
-      // script came with the request. m374 retired 'setup', and collapsing both
-      // to 'draft' would have thrown the distinction away — the shell lane is
-      // the one thing the survivor had to keep in order to create everything
-      // the kernel could.
-      //
-      // It is kept using canonical values instead: no script yet is 'draft'
-      // (created, nothing started), a script already in hand is 'script_ready'
-      // (the next step is a render, not authoring). That also gives
-      // 'script_ready' its first writer — it was in the vocabulary and in the
-      // in-progress set with nothing producing it, which is how the phantom
-      // filters this whole merge removed came to exist in the first place.
-      status: params.script?.trim() ? "script_ready" : "draft",
-      retry_count: 0,
-      video_provider: provider,
-      ...providerCols,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .select()
-    .maybeSingle()
-
-  if (error || !project) {
-    console.error("[create-video-project] Insert error:", error)
-    return { success: false, error: error?.message ?? "Failed to create video project" }
-  }
-
-  // Emit kernel event. supabase-js RESOLVES a refused insert instead of throwing,
-  // so an un-destructured `await` here would have swallowed an RLS refusal and
-  // reported a project whose lifecycle event never landed.
-  const { error: eventError } = await supabase.from("lifecycle_events").insert({
-    entity_type: "video_project",
-    entity_id: project.id,
-    brokerage_id: params.brokerageId,
-    event_type: KernelEvent.VIDEO_GENERATION_REQUESTED,
-    // lifecycle_events.actor_user_id is users-class — the caller-supplied users
-    // id is the right value here, NOT the resolved agents id above.
-    actor_user_id: params.agentUserId,
-    metadata: {
-      video_type: params.videoType,
-      title: params.title,
-      campaign_id: marketingCampaignId,
-      source_type: params.sourceType ?? null,
-      source_id: params.sourceId ?? null,
-    },
-  })
-  if (eventError) {
-    console.error("[create-video-project] lifecycle_events insert error:", eventError)
-  }
-
-  await processKernelEvent({
-    event: KernelEvent.VIDEO_GENERATION_REQUESTED,
-    brokerageId: params.brokerageId,
-    entityType: "video_project",
-    entityId: project.id,
-  }).catch(() => {})
-
-  // Brand compliance (merged from listing-media.ts:createVideoProject) — the
-  // BRAND check on the stored row, queued after the fair-housing hold above.
-  if (params.brandComplianceCheck) {
-    const { checkBrandCompliance } = await import("@/lib/kernel/brand-compliance")
-    await checkBrandCompliance({
-      contentType: "video",
-      contentId: project.id,
-      brokerageId: params.brokerageId,
-    }).catch((e: unknown) => console.error("[create-video-project] brand compliance queue failed:", e))
-  }
-
-  revalidatePath("/dashboard/videos")
-  revalidatePath("/dashboard/videos/create")
-
-  return {
-    success: true,
-    project: project as VideoProject,
-    ...(realismWarnings.length > 0 ? { realismWarnings } : {}),
-  }
+  return { ...result, project: result.project as VideoProject | undefined }
 }
 
 // ─── SUBMIT AVATAR VIDEO RENDER — DELETED (orphan doctrine §1.1, 2026-09-03) ─

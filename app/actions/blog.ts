@@ -1166,127 +1166,33 @@ export interface SaveBlogPostParams {
 export async function saveBlogPost(
   params: SaveBlogPostParams
 ): Promise<{ success: boolean; postId?: string; error?: string }> {
-  // ── 1. Auth via getAgentContext ──────────────────────────────────────────────
+  // TOMBSTONE (wave 85F, §1.1). The feature gate, the slug, the blog_posts insert, the SEO
+  // keyword upsert + links and the usage counter MOVED to the one draft creator,
+  // lib/kernel/content-creators.ts createBlogPostDraft. The voice webhook has no cookie session
+  // and was refused "Not authenticated" here, then fell back to a raw service-role insert in
+  // lib/wizard-staging/content-staging.ts that skipped the gate and the counter; that fallback
+  // merged onto the same creator. This door keeps the SESSION check.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
     return { success: false, error: "Not authenticated" }
   }
-
-  const accessCheck = await canAccessFeature(ctx.userId, "seo_blog_engine")
-  if (!accessCheck.allowed) {
-    return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  const supabase = await createClient()
-
-  // ── 2. Build slug from title if not supplied ────────────────────────────────
-  const slug =
-    (
-      params.slug ||
-      params.title
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, "")
-        .replace(/\s+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 80)
-    ) || `post-${Date.now()}`
-
-  // ── 3. Insert blog_posts ────────────────────────────────────────────────────
-  const insertData: Record<string, unknown> = {
-    brokerage_id: ctx.brokerageId,
-    agent_user_id: ctx.userId,
-    created_by: ctx.userId,
+  const { createBlogPostDraft } = await import("@/lib/kernel/content-creators")
+  const result = await createBlogPostDraft({
+    ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
     title: params.title,
-    slug,
-    excerpt: params.excerpt || null,
-    content: params.content || null,
-    featured_image_url: params.featuredImageUrl || null,
-    publish_status: params.publishStatus ?? "draft",
-    visibility_scope: "agent",
-    // pass 14: compliance_approved is a phantom key — the live gate column is
-    // approval_status (starts pending until compliance review).
-    approval_status: "pending",
-  }
-
-  // Store category and call_to_action in content_metadata JSON column if it exists,
-  // otherwise fall back to storing in excerpt/content fields.
-  if (params.category) {
-    insertData.category = params.category
-  }
-
-  if (params.callToAction) {
-    insertData.call_to_action = params.callToAction
-  }
-
-  const { data: post, error: insertError } = await supabase
-    .from("blog_posts")
-    .insert(insertData)
-    .select("id")
-    .maybeSingle()
-
-  if (insertError || !post) {
-    console.error("[saveBlogPost] Insert failed:", insertError)
-    return { success: false, error: "Failed to save blog post" }
-  }
-
-  // ── 4. Link keywords if provided ────────────────────────────────────────────
-  if (params.keywords?.length) {
-    for (let i = 0; i < params.keywords.length; i++) {
-      const keyword = params.keywords[i]
-      const isPrimary = i === 0
-
-      const { data: existingKw } = await supabase
-        .from("seo_keywords")
-        .select("id")
-        .eq("brokerage_id", ctx.brokerageId)
-        .eq("keyword", keyword)
-        .maybeSingle()
-
-      let seoKeywordId: string
-
-      if (existingKw) {
-        seoKeywordId = existingKw.id
-      } else {
-        const { data: newKw, error: kwErr } = await supabase
-          .from("seo_keywords")
-          .insert({
-            brokerage_id: ctx.brokerageId,
-            keyword,
-            keyword_type: isPrimary ? "primary" : "secondary",
-            search_intent: "informational",
-            visibility_scope: "agent",
-            created_by: ctx.userId,
-            is_active: true,
-          })
-          .select("id")
-          .maybeSingle()
-
-        if (kwErr || !newKw) {
-          console.error("[saveBlogPost] Keyword insert failed:", kwErr)
-          return { success: false, error: "Post saved but failed to create keywords" }
-        }
-        seoKeywordId = newKw.id
-      }
-
-      const { error: linkError } = await supabase.from("blog_post_keywords").insert({
-        brokerage_id: ctx.brokerageId,
-        blog_post_id: post.id,
-        seo_keyword_id: seoKeywordId,
-        is_primary: isPrimary,
-      })
-      if (linkError) {
-        console.error("[saveBlogPost] keyword link insert failed:", linkError.message)
-        return { success: false, error: "Post saved but failed to link keywords" }
-      }
-    }
-  }
-
-  // Increment usage only after all writes succeed
-  await incrementFeatureUsage(ctx.userId, "seo_blog_engine")
-
-  return { success: true, postId: post.id }
+    slug: params.slug,
+    excerpt: params.excerpt,
+    content: params.content,
+    featuredImageUrl: params.featuredImageUrl,
+    category: params.category,
+    callToAction: params.callToAction,
+    publishStatus: params.publishStatus,
+    keywords: params.keywords,
+  })
+  return result.success ? { success: true, postId: result.postId } : { success: false, error: result.error }
 }
 
+// ─── generateTopicIdeas ───────────────────────────────────────────────────────
 // ─── generateTopicIdeas ───────────────────────────────────────────────────────
 //
 // Returns 5 real estate blog topic suggestions based on the agent's market.

@@ -22,12 +22,7 @@ import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import {
-  canAccessFeature,
-  incrementFeatureUsage,
-  processKernelEvent,
-  KernelEvent,
-} from "@/lib/kernel"
+import { canAccessFeature } from "@/lib/kernel"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { generateEmail } from "@/app/actions/ai-content-generation"
@@ -170,106 +165,44 @@ export interface AiComposeEmailParams {
 // ─── CREATE ───────────────────────────────────────────────────────────────────
 
 export async function createEmailCampaign(params: CreateEmailCampaignParams) {
+  // TOMBSTONE (wave 85F, §1.1/§1.2). The umbrella + segment verification, the email_campaigns
+  // insert, the usage counter and EMAIL_CAMPAIGN_CREATED MOVED to the one creator,
+  // lib/kernel/content-creators.ts createEmailCampaign (no kernel half existed, so it was
+  // BUILT). The voice webhook has no cookie session and was refused "Unauthorized" here. Two
+  // defects closed in the move: `params.agentId` was written into agent_id UNVERIFIED (any
+  // agents id, any tenant), and the insert was not counted. This door keeps the SESSION
+  // check; the tenant is the session's and a foreign `brokerageId` is refused.
   try {
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
-
-    const access = await canAccessFeature(auth.userId, "email_campaigns")
-    if (!access.allowed) {
-      return { success: false, error: access.reason ?? "Email campaigns feature not available" }
+    if (params.brokerageId && params.brokerageId !== auth.brokerageId) {
+      return { success: false, error: "That brokerage is not yours — an email campaign is filed in your own brokerage." }
     }
-
-    const supabase = await createClient()
-
-    // THE UMBRELLA MUST BE ONE OF OURS. An FK proves a marketing_campaigns row
-    // exists; it never proves the row belongs to the caller's brokerage, and
-    // attaching this tenant's email to another tenant's campaign would feed
-    // their ROI rollup and their video fan-out. Same gate, same wording as
-    // app/actions/marketing-studio.ts:1098 where this pattern already stands.
-    let marketingCampaignId: string | null = null
-    if (params.marketingCampaignId) {
-      if (!isValidUUID(params.marketingCampaignId)) {
-        return { success: false, error: "Invalid campaign ID" }
-      }
-      const { data: umbrella, error: umbrellaError } = await supabase
-        .from("marketing_campaigns")
-        .select("id")
-        .eq("id", params.marketingCampaignId)
-        .eq("brokerage_id", auth.brokerageId)
-        .maybeSingle()
-      if (umbrellaError) {
-        return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
-      }
-      if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
-      marketingCampaignId = umbrella.id as string
-    }
-
-    // THE SEGMENT MUST HAVE MEMBERS IN THIS TENANT. contact_segments.segment_id
-    // has no FK and no catalogue, so "does this segment exist" can only be
-    // answered by "does anyone in MY brokerage belong to it" — which is also
-    // exactly the question the sender will ask when it resolves recipients. A
-    // campaign pointed at a segment with no local members would claim an
-    // audience and send to nobody.
-    let audienceSegmentId: string | null = null
-    if (params.audienceSegmentId) {
-      if (!isValidUUID(params.audienceSegmentId)) {
-        return { success: false, error: "Invalid segment ID" }
-      }
-      const { data: member, error: segmentError } = await supabase
-        .from("contact_segments")
-        .select("id")
-        .eq("segment_id", params.audienceSegmentId)
-        .eq("brokerage_id", auth.brokerageId)
-        .is("removed_at", null)
-        .limit(1)
-        .maybeSingle()
-      if (segmentError) {
-        return { success: false, error: `Could not verify that segment: ${segmentError.message}` }
-      }
-      if (!member) return { success: false, error: "That segment has no active members on your brokerage." }
-      audienceSegmentId = params.audienceSegmentId
-    }
-
-    const { data: campaign, error } = await supabase
-      .from("email_campaigns")
-      .insert({
-        brokerage_id: auth.brokerageId,  // from session, not params
-        agent_id: params.agentId ?? null,
-        marketing_campaign_id: marketingCampaignId,
-        audience_segment_id: audienceSegmentId,
-        campaign_name: params.campaignName,
-        subject_line: params.subjectLine,
-        content: params.content ?? "",
-        status: "draft",
-        approval_status: "pending",
-        created_by: auth.userId,  // from session
-        send_date: params.sendDate ?? null,
-        brand_compliance_passed: false,
-      })
-      .select()
-      .maybeSingle()
-
-    if (error || !campaign) throw error ?? new Error("Failed to create campaign")
-
-    await incrementFeatureUsage(auth.userId, "email_campaigns").catch(() => {})
-
-    await processKernelEvent({
-      event: KernelEvent.EMAIL_CAMPAIGN_CREATED,
-      brokerageId: auth.brokerageId,
-      entityType: "newsletter_campaign",
-      entityId: campaign.id,
-    }).catch((err) => {
-      console.error("[EmailCampaigns] Event processing failed (non-blocking):", err)
+    // IDENTITY CLASS (§3). The blog editor passes its USERS id as `agentId` (it wrote that into
+    // agent_id, a FK to agents: 23503 on every save). The caller's own users id means "me", so
+    // the creator crosses it to the caller's agents row; any other value must VERIFY as an
+    // agents row in the session tenant or the campaign is refused.
+    const namedAgentId = params.agentId && params.agentId !== auth.userId ? params.agentId : undefined
+    const { createEmailCampaign: fileEmailCampaign } = await import("@/lib/kernel/content-creators")
+    const result = await fileEmailCampaign({
+      ctx: { userId: auth.userId, brokerageId: auth.brokerageId, agentId: namedAgentId },
+      campaignName: params.campaignName,
+      subjectLine: params.subjectLine,
+      content: params.content,
+      sendDate: params.sendDate,
+      marketingCampaignId: params.marketingCampaignId,
+      audienceSegmentId: params.audienceSegmentId,
     })
-
+    if (!result.success) return result
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
-    return { success: true, campaign }
+    return { success: true, campaign: result.campaign }
   } catch (error) {
     return handleError(error, "createEmailCampaign")
   }
 }
 
+// ─── LIST ─────────────────────────────────────────────────────────────────────
 // ─── LIST ─────────────────────────────────────────────────────────────────────
 
 export async function getEmailCampaigns(_brokerageId?: string, agentId?: string) {
