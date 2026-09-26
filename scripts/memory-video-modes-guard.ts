@@ -39,7 +39,7 @@
  *
  * No network. PURE modules only, plus stripped-source scans.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
