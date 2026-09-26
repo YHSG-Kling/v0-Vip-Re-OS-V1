@@ -21,7 +21,6 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import {
   canAccessFeature,
-  incrementFeatureUsage,
   resolveProvider,
   processKernelEvent,
   KernelEvent,
@@ -29,6 +28,10 @@ import {
 import { dispatchDirectMail } from "@/lib/providers/dispatch"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+// THE ONE CREATOR of a user-authored campaign row. Aliased because this file's own export
+// is createMailCampaign and ai-direct-mail's is createDirectMailCampaign; the kernel's name
+// would read as a third door.
+import { createDirectMailCampaign as fileDirectMailCampaign } from "@/lib/kernel/marketing"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -157,44 +160,26 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
       agentRecordId = await resolveAgentIdInBrokerage(supabase, actor.userId, actor.brokerageId)
     }
 
-    // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(actor.userId, "direct_mail")
-    if (!access.allowed) {
-      return { success: false, error: access.reason ?? "Direct mail feature not available" }
-    }
-
-    const { data: campaign, error } = await supabase
-      .from("direct_mail_campaigns")
-      .insert({
-        brokerage_id: actor.brokerageId,
-        agent_id: agentRecordId,
-        campaign_name: params.campaignName,
-        target_audience: params.targetAudience,
-        design_url: params.designUrl ?? null,
-        copy_text: params.copyText ?? null,
-        quantity: params.quantity,
-        mailing_date: params.mailingDate ?? null,
-        per_piece_cost: params.perPieceCost ?? null,
-        status: "planning",
-        created_by: actor.userId,
-      })
-      .select()
-      .maybeSingle()
-
-    if (error || !campaign) throw error ?? new Error("Failed to create campaign")
-
-    // ── Increment usage counter ──
-    await incrementFeatureUsage(actor.userId, "direct_mail")
-
-    // ── Fire kernel event ──
-    await processKernelEvent({
-      event: KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED,
-      brokerageId: actor.brokerageId,
-      entityType: "direct_mail_campaign",
-      entityId: campaign.id,
-    }).catch((err) => {
-      console.error("[DirectMail] Event processing failed (non-blocking):", err)
+    // TOMBSTONE (wave 85D, §1.1): the feature gate, the raw direct_mail_campaigns insert, the
+    // usage counter and the DIRECT_MAIL_CAMPAIGN_CREATED emission that lived here MERGED onto
+    // the one creator, lib/kernel/marketing.ts createDirectMailCampaign ("THE ONE CREATOR"
+    // block). It is the same chain, and it is now shared with the voice webhook, which has
+    // no cookie session to reach this action. This action stays the SESSION door: identity
+    // is verified above, then handed over.
+    const created = await fileDirectMailCampaign({
+      ctx: { userId: actor.userId, brokerageId: actor.brokerageId, agentId: agentRecordId ?? undefined },
+      campaignName: params.campaignName,
+      targetAudience: params.targetAudience,
+      designUrl: params.designUrl,
+      copyText: params.copyText,
+      quantity: params.quantity,
+      mailingDate: params.mailingDate,
+      perPieceCost: params.perPieceCost,
     })
+    if (!created.success || !created.data) {
+      return { success: false, error: created.error ?? "Direct mail campaign was not created" }
+    }
+    const campaign = created.data.campaign
 
     revalidatePath("/dashboard/campaigns/mail")
     return { success: true, campaign }

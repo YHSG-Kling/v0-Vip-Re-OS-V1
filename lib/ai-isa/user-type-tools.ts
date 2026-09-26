@@ -38,6 +38,7 @@
 import { tool } from "ai"
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
+import { buildLookupPropertyFactsTool } from "@/lib/ai-isa/property-lookup-tools"
 import { USER_TYPE_TOOL_POLICY, type UserTypeSeat } from "@/lib/ai-isa/user-type-tool-policy"
 
 export interface UserTypeSeatContext {
@@ -626,6 +627,15 @@ const STAFF_SIDE_BUILDERS: Record<string, SeatBuilder> = {
   get_setup_readiness: buildGetSetupReadinessTool,
   get_billing_summary: buildGetBillingSummaryTool,
   get_compliance_summary: buildGetComplianceSummaryTool,
+  // Wave 85D: the staff copilot's property lookup through the ONE rail
+  // (cache → tenant IDX → RentCast → public records, never BatchData for a
+  // conversation). STAFF_FOLLOW_UPS already promised this tool by name, but it only
+  // mounted while the copilot was open on a contact, so a plain copilot session
+  // reached for BatchData's lookup_property instead ($0.05 a call, where the cache
+  // and IDX rungs are free). selectToolsForSeat drops that BatchData tool whenever
+  // this one mounts.
+  lookup_property_facts: (ctx: UserTypeSeatContext) =>
+    buildLookupPropertyFactsTool({ brokerageId: ctx.brokerageId, persona: null }, { audience: "staff", userId: ctx.userId }),
 }
 
 /** THE registry — every seat tool name the policy table may promise. The

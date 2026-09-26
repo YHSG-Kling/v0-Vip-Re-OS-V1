@@ -230,6 +230,24 @@ for (const [file, fn] of CREATORS) {
   ok(`${fn}: the tenant is the SESSION's (a foreign brokerageId is refused)`,
     /getAgentContext\(\)/.test(body) && /params\.brokerageId\s*(!==|&&)/.test(body))
 }
+// R1k (wave 85D). The insert, gate, usage counter and QR mint MERGED onto the one creator,
+// lib/kernel/marketing.ts createDirectMailCampaign, which the voice webhook shares. Its body
+// is judged by the same sink rule, and it must verify a supplied ctx.agentId in-tenant and
+// cross users→agents itself. Without this block the rule above would see only the doors
+// and go blind to the insert (each door now shows 1 sink where it showed 4-6).
+{
+  const kfile = "lib/kernel/marketing.ts"
+  const kbody = functionBody(blankStrings(read(kfile)), "createDirectMailCampaign")
+  ok(`createDirectMailCampaign (the one creator) found in ${kfile}`, !!kbody)
+  const v = creatorSinkViolations(kbody ?? "")
+  const sinks = [...(kbody ?? "").matchAll(/\b(canAccessFeature|incrementFeatureUsage|created_by|createdBy|agent_id|agentId)\b\s*[:(]/g)].length
+  ok(`kernel createDirectMailCampaign: ${sinks} identity sinks (≥ 4: gate, counter, created_by, agent_id), 0 fed the wrong class`,
+    sinks >= 4 && v.length === 0, v.map((x) => `${x.sink} ← ${x.expr} (${x.got}, want ${x.want})`).join("; "))
+  ok("kernel createDirectMailCampaign verifies a supplied ctx.agentId is an agents row IN ctx.brokerageId",
+    /\.eq\("\s*",\s*ctx\.agentId\)\s*\.eq\("\s*",\s*brokerageId\)/.test(kbody ?? ""))
+  ok("kernel createDirectMailCampaign crosses users→agents through resolveAgentIdInBrokerage when none is supplied",
+    /resolveAgentIdInBrokerage\(\s*supabase\s*,\s*actorUserId\s*,\s*brokerageId\s*\)/.test(kbody ?? ""))
+}
 const mailBody = bodies.get("createMailCampaign") ?? ""
 ok("createMailCampaign verifies a supplied agentId is an agents row IN the session tenant",
   /\.from\("\s*"\)|\.from\(/.test(mailBody) &&
@@ -241,16 +259,42 @@ console.log("\n── R2 / R3: every call site (discovered) ──")
 const files: string[] = []
 for (const r of ROOTS) walk(join(process.cwd(), r), files)
 const directReturnKeys = successReturnKeys(bodies.get("createDirectMailCampaign") ?? "")
+/** R4 — a kernel-creator ctx: userId users-class (required), agentId agents-class (optional). */
+function kernelCtxViolations(ctxExpr: string, scope: string): string[] {
+  const firstBrace = ctxExpr.indexOf("{")
+  const ctxProps = firstBrace >= 0 ? topLevelProps(balancedFrom(ctxExpr, firstBrace)) : new Map<string, string>()
+  const v: string[] = []
+  const u = ctxProps.get("userId")
+  const a = ctxProps.get("agentId")
+  if (u === undefined) v.push("ctx names no userId")
+  else if (classify(u, scope) !== "users") v.push(`ctx.userId is ${classify(u, scope)}-class (${u})`)
+  if (a !== undefined && classify(a, scope) !== "agents") v.push(`ctx.agentId is ${classify(a, scope)}-class (${a})`)
+  return v
+}
 let sitesSeen = 0
+let kernelSitesSeen = 0
 for (const abs of files) {
   const rel = abs.slice(process.cwd().length + 1)
   const raw = readFileSync(abs, "utf8")
   if (!/createMailCampaign|createDirectMailCampaign/.test(raw)) continue
   const code = blankStrings(raw)
+  // R4 (wave 85D): the kernel creator's call sites — `createDirectMailCampaign({ ctx … })`
+  // or an alias (`createDirectMailCampaign as fileDirectMailCampaign`). ctx.userId must be
+  // users-class and ctx.agentId agents-class; the kernel re-verifies agentId in-tenant, but a
+  // users id there is a class error at the door and is flagged here first.
+  const aliases = [...code.matchAll(/createDirectMailCampaign\s+as\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1])
+  for (const kfn of ["createDirectMailCampaign", ...aliases]) {
+    for (const site of callSites(rel, code, kfn)) {
+      const ctxExpr = site.args.get("ctx")
+      if (ctxExpr === undefined) continue
+      kernelSitesSeen++
+      const v = kernelCtxViolations(ctxExpr, code)
+      ok(`${rel}:${site.line} ${kfn}({ ctx }) — kernel creator, ctx ids in class`, v.length === 0, v.join("; "))
+    }
+  }
   for (const fn of ["createMailCampaign", "createDirectMailCampaign"]) {
     for (const site of callSites(rel, code, fn)) {
-      // lib/kernel/marketing.ts defines its own (unwired) kernel createDirectMailCampaign; a
-      // call to THAT one carries `ctx`, not the action's shape — judged by its args.
+      // The kernel creator's calls carry `ctx` and were judged by R4 above.
       if (fn === "createDirectMailCampaign" && site.args.has("ctx")) continue
       sitesSeen++
       const v = callSiteViolations(site, code, fn)
@@ -261,6 +305,7 @@ for (const abs of files) {
   }
 }
 ok(`call sites discovered: ${sitesSeen} (denominator; a zero here means the finder is blind)`, sitesSeen >= 4)
+ok(`kernel-creator call sites discovered: ${kernelSitesSeen} (the session doors + the voice/staging door; zero = blind)`, kernelSitesSeen >= 1)
 
 console.log("\n── positive controls: the pre-84E shapes must be flagged ──")
 {
@@ -325,6 +370,12 @@ console.log("\n── positive controls: the pre-84E shapes must be flagged ─�
   const tomb = blankStrings(`// createMailCampaign({ agentId: userId, createdBy: userId })\nconst x = "createMailCampaign({ agentId: userId })"`)
   ok("control: a tombstone / string mention is NOT a call site", callSites("specimen", tomb, "createMailCampaign").length === 0)
 
+  const badKernel = blankStrings(`async function k(actor) {
+    const r = await fileDirectMailCampaign({ ctx: { userId: actor.userId, brokerageId: b, agentId: actor.userId }, campaignName: "x" })
+  }`)
+  const [ks] = callSites("specimen", badKernel, "fileDirectMailCampaign")
+  ok("control (85D): a kernel ctx with a users id as agentId is flagged",
+    !!ks && kernelCtxViolations(ks.args.get("ctx") ?? "", badKernel).some((x) => /agentId is users-class/.test(x)))
   ok("control: the classifier reads a verified agents local as agents and a session user as users",
     classify("agentRecordId", "") === "agents" && classify("actor.userId", "") === "users" && classify("auth.userId", "") === "users")
 }

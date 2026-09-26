@@ -887,7 +887,11 @@ console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated
   // written with an agents-class id — so it follows the writer instead of being
   // relaxed to a smaller count here.
   ok("...and KEEPS ctx.agentId for newsletter_campaigns and direct_mail_campaigns,\n    which genuinely FK agents — the same file, both classes, on purpose",
-    (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length === 2)
+    // RE-ANCHORED (lane 85D): the direct-mail creator no longer writes ctx.agentId raw. It
+    // writes `agentRecordId`, the agents row it VERIFIED in ctx.brokerageId (or crossed from
+    // ctx.userId through resolveAgentIdInBrokerage). Newsletter still carries ctx.agentId.
+    (mk.match(/agent_id:\s*ctx\.agentId \?\? null,/g) ?? []).length >= 1
+    && /agent_id:\s*agentRecordId,/.test(mk) && /resolveAgentIdInBrokerage\(\s*supabase\s*,\s*actorUserId\s*,\s*brokerageId\s*\)/.test(mk))
   ok("...and the qr_codes writer carries that class with it to the ONE surviving\n    minter, which takes an agents id and never a users id",
     /agent_id: args\.agentId \?\? null,/.test(code("lib/marketing/tracked-qr.ts")) &&
     !/agent_id:\s*(ctx|args)\.userId/.test(code("lib/marketing/tracked-qr.ts")))

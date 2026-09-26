@@ -845,20 +845,17 @@ async function stageDirectMailCampaignVoice(params: Record<string, unknown>, ses
   const targetAudience = String(params.target_audience ?? "").trim()
   if (!campaignName) return { error: "campaign_name required" }
   if (!targetAudience) return { error: "target_audience required" }
-  const rawPieceType = params.piece_type ? String(params.piece_type) : undefined
-  const allowedPieceTypes = new Set([
-    "postcard_4x6",
-    "postcard_6x9",
-    "postcard_6x11",
-    "letter",
-    "handwritten",
-    "thank_you_note",
-  ])
-  const pieceType =
-    rawPieceType && allowedPieceTypes.has(rawPieceType)
-      ? (rawPieceType as "postcard_4x6" | "postcard_6x9" | "postcard_6x11" | "letter" | "handwritten" | "thank_you_note")
-      : undefined
+  // The spoken piece is folded onto the column vocabulary inside the staging helper
+  // (lib/direct-mail/piece-type.ts). A hand allowlist here dropped the column's own
+  // spellings ("postcard", "handwritten_letter") to undefined (§6).
+  const pieceType = params.piece_type ? String(params.piece_type) : undefined
   const { stageDirectMailCampaign } = await import("@/lib/wizard-staging/content-staging")
+  // THE ACTOR IS THE SESSION ROW, NEVER THE BODY (wave 85D). `session` was resolved above
+  // from the secret-verified request's conversation_id → agent_assistant_sessions, a row
+  // written by /api/agent-assistant/session from the signed-in user's cookie session.
+  // Any brokerage_id / agent_id / user_id a tool call puts in `params` is never read.
+  // The one creator (lib/kernel/marketing.ts createDirectMailCampaign) crosses users →
+  // agents itself, pinned to this brokerage.
   return stageDirectMailCampaign(
     { brokerageId: session.brokerage_id, userId: session.user_id },
     {

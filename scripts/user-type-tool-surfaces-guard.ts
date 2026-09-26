@@ -219,10 +219,19 @@ check("the route's staff toolkit was actually enumerated (≥ 19 `name: tool({` 
 for (const seat of ["staff", "team_lead", "broker_admin", "platform_staff"] as const) {
   const p = USER_TYPE_TOOL_POLICY[seat]
   const selected = selectToolsForSeat(seat, { ...parts, staffTools: fake(staffToolNames), seatTools: fake([...p.seatToolNames]) })
-  check(`${seat}: every staff tool survives (${staffToolNames.length}/${staffToolNames.length}) + BatchData + RentCast${p.customerPersonaToolsForContact ? " + the customer bundle" : ""}`,
-    staffToolNames.every((n) => n in selected) && "lookup_property" in selected && "rentcast_value_lookup" in selected
+  // RE-ANCHORED (lane 85D, owner: "No BatchData tools in agent tools when a cheaper lookup
+  // exists"): a seat whose rail tool (lookup_property_facts) mounts does NOT also get BatchData's
+  // lookup_property; BatchData preview/count stay. A seat without the rail tool keeps it.
+  const railMounted = p.seatToolNames.includes("lookup_property_facts")
+  check(`${seat}: every staff tool survives (${staffToolNames.length}/${staffToolNames.length}) + BatchData preview/count + RentCast${p.customerPersonaToolsForContact ? " + the customer bundle" : ""}; BatchData lookup_property ${railMounted ? "superseded by the rail's lookup_property_facts" : "kept (no rail tool on this seat)"}`,
+    staffToolNames.every((n) => n in selected) && "comparable_property_preview" in selected && "rentcast_value_lookup" in selected
+    && (railMounted ? ("lookup_property_facts" in selected && !("lookup_property" in selected)) : "lookup_property" in selected)
     && (p.customerPersonaToolsForContact ? "get_my_context" in selected : !("get_my_context" in selected)))
 }
+check("the three tenant staff seats carry the rail's lookup_property_facts as a seat tool (the prompt promised it by name)",
+  (["staff", "team_lead", "broker_admin"] as const).every((s) => USER_TYPE_TOOL_POLICY[s].seatToolNames.includes("lookup_property_facts")))
+check("POSITIVE CONTROL: if the rail tool did NOT build, the BatchData lookup_property is kept (the capability is never lost)",
+  "lookup_property" in selectToolsForSeat("staff", { ...parts, staffTools: fake(staffToolNames), seatTools: fake([]) }))
 check("staff / team_lead / broker_admin / platform_staff keep batchData: true + rentCast: true in the table (the wave-72B ruling stands)",
   (["staff", "team_lead", "broker_admin", "platform_staff"] as const).every((s) => USER_TYPE_TOOL_POLICY[s].batchData && USER_TYPE_TOOL_POLICY[s].rentCast && USER_TYPE_TOOL_POLICY[s].staffToolkit === "all"))
 

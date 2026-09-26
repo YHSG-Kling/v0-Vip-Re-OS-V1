@@ -315,7 +315,7 @@ const asFiles = CORPUS.filter((p) => AS.test(stripped(p)) && p !== "lib/kernel/m
 check("no env read, connector or host for AssessorSearch under app/ lib/ (the registry entry records the verdict in prose)", asFiles.length === 0, asFiles.join(", "))
 check("POSITIVE CONTROL: the scan DOES flag a fixture env read", AS.test(`process.env.ASSESSORSEARCH_API_KEY`))
 check("the rail's public-records rung is still the Perplexity Sonar reader (lib/property/address-lookup.ts) and its documented cost stays below RentCast's",
-  /lookupPropertyByAddress\(/.test(railSrc) && rail.PROPERTY_LOOKUP_RUNG_COST_USD.public_records < rail.PROPERTY_LOOKUP_RUNG_COST_USD.rentcast)
+  /lookupPropertyByAddress\(/.test(railSrc) && rail.PROPERTY_LOOKUP_RUNG_COST_USD.public_records.usd < rail.PROPERTY_LOOKUP_RUNG_COST_USD.rentcast.usd)
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 6 · persona / platform realism — the tools exist and the ladders reach a ROUTED model]")

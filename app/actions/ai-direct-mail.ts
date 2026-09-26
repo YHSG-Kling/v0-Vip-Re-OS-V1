@@ -30,21 +30,22 @@ import {
 // TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
 // imported here and never called. The wire is real but it is made ONE LAYER
 // DOWN, by the writers this file delegates every state change to:
-//   · createMailCampaign  → app/actions/direct-mail.ts:149 emits
-//     KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED (called from :524 below)
-//   · sendCampaign        → app/actions/direct-mail.ts:893 emits
-//     KernelEvent.DIRECT_MAIL_SENT (called from :736 below)
+//   · the one creator, lib/kernel/marketing.ts createDirectMailCampaign, emits
+//     KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED (wave 85D; it used to be
+//     createMailCampaign, which now delegates to the same creator)
+//   · sendCampaign → app/actions/direct-mail.ts emits KernelEvent.DIRECT_MAIL_SENT
 //   · addRecipients / logResponse are handled by the same module.
 // This file is the AI/authoring layer over those; a second emission here would
 // have double-fired both events on every campaign.
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 import {
-  createMailCampaign,
   addRecipients,
   sendCampaign,
   logResponse,
 } from "@/app/actions/direct-mail"
-import { createQrCodeAction } from "@/app/actions/marketing-studio"
+// THE ONE CREATOR (wave 85D). Aliased: this file's own export carries the kernel's name.
+import { createDirectMailCampaign as fileDirectMailCampaign } from "@/lib/kernel/marketing"
+import type { CampaignPieceType } from "@/lib/direct-mail/piece-type"
 
 /**
  * WHO THE MODEL SPEND IS BILLED TO — from the SESSION, never from the request.
@@ -69,8 +70,9 @@ async function ledgerActorForSpend(): Promise<{ userId?: string; brokerageId: st
   return { userId: ctx.userId, brokerageId: ctx.brokerageId }
 }
 
-// Direct mail piece types — matches the piece_type column on direct_mail_campaigns.
-export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
+// Direct mail piece types: the piece_type column vocabulary, defined ONCE in
+// lib/direct-mail/piece-type.ts (CAMPAIGN_PIECE_TYPES) and re-named here for callers.
+export type DirectMailPieceType = CampaignPieceType
 
 // REMOVED in the QR merge (wave Q): `buildQrImageUrl(absoluteScanUrl, size)`.
 // It returned an api.qrserver.com URL, so the tracked scan URL for every postcard was handed to a
@@ -504,35 +506,28 @@ export async function getDirectMailCampaigns(_agentId?: string /* ignored — de
 }
 
 /**
- * AI-enhanced direct mail campaign creation.
+ * AI-enhanced direct mail campaign creation: the SESSION door.
  *
- * Delegates the actual `direct_mail_campaigns` insert to the canonical
- * `createMailCampaign` in `app/actions/direct-mail.ts`. This function only
- * layers AI-driven enhancements on top:
- *   - Budget → quantity calculation (per-piece cost economics)
- *   - Piece-type tagging (postcard | letter | brochure)
- *   - QR-code generation + tracking link when tracking enabled
+ * What this adds on top of the one creator:
+ *   - budget → quantity (per-piece cost economics)
+ *   - piece-type tagging (folded onto the one column vocabulary, lib/direct-mail/piece-type.ts)
+ *   - tracked QR + tracking link when tracking is enabled
  *
- * The kernel event (DIRECT_MAIL_CAMPAIGN_CREATED) and feature gate are
- * handled by `createMailCampaign`; this fn does NOT duplicate them.
+ * TOMBSTONE (wave 85D, §1.1). The direct_mail_campaigns insert, the feature gate, the usage
+ * counter, the kernel event, the piece_type/tracking_id stamp, the createQrCodeAction mint
+ * and the reverse qr_code_id link that this function used to run itself (partly through
+ * createMailCampaign) all MERGED onto the one creator, lib/kernel/marketing.ts
+ * createDirectMailCampaign ("THE ONE CREATOR" block). The voice webhook needed the same
+ * chain without a cookie session. Its two stamps are now written IN the insert, so there is
+ * no unstamped window. This function keeps what only a "use server" door can do: verify
+ * the SESSION and revalidate the pages.
  *
- * Use `createMailCampaign` directly for manual / non-AI flows. Do NOT
- * introduce a third creator that bypasses both.
- *
- * IDENTITY CLASS (wave 84E — CLAUDE.md §3 "agents.id and users.id are DISJOINT").
- * This took ONE `agentId` and handed it to three columns of two classes:
- * `canAccessFeature` / `created_by` / `incrementFeatureUsage` want a USERS id,
- * while `direct_mail_campaigns.agent_id` and `qr_codes.agent_id` FK AGENTS.
- * Every caller (create-campaign-dialog `setAgentId(user.id)`, price-reduction-sheet
- * `agentId={user.id}`, content-staging `agentId: ctx.userId`) passed the USERS id,
- * so the insert named a users id in an agents FK and 23503'd — live
- * `direct_mail_campaigns` held 0 rows on 2026-09-26. Both ids now come from the
- * SESSION (§4, this is a "use server" export): users.id = the session user, and
- * agents.id is crossed through the ONE survivor
- * lib/kernel/agent-identity.ts `resolveAgentIdInBrokerage` (agents.user_id,
- * pinned to the session tenant). A seat with no agents row files the campaign
- * with agent_id NULL (the column is nullable) — never the users id.
- * `brokerageId` stays accepted only as a cross-check: a foreign tenant is refused.
+ * IDENTITY CLASS (wave 84E, CLAUDE.md §3 "agents.id and users.id are DISJOINT"). Both ids
+ * come from the SESSION (§4, this is a "use server" export). users.id is the session user,
+ * and agents.id is crossed through the ONE survivor lib/kernel/agent-identity.ts
+ * `resolveAgentIdInBrokerage` (agents.user_id, pinned to the session tenant). A seat with
+ * no agents row files the campaign with agent_id NULL, never the users id. `brokerageId`
+ * is accepted only as a cross-check, and a foreign tenant is refused.
  */
 export async function createDirectMailCampaign(params: {
   /** Cross-check only — the tenant is the SESSION's (§4). A foreign id is refused. */
@@ -545,10 +540,12 @@ export async function createDirectMailCampaign(params: {
   budget?: number
   sendDate?: string
   trackingEnabled?: boolean
+  /** Copy the agent wrote or dictated. Absent → the campaign name + audience line, as before. */
+  copyText?: string
   /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id when this mailer belongs to an
    *  umbrella marketing campaign — stamped onto qr_codes.marketing_campaign_id so the scans roll
-   *  up in lib/marketing/campaign-measurer.ts. Verified against the caller's brokerage inside
-   *  createQrCodeAction; an FK proves a campaign exists, never that it is ours. */
+   *  up in lib/marketing/campaign-measurer.ts. Verified against the session brokerage inside
+   *  the kernel creator; an FK proves a campaign exists, never that it is ours. */
   marketingCampaignId?: string
   /** Optional absolute origin (e.g. "https://app.example.com"); QR link defaults
    *  to NEXT_PUBLIC_APP_URL or a relative path if not provided. */
@@ -566,135 +563,43 @@ export async function createDirectMailCampaign(params: {
       return { success: false, error: "That brokerage is not yours — a direct mail campaign is filed in your own brokerage" }
     }
     const brokerageId = actor.brokerageId
-    // users.id — the gate, the usage counter and created_by (FK users).
+    // users.id: the gate, the usage counter and created_by (FK users).
     const actorUserId = actor.userId
-    // agents.id — direct_mail_campaigns.agent_id and qr_codes.agent_id (FK agents),
+    // agents.id: direct_mail_campaigns.agent_id and qr_codes.agent_id (FK agents),
     // crossed via agents.user_id and pinned to the session tenant.
     const agentRecordId = await resolveAgentIdInBrokerage(await createClient(), actorUserId, brokerageId)
 
-    const access = await canAccessFeature(actorUserId, "direct_mail")
-    if (!access.allowed) {
-      return { success: false, error: access.reason ?? "Direct mail feature not available" }
-    }
-
-    const quantity =
-      params.budget && params.budget > 0
-        ? Math.max(1, Math.floor(params.budget / 0.79))
-        : 100
-
-    const perPieceCost =
-      params.budget && quantity > 0
-        ? Number((params.budget / quantity).toFixed(2))
-        : 0.79
-    const trackingId = params.trackingEnabled
-      ? `dm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-      : null
-
-    const campaignResult = await createMailCampaign({
-      brokerageId,
-      agentId: agentRecordId ?? undefined,
-      campaignName: params.campaignName,
-      targetAudience: params.targetAudience,
-      designUrl: params.designTemplate ?? undefined,
-      copyText: [params.campaignName, params.targetAudience].filter(Boolean).join(" "),
-      quantity,
-      mailingDate: params.sendDate ?? undefined,
-      perPieceCost,
-      createdBy: actorUserId,
-    })
-
-    if (!campaignResult.success) {
-      return {
-        success: false,
-        error: campaignResult.error || "Failed to create direct mail campaign",
-      }
-    }
-
-    const campaign = campaignResult.campaign as { id: string } | null
-    const supabase = await createClient()
     const pieceType: DirectMailPieceType = params.pieceType ?? "postcard"
 
-    // Persist piece type + tracking id on the campaign row regardless of QR.
-    // supabase-js RESOLVES a refusal and an update matching nothing (§3), so read the
-    // error AND count the row: an unstamped tracking_id is what /api/qr/scan would miss.
-    if (campaign?.id) {
-      const { data: stamped, error: stampError } = await supabase
-        .from("direct_mail_campaigns")
-        .update({ piece_type: pieceType, tracking_id: trackingId })
-        .eq("id", campaign.id)
-        .eq("brokerage_id", brokerageId)
-        .select("id")
-      if (stampError || (stamped ?? []).length === 0) {
-        console.error(
-          "[AI Direct Mail] piece_type/tracking_id NOT stamped on the campaign:",
-          stampError?.message ?? "update matched 0 rows",
-        )
-      }
+    // Budget → quantity / per-piece economics moved INTO the one creator (the voice door
+    // prices a mailer the same way); this door hands over the budget.
+    const created = await fileDirectMailCampaign({
+      ctx: { userId: actorUserId, brokerageId, agentId: agentRecordId ?? undefined },
+      campaignName: params.campaignName,
+      targetAudience: params.targetAudience,
+      designUrl: params.designTemplate,
+      copyText: params.copyText?.trim() || [params.campaignName, params.targetAudience].filter(Boolean).join(" "),
+      budget: params.budget,
+      mailingDate: params.sendDate,
+      pieceType,
+      tracking: params.trackingEnabled
+        ? { marketingCampaignId: params.marketingCampaignId, origin: params.appOrigin }
+        : undefined,
+    })
+    if (!created.success || !created.data) {
+      return { success: false, error: created.error || "Failed to create direct mail campaign" }
     }
-
-    // Generate the QR code + image URL when tracking is enabled.
-    let qrCodeId: string | null = null
-    let qrSlug: string | null = null
-    let qrImageUrl: string | null = null
-    let trackingUrl: string | null = null
-
-    if (params.trackingEnabled && trackingId && campaign?.id) {
-      // The mint no longer needs a placeholder target_url patched after the fact: the minter owns
-      // the slug and returns the scan URL, and it defaults target_url to this code's own public
-      // /qr/<slug> landing when (as here) there is no other semantic destination.
-      //
-      // ★ TRACKING LINKED TO CAMPAIGN ★ `marketingCampaignId` is the FORWARD link to
-      // marketing_campaigns and is stamped only when the caller actually has one. It is NOT the
-      // same thing as `direct_mail_campaigns.qr_code_id` set below, which is a separate REVERSE
-      // link that already worked and is what /api/qr/scan reads for direct-mail attribution.
-      // Collapsing either into the other would break one of the two lanes.
-      const qrResult = await createQrCodeAction({
-        brokerageId,
-        // qr_codes.agent_id FKs agents — the crossed agents row, never the users id.
-        agentId: agentRecordId ?? undefined,
-        label: `${params.campaignName} (${trackingId})`,
-        purpose: "campaign",
-        destinationType: "landing_page",
-        campaignId: params.marketingCampaignId,
-        // trackingId is unique per campaign, so this doubles as the idempotency key: a retried
-        // create reuses the same tracked code instead of minting a second one.
-        idempotencyLabel: `direct_mail:${trackingId}`,
-      })
-
-      if (qrResult.success && qrResult.qrCode) {
-        qrCodeId = qrResult.qrCode.id
-        qrSlug = qrResult.qrCode.slug
-
-        // Link the QR to the campaign for scan attribution (the REVERSE link).
-        const { error: linkError } = await supabase
-          .from("direct_mail_campaigns")
-          .update({ qr_code_id: qrResult.qrCode.id })
-          .eq("id", campaign.id)
-        if (linkError) {
-          // Without this link /api/qr/scan cannot attribute a scan to the mail campaign, so the
-          // Responses tab and cost-per-response stay at zero. Say so rather than reporting a
-          // tracked campaign that is not tracked.
-          console.error("[AI Direct Mail] QR created but NOT linked to the campaign:", linkError.message)
-        }
-
-        trackingUrl = qrResult.qrCode.scan_url
-        qrImageUrl = qrResult.qrCode.image_url
-      } else {
-        console.error("[AI Direct Mail] QR code was NOT created:", (qrResult as { error?: string }).error)
-      }
-    }
+    const { campaign, trackingId, qr } = created.data
 
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/campaigns/mail")
 
     return {
       success: true,
-      campaign: campaign
-        ? { ...campaign, piece_type: pieceType, qr_code_id: qrCodeId, tracking_id: trackingId }
-        : null,
-      trackingUrl,
-      qrImageUrl,
-      qrSlug,
+      campaign: { ...campaign, piece_type: created.data.pieceType, qr_code_id: qr?.qrCodeId ?? null, tracking_id: trackingId },
+      trackingUrl: qr?.scanUrl ?? null,
+      qrImageUrl: qr?.imageUrl ?? null,
+      qrSlug: qr?.slug ?? null,
       pieceType,
     }
   } catch (error) {
@@ -702,6 +607,8 @@ export async function createDirectMailCampaign(params: {
     return handleError(error, "createDirectMailCampaign")
   }
 }
+
+
 
    
 

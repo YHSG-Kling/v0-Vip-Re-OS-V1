@@ -209,9 +209,35 @@ const ALLOW = { batchDataTier: "lean" as const, batchDataOptedIn: true }
 const NO_OPT_IN = { batchDataTier: "lean" as const, batchDataOptedIn: false }
 const OFF = { batchDataTier: "off" as const, batchDataOptedIn: true }
 
-check("rung order is cache → tenant_idx → rentcast → public_records → batchdata and the documented cost is non-decreasing up to public records (BatchData is per-record priced beyond the sample)",
+// RE-ANCHORED (lane 85D). This check's old name said the documented cost was "non-decreasing
+// up to public records", and it only tested that the paid rungs were > 0. It could not see
+// that RentCast ($0.074) runs ahead of public records ($0.015) and BatchData ($0.05). The RULE
+// now: the order is cheapest-ADEQUATE-first, so every rung that precedes a CHEAPER rung must
+// name why (PROPERTY_LOOKUP_RUNG_COST_USD[r].aheadOfCheaper), and the free own-data rungs lead.
+type RungCostTable = Readonly<Record<Rung, { usd: number; aheadOfCheaper?: string }>>
+function unexplainedCostInversions(order: readonly Rung[], cost: RungCostTable): string[] {
+  const out: string[] = []
+  order.forEach((r, i) => {
+    for (const later of order.slice(i + 1)) {
+      if (cost[later].usd < cost[r].usd && !(cost[r].aheadOfCheaper ?? "").includes(later)) {
+        out.push(`${r} ($${cost[r].usd}) precedes cheaper ${later} ($${cost[later].usd}) with no reason naming ${later}`)
+      }
+    }
+  })
+  return out
+}
+check("rung order is cache → tenant_idx → rentcast → public_records → batchdata; the free own-data rungs lead",
   PROPERTY_LOOKUP_RUNG_ORDER.join(",") === "cache,tenant_idx,rentcast,public_records,batchdata"
-  && PROPERTY_LOOKUP_RUNG_COST_USD.cache === 0 && PROPERTY_LOOKUP_RUNG_COST_USD.tenant_idx === 0 && PROPERTY_LOOKUP_RUNG_COST_USD.rentcast > 0 && PROPERTY_LOOKUP_RUNG_COST_USD.public_records > 0)
+  && PROPERTY_LOOKUP_RUNG_COST_USD.cache.usd === 0 && PROPERTY_LOOKUP_RUNG_COST_USD.tenant_idx.usd === 0
+  && PROPERTY_LOOKUP_RUNG_ORDER.slice(2).every((r) => PROPERTY_LOOKUP_RUNG_COST_USD[r].usd > 0))
+{
+  const inv = unexplainedCostInversions(PROPERTY_LOOKUP_RUNG_ORDER, PROPERTY_LOOKUP_RUNG_COST_USD)
+  check("every cost inversion in the ladder is a NAMED adequacy exception (cheapest-adequate-first, not a false monotone claim)", inv.length === 0, inv.join("; "))
+  const stripped: RungCostTable = Object.fromEntries(PROPERTY_LOOKUP_RUNG_ORDER.map((r) => [r, { usd: PROPERTY_LOOKUP_RUNG_COST_USD[r].usd }])) as RungCostTable
+  const ctl = unexplainedCostInversions(PROPERTY_LOOKUP_RUNG_ORDER, stripped)
+  check("POSITIVE CONTROL: with the reasons removed the finder flags exactly rentcast→public_records and rentcast→batchdata (the claim lane84E found false)",
+    ctl.length === 2 && ctl.every((x) => x.startsWith("rentcast")) && ctl.some((x) => x.includes("public_records")) && ctl.some((x) => x.includes("batchdata")), ctl.join("; "))
+}
 // Re-anchored lane 81B: 'valuation' (the wave-70 staff comps/AVM lane) joined the carve-out
 // through the ONE gate; a conversation or a listing intake still never reaches BatchData.
 check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc / valuation — never conversation or listing_intake",
@@ -272,8 +298,18 @@ check("the rail's batchdata rung is reachable ONLY behind isBatchDataRungAllowed
   (railSrc.match(/isBatchDataRungAllowed\(req\.purpose, policy\)/g) ?? []).length === 1 && /if \(rung === "batchdata"\)/.test(railSrc))
 check("the rail's paid rungs ride EXISTING survivors (searchRentcastSaleListings / lookupPropertyByAddress / batchDataPreferMcp / meterVendorSpend) — no second provider client",
   /searchRentcastSaleListings\(/.test(railSrc) && /lookupPropertyByAddress\(/.test(railSrc) && /batchDataPreferMcp/.test(railSrc) && /meterVendorSpend\(/.test(railSrc) && !/fetch\(/.test(railSrc))
-check("the persona tool calls the rail with purpose 'conversation' and audience 'customer' — never a purpose the model can choose",
-  /purpose: "conversation",\s*audience: "customer"/.test(stripped("lib/ai-isa/property-lookup-tools.ts")) && !/purpose: z\./.test(stripped("lib/ai-isa/property-lookup-tools.ts")))
+// RE-ANCHORED (lane 85D): the builder now also serves the staff copilot's seat tool with a
+// SERVER-set audience ("staff", never BatchData: the purpose stays "conversation"). The rule is
+// unchanged: purpose is a literal, audience is never a model input, defaults to "customer",
+// and the customer bundle's call passes no audience override.
+{
+  const plt = stripped("lib/ai-isa/property-lookup-tools.ts")
+  const cct2 = stripped("lib/ai-isa/customer-context-tools.ts")
+  check("the persona tool calls the rail with purpose 'conversation' and a server-set audience defaulting to 'customer' — never a purpose or audience the model can choose",
+    /purpose: "conversation",\s*audience,/.test(plt) && /const audience = opts\.audience \?\? "customer"/.test(plt)
+    && !/purpose: z\./.test(plt) && !/audience: z\./.test(plt)
+    && /buildLookupPropertyFactsTool\(ctx as CustomerCapabilityContext\)/.test(cct2))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 6 · registration]")

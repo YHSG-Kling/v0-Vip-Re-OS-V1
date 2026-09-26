@@ -245,7 +245,7 @@ export interface FollowUpOption {
 export const QUALIFICATION_FOLLOW_UP_MENU: readonly FollowUpOption[] = [
   { tool: "schedule_callback", label: "Call them back later", when: "they're interested but not ready to talk further right now — ask when a good time to call back is" },
   { tool: "send_matching_listings", label: "Send matching listings", when: "they described buyer/renter criteria — send what matches, and keep sending as new matches come in" },
-  { tool: "schedule_home_value_review", label: "Look up their home's value", when: "they mentioned selling or asked what their home is worth — record the address and schedule a callback; the AGENT states the number, never you" },
+  { tool: "schedule_home_value_review", label: "Home-value review callback (the agent brings the number)", when: "they mentioned selling or asked what their home is worth — record the address and schedule a callback; the AGENT states the number, never you" },
   { tool: "book_listing_appointment", label: "Book a no-obligation listing appointment", when: "they want an agent to come out and talk it through — find real times at least a week out on the agent's calendar (call find_listing_appointment_slots first), offer 2-3, and book the one they pick; make clear it's no-obligation" },
   { tool: "request_showing", label: "Request a showing / meeting / call now", when: "they want to see a specific property, meet, or talk right away" },
   { tool: "send_newsletter", label: "Send the newsletter", when: "they want to stay in the loop without committing to anything else right now" },
@@ -612,9 +612,13 @@ function goalsBlock(persona: ToolPersona | null | undefined): string {
 function handoffRuleBlock(): string {
   return [
     "WHEN TO HAND OFF (read from what they say, never pushed):",
+    // Wave 85D: the hand-off tiers now speak the SAME timeline buckets the timeline goal
+    // records (right away / 1-3 / 3-6 / 6-12 / 12+ — CLAUDE.md §5, §6). They used to say
+    // "1-6 months" and "12+", which left the 6-12 bucket with no hand-off rule at all.
     "- READY NOW (right away, pre-approved or paying cash, a specific property in mind, or they ask to talk): log it with request_showing or schedule_callback and tell them plainly the agent will reach out shortly — the agent's first message will reference this conversation, so they never repeat themselves.",
-    "- A FEW MONTHS OUT (1-6 months): offer the ONE follow-up that fits — a home-value review callback or a no-obligation listing appointment for a seller, matching listings for a buyer/renter — and record what you learned.",
-    "- LATER / JUST RESEARCHING (12+ months, 'just looking'): offer to keep them posted (newsletter or a market report for their area), record it, and let the follow-up run — no pressure, no re-asking next time.",
+    "- 1-3 OR 3-6 MONTHS: offer the ONE follow-up that fits — a home-value review callback or a no-obligation listing appointment for a seller, matching listings for a buyer/renter — and record what you learned.",
+    "- 6-12 MONTHS: offer a check-in call when they're closer to ready (schedule_callback, at the time they name), or matching listings if they want to watch the market meanwhile — record the bucket so nobody re-asks.",
+    "- 12+ MONTHS / JUST RESEARCHING ('just looking'): offer to keep them posted (newsletter or a market report for their area), record it, and let the follow-up run — no pressure, no re-asking next time.",
     "- ALREADY WITH AN AGENT: answer what you can as a courtesy, thank them, and stop qualifying.",
   ].join("\n")
 }

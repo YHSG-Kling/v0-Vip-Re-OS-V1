@@ -44,6 +44,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted } from "@/lib/ai/models"
 import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
+import { canonicalCampaignPieceType, type CampaignPieceType } from "@/lib/direct-mail/piece-type"
 
 // ─── RESULT CONTRACT ──────────────────────────────────────────────────────────
 
@@ -544,59 +545,223 @@ if (!compliance.allowed) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. createDirectMailCampaign
+// 6. createDirectMailCampaign — THE ONE CREATOR of a user-authored campaign row
 //
-// Creates a direct mail campaign in planning status.
-// Input:  ctx, campaignName, targetAudience, quantity, copyText, designUrl, mailingDate
-// Output: { campaignId }
-// Tables write: direct_mail_campaigns
-// Rules:  canAccessFeature('direct_mail'); provider resolved server-side (superadmin-owned)
+// Creates a direct mail campaign in planning status, for a VERIFIED actor.
+// Input:  ctx (userId + brokerageId VERIFIED by the caller; agentId optional, re-verified
+//         here), campaignName, targetAudience, quantity, copyText, designUrl, mailingDate,
+//         perPieceCost, pieceType, tracking
+// Output: { campaignId, campaign, agentRecordId, pieceType, trackingId, qr }
+// Tables write: direct_mail_campaigns (+ qr_codes through mintTrackedQr, + the usage row)
+// Rules:  canAccessFeature('direct_mail') → counted insert → tracked QR (optional) →
+//         incrementFeatureUsage → DIRECT_MAIL_CAMPAIGN_CREATED
+//
+// WHO MAY CALL IT (wave 85D, lane84E's unresolved voice door). This is a library, not a
+// "use server" file, so nothing reaches it from a request body. Every caller hands in an
+// actor it has ALREADY verified, and that is the whole contract:
+//   · app/actions/direct-mail.ts createMailCampaign and app/actions/ai-direct-mail.ts
+//     createDirectMailCampaign: the cookie SESSION (getAgentContext), with a foreign
+//     brokerageId / createdBy refused before the call
+//   · lib/wizard-staging/content-staging.ts stageDirectMailCampaign: ctx from the voice
+//     webhook's agent_assistant_sessions row (the secret header is verified before any
+//     read, and the conversation id maps to the row) or from the copilot's cookie session.
+//     The webhook used to reach the session-bound action and was refused "Not signed in"
+//     on every call.
+//   · app/actions/neighbor-notifications.ts launchNeighborNotification: the cookie session
+// The id classes are resolved HERE, once: created_by / the gate / the usage row take the
+// users id, and agent_id / qr_codes.agent_id take an agents id. That agents id is a
+// supplied ctx.agentId VERIFIED as an agents row in ctx.brokerageId, or the actor's own row
+// crossed through lib/kernel/agent-identity.ts resolveAgentIdInBrokerage, or NULL. It is
+// never the users id (§3).
+//
+// MERGED ONTO THIS SURVIVOR (§1.1), each with a tombstone at its old site:
+//   · app/actions/direct-mail.ts createMailCampaign's insert, usage counter and kernel event
+//   · app/actions/ai-direct-mail.ts createDirectMailCampaign's piece_type/tracking_id stamp,
+//     its tracked-QR mint and the reverse qr_code_id link
+//   · the raw insert in app/actions/neighbor-notifications.ts, which wrote
+//     marketing_campaigns.agent_user_id, a USERS id, into agent_id (23503)
 // ─────────────────────────────────────────────────────────────────────────────
 
+type DirectMailClient = ReturnType<typeof createServiceClient>
+
 export interface CreateDirectMailCampaignInput {
+  /** VERIFIED actor. userId = users.id, brokerageId = the actor's tenant, both from a
+   *  session (cookie or webhook session row), never from a request body. agentId, when
+   *  given, must be an agents row in that tenant (re-verified here). */
   ctx: MarketingActorContext
   campaignName: string
   targetAudience: string
-  quantity: number
+  /** Pieces to print. Omit it and pass `budget` to have it derived (budget economics). */
+  quantity?: number
+  /** Dollars. Used only when `quantity` is absent: quantity = floor(budget / per-piece). */
+  budget?: number
   copyText?: string
   designUrl?: string
   mailingDate?: string
   perPieceCost?: number
+  /** Any spoken/typed spelling; folded onto the one column vocabulary
+   *  (lib/direct-mail/piece-type.ts). Absent → NULL (not stated). A spelling that folds
+   *  to nothing is REFUSED rather than written (§6). */
+  pieceType?: string
+  /** When set, stamp a tracking_id and mint a tracked QR (reverse-linked via qr_code_id). */
+  tracking?: {
+    /** marketing_campaigns.id, verified to be the actor's tenant's before it is stamped. */
+    marketingCampaignId?: string
+    origin?: string
+  }
+  /** Test seam / caller's service client. Defaults to the service client. */
+  client?: DirectMailClient
 }
+
+export interface CreatedDirectMailCampaign {
+  campaignId: string
+  campaign: Record<string, unknown>
+  /** agents.id written to agent_id (and the QR), or null — never a users id. */
+  agentRecordId: string | null
+  pieceType: CampaignPieceType | null
+  trackingId: string | null
+  qr: { qrCodeId: string; slug: string; scanUrl: string; imageUrl: string } | null
+}
+
+/** Lob postcard list price the budget economics assume when no per-piece cost is given. */
+const DEFAULT_DIRECT_MAIL_PIECE_USD = 0.79
+/** Pieces assumed when neither a quantity nor a budget is stated. */
+const DEFAULT_DIRECT_MAIL_QUANTITY = 100
 
 export async function createDirectMailCampaign(
   input: CreateDirectMailCampaignInput
-): Promise<KernelMarketingResult<{ campaignId: string }>> {
-  const { ctx, campaignName, targetAudience, quantity } = input
+): Promise<KernelMarketingResult<CreatedDirectMailCampaign>> {
+  const { ctx, campaignName, targetAudience } = input
+  // Budget economics, ONE place (moved here from app/actions/ai-direct-mail.ts so the voice
+  // door and the session door price a mailer the same way).
+  const budget = input.budget && input.budget > 0 ? input.budget : null
+  const quantity = input.quantity ?? (budget ? Math.max(1, Math.floor(budget / DEFAULT_DIRECT_MAIL_PIECE_USD)) : DEFAULT_DIRECT_MAIL_QUANTITY)
+  // A stated quantity with no stated price stays unpriced (NULL), as the session door always
+  // wrote it; only a DERIVED quantity carries the price it was derived from.
+  const perPieceCost: number | null = input.perPieceCost
+    ?? (input.quantity !== undefined ? null
+      : budget ? Number((budget / quantity).toFixed(2)) : DEFAULT_DIRECT_MAIL_PIECE_USD)
+  // Fail closed on a missing actor (§4): "nobody said who" is never "the platform".
+  if (!ctx?.userId)             return { success: false, error: "No verified user on the direct mail request — a campaign is filed by a known user." }
+  if (!ctx?.brokerageId)        return { success: false, error: "No verified brokerage on the direct mail request — a campaign belongs to a brokerage." }
   if (!campaignName?.trim())    return { success: false, error: "Campaign name is required." }
   if (!targetAudience?.trim())  return { success: false, error: "Target audience is required." }
   if (!quantity || quantity < 1) return { success: false, error: "Quantity must be at least 1." }
 
-  const access = await canAccessFeature(ctx.userId, "direct_mail")
+  const supabase: DirectMailClient = input.client ?? createServiceClient()
+  const brokerageId = ctx.brokerageId
+  const actorUserId = ctx.userId
+
+  // agents.id — verified in-tenant when supplied, else crossed from the actor's users id.
+  let agentRecordId: string | null = null
+  if (ctx.agentId) {
+    const { data: agentRow, error: agentError } = await supabase
+      .from("agents").select("id").eq("id", ctx.agentId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (agentError) return { success: false, error: `Could not verify the campaign's agent: ${agentError.message}` }
+    if (!agentRow) return { success: false, error: "That agent is not an agents row in this brokerage. agent_id takes an agents id, not a users id." }
+    agentRecordId = (agentRow as { id: string }).id
+  } else {
+    agentRecordId = await resolveAgentIdInBrokerage(supabase, actorUserId, brokerageId)
+  }
+
+  // An umbrella campaign must be OURS. The FK only proves that some campaign row exists.
+  let marketingCampaignId: string | null = null
+  if (input.tracking?.marketingCampaignId) {
+    const { data: mc, error: mcError } = await supabase
+      .from("marketing_campaigns").select("id")
+      .eq("id", input.tracking.marketingCampaignId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (mcError) return { success: false, error: `Could not verify the marketing campaign: ${mcError.message}` }
+    if (!mc) return { success: false, error: "That marketing campaign is not on this brokerage." }
+    marketingCampaignId = (mc as { id: string }).id
+  }
+
+  // The gate reads through THIS client: the webhook has no cookie session, and the cookie
+  // client there is anon (feature_flags is readable by `authenticated` only).
+  const featureClient = supabase as unknown as Parameters<typeof canAccessFeature>[3]
+  const access = await canAccessFeature(actorUserId, "direct_mail", undefined, featureClient)
   if (!access.allowed) return { success: false, error: access.reason ?? "Direct mail access denied" }
 
-  const supabase = await createServiceClient()
-  const { data, error } = await supabase
+  const pieceType: CampaignPieceType | null = canonicalCampaignPieceType(input.pieceType)
+  if (input.pieceType && !pieceType) {
+    return { success: false, error: `Unknown direct mail piece type "${input.pieceType}". Use postcard, letter, handwritten_letter or thank_you_note.` }
+  }
+  const trackingId = input.tracking
+    ? `dm-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`
+    : null
+
+  // COUNTED insert (§3): read the error AND the rows. A refusal or an empty return is a
+  // refusal, never a "created" campaign.
+  const { data: insertedRows, error } = await supabase
     .from("direct_mail_campaigns")
     .insert({
-      brokerage_id:   ctx.brokerageId,
-      agent_id:       ctx.agentId ?? null,
-      created_by:     ctx.userId,
-      campaign_name:  campaignName.trim(),
+      brokerage_id:    brokerageId,
+      agent_id:        agentRecordId,
+      created_by:      actorUserId,
+      campaign_name:   campaignName.trim(),
       target_audience: targetAudience.trim(),
       quantity,
-      copy_text:      input.copyText   ?? null,
-      design_url:     input.designUrl  ?? null,
-      mailing_date:   input.mailingDate ?? null,
-      per_piece_cost: input.perPieceCost ?? null,
-      status:         "planning",
-      created_at:     new Date().toISOString(),
+      copy_text:       input.copyText   ?? null,
+      design_url:      input.designUrl  ?? null,
+      mailing_date:    input.mailingDate ?? null,
+      per_piece_cost:  perPieceCost,
+      piece_type:      pieceType,
+      tracking_id:     trackingId,
+      status:          "planning",
+      created_at:      new Date().toISOString(),
     })
-    .select("id")
-    .single()
+    .select()
+  if (error) return { success: false, error: `Direct mail campaign was not created: ${error.message}` }
+  const rows = (insertedRows ?? []) as Array<Record<string, unknown>>
+  if (rows.length !== 1 || !rows[0]?.id) {
+    return { success: false, error: `Direct mail campaign insert returned ${rows.length} rows (expected 1), so it was not created.` }
+  }
+  const campaign = rows[0]
+  const campaignId = String(campaign.id)
 
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-  return { success: true, data: { campaignId: data.id } }
+  // Tracked QR. The label IS the idempotency key (qr_codes has one text column for both),
+  // so a retried create reuses the same code. Server-only minter, imported lazily so this
+  // client-agnostic kernel never drags "server-only" into a page bundle.
+  let qr: CreatedDirectMailCampaign["qr"] = null
+  if (trackingId) {
+    const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+    const minted = await mintTrackedQr({
+      brokerageId,
+      agentId: agentRecordId,
+      label: `direct_mail:${trackingId}`,
+      purpose: "campaign",
+      destinationType: "landing_page",
+      marketingCampaignId,
+      origin: input.tracking?.origin,
+    }, supabase)
+    if (minted) {
+      // The REVERSE link /api/qr/scan reads for direct-mail attribution, counted: an
+      // unmatched update leaves the scans unattributed, and that is said out loud.
+      const { data: linked, error: linkError } = await supabase
+        .from("direct_mail_campaigns").update({ qr_code_id: minted.qrCodeId })
+        .eq("id", campaignId).eq("brokerage_id", brokerageId).select("id")
+      if (linkError || (linked ?? []).length !== 1) {
+        console.error("[kernel/marketing] QR minted but NOT linked to the direct mail campaign:",
+          linkError?.message ?? `update matched ${(linked ?? []).length} rows`)
+      } else {
+        campaign.qr_code_id = minted.qrCodeId
+      }
+      qr = { qrCodeId: minted.qrCodeId, slug: minted.slug, scanUrl: minted.scanUrl, imageUrl: minted.qrCodeDataUrl }
+    } else {
+      console.error("[kernel/marketing] tracked QR was NOT minted for direct mail campaign", campaignId)
+    }
+  }
+
+  const usage = await incrementFeatureUsage(actorUserId, "direct_mail", featureClient)
+  if (!usage.success) console.error("[kernel/marketing] direct_mail usage NOT counted:", usage.error)
+
+  await processKernelEvent({
+    event:       KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED,
+    brokerageId,
+    entityType:  "direct_mail_campaign",
+    entityId:    campaignId,
+  }).catch((err) => console.error("[kernel/marketing] DIRECT_MAIL_CAMPAIGN_CREATED not processed (non-blocking):", err))
+
+  return { success: true, data: { campaignId, campaign, agentRecordId, pieceType, trackingId, qr } }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

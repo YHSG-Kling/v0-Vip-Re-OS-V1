@@ -751,7 +751,7 @@ function buildToolsConfig() {
       parameters: {
         campaign_name: { type: "string", description: "Internal name — required" },
         target_audience: { type: "string", description: "Who to mail to — required" },
-        piece_type: { type: "string", description: "postcard_4x6 | postcard_6x9 | postcard_6x11 | letter | handwritten | thank_you_note" },
+        piece_type: { type: "string", description: "postcard | letter | handwritten_letter | thank_you_note (a size like postcard_6x9 is accepted and filed as postcard)" },
         budget: { type: "number", description: "Budget in dollars (determines quantity)" },
         send_date: { type: "string", description: "Mailing date (YYYY-MM-DD)" },
         copy_text: { type: "string", description: "Initial copy if dictated" },

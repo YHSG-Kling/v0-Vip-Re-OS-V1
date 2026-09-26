@@ -98,6 +98,10 @@ const TIER_LIMIT_COLUMN: Record<UserTier, keyof FeatureFlagRow> = {
   multi_location: "multi_location_limit",
 }
 
+/** The client canAccessFeature / incrementFeatureUsage read through: the cookie client's
+ *  type, which a service client satisfies. */
+type FeatureAccessClient = Awaited<ReturnType<typeof createClient>>
+
 // Internal shape from feature_flags table
 interface FeatureFlagRow {
   feature_key: string
@@ -135,9 +139,24 @@ interface FeatureFlagRow {
 export async function canAccessFeature(
   userId: string,
   featureKey: string,
-  userTier?: UserTier
+  userTier?: UserTier,
+  /**
+   * A caller-supplied client for a VERIFIED service-side actor that has no cookie
+   * session: the ElevenLabs voice webhook (secret-verified, its actor read off the
+   * agent_assistant_sessions row, never the body) calling the kernel direct-mail
+   * creator (lib/kernel/marketing.ts createDirectMailCampaign). Without it this gate
+   * built the COOKIE client, which in a webhook is anon: feature_flags is readable by
+   * `authenticated` only (live policy feature_flags_read_authenticated), so the flag
+   * read came back null and every webhook call was refused. The caller vouches for
+   * userId. RLS no longer narrows the reads, so the one read RLS used to scope,
+   * feature_access_overrides, is pinned to the user's tenant below
+   * (FEATURE_OVERRIDE_TENANT_PIN).
+   */
+  client?: FeatureAccessClient,
 ): Promise<FeatureAccessCheck> {
-  const supabase = await createClient()
+  const supabase = client ?? await createClient()
+  // The tenant the override read is pinned to. `undefined` = not yet known.
+  let overrideTenant: string | null | undefined = undefined
 
   // ── 1. Load feature flag ───────────────────────────────────────────────────
   const { data: flagRaw, error: flagError } = await supabase
@@ -176,7 +195,9 @@ export async function canAccessFeature(
       if (!read.ok) return { allowed: false, reason: read.reason }
       resolvedTier = read.tier
       isSuperadmin = false
+      overrideTenant = userId
     } else {
+    overrideTenant = (user as { brokerage_id?: string | null }).brokerage_id ?? null
     // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
     isSuperadmin = isPlatformSuperadminIdentity(user.user_type, (user as any).platform_role)
     // ── BILLED-TIER TRUTH ────────────────────────────────────────────────────
@@ -237,7 +258,22 @@ export async function canAccessFeature(
     // which meant one teammate's personal trial or personal disable became the
     // answer for every other user in the brokerage. The tenant-wide fallback is
     // only ever a row that names no user.
-    const o = overrides?.find((x) => x.user_id === userId) ?? overrides?.find((x) => x.user_id === null) ?? null
+    // FEATURE_OVERRIDE_TENANT_PIN. Under the cookie client RLS already limits this read to
+    // `brokerage_id IS NULL OR = current_user_brokerage_id()`. A caller-supplied (service)
+    // client sees every tenant's rows, so the same predicate is applied here explicitly.
+    // Under RLS it drops nothing, because the rows it would drop are the ones RLS already
+    // hid. With a supplied client and an unknown tenant, the tenant is read first, and a
+    // refused read REFUSES (§4).
+    if (client && overrideTenant === undefined) {
+      const { data: tenantRow, error: tenantError } = await supabase
+        .from("users").select("brokerage_id").eq("id", userId).maybeSingle()
+      if (tenantError) return { allowed: false, reason: `Could not read the user's tenant for the feature override check: ${tenantError.message}` }
+      overrideTenant = (tenantRow as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    }
+    const inTenant = (x: { brokerage_id: string | null }) =>
+      overrideTenant === undefined || x.brokerage_id === null || x.brokerage_id === overrideTenant
+    const scoped = (overrides ?? []).filter(inTenant)
+    const o = scoped.find((x) => x.user_id === userId) ?? scoped.find((x) => x.user_id === null) ?? null
     if (o) override = { type: o.override_type, trialEndsAt: o.trial_ends_at, disabledReason: o.disabled_reason }
   }
 
@@ -290,9 +326,12 @@ export async function canAccessFeature(
  */
 export async function incrementFeatureUsage(
   userId: string,
-  featureKey: string
+  featureKey: string,
+  /** Same contract as canAccessFeature's `client`: a verified service-side actor with no
+   *  cookie session (the voice webhook). Omitted → the cookie client, as before. */
+  client?: FeatureAccessClient,
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
+  const supabase = client ?? await createClient()
 
   const now = new Date()
   const periodStart = new Date(now.getFullYear(), now.getMonth(), 1)

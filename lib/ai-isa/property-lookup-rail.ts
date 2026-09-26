@@ -12,7 +12,7 @@
  * its own registry (lib/ai-isa/batchdata-isa-tools.ts's lookup_property /
  * search_properties_* / comparable_property_* / investor_buybox_* — all
  * BatchData, per-record priced) and the cheap rails the OS already owned
- * were never consulted first. This file is the ladder, cheapest rung first,
+ * were never consulted first. This file is the ladder, cheapest ADEQUATE rung first,
  * and it STOPS at the first rung that answers:
  *
  *   1. cache          — OUR OWN DATABASE: `listings` (the brokerage's own
@@ -347,19 +347,41 @@ export type PropertyLookupRung = "cache" | "tenant_idx" | "rentcast" | "public_r
  *  nothing up) and never runs for any other purpose. */
 export type PropertyLookupSource = PropertyLookupRung | "ai_estimate"
 
-/** Cheapest first. The rail walks this order and stops at the first answer. */
+/** Cheapest ADEQUATE first. The rail walks this order and stops at the first answer.
+ *  It is NOT a pure cost order. RentCast ($0.074) runs ahead of two cheaper rungs, and each
+ *  inversion carries its reason in PROPERTY_LOOKUP_RUNG_COST_USD[rung].aheadOfCheaper. */
 export const PROPERTY_LOOKUP_RUNG_ORDER: readonly PropertyLookupRung[] = [
   "cache", "tenant_idx", "rentcast", "public_records", "batchdata",
 ]
 
-/** Documented per-lookup cost of each rung in USD — a cost ORDER the proof
- *  holds monotone (never a billing number; the ledgers carry those). */
-export const PROPERTY_LOOKUP_RUNG_COST_USD: Readonly<Record<PropertyLookupRung, number>> = {
-  cache: 0,
-  tenant_idx: 0,
-  rentcast: 0.074,      // RENTCAST_USD_PER_REQUEST (lib/property/rentcast.ts)
-  public_records: 0.015, // Perplexity Sonar upper bound (lib/property/address-lookup.ts) — booked to ai_tool_usage, not a vendor
-  batchdata: 0.05,      // MCP_TOOL_CALL_COST_USD (lib/external/batchdata-ai-tools.ts) per call, per-record priced at scale
+/**
+ * Documented per-lookup cost of each rung in USD. This is never a billing number; the
+ * ledgers carry those.
+ *
+ * WAVE 85D CORRECTION. The comment here used to say "a cost ORDER the proof holds
+ * monotone". The numbers never were. RentCast ($0.074) sits ahead of public records
+ * ($0.015) and BatchData ($0.05), and the proof only checked that the paid rungs were
+ * above zero, so the claim went unexamined (lane84E finding). The order is kept, and the
+ * reason is now written down where the order is decided. The rule the proof holds
+ * (test:persona-tool-realism): every rung that precedes a CHEAPER rung names why, in
+ * `aheadOfCheaper`, and every other adjacent pair is non-decreasing.
+ */
+export const PROPERTY_LOOKUP_RUNG_COST_USD: Readonly<Record<PropertyLookupRung, { usd: number; aheadOfCheaper?: string }>> = {
+  cache: { usd: 0 },
+  tenant_idx: { usd: 0 },
+  rentcast: {
+    usd: 0.074, // RENTCAST_USD_PER_REQUEST (lib/property/rentcast.ts), Foundation plan; $0.018 at Scale
+    aheadOfCheaper:
+      "public_records (the rung) is cheaper per call but is NOT adequate first. It is a live LLM web search "
+      + "(Perplexity Sonar) that extracts facts from county pages with a confidence score and a "
+      + "multi-second latency, which is too slow to wait on mid-call and can be wrong in front of a "
+      + "customer. RentCast returns a structured assessor record in one metered request. batchdata (the rung) is "
+      + "cheaper per call but is a policy rung: never reached for a customer conversation or a listing "
+      + "intake (owner ruling, wave 79: own DB → RentCast → BatchData only for acquisition / skip-trace "
+      + "/ DNC / staff valuation).",
+  },
+  public_records: { usd: 0.015 }, // Perplexity Sonar upper bound (lib/property/address-lookup.ts), booked to ai_tool_usage, not a vendor
+  batchdata: { usd: 0.05 },       // MCP_TOOL_CALL_COST_USD (lib/external/batchdata-ai-tools.ts) per call, per-record priced at scale
 }
 
 export interface PropertyLookupAddress {
@@ -817,7 +839,7 @@ export async function resolveBatchDataAccess(
 }
 
 /**
- * THE rail. Walks PROPERTY_LOOKUP_RUNG_ORDER cheapest-first and returns the
+ * THE rail. Walks PROPERTY_LOOKUP_RUNG_ORDER cheapest-adequate-first and returns the
  * first rung's facts, redacted for the audience. A rung that throws is
  * recorded as skipped and the ladder continues — a dark vendor never fails
  * the lookup, it just costs the next rung. The batchdata rung is consulted

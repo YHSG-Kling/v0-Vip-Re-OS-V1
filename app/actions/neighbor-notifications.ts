@@ -19,6 +19,9 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+// THE ONE CREATOR of a user-authored direct mail campaign row (wave 85D).
+import { createDirectMailCampaign as fileDirectMailCampaign } from "@/lib/kernel/marketing"
 
 export interface NeighborNotificationCampaign {
   id: string
@@ -32,6 +35,26 @@ export interface NeighborNotificationCampaign {
   maxNeighbors: number
   searchRadiusMeters: number
   createdAt: string
+}
+
+/**
+ * THE TENANT IS THE SESSION'S (§4, wave 85D). Three exports below ran on the SERVICE client
+ * keyed on a body-supplied `brokerageId`. That is the IDOR shape: a caller naming another
+ * brokerage's id created, approved and launched that tenant's neighbour mailers. The
+ * argument stays as a cross-check only, and a foreign id is refused. Module-private, so it
+ * is not an endpoint.
+ */
+async function sessionTenant(claimedBrokerageId: string): Promise<
+  { ok: true; userId: string; brokerageId: string } | { ok: false; error: string }
+> {
+  const actor = await getAgentContext()
+  if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
+    return { ok: false, error: "Not signed in to a brokerage — a neighbour notification belongs to a signed-in brokerage user" }
+  }
+  if (claimedBrokerageId && claimedBrokerageId !== actor.brokerageId) {
+    return { ok: false, error: "That brokerage is not yours — a neighbour notification is run in your own brokerage" }
+  }
+  return { ok: true, userId: actor.userId, brokerageId: actor.brokerageId }
 }
 
 /**
@@ -52,7 +75,17 @@ export async function createNeighborNotificationCampaign(params: {
   minTenureYears?: number
   knowsBuyerScoreThreshold?: number
 }): Promise<{ success: boolean; campaignId?: string; identified?: number; error?: string }> {
+  const tenant = await sessionTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  params = { ...params, brokerageId: tenant.brokerageId }
   const supabase = createServiceClient()
+
+  // agent_user_id is a USERS id (the campaign's owner). It arrives in the body, so it must
+  // name a user IN the session tenant, or it is refused.
+  const { data: ownerRow, error: ownerErr } = await supabase
+    .from("users").select("id").eq("id", params.agentUserId).eq("brokerage_id", tenant.brokerageId).maybeSingle()
+  if (ownerErr) return { success: false, error: `Could not verify the campaign owner: ${ownerErr.message}` }
+  if (!ownerRow) return { success: false, error: "That agent is not a user in your brokerage" }
 
   // Verify the listing belongs to the brokerage
   const { data: listing, error: listingErr } = await supabase
@@ -138,9 +171,12 @@ export async function grantSellerPermission(params: {
   sellerContactId: string
   brokerageId: string
 }): Promise<{ success: boolean; error?: string }> {
+  const tenant = await sessionTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
   const supabase = createServiceClient()
 
-  const { error } = await supabase
+  // COUNTED (§3): an update that matches nothing (foreign or gone campaign) also resolves.
+  const { data: granted, error } = await supabase
     .from("neighbor_notification_campaigns")
     .update({
       seller_permission_granted: true,
@@ -150,9 +186,11 @@ export async function grantSellerPermission(params: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.campaignId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", tenant.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((granted ?? []).length !== 1) return { success: false, error: "Neighbour notification campaign not found in your brokerage — no permission was recorded" }
   return { success: true }
 }
 
@@ -165,6 +203,9 @@ export async function launchNeighborNotification(params: {
   campaignId: string
   brokerageId: string
 }): Promise<{ success: boolean; staged?: number; note?: string; error?: string }> {
+  const tenant = await sessionTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  params = { ...params, brokerageId: tenant.brokerageId }
   const supabase = createServiceClient()
 
   const { data: campaign } = await supabase
@@ -194,25 +235,29 @@ export async function launchNeighborNotification(params: {
       .eq("campaign_id", params.campaignId)
       .eq("status", "identified")
 
-    // Insert a direct_mail_campaigns row directly so we have a campaign_id
-    // tying neighbor recipients to the existing direct mail pipeline.
-    const { data: dmCampaign, error: dmErr } = await supabase
-      .from("direct_mail_campaigns")
-      .insert({
-        brokerage_id: params.brokerageId,
-        agent_id: (campaign as { agent_user_id: string | null }).agent_user_id,
-        campaign_name: `Neighbor Notification — ${(campaign as { listing_id: string }).listing_id}`,
-        target_audience: "neighbors_of_new_listing",
-        piece_type: "postcard",
-        status: "planning",  // "queued" is not in the CHECK — this INSERT was rejected outright
-        copy_text: "Your neighbor just listed their home — know anyone who'd love to live nearby?",
-      })
-      .select("id")
-      .single()
-
-    if (dmErr || !dmCampaign) {
-      throw new Error(dmErr?.message ?? "Failed to create direct mail campaign")
+    // TOMBSTONE (wave 85D, §1.1): the raw direct_mail_campaigns insert that lived here MERGED
+    // onto the one creator, lib/kernel/marketing.ts createDirectMailCampaign. It wrote
+    // neighbor_notification_campaigns.agent_user_id, a USERS id, into agent_id, which FKs
+    // AGENTS (23503 whenever an owner was set), and it skipped the feature gate and the
+    // DIRECT_MAIL_CAMPAIGN_CREATED event. The owner's agents row is now crossed through
+    // lib/kernel/agent-identity.ts resolveAgentIdInBrokerage, pinned to the session tenant,
+    // and the creator re-verifies it.
+    const ownerUserId = (campaign as { agent_user_id: string | null }).agent_user_id
+    const ownerAgentId = ownerUserId ? await resolveAgentIdInBrokerage(supabase, ownerUserId, tenant.brokerageId) : null
+    const recipientCount = (recipients ?? []).length
+    const filed = await fileDirectMailCampaign({
+      ctx: { userId: tenant.userId, brokerageId: tenant.brokerageId, agentId: ownerAgentId ?? undefined },
+      campaignName: `Neighbor Notification — ${(campaign as { listing_id: string }).listing_id}`,
+      targetAudience: "neighbors_of_new_listing",
+      quantity: Math.max(1, recipientCount),
+      pieceType: "postcard",
+      copyText: "Your neighbor just listed their home — know anyone who'd love to live nearby?",
+      client: supabase,
+    })
+    if (!filed.success || !filed.data) {
+      throw new Error(filed.error ?? "Failed to create direct mail campaign")
     }
+    const dmCampaign = { id: filed.data.campaignId }
 
     // Push recipients into direct_mail_recipients
     const recipientsList = (recipients ?? []) as Array<{

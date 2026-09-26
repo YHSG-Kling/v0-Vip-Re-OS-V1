@@ -428,7 +428,9 @@ export async function stageVideoProject(
 export interface DirectMailIntake {
   campaignName: string
   targetAudience: string
-  pieceType?: "postcard_4x6" | "postcard_6x9" | "postcard_6x11" | "letter" | "handwritten" | "thank_you_note"
+  /** Spoken or typed spelling (postcard_4x6 … handwritten, or the column's own). Folded
+   *  onto the one vocabulary in lib/direct-mail/piece-type.ts. */
+  pieceType?: string
   budget?: number
   sendDate?: string
   copyText?: string
@@ -442,40 +444,44 @@ export async function stageDirectMailCampaign(
   if (!intake.targetAudience?.trim()) return { success: false, error: "target_audience required" }
 
   try {
-    const { createDirectMailCampaign } = await import("@/app/actions/ai-direct-mail")
-    // Map the new piece_type enum back to the canonical mailingType union the
-    // ai-direct-mail action expects. handwritten + thank_you_note are letter
-    // variants for the purposes of Lob fulfillment; piece_type stays granular.
-    const mailingType: "postcard" | "letter" | "brochure" =
-      intake.pieceType === "letter" || intake.pieceType === "handwritten" || intake.pieceType === "thank_you_note"
-        ? "letter"
-        : "postcard"
-    // IDENTITY CLASS (wave 84E). This passed `agentId: ctx.userId` — a USERS id — and the
-    // action wrote it into direct_mail_campaigns.agent_id, which FKs AGENTS (23503). The
-    // action now derives both classes from the SESSION (users.id for the gate/created_by,
-    // agents.id via lib/kernel/agent-identity.ts resolveAgentIdInBrokerage), and the
-    // brokerage here is a cross-check it refuses on mismatch. The ElevenLabs webhook
-    // caller has no cookie session, so it is REFUSED ("Not signed in") rather than
-    // filed under an id of the wrong class — see lane84E notes (unresolved door).
+    // THE VOICE DOOR (wave 85D, lane84E's unresolved door). This used to call the "use
+    // server" action app/actions/ai-direct-mail.ts createDirectMailCampaign, which reads
+    // the COOKIE session. The ElevenLabs webhook has none, so every spoken "send postcards
+    // to my past clients" came back "Not signed in". It now files through the one creator,
+    // lib/kernel/marketing.ts createDirectMailCampaign, with the actor THIS function's
+    // callers already verified:
+    //   · app/api/agent-assistant/tool-call: ctx = { session.brokerage_id, session.user_id }
+    //     off the agent_assistant_sessions row. The secret header is checked before any
+    //     read, and the conversation id is what maps to that row. Tool parameters (the body)
+    //     supply only the campaign's content, never an id.
+    //   · app/api/internal/ai-chat: ctx = the cookie session's user and tenant.
+    // The kernel resolves agents.id itself (resolveAgentIdInBrokerage, pinned to
+    // ctx.brokerageId). It is never ctx.userId: the 84E identity-class rule, now held in
+    // one place.
+    const { createDirectMailCampaign } = await import("@/lib/kernel/marketing")
+    const { canonicalCampaignPieceType } = await import("@/lib/direct-mail/piece-type")
+    // The spoken vocabulary (postcard_4x6 | … | handwritten) folds onto the column's
+    // (lib/direct-mail/piece-type.ts). An unrecognised spoken piece is a postcard, the
+    // default the session door has always used.
+    const pieceType = canonicalCampaignPieceType(intake.pieceType) ?? "postcard"
     const result = await createDirectMailCampaign({
-      brokerageId: ctx.brokerageId,
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
       campaignName: intake.campaignName,
       targetAudience: intake.targetAudience,
-      mailingType,
-      pieceType: intake.pieceType as never,
+      pieceType,
       budget: intake.budget,
-      sendDate: intake.sendDate,
-      trackingEnabled: true,
+      mailingDate: intake.sendDate,
+      // Dictated copy is the agent's own words. It used to be dropped on the floor here.
+      copyText: intake.copyText?.trim() || [intake.campaignName, intake.targetAudience].join(" "),
+      tracking: {},
     })
-    if (!result.success) return { success: false, error: result.error ?? "Direct mail creation failed" }
-    // The action returns `campaign.id`; it has never returned a `campaignId`, so this
-    // read was writerless and every staged mailer lost its draftId / deep link.
-    const campaignId = (result as { campaign?: { id?: string } | null }).campaign?.id
+    if (!result.success || !result.data) return { success: false, error: result.error ?? "Direct mail creation failed" }
+    const campaignId = result.data.campaignId
     return {
       success: true,
       draftId: campaignId,
-      openUrl: campaignId ? `/dashboard/campaigns/mail?campaign=${campaignId}` : "/dashboard/campaigns/mail",
-      summary: `Direct mail campaign "${intake.campaignName}" staged via canonical createDirectMailCampaign (feature gate + QR tracking pipeline intact).`,
+      openUrl: `/dashboard/campaigns/mail?campaign=${campaignId}`,
+      summary: `Direct mail campaign "${intake.campaignName}" staged at planning (feature gate + tracked QR${result.data.qr ? "" : " — the QR could not be minted, add one from the campaign"}). Nothing prints or mails until it is approved.`,
     }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Direct mail staging failed" }

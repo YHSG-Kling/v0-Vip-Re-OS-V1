@@ -285,7 +285,11 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     // writes the agents row it VERIFIED in the session tenant (or crossed from the
     // session user via resolveAgentIdInBrokerage). test:direct-mail-identity-class owns
     // the full rule; this keeps the insert pinned to the verified agents-class local.
-    && /\.from\("direct_mail_campaigns"\)\s*\.insert\(\{[\s\S]{0,120}agent_id: agentRecordId,/.test(code(read("app/actions/direct-mail.ts"))))
+    // RE-ANCHORED (lane 85D): the insert itself MERGED onto the one creator,
+    // lib/kernel/marketing.ts createDirectMailCampaign (the voice webhook shares it), so the
+    // pin follows the insert there; createMailCampaign hands it the verified local as ctx.agentId.
+    && /\.from\("direct_mail_campaigns"\)\s*\.insert\(\{[\s\S]{0,120}agent_id:\s*agentRecordId,/.test(code(read("lib/kernel/marketing.ts")))
+    && /fileDirectMailCampaign\(\{\s*ctx:\s*\{[^}]*agentId:\s*agentRecordId/.test(code(read("app/actions/direct-mail.ts"))))
 
   const cr = code(read("app/dashboard/documents/contract-review/page.tsx"))
   ok("the contract-review page hands down an agents id or nothing, never the\n    auth user id wearing an agents id's name",

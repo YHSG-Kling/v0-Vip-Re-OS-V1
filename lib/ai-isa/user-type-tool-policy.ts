@@ -229,12 +229,26 @@ const STAFF_RULES: readonly string[] = [
   "Commission and brokerage-wide financials are off agent-facing display (CLAUDE.md §5).",
 ]
 
+/** Wave 85D: the rail's property tool, a seat tool on the three tenant staff seats. */
+const RAIL_PROPERTY_LOOKUP_TOOL = "lookup_property_facts"
+
+/**
+ * BATCHDATA TOOLS A CHEAPER RAIL TOOL SUPERSEDES (wave 85D; owner: "No BatchData tools in
+ * agent tools when a cheaper lookup exists"). When the rail tool on the right mounts, the
+ * BatchData tool on the left is not mounted beside it. BatchData's lookup_property is one
+ * $0.05 call for the same one-address facts the rail answers from the free cache and IDX
+ * rungs first. Preview/count tools stay: nothing in the rail counts or previews a market.
+ */
+const BATCHDATA_SUPERSEDED_BY_RAIL: Readonly<Record<string, string>> = {
+  lookup_property: RAIL_PROPERTY_LOOKUP_TOOL,
+}
+
 export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
   staff: {
     label: "Agent / ISA / transaction coordinator copilot",
     audience: "a licensed agent, an inside sales agent or a transaction coordinator working their own book inside the OS",
     staffToolkit: "all",
-    seatToolNames: [],
+    seatToolNames: [RAIL_PROPERTY_LOOKUP_TOOL],
     batchData: true,
     rentCast: true,
     customerPersonaToolsForContact: true,
@@ -246,7 +260,7 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
     label: "Team lead copilot",
     audience: "the lead of a team (teams.team_lead_id) — a mini brokerage with its own board, rules and coaching",
     staffToolkit: "all",
-    seatToolNames: ["get_team_board", "get_team_assignment_rules", "get_agent_coaching_brief"],
+    seatToolNames: [RAIL_PROPERTY_LOOKUP_TOOL, "get_team_board", "get_team_assignment_rules", "get_agent_coaching_brief"],
     batchData: true,
     rentCast: true,
     customerPersonaToolsForContact: true,
@@ -270,7 +284,7 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
     label: "Broker / admin / compliance officer copilot",
     audience: "a broker, broker owner/admin, office admin or compliance officer administering the brokerage",
     staffToolkit: "all",
-    seatToolNames: ["get_setup_readiness", "get_billing_summary", "get_compliance_summary"],
+    seatToolNames: [RAIL_PROPERTY_LOOKUP_TOOL, "get_setup_readiness", "get_billing_summary", "get_compliance_summary"],
     batchData: true,
     rentCast: true,
     customerPersonaToolsForContact: true,
@@ -452,6 +466,12 @@ export function selectToolsForSeat(seat: UserTypeSeat, parts: SeatToolParts): Re
   if (policy.customerPersonaToolsForContact) Object.assign(out, parts.customerTools)
   for (const name of policy.seatToolNames) {
     if (name in parts.seatTools) out[name] = parts.seatTools[name]
+  }
+  // Cheaper rail first: a BatchData tool whose rail twin mounted is dropped (see
+  // BATCHDATA_SUPERSEDED_BY_RAIL). Only when the twin is ACTUALLY mounted — a seat whose
+  // rail tool failed to build keeps the BatchData one rather than losing the capability.
+  for (const [batchDataTool, railTool] of Object.entries(BATCHDATA_SUPERSEDED_BY_RAIL)) {
+    if (railTool in out && batchDataTool in out && batchDataTool in parts.batchDataTools) delete out[batchDataTool]
   }
   return out
 }

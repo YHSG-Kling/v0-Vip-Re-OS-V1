@@ -53,7 +53,10 @@ const code = (p: string) => stripComments(raw(p))
 const { reassignAgentBooks, revertBookTransfer, revertExpiredBookTransfers, validateBookTransferRequest, listBookTransfers, MAX_TEMPORARY_TRANSFER_DAYS } = await import("../lib/agents/agent-books")
 const { COVER_INTRO_SUBJECT } = await import("../lib/agents/agent-deactivation")
 
-const NOW = new Date("2026-09-24T12:00:00Z")
+// Anchored to the REAL clock (noon UTC today), not a calendar date: reassignAgentBooks
+// validates `until` against new Date(), so a pinned date made "due in 2 days" a past
+// date two days after it was written (CLAUDE.md §2 — never pin to a waypoint).
+const NOW = new Date(Math.floor(Date.now() / 86_400_000) * 86_400_000 + 12 * 3_600_000)
 const DAY = 86_400_000
 const iso = (d: Date) => d.toISOString()
 const plus = (days: number) => iso(new Date(NOW.getTime() + days * DAY))
@@ -169,7 +172,7 @@ let transferId = ""
   // Wave 82E — the cover introduces themselves (gated, one per moved client).
   const intros = svc.tables.agent_client_messages.filter((m: any) => m.subject === COVER_INTRO_SUBJECT)
   check("COVER INTRODUCTIONS: one PROPOSED (not sent) intro per moved client (c1, c2), from the covering agent, naming the return date — and none to B's own c4",
-    r.introductionsProposed === 2 && intros.length === 2 && intros.every((m: any) => m.status === "proposed" && /Bo with Kling Realty/.test(m.body) && /October 1/.test(m.body))
+    r.introductionsProposed === 2 && intros.length === 2 && intros.every((m: any) => m.status === "proposed" && /Bo with Kling Realty/.test(m.body) && m.body.includes(new Date(plus(7)).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })))
     && intros.map((m: any) => m.recipient_contact_id).sort().join() === "c1,c2", JSON.stringify(intros.map((m: any) => [m.recipient_contact_id, m.status, m.body])))
   check("…side-aware (seller c2 → listing_concierge, buyer c1 → shopping_agent) and worded as TEMPORARY, never as a hand-off",
     intros.find((m: any) => m.recipient_contact_id === "c2")?.agent_kind === "listing_concierge" && intros.find((m: any) => m.recipient_contact_id === "c1")?.agent_kind === "shopping_agent"

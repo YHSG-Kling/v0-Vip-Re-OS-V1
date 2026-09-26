@@ -133,16 +133,25 @@ const AddressShape = {
  * reaches BatchData for purpose "conversation"; the audience is always
  * "customer" on a persona surface, so no valuation figure is returned.
  */
-export function buildLookupPropertyFactsTool(ctx: CustomerCapabilityContext) {
+export function buildLookupPropertyFactsTool(
+  ctx: CustomerCapabilityContext,
+  /** "staff" (wave 85D): the staff copilot's seat tool. Same rail, same purpose (so it
+   *  never reaches BatchData), and the county's assessed tax basis is kept for the agent's
+   *  own eyes. A customer surface always takes the default "customer" audience. */
+  opts: { audience?: "customer" | "staff"; userId?: string | null } = {},
+) {
+  const audience = opts.audience ?? "customer"
   return tool({
-    description:
-      "Look up the FACTS of one property by address — beds, baths, square feet, year built, property type, and whether it is one of our active listings (with its list price). Cheapest source first: our own records, the brokerage's MLS feed, then a public listing/records lookup. NEVER returns a home value or estimate: if the person wants to know what a home is worth, offer schedule_home_value_review (the agent brings the number). Use when someone asks about a specific address.",
+    description: audience === "staff"
+      ? "Look up the FACTS of one property by address for YOUR OWN work — beds, baths, square feet, year built, property type, tax basis, and whether it is one of our active listings. Cheapest source first: our own records, the brokerage's MLS feed, RentCast, then public records. Use this before any BatchData tool; it never spends BatchData. It is not a valuation: never quote a figure from it to a customer as what their home is worth."
+      : "Look up the FACTS of one property by address — beds, baths, square feet, year built, property type, and whether it is one of our active listings (with its list price). Cheapest source first: our own records, the brokerage's MLS feed, then a public listing/records lookup. NEVER returns a home value or estimate: if the person wants to know what a home is worth, offer schedule_home_value_review (the agent brings the number). Use when someone asks about a specific address.",
     inputSchema: z.object(AddressShape),
     execute: async (args: { street: string; city: string | null; state: string | null; zip: string | null }) => {
       const r = await lookupPropertyForConversation({
         brokerageId: ctx.brokerageId,
         purpose: "conversation",
-        audience: "customer",
+        audience,
+        userId: opts.userId ?? null,
         address: { street: args.street, city: args.city, state: args.state, zip: args.zip },
         contactId: ctx.contactId ?? null,
         agentId: ctx.agentId ?? null,

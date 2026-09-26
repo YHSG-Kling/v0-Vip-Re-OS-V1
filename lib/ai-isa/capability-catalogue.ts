@@ -206,7 +206,7 @@ export const CAPABILITY_CATALOGUE: readonly CapabilityDefinition[] = [
   },
   {
     id: "schedule_home_value_review",
-    label: "Look up their home's value (never spoken)",
+    label: "Home-value review callback (the agent brings the number; never spoken by the AI)",
     usefulFor: "they mentioned selling, asked what their home is worth, or (a past client) want an equity/anniversary update — record the address and book a callback; the AGENT states the number, never the AI",
     personas: ["seller", "sphere"],
     costRank: 0,
