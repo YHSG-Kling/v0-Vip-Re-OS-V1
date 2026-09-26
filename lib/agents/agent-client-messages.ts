@@ -139,6 +139,22 @@ export async function approveClientMessage(
   if (!claimed) return { status: "skipped", result: { reason: "not in proposed/approved state" } }
   const m = claimed as { brokerage_id: string; entity_type: string; entity_id: string | null; recipient_contact_id: string | null; recipient_lead_id: string | null; audience: string; subject: string | null; body: string; channel: string }
 
+  // WAVE 83C — a PRINTED client message carries a TRACKED QR (82D open item:
+  // agent-client-message direct mail passed no qrScanUrl). ONE registered code
+  // per approved message, minted/reused through THE ONE minter; null (and
+  // said) when the mint refuses — the piece still mails with its CTA.
+  const printedQrScanUrl = async (): Promise<string | null> => {
+    try {
+      const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+      const minted = await mintTrackedQr({ brokerageId: m.brokerage_id, label: `agent_client_message:${messageId}`, purpose: "campaign" }, supabase as any)
+      if (!minted) console.error(`[agent-client-messages] no tracked QR for message ${messageId} — the piece mails without one`)
+      return minted?.scanUrl ?? null
+    } catch (err) {
+      console.error(`[agent-client-messages] tracked QR unavailable for message ${messageId}:`, (err as Error)?.message)
+      return null
+    }
+  }
+
   try {
     const channel = m.channel ?? "portal"
     if (m.recipient_lead_id && !m.recipient_contact_id) {
@@ -169,6 +185,7 @@ export async function approveClientMessage(
           brokerageId: m.brokerage_id, presetId, leadId: m.recipient_lead_id,
           recipientName: `${lead.first_name ?? ""} ${lead.last_name ?? ""}`.trim() || "Neighbor",
           mailingAddress: lead.mailing_address, city: lead.mailing_city, state: lead.mailing_state, zip: lead.mailing_zip,
+          qrScanUrl: await printedQrScanUrl(),
           systemSource: "agent_client_message",
         })
         if (!r.success) return await fail(supabase, messageId, r.error ?? r.fellBackReason ?? "direct mail send failed")
@@ -235,6 +252,7 @@ export async function approveClientMessage(
         brokerageId: m.brokerage_id, presetId, contactId: m.recipient_contact_id,
         recipientName: `${dm.first_name ?? ""} ${dm.last_name ?? ""}`.trim() || "Neighbor",
         mailingAddress: addr.street, city: addr.city, state: addr.state, zip: addr.zip,
+        qrScanUrl: await printedQrScanUrl(),
         systemSource: "agent_client_message",
       })
       if (!r.success) return await fail(supabase, messageId, r.error ?? r.fellBackReason ?? "direct mail send failed")

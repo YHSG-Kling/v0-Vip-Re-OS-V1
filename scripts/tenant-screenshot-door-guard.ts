@@ -21,8 +21,8 @@
  *   3. THE STUBBED CAPTURE — search restricted to the ONE source host (an
  *      off-source portal hit is skipped: control); the row lands in the
  *      tenant's assets (visibility_scope=brokerage, brokerage_id from the
- *      gate, PENDING), tagged use:marketing_campaign (+ product_video when
- *      chosen), with estimate_source/address provenance and
+ *      gate, PENDING), tagged use:marketing_campaign ONLY (83C — "zestimate is
+ *      marketing campaigns strictly"), with estimate_source/address provenance and
  *      customer_facing_value:false; the cache read carries the tenant
  *      predicate; an os_surface capture with an owner refuses; a host off the
  *      allowlist refuses.
@@ -55,7 +55,7 @@ import {
   type ScreenshotProvider, type ProviderCaptureInput,
 } from "../lib/assets/screenshot-capture"
 import {
-  planTenantStill, captureTenantEstimateStill, pickApprovedStill, ensureZestimateChallengeStill, tenantScreenshotUrlsForVideo,
+  planTenantStill, captureTenantEstimateStill, pickApprovedStill, ensureZestimateChallengeStill,
 } from "../lib/marketing/tenant-screenshot-door"
 import { COMPOSITION_TREATMENTS } from "../lib/video/body-visual-model"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
@@ -158,10 +158,9 @@ check("the vocabulary module is PURE (no imports) so the client card and the doo
   const short = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "12" })
   const noTenant = planTenantStill({ brokerageId: "", userId: "u", source: "zillow_zestimate", address: "123 Main St, Austin TX" })
   check("planTenantStill refuses a short address and a missing tenant (fail closed)", !short.ok && !noTenant.ok)
-  const ok = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "  123  Main St, Austin TX ", alsoForVideo: true })
-  check("a valid plan restricts to the source host, normalises the address, and tags marketing_campaign (+ product_video when chosen)", ok.ok && ok.source.host === "zillow.com" && ok.mustShow.join("+") === "property_photo+zestimate" && ok.address === "123 Main St, Austin TX" && ok.uses.join() === "marketing_campaign,product_video" && /zestimate/.test(ok.query))
-  const noVideo = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "123 Main St, Austin TX" })
-  check("without alsoForVideo the still is campaign material only — marketing_campaign is never optional", noVideo.ok && noVideo.uses.join() === "marketing_campaign")
+  // WAVE 83C (owner: "zestimate is marketing campaigns strictly"): the 80D product_video opt-in is retired.
+  const ok = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "  123  Main St, Austin TX ", alsoForVideo: true } as any)
+  check("a valid plan restricts to the source host, normalises the address, and tags marketing_campaign ONLY — a stale alsoForVideo is ignored", ok.ok && ok.source.host === "zillow.com" && ok.mustShow.join("+") === "property_photo+zestimate" && ok.address === "123 Main St, Austin TX" && ok.uses.join() === "marketing_campaign" && /zestimate/.test(ok.query))
 }
 
 console.log("\n[2 · tenant gate from the SESSION — never the platform door, never a body tenant]")
@@ -189,14 +188,14 @@ console.log("\n[3 · the stubbed capture — source-restricted search, tenant-ow
   const provider = countingProvider(); const svc = makeSvc([], { insertId: "still-1" })
   const searched: string[][] = []
   const r = await captureTenantEstimateStill(
-    { brokerageId: TENANT, userId: "user-1", source: "zillow_zestimate", address: "123 Main St, Austin TX", listingId: "lst-1", alsoForVideo: true },
+    { brokerageId: TENANT, userId: "user-1", source: "zillow_zestimate", address: "123 Main St, Austin TX", listingId: "lst-1" },
     { svc, provider, fetchRobots: robotsAllow, now: new Date("2026-09-23T10:00:00Z"), search: async (_q, domains) => { searched.push(domains); return [{ url: redfinHit }, { url: "https://example.com/x" }, { url: zillowHit }] } },
   )
   const row = svc.inserted[0] as any
   check("the search is restricted to the ONE host of the chosen source", searched[0]?.join() === "zillow.com")
   check("CONTROL: a portal hit OFF the chosen source (redfin, first in the results) is skipped and the zillow page is what gets captured", r.ok && r.sourceUrl === zillowHit && provider.calls.length === 1 && provider.calls[0].url === zillowHit)
   check("the row lands in the TENANT's marketing assets: visibility_scope=brokerage, brokerage_id from the gate, created_by, PENDING", !!row && row.visibility_scope === "brokerage" && row.brokerage_id === TENANT && row.created_by === "user-1" && row.approval_status === "pending")
-  check("tags carry use:marketing_campaign + use:product_video, screenshot, third_party_page, estimate_still", !!row && ["use:marketing_campaign", "use:product_video", "screenshot", "third_party_page", "estimate_still"].every((t) => row.tags.includes(t)))
+  check("tags carry use:marketing_campaign (and NO other use), screenshot, third_party_page, estimate_still", !!row && ["use:marketing_campaign", "screenshot", "third_party_page", "estimate_still"].every((t) => row.tags.includes(t)) && (row.tags as string[]).filter((t) => t.startsWith("use:")).length === 1)
   check("metadata records provenance (estimate_source, address, listing_id, source_url, captured_at) and customer_facing_value:false with the disclaimer", !!row && row.metadata.estimate_source === "zillow_zestimate" && row.metadata.address === "123 Main St, Austin TX" && row.metadata.listing_id === "lst-1" && row.metadata.source_url === zillowHit && row.metadata.captured_at === "2026-09-23T10:00:00.000Z" && row.metadata.customer_facing_value === false && /not an appraisal/.test(String(row.metadata.disclaimer)))
   check("the result itself says pending + never a customer-facing value", r.ok && r.approvalStatus === "pending" && r.customerFacingValue === false && r.source === "zillow_zestimate")
   const cacheRead = svc.predicates.find((p) => p.some(([k]) => k === "metadata->>cache_key"))
@@ -257,7 +256,7 @@ console.log("\n[5 · the autonomous ensure + the playbook consumes the still]")
     const d = deps(svc)
     const o = await ensureZestimateChallengeStill({ svc, brokerageId: TENANT, userId: "u", address: "123 Main St, Austin TX", listingId: "lst-9" }, d)
     check("no still for THIS address → the OS captures one (pending) and reports captured, url null", o.state === "captured" && o.assetId === "fresh" && o.url === null && svc.inserted.length === 1 && (svc.inserted[0] as any).approval_status === "pending" && (svc.inserted[0] as any).metadata.listing_id === "lst-9" && d.provider.calls.length === 1)
-    check("the autonomous capture defaults to the play's own source (zillow) and tags product_video too", o.source === "zillow_zestimate" && (svc.inserted[0] as any).tags.includes("use:product_video"))
+    check("the autonomous capture defaults to the play's own source (zillow) and tags marketing_campaign only (83C)", o.source === "zillow_zestimate" && !(svc.inserted[0] as any).tags.includes("use:product_video") && (svc.inserted[0] as any).tags.includes("use:marketing_campaign"))
   }
   {
     const svc = makeSvc([])
@@ -266,8 +265,10 @@ console.log("\n[5 · the autonomous ensure + the playbook consumes the still]")
     const other = makeSvc([mk("approved")])
     const list = await listScreenshotStillsForUse(other, "marketing_campaign", { brokerageId: OTHER_TENANT, approvedOnly: true })
     check("another tenant's scoped list carries its own brokerage predicate and does not see this tenant's still", list.length === 0 && other.predicates.some((p) => p.some(([k, v]) => k === "brokerage_id" && v === OTHER_TENANT)))
-    const urls = await tenantScreenshotUrlsForVideo(makeSvc([mk("approved"), mk("pending")]), TENANT)
-    check("tenantScreenshotUrlsForVideo stages APPROVED urls only", urls.join() === "https://c/approved.png")
+    // 83C: a legacy still tagged use:product_video is never listed for video (the seam clamps public_page rows).
+    const vids = await listScreenshotStillsForUse(makeSvc([mk("approved"), mk("pending")]), "product_video", { brokerageId: TENANT, approvedOnly: true })
+    const camp = await listScreenshotStillsForUse(makeSvc([mk("approved"), mk("pending")]), "marketing_campaign", { brokerageId: TENANT, approvedOnly: true })
+    check("a legacy Zestimate still tagged product_video is listed for NO video; the same row IS listed for marketing_campaign (control)", vids.length === 0 && camp.length >= 1)
     const setOther = await setScreenshotUses(makeSvc([mk("approved")]), "row-approved", ["marketing_campaign"], { brokerageId: OTHER_TENANT })
     check("setScreenshotUses under another tenant's scope matches 0 rows and REFUSES (§3 counted update)", !setOther.ok && /not found/.test(setOther.reason))
     const setMine = await setScreenshotUses(makeSvc([mk("approved")]), "row-approved", ["marketing_campaign"], { brokerageId: TENANT })
@@ -280,8 +281,11 @@ console.log("\n[5 · the autonomous ensure + the playbook consumes the still]")
   check("the presentation video stages the approved still as input_props.screenshotUrls (the key assetsFromProps reads)", /screenshotUrls: approvedStillUrl \? \[approvedStillUrl\] : \[\]/.test(pb) && /input_props: \{ screenshotUrls: args\.screenshotUrls \?\? \[\] \}/.test(pb) && /arr\("screenshotUrls"\)/.test(strippedKeepStrings("lib/video/body-visual-model.ts")))
   check("the address comes from the tenant's OWN listings (cheapest rail) with the tenant predicate — never a provider", /from\("listings"\)[^\n]*\.eq\("brokerage_id", ctx\.brokerageId\)/.test(pb) && !/batchdata|rentcast/i.test(pb))
   const director = strippedKeepStrings("lib/video/video-director.ts")
-  check("video-director stages tenant stills when the composition's COMPOSITION_TREATMENTS row renders `screenshot` (derived, no typed composition name)", /COMPOSITION_TREATMENTS\[format\.compositionId\][^\n]*includes\("screenshot"\)/.test(director) && /tenantScreenshotUrlsForVideo\(svc, opts\.brokerageId\)/.test(director) && /screenshotUrls\.length \? \{ screenshotUrls \}/.test(director))
-  check("the treatments registry does carry a screenshot-rendering composition today (the director's rule has a live member)", Object.values(COMPOSITION_TREATMENTS).some((t) => t.includes("screenshot")))
+  // WAVE 83C — RE-ANCHORED (owner: "zestimate is marketing campaigns strictly"). 80D's director step 6d
+  // staged the tenant's stills into ANY screenshot-treatment video; every tenant still is a Zestimate page,
+  // so the step is deleted (tombstone in video-director.ts) and the campaign video above keeps its still.
+  check("video-director stages NO tenant still (the 80D step 6d is tombstoned; a Zestimate stays in its campaign)", !/tenantScreenshotUrlsForVideo|tenant-screenshot-door/.test(director) && !/export async function tenantScreenshotUrlsForVideo/.test(strippedKeepStrings(DOOR)))
+  check("the treatments registry still carries a screenshot-rendering composition (the campaign video's still has a live renderer)", Object.values(COMPOSITION_TREATMENTS).some((t) => t.includes("screenshot")))
 }
 
 console.log("\n[6 · the approval rail is the EXISTING one]")

@@ -36,11 +36,11 @@ export async function listEstimateSourcesAction(): Promise<{ ok: true; sources: 
 /** Capture (or return today's cached) estimate still for the caller's
  *  brokerage — source + address picked by the tenant; the tenant itself is
  *  the session's. Lands pending. */
-export async function captureEstimateStillAction(input: { source: string; address: string; listingId?: string | null; alsoForVideo?: boolean }): Promise<CaptureActionResult> {
+export async function captureEstimateStillAction(input: { source: string; address: string; listingId?: string | null }): Promise<CaptureActionResult> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
   const r = await captureTenantEstimateStill(
-    { brokerageId: auth.brokerageId, userId: auth.userId, source: input.source, address: input.address, listingId: input.listingId ?? null, alsoForVideo: input.alsoForVideo === true },
+    { brokerageId: auth.brokerageId, userId: auth.userId, source: input.source, address: input.address, listingId: input.listingId ?? null },
     { svc: createServiceClient() },
   )
   return r.ok
@@ -56,26 +56,41 @@ export async function listTenantScreenshotStillsAction(input: { use: ScreenshotU
   return { ok: true, stills: await listTenantScreenshotStills(createServiceClient(), auth.brokerageId, input.use) }
 }
 
-// ── THE ESTIMATE COMPARISON PIECE (wave 82D) ─────────────────────────────────
-// Same gate, same session tenant, same approval rail. Capture → approve (the
-// existing approveAsset) → confirm the figure each approved still shows →
-// compose. Nothing here reads a value off a page or states one.
+// ── THE ESTIMATE COMPARISON PIECE (wave 82D; 83C web search) ─────────────────
+// Same gate, same session tenant, same approval rail. Gather (the Zillow still
+// + an AI web search for realtor.com / redfin / homes.com — no screenshot of
+// those sites) → approve each on the existing approveAsset → (Zillow: confirm
+// the figure the still shows; a search that found nothing: type the figure) →
+// compose. Nothing here states a value to a customer.
 
-type ComparisonEvidenceView = { assetId: string; source: string; label: string; url: string | null; approvalStatus: string | null; capturedAt: string | null; confirmedFigureUsd: number | null; posture: string; tosNote: string }
+type ComparisonEvidenceView = { assetId: string; source: string; label: string; url: string | null; approvalStatus: string | null; capturedAt: string | null; confirmedFigureUsd: number | null; posture: string; via: string; tosNote: string }
 
-/** Capture every comparison source for an address (pending, per-source outcome). */
-export async function captureEstimateComparisonAction(input: { address: string; listingId?: string | null }): Promise<{ ok: true; outcomes: Array<{ source: string; ok: boolean; reason?: string }> } | { ok: false; error: string }> {
+/** Gather every comparison source for an address (pending, per-source outcome;
+ *  `fallback` marks a site the search could not read — type its figure). */
+export async function captureEstimateComparisonAction(input: { address: string; listingId?: string | null }): Promise<{ ok: true; outcomes: Array<{ source: string; ok: boolean; via: string; note?: string; reason?: string; fallback?: boolean }> } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
-  const { captureEstimateComparisonStills } = await import("@/lib/marketing/estimate-comparison")
-  const r = await captureEstimateComparisonStills({ svc: createServiceClient(), brokerageId: auth.brokerageId, userId: auth.userId, address: input.address, listingId: input.listingId ?? null })
+  const { gatherEstimateComparisonEvidence } = await import("@/lib/marketing/estimate-comparison")
+  const r = await gatherEstimateComparisonEvidence({ svc: createServiceClient(), brokerageId: auth.brokerageId, userId: auth.userId, address: input.address, listingId: input.listingId ?? null })
   if (!r.ok) return { ok: false, error: r.reason }
-  return { ok: true, outcomes: r.outcomes.map((o) => (o.ok ? { source: o.source, ok: true } : { source: o.source, ok: false, reason: o.reason })) }
+  return { ok: true, outcomes: r.outcomes.map((o) => (o.ok ? { source: o.source, ok: true, via: o.via, note: o.note } : { source: o.source, ok: false, via: o.via, reason: o.reason, fallback: o.fallback })) }
 }
 
-/** The caller's comparison evidence for an address, every approval state. The
- *  pixels of a figure_only portal are shown to the approving human only (the
- *  evidence), never placed on the piece. */
+/** THE FALLBACK (83C): the web search found nothing for a site, so a person
+ *  types the figure it shows (optionally its page link). Territory-gated,
+ *  lands pending on the same rail. */
+export async function typeComparisonFigureAction(input: { address: string; source: string; figure: string | number; sourceUrl?: string | null }): Promise<{ ok: true; assetId: string; figureUsd: number } | { ok: false; error: string }> {
+  const auth = await requireTenantAdminOrSoloOwner()
+  if (!auth.ok) return { ok: false, error: auth.error }
+  if (typeof input.source !== "string" || !input.source) return { ok: false, error: "source required" }
+  const { recordTypedComparisonFigure } = await import("@/lib/marketing/estimate-web-search")
+  const r = await recordTypedComparisonFigure({ svc: createServiceClient(), brokerageId: auth.brokerageId, userId: auth.userId, address: input.address, source: input.source, figure: input.figure, sourceUrl: input.sourceUrl ?? null })
+  return r.ok ? r : { ok: false, error: r.reason }
+}
+
+/** The caller's comparison evidence for an address, every approval state: the
+ *  Zillow still (shown to the approving human) and the staged web / typed
+ *  figures with their source links — never pixels of the other portals. */
 export async function listEstimateComparisonAction(input: { address: string }): Promise<{ ok: true; evidence: ComparisonEvidenceView[] } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
@@ -86,7 +101,7 @@ export async function listEstimateComparisonAction(input: { address: string }): 
     ok: true,
     evidence: rows.map((r) => {
       const src = comparisonEstimateSource(r.source)
-      return { assetId: r.assetId, source: r.source, label: src?.cardLabel ?? r.source, url: r.url, approvalStatus: r.approvalStatus, capturedAt: r.capturedAt, confirmedFigureUsd: r.confirmedFigureUsd, posture: src?.posture ?? "figure_only", tosNote: src?.tosNote ?? "" }
+      return { assetId: r.assetId, source: r.source, label: src?.cardLabel ?? r.source, url: r.url, approvalStatus: r.approvalStatus, capturedAt: r.capturedAt, confirmedFigureUsd: r.confirmedFigureUsd, posture: src?.posture ?? "figure_only", via: r.via ?? "still", tosNote: src?.tosNote ?? "" }
     }),
   }
 }

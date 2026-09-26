@@ -9,11 +9,10 @@
 // and you are the expert in real estate viral and effective content.").
 //
 // ALREADY EXISTED — REUSED, never rebuilt:
-//   · lib/assets/screenshot-capture.ts — THE seam (robots, rate, cache,
-//     readiness: property photo + the portal's estimate confirmed on screen or
-//     nothing is kept). 82D taught it `hostScope: "estimate_comparison"` so the
-//     three portals 81D retired are admitted for THIS piece only, as
-//     comparison-only rows (no campaign use).
+//   · lib/assets/screenshot-capture.ts — THE seam, for the Zillow still only
+//     (82D's `hostScope: "estimate_comparison"` for the other three portals is
+//     retired at 83C — their figures come from lib/marketing/
+//     estimate-web-search.ts, an AI web search, never a screenshot).
 //   · lib/marketing/tenant-screenshot-door.ts captureTenantEstimateStill — the
 //     Zillow card rides the EXISTING campaign still (a Zestimate still is
 //     campaign material; the comparison is a campaign).
@@ -28,12 +27,17 @@
 //     copy stays AI-authored from briefs (the catalog's owner rule), while the
 //     ON-IMAGE words below are the vetted layout copy the creative prints.
 //
-// HOW THE NUMBERS GET ON THE PIECE. Nothing here reads text off a page (the
-// seam forbids it). A human approves each capture, then CONFIRMS the figure
-// they see on it (confirmComparisonFigure); only approved + confirmed cards
-// are composed, and at least two are needed for a comparison. The three
-// figure_only portals print as TEXT under a plain, logo-free label — their
-// terms bar reproducing their pages (estimate-sources.ts ToS posture).
+// HOW THE NUMBERS GET ON THE PIECE. ZILLOW: a human approves the Zestimate
+// still, then CONFIRMS the figure they see on it (confirmComparisonFigure).
+// REALTOR.COM / REDFIN / HOMES.COM (wave 83C — owner: "we should use ai to
+// search the internet for the property and what realtor.com, homes.com and
+// redfin [show]"): NO SCREENSHOT. lib/marketing/estimate-web-search.ts runs an
+// AI web search for the territory property, extracts the figure with its source
+// URL and date (facts only, verified verbatim), and stages it PENDING; the
+// human's approval confirms it. When the search finds nothing, a person types
+// the figure (the fallback), which lands pending too. Only approved + confirmed
+// cards are composed, at least two. The three figure_only portals print as
+// TEXT under a plain, logo-free label (estimate-sources.ts ToS posture).
 //
 // NEVER AN ESTIMATE OF VALUE: the piece shows the websites' figures as what
 // they are, the spread between them, and invites a no-obligation home-value
@@ -44,7 +48,7 @@
 // under tsx for scripts/estimate-comparison-guard.ts.
 
 import {
-  COMPARISON_ESTIMATE_SOURCES, comparisonEstimateSource, estimateStillUseVerdict, ESTIMATE_COMPARISON_USE, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_STILL_DISCLAIMER,
+  COMPARISON_ESTIMATE_SOURCES, comparisonEstimateSource, estimateStillUseVerdict, ESTIMATE_COMPARISON_USE,
   type ComparisonEstimateSourceKey,
 } from "@/lib/marketing/estimate-sources"
 
@@ -95,15 +99,22 @@ export function comparisonDisclaimer(capturedOn: string): string {
 
 // ── Pure composer ────────────────────────────────────────────────────────────
 
-/** One piece of evidence: an approved capture + the figure a human confirmed on it. */
+/** One piece of evidence: an approved Zillow still + the figure a human
+ *  confirmed on it, or (83C) an approved web-searched / typed portal figure. */
 export interface ComparisonEvidence {
   assetId: string
   source: string
-  url: string
+  /** The still (Zillow) — or, for a web figure, the portal page it came from. */
+  url: string | null
   approvalStatus: string | null
   capturedAt: string | null
-  /** Human-confirmed figure read off the approved still (whole USD). */
+  /** The confirmed figure (whole USD): typed off an approved still, or the
+   *  web-searched figure once a human approved it. */
   confirmedFigureUsd: number | null
+  /** How it arrived (83C). Omitted = a still (the 82D shape). */
+  via?: "still" | "web_search" | "human_typed"
+  /** Web figures: a plain provider detail for the card label (realtor.com's panel). */
+  labelDetail?: string | null
 }
 
 export interface ComparisonCard {
@@ -159,25 +170,33 @@ export interface ComparisonPlan {
 
 /** PURE, FAIL-CLOSED: the cards a piece may carry — approved evidence with a
  *  confirmed figure, one per source (newest wins), the verdict asked per card;
- *  refused below MIN_COMPARISON_CARDS. */
-export function planComparisonCards(evidence: readonly ComparisonEvidence[], campaignUses: readonly string[]): ComparisonPlan | { ok: false; reason: string; omitted: Array<{ source: string; reason: string }> } {
+ *  refused below MIN_COMPARISON_CARDS. WAVE 83C: a web-searched portal's card
+ *  comes ONLY from a web-searched or typed figure — a screenshot of that site
+ *  (an 82D capture) never makes a card any more. */
+export function planComparisonCards(evidence: readonly ComparisonEvidence[]): ComparisonPlan | { ok: false; reason: string; omitted: Array<{ source: string; reason: string }> } {
   const omitted: Array<{ source: string; reason: string }> = []
   const cards: ComparisonCard[] = []
   for (const src of COMPARISON_ESTIMATE_SOURCES) {
-    const rows = evidence.filter((e) => e.source === src.key).sort((a, b) => String(b.capturedAt ?? "").localeCompare(String(a.capturedAt ?? "")))
-    if (!rows.length) { omitted.push({ source: src.key, reason: "no capture yet" }); continue }
+    const admissible = (e: ComparisonEvidence) => src.evidenceVia === "web_search" ? (e.via === "web_search" || e.via === "human_typed") : (e.via ?? "still") === "still"
+    const all = evidence.filter((e) => e.source === src.key)
+    const rows = all.filter(admissible).sort((a, b) => String(b.capturedAt ?? "").localeCompare(String(a.capturedAt ?? "")))
+    if (!rows.length) {
+      omitted.push({ source: src.key, reason: all.length ? "only a screenshot of this site is on file — screenshots of it are no longer used; run the web search or type the figure it shows" : src.evidenceVia === "web_search" ? "no figure yet — run the web search (or type the figure the site shows)" : "no capture yet" })
+      continue
+    }
     const e = rows.find((r) => r.approvalStatus === "approved" && r.confirmedFigureUsd != null) ?? null
     if (!e) {
       const any = rows[0]
-      omitted.push({ source: src.key, reason: any.approvalStatus !== "approved" ? `capture ${any.approvalStatus ?? "pending"} — approve it first` : "figure not confirmed — type the figure the still shows" })
+      omitted.push({ source: src.key, reason: any.approvalStatus !== "approved" ? `${src.evidenceVia === "web_search" ? "figure" : "capture"} ${any.approvalStatus ?? "pending"} — approve it first` : "figure not confirmed — type the figure the still shows" })
       continue
     }
-    const verdict = estimateStillUseVerdict(src.key, ESTIMATE_COMPARISON_USE, campaignUses)
+    const verdict = estimateStillUseVerdict(src.key, ESTIMATE_COMPARISON_USE)
     if (!verdict.ok) { omitted.push({ source: src.key, reason: verdict.reason }); continue }
     const fig = validateConfirmedFigure(e.confirmedFigureUsd)
     if (!fig.ok) { omitted.push({ source: src.key, reason: fig.reason }); continue }
+    const detail = (e.labelDetail ?? "").replace(/[®™℠©]/g, "").trim().slice(0, 28)
     cards.push({
-      source: src.key, label: src.cardLabel, figureUsd: fig.figureUsd, figureText: formatUsd(fig.figureUsd),
+      source: src.key, label: detail ? `${src.cardLabel} · ${detail}` : src.cardLabel, figureUsd: fig.figureUsd, figureText: formatUsd(fig.figureUsd),
       capturedOn: String(e.capturedAt ?? "").slice(0, 10), stillUrl: src.posture === "still_with_attribution" ? e.url : null,
       evidenceAssetId: e.assetId, isHigh: false, isLow: false,
     })
@@ -337,10 +356,10 @@ export interface EstimateComparisonCreative {
 
 /** PURE: evidence → plan → copy → every format's SVG. */
 export function composeEstimateComparison(
-  evidence: readonly ComparisonEvidence[], campaignUses: readonly string[],
+  evidence: readonly ComparisonEvidence[],
   opts: { hookKey?: ComparisonHookKey; brand?: ComparisonBrand; qrDataUrl?: string | null } = {},
 ): EstimateComparisonCreative | { ok: false; reason: string; omitted: Array<{ source: string; reason: string }> } {
-  const plan = planComparisonCards(evidence, campaignUses)
+  const plan = planComparisonCards(evidence)
   if (!plan.ok) return plan
   const copy = comparisonCopy(plan, { hookKey: opts.hookKey, channel: "print" })
   const svgs = Object.fromEntries((Object.keys(COMPARISON_FORMATS) as ComparisonFormat[]).map((fmt) => {
@@ -354,66 +373,92 @@ export function composeEstimateComparison(
 
 const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ")
 
-export type ComparisonCaptureOutcome = { source: ComparisonEstimateSourceKey; ok: true; assetId: string; cached: boolean } | { source: ComparisonEstimateSourceKey; ok: false; reason: string }
+export type ComparisonGatherOutcome =
+  | { source: ComparisonEstimateSourceKey; ok: true; via: "still" | "web_search"; assetId: string; note: string }
+  | { source: ComparisonEstimateSourceKey; ok: false; via: "still" | "web_search"; reason: string; fallback: boolean }
 
 /**
- * Capture every comparison source for an address into the tenant's assets,
- * PENDING. Zillow rides the campaign still door (a Zestimate still is campaign
- * material); the three portals ride the seam with hostScope
- * "estimate_comparison" and land comparison-only (no campaign use). Each
- * refusal (robots, readiness, rate, no page found) is reported per source.
+ * Gather the evidence for every comparison source, PENDING. Zillow: the
+ * campaign still door (a Zestimate still is campaign material). Realtor.com /
+ * Redfin / Homes.com (wave 83C): NO screenshot — an AI web search for the
+ * territory property through lib/marketing/estimate-web-search.ts, each found
+ * figure staged pending with its source URL and date. A portal the search
+ * could not read reports `fallback: true` (a person types the figure).
+ *
+ * TOMBSTONE (§1.3, 83C): `captureEstimateComparisonStills` (82D) screenshotted
+ * the three portals through the seam's comparison scope; it is replaced here
+ * (same callers: app/actions/creative-playbooks.ts, app/actions/marketing/
+ * tenant-screenshots.ts) and the seam scope is retired
+ * (lib/assets/screenshot-capture.ts, the 83C tombstone above readyRulesForHost).
  */
-export async function captureEstimateComparisonStills(
+export async function gatherEstimateComparisonEvidence(
   args: { svc: any; brokerageId: string; userId: string | null; address: string; listingId?: string | null },
-  deps: Record<string, unknown> = {},
-): Promise<{ ok: true; outcomes: ComparisonCaptureOutcome[] } | { ok: false; reason: string }> {
+  deps: { still?: Record<string, unknown>; web?: import("@/lib/marketing/estimate-web-search").WebEstimateDeps } = {},
+): Promise<{ ok: true; outcomes: ComparisonGatherOutcome[] } | { ok: false; reason: string }> {
   if (!args.brokerageId) return { ok: false, reason: "REFUSED: an estimate comparison needs the session's brokerage id" }
   const address = (args.address ?? "").trim().replace(/\s+/g, " ")
   if (address.length < 6) return { ok: false, reason: "an estimate comparison needs a street address (6+ characters)" }
-  const { capturePublicPropertyPage } = await import("@/lib/assets/screenshot-capture")
   const { captureTenantEstimateStill } = await import("@/lib/marketing/tenant-screenshot-door")
-  const outcomes: ComparisonCaptureOutcome[] = []
-  for (const src of COMPARISON_ESTIMATE_SOURCES) {
-    if (src.key === DEFAULT_ESTIMATE_SOURCE) {
-      const r = await captureTenantEstimateStill({ brokerageId: args.brokerageId, userId: args.userId, source: src.key, address, listingId: args.listingId ?? null, alsoForVideo: true }, { ...(deps as any), svc: args.svc })
-      outcomes.push(r.ok ? { source: src.key, ok: true, assetId: r.assetId, cached: r.cached } : { source: src.key, ok: false, reason: r.reason })
-      continue
+  const { stageWebEstimateFigures } = await import("@/lib/marketing/estimate-web-search")
+  const outcomes: ComparisonGatherOutcome[] = []
+  for (const src of COMPARISON_ESTIMATE_SOURCES.filter((s) => s.evidenceVia === "still")) {
+    const r = await captureTenantEstimateStill({ brokerageId: args.brokerageId, userId: args.userId, source: src.key, address, listingId: args.listingId ?? null }, { ...((deps.still ?? {}) as any), svc: args.svc })
+    outcomes.push(r.ok ? { source: src.key, ok: true, via: "still", assetId: r.assetId, note: r.cached ? "still already captured today (pending/approved)" : "still captured (pending your approval)" } : { source: src.key, ok: false, via: "still", reason: r.reason, fallback: false })
+  }
+  const web = await stageWebEstimateFigures({ svc: args.svc, brokerageId: args.brokerageId, userId: args.userId, address, listingId: args.listingId ?? null }, deps.web ?? {})
+  if (!web.ok) {
+    for (const src of COMPARISON_ESTIMATE_SOURCES.filter((s) => s.evidenceVia === "web_search")) outcomes.push({ source: src.key, ok: false, via: "web_search", reason: web.reason, fallback: false })
+  } else {
+    for (const o of web.outcomes) {
+      if (o.state === "staged") outcomes.push({ source: o.source, ok: true, via: "web_search", assetId: o.assetId, note: `found ${formatUsd(o.figureUsd)} on ${o.sourceUrl} (pending your approval)` })
+      else if (o.state === "already_staged") outcomes.push({ source: o.source, ok: true, via: "web_search", assetId: o.assetId, note: "a figure is already staged for this address" })
+      else outcomes.push({ source: o.source, ok: false, via: "web_search", reason: o.reason, fallback: o.state === "not_found" })
     }
-    const r = await capturePublicPropertyPage(`${address} ${src.searchHint}`, { ...(deps as any), svc: args.svc }, {
-      domains: [src.host],
-      hostScope: "estimate_comparison",
-      request: {
-        label: `${src.cardLabel} — ${address}`.slice(0, 160),
-        owner: {
-          brokerageId: args.brokerageId, createdBy: args.userId, uses: [],
-          provenance: { estimate_source: src.key, address, listing_id: args.listingId ?? null, comparison: true, disclaimer: ESTIMATE_STILL_DISCLAIMER },
-        },
-      },
-    })
-    outcomes.push(r.ok ? { source: src.key, ok: true, assetId: r.assetId, cached: r.cached } : { source: src.key, ok: false, reason: r.reason })
   }
   return { ok: true, outcomes }
 }
 
 /** DB: the tenant's comparison evidence for an address (every approval
- *  state), tenant-predicated. */
+ *  state), tenant-predicated — the Zillow stills AND (83C) the staged web /
+ *  typed figures. A web figure's approval IS its confirmation (the human saw
+ *  the figure, its source link and date before approving); a later typed
+ *  correction (confirmComparisonFigure) wins over the extracted figure. */
 export async function listComparisonEvidence(svc: any, brokerageId: string, address: string): Promise<ComparisonEvidence[]> {
   if (!brokerageId) return []
   const { SCREENSHOT_ASSET_KIND } = await import("@/lib/assets/screenshot-capture")
-  const { data, error } = await svc.from("marketing_assets")
-    .select("id, asset_url, approval_status, metadata")
-    .eq("asset_type", "image").eq("visibility_scope", "brokerage").eq("brokerage_id", brokerageId)
-    .eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)
-    .order("updated_at", { ascending: false }).limit(200)
-  if (error) { console.error("[estimate-comparison] evidence read refused:", error.message); return [] }
+  const { ESTIMATE_WEB_FIGURE_KIND } = await import("@/lib/marketing/estimate-web-search")
+  const [stills, figures] = await Promise.all([
+    svc.from("marketing_assets")
+      .select("id, asset_url, approval_status, metadata")
+      .eq("asset_type", "image").eq("visibility_scope", "brokerage").eq("brokerage_id", brokerageId)
+      .eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)
+      .order("updated_at", { ascending: false }).limit(200),
+    svc.from("marketing_assets")
+      .select("id, asset_url, approval_status, metadata")
+      .eq("asset_type", "snippet").eq("visibility_scope", "brokerage").eq("brokerage_id", brokerageId)
+      .eq("metadata->>asset_kind", ESTIMATE_WEB_FIGURE_KIND)
+      .order("updated_at", { ascending: false }).limit(200),
+  ])
+  if (stills.error) console.error("[estimate-comparison] still evidence read refused:", stills.error.message)
+  if (figures.error) console.error("[estimate-comparison] web figure read refused:", figures.error.message)
   const want = norm(address)
-  return ((data ?? []) as Array<{ id: string; asset_url: string; approval_status: string | null; metadata: Record<string, any> | null }>)
-    .filter((r) => comparisonEstimateSource(r.metadata?.estimate_source) && (!want || norm(r.metadata?.address) === want))
-    .map((r) => ({
-      assetId: r.id, source: String(r.metadata?.estimate_source), url: r.asset_url, approvalStatus: r.approval_status,
+  type Row = { id: string; asset_url: string | null; approval_status: string | null; metadata: Record<string, any> | null }
+  const mine = (rows: Row[] | null | undefined) => ((rows ?? []) as Row[]).filter((r) => comparisonEstimateSource(r.metadata?.estimate_source) && (!want || norm(r.metadata?.address) === want))
+  const num = (v: unknown) => (typeof v === "number" ? v : null)
+  return [
+    ...mine(stills.error ? [] : stills.data).map((r): ComparisonEvidence => ({
+      assetId: r.id, source: String(r.metadata?.estimate_source), url: r.asset_url, approvalStatus: r.approval_status, via: "still",
       capturedAt: typeof r.metadata?.captured_at === "string" ? r.metadata.captured_at : null,
-      confirmedFigureUsd: typeof r.metadata?.confirmed_figure_usd === "number" ? r.metadata.confirmed_figure_usd : null,
-    }))
+      confirmedFigureUsd: num(r.metadata?.confirmed_figure_usd),
+    })),
+    ...mine(figures.error ? [] : figures.data).map((r): ComparisonEvidence => ({
+      assetId: r.id, source: String(r.metadata?.estimate_source), url: typeof r.metadata?.source_url === "string" ? r.metadata.source_url : null,
+      approvalStatus: r.approval_status, via: r.metadata?.figure_via === "human_typed" ? "human_typed" : "web_search",
+      capturedAt: typeof r.metadata?.retrieved_at === "string" ? r.metadata.retrieved_at : null,
+      confirmedFigureUsd: num(r.metadata?.confirmed_figure_usd) ?? (r.approval_status === "approved" ? num(r.metadata?.figure_usd) : null),
+      labelDetail: typeof r.metadata?.label_detail === "string" ? r.metadata.label_detail : null,
+    })),
+  ]
 }
 
 /**
@@ -460,9 +505,8 @@ export async function buildEstimateComparisonCreative(
   args: { svc: any; brokerageId: string; userId: string | null; address: string; hookKey?: ComparisonHookKey; brand?: ComparisonBrand; qrDataUrl?: string | null },
 ): Promise<ComparisonBuildOutcome> {
   if (!args.brokerageId) return { state: "refused", reason: "REFUSED: composing needs the session's brokerage id" }
-  const { SCREENSHOT_USES } = await import("@/lib/assets/screenshot-capture")
   const evidence = await listComparisonEvidence(args.svc, args.brokerageId, args.address)
-  const creative = composeEstimateComparison(evidence, SCREENSHOT_USES, { hookKey: args.hookKey, brand: args.brand, qrDataUrl: args.qrDataUrl })
+  const creative = composeEstimateComparison(evidence, { hookKey: args.hookKey, brand: args.brand, qrDataUrl: args.qrDataUrl })
   if (!creative.ok) return { state: "needs_evidence", reason: creative.reason, omitted: creative.omitted }
   const c = creative
   const sharp = (await import("sharp")).default
@@ -482,13 +526,17 @@ export async function buildEstimateComparisonCreative(
       brokerage_id: args.brokerageId, created_by: args.userId, visibility_scope: "brokerage", asset_type: "image",
       asset_name: `Estimate comparison (${fmt}) — ${args.address}`.slice(0, 160), asset_url: url, thumbnail_url: url,
       preview_text: c.copy.headline.slice(0, 280), source_table: "image_library",
-      tags: ["library", ESTIMATE_COMPARISON_ASSET_KIND, fmt, "use:marketing_campaign", "use:product_video"],
+      // Marketing-campaign material ONLY (83C): it carries the Zestimate among
+      // its cards, and the Zestimate is "marketing campaigns strictly". The
+      // comparison play's own video gets it through the install rail, never
+      // through a generic video picker.
+      tags: ["library", ESTIMATE_COMPARISON_ASSET_KIND, fmt, "use:marketing_campaign"],
       approval_status: "pending",
       metadata: {
         asset_kind: ESTIMATE_COMPARISON_ASSET_KIND, format: fmt, address: args.address, comparison_key: key,
-        uses: ["marketing_campaign", "product_video"], hook_key: c.copy.hookKey, headline: c.copy.headline, cta: c.copy.cta,
+        uses: ["marketing_campaign"], hook_key: c.copy.hookKey, headline: c.copy.headline, cta: c.copy.cta,
         disclaimer: c.copy.disclaimer, spread_usd: c.plan.spreadUsd,
-        cards: c.plan.cards.map((x) => ({ source: x.source, label: x.label, figure_usd: x.figureUsd, captured_on: x.capturedOn, evidence_asset_id: x.evidenceAssetId })),
+        cards: c.plan.cards.map((x) => ({ source: x.source, label: x.label, figure_usd: x.figureUsd, captured_on: x.capturedOn, evidence_asset_id: x.evidenceAssetId, via: evidence.find((e) => e.assetId === x.evidenceAssetId)?.via ?? "still", source_url: evidence.find((e) => e.assetId === x.evidenceAssetId)?.url ?? null })),
         customer_facing_value: false, usage: "campaign_material_never_an_estimate_of_value",
       },
     }).select("id").single()

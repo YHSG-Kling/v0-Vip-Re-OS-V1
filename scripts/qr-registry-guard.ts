@@ -143,6 +143,9 @@ async function main() {
     // campaign-bundle-dispatch.ts) now mint/reuse the campaign's code through mintTrackedQr and
     // pass its scanUrl — the count moved 0 → 2 BECAUSE the defect was fixed. scripts/
     // estimate-comparison-guard.ts holds the producers ≥ the two drains (a rule, not a count).
+    // WAVE 83C: 2 → 6 — the four senders 82D named (agent client messages, listing-appointment prep,
+    // the lifecycle reactor, farm mail) now mint through mintTrackedQr and pass its scanUrl; the
+    // count moved UP because the defect was fixed (estimate-comparison-guard section 7 holds each).
     console.log(`    qrScanUrl producers (non-passthrough, non-null): ${producers.length} — ${producers.map((x) => rel(x.f)).join(", ") || "none (printed postcards carry no tracked QR — a regression of the 82D fix)"}`)
     return producers.every((x) => /scan_url|scanUrl|mintTrackedQr\(/.test(x.code))
   })())

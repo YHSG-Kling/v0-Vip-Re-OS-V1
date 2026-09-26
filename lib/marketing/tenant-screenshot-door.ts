@@ -43,7 +43,7 @@ import {
   capturePublicPropertyPage, listScreenshotStillsForUse, SCREENSHOT_USES,
   type CaptureDeps, type CaptureResult, type ScreenshotRefusal, type ScreenshotStillPick, type ScreenshotUse,
 } from "@/lib/assets/screenshot-capture"
-import { estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_SOURCE_KEYS, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey, type EstimateStillMustShow } from "@/lib/marketing/estimate-sources"
+import { estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_SOURCE_KEYS, ESTIMATE_STILL_DISCLAIMER, ZESTIMATE_STILL_USES, type EstimateSourceKey, type EstimateStillMustShow } from "@/lib/marketing/estimate-sources"
 
 export interface TenantStillRequest {
   /** From the SESSION gate — never a request body. */
@@ -52,8 +52,12 @@ export interface TenantStillRequest {
   source: EstimateSourceKey | string
   address: string
   listingId?: string | null
-  /** marketing_campaign is always on; product_video is the tenant's choice. */
-  alsoForVideo?: boolean
+  // TOMBSTONE (wave 83C — owner verbatim: "zestimate is marketing campaigns
+  // strictly"): `alsoForVideo` (80D — tag the still product_video too) is
+  // RETIRED. A Zestimate still carries marketing_campaign alone
+  // (lib/marketing/estimate-sources.ts ZESTIMATE_STILL_USES); the campaign's own
+  // video still gets it, handed over by app/actions/creative-playbooks.ts
+  // installCreativePlaybook → createPlaybookVideo({ screenshotUrls }).
 }
 
 export interface TenantStillResult {
@@ -80,7 +84,8 @@ export function planTenantStill(req: TenantStillRequest): { ok: true; source: No
   if (!src) return { ok: false, reason: `estimate source "${String(req.source)}" is not one of the sources a tenant may pick (${ESTIMATE_SOURCE_KEYS.join(" | ")})` }
   const address = (req.address ?? "").trim().replace(/\s+/g, " ")
   if (address.length < 6) return { ok: false, reason: "an estimate still needs a street address (6+ characters)" }
-  const uses: ScreenshotUse[] = SCREENSHOT_USES.filter((u) => u === "marketing_campaign" || (u === "product_video" && req.alsoForVideo === true))
+  // Marketing campaigns STRICTLY (83C) — the ONE rule's use list, never restated.
+  const uses: ScreenshotUse[] = SCREENSHOT_USES.filter((u) => (ZESTIMATE_STILL_USES as readonly string[]).includes(u))
   return { ok: true, source: src, address, uses, query: `${address} ${src.searchHint}`.trim(), label: `${src.estimateName} — ${address}`.slice(0, 160), mustShow: src.mustShow }
 }
 
@@ -138,11 +143,17 @@ export async function approvedTenantStill(svc: any, brokerageId: string, want: {
   return pickApprovedStill(await listTenantScreenshotStills(svc, brokerageId, "marketing_campaign", { approvedOnly: true, limit: 50 }), want)
 }
 
-/** DB: the approved tenant stills a video producer stages as
- *  input_props.screenshotUrls for the `screenshot` body treatment. */
-export async function tenantScreenshotUrlsForVideo(svc: any, brokerageId: string, limit = 6): Promise<string[]> {
-  return (await listTenantScreenshotStills(svc, brokerageId, "product_video", { approvedOnly: true, limit })).map((s) => s.url)
-}
+// TOMBSTONE (§1.3, wave 83C — owner verbatim: "zestimate is marketing campaigns
+// strictly"): `tenantScreenshotUrlsForVideo` (80D) staged a tenant's approved
+// `use:product_video` stills into ANY video the director commissioned with a
+// `screenshot`-treatment composition. Every tenant still is a Zillow/Zestimate
+// page (the seam admits no other tenant capture), and a Zestimate still no
+// longer carries product_video, so that path could only ever put a Zestimate
+// into a non-campaign video — the exact use the ruling forbids. It is deleted
+// together with its one caller (lib/video/video-director.ts step 6d). The
+// capability that remains lives at app/actions/creative-playbooks.ts
+// installCreativePlaybook → createPlaybookVideo({ screenshotUrls }): the
+// Zestimate Challenge's OWN campaign video gets its approved still there.
 
 export interface EnsureStillOutcome {
   /** "approved" — an approved still exists (url set); "pending" — one exists
@@ -176,7 +187,7 @@ export async function ensureZestimateChallengeStill(
   const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ")
   const pending = have.find((s) => s.approvalStatus === "pending" && s.estimateSource === src.key && norm(s.address) === norm(address))
   if (pending) return { state: "pending", assetId: pending.id, url: null, reason: "a still is already awaiting approval", source: src.key }
-  const r = await captureTenantEstimateStill({ brokerageId: args.brokerageId, userId: args.userId, source: src.key, address, listingId: args.listingId ?? null, alsoForVideo: true }, { ...deps, svc: args.svc })
+  const r = await captureTenantEstimateStill({ brokerageId: args.brokerageId, userId: args.userId, source: src.key, address, listingId: args.listingId ?? null }, { ...deps, svc: args.svc })
   if (!r.ok) return { state: "refused", assetId: null, url: null, reason: r.reason, source: src.key }
   return { state: "captured", assetId: r.assetId, url: null, reason: null, source: src.key }
 }

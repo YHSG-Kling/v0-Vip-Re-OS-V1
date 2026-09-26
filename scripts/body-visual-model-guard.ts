@@ -468,7 +468,14 @@ console.log("\n── §screenshots · one still, many uses; a public-page captu
   check("a public-page capture plans (fixture)", plan.ok, plan.ok ? undefined : plan.reason)
   if (plan.ok) {
     const row = screenshotAssetRow(plan, "https://cdn/x.png", "2026-09-23T12:00:00Z", "puppeteer") as { tags: string[]; approval_status: string; metadata: Record<string, unknown> }
-    check("the capture row carries every use tag AND stays approval_status=pending (never a tenant picker)", SCREENSHOT_USES.every((u) => row.tags.includes(screenshotUseTag(u))) && row.approval_status === "pending" && Array.isArray(row.metadata.uses))
+    // RE-ANCHORED wave 83C (owner: "zestimate is marketing campaigns strictly"): a public-page (Zillow /
+    // Zestimate) capture carries marketing_campaign ONLY; an OS-surface capture keeps every use (control).
+    check("a public-page capture row carries use:marketing_campaign ONLY AND stays approval_status=pending (never a tenant picker)", row.tags.filter((t) => t.startsWith("use:")).join() === screenshotUseTag("marketing_campaign") && row.approval_status === "pending" && Array.isArray(row.metadata.uses))
+    const osPlan = planScreenshotCapture({ kind: "os_surface", surfaceId: "command_center" }, { siteOrigin: "https://app.example.com", now: new Date("2026-09-23T12:00:00Z") })
+    if (osPlan.ok) {
+      const osRow = screenshotAssetRow(osPlan, "https://cdn/os.png", "2026-09-23T12:00:00Z", "puppeteer") as { tags: string[] }
+      check("CONTROL: an OS-surface capture row carries every use tag (demo / training / video stills are OS screens, not Zestimates)", SCREENSHOT_USES.every((u) => osRow.tags.includes(screenshotUseTag(u))))
+    } else check("CONTROL: an OS-surface capture plans (fixture)", false, osPlan.reason)
   }
   // A fake client: the filters are recorded, the rows are what the fixture holds.
   const rows = [

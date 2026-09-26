@@ -46,12 +46,14 @@
 //                 blurred by selector (demo data is fictional; the blur is
 //                 belt-and-braces). Rows are approved platform library images
 //                 (platform-OWNED content — canShareToTenants "owned").
-//   public_page — a public property page (Zestimate & co.) found through the
-//                 search tool. ToS-aware: robots.txt honoured, host allowlist,
-//                 per-host rate limit, cached by URL+day, source + captured_at
-//                 recorded. Rows land approval_status='pending' so they NEVER
-//                 enter tenant pickers (listImageLibraryAction filters
-//                 approved): they are DEMO / TRAINING / VIDEO material, never
+//   public_page — the Zillow property page with its Zestimate (the ONLY public
+//                 host since 81D) found through the search tool. ToS-aware:
+//                 robots.txt honoured, host allowlist, per-host rate limit,
+//                 cached by URL+day, source + captured_at recorded. Rows land
+//                 approval_status='pending'; since 83C ("zestimate is
+//                 marketing campaigns strictly") they carry marketing_campaign
+//                 ONLY (PUBLIC_PAGE_STILL_USES), never demo / training / video
+//                 material, and never
 //                 an AI-agent statement of a home's value to a customer —
 //                 scripts/screenshot-capture-guard.ts asserts no customer-
 //                 facing tool imports this module.
@@ -158,52 +160,27 @@ export const PUBLIC_PAGE_READY_RULES: Readonly<Record<string, readonly PublicPag
   ],
 }
 
-/**
- * COMPARISON-ONLY HOSTS (wave 82, lane 82D — owner verbatim: "taking the
- * estimates on every real estate page that we retired as screenshots, merging
- * to show each value on those pages … for a marketing piece"). The three
- * portals 81D retired return for ONE purpose: a request with
- * `hostScope: "estimate_comparison"` may capture them, and the row it writes is
- * COMPARISON-ONLY material (no campaign use, never in the image library — the
- * vocabulary's estimateStillUseVerdict). Any other request refuses these hosts
- * exactly as before (isPublicPageHost is unchanged: Zillow alone). Readiness is
- * the same fail-closed rule: the property photo AND the portal's estimate must
- * be on screen, else nothing is kept. Selector-based only (nothing reads text).
- */
-// ── BEGIN COMPARISON-ONLY BLOCK ──────────────────────────────────────────────
-export const COMPARISON_ONLY_PAGE_HOSTS = ["realtor.com", "redfin.com", "homes.com"] as const
-export const COMPARISON_PAGE_READY_RULES: Readonly<Record<string, readonly PublicPageReadyRule[]>> = {
-  "realtor.com": [
-    { label: "property_photo", selector: '[data-testid*="hero" i] img, [data-testid*="photo" i] img, img[src*="rdcpix.com"]' },
-    { label: "estimate", selector: '[data-testid*="estimate" i], [class*="estimate" i], [id*="estimate" i]' },
-  ],
-  "redfin.com": [
-    { label: "property_photo", selector: '[class*="InlinePhotoPreview" i] img, [class*="media" i] img, img[src*="cdn-redfin.com"]' },
-    { label: "estimate", selector: '[data-rf-test-id*="avm" i], [class*="avm" i], [class*="RedfinEstimate" i], [data-rf-test-id*="estimate" i]' },
-  ],
-  "homes.com": [
-    { label: "property_photo", selector: '[class*="hero" i] img, [class*="carousel" i] img, img[src*="homes.com"]' },
-    { label: "estimate", selector: '[class*="estimate" i], [data-testid*="estimate" i], [class*="home-value" i]' },
-  ],
-}
-// ── END COMPARISON-ONLY BLOCK ────────────────────────────────────────────────
-
-/** Who asked for a public-page capture: a campaign still (Zillow alone) or the
- *  estimate comparison piece (Zillow + the comparison-only hosts). */
-export type PublicPageHostScope = "campaign" | "estimate_comparison"
-
-export function isComparisonOnlyPageHost(hostname: string): boolean {
-  const h = hostname.toLowerCase()
-  return COMPARISON_ONLY_PAGE_HOSTS.some((d) => h === d || h.endsWith(`.${d}`))
-}
+// TOMBSTONE (§1.3, wave 83C — owner verbatim: "since we can't use the
+// screenshots for the real estate sites showing the homes value except for
+// zillow for marketing campaigns, we should use ai to search the internet for
+// the property and what realtor.com, homes.com and redfin [show]."): the 82D
+// COMPARISON-ONLY capture scope — COMPARISON_ONLY_PAGE_HOSTS,
+// COMPARISON_PAGE_READY_RULES, PublicPageHostScope / `hostScope`,
+// isComparisonOnlyPageHost and ScreenshotPlan.comparisonOnly — is RETIRED from
+// this seam. The capability moved to lib/marketing/estimate-web-search.ts
+// (stageWebEstimateFigures: an AI web search through
+// lib/providers/dispatch.ts dispatchWebSearch, the figure extracted with its
+// source URL and date, staged pending a human's approval). No request of any
+// scope may capture those hosts now; PUBLIC_PAGE_HOSTS above is Zillow alone.
+// Rows 82D wrote with metadata.comparison_only stay history: they carry no use
+// (usesOfRow) and setScreenshotUses still refuses to widen them.
 
 /** PURE: the readiness rules for a host (subdomains included); empty when the
  *  host has none — an os_surface capture never has any. */
 export function readyRulesForHost(hostname: string): readonly PublicPageReadyRule[] {
   const h = hostname.toLowerCase()
-  const rules = { ...PUBLIC_PAGE_READY_RULES, ...COMPARISON_PAGE_READY_RULES }
-  const key = Object.keys(rules).find((d) => h === d || h.endsWith(`.${d}`))
-  return key ? rules[key] : []
+  const key = Object.keys(PUBLIC_PAGE_READY_RULES).find((d) => h === d || h.endsWith(`.${d}`))
+  return key ? PUBLIC_PAGE_READY_RULES[key] : []
 }
 
 /** PURE: a single CSS selector that is satisfied only when EVERY rule is —
@@ -262,9 +239,6 @@ export interface ScreenshotRequest {
   /** public_page: override the host's PUBLIC_PAGE_READY_RULES (tests / a
    *  narrower rule). Omit → the host's rules apply. */
   readyWhen?: readonly PublicPageReadyRule[]
-  /** public_page: "estimate_comparison" admits COMPARISON_ONLY_PAGE_HOSTS
-   *  (wave 82D); omitted/"campaign" admits PUBLIC_PAGE_HOSTS only. */
-  hostScope?: PublicPageHostScope
 }
 
 export interface ScreenshotOwner {
@@ -295,9 +269,6 @@ export interface ScreenshotPlan {
   /** What the provider must confirm on screen before the still is kept
    *  (PUBLIC_PAGE_READY_RULES for the host; empty for an OS surface). */
   readyWhen: readonly PublicPageReadyRule[]
-  /** true when the host is COMPARISON-ONLY (wave 82D): the row carries no
-   *  campaign use and is material for the estimate comparison piece alone. */
-  comparisonOnly: boolean
 }
 export interface ScreenshotRefusal { ok: false; reason: string }
 
@@ -340,7 +311,7 @@ export function planScreenshotCapture(
       redactSelectors: Array.from(new Set([...DEFAULT_REDACT_SELECTORS, ...(req.redact ?? [])])),
       viewport, cacheKey, storagePath: `screenshots/os_surface/${slug}/${dayIso}-${cacheKey}.png`,
       label: req.label ?? surface?.label ?? `OS surface ${route}`, host, dayIso,
-      readyWhen: [], comparisonOnly: false,
+      readyWhen: [],
     }
   }
 
@@ -349,10 +320,9 @@ export function planScreenshotCapture(
   let u: URL
   try { u = new URL(raw) } catch { return { ok: false, reason: "public_page capture needs an absolute http(s) url" } }
   if (u.protocol !== "https:" && u.protocol !== "http:") return { ok: false, reason: "public_page capture url must be http(s)" }
-  // A comparison-only host is admitted ONLY for the estimate comparison piece
-  // (wave 82D); every other request sees the unchanged Zillow-only allowlist.
-  const comparisonOnly = req.hostScope === "estimate_comparison" && isComparisonOnlyPageHost(u.hostname)
-  if (!isPublicPageHost(u.hostname) && !comparisonOnly) return { ok: false, reason: `public_page host "${u.hostname}" is not on PUBLIC_PAGE_HOSTS (${PUBLIC_PAGE_HOSTS.join(", ")})${isComparisonOnlyPageHost(u.hostname) ? " — it is admitted only for the estimate comparison piece" : ""}` }
+  // Zillow alone (wave 81D). The 82D comparison scope is retired (83C — the
+  // other portals' figures come from lib/marketing/estimate-web-search.ts).
+  if (!isPublicPageHost(u.hostname)) return { ok: false, reason: `public_page host "${u.hostname}" is not on PUBLIC_PAGE_HOSTS (${PUBLIC_PAGE_HOSTS.join(", ")})` }
   u.hash = ""
   const targetUrl = u.toString()
   const cacheKey = screenshotCacheKey(targetUrl, dayIso)
@@ -363,7 +333,6 @@ export function planScreenshotCapture(
     storagePath: `screenshots/public_page/${slug}/${dayIso}-${cacheKey}.png`,
     label: req.label ?? `${u.hostname} ${u.pathname}`.slice(0, 160), host: u.hostname, dayIso,
     readyWhen: req.readyWhen ?? readyRulesForHost(u.hostname),
-    comparisonOnly,
   }
 }
 
@@ -601,10 +570,20 @@ export type ScreenshotUse = (typeof SCREENSHOT_USES)[number]
 
 export function screenshotUseTag(use: ScreenshotUse): string { return `use:${use}` }
 
-/** Every capture is usable everywhere by default; a human narrows it
- *  (setScreenshotUses) — a Zestimate still meant only for a campaign can be
- *  taken off the training and demo menus without losing the row. */
-export function defaultScreenshotUses(_kind: ScreenshotKind): ScreenshotUse[] { return [...SCREENSHOT_USES] }
+/** The uses a PUBLIC-PAGE still (the Zillow page with its Zestimate — the only
+ *  public host) may ever carry. WAVE 83C (owner verbatim: "zestimate is
+ *  marketing campaigns strictly"): marketing_campaign alone — never demo,
+ *  training or product_video. Mirrors lib/marketing/estimate-sources.ts
+ *  ZESTIMATE_STILL_USES (the ONE rule, estimateStillUseVerdict); the
+ *  zestimate-only proof holds the two equal. */
+export const PUBLIC_PAGE_STILL_USES: readonly ScreenshotUse[] = ["marketing_campaign"]
+
+/** An OS-surface still (the demo tenant's own screens) is usable everywhere by
+ *  default and a human narrows it (setScreenshotUses). A public-page still is
+ *  born — and stays — marketing_campaign only (83C). */
+export function defaultScreenshotUses(kind: ScreenshotKind): ScreenshotUse[] {
+  return kind === "public_page" ? [...PUBLIC_PAGE_STILL_USES] : [...SCREENSHOT_USES]
+}
 
 /** PURE: the tags array with exactly this use set (other tags kept). */
 export function tagsWithUses(tags: readonly string[] | null | undefined, uses: readonly ScreenshotUse[]): string[] {
@@ -614,26 +593,32 @@ export function tagsWithUses(tags: readonly string[] | null | undefined, uses: r
 }
 
 /** PURE: the uses a row carries — the tag set, else metadata.uses, else (a row
- *  captured before uses existed) every use. */
+ *  captured before uses existed) every use. WAVE 83C: a public_page row is
+ *  CLAMPED to PUBLIC_PAGE_STILL_USES whatever its tags say, so a Zestimate
+ *  still tagged product_video / demo / training by an older capture (80D-82D
+ *  tagged them) is never listed for those uses again — the rule is enforced
+ *  where every picker reads, not only where rows are written. A
+ *  metadata.comparison_only row (82D evidence, retired) carries none. */
 export function usesOfRow(row: { tags?: readonly string[] | null; metadata?: Record<string, unknown> | null }): ScreenshotUse[] {
   const fromTags = (row.tags ?? []).filter((t) => t.startsWith("use:")).map((t) => t.slice(4)).filter((u): u is ScreenshotUse => (SCREENSHOT_USES as readonly string[]).includes(u))
-  if (fromTags.length) return fromTags
   const meta = row.metadata?.uses
-  if (Array.isArray(meta)) return meta.filter((u): u is ScreenshotUse => (SCREENSHOT_USES as readonly string[]).includes(String(u)))
-  return [...SCREENSHOT_USES]
+  const raw: ScreenshotUse[] = fromTags.length
+    ? fromTags
+    : Array.isArray(meta) ? meta.filter((u): u is ScreenshotUse => (SCREENSHOT_USES as readonly string[]).includes(String(u))) : [...SCREENSHOT_USES]
+  if (row.metadata?.comparison_only === true) return []
+  return row.metadata?.screenshot_kind === "public_page" ? raw.filter((u) => PUBLIC_PAGE_STILL_USES.includes(u)) : raw
 }
 
 /** PURE: the marketing_assets row for a finished capture — the image-library
  *  row shape, plus provenance. */
 export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, capturedAtIso: string, providerName: string, owner?: ScreenshotOwner | null): Record<string, unknown> {
   const isOs = plan.kind === "os_surface"
-  // A tenant-owned still carries the uses the tenant chose (marketing_campaign
-  // always — it is campaign material by definition); a platform still is
-  // usable everywhere until a human narrows it.
-  // A COMPARISON-ONLY still (wave 82D) carries NO use at all: it is evidence
-  // for the estimate comparison piece and never a campaign still.
-  const uses: ScreenshotUse[] = owner
-    ? (plan.comparisonOnly ? [] : SCREENSHOT_USES.filter((u) => u === "marketing_campaign" || (owner.uses ?? []).includes(u)))
+  // A public-page still (tenant-owned or platform) is marketing_campaign
+  // material ONLY (wave 83C: "zestimate is marketing campaigns strictly") —
+  // whatever uses an owner asks for are clamped to PUBLIC_PAGE_STILL_USES. An
+  // OS-surface still (platform only) is usable everywhere until narrowed.
+  const uses: ScreenshotUse[] = plan.kind === "public_page"
+    ? SCREENSHOT_USES.filter((u) => PUBLIC_PAGE_STILL_USES.includes(u))
     : defaultScreenshotUses(plan.kind)
   if (owner) {
     return {
@@ -646,7 +631,7 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
       thumbnail_url: assetUrl,
       preview_text: `Online estimate page capture of ${plan.host} — marketing material, pending approval`.slice(0, 280),
       source_table: "image_library",
-      tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, "third_party_page", "estimate_still", ...(plan.comparisonOnly ? ["estimate_comparison"] : [])], uses),
+      tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, "third_party_page", "estimate_still"], uses),
       // ALWAYS pending: a third-party page capture enters a tenant's campaign
       // only once a human approves it on the tenant's own marketing_assets
       // approval rail (app/actions/marketing-studio.ts approveAsset/rejectAsset).
@@ -664,9 +649,8 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
         viewport: plan.viewport,
         redact: plan.redactSelectors,
         provider: providerName,
-        usage: plan.comparisonOnly ? "estimate_comparison_evidence_only" : "marketing_material_never_customer_value",
+        usage: "marketing_campaign_material_never_customer_value",
         uses,
-        comparison_only: plan.comparisonOnly,
         /** The labels the provider confirmed on screen before the shot. */
         shows: plan.readyWhen.map((r) => r.label),
         customer_facing_value: false,
@@ -688,8 +672,9 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
     tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, ...(isOs ? [] : ["third_party_page"])], uses),
     // OS stills are platform-OWNED renders (canShareToTenants "owned") and join
     // the tenant pickers; a third-party page capture is NOT redistributable
-    // library stock, so it stays 'pending' — reachable only by the demo /
-    // training / video planners that query by asset_kind.
+    // library stock, so it stays 'pending' — and since 83C it is reachable ONLY
+    // by the platform's own marketing-campaign picker (usesOfRow clamps it to
+    // PUBLIC_PAGE_STILL_USES; never a demo, a training figure or a video).
     approval_status: isOs ? "approved" : "pending",
     metadata: {
       asset_kind: SCREENSHOT_ASSET_KIND,
@@ -704,10 +689,10 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
       viewport: plan.viewport,
       redact: plan.redactSelectors,
       provider: providerName,
-      usage: "demo_training_video_only",
+      usage: isOs ? "demo_training_video_only" : "marketing_campaign_material_never_customer_value",
       uses,
       shows: plan.readyWhen.map((r) => r.label),
-      license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)." : `Third-party page (${plan.host}) captured for internal demo/training/video use; source and capture time recorded; not redistributable as stock.`,
+      license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)." : `Third-party page (${plan.host}) captured as the platform's own marketing-campaign material only; source and capture time recorded; not redistributable as stock; never a demo, training or video still.`,
     },
   }
 }
@@ -756,7 +741,6 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
   const owner = req.owner ?? null
   if (owner && plan.kind !== "public_page") return { ok: false, reason: "REFUSED: an os_surface still is demo-tenant-only — a tenant owner may capture public_page stills only" }
   if (owner && !owner.brokerageId) return { ok: false, reason: "REFUSED: a tenant-owned capture needs the session's brokerage id" }
-  if (plan.comparisonOnly && !owner) return { ok: false, reason: "REFUSED: a comparison-only host is captured only as a tenant's estimate comparison evidence (owner required)" }
   const svc = deps.svc ?? (await import("@/lib/supabase/service")).createServiceClient()
 
   // Cache by URL + day — the same still is never captured twice in a day.
@@ -833,8 +817,8 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
 /**
  * Find a property's public page (Zestimate & co.) through the ONE search tool
  * (lib/external/exa-client.ts), restricted to PUBLIC_PAGE_HOSTS, then capture
- * it. DEMO / TRAINING / VIDEO material only — the value on the page is never
- * read, parsed or spoken; only pixels are kept, with source + captured_at.
+ * it. MARKETING-CAMPAIGN material only (83C) — the value on the page is never
+ * read, parsed or spoken here; only pixels are kept, with source + captured_at.
  */
 export async function capturePublicPropertyPage(
   query: string,
@@ -845,14 +829,11 @@ export async function capturePublicPropertyPage(
     domains?: readonly string[]
     /** Extra request fields (owner, label) merged onto the capture. */
     request?: Partial<Pick<ScreenshotRequest, "owner" | "label" | "dayIso" | "viewport">>
-    /** "estimate_comparison" (wave 82D) also admits COMPARISON_ONLY_PAGE_HOSTS. */
-    hostScope?: PublicPageHostScope
   } = {},
 ): Promise<CaptureResult | ScreenshotRefusal> {
   const q = query.trim()
   if (q.length < 6) return { ok: false, reason: "a property search needs an address or a specific query" }
-  const comparison = opts.hostScope === "estimate_comparison"
-  const admitted = (h: string) => isPublicPageHost(h) || (comparison && isComparisonOnlyPageHost(h))
+  const admitted = (h: string) => isPublicPageHost(h)
   const domains = opts.domains?.length ? [...opts.domains] : [...PUBLIC_PAGE_HOSTS]
   const offList = domains.filter((d) => !admitted(d))
   if (offList.length) return { ok: false, reason: `search domain ${offList.join(", ")} is not on PUBLIC_PAGE_HOSTS (${PUBLIC_PAGE_HOSTS.join(", ")}) — not searched` }
@@ -864,7 +845,7 @@ export async function capturePublicPropertyPage(
   const onDomain = (host: string) => domains.some((d) => host === d || host.endsWith(`.${d}`))
   const first = results.map((r) => r.url).find((u): u is string => typeof u === "string" && (() => { try { const h = new URL(u).hostname.toLowerCase(); return admitted(h) && onDomain(h) } catch { return false } })())
   if (!first) return { ok: false, reason: `the search tool found no public property page on ${domains.join("/")} for "${q}"` }
-  return captureScreenshot({ kind: "public_page", url: first, label: `Public listing page — ${q}`.slice(0, 160), ...(opts.request ?? {}), ...(comparison ? { hostScope: "estimate_comparison" as const } : {}) }, deps)
+  return captureScreenshot({ kind: "public_page", url: first, label: `Public listing page — ${q}`.slice(0, 160), ...(opts.request ?? {}) }, deps)
 }
 
 // ── Refresh loop (rides marketing-image-regen) ───────────────────────────────
@@ -1086,15 +1067,21 @@ export async function setScreenshotUses(
   if (readErr) return { ok: false, reason: `screenshot row ${assetId} read refused: ${readErr.message}` }
   const row = ((rows ?? []) as Array<{ id: string; tags: string[] | null; metadata: Record<string, unknown> | null }>)[0]
   if (!row) return { ok: false, reason: `screenshot row ${assetId} not found (or not a screenshot${scope.brokerageId ? " of this brokerage" : ""})` }
-  // WAVE 82D — an estimate still's uses obey the ONE rule
-  // (estimate-sources.ts estimateStillUseVerdict): a comparison-only portal
-  // still can never be widened into a campaign use, and no use may present a
-  // still as an estimate of value. Fail closed on the first refused use.
-  const estimateSourceKey = typeof row.metadata?.estimate_source === "string" ? row.metadata.estimate_source : null
+  // WAVE 82D/83C — an estimate still's uses obey the ONE rule
+  // (estimate-sources.ts estimateStillUseVerdict): a Zestimate still is
+  // marketing_campaign ONLY (83C — widening it to product_video / demo /
+  // training refuses), a retired comparison-only portal still can never be
+  // widened, and no use may present a still as an estimate of value. A
+  // public_page row with no recorded source is a Zillow page (the ONLY public
+  // host) and is judged as one. Fail closed on the first refused use.
+  const isPublicPage = row.metadata?.screenshot_kind === "public_page"
+  const estimateSourceKey = typeof row.metadata?.estimate_source === "string"
+    ? row.metadata.estimate_source
+    : isPublicPage && row.metadata?.comparison_only !== true ? "zillow_zestimate" : null
   if (estimateSourceKey || row.metadata?.comparison_only === true) {
     const { estimateStillUseVerdict } = await import("@/lib/marketing/estimate-sources")
     for (const u of valid) {
-      const v = estimateStillUseVerdict(row.metadata?.comparison_only === true && !estimateSourceKey ? "comparison_only" : estimateSourceKey, u, SCREENSHOT_USES)
+      const v = estimateStillUseVerdict(row.metadata?.comparison_only === true && !estimateSourceKey ? "comparison_only" : estimateSourceKey, u)
       if (!v.ok) return { ok: false, reason: v.reason }
     }
   }

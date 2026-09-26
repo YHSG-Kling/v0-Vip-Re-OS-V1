@@ -232,6 +232,23 @@ export async function dispatchFarmMail(
       continue
     }
 
+    // WAVE 83C — THE PRINTED FARM PIECE CARRIES A TRACKED QR (82D open item:
+    // farm mail passed no qrScanUrl, so the postcard's response QR never
+    // rendered and a scan could never be attributed). ONE registered code per
+    // agent × persona farm audience, minted/reused through THE ONE minter
+    // (idempotent per label), pointing at the CMA form the copy already sells
+    // (copyCtx.qrDestinationType "cma_form"). A refused mint mails the piece
+    // without a QR (the CTA still prints) and says so.
+    let farmQr: { scanUrl: string } | null = null
+    try {
+      const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+      const minted = await mintTrackedQr({ brokerageId: args.brokerageId, agentId: args.agentId, label: `farm_mail:${args.agentId}:${persona}`, purpose: "campaign", destinationType: "cma_form" }, svc as any)
+      if (minted) farmQr = { scanUrl: minted.scanUrl }
+      else console.error(`[farm-mail] no tracked QR for agent ${args.agentId} persona ${persona} — pieces mail without one`)
+    } catch (err) {
+      console.error(`[farm-mail] tracked QR unavailable for agent ${args.agentId}:`, (err as Error)?.message)
+    }
+
     // Real path — orchestrate one piece per contact.
     let sent = 0, rendered = 0, failed = 0, fellBack = 0
     for (const c of contacts) {
@@ -279,6 +296,8 @@ export async function dispatchFarmMail(
           } : undefined,
         },
         fallbackTemplateId: args.fallbackTemplateId,
+        // The farm audience's REGISTERED code (minted above) — /api/qr/scan?slug=….
+        qrScanUrl:          farmQr?.scanUrl ?? null,
         systemSource:       "farm_mail",
       })
 

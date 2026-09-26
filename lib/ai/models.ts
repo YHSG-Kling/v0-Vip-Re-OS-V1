@@ -189,6 +189,7 @@ export const AI_TASK_ROUTING: Record<string, {
   lead_data_extraction:      { model: "gpt-4o", fallback: "claude-haiku",   reason: "Extract contact fields from raw lead payloads" },
   generate_json:             { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Any task requiring strict JSON schema output" },
   license_verification:      { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Extract license record fields from state regulator registry pages — extraction only, schema strict" },
+  estimate_figure_extraction: { model: "gpt-4o", fallback: "claude-sonnet", reason: "Wave 83C — read the ONE figure a public home-value page (realtor.com / redfin.com / homes.com) publishes for a subject address out of web-search page text: facts only, schema strict, verified verbatim against the page by lib/marketing/estimate-web-search.ts before a human approves it" },
   copilot_plan_generation:   { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Structured daily plan with typed task objects" },
   transaction_coordinator:   { model: "gpt-4o", fallback: "claude-sonnet",  reason: "TC task list generation — structured milestone output" },
 

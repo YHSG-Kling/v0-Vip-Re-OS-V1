@@ -281,6 +281,27 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
   },
 ]
 
+/**
+ * THE ESTIMATE-TYPE PLAYS (wave 83, lane 83C — owner verbatim: "you removed
+ * the zestimate playbook which you shouldn't have done because there can be
+ * more than one 'estimate' type play. zestimate is marketing campaigns
+ * strictly.").
+ *
+ * FINDING (git log -S zestimate_challenge -- lib/marketing/creative-playbooks.ts,
+ * 2026-09-26): the ONLY commit touching the key is 5a9313bf (Round 36, which
+ * added it); no commit on this branch removed or renamed it, and at d35fe4a4
+ * it sits first in CREATIVE_PLAYBOOKS with its install path
+ * (app/actions/creative-playbooks.ts `playbook.key === "zestimate_challenge"` →
+ * ensureZestimateChallengeStill), its card (estimate-stills-card.tsx) and its
+ * autonomous still capture intact. What 82D did was ADD `estimate_comparison`
+ * beside it — so nothing needed restoring; what was missing was a rule that
+ * the two plays coexist. This list IS that rule: both keys must resolve, and
+ * scripts/estimate-comparison-guard.ts fails if either play is dropped or one
+ * is folded into the other. A new estimate-type play is ADDED here, never
+ * substituted for an existing one.
+ */
+export const ESTIMATE_PLAY_KEYS = ["zestimate_challenge", "estimate_comparison"] as const
+
 export function getPlaybook(key: string): CreativePlaybook | null {
   return CREATIVE_PLAYBOOKS.find((p) => p.key === key) ?? null
 }

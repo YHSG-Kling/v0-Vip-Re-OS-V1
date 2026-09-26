@@ -1540,7 +1540,10 @@ export interface DispatchWebSearchParams {
   numResults?: number
   startPublishedDate?: string
   includeDomains?: string[]
-  purpose: "search_enrichment" | "intent_acquisition"
+  /** `estimate_comparison` (wave 83C): lib/marketing/estimate-web-search.ts
+   *  finding what realtor.com / redfin.com / homes.com publish for a tenant's
+   *  territory property — booked like the other two, never a screenshot. */
+  purpose: "search_enrichment" | "intent_acquisition" | "estimate_comparison"
   metadata?: Record<string, unknown>
 }
 

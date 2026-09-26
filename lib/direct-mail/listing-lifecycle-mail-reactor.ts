@@ -288,6 +288,21 @@ export async function dispatchLifecycleMail(
   // 6. Dispatch one piece per recipient via the orchestrator. Per-piece
   //    Fair Housing gate + de-conflict + Lob spend still all apply.
   const propertyAddress = [l.address, l.city, l.state].filter(Boolean).join(", ")
+  // WAVE 83C — THE PRINTED LIFECYCLE PIECE CARRIES A TRACKED QR (82D open item:
+  // the reactor passed no qrScanUrl). ONE registered code per listing × event,
+  // minted/reused through THE ONE minter, stamped with the listing so the QR
+  // boards resolve it; destination follows the copy's own CTA. A refused mint
+  // mails without a QR (the CTA still prints) and says so.
+  const qrDestination = args.eventType === "open_house_announce" || args.eventType === "open_house_reminder" ? "book_meeting" : "listing_detail"
+  let lifecycleQr: { scanUrl: string } | null = null
+  try {
+    const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+    const minted = await mintTrackedQr({ brokerageId: args.brokerageId, agentId, label: `lifecycle_mail:${args.listingId}:${args.eventType}`, purpose: "listing", destinationType: qrDestination, listingId: args.listingId }, svc as any)
+    if (minted) lifecycleQr = { scanUrl: minted.scanUrl }
+    else console.error(`[mail-reactor] no tracked QR for listing ${args.listingId} ${args.eventType} — pieces mail without one`)
+  } catch (err) {
+    console.error(`[mail-reactor] tracked QR unavailable for listing ${args.listingId}:`, (err as Error)?.message)
+  }
   let sent = 0, rendered = 0, failed = 0
   for (const contactId of recipientList) {
     const addr = await resolveMailingAddressForContact({ contactId, brokerageId: args.brokerageId })
@@ -319,14 +334,14 @@ export async function dispatchLifecycleMail(
         agentUserId: args.agentUserId,
         contactId,
         persona:     defaults.persona,
-        qrDestinationType: args.eventType === "open_house_announce" || args.eventType === "open_house_reminder"
-          ? "book_meeting"
-          : "listing_detail",
+        qrDestinationType: qrDestination,
         hookFacts: {
           listingAddress: propertyAddress || undefined,
         },
       },
       fallbackTemplateId: fallbackTpl,
+      // The listing × event REGISTERED code (minted above).
+      qrScanUrl:          lifecycleQr?.scanUrl ?? null,
       systemSource:       `lifecycle:${args.eventType}`,
     })
 

@@ -660,6 +660,24 @@ export const listingApptPrepChain: WorkflowChain = {
           rendered?: boolean; fellBackReason?: string | null
         }> = []
 
+        // WAVE 83C — THE PRE-LISTING POSTCARD CARRIES A TRACKED QR (82D open
+        // item: this chain passed no qrScanUrl). ONE registered code per
+        // seller contact's kit, minted/reused through THE ONE minter, pointing
+        // at the booking CTA the postcard copy already uses. Letters carry no
+        // QR (orchestrate-send renders it on the postcard front only). A
+        // refused mint mails without one (the CTA still prints) and says so.
+        let kitQr: { scanUrl: string } | null = null
+        if (postcardTpl) {
+          try {
+            const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+            const minted = await mintTrackedQr({ brokerageId: ctx.brokerageId, label: `pre_listing_kit:${ctx.contactId}`, purpose: "campaign", destinationType: "book_meeting" }, svc as any)
+            if (minted) kitQr = { scanUrl: minted.scanUrl }
+            else console.error(`[listing-appt-prep] no tracked QR for contact ${ctx.contactId} — the postcard mails without one`)
+          } catch (err) {
+            console.error(`[listing-appt-prep] tracked QR unavailable for contact ${ctx.contactId}:`, (err as Error)?.message)
+          }
+        }
+
         const { orchestrateRenderAndSend } = await import("@/lib/direct-mail/orchestrate-send")
         for (const [piece, tpl] of [["letter", letterTpl], ["postcard", postcardTpl]] as const) {
           if (!tpl) continue
@@ -684,6 +702,8 @@ export const listingApptPrepChain: WorkflowChain = {
             fallbackTemplateId: tpl,
             agentName:          null,
             agentTitle:         "REALTOR®",
+            // The kit's REGISTERED code (minted above) — postcard front only.
+            qrScanUrl:          piece === "postcard" ? kitQr?.scanUrl ?? null : null,
             systemSource:       "pre_listing_kit",
           })
 

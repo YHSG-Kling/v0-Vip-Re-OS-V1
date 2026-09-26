@@ -1382,24 +1382,14 @@ export async function commissionVideo(
   //     plan rides input_props.bodyVisualPlan; the composition re-fits it to
   //     the duration it renders at. A composition with no rule FAILS LOUDLY —
   //     blocked like a missing content prop, never rendered unplanned.
-  const { COMPOSITION_TREATMENTS } = await import("@/lib/video/body-visual-model")
-  // 6d. TENANT SCREENSHOT STILLS (wave 80D — owner: "screenshots can be used
-  //     by tenants"). When the chosen composition can RENDER the `screenshot`
-  //     treatment (its COMPOSITION_TREATMENTS row — derived, never a typed
-  //     composition name), the tenant's APPROVED `use:product_video` stills
-  //     (Zestimate & co., lib/marketing/tenant-screenshot-door.ts) are staged
-  //     as input_props.screenshotUrls, the key assetsFromProps reads. Pending
-  //     stills never ride; an empty tenant stages nothing (the plan falls to
-  //     its universal floor). Best-effort — a refused read never blocks.
-  let screenshotUrls: string[] = []
-  if ((COMPOSITION_TREATMENTS[format.compositionId] ?? []).includes("screenshot")) {
-    try {
-      const { tenantScreenshotUrlsForVideo } = await import("@/lib/marketing/tenant-screenshot-door")
-      screenshotUrls = await tenantScreenshotUrlsForVideo(svc, opts.brokerageId)
-    } catch (e) {
-      console.warn("[video-director] tenant still pick failed; staging without screenshots:", (e as Error).message)
-    }
-  }
+  // 6d. TOMBSTONE (§1.3, wave 83C — owner verbatim: "zestimate is marketing
+  //     campaigns strictly"). The 80D step that staged the tenant's approved
+  //     `use:product_video` stills into ANY screenshot-treatment video is
+  //     deleted: every tenant still is a Zillow/Zestimate page and a Zestimate
+  //     may appear only inside its own marketing campaign. That campaign's
+  //     video still gets its approved still — app/actions/creative-playbooks.ts
+  //     installCreativePlaybook → createPlaybookVideo({ screenshotUrls }) — so
+  //     nothing campaign-bound is lost; the director stages no tenant still.
   //     WAVE 80C — PLAN BEFORE SEND. The plan is cut under the tenant's LIVE
   //     learned rule overrides (lib/video/body-visual-rule-ledger.ts), the
   //     situation's own purpose is staged when the composition alsoServes it
@@ -1438,8 +1428,6 @@ export async function commissionVideo(
     ...contentProps,
     ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
     ...(format.needsBroll ? { brollClips, brollSource: "stock" } : {}),
-    // 6d (wave 80D): the tenant's approved stills ride the ONE key the plan reads.
-    ...(screenshotUrls.length ? { screenshotUrls } : {}),
   }
   const visual = stageBodyVisualPlan({
     compositionId: format.compositionId,
@@ -1475,8 +1463,6 @@ export async function commissionVideo(
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
       ...contentProps,
-      // The tenant's approved stills (6d) under the ONE key the plan read.
-      ...(screenshotUrls.length ? { screenshotUrls } : {}),
       // The per-segment screen plan (6e) — segments, treatments, b-roll /
       // photo / screenshot windows, caption window, music duck, avatar share.
       bodyVisualPlan: visual.plan,

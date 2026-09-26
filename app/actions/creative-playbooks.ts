@@ -145,12 +145,14 @@ export async function installCreativePlaybook(
   }
   if (playbook.key === "estimate_comparison") {
     // WAVE 82D — the comparison piece: an APPROVED composite is the postcard
-    // art and the video's screenshot slot; otherwise the OS captures every
-    // source (pending) and says exactly what the human still has to do.
+    // art and the video's screenshot slot; otherwise the OS gathers every
+    // source (pending) and says exactly what the human still has to do. 83C:
+    // Zillow is the campaign still; realtor.com / redfin / homes.com figures
+    // come from an AI web search (never a screenshot), staged for approval.
     const address = await resolvePlayAddress()
     if (!address) notes.push("Comparison: no listing address on file — enter one under Estimate Comparison.")
     else {
-      const { approvedComparisonCreative, listComparisonEvidence, captureEstimateComparisonStills } = await import("@/lib/marketing/estimate-comparison")
+      const { approvedComparisonCreative, listComparisonEvidence, gatherEstimateComparisonEvidence } = await import("@/lib/marketing/estimate-comparison")
       const postcard = await approvedComparisonCreative(svc, ctx.brokerageId, address, "postcard_6x9")
       const square = await approvedComparisonCreative(svc, ctx.brokerageId, address, "social_square")
       if (postcard) { approvedStillUrl = postcard.url; approvedStillId = postcard.id; notes.push("Comparison: using your approved estimate comparison as the postcard art.") }
@@ -158,9 +160,9 @@ export async function installCreativePlaybook(
       if (!postcard && !square) {
         const have = await listComparisonEvidence(svc, ctx.brokerageId, address)
         if (have.length === 0) {
-          const cap = await captureEstimateComparisonStills({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null })
-          if (!cap.ok) notes.push(`Comparison: not captured — ${cap.reason}`)
-          else notes.push(`Comparison: captured ${cap.outcomes.filter((o) => o.ok).length}/${cap.outcomes.length} websites for ${address} — approve each, confirm the figure it shows, then compose under Estimate Comparison. ${cap.outcomes.filter((o) => !o.ok).map((o) => `${o.source}: ${(o as { reason: string }).reason}`).join("; ")}`.trim())
+          const cap = await gatherEstimateComparisonEvidence({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null })
+          if (!cap.ok) notes.push(`Comparison: not gathered — ${cap.reason}`)
+          else notes.push(`Comparison: gathered ${cap.outcomes.filter((o) => o.ok).length}/${cap.outcomes.length} websites for ${address} (Zillow still + web-searched figures) — approve each, then compose under Estimate Comparison. ${cap.outcomes.filter((o) => !o.ok).map((o) => `${o.source}: ${(o as { reason: string }).reason}${(o as { fallback?: boolean }).fallback ? " — type the figure the site shows" : ""}`).join("; ")}`.trim())
         } else notes.push(`Comparison: ${have.length} capture(s) on file for ${address} — approve, confirm figures and compose under Estimate Comparison (the QR stays the postcard art until then).`)
       }
     }

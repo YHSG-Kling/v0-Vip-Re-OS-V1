@@ -164,15 +164,20 @@ export async function listImageLibraryAction(): Promise<
   const { data, error } = await q
   if (error) return { ok: false, error: error.message }
 
-  // WAVE 82D — the library is CAMPAIGN material; an estimate still enters it
-  // only when the ONE rule admits it (lib/marketing/estimate-sources.ts
-  // estimateStillUseVerdict): the Zestimate still yes, a comparison-only
-  // portal capture (realtor / redfin / homes evidence) never.
-  const { estimateStillUseVerdict, IMAGE_LIBRARY_USE } = await import("@/lib/marketing/estimate-sources")
+  // WAVE 82D/83C — an estimate still enters the library only when the ONE rule
+  // admits it (lib/marketing/estimate-sources.ts estimateStillUseVerdict). Since
+  // 83C ("zestimate is marketing campaigns strictly") it admits none: the
+  // library feeds every creative picker (video create, the growth studio), not
+  // only campaigns, so a Zestimate still stays inside its own campaign. A
+  // public_page row with no recorded source is a Zillow page (the only public
+  // host) and is judged as one; retired comparison-only evidence never enters.
+  const { estimateStillUseVerdict, IMAGE_LIBRARY_USE, DEFAULT_ESTIMATE_SOURCE } = await import("@/lib/marketing/estimate-sources")
   const admitted = ((data ?? []) as any[]).filter((r) => {
-    const src = r.metadata?.estimate_source
     if (r.metadata?.comparison_only === true) return false
-    return typeof src === "string" ? estimateStillUseVerdict(src, IMAGE_LIBRARY_USE, []).ok : true
+    const src = typeof r.metadata?.estimate_source === "string"
+      ? r.metadata.estimate_source
+      : r.metadata?.screenshot_kind === "public_page" ? DEFAULT_ESTIMATE_SOURCE : null
+    return src ? estimateStillUseVerdict(src, IMAGE_LIBRARY_USE).ok : true
   })
 
   return {

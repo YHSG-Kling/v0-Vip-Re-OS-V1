@@ -26,7 +26,9 @@
 // (pickApprovedStill matches the source key) — it is history, not a defect.
 // WAVE 82D: the three return for ONE use — the estimate COMPARISON piece
 // (COMPARISON_ESTIMATE_SOURCES at the foot of this file, owner-ruled); they
-// never re-enter ESTIMATE_SOURCES, the campaign-still vocabulary.
+// never re-enter ESTIMATE_SOURCES, the campaign-still vocabulary. WAVE 83C:
+// and they are never screenshotted again — their figures come from an AI web
+// search (evidenceVia "web_search", lib/marketing/estimate-web-search.ts).
 //
 // ToS NOTES (Exa, 2026-09-23 + 2026-09-24). The still is MARKETING MATERIAL
 // captured for the tenant's own campaign, pending a human's approval, with
@@ -96,15 +98,25 @@ export const ESTIMATE_STILL_DISCLAIMER =
   "Online estimate shown as published by its source on the capture date. It is an automated figure, not an appraisal and not this brokerage's opinion of value."
 
 // ═════════════════════════════════════════════════════════════════════════════
-// (b) THE ZESTIMATE STILL IS CAMPAIGN MATERIAL — NEVER AN ESTIMATE OF VALUE
+// (b) THE ZESTIMATE STILL IS MARKETING-CAMPAIGN MATERIAL, STRICTLY
 // (wave 82, lane 82D, owner verbatim: "the zillow zestimate screenshot should
-// only be used for campaigns and not other estimate of value.").
+// only be used for campaigns and not other estimate of value."; NARROWED wave
+// 83, lane 83C, owner verbatim: "zestimate is marketing campaigns strictly.").
 //
 // A still is the PORTAL's figure shown whole, as marketing material. It is
 // never a CMA input, a valuation, a home-value report, a price opinion, a
-// listing price, an appraisal or any value a customer is told is "the" value.
-// estimateStillUseVerdict is the ONE rule every consumer asks; the image
-// library (app/actions/marketing/image-library.ts) filters through it and
+// listing price, an appraisal or any value a customer is told is "the" value —
+// and (83C) never demo, training, product-video or image-library stock either:
+// the ONLY seam use it carries is `marketing_campaign`, plus the estimate
+// comparison piece, which is itself a marketing campaign (the
+// `estimate_comparison` play in lib/marketing/creative-playbooks.ts). A
+// campaign's OWN video still shows it — installCreativePlaybook hands the
+// APPROVED still straight to that campaign's video (app/actions/
+// creative-playbooks.ts createPlaybookVideo screenshotUrls) — but no other
+// video picks it up. estimateStillUseVerdict is the ONE rule: the seam
+// (lib/assets/screenshot-capture.ts usesOfRow / setScreenshotUses), the image
+// library (app/actions/marketing/image-library.ts) and the tenant door read it;
+// scripts/zestimate-only-guard.ts proves it with positive controls and
 // scripts/estimate-comparison-guard.ts proves no value surface reads a still.
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -117,33 +129,39 @@ export const ESTIMATE_OF_VALUE_USES = [
 export const ESTIMATE_COMPARISON_USE = "estimate_comparison" as const
 
 /** The generic creative pickers (the approved image library every tenant
- *  creative surface reads) — campaign material by definition. */
+ *  creative surface reads — video create, the growth studio). NOT a campaign
+ *  by itself, so since 83C no estimate still is admitted to it. */
 export const IMAGE_LIBRARY_USE = "image_library" as const
+
+/** The ONLY seam use (lib/assets/screenshot-capture.ts SCREENSHOT_USES) a
+ *  Zestimate still may carry — wave 83C: "zestimate is marketing campaigns
+ *  strictly". demo / training / product_video are refused. */
+export const ZESTIMATE_STILL_USES = ["marketing_campaign"] as const
 
 export type EstimateStillUseVerdict = { ok: true } | { ok: false; reason: string }
 
 /**
- * PURE, FAIL-CLOSED: may a still captured from `sourceKey` be used for `use`?
+ * PURE, FAIL-CLOSED: may evidence from `sourceKey` be used for `use`?
  *   · any ESTIMATE_OF_VALUE_USES → refused (a portal figure is never a value);
- *   · zillow_zestimate → campaign uses (`campaignUses`, i.e. the seam's
- *     SCREENSHOT_USES — campaigns, campaign videos, demos, training), the
- *     image library, and the comparison piece;
+ *   · zillow_zestimate → `marketing_campaign` and the comparison piece ONLY
+ *     (83C — demo, training, product_video and the image library refused);
  *   · a COMPARISON-ONLY source (realtor / redfin / homes) → the comparison
- *     piece ONLY — never a standalone campaign still, never the library;
+ *     piece ONLY (since 83C its figure arrives by AI web search, never a
+ *     still — lib/marketing/estimate-web-search.ts);
  *   · an unknown source or use → refused.
  */
-export function estimateStillUseVerdict(sourceKey: string | null | undefined, use: string, campaignUses: readonly string[]): EstimateStillUseVerdict {
+export function estimateStillUseVerdict(sourceKey: string | null | undefined, use: string): EstimateStillUseVerdict {
   if ((ESTIMATE_OF_VALUE_USES as readonly string[]).includes(use)) {
     return { ok: false, reason: `REFUSED: an online-estimate still is campaign material, never an estimate of value — "${use}" would present the portal's figure as a value` }
   }
   if (sourceKey === DEFAULT_ESTIMATE_SOURCE) {
-    if (use === ESTIMATE_COMPARISON_USE || use === IMAGE_LIBRARY_USE || campaignUses.includes(use)) return { ok: true }
-    return { ok: false, reason: `REFUSED: a Zestimate still is for campaigns only — "${use}" is not a campaign use (${[...campaignUses, IMAGE_LIBRARY_USE, ESTIMATE_COMPARISON_USE].join(" | ")})` }
+    if (use === ESTIMATE_COMPARISON_USE || (ZESTIMATE_STILL_USES as readonly string[]).includes(use)) return { ok: true }
+    return { ok: false, reason: `REFUSED: a Zestimate still is for marketing campaigns strictly — "${use}" is not one (${[...ZESTIMATE_STILL_USES, ESTIMATE_COMPARISON_USE].join(" | ")})` }
   }
   if (comparisonEstimateSource(sourceKey)) {
     return use === ESTIMATE_COMPARISON_USE
       ? { ok: true }
-      : { ok: false, reason: `REFUSED: a ${String(sourceKey)} still exists only for the estimate comparison piece — "${use}" is not ${ESTIMATE_COMPARISON_USE}` }
+      : { ok: false, reason: `REFUSED: a ${String(sourceKey)} figure exists only for the estimate comparison piece — "${use}" is not ${ESTIMATE_COMPARISON_USE}` }
   }
   return { ok: false, reason: `REFUSED: "${String(sourceKey)}" is not an estimate source this OS captures` }
 }
@@ -168,12 +186,23 @@ export function estimateStillUseVerdict(sourceKey: string | null | undefined, us
 //     works "or attempt to commercially gain" from the Services.
 //   · Homes.com (CoStar): CoStar retains all rights in its imagery; its marks
 //     only with written consent.
-// So the three capture as EVIDENCE — the pending, human-approved record the
-// agent reads the figure off, with source + capture date — and the published
-// creative carries each portal's FIGURE as TEXT under a plain, logo-free,
-// nominative label ("Redfin Estimate"), never their pixels, logo or trade
-// dress. Only the Zillow still (posture `still_with_attribution`, the 81D
-// ruling) may appear as a picture inside the piece.
+// So the published creative carries each portal's FIGURE as TEXT under a
+// plain, logo-free, nominative label ("Redfin Estimate"), never their pixels,
+// logo or trade dress. Only the Zillow still (posture
+// `still_with_attribution`, the 81D ruling) may appear as a picture.
+//
+// WAVE 83C (owner verbatim: "since we can't use the screenshots for the real
+// estate sites showing the homes value except for zillow for marketing
+// campaigns, we should use ai to search the internet for the property and what
+// realtor.com, homes.com and redfin [show]."): the three portals are no longer
+// SCREENSHOTTED at all, not even as evidence. `evidenceVia: "web_search"` —
+// lib/marketing/estimate-web-search.ts runs an AI web search (Exa through
+// lib/providers/dispatch.ts dispatchWebSearch, spend booked, tenant from the
+// session) for the property on that portal's host, a routed model extracts
+// the figure with its source URL and date (facts only, verified verbatim
+// against the page text), and the figure lands PENDING for a human's approval.
+// When the search finds nothing, a human types the figure the portal shows
+// (the fallback). Zillow alone keeps `evidenceVia: "still"`.
 // ── BEGIN COMPARISON-ONLY BLOCK ──────────────────────────────────────────────
 
 export const COMPARISON_ESTIMATE_SOURCE_KEYS = ["zillow_zestimate", "realtor_estimate", "redfin_estimate", "homes_estimate"] as const
@@ -183,34 +212,42 @@ export type ComparisonEstimateSourceKey = (typeof COMPARISON_ESTIMATE_SOURCE_KEY
  *  or its figure as text under a logo-free label (the three others). */
 export type ComparisonStillPosture = "still_with_attribution" | "figure_only"
 
+/** How the figure reaches the piece: the Zillow still (a human reads it off
+ *  the approved capture), or an AI web search (83C) staged for approval. */
+export type ComparisonEvidenceVia = "still" | "web_search"
+
 export interface ComparisonEstimateSource {
   key: ComparisonEstimateSourceKey
   /** Logo-free, nominative card label (the portal's own name for its number). */
   cardLabel: string
   host: string
+  /** Extra search words that find the portal's page for an address. */
   searchHint: string
-  /** The labels the seam's readiness rule for the host confirms on screen. */
+  /** The portal's own names for its figure (what the extraction looks for). */
+  estimateNames: readonly string[]
+  /** Still sources: the labels the seam's readiness rule confirms on screen. */
   mustShow: readonly string[]
   posture: ComparisonStillPosture
+  evidenceVia: ComparisonEvidenceVia
   tosNote: string
 }
 
 export const COMPARISON_ESTIMATE_SOURCES: readonly ComparisonEstimateSource[] = [
   {
-    key: "zillow_zestimate", cardLabel: "Zillow Zestimate", host: "zillow.com", searchHint: "zestimate", mustShow: ZESTIMATE_STILL_MUST_SHOW, posture: "still_with_attribution",
+    key: "zillow_zestimate", cardLabel: "Zillow Zestimate", host: "zillow.com", searchHint: "zestimate", estimateNames: ["Zestimate"], mustShow: ZESTIMATE_STILL_MUST_SHOW, posture: "still_with_attribution", evidenceVia: "still",
     tosNote: "Zestimate® and Zillow® are registered marks of Zillow Group — named descriptively only. The still is the Zillow page shown whole (photo + Zestimate), source and capture date recorded, approved by a human before use.",
   },
   {
-    key: "realtor_estimate", cardLabel: "Realtor.com estimate", host: "realtor.com", searchHint: "home value estimate", mustShow: ["property_photo", "estimate"], posture: "figure_only",
-    tosNote: "realtor.com® is a mark of Move, Inc. Its terms bar reproducing its content without written permission, so the capture is evidence only: the piece prints the figure you confirm as text under a plain label — no screenshot, no logo.",
+    key: "realtor_estimate", cardLabel: "Realtor.com estimate", host: "realtor.com", searchHint: "RealEstimate home value", estimateNames: ["RealEstimate", "estimated value", "Estimate"], mustShow: [], posture: "figure_only", evidenceVia: "web_search",
+    tosNote: "realtor.com® is a mark of Move, Inc. Its terms bar reproducing its content without written permission, so nothing is screenshotted: an AI web search finds the figure the page publishes, records the source link and date, and you approve it; the piece prints it as text under a plain label — no screenshot, no logo.",
   },
   {
-    key: "redfin_estimate", cardLabel: "Redfin Estimate", host: "redfin.com", searchHint: "redfin estimate", mustShow: ["property_photo", "estimate"], posture: "figure_only",
-    tosNote: "Redfin® and Redfin Estimate™ are marks of Redfin Corporation. Its terms bar reproducing or redistributing its pages, so the capture is evidence only: the piece prints the figure you confirm as text under a plain label — no screenshot, no logo.",
+    key: "redfin_estimate", cardLabel: "Redfin Estimate", host: "redfin.com", searchHint: "Redfin Estimate", estimateNames: ["Redfin Estimate", "estimate"], mustShow: [], posture: "figure_only", evidenceVia: "web_search",
+    tosNote: "Redfin® and Redfin Estimate™ are marks of Redfin Corporation. Its terms bar reproducing or redistributing its pages, so nothing is screenshotted: an AI web search finds the figure the page publishes, records the source link and date, and you approve it; the piece prints it as text under a plain label — no screenshot, no logo.",
   },
   {
-    key: "homes_estimate", cardLabel: "Homes.com estimate", host: "homes.com", searchHint: "home value", mustShow: ["property_photo", "estimate"], posture: "figure_only",
-    tosNote: "Homes.com® is a mark of CoStar Group, which reserves all rights in its imagery. The capture is evidence only: the piece prints the figure you confirm as text under a plain label — no screenshot, no logo.",
+    key: "homes_estimate", cardLabel: "Homes.com estimate", host: "homes.com", searchHint: "home value estimate", estimateNames: ["Homes.com Estimate", "estimated value", "estimate"], mustShow: [], posture: "figure_only", evidenceVia: "web_search",
+    tosNote: "Homes.com® is a mark of CoStar Group, which reserves all rights in its imagery. Nothing is screenshotted: an AI web search finds the figure the page publishes, records the source link and date, and you approve it; the piece prints it as text under a plain label — no screenshot, no logo.",
   },
 ] as const
 
