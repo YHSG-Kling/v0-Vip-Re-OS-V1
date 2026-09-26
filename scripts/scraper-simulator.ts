@@ -34,7 +34,7 @@ import {
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
-import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources, buildAgentSeekingPhrases, buildNewConstructionPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
+import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, vendorForSource, expandEnabledSources, buildAgentSeekingPhrases, buildNewConstructionPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
 import { normalizeSiteVisitorRow, SITE_VISITOR_MIN_DWELL_SECONDS, SITE_VISITOR_LOOKBACK_HOURS } from "../lib/lead-pipeline/site-visitor-sourcer"
 // lib/lead-pipeline/rental-graduation-sourcer.ts statically imports lib/avm/provider-chain.ts,
 // which imports `server-only` (throws outside a Server Component) — NOT imported at the top of
@@ -93,7 +93,7 @@ import { BATCHDATA_MOTIVATION_TYPES, BATCHDATA_QUICKLISTS, fetchMotivatedSellers
 import { runApifyActor } from "../lib/external/apify-client"
 import { syncContactToHubSpot } from "../lib/crm/providers/hubspot"
 import { publishToSocialPlatform } from "../lib/social/publisher"
-import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
+import { meterVendorSpend, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
 import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governance/vendor-policy"
@@ -572,11 +572,12 @@ async function testVendorConnectors() {
 // ── 8c. Unified vendor-spend gateway (meterVendorSpend) ──────────────────────
 async function testVendorGateway() {
   console.log("\n[Unified vendor-spend gateway — meterVendorSpend]")
-  // scraper_type → canonical vendor mapping (the ledger's vendor_name).
-  check("zillow_behavior → zenrows", scraperTypeToVendor("zillow_behavior") === "zenrows")
-  check("batchdata_motivated → batchdata", scraperTypeToVendor("batchdata_motivated") === "batchdata")
-  check("social_intent → apify_social", scraperTypeToVendor("social_intent") === "apify_social")
-  check("osint_signal → osint", scraperTypeToVendor("osint_signal") === "osint")
+  // source → canonical vendor mapping (the ledger's vendor_name). Lane 83E: re-pointed from the
+  // deleted scraperTypeToVendor duplicate to its survivor, SOURCE_VENDOR via vendorForSource.
+  check("zillow → zenrows (alias → zenrows_zillow)", vendorForSource("zillow") === "zenrows")
+  check("batchdata_motivated → batchdata", vendorForSource("batchdata_motivated") === "batchdata")
+  check("exa_buyer_intent → exa (never the retired apify_social composite)", vendorForSource("exa_buyer_intent") === "exa")
+  check("osint_signal → osint", vendorForSource("osint_signal") === "osint")
 
   // Captured logger records exactly what the gateway forwards.
   const calls: any[] = []

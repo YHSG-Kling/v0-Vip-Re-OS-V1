@@ -107,6 +107,43 @@ export async function resolveUserIdForAgentRecord(
 }
 
 /**
+ * THE REVERSE DIRECTION, BATCHED AND TENANT-PINNED — many agents.id → users.id.
+ *
+ * Same crossing as resolveUserIdForAgentRecord above (agents.user_id), for the
+ * callers that hold a whole roster of agents ids at once — a report crediting the
+ * CURRENT holder of each contact, or a miner whose supporting-agent list must be
+ * written in the class its only reader compares against (users.id, see
+ * lib/learning-router/resolve-agent-learning-context.ts). Pinned to the tenant:
+ * an agents id from another brokerage resolves to nothing, never to a user.
+ *
+ * supabase-js RESOLVES a refused read, so a refusal is returned as a refusal —
+ * never as an empty map that would read as "none of these agents has a login".
+ * An agents id missing from the map is an agents row that is gone or foreign;
+ * callers must not substitute the agents id for it.
+ */
+export async function resolveUserIdsForAgentRecords(
+  supabase: Pick<SupabaseClient, 'from'>,
+  brokerageId: string,
+  agentRecordIds: ReadonlyArray<string>
+): Promise<{ ok: true; userIdByAgentId: Map<string, string> } | { ok: false; error: string }> {
+  const userIdByAgentId = new Map<string, string>()
+  const ids = Array.from(new Set(agentRecordIds.filter(Boolean)))
+  if (!brokerageId || ids.length === 0) return { ok: true, userIdByAgentId }
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await supabase
+      .from('agents')
+      .select('id, user_id')
+      .eq('brokerage_id', brokerageId)
+      .in('id', ids.slice(i, i + 200))
+    if (error) return { ok: false, error: `agents (agents.id → users.id) read refused: ${error.message}` }
+    for (const row of (data ?? []) as Array<{ id: string; user_id: string | null }>) {
+      if (row.user_id) userIdByAgentId.set(row.id, row.user_id)
+    }
+  }
+  return { ok: true, userIdByAgentId }
+}
+
+/**
  * Resolves agent ID or throws if not found.
  * Use when agent profile is required for the operation.
  */

@@ -50,16 +50,14 @@ export async function meterVendorSpend(
   }
 }
 
-/** Maps a cron scraper_type to the canonical vendor name recorded in the ledger. */
-export function scraperTypeToVendor(scraperType: string): string {
-  switch (scraperType) {
-    case "zillow_behavior": return "zenrows"
-    case "batchdata_motivated": return "batchdata"
-    case "social_intent": return "apify_social" // composite: apify + exa + tavily
-    case "osint_signal": return "osint"
-    default: return scraperType
-  }
-}
+// TOMBSTONE (§1.1 + §6, lane 83E, 2026-09-26): scraperTypeToVendor DELETED — a second
+// scraper→vendor vocabulary with no runtime reader (orphan-export category A: only
+// scripts/scraper-simulator.ts named it). Its one distinctive entry was the RETIRED composite
+// `social_intent → "apify_social"` that filed Exa/Tavily spend under Apify (wave 82 integration
+// note). Survivor: lib/lead-pipeline/source-intent-map.ts:885 SOURCE_VENDOR, read through
+// vendorForSource (:937) by lib/lead-pipeline/source-cost-ledger.ts::planSourceSpendBooking —
+// which already carries every other entry (zillow → zenrows via the alias map, batchdata_motivated
+// → batchdata, osint_signal → osint), per source rather than per cron block. Nothing to merge.
 
 // ─── Platform-controlled AI vendors (D-ID, HeyGen, ElevenLabs, Vapi) ──────────
 // The platform owns these keys/cost (not the brokerage), but spend is still

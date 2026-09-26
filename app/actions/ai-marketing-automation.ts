@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { createMailCampaign } from "@/app/actions/direct-mail"
 
 /**
  * TENANT + IDENTITY GUARD for every action in this file.
@@ -378,7 +379,11 @@ export interface DirectMailResult {
     designNotes: string
     targetCount: number
     estimatedCost: number
-    qrCodeUrl?: string
+    // TOMBSTONE (§1.3, lane 83E): `qrCodeUrl` DELETED — it was `/api/qr/${id}`, a path no
+    // route serves (app/api/qr holds only scan/ and submit/), and its one caller
+    // (agent-superpowers-panel) never read it. The tracked QR for a mail piece is minted
+    // by app/actions/ai-direct-mail.ts createDirectMailCampaign (createQrCodeAction →
+    // lib/marketing/tracked-qr.ts), landing on /qr/<slug>.
   }
   error?: string
 }
@@ -392,6 +397,11 @@ export async function generateAIDirectMail(params: DirectMailParams): Promise<Di
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
     }
+    // GATE FIRST (lane 83E). This "use server" export is a public endpoint and took
+    // params.agentId from the caller with no tenant check — the only AI marketing
+    // action here that did not verify the agent is inside the caller's brokerage.
+    const auth = await requireAgentInCallerBrokerage(params.agentId)
+    if (!auth.ok) return { success: false, error: auth.error }
 
     const supabase = await createClient()
 
@@ -534,29 +544,40 @@ Return JSON:
     // Get target count (placeholder - would integrate with list provider)
     const estimatedTargets = params.farmAreaZip ? 500 : 100
 
-    // Save to database
-    // Map to the canonical direct_mail_campaigns columns: mail_type→piece_type
-    // (free text), target_count→quantity, estimated_cost→per_piece_cost (unit;
-    // total derives as quantity*per_piece_cost), headline+content→copy_text.
-    // status must satisfy the CHECK (planning|approved|printed|mailed).
-    const { data: saved, error: saveError } = await supabase
+    // ONE CREATOR (§1.1, lane 83E). This used to insert direct_mail_campaigns itself —
+    // the "third creator that bypasses both" app/actions/ai-direct-mail.ts's
+    // createDirectMailCampaign header forbids — so an AI piece skipped the direct_mail
+    // feature gate, the usage counter and the DIRECT_MAIL_CAMPAIGN_CREATED kernel event.
+    // Survivor: app/actions/direct-mail.ts:111 createMailCampaign. Only what it does not
+    // carry (piece_type, is_ai_generated) is stamped after, on the row it returned, the
+    // same way createDirectMailCampaign stamps piece_type. createdBy is the SESSION
+    // user (created_by FKs users; agents.id and users.id are disjoint — §3).
+    // Column mapping unchanged: mail_type→piece_type, target_count→quantity,
+    // estimated_cost→per_piece_cost (unit), headline+content→copy_text.
+    const created = await createMailCampaign({
+      brokerageId: mailBrokerageId, // resolved above from the agents row (gated to the caller's tenant)
+      agentId: params.agentId,
+      campaignName: `${params.mailType} – ${params.targetAudience}`,
+      targetAudience: params.targetAudience,
+      copyText: JSON.stringify({ headline: mailContent.headline, ...mailContent }),
+      quantity: estimatedTargets,
+      perPieceCost: costPerPiece[params.mailType],
+      createdBy: auth.userId,
+    })
+    const saved = created.success ? (created as { campaign?: { id: string } | null }).campaign ?? null : null
+    if (!saved) {
+      return { success: false, error: (created as { error?: string }).error ?? "The mail piece could not be filed." }
+    }
+    const { data: stamped, error: stampError } = await supabase
       .from("direct_mail_campaigns")
-      .insert({
-        brokerage_id: mailBrokerageId, // resolved above from the agents row
-        agent_id: params.agentId,
-        campaign_name: `${params.mailType} – ${params.targetAudience}`,
-        piece_type: params.mailType,
-        target_audience: params.targetAudience,
-        copy_text: JSON.stringify({ headline: mailContent.headline, ...mailContent }),
-        quantity: estimatedTargets,
-        per_piece_cost: costPerPiece[params.mailType],
-        status: "planning",
-        is_ai_generated: true,
-      })
-      .select()
-      .single()
-
-    if (saveError) throw saveError
+      .update({ piece_type: params.mailType, is_ai_generated: true })
+      .eq("id", saved.id)
+      .eq("brokerage_id", mailBrokerageId)
+      .select("id")
+    if (stampError) throw stampError
+    if (!stamped || stamped.length === 0) {
+      return { success: false, error: "The mail piece was filed but its piece type could not be recorded." }
+    }
 
     // /dashboard/marketing/direct-mail has no page.tsx. direct_mail_campaigns is read
     // by the full manager at app/dashboard/campaigns/mail and mirrored on the studio
@@ -574,7 +595,6 @@ Return JSON:
         designNotes: mailContent.designNotes,
         targetCount: estimatedTargets,
         estimatedCost: estimatedTargets * costPerPiece[params.mailType],
-        qrCodeUrl: `/api/qr/${saved.id}`,
       },
     }
   } catch (error) {

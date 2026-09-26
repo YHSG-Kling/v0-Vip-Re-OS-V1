@@ -23,13 +23,36 @@
  *   - activities.created_at + agent_id + contact_id + channel
  *   - contacts.created_at + ai_isa_enabled + status + agent_id
  *   - transactions.status='closed' (linked via contact_id)
- *   - sequence_enrollments.enrolled_at + completed_at + agent_id + status
+ *   - sequence_enrollments.enrolled_at + completed_at + status, credited to the
+ *     contact's CURRENT holder (enrolled_by is the enroller — history, not credit)
  *   - lifetime_customer_touchpoints.sent_date + agent_id + status
  */
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { QUALIFIED_CONTACT_STATUS } from "@/lib/contact-promotion/qualification"
+import { resolveUserIdsForAgentRecords } from "@/lib/kernel/agent-identity"
+import { creditEnrollment, loadContactHolders } from "@/lib/campaign-sequences/enrollment-attribution"
+
+/**
+ * ONE CLASS FOR supporting_agents: users.id. Its only reader,
+ * lib/learning-router/resolve-agent-learning-context.ts, asks
+ * `supporting_agents.includes(userId)`. The response-time, AI-ISA and cadence miners
+ * rank agents by contacts/touchpoints `agent_id` — an agents.id (FK agents) — and
+ * wrote that list verbatim, so it could never contain a users.id: every agent,
+ * top quartile included, was told they had NOT adopted the pattern. Crossed here via
+ * agents.user_id, tenant-pinned. A refused crossing throws, so allSettled drops the
+ * insight instead of persisting the wrong class.
+ */
+async function supportersAsUserIds(
+  svc: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  agentIds: string[],
+): Promise<string[]> {
+  const res = await resolveUserIdsForAgentRecords(svc, brokerageId, agentIds)
+  if (!res.ok) throw new Error(res.error)
+  return agentIds.map((a) => res.userIdByAgentId.get(a)).filter((u): u is string => !!u)
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -194,7 +217,7 @@ async function mineResponseTime(input: MinerInput): Promise<MinerInsight | null>
     bottomQuartileOutcome: bottomConversion,
     liftPct:               lift,
     sampleSize:            list.length,
-    supportingAgents:      top.map((a) => a.agentId),
+    supportingAgents:      await supportersAsUserIds(svc, input.brokerageId, top.map((a) => a.agentId)),
     playbook:              `Set a first-touch SLA of ${Math.max(topMinutesRounded, 5)} minutes on every new lead. The top-quartile agents in your brokerage already hit it — and convert ${lift}% more leads as a result.`,
     playbookActions:       [
       { type: "first_touch_target_minutes", minutes: Math.max(topMinutesRounded, 5) },
@@ -264,7 +287,7 @@ async function mineAiIsaLift(input: MinerInput): Promise<MinerInsight | null> {
     bottomQuartileOutcome: offConv,
     liftPct:               lift,
     sampleSize:            list.length,
-    supportingAgents:      topAgents,
+    supportingAgents:      await supportersAsUserIds(svc, input.brokerageId, topAgents),
     playbook:              `Auto-enable AI ISA on every new lead. Adopters in your brokerage see ${lift}% more engagement, with no extra agent time required.`,
     playbookActions:       [
       { type: "enable_ai_isa_on_new_leads" },
@@ -363,7 +386,7 @@ async function mineTouchpointCadence(input: MinerInput): Promise<MinerInsight | 
     bottomQuartileOutcome: bottomCloses,
     liftPct:               lift,
     sampleSize:            list.length,
-    supportingAgents:      top.map((a) => a.agentId),
+    supportingAgents:      await supportersAsUserIds(svc, input.brokerageId, top.map((a) => a.agentId)),
     playbook:              `Touch every lifetime customer at least every ${cadenceRounded} days. Your top-quartile agents close ${lift}% more deals with this cadence — and the NPV-ranked sphere panel tells you exactly who's due.`,
     playbookActions:       [
       { type: "set_sphere_cadence_days", days: cadenceRounded },
@@ -381,14 +404,18 @@ async function mineDripEngagement(input: MinerInput): Promise<MinerInsight | nul
   const lookbackDays = input.lookbackDays ?? 180
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString()
 
-  const { data: enrollments } = await svc
+  // CREDIT FOLLOWS THE CONTACT (lib/campaign-sequences/enrollment-attribution.ts). This
+  // used to alias enrolled_by as the agent — the ENROLLER — so an inherited book kept
+  // crediting the agent who left. enrolled_by is still read, as history only.
+  const { data: enrollments, error: enrollmentsError } = await svc
     .from("sequence_enrollments")
-    .select("contact_id, agent_id:enrolled_by, status, enrolled_at, completed_at")
+    .select("contact_id, enrolled_by, status, enrolled_at, completed_at")
     .eq("brokerage_id", input.brokerageId)
     .gte("enrolled_at", since)
     .limit(10000)
+  if (enrollmentsError) throw new Error(`sequence_enrollments read refused: ${enrollmentsError.message}`)
 
-  const list = (enrollments ?? []) as Array<{ contact_id: string | null; agent_id: string | null; status: string; enrolled_at: string; completed_at: string | null }>
+  const list = (enrollments ?? []) as Array<{ contact_id: string | null; enrolled_by: string | null; status: string; enrolled_at: string; completed_at: string | null }>
   if (list.length < 20) return null
 
   const enrolledContactIds = Array.from(new Set(list.map((e) => e.contact_id).filter(Boolean) as string[]))
@@ -424,13 +451,18 @@ async function mineDripEngagement(input: MinerInput): Promise<MinerInsight | nul
   const lift = liftPct(enrolledMedian, nonEnrolledMedian)
   if (lift < 15) return null
 
-  // Top-quartile agents = those enrolling the largest share of their contacts
+  // Top-quartile agents = those holding the most drip-enrolled contacts NOW — the
+  // current holder (contacts.agent_id → agents.user_id), in users.id, the class
+  // supporting_agents' only reader compares against.
+  const held = await loadContactHolders(svc, input.brokerageId, enrolledContactIds)
+  if (!held.ok) throw new Error(held.error)
   const perAgent = new Map<string, { enrolled: number }>()
   for (const e of list) {
-    if (!e.agent_id) continue
-    const s = perAgent.get(e.agent_id) ?? { enrolled: 0 }
+    const credit = creditEnrollment(e, e.contact_id ? held.holders.get(e.contact_id) : undefined)
+    if (!credit.creditedUserId) continue
+    const s = perAgent.get(credit.creditedUserId) ?? { enrolled: 0 }
     s.enrolled++
-    perAgent.set(e.agent_id, s)
+    perAgent.set(credit.creditedUserId, s)
   }
   const agentStats = Array.from(perAgent.entries()).map(([id, s]) => ({ id, count: s.enrolled }))
   agentStats.sort((a, b) => b.count - a.count)
@@ -541,7 +573,7 @@ async function mineNegotiationCoPilotAdoption(input: MinerInput): Promise<MinerI
     bottomQuartileOutcome: bottomWins,
     liftPct:               lift,
     sampleSize:            rows.length,
-    supportingAgents:      top.map((a) => a.agentId),
+    supportingAgents:      top.map((a) => a.agentId), // already users.id — negotiation_copilot_suggestions.agent_user_id
     playbook:              `Open every Co-Pilot strategy in the action queue. Even when you disagree, the rationale signals (peer concession curves, your prior track record) are calibrated to your brokerage — not generic. Bottom-quartile agents dismiss without opening; top-quartile read first, then decide.`,
     playbookActions:       [
       { type: "review_open_strategies_daily" },

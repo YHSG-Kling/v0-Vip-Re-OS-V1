@@ -303,6 +303,58 @@ console.log("\n[7b · PERMANENT, AGENT STAYS — a role change moves the book fo
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[wave 83E · SEQUENCE REPORTS CREDIT THE CURRENT HOLDER — the enroller is history]")
+{
+  const { creditEnrollment, loadContactHolders } = await import("../lib/campaign-sequences/enrollment-attribution")
+  // A enrolled c1 and c2 (enrolled_by = uA); the books then move to B.
+  const mv = memSupabase(tenantSeed())
+  const enrolments = [
+    { contact_id: "c1", enrolled_by: "uA" }, { contact_id: "c2", enrolled_by: "uA" },
+    { contact_id: "c4", enrolled_by: "uB" }, { contact_id: null, enrolled_by: "uA" },   // B's own · a LEAD enrolment
+  ]
+  const before = await loadContactHolders(mv, "b1", ["c1", "c2", "c4"])
+  check("before the move the holder of c1 is A (agents.id) with login uA (users.id)",
+    before.ok && before.holders.get("c1")?.agentId === "A" && before.holders.get("c1")?.userId === "uA")
+  await reassignAgentBooks(mv, { brokerageId: "b1", fromAgentId: "A", toAgentId: "B", scope: "permanent", keepActive: true, actorUserId: null })
+  const after = await loadContactHolders(mv, "b1", ["c1", "c2", "c4", "c5"])
+  const credits = enrolments.map((e) => creditEnrollment(e, e.contact_id && after.ok ? after.holders.get(e.contact_id) : undefined))
+  check("after the move A's enrolments are CREDITED to B (agents.id B, users.id uB) — the report follows the contact like the sender does",
+    credits[0].creditedAgentId === "B" && credits[0].creditedUserId === "uB" && credits[1].creditedUserId === "uB")
+  check("…and the enroller is KEPT as history: enrolledBy stays uA and inherited=true; B's own enrolment is not inherited",
+    credits[0].enrolledBy === "uA" && credits[0].inherited && !credits[2].inherited && credits[2].creditedUserId === "uB")
+  check("a LEAD enrolment (no contact) credits nobody — leads belong to the brokerage (§5), brokerage view only",
+    credits[3].creditedAgentId === null && credits[3].creditedUserId === null && !credits[3].inherited)
+  check("tenant-pinned: another tenant's contact (c5 in b2) has no holder in b1",
+    after.ok && !after.holders.has("c5"))
+  const refused = await loadContactHolders(memSupabase(tenantSeed(), { missingTables: ["contacts"] }), "b1", ["c1"])
+  check("a refused contacts read is returned as a REFUSAL, never as an empty holder map (§3)", !refused.ok)
+  const enrollerCredit = (e: { contact_id: string | null; enrolled_by: string | null }) => ({ creditedUserId: e.enrolled_by })
+  control("the credit check goes RED on the enroller-credit defect (a creditor returning enrolled_by credits uA, not the holder uB)",
+    enrollerCredit(enrolments[0]).creditedUserId !== "uB")
+
+  const miners = code("lib/brokerage-intelligence/miners.ts")
+  const drip = miners.slice(miners.indexOf("async function mineDripEngagement"), miners.indexOf("async function mineNegotiationCoPilotAdoption"))
+  check("the drip miner credits the current holder (loadContactHolders + creditEnrollment → creditedUserId) and no longer aliases enrolled_by as the agent",
+    /loadContactHolders\(svc, input\.brokerageId, enrolledContactIds\)/.test(drip) && /creditEnrollment\(e,/.test(drip) && /perAgent\.set\(credit\.creditedUserId/.test(drip) && !/agent_id:enrolled_by/.test(miners))
+  control("the alias finder recognises the old enroller-credit select", /agent_id:enrolled_by/.test(`.select("contact_id, agent_id:enrolled_by, status")`))
+  check("supporting_agents has ONE class (users.id, what resolve-agent-learning-context compares): the three agents-class miners cross through supportersAsUserIds",
+    (miners.match(/supportingAgents:\s+await supportersAsUserIds\(svc, input\.brokerageId,/g) ?? []).length === 3
+    && /supporting_agents[\s\S]{0,400}includes\(userId\)/.test(code("lib/learning-router/resolve-agent-learning-context.ts")))
+  control("the class finder recognises a raw agents-id supporter list", !/await supportersAsUserIds/.test("supportingAgents:      top.map((a) => a.agentId),"))
+
+  const wr = code("app/actions/workflow-reports.ts")
+  check("workflow reports: tenant from the SESSION (auth.getUser → users.brokerage_id), a foreign brokerageId refused unless platform staff",
+    /auth\.getUser\(\)/.test(wr) && /isStaff \? \(filters\.brokerageId/.test(wr) && /!isStaff && filters\.brokerageId && filters\.brokerageId !== brokerageId/.test(wr) && !/\.eq\("brokerage_id", filters\.brokerageId\)/.test(wr))
+  check("workflow reports: team/agent scope is READ (it was a label) — scopeAgentIds from the led team or own agents row, enrollments filtered by the CURRENT holder, inherited counted",
+    /eq\("team_lead_id", user\.id\)/.test(wr) && /resolveAgentIdInBrokerage\(supabase, user\.id, brokerageId\)/.test(wr)
+    && /creditEnrollment\(e,/.test(wr) && /scopeAgentIds\.has\(credit\.creditedAgentId\)/.test(wr) && /inheritedEnrollments \+= 1/.test(wr))
+  check("…and the page renders the inherited count (the history half is read, not a readerless field)",
+    /report\.inheritedEnrollments/.test(code("app/dashboard/campaigns/workflow-reports/workflow-reports-client.tsx")))
+  control("the scope finder recognises the old label-only report (teamId/agentId accepted, never read)",
+    !/scopeAgentIds\.has/.test(`.from("sequence_enrollments").select("id").in("sequence_id", sequenceIds)`))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[8 · NEW LEADS FOLLOW — a deactivated agent is dropped from a rule's named pool; an away agent is redirected]")
 {
   const { resolveAgentByRules } = await import("../lib/lead-assignment/assignment-engine")
@@ -357,6 +409,6 @@ console.log("\n[9 · WIRING — the cron tick, the actions, the UI mount, regist
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
-console.log(" Denominator: validator, temporary move (7 kinds) + cover intros, ledger-first, one-open, revert + intro withdraw, sweep, permanent, permanent-agent-stays, sequences-follow-contact, engine, wiring. Blind spots: in-memory client only (m661 is applied live since 2026-09-24; a refused ledger still refuses the temporary door first and the sweep reports readRefused); the cover-intro wording is asserted on this seed's names, not on every locale; sequence ownership is read from the step executor's source (sender resolved at send time), not executed.")
+console.log(" Denominator: validator, temporary move (7 kinds) + cover intros, ledger-first, one-open, revert + intro withdraw, sweep, permanent, permanent-agent-stays, sequences-follow-contact, sequence-reports-credit-current-holder (83E: holder resolver executed in memory; miners + workflow-reports asserted on stripped source), engine, wiring. Blind spots: in-memory client only (m661 is applied live since 2026-09-24; a refused ledger still refuses the temporary door first and the sweep reports readRefused); the cover-intro wording is asserted on this seed's names, not on every locale; sequence ownership is read from the step executor's source (sender resolved at send time), not executed.")
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
 console.log(" AGENT_BOOKS_REASSIGNMENT_PASS — temporary covers and auto-reverts, permanent leaves through the survivor, new leads follow")

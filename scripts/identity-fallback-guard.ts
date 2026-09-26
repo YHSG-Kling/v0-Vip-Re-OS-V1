@@ -275,8 +275,13 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
   // piece). Extra columns on that select are free.
   ok("generateAIDirectMail reads the agent's name/phone/email THROUGH the agents\n    row — it read `users` by the agents id, matched nothing, and every piece\n    was generated from a prompt that said \"AGENT: undefined undefined\"",
     /\.from\("agents"\)\s*\.select\("[^"]*users\(first_name, last_name, phone, email\)"\)\s*\.eq\("id", params\.agentId\)/.test(mail))
-  ok("...while direct_mail_campaigns.agent_id keeps the agents id, which is the\n    class that column's foreign key actually points at",
-    /\.from\("direct_mail_campaigns"\)[\s\S]{0,120}agent_id: params\.agentId/.test(mail))
+  // RE-ANCHORED (lane 83E): generateAIDirectMail no longer inserts the row itself — it
+  // files through the ONE creator, app/actions/direct-mail.ts createMailCampaign, whose
+  // insert writes `agent_id: params.agentId`. The rule is unchanged: the agents id goes to
+  // agent_id, and created_by (FK users) gets the session user, never the agents id.
+  ok("...while direct_mail_campaigns.agent_id keeps the agents id, which is the\n    class that column's foreign key actually points at (via the one creator, createMailCampaign)",
+    /createMailCampaign\(\{[\s\S]{0,300}agentId: params\.agentId,[\s\S]{0,300}createdBy: auth\.userId/.test(mail)
+    && /\.from\("direct_mail_campaigns"\)\s*\.insert\(\{[\s\S]{0,120}agent_id: params\.agentId \?\? null/.test(code(read("app/actions/direct-mail.ts"))))
 
   const cr = code(read("app/dashboard/documents/contract-review/page.tsx"))
   ok("the contract-review page hands down an agents id or nothing, never the\n    auth user id wearing an agents id's name",

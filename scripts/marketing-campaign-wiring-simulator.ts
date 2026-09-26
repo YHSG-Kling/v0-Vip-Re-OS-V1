@@ -444,6 +444,25 @@ const CHECKS: Check[] = [
       ),
   },
   {
+    // Lane 83E (§1.1): generateAIDirectMail was a third direct_mail_campaigns creator that
+    // bypassed the canonical one (feature gate, usage counter, kernel event), and handed back
+    // a qrCodeUrl of `/api/qr/<id>` — a path no route serves, read by no caller.
+    id: "ai/direct-mail-one-creator",
+    file: "aiMarketing",
+    name: "generateAIDirectMail files through createMailCampaign (one creator, created_by = session user) and returns no dangling /api/qr/<id> link",
+    assert: (s) => {
+      const body = fnBody(s, "generateAIDirectMail")
+      return callsFunction(body, "createMailCampaign") && /createdBy: auth\.userId/.test(body)
+        && !/\.insert\(/.test(body) && !/\/api\/qr\/\$\{/.test(body)
+    },
+    mutate: (raw) =>
+      replaceOnce(
+        raw,
+        `const created = await createMailCampaign({`,
+        `const created = await supabase.from("direct_mail_campaigns").insert({`
+      ),
+  },
+  {
     id: "ai/tenant-guard-on-every-action",
     file: "aiMarketing",
     name: "every AI marketing action verifies the agent is inside the caller's brokerage",
@@ -458,6 +477,7 @@ const CHECKS: Check[] = [
         "generateAINewsletter",
         "generateNewsletterSubjectVariants",
         "enhanceListingDescription",
+        "generateAIDirectMail", // lane 83E — was the one ungated action
       ].every((fn) => callsFunction(fnBody(s, fn), "requireAgentInCallerBrokerage")),
     mutate: (raw) =>
       replaceOnce(

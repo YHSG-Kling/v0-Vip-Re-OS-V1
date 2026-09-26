@@ -7,24 +7,39 @@
  * surfaces aggregate metrics scoped to:
  *   - brokerage  (broker / admin role view)
  *   - team       (team-lead view, filtered by team_id)
- *   - agent      (single-agent view, filtered by enrolled_by or sequence.agent_id)
+ *   - agent      (single-agent view)
  *
- * All queries respect the authenticated user's role and scope; pass-through
- * to the service client only happens for service-role-only callers
- * (e.g. cron analytics rollups).
+ * SCOPE WAS A LABEL (lane 83E). teamId and agentId were accepted and never read,
+ * so "My deals" and "My team" rendered the whole brokerage's numbers to anyone who
+ * could open the page, and brokerageId was taken from the caller. Now:
+ *   · the tenant comes from the SESSION (CLAUDE.md §4); a brokerageId naming any
+ *     other tenant is refused unless the caller is platform staff;
+ *   · brokerage scope needs a tenant admin (user_type or grant) or platform staff;
+ *     team scope needs that admin or the team's lead (teams.team_lead_id); agent
+ *     scope is the caller's own agents row unless an admin names another agent;
+ *   · agent/team numbers are CREDITED TO THE CURRENT HOLDER of each enrolled
+ *     contact (lib/campaign-sequences/enrollment-attribution.ts), not the enroller.
+ *     enrolled_by stays as history: `inheritedEnrollments` counts the in-scope
+ *     enrollments someone else started. Lead enrollments (no contact) belong to the
+ *     brokerage (§5) and count in the brokerage view only.
+ * Every read is on the caller's RLS client.
  */
 
 import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
+import { isPlatformStaffIdentity, resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+import { creditEnrollment, loadContactHolders } from "@/lib/campaign-sequences/enrollment-attribution"
 
 export type ReportScope = "brokerage" | "team" | "agent"
 
 export interface WorkflowReportFilters {
   scope:        ReportScope
-  brokerageId:  string
-  /** Required when scope === "team" */
+  /** Platform staff may name a tenant; for everyone else it must be their own (session) tenant. */
+  brokerageId?: string
+  /** scope === "team": a tenant admin may name any team of the tenant; a team lead gets the team they lead. */
   teamId?:      string
-  /** Required when scope === "agent" — agents.id (NOT users.id) */
+  /** scope === "agent": agents.id (NOT users.id). Honoured for a tenant admin; everyone else gets their own. */
   agentId?:     string
   /** ISO date — defaults to last 30 days */
   fromDate?:    string
@@ -37,6 +52,8 @@ export interface WorkflowReportFilters {
 export interface WorkflowReportSummary {
   scope:                ReportScope
   totalEnrollments:     number
+  /** In-scope enrollments started by someone other than the contact's current holder (enrolled_by kept as history). */
+  inheritedEnrollments: number
   activeEnrollments:    number
   completedEnrollments: number
   totalStepsRun:        number
@@ -63,19 +80,68 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
   try {
     const supabase = await createClient()
 
+    // ── 0. Who is asking, for which tenant, over which holders ──────────────
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Sign in to view workflow reports." }
+    const { data: me, error: meError } = await supabase
+      .from("users").select("brokerage_id, team_id, user_type, platform_role").eq("id", user.id).maybeSingle()
+    if (meError) return { success: false, error: `Workflow report refused: your profile could not be read (${meError.message}).` }
+    const isStaff = isPlatformStaffIdentity(me?.user_type, me?.platform_role)
+    const brokerageId = isStaff ? (filters.brokerageId ?? me?.brokerage_id ?? null) : (me?.brokerage_id ?? null)
+    if (!brokerageId) return { success: false, error: "Workflow report refused: your account carries no brokerage." }
+    if (!isStaff && filters.brokerageId && filters.brokerageId !== brokerageId) {
+      return { success: false, error: "Workflow report refused: that brokerage is not yours." }
+    }
+    const admin = isStaff
+      ? { ok: true as const, isTenantAdmin: true }
+      : await resolveTenantAdmin(supabase, user.id, { user_type: me?.user_type, brokerage_id: brokerageId })
+    if (!admin.ok) return { success: false, error: `Workflow report refused: role grants could not be read (${admin.error}).` }
+
+    // "Teams see only their own board" (CLAUDE.md §4): team_lead sits in the tenant
+    // roster, but its board is the team it leads (teams.team_lead_id), never the brokerage.
+    const brokerageAdmin = admin.isTenantAdmin && me?.user_type !== "team_lead"
+
+    // null = brokerage view (every enrollment); otherwise the agents.id set whose
+    // CURRENT contacts are in scope.
+    let scopeAgentIds: Set<string> | null = null
+    if (filters.scope === "brokerage") {
+      if (!brokerageAdmin) return { success: false, error: "The brokerage workflow report is for tenant admins." }
+    } else if (filters.scope === "team") {
+      const requestedTeamId = filters.teamId ?? me?.team_id ?? null
+      if (brokerageAdmin && !requestedTeamId) return { success: false, error: "Pick a team to report on." }
+      let teamQuery = supabase.from("teams").select("id").eq("brokerage_id", brokerageId)
+      teamQuery = brokerageAdmin && requestedTeamId
+        ? teamQuery.eq("id", requestedTeamId)
+        : teamQuery.eq("team_lead_id", user.id)
+      const { data: teams, error: teamError } = await teamQuery
+      if (teamError) return { success: false, error: `Workflow report refused: teams could not be read (${teamError.message}).` }
+      const teamIds = (teams ?? []).map((t) => t.id as string).filter((id) => !filters.teamId || id === filters.teamId)
+      if (teamIds.length === 0) return { success: false, error: "The team workflow report is for that team's lead or a tenant admin." }
+      const { data: members, error: memberError } = await supabase
+        .from("agents").select("id").eq("brokerage_id", brokerageId).in("team_id", teamIds)
+      if (memberError) return { success: false, error: `Workflow report refused: team agents could not be read (${memberError.message}).` }
+      scopeAgentIds = new Set((members ?? []).map((a) => a.id as string))
+    } else {
+      const ownAgentId = await resolveAgentIdInBrokerage(supabase, user.id, brokerageId)
+      const agentId = brokerageAdmin && filters.agentId ? filters.agentId : ownAgentId
+      if (!agentId) return { success: false, error: "No agent profile in this brokerage to report on." }
+      scopeAgentIds = new Set([agentId])
+    }
+
     const fromDate = filters.fromDate ?? new Date(Date.now() - 30 * 86_400_000).toISOString()
     const toDate   = filters.toDate   ?? new Date().toISOString()
 
     // ── 1. Resolve which sequence ids fall in scope ─────────────────────────
     // campaign_sequences carries no agent_id/team_id — ownership is created_by +
-    // brokerage_id. Sequence-level team/agent scoping isn't expressible here; per-
-    // agent attribution is applied downstream at the enrollment level (enrolled_by).
+    // brokerage_id. Team/agent scope is applied downstream at the enrollment level,
+    // credited to the contact's CURRENT holder (step 2).
     const sequenceQuery = supabase
       .from("campaign_sequences")
       .select("id, name")
-      .eq("brokerage_id", filters.brokerageId)
+      .eq("brokerage_id", brokerageId)
 
-    const { data: sequences } = await sequenceQuery
+    const { data: sequences, error: sequencesError } = await sequenceQuery
+    if (sequencesError) return { success: false, error: `Workflow report refused: sequences could not be read (${sequencesError.message}).` }
     const sequenceIds = (sequences ?? []).map(s => s.id)
     const sequenceMap = new Map((sequences ?? []).map(s => [s.id, s.name]))
 
@@ -84,12 +150,28 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
     }
 
     // ── 2. Pull enrollments in scope ────────────────────────────────────────
-    const { data: enrollments } = await supabase
+    const { data: enrollmentRows, error: enrollmentsError } = await supabase
       .from("sequence_enrollments")
-      .select("id, sequence_id, status, enrolled_at, completed_at, converted_at")
+      .select("id, sequence_id, status, enrolled_at, completed_at, converted_at, contact_id, enrolled_by")
       .in("sequence_id", sequenceIds)
       .gte("enrolled_at", fromDate)
       .lte("enrolled_at", toDate)
+    if (enrollmentsError) return { success: false, error: `Workflow report refused: enrollments could not be read (${enrollmentsError.message}).` }
+
+    // CREDIT FOLLOWS THE CONTACT — the current holder, never the enroller.
+    const held = await loadContactHolders(
+      supabase,
+      brokerageId,
+      (enrollmentRows ?? []).map((e) => e.contact_id as string | null).filter((c): c is string => !!c),
+    )
+    if (!held.ok) return { success: false, error: `Workflow report refused: ${held.error}` }
+    let inheritedEnrollments = 0
+    const enrollments = (enrollmentRows ?? []).filter((e) => {
+      const credit = creditEnrollment(e, e.contact_id ? held.holders.get(e.contact_id) : undefined)
+      const inScope = scopeAgentIds === null || (!!credit.creditedAgentId && scopeAgentIds.has(credit.creditedAgentId))
+      if (inScope && credit.inherited) inheritedEnrollments += 1
+      return inScope
+    })
 
     const totalEnrollments     = enrollments?.length ?? 0
     const activeEnrollments    = enrollments?.filter(e => e.status === "active").length ?? 0
@@ -123,7 +205,7 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
       stepQuery = stepQuery.in("enrollment_id", enrollmentIds)
     } else {
       // No enrollments — short-circuit
-      return { success: true, report: { ...emptyReport(filters.scope), totalEnrollments, activeEnrollments, completedEnrollments } }
+      return { success: true, report: { ...emptyReport(filters.scope), totalEnrollments, inheritedEnrollments, activeEnrollments, completedEnrollments } }
     }
 
     if (filters.channel) {
@@ -191,6 +273,7 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
       report: {
         scope: filters.scope,
         totalEnrollments,
+        inheritedEnrollments,
         activeEnrollments,
         completedEnrollments,
         totalStepsRun,
@@ -213,6 +296,7 @@ function emptyReport(scope: ReportScope): WorkflowReportSummary {
   return {
     scope,
     totalEnrollments: 0,
+    inheritedEnrollments: 0,
     activeEnrollments: 0,
     completedEnrollments: 0,
     totalStepsRun: 0,

@@ -128,6 +128,12 @@ export default function WorkflowReportsClient({
             <StatCard label="Completed"        value={report.completedEnrollments} icon={CheckCircle2} color="text-emerald-600" />
             <StatCard label="Avg days to done" value={report.averageCompletionDays != null ? report.averageCompletionDays.toFixed(1) : "—"} icon={Activity} color="text-violet-600" />
           </div>
+          {report.inheritedEnrollments > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Credited to whoever holds each contact now. {report.inheritedEnrollments} of these
+              enrollments were started by another agent before the contact moved; the enroller is kept as history.
+            </p>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <StatCard label="Steps run"        value={report.totalStepsRun} icon={Activity} color="text-slate-600" />
