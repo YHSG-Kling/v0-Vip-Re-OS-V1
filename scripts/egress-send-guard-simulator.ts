@@ -179,6 +179,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/voice/twilio-outbound.ts":           "outbound AI voice dial — the ONE pre-dial gate stack (lib/voice/outbound-call-gates.ts: autonomy → suppression incl. contact_suppression_list → TCPA chokepoint → de-conflict → vendor budget) runs to completion BEFORE the Twilio request; a refusal short-circuits and never dials",
   "app/api/voice/relay/plan/route.ts":      "live-call transfer redirect (call-control REST on an ALREADY-GATED in-progress call; secret-gated endpoint, not a message)",
   "lib/voice/a2p-registration.ts":          "A2P 10DLC carrier registration (TrustHub/Messaging admin APIs — compliance filings, not messages)",
+  "lib/voice/number-port-in.ts":            "number PORT-IN (wave 83D) — Twilio Porting ADMIN API only (Portability check, PortIn create/fetch, the utility-bill Documents upload); session finance-admin gated + plan-allowance gated; Twilio itself e-mails the LOA to the signer the tenant names; never a message from us",
   "app/api/voice/twilio/intelligence/route.ts": "Conversational Intelligence transcript/operator READS (GET-only merge onto the call ledger, not a message)",
   "lib/platform/go-live-readiness.ts":      "go-live readiness probes (read-only GET reachability checks per vendor — never a message)",
   "lib/voice/warm-transfer.ts":             "warm-bridge agent leg (call-control dial to the AGENT on an already-gated live call — a bridge, not a consumer message)",

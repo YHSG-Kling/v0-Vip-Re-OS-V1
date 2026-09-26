@@ -180,8 +180,16 @@ async function main() {
   }
   const np = stripped("lib/voice/number-provisioning.ts")
   check("provisionNumber kicks carrier registration AFTER the purchase + bind and returns the outcome (never blocks the purchase)", np.indexOf("bindNumberToTwilioLane(svc, numberRowId)") < np.indexOf('kickCarrierRegistration(svc, { brokerageId: params.brokerageId, phoneNumber: targetNumber, trigger: "purchased" })') && /registration \}/.test(np))
+  // Wave 83D re-anchor: manuallyAddAgentPhone's post-gate body moved VERBATIM IN
+  // BEHAVIOUR to lib/voice/number-provisioning.ts attachOwnedNumber (the port-in
+  // cron lands completed ports through it). The rule is unchanged: the audit line
+  // first, then the kickoff, and the door reports registrationNote.
   const pp = stripped("app/actions/phone-provisioning.ts")
-  check("manuallyAddAgentPhone (port-in / BYO) kicks it too, after the audit line, and reports registrationNote", pp.indexOf('eventType: params.source === "ported_in" ? "ported_in" : "manually_added"') < pp.indexOf("kickCarrierRegistration(svc, { brokerageId: ctx.brokerageId, phoneNumber: cleaned") && /registrationNote/.test(pp))
+  const attach = np.slice(np.indexOf("export async function attachOwnedNumber("), np.indexOf("export type ReleaseNumberResult"))
+  check("manuallyAddAgentPhone (port-in / BYO) kicks it too — through attachOwnedNumber — after the audit line, and reports registrationNote",
+    attach.indexOf('eventType: params.source === "ported_in" ? "ported_in" : "manually_added"') > 0 &&
+    attach.indexOf('eventType: params.source === "ported_in" ? "ported_in" : "manually_added"') < attach.indexOf("kickCarrierRegistration(svc, { brokerageId: params.brokerageId, phoneNumber: cleaned") &&
+    /await attachOwnedNumber\(svc, \{/.test(pp) && /registrationNote: r\.registrationNote/.test(pp))
   const a2p = stripped("lib/voice/a2p-registration.ts")
   check("runTollfreeVerification files against /v1/Tollfree/Verifications with the number's SID, Privacy + Terms URLs and the EIN, polls by its OWN sid, and never marks approved itself", /"\/v1\/Tollfree\/Verifications", "POST"/.test(a2p) && /TollfreePhoneNumberSid: tollFree\.twilio_number_sid/.test(a2p) && /PrivacyPolicyUrl: profile\.privacyPolicyUrl/.test(a2p) && /BusinessRegistrationNumber: profile\.ein/.test(a2p) && /`\/v1\/Tollfree\/Verifications\/\$\{state\.tollfree_verification_sid\}`, "GET"/.test(a2p) && !/tollfree_status = "TWILIO_APPROVED"/.test(a2p))
   const ptc = stripped("app/actions/phone-test-call.ts")

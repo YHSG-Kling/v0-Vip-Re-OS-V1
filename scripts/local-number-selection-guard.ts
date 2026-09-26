@@ -110,11 +110,17 @@ async function main() {
   console.log("\n[3 · wiring — one core, the SDK adapter, gated doors, billing + registration kept, both boards]")
   const client = stripped("lib/providers/twilio/client.ts")
   check("the Twilio SDK adapter passes Twilio's geographic params (inRegion / inPostalCode / nearNumber / nearLatLong / distance) and lists TollFree — through the SDK, no hand-built fetch",
-    /import Twilio from "twilio"/.test(client) && ["inRegion", "inPostalCode", "nearNumber", "nearLatLong", "distance"].every((k) => new RegExp(`\\{ ${k}: opts\\.${k} \\}`).test(client)) && /\.tollFree\.list\(/.test(client) && !/\bfetch\(/.test(client))
+    /import Twilio from "twilio"/.test(client) && ["inRegion", "inPostalCode", "nearNumber", "nearLatLong", "distance"].every((k) => new RegExp(`\\{ ${k}: opts\\.${k} \\}`).test(client)) && /\.tollFree\.list\(/.test(client) && !/(?<![.\w])fetch\(/.test(client))
+  // Wave 83D re-anchor: the SDK's own `.fetch(` resource method (porting status /
+  // portability) is the SDK, not a hand-built request — only a BARE fetch( call is
+  // banned. The adapter's ONE deliberate non-SDK call (the utility-bill upload, no
+  // SDK resource exists) goes through an injected fetchImpl and is held by
+  // scripts/pick-or-port-guard.ts.
   const core = stripped("lib/voice/number-provisioning.ts")
   const suggest = bodyOf(core, "export async function suggestLocalNumbers(")
   check("suggestLocalNumbers = pure planner → canonical creds → SDK search per rung (local or toll-free)", /planLocalNumberSearch\(loc\.anchor/.test(suggest) && /resolveCreds\(svc, brokerageId\)/.test(suggest) && /searchAvailableTollFreeNumbers\(creds/.test(suggest) && /searchAvailableLocalNumbers\(creds, \{ \.\.\.step\.params/.test(suggest))
-  check("the location anchor reads the tenant's own brokerage row, and a named location only under the tenant predicate", /from\("brokerages"\)\.select\("phone, city, state, zip"\)\.eq\("id", brokerageId\)/.test(core) && /from\("locations"\)\.select\("city, state"\)\.eq\("id", opts\.locationId\)\.eq\("brokerage_id", brokerageId\)/.test(core))
+  check("the location anchor reads the tenant's own brokerage row, and a named location only under the tenant predicate", /from\("brokerages"\)\.select\("phone, (address, )?city, state, zip"\)\.eq\("id", brokerageId\)/.test(core) && /from\("locations"\)\.select\("(address, )?city, state"\)\.eq\("id", opts\.locationId\)\.eq\("brokerage_id", brokerageId\)/.test(core))
+  // (Wave 83D re-anchor: the anchor now also reads the street address — the geocoder's input.)
   const prov = bodyOf(core, "export async function provisionNumber(")
   check("provisionNumber with no number and no area code buys the first LOCAL number near the tenant (never toll-free, never any-US)", /if \(!targetNumber && !params\.areaCode\)/.test(prov) && /suggestLocalNumbers\(svc, params\.brokerageId, \{ limit: 1 \}\)/.test(prov) && !/includeTollFree: true/.test(prov))
   check("the purchase pipeline still gates the plan allowance first and kicks carrier registration after purchase", prov.indexOf("evaluateTenantNumberProvisioning") > -1 && prov.indexOf("evaluateTenantNumberProvisioning") < prov.indexOf("purchaseIncomingPhoneNumber(") && prov.indexOf("kickCarrierRegistration(") > prov.indexOf("purchaseIncomingPhoneNumber("))
@@ -136,7 +142,7 @@ async function main() {
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
-  console.log(" blind spots: no live Twilio search (sandbox) — the adapter's param names are asserted by source against the SDK's LocalList options; the location anchor has no lat/long column today (brokerages/locations carry city/state/zip), so NearLatLong runs only when a caller supplies coordinates; area-code overlays (two NPAs on one city) are covered by the near/locality rungs, not by an NPA table; porting and BYO numbers are not searched here (manuallyAddAgentPhone unchanged).")
+  console.log(" blind spots: no live Twilio search (sandbox) — the adapter's param names are asserted by source against the SDK's LocalList options; brokerages/locations carry no lat/long column, so since wave 83D the office address is geocoded per search through lib/external/nominatim-geocode.ts (memoised in-process, never cached on the row) and NearLatLong + per-candidate distance run only when that geocode succeeds; area-code overlays (two NPAs on one city) are covered by the near/locality rungs, not by an NPA table; porting and BYO numbers are not searched here (ports: scripts/pick-or-port-guard.ts).")
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
   console.log(" ✅ LOCAL_NUMBER_SELECTION_PASS")
 }

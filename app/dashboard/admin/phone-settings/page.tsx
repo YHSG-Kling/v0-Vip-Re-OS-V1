@@ -4,6 +4,7 @@ import { getBrokeragePhoneSettings, getPhoneAllowanceStatusAction, getTenantPhon
 import { getVoiceUsageAction, getTwilioByoStatusAction } from "@/app/actions/voice-tenancy"
 import { TwilioByoCard } from "./twilio-byo-card"
 import { AgentPortInCard, type PortInAgentOption } from "./agent-port-in-card"
+import { PickOrPortCard } from "./pick-or-port-card"
 import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
 import { PhoneSettingsClient } from "./phone-settings-client"
 
@@ -139,6 +140,8 @@ export default async function PhoneSettingsPage() {
           initialAccountSid={byoRes?.ok ? byoRes.accountSid : null}
         />
       )}
+      {/* Wave 83D: pick a local number or port yours — registration follows automatically. */}
+      <PickOrPortCard agents={portInAgents} />
       <AgentPortInCard agents={portInAgents} />
       <PhoneSettingsClient initialSettings={settings} genericVoices={GENERIC_VOICES} allowanceStatus={allowanceStatus} />
     </div>

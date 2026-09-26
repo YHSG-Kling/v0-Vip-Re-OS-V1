@@ -121,32 +121,60 @@ type LocalNumberSuggestion =
   | { ok: true; candidates: LocalNumberCandidate[]; anchor: string; areaCode: string | null; tried: Array<{ rung: string; found: number; error?: string }>; credTier: TwilioCreds["tier"] }
   | { ok: false; error: string; notConfigured?: boolean }
 
+/** Wave 83D — the office's coordinates. brokerages / locations carry NO
+ *  lat/long column (scripts/schema-snapshot.ts), so there is nothing to cache
+ *  ON the row; the point is resolved through THE free geocoder survivor
+ *  (lib/external/nominatim-geocode.ts geocodeOne — Nominatim, keyless, 1 req/s)
+ *  and memoised per address for the life of the process. A miss or an
+ *  unreachable geocoder yields null and the ladder simply skips its
+ *  NearLatLong rung — a missing point is never invented. */
+type GeocodeFn = (parts: { address?: string | null; city?: string | null; state?: string | null; zip?: string | null }) => Promise<{ lat: number; lng: number } | null>
+const officePointMemo = new Map<string, { lat: number; lng: number } | null>()
+async function geocodeOffice(parts: { address?: string | null; city?: string | null; state?: string | null; zip?: string | null }, geocode?: GeocodeFn): Promise<{ latitude: number; longitude: number } | null> {
+  if (!parts.address && !parts.zip && !(parts.city && parts.state)) return null
+  const key = [parts.address, parts.city, parts.state, parts.zip].map((v) => String(v ?? "").trim().toLowerCase()).join("|")
+  let p = geocode ? undefined : officePointMemo.get(key)
+  if (p === undefined) {
+    try {
+      const fn: GeocodeFn = geocode ?? (await import("@/lib/external/nominatim-geocode")).geocodeOne
+      p = await fn(parts)
+    } catch { p = null }
+    // Only a FOUND point is memoised — a miss or an outage is retried next time.
+    if (!geocode && p) officePointMemo.set(key, p)
+  }
+  return p ? { latitude: p.lat, longitude: p.lng } : null
+}
+
 /** Read the tenant's location anchor: the named location (tenant-predicated)
- *  else the brokerage's own address + office phone. */
+ *  else the brokerage's own address + office phone, geocoded (wave 83D). */
 async function tenantLocationAnchor(
-  svc: any, brokerageId: string, opts: { locationId?: string | null; areaCode?: string | null } = {},
+  svc: any, brokerageId: string, opts: { locationId?: string | null; areaCode?: string | null; geocode?: GeocodeFn } = {},
 ): Promise<{ ok: true; anchor: TenantLocationAnchor } | { ok: false; error: string }> {
-  const { data: b, error: bErr } = await svc.from("brokerages").select("phone, city, state, zip").eq("id", brokerageId).maybeSingle()
+  const { data: b, error: bErr } = await svc.from("brokerages").select("phone, address, city, state, zip").eq("id", brokerageId).maybeSingle()
   if (bErr) return { ok: false, error: `brokerage location read refused: ${bErr.message}` }
   if (!b) return { ok: false, error: "Tenant not found" }
+  let address: string | null = (b as any).address ?? null
   let city: string | null = (b as any).city ?? null
   let state: string | null = (b as any).state ?? null
   let zip: string | null = (b as any).zip ?? null
   if (opts.locationId) {
-    const { data: loc, error: lErr } = await svc.from("locations").select("city, state").eq("id", opts.locationId).eq("brokerage_id", brokerageId).maybeSingle()
+    const { data: loc, error: lErr } = await svc.from("locations").select("address, city, state").eq("id", opts.locationId).eq("brokerage_id", brokerageId).maybeSingle()
     if (lErr) return { ok: false, error: `location read refused: ${lErr.message}` }
     if (!loc) return { ok: false, error: "Location not found for this tenant" }
+    const otherCity = !!(loc as any).city && (loc as any).city !== (b as any).city
+    if (otherCity) zip = null // the brokerage ZIP is not this location's
+    address = (loc as any).address ?? (otherCity ? null : address)
     city = (loc as any).city ?? city; state = (loc as any).state ?? state
-    if ((loc as any).city && (loc as any).city !== (b as any).city) zip = null // the brokerage ZIP is not this location's
   }
-  return { ok: true, anchor: { areaCode: opts.areaCode ?? null, phone: (b as any).phone ?? null, city, state, zip } }
+  const point = await geocodeOffice({ address, city, state, zip }, opts.geocode)
+  return { ok: true, anchor: { areaCode: opts.areaCode ?? null, phone: (b as any).phone ?? null, city, state, zip, latitude: point?.latitude ?? null, longitude: point?.longitude ?? null } }
 }
 
 /** Suggest purchasable LOCAL numbers nearest the tenant — area code first,
  *  nearby fallback, toll-free only when asked (the secondary option). */
 export async function suggestLocalNumbers(
   svc: any, brokerageId: string,
-  opts: { locationId?: string | null; areaCode?: string | null; includeTollFree?: boolean; limit?: number } = {},
+  opts: { locationId?: string | null; areaCode?: string | null; includeTollFree?: boolean; limit?: number; geocode?: GeocodeFn } = {},
 ): Promise<LocalNumberSuggestion> {
   const { planLocalNumberSearch, runLocalNumberSearch } = await import("@/lib/voice/local-number-search")
   const loc = await tenantLocationAnchor(svc, brokerageId, opts)
@@ -310,6 +338,123 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
   }
 
   return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote, billing, monthlyOverageCents, registration }
+}
+
+// ─── Attach a number the tenant already OWNS (BYO / ported) ──────────────────
+// Wave 83D: the post-gate body of app/actions/phone-provisioning.ts
+// manuallyAddAgentPhone, moved here VERBATIM IN BEHAVIOUR so the port-in cron
+// (lib/voice/number-port-in.ts — a completed port lands with no session) runs
+// the SAME guards the human door runs, never a second copy of them:
+//   GUARD 1 — global active-number collision (fails CLOSED on a refused read;
+//             never discloses which other tenant holds it);
+//   GUARD 2 — ownership proof: the number must sit in the Twilio account this
+//             tenant's creds resolve to (SDK IncomingPhoneNumbers lookup; the
+//             SID is taken from Twilio's answer, never from a caller);
+//   then row → webhook bind → phone_number_events → kickCarrierRegistration.
+// The caller owns identity (session gate or the cron's own tenant loop).
+
+export type AttachOwnedNumberResult =
+  | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; bound: boolean; bindNote?: string; registration?: CarrierKickoffResult; registrationNote?: string }
+  | { ok: false; error: string }
+
+export async function attachOwnedNumber(
+  svc: any,
+  params: {
+    brokerageId: string
+    phoneNumber: string
+    /** 'agent' needs agentUserId (+ agentId for the audit FK); else brokerage inventory. */
+    scopeType: "agent" | "brokerage"
+    agentUserId?: string | null
+    agentId?: string | null
+    source: "manually_added" | "ported_in"
+    eventSource: string
+  },
+): Promise<AttachOwnedNumberResult> {
+  const digits = String(params.phoneNumber ?? "").replace(/\D/g, "")
+  if (digits.length < 10 || digits.length > 15) return { ok: false, error: "Enter a valid phone number" }
+  const cleaned = digits.length === 10 ? `+1${digits}` : `+${digits}`
+
+  // GUARD 1 — global collision (deliberately NOT tenant-scoped).
+  const { data: collision, error: collisionErr } = await svc
+    .from("tenant_phone_numbers")
+    .select("id, brokerage_id")
+    .eq("phone_digits", digits)
+    .eq("is_active", true)
+    .limit(1)
+  if (collisionErr) return { ok: false, error: "Could not verify the number is free — nothing was added" }
+  if (collision && collision.length > 0) {
+    const owner = (collision[0] as any).brokerage_id
+    return { ok: false, error: owner === params.brokerageId ? "That number is already active on your account" : "That number is already in use on this platform" }
+  }
+
+  // GUARD 2 — ownership proof against the tenant's resolved Twilio account.
+  const creds = await resolveTenantTwilioCreds(svc, params.brokerageId)
+  if (!creds) return { ok: false, error: "Telephony isn't connected yet, so number ownership can't be verified — nothing was added." }
+  const { findIncomingPhoneNumber } = await import("@/lib/providers/twilio/client")
+  const own = await findIncomingPhoneNumber(creds, cleaned)
+  if (!own.ok) return { ok: false, error: `Could not verify the number with the carrier (${own.status ?? "—"}) — nothing was added.` }
+  if (!own.data) return { ok: false, error: "That number isn't in your telephony account. Numbers must be owned by your brokerage before they can be added." }
+  const verifiedSid = own.data.sid
+
+  if (params.scopeType === "agent") {
+    if (!params.agentUserId) return { ok: false, error: "Agent not found" }
+    // Deactivate any existing active number for this agent (read the refusal).
+    const { error: deErr } = await svc.from("tenant_phone_numbers").update({ is_active: false })
+      .eq("agent_user_id", params.agentUserId).eq("brokerage_id", params.brokerageId).eq("is_active", true)
+    if (deErr) return { ok: false, error: `Could not retire the agent's current number (${deErr.message}) — nothing was added` }
+  }
+
+  // number_source CHECK allows (byoc_twilio|ported) only.
+  const { data: inserted, error } = await svc
+    .from("tenant_phone_numbers")
+    .insert({
+      agent_user_id: params.scopeType === "agent" ? params.agentUserId : null,
+      brokerage_id: params.brokerageId,
+      scope_type: params.scopeType,
+      phone_number: cleaned,
+      phone_digits: digits,
+      twilio_number_sid: verifiedSid,
+      number_source: params.source === "ported_in" ? "ported" : "byoc_twilio",
+      is_active: true,
+    })
+    .select("id")
+    .single()
+  if (error) return { ok: false, error: error.message }
+
+  let bound = false
+  let bindNote: string | undefined
+  const numberRowId = (inserted as { id?: string } | null)?.id ?? null
+  if (numberRowId) {
+    const { bindNumberToTwilioLane } = await import("@/lib/voice/twilio-voice")
+    const bind = await bindNumberToTwilioLane(svc, numberRowId).catch((err: any) => ({ ok: false as const, error: String(err?.message ?? err) }))
+    bound = bind.ok
+    if (!bind.ok) bindNote = `Number saved, but pointing it at the AI lane failed: ${bind.error}`
+  } else {
+    bindNote = "Number saved, but the row id was not returned — bind it from its row later"
+  }
+
+  await logPhoneNumberEvent(svc, {
+    brokerageId: params.brokerageId,
+    agentId: params.agentId ?? null,
+    phoneNumber: cleaned,
+    eventType: params.source === "ported_in" ? "ported_in" : "manually_added",
+    source: params.eventSource,
+    twilioSid: verifiedSid,
+  })
+
+  // AUTOMATIC BUSINESS REGISTRATION after a port-in / BYO add (wave 81D) —
+  // best-effort, audited, honest about a missing business profile.
+  let registration: CarrierKickoffResult | undefined
+  let registrationNote: string | undefined
+  try {
+    const { kickCarrierRegistration } = await import("@/lib/voice/a2p-registration")
+    registration = await kickCarrierRegistration(svc, { brokerageId: params.brokerageId, phoneNumber: cleaned, trigger: params.source === "ported_in" ? "ported_in" : "manually_added" })
+    registrationNote = registration.statusLine
+  } catch (err) {
+    registrationNote = `Business registration could not start: ${(err as Error)?.message ?? "unknown"}`
+  }
+
+  return { ok: true, phoneNumber: cleaned, twilioSid: verifiedSid, numberRowId, bound, bindNote, registration, registrationNote }
 }
 
 // ─── Release (Twilio release → deactivate row → event) ───────────────────────

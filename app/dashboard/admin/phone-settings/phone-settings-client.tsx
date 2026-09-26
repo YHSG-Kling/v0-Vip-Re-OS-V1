@@ -42,7 +42,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
   const [areaCode, setAreaCode] = useState("")
   // Wave 82D — a candidate may carry WHY it was suggested (your area code /
   // nearby / toll-free secondary) and the carrier-registration lane it kicks.
-  const [candidates, setCandidates] = useState<Array<NumberCandidateView & { rungLabel?: string; tollFree?: boolean; registrationLane?: "10dlc" | "tollfree" }>>([])
+  const [candidates, setCandidates] = useState<Array<NumberCandidateView & { rungLabel?: string; tollFree?: boolean; registrationLane?: "10dlc" | "tollfree"; distanceMiles?: number | null }>>([])
   const [includeTollFree, setIncludeTollFree] = useState(false)
   const [searchAnchor, setSearchAnchor] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
@@ -260,8 +260,9 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
         </CardContent>
       </Card>
 
-      {/* Add a Number — search + purchase, gated by the plan allowance */}
-      <Card>
+      {/* Add a Number — search + purchase, gated by the plan allowance.
+          id="pick-a-number": the Pick-or-Port card's "Pick" path lands here (wave 83D). */}
+      <Card id="pick-a-number">
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Plus className="h-4 w-4 text-blue-600" />
@@ -341,6 +342,9 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
                         )}
                         {c.rungLabel && (
                           <Badge variant={c.tollFree ? "outline" : "secondary"} className="ml-2 text-[10px]">{c.rungLabel}</Badge>
+                        )}
+                        {typeof c.distanceMiles === "number" && (
+                          <span className="text-[10px] text-muted-foreground ml-2">{c.distanceMiles} mi from your office</span>
                         )}
                       </div>
                       <Button

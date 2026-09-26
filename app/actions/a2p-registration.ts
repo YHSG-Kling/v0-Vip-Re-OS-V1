@@ -11,7 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // ★ ACT-AS SEAM — TWO ENTRY POINTS, ONE GATE ★ resolveActingContext for the
 // status read, resolveWriteContext for the profile save and the carrier filing.
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
-import { validateA2pProfile, loadA2pState, runA2pRegistration, describeA2pState, nextA2pStep, type A2pState } from "@/lib/voice/a2p-registration"
+import { validateA2pProfile, loadA2pState, runA2pRegistration, describeA2pState, nextA2pStep, resolveA2pProfile, type A2pState } from "@/lib/voice/a2p-registration"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 // TOMBSTONE: local isBrokerRole (["admin","broker","broker_owner","broker_admin"])
@@ -49,6 +49,11 @@ export interface A2pStatusView {
   profileSaved: boolean
   profileMissing: string[]
   state: A2pState
+  /** Wave 83D — every field already known from the brokerage's own record
+   *  (typed values win), so the card pre-fills instead of asking again. */
+  prefill: Record<string, string>
+  /** Which prefilled fields came from the brokerage record, not the tenant. */
+  derivedKeys: string[]
 }
 
 export async function getA2pStatusAction(): Promise<{ ok: true; status: A2pStatusView } | { ok: false; error: string }> {
@@ -56,11 +61,11 @@ export async function getA2pStatusAction(): Promise<{ ok: true; status: A2pStatu
   const auth = await requireBrokerCtx("read")
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const [{ state }, { data: bs }] = await Promise.all([
+  // READ: derive without persisting (persist: false) — a read never writes.
+  const [{ state }, v] = await Promise.all([
     loadA2pState(svc, auth.brokerageId),
-    svc.from("brokerage_settings").select("settings").eq("brokerage_id", auth.brokerageId).maybeSingle(),
+    resolveA2pProfile(svc, auth.brokerageId, { persist: false }),
   ])
-  const v = validateA2pProfile((bs as any)?.settings?.a2p_business_profile)
   return {
     ok: true,
     status: {
@@ -69,6 +74,8 @@ export async function getA2pStatusAction(): Promise<{ ok: true; status: A2pStatu
       profileSaved: v.ok,
       profileMissing: v.ok ? [] : v.missing,
       state,
+      prefill: v.draft ?? {},
+      derivedKeys: v.derivedKeys ?? [],
     },
   }
 }

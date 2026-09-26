@@ -381,7 +381,7 @@ function composeA2pStall(f: A2pStallFact, bucket: string): ProposedSentinelActio
     severity: f.failed ? "critical" : "warn",
     brokerageId: f.brokerageId,
     title: `A2P stalled: ${f.brokerageName} — ${f.reason}`,
-    detail: `A2P board stall detection (assessA2pStall over the persisted twilio_a2p state): ${f.reason}. Until brand and campaign clear carrier review this tenant's texting is filtered or blocked — and nothing advances on its own.`,
+    detail: `A2P board stall detection (assessA2pStall over the persisted twilio_a2p state): ${f.reason}. Until brand and campaign clear carrier review this tenant's texting is filtered or blocked. The hourly carrier-registration tick (lib/voice/carrier-registration-loop.ts) already re-runs the machine, so a stall that survives it is a profile or carrier problem, not a missed button.`,
     // No outreach draft — a stuck carrier registration is STAFF work (re-run
     // the runner, fix the profile, open a Twilio ticket), not tenant outreach.
     draftChannel: "none",

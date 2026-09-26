@@ -200,6 +200,26 @@ raise (`9384.052` → `9385.052`/day) is left to the integrator's
 `npx tsx scripts/cron-cost-census.ts` currently reports `CRON_COST_FAIL` on
 this exact +1.0/day delta until that run happens.
 
+### Raise justified — lane 83D (2026-09-26)
+
+**`/api/cron/carrier-registration-tick`** (`41 * * * *`, owner
+`compliance_officer`) was added: **+24.0/day, +730/mo** — the autonomous half
+of business registration (owner ruling wave 83: "the person picks a number or
+ports and auto business listing approval"). Before it, A2P 10DLC registration
+advanced only when a human pressed a button, so every tenant stalled at "brand
+under review". Hourly, not daily, because the same tick LANDS completed number
+ports: a ported number that has left the old carrier but is not yet bound to the
+AI lane rings nowhere until the next tick, so a daily cadence could strand a
+brokerage's main line for up to a day. Sub-hourly was rejected (Twilio reviews
+run hours to weeks). An approved, fully pooled tenant costs one DB read and
+zero Twilio calls per tick (`test:business-registration-loop`). Folding it into
+`platform-sentinel` (daily, `data_steward`) was considered and rejected: that
+job READS the fleet to propose staff actions; this one WRITES carrier filings and
+number rows, and the port-landing latency needs hourly. Baseline raise
+(`9385.052` → `9409.1`/day) is left to the integrator's `--write-baseline` run
+(lane rule) — `test:cron-cost` reports `CRON_COST_FAIL` on this exact +24.0/day
+until then.
+
 ### Considered and explicitly NOT consolidated
 
 - **Scraping crons** (`/api/cron/lead-scraping` and everything the frozen

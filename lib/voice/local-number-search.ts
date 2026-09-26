@@ -68,7 +68,7 @@ export interface LocalSearchStep {
 }
 
 export type LocalSearchPlan =
-  | { ok: true; areaCode: string | null; steps: LocalSearchStep[]; anchor: string }
+  | { ok: true; areaCode: string | null; steps: LocalSearchStep[]; anchor: string; origin: { latitude: number; longitude: number } | null }
   | { ok: false; reason: string }
 
 /** PURE: the NPA of a NANP number, or null (toll-free / N11 / malformed). */
@@ -128,7 +128,7 @@ export function planLocalNumberSearch(anchor: TenantLocationAnchor, opts: { incl
   }
   if (opts.includeTollFree) steps.push({ rung: "toll_free", params: {} })
   const anchorLine = [areaCode ? `area code ${areaCode}` : null, city, region, zip.length === 5 ? zip : null].filter(Boolean).join(" · ")
-  return { ok: true, areaCode, steps, anchor: anchorLine }
+  return { ok: true, areaCode, steps, anchor: anchorLine, origin: hasLatLong ? { latitude: anchor.latitude as number, longitude: anchor.longitude as number } : null }
 }
 
 export interface RawCandidate {
@@ -139,6 +139,24 @@ export interface RawCandidate {
   rateCenter?: string | null
   smsCapable?: boolean | null
   voiceCapable?: boolean | null
+  /** Wave 83D — Twilio returns the rate center's coordinates on each candidate. */
+  latitude?: number | null
+  longitude?: number | null
+}
+
+/** PURE (wave 83D): great-circle miles between two points (haversine, R = 3958.8 mi).
+ *  null when either point is missing or non-finite — never a made-up distance. */
+export function distanceMiles(
+  a: { latitude?: number | null; longitude?: number | null } | null | undefined,
+  b: { latitude?: number | null; longitude?: number | null } | null | undefined,
+): number | null {
+  const ok = (p: any) => p && typeof p.latitude === "number" && typeof p.longitude === "number" && Number.isFinite(p.latitude) && Number.isFinite(p.longitude)
+  if (!ok(a) || !ok(b)) return null
+  const rad = (d: number) => (d * Math.PI) / 180
+  const dLat = rad(b!.latitude! - a!.latitude!)
+  const dLon = rad(b!.longitude! - a!.longitude!)
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a!.latitude!)) * Math.cos(rad(b!.latitude!)) * Math.sin(dLon / 2) ** 2
+  return Math.round(2 * 3958.8 * Math.asin(Math.min(1, Math.sqrt(h))) * 10) / 10
 }
 
 export interface LocalNumberCandidate extends RawCandidate {
@@ -149,6 +167,9 @@ export interface LocalNumberCandidate extends RawCandidate {
   tollFree: boolean
   /** The carrier registration lane the purchase will kick (kickCarrierRegistration). */
   registrationLane: "10dlc" | "tollfree"
+  /** Wave 83D — miles from the geocoded office to the number's rate center;
+   *  null when either side has no coordinates (never guessed). */
+  distanceMiles: number | null
 }
 
 export type LocalSearchResult =
@@ -177,7 +198,12 @@ export async function runLocalNumberSearch(
     const r = await search(step, limit - out.length)
     if (!r.ok) { tried.push({ rung: step.rung, found: 0, error: r.error }); continue }
     let found = 0
-    for (const row of r.rows) {
+    // Wave 83D — within a rung, nearest first when the office is geocoded
+    // (rung order still wins: "your area code" before "nearby").
+    const rows = plan.origin
+      ? [...r.rows].sort((x, y) => (distanceMiles(plan.origin, x) ?? Infinity) - (distanceMiles(plan.origin, y) ?? Infinity))
+      : r.rows
+    for (const row of rows) {
       if (!row?.phoneNumber || seen.has(row.phoneNumber)) continue
       const tollFree = isTollFreeNumber(row.phoneNumber)
       // A local rung never hands back a toll-free number as "local".
@@ -188,6 +214,7 @@ export async function runLocalNumberSearch(
         ...row, rung: step.rung, rungLabel: LOCAL_SEARCH_RUNG_LABELS[step.rung],
         inAreaCode: !!plan.areaCode && areaCodeFromPhone(row.phoneNumber) === plan.areaCode,
         tollFree, registrationLane: tollFree ? "tollfree" : "10dlc",
+        distanceMiles: distanceMiles(plan.origin, row),
       })
       if (out.length >= limit) break
     }

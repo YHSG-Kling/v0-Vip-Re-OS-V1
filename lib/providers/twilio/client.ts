@@ -10,7 +10,10 @@
 //
 // SCOPE. This adapter wraps the CALLS + PHONE-NUMBER + SUBACCOUNT surface used
 // by lib/voice/twilio-tenancy.ts, twilio-voice.ts, twilio-outbound.ts,
-// number-provisioning.ts, warm-transfer.ts and call-recording.ts. Credential
+// number-provisioning.ts, warm-transfer.ts and call-recording.ts — and, since
+// wave 83D, number PORTING (lib/voice/number-port-in.ts: Portability, PortIn
+// create/fetch on numbers.v1; the utility-bill upload is the one documented
+// non-SDK call below) and the ownership proof (findIncomingPhoneNumber). Credential
 // resolution (BYO → subaccount → master) stays the ONE resolver in
 // lib/voice/twilio-tenancy.ts — this file only executes calls with whatever
 // creds it is handed.
@@ -235,6 +238,162 @@ export async function releaseIncomingPhoneNumber(creds: TwilioCreds, numberSid: 
   try {
     await client(creds).incomingPhoneNumbers(numberSid).remove()
     return { ok: true, status: 204, data: true, error: null }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+/** `GET /IncomingPhoneNumbers.json?PhoneNumber=` — the OWNERSHIP PROOF (wave
+ *  83D: moved onto the SDK from a hand-built connector request in
+ *  app/actions/phone-provisioning.ts verifyNumberOwnedByTenant). A number is
+ *  the tenant's only if it sits in the account the tenant's creds resolve to;
+ *  data null = not in that account. */
+export async function findIncomingPhoneNumber(creds: TwilioCreds, e164: string): Promise<AdapterResult<{ sid: string } | null>> {
+  try {
+    const rows = await client(creds).incomingPhoneNumbers.list({ phoneNumber: e164, limit: 1 })
+    const hit = rows[0]
+    return { ok: true, status: 200, data: hit?.sid ? { sid: hit.sid } : null, error: null }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+// ─── Number porting (wave 83D — "the person picks a number or ports") ────
+// Twilio Porting API (numbers.twilio.com/v1/Porting, SDK numbers.v1): US
+// landline + mobile only — the PortIn resource does NOT take toll-free numbers
+// (twilio.com/docs/phone-numbers/port-in/port-in-request-api, 2026-09-26).
+// Twilio generates the LOA from the request and e-mails it to the authorized
+// representative for signature; the request then walks In Review → Waiting for
+// Signature → In Progress → Completed (or Action Required / Canceled).
+
+export interface PortabilityData {
+  phoneNumber: string
+  portable: boolean
+  pinAndAccountNumberRequired: boolean
+  notPortableReason: string | null
+  numberType: string | null
+}
+
+/** `GET /v1/Porting/Portability/PhoneNumber/{n}` — can Twilio port this number
+ *  into the tenant's account, and does the losing carrier need PIN + account #? */
+export async function checkPortability(creds: TwilioCreds, e164: string): Promise<AdapterResult<PortabilityData>> {
+  try {
+    const p = await client(creds).numbers.v1.portingPortabilities(e164).fetch({ targetAccountSid: creds.accountSid })
+    return {
+      ok: true, status: 200, error: null,
+      data: { phoneNumber: p.phoneNumber, portable: p.portable === true, pinAndAccountNumberRequired: p.pinAndAccountNumberRequired === true, notPortableReason: p.notPortableReason ?? null, numberType: (p.numberType as string | undefined) ?? null },
+    }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+export interface PortInCreateInput {
+  /** The account the numbers land in (the tenant's subaccount). */
+  accountSid: string
+  documentSids: string[]
+  phoneNumbers: Array<{ phoneNumber: string; pin?: string }>
+  losingCarrier: {
+    customerName: string
+    customerType: "Business" | "Individual"
+    accountNumber?: string
+    accountTelephoneNumber?: string
+    authorizedRepresentative: string
+    authorizedRepresentativeEmail: string
+    address: { street: string; street2?: string; city: string; state: string; zip: string }
+  }
+  notificationEmails?: string[]
+  /** ISO local date, ≥ 7 days out for US ports (Twilio). */
+  targetPortInDate?: string
+}
+
+export interface PortInRequestData {
+  sid: string
+  status: string
+  signatureRequestUrl: string | null
+  targetPortInDate: string | null
+  numbers: Array<{ phoneNumber: string; status: string | null; portable: boolean | null; rejectionReason: string | null; portDate: string | null }>
+}
+
+function toPortInData(r: { portInRequestSid: string; portInRequestStatus?: string; signatureRequestUrl?: string; targetPortInDate?: Date | string | null; phoneNumbers?: Array<any> }): PortInRequestData {
+  const d = r.targetPortInDate
+  return {
+    sid: r.portInRequestSid,
+    status: r.portInRequestStatus ?? "",
+    signatureRequestUrl: r.signatureRequestUrl ?? null,
+    targetPortInDate: d ? (d instanceof Date ? d.toISOString().slice(0, 10) : String(d)) : null,
+    numbers: (r.phoneNumbers ?? []).map((n: any) => ({
+      phoneNumber: n.phoneNumber ?? n.phone_number ?? "",
+      status: n.portInPhoneNumberStatus ?? n.port_in_phone_number_status ?? null,
+      portable: typeof n.portable === "boolean" ? n.portable : null,
+      rejectionReason: n.rejectionReason ?? n.rejection_reason ?? n.notPortabilityReason ?? n.not_portability_reason ?? null,
+      portDate: n.portDate ? String(n.portDate instanceof Date ? n.portDate.toISOString() : n.portDate) : (n.port_date ?? null),
+    })),
+  }
+}
+
+/** `POST /v1/Porting/PortIn` — submit the port-in request (Twilio e-mails the LOA). */
+export async function createPortInRequest(creds: TwilioCreds, input: PortInCreateInput): Promise<AdapterResult<PortInRequestData>> {
+  try {
+    const lc = input.losingCarrier
+    const r = await client(creds).numbers.v1.portingPortIns.create({
+      accountSid: input.accountSid,
+      documents: input.documentSids,
+      phoneNumbers: input.phoneNumbers.map((n) => ({ phoneNumber: n.phoneNumber, ...(n.pin ? { pin: n.pin } : {}) })),
+      losingCarrierInformation: {
+        customerName: lc.customerName,
+        customerType: lc.customerType,
+        ...(lc.accountNumber ? { accountNumber: lc.accountNumber } : {}),
+        ...(lc.accountTelephoneNumber ? { accountTelephoneNumber: lc.accountTelephoneNumber } : {}),
+        authorizedRepresentative: lc.authorizedRepresentative,
+        authorizedRepresentativeEmail: lc.authorizedRepresentativeEmail,
+        address: { street: lc.address.street, ...(lc.address.street2 ? { street2: lc.address.street2 } : {}), city: lc.address.city, state: lc.address.state, zip: lc.address.zip, country: "US" },
+      },
+      ...(input.notificationEmails?.length ? { notificationEmails: input.notificationEmails } : {}),
+      ...(input.targetPortInDate ? { targetPortInDate: input.targetPortInDate } : {}),
+    } as any)
+    return { ok: true, status: 201, data: toPortInData(r as any), error: null }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+/** `GET /v1/Porting/PortIn/{sid}` — the cron poll, by the request's OWN sid. */
+export async function fetchPortInRequest(creds: TwilioCreds, portInRequestSid: string): Promise<AdapterResult<PortInRequestData>> {
+  try {
+    const r = await client(creds).numbers.v1.portingPortIns(portInRequestSid).fetch()
+    return { ok: true, status: 200, data: toPortInData(r as any), error: null }
+  } catch (err) {
+    return mapError(err)
+  }
+}
+
+/**
+ * `POST https://numbers-upload.twilio.com/v1/Documents` (document_type
+ * utility_bill) — the ONE non-SDK call in this adapter, on purpose: twilio-node
+ * 6.1.1 ships no Documents-upload resource (node_modules/twilio/lib/rest/
+ * numbers/v1 has portingPortIn / portingPortability but no documents), and the
+ * port-in request REQUIRES a utility-bill document SID (dated within 30 days).
+ * Multipart via the platform fetch; same basic auth the SDK uses.
+ */
+export async function uploadPortingUtilityBill(
+  creds: TwilioCreds,
+  file: { name: string; type: string; bytes: ArrayBuffer },
+  fetchImpl: typeof fetch = fetch,
+): Promise<AdapterResult<{ sid: string; status: string | null }>> {
+  try {
+    const form = new FormData()
+    form.append("document_type", "utility_bill")
+    form.append("friendly_name", file.name.slice(0, 120))
+    form.append("File", new Blob([file.bytes], { type: file.type || "application/pdf" }), file.name)
+    const res = await fetchImpl("https://numbers-upload.twilio.com/v1/Documents", {
+      method: "POST",
+      headers: { Authorization: `Basic ${Buffer.from(`${creds.accountSid}:${creds.authToken}`).toString("base64")}` },
+      body: form,
+    })
+    const body: any = await res.json().catch(() => null)
+    if (!res.ok || !body?.sid) return { ok: false, status: res.status, data: null, error: body?.message ?? `utility bill upload refused (${res.status})` }
+    return { ok: true, status: res.status, data: { sid: body.sid, status: body.status ?? null }, error: null }
   } catch (err) {
     return mapError(err)
   }

@@ -208,6 +208,9 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/billing-dunning"                     , schedule: "0 14 * * *" },
   // Platform Sentinel — daily fleet watch → proposed staff actions with drafted outreach.
   { path: "/api/cron/platform-sentinel"                   , schedule: "12 12 * * *" }, // (staggered r43)
+  // Automatic business registration (wave 83D): poll number ports + land completed numbers, then walk each
+  // tenant's A2P 10DLC / toll-free registration through Twilio's async reviews (hours–weeks) — hourly is ample.
+  { path: "/api/cron/carrier-registration-tick"           , schedule: "41 * * * *" },
   { path: "/api/cron/webhook-deliveries"                  , schedule: "*/5 * * * *" }, // tenant outbound webhooks: enqueue from lifecycle_events + drain due deliveries (round 24)
   { path: "/api/cron/affiliate-commissions"               , schedule: "0 6 28 * *" }, // monthly MRR commission accrual, idempotent per (referral, period) (round 24)
   { path: "/api/cron/stripe-drift"                        , schedule: "0 9 * * 1" }, // weekly plan-catalog vs Stripe price drift watch — notifies superadmins, never auto-fixes (round 33)

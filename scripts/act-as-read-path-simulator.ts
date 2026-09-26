@@ -450,6 +450,8 @@ async function main() {
         exports.runA2pRegistration = async () => ({ ok: true })
         exports.describeA2pState = () => ""
         exports.nextA2pStep = () => ""
+        // wave 83D: the status read derives the profile (persist: false — a read never writes)
+        exports.resolveA2pProfile = async () => ({ ok: false, missing: ["EIN (federal tax ID)"], draft: {}, derivedKeys: [] })
       ` } },
   ]
 

@@ -36,6 +36,7 @@ export function A2pRegistrationCard() {
   const [showForm, setShowForm] = useState(false)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [derivedKeys, setDerivedKeys] = useState<string[]>([])
 
   useEffect(() => {
     getA2pStatusAction().then((r) => {
@@ -43,6 +44,11 @@ export function A2pRegistrationCard() {
         setStatusLine(r.status.statusLine)
         setProfileSaved(r.status.profileSaved)
         setMissing(r.status.profileMissing)
+        // Wave 83D: pre-fill from the brokerage's own record — the tenant only
+        // types what no record holds (usually the EIN + privacy/terms URLs).
+        setForm(r.status.prefill ?? {})
+        setDerivedKeys(r.status.derivedKeys ?? [])
+        if (!r.status.profileSaved && (r.status.profileMissing?.length ?? 0) > 0) setShowForm(true)
       } else setStatusLine(r.error)
     })
   }, [])
@@ -71,8 +77,9 @@ export function A2pRegistrationCard() {
         </CardTitle>
         <CardDescription className="text-xs">
           US carriers require business texting to be registered — unregistered messages get filtered.
-          Enter your business profile once; we file the brand and campaign for you and resume through
-          the carrier reviews automatically.
+          We fill your business profile from your brokerage record and file the brand and campaign
+          the moment you pick or port a number; an hourly check walks it through the carrier reviews
+          and unlocks the phone test on approval. You only add what we can&apos;t know (usually the EIN).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
@@ -84,6 +91,8 @@ export function A2pRegistrationCard() {
           <div className="grid grid-cols-2 gap-2">
             {FIELDS.map((f) => (
               <Input key={f.key} placeholder={f.placeholder ?? f.label} aria-label={f.label}
+                title={derivedKeys.includes(f.key) ? "From your brokerage profile — edit if the legal record differs" : undefined}
+                className={derivedKeys.includes(f.key) ? "bg-muted/40" : undefined}
                 value={form[f.key] ?? ""} onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))} />
             ))}
             <div className="col-span-2 flex gap-2">
