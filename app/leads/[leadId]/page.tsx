@@ -1,16 +1,21 @@
 // app/leads/[leadId]/page.tsx
 // Minimal lead detail surface — shows identity + ISA state and the lead quick-actions panel.
 // `leads` are platform OR brokerage-scoped (NEVER agent-assigned in the canonical flow). The
-// QuickActions server actions enforce the matching auth gate so this page can render without
-// per-row authorization in the page itself.
+// QuickActions server actions enforce the matching auth gate; this page ALSO authorises the
+// ROW it is about to render, through lib/auth/lead-visibility.ts — since the team-tier ruling
+// admitted `team_lead`, "may you see leads" and "may you see THIS lead" are different
+// questions, and a detail page is exactly where the second one has to be asked.
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { resolveLeadVisibility, leadRowInScope } from "@/lib/auth/lead-visibility"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { LeadQuickActions } from "@/components/lead/LeadQuickActions"
 import { LeadReadinessPanel } from "@/components/lead/LeadReadinessPanel"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { getLeadIntelligenceSignals } from "@/lib/lead-pipeline/lead-intelligence-signals"
+import { buildPersonTimeline } from "@/lib/lead-intelligence/person-timeline"
 
 export const dynamic = "force-dynamic"
 
@@ -24,28 +29,92 @@ export default async function LeadDetailPage({ params }: PageProps) {
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const svc = createServiceClient()
   const { data: lead } = await svc.from("leads")
-    .select("id, brokerage_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, email_verified, mailing_address_verified, lead_stage, lifecycle_state, ai_isa_owner, is_active, created_at")
+    .select("id, brokerage_id, agent_id, contact_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, email_verified, mailing_address_verified, lead_stage, lifecycle_state, ai_isa_owner, is_active, created_at")
     .eq("id", leadId).maybeSingle()
   if (!lead) {
     return <div className="p-6 text-sm text-muted-foreground">Lead not found.</div>
   }
 
-  // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. Page-level gate
-  // (mirrors the canonical lead scoping rule used inside the server actions):
-  // platform admin / staff → always. Brokerage-LEVEL roles (broker/admin family)
-  // → only when brokerage_id matches. Agents, team leads, TCs and compliance
-  // officers do NOT reach lead rows — agents work CONTACTS only (post-promotion).
-  const { data: profile } = await svc.from("users")
+  // TOMBSTONE (lead-visibility consolidation): the inline `BROKERAGE_ROLES` set
+  // is DELETED. The survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility
+  // + leadRowInScope.
+  //
+  // This was the SIXTEENTH lead-visibility roster and it was not on the census
+  // that opened this lane — it was found by the guard that closes it
+  // (scripts/lead-visibility-roster-simulator.ts), which is the whole point of
+  // measuring instead of listing. It gated the LEAD DETAIL page, so it is the
+  // one place a single lead row is shown whole.
+  //
+  //   · team_lead ADMITTED (owner ruling) and ROW-SCOPED: because this page has
+  //     the lead row in hand, leadRowInScope answers exactly — a team lead sees
+  //     the detail of a lead their own team is working, and is redirected off
+  //     any other. The old comment here said team leads "do NOT reach lead rows";
+  //     that is superseded.
+  //   · 'broker_admin' REMOVED — not a storable user_type, so `BROKERAGE_ROLES.has(user_type)`
+  //     could never match it against a live row.
+  //
+  // A NULL brokerage_id on the lead still means PLATFORM-ONLY: leadRowInScope
+  // refuses it for every tenant scope, exactly as the previous equality check did.
+  const { data: profile, error: profileError } = await svc.from("users")
     .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
-  const isPlatform = profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)
-  const BROKERAGE_ROLES = new Set(["broker","broker_owner","broker_admin","admin"])
-  const isBrokerageMatch =
-    !!profile?.user_type && BROKERAGE_ROLES.has(profile.user_type)
-    && !!profile?.brokerage_id && profile.brokerage_id === lead.brokerage_id
-  const allowed = isPlatform || isBrokerageMatch
-  if (!allowed) redirect("/dashboard")
+  // supabase-js RESOLVES a refusal — "could not read the profile" is not
+  // "not authorised", but both must refuse rather than render the lead.
+  if (profileError) redirect("/dashboard")
+  const vis = await resolveLeadVisibility(svc, {
+    userId: user.id,
+    userType: profile?.user_type ?? null,
+    platformRole: profile?.platform_role ?? null,
+    brokerageId: profile?.brokerage_id ?? null,
+  })
+  if (!vis.allowed || !leadRowInScope(vis.scope, lead)) redirect("/dashboard")
+
+  // THE INBOUND TRANSCRIPT. lib/lead-intent/inbound-lead-intent.ts records every inbound
+  // message on lead_conversation_history before evaluating it, and until this read the table
+  // had no consumer — the write-only-table guard caught it, correctly. The transcript is the
+  // EVIDENCE behind the automatic decisions this page's other cards report: a lead converted
+  // because a reply was positive, or went quiet because a reply asked to be left alone. Read
+  // here rather than in a client component so it stays behind the gate above, and scoped by
+  // brokerage_id as well as lead_id so a platform-staff read cannot widen by a guessed id.
+  const { data: transcript, error: transcriptError } = await svc
+    .from("lead_conversation_history")
+    .select("id, channel, direction, message_content, metadata, occurred_at")
+    .eq("lead_id", lead.id)
+    .eq("brokerage_id", lead.brokerage_id)
+    .order("occurred_at", { ascending: false })
+    .limit(50)
+
+  // Provenance ledger + prior value-first outreach — see
+  // lib/lead-pipeline/lead-intelligence-signals.ts for the full story (both
+  // tables had a writer and no reader anywhere until this page). BROKERAGE
+  // LEAD-DESK ONLY: this page already gated on resolveLeadVisibility +
+  // leadRowInScope above, so nothing below this line ever renders for an
+  // agent — leads are never agent-facing (CLAUDE.md §5).
+  const intel = await getLeadIntelligenceSignals(svc, {
+    contactId: lead.contact_id ?? null,
+    brokerageId: lead.brokerage_id ?? null,
+  })
+
+  // THE PERSON TIMELINE — one ordered history from first touch (scrape / lead
+  // magnet / portal / open house) through ISA touches, assignment, conversion
+  // and post-conversion activity (owner ruling, wave 65). LEAD-DESK ONLY: this
+  // page already gated on resolveLeadVisibility + leadRowInScope above, so the
+  // full (un-redacted) timeline — including raw scrape provenance and
+  // behavioral signals — is safe to render here and nowhere agent-facing.
+  const timeline = await buildPersonTimeline({
+    leadId: lead.id,
+    contactId: lead.contact_id ?? null,
+    brokerageId: lead.brokerage_id ?? null,
+    client: svc,
+  })
 
   const fullName = [lead.first_name, lead.last_name].filter(Boolean).join(" ") || "(unnamed lead)"
   const addr = [lead.mailing_address, lead.mailing_city, lead.mailing_state, lead.mailing_zip].filter(Boolean).join(", ")
@@ -73,6 +142,119 @@ export default async function LeadDetailPage({ params }: PageProps) {
           <div className="flex gap-2"><span className="text-muted-foreground w-24">Address</span> <span>{addr || "—"}</span></div>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Conversation</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm space-y-3">
+          {transcriptError ? (
+            // A refused read is not an empty inbox. Saying "no messages" here would claim
+            // the lead never replied, which is the one thing this card must never get wrong.
+            <div className="text-destructive">
+              Could not load the conversation: {transcriptError.message}
+            </div>
+          ) : !transcript?.length ? (
+            <div className="text-muted-foreground">No inbound messages recorded yet.</div>
+          ) : (
+            transcript.map((m) => {
+              const meta = (m.metadata ?? {}) as Record<string, unknown>
+              const source = typeof meta.source === "string" ? meta.source : null
+              return (
+                <div key={m.id} className="border-l-2 pl-3 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                    <Badge variant="outline">{m.channel ?? "unknown channel"}</Badge>
+                    <Badge variant={m.direction === "inbound" ? "default" : "outline"}>
+                      {m.direction ?? "—"}
+                    </Badge>
+                    {source && <span>via {source}</span>}
+                    <span>{m.occurred_at ? new Date(m.occurred_at).toLocaleString() : "—"}</span>
+                  </div>
+                  <div className="whitespace-pre-wrap">{m.message_content ?? "—"}</div>
+                </div>
+              )
+            })
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Person Timeline</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            First touch through {timeline.convertedAt ? "conversion and after" : "today"} — every source in one
+            order.{timeline.acquisitionCost != null ? ` Acquisition cost: $${timeline.acquisitionCost.toFixed(2)}.` : ""}
+          </p>
+        </CardHeader>
+        <CardContent className="text-sm space-y-3">
+          {timeline.warnings.length > 0 && (
+            <div className="text-xs text-destructive">
+              Some sources could not be read: {timeline.warnings.join("; ")}
+            </div>
+          )}
+          {timeline.events.length === 0 ? (
+            <div className="text-muted-foreground">No timeline events recorded yet.</div>
+          ) : (
+            <ol className="space-y-2">
+              {timeline.events.map((e) => (
+                <li key={e.id} className="border-l-2 pl-3 space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                    <Badge variant="outline">{e.type.replace(/_/g, " ")}</Badge>
+                    <span>{e.occurredAt ? new Date(e.occurredAt).toLocaleString() : "date unrecorded"}</span>
+                  </div>
+                  <div>{e.summary}</div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </CardContent>
+      </Card>
+
+      {(lead.contact_id) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Intelligence &amp; Outreach</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm space-y-4">
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">Signals detected</div>
+              {intel.signalsError ? (
+                <div className="text-destructive">Could not load signals: {intel.signalsError}</div>
+              ) : !intel.signals.length ? (
+                <div className="text-muted-foreground">No provenance signals recorded yet.</div>
+              ) : (
+                intel.signals.map((s) => (
+                  <div key={s.id} className="border-l-2 pl-3 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                      <Badge variant="outline">{s.signal_type ?? "signal"}</Badge>
+                      {typeof s.signal_strength === "number" && <span>strength {s.signal_strength}</span>}
+                      <span>{s.detected_at ? new Date(s.detected_at).toLocaleString() : "—"}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">Value-first outreach already sent</div>
+              {intel.outreachError ? (
+                <div className="text-destructive">Could not load outreach history: {intel.outreachError}</div>
+              ) : !intel.outreach.length ? (
+                <div className="text-muted-foreground">No intelligent outreach sent yet.</div>
+              ) : (
+                intel.outreach.map((o) => (
+                  <div key={o.id} className="border-l-2 pl-3 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                      <Badge variant="outline">{o.outreach_type ?? "outreach"}</Badge>
+                      <Badge variant="outline">{o.channel ?? "—"}</Badge>
+                      <span>{o.created_at ? new Date(o.created_at).toLocaleString() : "—"}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <LeadReadinessPanel leadId={lead.id} />
 

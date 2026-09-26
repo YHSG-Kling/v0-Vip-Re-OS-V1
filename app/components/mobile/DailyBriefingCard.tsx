@@ -1,10 +1,14 @@
 "use client"
 
+import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AlertCircle, RefreshCw, User, CheckCircle2 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { getTimeOfDayGreeting } from "@/lib/format/strings"
+import { generateBriefing } from "@/app/actions/briefing-actions"
 
 interface PriorityContact {
   id: string
@@ -33,15 +37,16 @@ interface DailyBriefingCardProps {
     generated_at: string
   } | null
   lastBriefingDate?: string
+  /** optional by design: a caller-supplied override. When omitted, the card runs its OWN
+   *  refresh via generateBriefing() + router.refresh() below — needed because this card's
+   *  one caller (app/mobile/assistant/page.tsx) is a server component, and a server
+   *  component cannot pass a function prop across the RSC boundary to a client component. */
   onRefresh?: () => void
 }
 
-function getTimeOfDayGreeting(): string {
-  const hour = new Date().getHours()
-  if (hour < 12) return "Good morning"
-  if (hour < 17) return "Good afternoon"
-  return "Good evening"
-}
+// `getTimeOfDayGreeting` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical to lib/format/strings.ts `getTimeOfDayGreeting`
+// (imported above).
 
 function getBuyerStageBadgeColor(stage: string): string {
   switch (stage?.toLowerCase()) {
@@ -66,6 +71,23 @@ export function DailyBriefingCard({
   onRefresh,
 }: DailyBriefingCardProps) {
   const greeting = getTimeOfDayGreeting()
+  const router = useRouter()
+  const [isRefreshing, startRefresh] = useTransition()
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+
+  const handleRefresh =
+    onRefresh ??
+    (() => {
+      setRefreshError(null)
+      startRefresh(async () => {
+        const result = await generateBriefing(true)
+        if (result.error && !result.briefing) {
+          setRefreshError(result.error)
+          return
+        }
+        router.refresh()
+      })
+    })
 
   if (!briefing) {
     return (
@@ -78,12 +100,11 @@ export function DailyBriefingCard({
               Last briefing: {formatDistanceToNow(new Date(lastBriefingDate), { addSuffix: true })}
             </p>
           )}
-          {onRefresh && (
-            <Button variant="outline" size="lg" className="min-h-[44px]" onClick={onRefresh}>
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh Briefing
-            </Button>
-          )}
+          <Button variant="outline" size="lg" className="min-h-[44px]" onClick={handleRefresh} disabled={isRefreshing}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`} />
+            {isRefreshing ? "Refreshing…" : "Refresh Briefing"}
+          </Button>
+          {refreshError && <p className="text-sm text-destructive mt-2">{refreshError}</p>}
         </CardContent>
       </Card>
     )

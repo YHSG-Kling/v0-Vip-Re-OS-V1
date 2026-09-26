@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Users, Cpu, HardDrive, Video } from "lucide-react"
+import { formatTenantSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 
 interface UsageSectionProps {
   usage: {
@@ -11,7 +12,15 @@ interface UsageSectionProps {
     storage_bytes?: number
     video_minutes?: number
   } | null
-  maxAgents: number
+  /** Catalogue seat cap. `null` = UNLIMITED — the spelling the live
+   *  multi_location tier actually stores in subscription_tiers.max_agents.
+   *  This used to be a bare `number` fed by `max_agents || 1`, which turned
+   *  the unlimited plan into a ONE-seat cap and drew the bar pegged at 100%. */
+  maxAgents: number | null
+  /** Whether a catalogue tier row was actually read. `false` means NO PLAN —
+   *  which reaches `maxAgents` as the same `null` unlimited uses, and used to
+   *  print "Unlimited". An absent entitlement is not the largest one (§4). */
+  hasTier: boolean
   aiCallsLimit: number
   storageLimitGb: number
   videoMinutesLimit: number
@@ -32,6 +41,7 @@ function getProgressColor(percent: number): string {
 export function UsageSection({
   usage,
   maxAgents,
+  hasTier,
   aiCallsLimit,
   storageLimitGb,
   videoMinutesLimit,
@@ -41,7 +51,10 @@ export function UsageSection({
   const storageBytes = usage?.storage_bytes || 0
   const videoMinutes = usage?.video_minutes || 0
 
-  const agentPercent = maxAgents > 0 ? Math.min((activeAgents / maxAgents) * 100, 100) : 0
+  // null = unlimited ⇒ no percentage to draw. Folded through the ONE shared
+  // normalizer so display and the seat gate cannot disagree.
+  const seatCap = normalizeCatalogSeatLimit(maxAgents)
+  const agentPercent = seatCap !== null && seatCap > 0 ? Math.min((activeAgents / seatCap) * 100, 100) : 0
   const aiPercent = aiCallsLimit > 0 ? Math.min((aiCalls / aiCallsLimit) * 100, 100) : 0
   const storagePercent = storageLimitGb > 0 
     ? Math.min((storageBytes / (storageLimitGb * 1024 * 1024 * 1024)) * 100, 100) 
@@ -52,11 +65,11 @@ export function UsageSection({
 
   const usageItems = [
     {
-      label: "Active Agents",
+      label: "Seats in use",
       icon: Users,
       current: activeAgents,
-      max: maxAgents === -1 ? "Unlimited" : maxAgents,
-      percent: maxAgents === -1 ? 0 : agentPercent,
+      max: formatTenantSeatLimit(hasTier, maxAgents),
+      percent: seatCap === null ? 0 : agentPercent,
       unit: "",
     },
     {

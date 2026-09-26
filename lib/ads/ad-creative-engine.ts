@@ -75,7 +75,8 @@ export function fallbackCreative(ad: RankedCompetitorAd, brokerageName: string):
 }
 
 /** Pure: the prompt that turns a winning competitor ANGLE into NEW, compliant copy. */
-export function buildCreativePrompt(ad: RankedCompetitorAd, brokerageName: string): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function buildCreativePrompt(ad: RankedCompetitorAd, brokerageName: string): string {
   return [
     `You are a senior real-estate ad copywriter for the brokerage "${brokerageName}".`,
     `A competitor's ad has performed well (${ad.longevityDays} days live, engagement ${ad.engagementScore}/100). Use its ANGLE as inspiration only — DO NOT copy its wording.`,

@@ -103,7 +103,7 @@ const UNIT_DAYS: Record<string, number> = { day: 1, week: 7, month: 30, year: 36
 const SEASON_START_MONTH: Record<string, number> = { spring: 2, summer: 5, fall: 8, autumn: 8, winter: 11 }
 
 /** Stated-horizon floor/ceiling: never schedule same-instant or past a 2-year horizon. */
-export const HORIZON_MIN_DAYS = 1
+const HORIZON_MIN_DAYS = 1
 export const HORIZON_MAX_DAYS = 730
 
 const clampHorizon = (d: number) => Math.min(HORIZON_MAX_DAYS, Math.max(HORIZON_MIN_DAYS, Math.round(d)))

@@ -1,17 +1,9 @@
-import { getMyProfile } from "@/app/actions/user-profile"
-import { ProfileSettingsClient } from "./client"
+import { redirect } from "next/navigation"
 
-export const dynamic = "force-dynamic"
-
-export default async function ProfileSettingsPage() {
-  const result = await getMyProfile()
-  if (!result.success || !result.profile) {
-    return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">Profile Settings</h1>
-        <p className="text-red-600">{result.error ?? "Could not load profile"}</p>
-      </div>
-    )
-  }
-  return <ProfileSettingsClient initialProfile={result.profile} />
+// Profile consolidation: the one-field personal-website editor that lived here has
+// been folded into the canonical "My Profile" hub (/dashboard/profile), alongside
+// account info, email signature, video settings, and social accounts. Kept as a
+// redirect stub so old bookmarks / deep links don't 404.
+export default function ProfileSettingsRedirect() {
+  redirect("/dashboard/profile")
 }

@@ -12,6 +12,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ─── Learning content (delegates to learning_modules) ────────────────────────
 //
@@ -136,6 +137,8 @@ export async function getMarketplaceTemplates(filters?: {
   tags?:        string[]
   searchQuery?: string
   sortBy?:      "popular" | "recent" | "top_rated"
+  /** When true, return only templates the CURRENT user authored (any visibility). */
+  mineOnly?:    boolean
 }) {
   const supabase = await createClient()
 
@@ -143,7 +146,16 @@ export async function getMarketplaceTemplates(filters?: {
   let query = supabase
     .from("template_marketplace")
     .select("id, name:template_name, description:template_body, template_type, visibility, average_rating:rating, clone_count:usage_count, metadata, created_at, updated_at")
-    .in("visibility", ["global", "brokerage_only"])
+
+  if (filters?.mineOnly) {
+    // "My Templates" — the user's OWN authored templates, regardless of visibility
+    // (their private drafts should surface here even though the marketplace hides them).
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return []
+    query = query.eq("author_user_id", user.id)
+  } else {
+    query = query.in("visibility", ["global", "brokerage_only"])
+  }
 
   // NOTE: live template_marketplace has no `tags` column — tag filtering is a no-op.
   if (filters?.searchQuery) {
@@ -171,16 +183,33 @@ export async function cloneTemplate(templateId: string) {
     .single()
   if (fetchError || !template) return { error: "Template not found" }
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: "Not authenticated" }
+  // STAMPED. The marketplace it is cloned FROM is deliberately cross-brokerage, but
+  // the clone is not: it lands in `plan_tasks` as this tenant's own playbook.
+  //
+  // All four live `plan_tasks` policies read
+  // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`, granted to
+  // `authenticated`. A NULL brokerage_id SATISFIES that predicate for EVERY tenant —
+  // so an unstamped clone is not private, it is published to every signed-in user of
+  // every other brokerage, who can also edit and delete it. Hence the stamp.
+  //
+  // The tenant comes from the SESSION, not from `templateId`: that argument is
+  // caller-supplied into a `"use server"` export, so deriving the tenant from it would
+  // let the caller pick which brokerage to write into.
+  const { brokerageId, isAuthenticated } = await getAgentContext()
+  if (!isAuthenticated) return { error: "Not authenticated" }
+  // Refuse rather than fall back to NULL. Writing the row untenanted would hand the
+  // clone to the whole platform, which is worse than not cloning it.
+  if (!brokerageId) return { error: "Your account is not attached to a brokerage" }
 
   // plan_tasks (live, merged playbook table): task_description is NOT NULL; playbook
   // fields are playbook_name/trigger_type/steps/target_persona_ids/active. Clone source
-  // data lives in template.metadata. No agent_id column on plan_tasks.
+  // data lives in template.metadata. No agent_id column on plan_tasks (re-verified
+  // against the live schema) — brokerage_id is the whole tenant key here.
   const meta = (template.metadata as any) || {}
   const { data: clonedPlaybook, error: cloneError } = await supabase
     .from("plan_tasks")
     .insert({
+      brokerage_id:       brokerageId,
       task_description:   `${template.name} (Copy)`,
       playbook_name:      `${template.name} (Copy)`,
       trigger_type:       meta.trigger_type || "manual",
@@ -224,8 +253,21 @@ export async function addTemplateFeedback(data: {
   return { success: true }
 }
 
+/**
+ * Feedback on a marketplace template.
+ *
+ * GATED (was not). Lower stakes than this slice's other findings — the academy
+ * marketplace is deliberately cross-brokerage, so there is no tenant predicate to
+ * add and none is claimed here. But the rows carry free-text comments written by
+ * named users, and `"use server"` made reading them an anonymous HTTP endpoint.
+ * Requiring a session matches its write-side sibling `addTemplateFeedback`
+ * directly above, which has always required one.
+ */
 export async function getTemplateFeedback(templateId: string) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
   // template_feedback.user_id FKs auth.users (not public.users) — no embeddable
   // public.users relationship, so select the row only.
   const { data, error } = await supabase

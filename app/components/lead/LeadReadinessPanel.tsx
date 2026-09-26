@@ -86,6 +86,9 @@ export function LeadReadinessPanel({ leadId }: { leadId: string }) {
                   ))}
                 </div>
               )}
+              {handoff && (
+                <p className="text-xs text-muted-foreground border-t pt-2 mt-2">{handoff}</p>
+              )}
             </>
           )}
         </CardContent>

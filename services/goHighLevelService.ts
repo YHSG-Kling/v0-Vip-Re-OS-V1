@@ -1,10 +1,31 @@
 
 
 // =====================================================
-// GO HIGH LEVEL (GHL) INTEGRATION SERVICE
+// GO HIGH LEVEL (GHL) INTEGRATION SERVICE — the ONE GHL egress module.
 // =====================================================
 // All communications route through GHL to maintain contact history
 // Includes: SMS, Email, Calls, Social Media, Calendar
+//
+// TOMBSTONE (orphan doctrine §1.3, 2026-08-27) — lib/ghl-integration.ts
+// (class GHLIntegration + singleton ghlIntegration) is DELETED; THIS file is
+// the survivor. Its last importer was the duplicate webhook route
+// app/api/webhooks/ghl/route.ts, deleted the same day (survivor:
+// app/api/webhooks/gohighlevel/route.ts), which left the whole module a
+// second public door onto endpoints this service already owns. Where each of
+// its jobs lives now:
+//   · syncContactToGHL (class copy)      → syncContactToGHL below — the copy
+//     lib/crm/sync.ts and app/actions/communications.ts always called;
+//   · syncContactFromGHL (inbound REFUSAL stub) → the ruling "GHL is sync-out
+//     only" is enforced where inbound arrives: the gohighlevel webhook's
+//     verified no-op ack, with sanctioned inbound import living in
+//     lib/crm/import-pull.ts;
+//   · logComplianceNote                  → addGHLContactNote below;
+//   · handleIncomingMessage (no-op ack)  → inline in the gohighlevel route;
+//   · syncMessageToGHL / sendComplianceApprovedEmail — CALLER-LESS copies of
+//     the `/conversations/messages` POST; outbound messages ride the
+//     approval-rail/outbound-sender lanes, and CRM egress goes through
+//     lib/crm/sync.ts:syncContactToCRM. Not ported: a second unwired door is
+//     the defect, not a capability.
 
 const GHL_BASE_URL = "https://services.leadconnectorhq.com"
 const GHL_API_VERSION = "2021-07-28"
@@ -28,10 +49,24 @@ function getGHLConfig(): GHLConfig | null {
   return { apiKey, locationId }
 }
 
-async function ghlFetch(endpoint: string, options: RequestInit = {}) {
-  const config = getGHLConfig()
+async function ghlFetch(endpoint: string, options: RequestInit = {}, configOverride?: GHLConfig | null) {
+  // configOverride carries a TENANT's own GHL credential (resolved from the
+  // Connection Center / connection cascade). When absent we fall back to the
+  // platform env credential, preserving every existing caller's behavior.
+  const config = configOverride ?? getGHLConfig()
   if (!config) {
-    return { success: false, error: "Go High Level not configured", mock: true }
+    // THROW, do not return. This function's contract — stated two lines below —
+    // is "returns parsed data on success, throws on a non-2xx". Returning a
+    // {success:false} object here broke that contract for the seven callers that
+    // wrap the result as `{ success: true, contact: result.contact }`: they read
+    // the object as GHL data, found no such field, and reported SUCCESS with an
+    // undefined id. There was no `mock` flag on those returns, so nothing
+    // downstream could tell a fabricated success from a real one.
+    //
+    // Every caller already wraps this in try/catch and returns
+    // { success: false, error: error.message }, so throwing is what makes them
+    // all honest at once.
+    throw new Error("GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.")
   }
 
   // Route through the single connector-gateway (one way in/out). Behavior preserved:
@@ -74,8 +109,11 @@ export interface GHLContact {
   postalCode?: string
 }
 
-export async function syncContactToGHL(contact: GHLContact) {
-  const config = getGHLConfig()
+export async function syncContactToGHL(contact: GHLContact, credentialOverride?: GHLConfig | null) {
+  // credentialOverride carries a TENANT's own GHL apiKey + locationId (resolved
+  // from the unified connection cascade in lib/crm/sync.ts). Without it we fall
+  // back to the platform env credential so existing callers are unchanged.
+  const config = credentialOverride ?? getGHLConfig()
   if (!config) {
     return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
@@ -86,6 +124,8 @@ export async function syncContactToGHL(contact: GHLContact) {
     if (contact.email) {
       const searchResult = await ghlFetch(
         `/contacts/?locationId=${config.locationId}&email=${encodeURIComponent(contact.email)}`,
+        {},
+        config,
       )
       if (searchResult.contacts?.length > 0) {
         existingContact = searchResult.contacts[0]
@@ -100,7 +140,7 @@ export async function syncContactToGHL(contact: GHLContact) {
           ...contact,
           locationId: config.locationId,
         }),
-      })
+      }, config)
       return { success: true, contactId: existingContact.id, action: "updated", data: result }
     } else {
       // Create new contact
@@ -110,7 +150,7 @@ export async function syncContactToGHL(contact: GHLContact) {
           ...contact,
           locationId: config.locationId,
         }),
-      })
+      }, config)
       return { success: true, contactId: result.contact?.id, action: "created", data: result }
     }
   } catch (error: any) {
@@ -119,342 +159,97 @@ export async function syncContactToGHL(contact: GHLContact) {
   }
 }
 
-export async function getGHLContact(contactId: string) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}`)
-    return { success: true, contact: result.contact }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
-export async function searchGHLContacts(query: string) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", contacts: [] }
-  }
-
-  try {
-    const result = await ghlFetch(`/contacts/?locationId=${config.locationId}&query=${encodeURIComponent(query)}`)
-    return { success: true, contacts: result.contacts || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, contacts: [] }
-  }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `getGHLContact(contactId)` and `searchGHLContacts(query)` — DELETED.
+// SURVIVOR: lib/crm/import-pull.ts:142 `pullGoHighLevel` (dispatched through
+// `pullCrmPage`, lib/crm/import-pull.ts:159, called by
+// app/actions/lead-import/crm-pull-actions.ts and surfaced on the superadmin
+// tenant CRM-pull panel).
+//
+// These two WERE the "GHL read side is a backlog to finish" note recorded in
+// this guard's own header (scripts/orphan-export-guard.ts, the SCANNED_ROOTS
+// comment). That backlog HAS since been finished — but by import-pull.ts, not
+// here, and the note was never retired. `pullGoHighLevel` is the more complete
+// read on every axis that matters: it takes the TENANT's own apiKey +
+// locationId (resolved from platform_credentials) instead of reading only the
+// platform-wide `GHL_API_KEY`/`GHL_LOCATION_ID` env pair, it paginates with a
+// resumable cursor instead of returning one un-paged page, and its rows land
+// through the ONE gated import pipeline (processImportRows → field steward →
+// captureContact) rather than being handed to a caller raw.
+//
+// Nothing needed merging: neither deleted function did anything
+// `pullGoHighLevel` does not do better, and keeping an env-credentialed,
+// ungated second read path is how a tenant ends up reading the platform's GHL
+// book instead of its own.
 
 // =====================================================
 // SMS MESSAGING (via GHL)
 // =====================================================
 
-export interface GHLMessage {
-  contactId: string
-  message: string
-  type: "SMS" | "Email" | "Call" | "WhatsApp" | "GMB" | "FB" | "IG"
-}
-
-export async function sendGHLSMS(params: {
-  contactId: string
-  message: string
-  phone?: string
-  attachments?: string[]
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    // Fallback to mock for development
-    console.log("[GHL Service] Mock SMS sent to contact:", params.contactId)
-    return {
-      success: true,
-      mock: true,
-      messageId: `mock_sms_${Date.now()}`,
-      message: "SMS sent (mock mode - configure GHL for real delivery)",
-    }
-  }
-
-  try {
-    const result = await ghlFetch("/conversations/messages", {
-      method: "POST",
-      body: JSON.stringify({
-        type: "SMS",
-        contactId: params.contactId,
-        message: params.message,
-        attachments: params.attachments || [],
-      }),
-    })
-
-    return {
-      success: true,
-      messageId: result.messageId || result.id,
-      conversationId: result.conversationId,
-      status: result.status,
-    }
-  } catch (error: any) {
-    console.error("[GHL Service] SMS error:", error)
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): interface `GHLMessage` deleted. It was
+// the payload shape for `syncMessageToGHL` / `sendComplianceApprovedEmail`,
+// both deleted in an earlier wave (see the header tombstone) under the standing
+// ruling that GHL is SYNC-OUT ONLY for contact data — not a message transport.
+// A payload type whose senders were removed by ruling is the orphaned half of a
+// capability this product does not have. Outbound messages ride the one sender,
+// lib/providers/outbound-sender.ts (guard: test:outbound-sender).
 
 // =====================================================
 // EMAIL (via GHL)
 // =====================================================
 
-export async function sendGHLEmail(params: {
-  contactId: string
-  subject: string
-  html: string
-  text?: string
-  from?: string
-  replyTo?: string
-  attachments?: Array<{ url: string; filename: string }>
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    console.log("[GHL Service] Mock email sent to contact:", params.contactId)
-    return {
-      success: true,
-      mock: true,
-      messageId: `mock_email_${Date.now()}`,
-      message: "Email sent (mock mode - configure GHL for real delivery)",
-    }
-  }
-
-  try {
-    const result = await ghlFetch("/conversations/messages", {
-      method: "POST",
-      body: JSON.stringify({
-        type: "Email",
-        contactId: params.contactId,
-        subject: params.subject,
-        html: params.html,
-        text: params.text,
-        emailFrom: params.from,
-        emailReplyTo: params.replyTo,
-        attachments: params.attachments,
-      }),
-    })
-
-    return {
-      success: true,
-      messageId: result.messageId || result.id,
-      conversationId: result.conversationId,
-    }
-  } catch (error: any) {
-    console.error("[GHL Service] Email error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
 // =====================================================
 // CONVERSATIONS / MESSAGE HISTORY
 // =====================================================
 
-export async function getGHLConversations(params?: {
-  contactId?: string
-  limit?: number
-  startAfter?: string
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", conversations: [] }
-  }
+// ─── MERGED in the orphan burn-down (lane O) ────────────────────────────────
+//
+// `getGHLConversations(params)` and `getGHLMessages(conversationId, limit)` —
+// MERGED-THEN-DELETED as exports.
+// SURVIVOR: `getContactConversationHistory` immediately below (this file), the
+// one GHL conversation read with a live caller —
+// app/actions/communications.ts:236 `getContactHistory`.
+//
+// The survivor already did both jobs, inline and verbatim: the same
+// `/conversations/?locationId=…&contactId=…` fetch and the same
+// `/conversations/{id}/messages?limit=…` fetch, hand-written a second time.
+// Rather than delete two working fetchers and leave the duplicate copies
+// embedded in the survivor, the fetchers ARE now the survivor's body — kept as
+// module-private helpers, so the capability survives and stops being a second
+// public door onto the same endpoints.
+//
+// What was merged ONTO them from the survivor's inline copies: nothing was
+// lost, and their `{ success, error }` wrappers were dropped in favour of
+// throwing, because the survivor's own try/catch is what turns a GHL failure
+// into `{ success: false, error }` for its caller. A helper that swallowed the
+// error would have handed the caller an empty history that read as success.
 
-  try {
-    let url = `/conversations/?locationId=${config.locationId}`
-    if (params?.contactId) url += `&contactId=${params.contactId}`
-    if (params?.limit) url += `&limit=${params.limit}`
-    if (params?.startAfter) url += `&startAfter=${params.startAfter}`
-
-    const result = await ghlFetch(url)
-    return { success: true, conversations: result.conversations || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, conversations: [] }
-  }
-}
-
-export async function getGHLMessages(conversationId: string, limit = 50) {
-  try {
-    const result = await ghlFetch(`/conversations/${conversationId}/messages?limit=${limit}`)
-    return { success: true, messages: result.messages || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, messages: [] }
-  }
-}
-
-export async function getContactConversationHistory(contactId: string) {
-  const config = getGHLConfig()
-  if (!config) {
-    return {
-      success: false,
-      error: "GHL not configured",
-      history: [],
-      mock: true,
-    }
-  }
-
-  try {
-    // Get all conversations for this contact
-    const convResult = await ghlFetch(`/conversations/?locationId=${config.locationId}&contactId=${contactId}`)
-    const conversations = convResult.conversations || []
-
-    // Get messages from each conversation
-    const history: any[] = []
-    for (const conv of conversations.slice(0, 5)) {
-      // Limit to last 5 conversations
-      const msgResult = await ghlFetch(`/conversations/${conv.id}/messages?limit=20`)
-      history.push({
-        conversationId: conv.id,
-        type: conv.type,
-        lastMessageDate: conv.lastMessageDate,
-        messages: msgResult.messages || [],
-      })
-    }
-
-    return { success: true, history }
-  } catch (error: any) {
-    return { success: false, error: error.message, history: [] }
-  }
-}
+// TOMBSTONE (§1, lane E2 2026-08-28) — `getContactConversationHistory` and its
+// module-private fetchers (`fetchGHLConversations`, `fetchGHLMessages`)
+// deleted. The lane-O merge above kept this chain alive for exactly one
+// caller, app/actions/communications.ts:getContactHistory — which a
+// stripped-source census then found to have zero callers of its own outside
+// the importer-less the actions barrel (app/actions/index, deleted this wave) barrel, so the whole chain was
+// unreachable. Contact message history is served locally — SURVIVORS:
+// app/actions/contact-details.ts:getContactActivity and
+// app/actions/communications.ts:getRecentCommunications. GHL remains a
+// one-way contact-data sync target (syncContactToGHL below); it is not a
+// message-history source in this product.
 
 // =====================================================
 // SOCIAL MEDIA POSTING (via GHL Social Planner)
 // =====================================================
 
-export interface GHLSocialPost {
-  content: string
-  platforms: Array<"facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "google">
-  mediaUrls?: string[]
-  scheduledTime?: string // ISO date string
-  locationId?: string
-}
-
-export async function createGHLSocialPost(params: GHLSocialPost) {
-  const config = getGHLConfig()
-  if (!config) {
-    console.log("[GHL Service] Mock social post created:", params.platforms)
-    return {
-      success: true,
-      mock: true,
-      postId: `mock_social_${Date.now()}`,
-      message: "Social post created (mock mode - configure GHL for real posting)",
-    }
-  }
-
-  try {
-    const result = await ghlFetch("/social-media-posting/post", {
-      method: "POST",
-      body: JSON.stringify({
-        locationId: params.locationId || config.locationId,
-        content: params.content,
-        platforms: params.platforms,
-        mediaUrls: params.mediaUrls || [],
-        scheduledTime: params.scheduledTime,
-        status: params.scheduledTime ? "scheduled" : "published",
-      }),
-    })
-
-    return {
-      success: true,
-      postId: result.id,
-      status: result.status,
-      scheduledTime: result.scheduledTime,
-    }
-  } catch (error: any) {
-    console.error("[GHL Service] Social post error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-export async function getGHLSocialPosts(params?: {
-  status?: "scheduled" | "published" | "failed"
-  platform?: string
-  limit?: number
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", posts: [] }
-  }
-
-  try {
-    let url = `/social-media-posting/posts?locationId=${config.locationId}`
-    if (params?.status) url += `&status=${params.status}`
-    if (params?.platform) url += `&platform=${params.platform}`
-    if (params?.limit) url += `&limit=${params.limit}`
-
-    const result = await ghlFetch(url)
-    return { success: true, posts: result.posts || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, posts: [] }
-  }
-}
-
-export async function deleteGHLSocialPost(postId: string) {
-  try {
-    await ghlFetch(`/social-media-posting/post/${postId}`, { method: "DELETE" })
-    return { success: true }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): interface `GHLSocialPost` deleted. The
+// GHL Social Planner poster it described was never built, and social publishing
+// lives elsewhere by design: lib/social/publisher.ts (PublishParams →
+// publishToSocialPlatform, all platforms through the connector gateway). GHL's
+// live half here is contact sync-out, call logging and notes only.
 
 // =====================================================
 // CALENDAR & APPOINTMENTS
 // =====================================================
-
-export async function createGHLCalendarEvent(params: {
-  contactId: string
-  calendarId: string
-  title: string
-  startTime: string
-  endTime: string
-  meetingType?: "in_person" | "video" | "phone"
-  notes?: string
-  assignedUserId?: string
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return {
-      success: true,
-      mock: true,
-      eventId: `mock_event_${Date.now()}`,
-      message: "Calendar event created (mock mode)",
-    }
-  }
-
-  try {
-    const result = await ghlFetch("/calendars/events", {
-      method: "POST",
-      body: JSON.stringify({
-        locationId: config.locationId,
-        contactId: params.contactId,
-        calendarId: params.calendarId,
-        title: params.title,
-        startTime: params.startTime,
-        endTime: params.endTime,
-        appointmentType: params.meetingType || "in_person",
-        notes: params.notes,
-        assignedUserId: params.assignedUserId,
-      }),
-    })
-
-    return { success: true, eventId: result.id, event: result }
-  } catch (error: any) {
-    console.error("[GHL Service] Calendar event error:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-export async function getGHLCalendars() {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: false, error: "GHL not configured", calendars: [] }
-  }
-
-  try {
-    const result = await ghlFetch(`/calendars/?locationId=${config.locationId}`)
-    return { success: true, calendars: result.calendars || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, calendars: [] }
-  }
-}
 
 // =====================================================
 // CALL TRACKING
@@ -470,11 +265,7 @@ export async function logGHLCall(params: {
 }) {
   const config = getGHLConfig()
   if (!config) {
-    return {
-      success: true,
-      mock: true,
-      callId: `mock_call_${Date.now()}`,
-    }
+    return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
 
   try {
@@ -501,57 +292,29 @@ export async function logGHLCall(params: {
 // WORKFLOWS & AUTOMATIONS
 // =====================================================
 
-export async function triggerGHLWorkflow(params: {
-  contactId: string
-  workflowId: string
-  eventData?: Record<string, any>
-}) {
-  const config = getGHLConfig()
-  if (!config) {
-    return { success: true, mock: true, message: "Workflow triggered (mock)" }
-  }
-
-  try {
-    const result = await ghlFetch(`/contacts/${params.contactId}/workflow/${params.workflowId}`, {
-      method: "POST",
-      body: JSON.stringify({
-        eventData: params.eventData || {},
-      }),
-    })
-
-    return { success: true, data: result }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
 // =====================================================
 // TAGS MANAGEMENT
 // =====================================================
 
-export async function addGHLContactTags(contactId: string, tags: string[]) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}/tags`, {
-      method: "POST",
-      body: JSON.stringify({ tags }),
-    })
-    return { success: true, data: result }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
-export async function removeGHLContactTags(contactId: string, tags: string[]) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}/tags`, {
-      method: "DELETE",
-      body: JSON.stringify({ tags }),
-    })
-    return { success: true, data: result }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `addGHLContactTags(contactId, tags)` and
+// `removeGHLContactTags(contactId, tags)` — DELETED.
+// SURVIVOR: lib/crm/sync.ts:43 `syncContactToCRM`, which passes `tags` on every
+// push and reaches GHL through `syncContactToGHL` above — whose update branch
+// PUTs the whole contact (`{ ...contact, locationId }`), so the tag ARRAY is
+// authored wholesale on each sync. The OS derives that array from the contact
+// itself (app/actions/contacts.ts:231 — `[contact_type, status]`), so there is
+// no OS-side incremental "tag added" event for these two to have been wired to:
+// a tag change in the OS is a contact change, and a contact change already
+// re-authors the GHL tag set.
+//
+// Nothing needed merging. Deleting them also closes a bypass: both called
+// `ghlFetch` with no credential override, i.e. the platform-wide env key rather
+// than the tenant's own resolved credential, and skipped the egress gate
+// (`validateEgress` / CRM_CONTACT_EGRESS_CONTRACT) that lib/crm/sync.ts:51
+// applies to every outbound contact. lib/crm/sync.ts:7 states the rule they
+// broke: never call goHighLevelService directly from feature code.
 
 // =====================================================
 // NOTES
@@ -569,40 +332,41 @@ export async function addGHLContactNote(contactId: string, note: string) {
   }
 }
 
-export async function getGHLContactNotes(contactId: string) {
-  try {
-    const result = await ghlFetch(`/contacts/${contactId}/notes`)
-    return { success: true, notes: result.notes || [] }
-  } catch (error: any) {
-    return { success: false, error: error.message, notes: [] }
-  }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `getGHLContactNotes(contactId)` — DELETED.
+// SURVIVOR: the `contact_notes` table is the OS's store of record for notes —
+// app/actions/contacts.ts:374 is the canonical writer (its own header says so)
+// and app/crm/page.tsx:605 reads it for the contact timeline
+// (app/actions/crm.ts:221 reads it too).
+//
+// `addGHLContactNote` above stays because it MIRRORS an OS note outward
+// (app/actions/communications.ts:358 writes locally and mirrors). Reading notes
+// back the other way would make GHL an authority over a table the OS owns, and
+// no surface asked for it. Nothing needed merging — the read that exists reads
+// the store of record.
 
 // =====================================================
 // BULK SYNC UTILITY
 // =====================================================
 
-export async function bulkSyncContactsToGHL(contacts: GHLContact[]) {
-  const results = {
-    success: 0,
-    failed: 0,
-    errors: [] as string[],
-  }
-
-  for (const contact of contacts) {
-    try {
-      const result = await syncContactToGHL(contact)
-      if (result.success) {
-        results.success++
-      } else {
-        results.failed++
-        results.errors.push(`${contact.email}: ${result.error}`)
-      }
-    } catch (error: any) {
-      results.failed++
-      results.errors.push(`${contact.email}: ${error.message}`)
-    }
-  }
-
-  return results
-}
+// ─── REMOVED in the orphan burn-down (lane O) ───────────────────────────────
+//
+// `bulkSyncContactsToGHL(contacts)` — DELETED.
+// SURVIVOR: lib/crm/sync.ts:43 `syncContactToCRM` — the single sanctioned
+// sync-out lane, already called per contact by app/actions/contacts.ts:226,
+// app/actions/lead-lifecycle.ts:205 and app/actions/crm-connect.ts:146.
+//
+// Nothing needed merging: the deleted function's entire body was a for-loop
+// with a success/failed tally, and looping is the caller's job — the three live
+// callers each loop over their own scope with their own tenant context.
+//
+// It was deleted rather than wired because it was a THREE-WAY BYPASS of that
+// lane, and every bypass was silent. It called `syncContactToGHL` with no
+// credential override, so a bulk run pushed a tenant's whole book through the
+// PLATFORM's `GHL_API_KEY`/`GHL_LOCATION_ID` — into the wrong GHL location. It
+// skipped the provider cascade in lib/crm/sync.ts:67, so a brokerage that had
+// connected Follow Up Boss, Lofty or HubSpot would still have had its contacts
+// shipped to GoHighLevel. And it skipped the egress gate at lib/crm/sync.ts:51,
+// so nameless/unreachable rows went out unrefused and unledgered. Doing that
+// once, in bulk, is the worst possible scale for all three faults.

@@ -20,7 +20,12 @@ const DISPOSABLE_DOMAINS = new Set<string>([
   "trashmail.com", "tempmail.com", "throwawaymail.com", "fakeinbox.com",
   "discard.email", "getnada.com", "dispostable.com",
 ])
-const ROLE_LOCAL_PARTS = new Set<string>([
+// Exported (lane 73A) so lib/lead-pipeline/unknown-sender-identification.ts's automated-sender
+// prefilter can REUSE the no-reply/postmaster/webmaster members here rather than hand-rolling a
+// second copy (CLAUDE.md §6: one vocabulary per function) — it extends this set with bounce-
+// specific local parts (mailer-daemon, bounce, autoreply…) this file has no reason to know about,
+// it never redefines these three.
+export const ROLE_LOCAL_PARTS = new Set<string>([
   "info", "support", "sales", "admin", "contact", "hello", "marketing",
   "office", "team", "billing", "no-reply", "noreply", "postmaster", "webmaster",
 ])

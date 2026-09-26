@@ -6,8 +6,10 @@
  *
  *   0–2s   CoverFrame      — brokerage logo + "Just Listed" hook + address
  *   2–18s  PropertyImages  — image grid panning ken-burns through up to
- *                            8 property photos (sort_order asc); each
- *                            slide is 2s with a 0.3s crossfade
+ *                            8 property photos (sort_order asc); the 16s
+ *                            window is split evenly across however many
+ *                            photos arrived (2s each at the full 8), with
+ *                            a 0.3s crossfade
  *   18–22s FactCards       — price / beds / baths / sqft in brand colors
  *   22–25s CTAFrame        — agent name + phone + "DM me to tour"
  *
@@ -21,17 +23,15 @@
  * passes it in via inputProps.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { EqualHousingMark } from "./components/EqualHousingMark"
+import { computeAssemblyTimeline, evenShotSlots } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelProps {
@@ -71,52 +71,67 @@ export interface JustListedReelProps {
   /** SOUND-OFF CAPTIONS fallback — the raw VO script text; the CaptionLayer
    *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
   captionScript?: string | null
+  /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts). True → the cover prints
+   *  the address instead of the hook and no logo, the outro prints the address
+   *  and the fair-housing mark instead of "DM me to tour" + name + phone, and
+   *  the QR badge renders nothing. The staged props are already stripped by
+   *  mlsCutProps; this flag is the composition's own guard so a branded prop
+   *  that somehow rode along still cannot paint. */
+  mlsClean?: boolean
 }
 
-// 25 seconds @ 30 fps = 750 frames. Component breakdown in frames:
-const FRAMES = {
-  COVER_END:    60,    // 0–2s
-  IMAGES_START: 60,
-  IMAGES_END:   540,   // 16s of images (8 × 2s)
-  FACTS_START:  540,
-  FACTS_END:    660,   // 4s of facts
-  CTA_START:    660,
-  CTA_END:      750,   // 3s
-} as const
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts). A
+// FRAMES table (COVER_END 60 … CTA_END 750, "25 seconds") stood here. The
+// bookends are read from the ONE registry; the facts tile is a fixed design
+// beat INSIDE the body; the image tour is whatever the render's
+// durationInFrames leaves (calculateMetadata sizes it to the fitted narration).
+const FPS   = 30
+const BOOKENDS = compositionBookends("JustListedReel")
+const COVER = BOOKENDS.introFrames
+const FACTS = 4 * FPS
+const CTA   = BOOKENDS.outroFrames
 
 export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY = timeline.body.durationInFrames
+  const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
+  const IMAGES = BODY - FACTS_FRAMES
   return (
     <AbsoluteFill style={{ backgroundColor: "#111" }}>
       {props.voiceoverUrl && <Audio src={props.voiceoverUrl} />}
 
-      <Sequence from={0} durationInFrames={FRAMES.COVER_END}>
+      <Sequence from={0} durationInFrames={COVER}>
         <CoverFrame {...props} />
       </Sequence>
 
-      <Sequence from={FRAMES.IMAGES_START} durationInFrames={FRAMES.IMAGES_END - FRAMES.IMAGES_START}>
-        <PropertyImages images={props.imageUrls.slice(0, 8)} />
+      <Sequence from={COVER} durationInFrames={IMAGES}>
+        <PropertyImages images={props.imageUrls.slice(0, 8)} windowFrames={IMAGES} />
       </Sequence>
 
-      <Sequence from={FRAMES.FACTS_START} durationInFrames={FRAMES.FACTS_END - FRAMES.FACTS_START}>
+      <Sequence from={COVER + IMAGES} durationInFrames={FACTS_FRAMES}>
         <FactCards {...props} />
       </Sequence>
 
-      <Sequence from={FRAMES.CTA_START} durationInFrames={FRAMES.CTA_END - FRAMES.CTA_START}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <CTAFrame {...props} />
         <QrOutroBadge
           qrCodeDataUrl={props.qrCodeDataUrl}
           caption={props.qrCaption ?? "Scan to tour"}
           primaryColor={props.brand.primaryColor}
           accentColor={props.brand.accentColor}
+          mlsClean={props.mlsClean}
         />
       </Sequence>
 
-      {props.brand.showEhoMark && <EhoBadge />}
+      {props.brand.showEhoMark && <EqualHousingMark variant="badge" />}
 
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
       <CaptionLayer
         cues={props.captionsCues}
         script={props.captionScript}
         accentColor={props.brand.accentColor}
+        hiddenFromFrame={COVER + BODY}
       />
     </AbsoluteFill>
   )
@@ -124,17 +139,17 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
 
 // ─── Frames ─────────────────────────────────────────────────────────────────
 
-const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, brand }) => {
+const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, brand, mlsClean }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.85], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, opacity, padding: 80 }}>
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
-        {brand.logoUrl && (
-          <Img src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
+        {!mlsClean && brand.logoUrl && (
+          <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 96, margin: 0, fontWeight: 800, letterSpacing: -1 }}>
-          {hook}
+          {mlsClean ? mlsNeutralTitle(address) : hook}
         </h1>
         <p style={{ color: "white", fontSize: 56, marginTop: 24, opacity: 0.9 }}>{address}</p>
         <p style={{ color: brand.accentColor, fontSize: 36, marginTop: 8 }}>{cityState}</p>
@@ -143,27 +158,57 @@ const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, b
   )
 }
 
-const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
+const PropertyImages: React.FC<{ images: string[]; windowFrames: number }> = ({ images, windowFrames }) => {
   const frame = useCurrentFrame()
-  const slideFrames = 60 // 2s per slide @ 30fps
-  const idx = Math.min(images.length - 1, Math.floor(frame / slideFrames))
-  const localFrame = frame - idx * slideFrames
-  // Ken-burns: subtle scale + drift over 60 frames
-  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08])
+  // The window is divided across however many images actually arrived — the
+  // same idiom as JustListedReelSquare/Horizontal's `perPhoto`, now the ONE
+  // shared implementation (lib/video/assembly-timeline.ts evenShotSlots, §6)
+  // rather than a fifth inline copy of "window / count". This used to be a
+  // fixed 60 frames (2s), sized for the full 8 images: with fewer, the last
+  // slide's crossfade-out clamped opacity to 0 and the remaining seconds of the
+  // 16s window rendered EMPTY (gradient over the #111 background) while the
+  // voiceover kept narrating. `windowFrames` is the COMPUTED image window the
+  // parent derived from the render's own durationInFrames (wave 78).
+  const slots = evenShotSlots(windowFrames, images.length)
+  const idxFound = slots.findIndex((s) => frame < s.from + s.durationInFrames)
+  const idx = idxFound >= 0 ? idxFound : Math.max(0, slots.length - 1)
+  const activeSlot = slots[idx] ?? { from: 0, durationInFrames: windowFrames }
+  const slideFrames = activeSlot.durationInFrames
+  const localFrame = frame - activeSlot.from
+  // Ken-burns: subtle scale + drift over each slide
+  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   const opacity = interpolate(localFrame, [0, 8, slideFrames - 8, slideFrames], [0, 1, 1, 0], {
+    extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   })
   const url = images[idx]
-  if (!url) return null
+  // HONEST EMPTY (found in the wave-48 assembly audit). Zero images used to
+  // fall through this `!url` guard into a bare-null render — no message, no
+  // card, just the root #111 background showing through for the whole 16s
+  // window while the voiceover kept narrating over nothing. Every sibling
+  // that shares this "divide the window by however many photos arrived"
+  // idiom (JustListedReelSquare/Horizontal, JustSoldReelSquare) already
+  // shows this exact card on the zero-image path; this was the one that did
+  // not. §6 — one message, not a fourth wording of it.
+  if (!url) {
+    return (
+      <AbsoluteFill style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: "#fff", fontSize: 36, opacity: 0.55,
+      }}>
+        Photos coming soon
+      </AbsoluteFill>
+    )
+  }
   return (
     <AbsoluteFill>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%",
           height: "100%",
           objectFit: "cover",
-          transform: `scale(${scale})`,
+          scale,
           opacity,
         }}
       />
@@ -174,8 +219,8 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
 
 const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, sqft, brand }) => {
   const frame = useCurrentFrame()
-  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateRight: "clamp" })
-  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateRight: "clamp" })
+  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const cards = [
     { label: "Price",    value: price    || "—" },
     { label: "Beds",     value: bedrooms || "—" },
@@ -188,7 +233,7 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
         display: "grid",
         gridTemplateColumns: `repeat(${Math.min(cards.length, 4)}, 1fr)`,
         gap: 32,
-        transform: `translateY(${enter}px)`,
+        translate: `0 ${enter}px`,
         opacity,
       }}>
         {cards.map((c) => (
@@ -209,13 +254,26 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
   )
 }
 
-const CTAFrame: React.FC<JustListedReelProps> = ({ brand }) => {
+const CTAFrame: React.FC<JustListedReelProps> = ({ brand, address, cityState, mlsClean }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  // THE MLS CUT'S END CARD is neutral: the address (descriptive of the
+  // property — IRMLS §1.19 f) and the fair-housing mark. No CTA, no name, no
+  // phone, no logo — the unbranded end card the MLS field allows.
+  if (mlsClean) {
+    return (
+      <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
+        <h1 style={{ color: "white", fontSize: 72, margin: 0, fontWeight: 800 }}>{mlsNeutralTitle(address, cityState)}</h1>
+        {brand.showEhoMark !== false && (
+          <p style={{ color: "white", fontSize: 28, opacity: 0.7, marginTop: 32, letterSpacing: 1 }}>Equal Housing Opportunity</p>
+        )}
+      </AbsoluteFill>
+    )
+  }
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
       )}
       <h1 style={{ color: "white", fontSize: 80, margin: 0, fontWeight: 800 }}>DM me to tour.</h1>
       {brand.agentName && (
@@ -230,18 +288,6 @@ const CTAFrame: React.FC<JustListedReelProps> = ({ brand }) => {
   )
 }
 
-const EhoBadge: React.FC = () => (
-  <div style={{
-    position: "absolute",
-    bottom: 24,
-    left: 24,
-    backgroundColor: "rgba(255,255,255,0.9)",
-    color: "#000",
-    padding: "6px 12px",
-    borderRadius: 6,
-    fontSize: 14,
-    fontWeight: 600,
-  }}>
-    Equal Housing Opportunity
-  </div>
-)
+// EhoBadge MERGED onto the survivor remotion/components/EqualHousingMark.tsx:58
+// (variant="badge" reproduces this exact positioning/style). Tombstone — do not
+// reintroduce a third local copy of the Equal Housing Opportunity mark (§6).

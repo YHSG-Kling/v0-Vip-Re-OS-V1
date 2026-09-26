@@ -26,16 +26,14 @@
  * what it is handed and never redrafts.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
-import { QrOutroBadge } from "./components/QrOutroBadge"
+import { EndCard } from "./components/EndCard"
+import { LowerThird } from "./components/LowerThird"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface TeammateExplainerReelProps {
@@ -69,10 +67,13 @@ export interface TeammateExplainerReelProps {
 }
 
 const FPS   = 30
-const INTRO = Math.round(2.5 * FPS) // 75
-const BODY  = Math.round(24.5 * FPS) // 735
-const OUTRO = 3 * FPS               // 90
-const TOTAL = INTRO + BODY + OUTRO  // 900
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = Math.round(24.5 * FPS)` stood here. Bookends come from the ONE
+// registry; the avatar body is whatever the render's durationInFrames leaves.
+const BOOKENDS = compositionBookends("TeammateExplainerReel")
+const INTRO = BOOKENDS.introFrames
+const OUTRO = BOOKENDS.outroFrames
+void FPS
 
 /** Branded intro card — logo, eyebrow chip, title. */
 const IntroCard: React.FC<{
@@ -81,7 +82,7 @@ const IntroCard: React.FC<{
   brand: TeammateExplainerReelProps["brand"]
 }> = ({ eyebrow, title, brand }) => {
   const frame = useCurrentFrame()
-  const barWidth = interpolate(frame, [8, INTRO - 8], [0, 320], { extrapolateRight: "clamp" })
+  const barWidth = interpolate(frame, [8, INTRO - 8], [0, 320], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill
       style={{
@@ -90,12 +91,12 @@ const IntroCard: React.FC<{
       }}
     >
       {brand.logoUrl ? (
-        <Img
+        <SafeImg
           src={brand.logoUrl}
-          style={{ height: 64, objectFit: "contain", marginBottom: 30, opacity: interpolate(frame, [0, 12], [0, 1]) }}
+          style={{ height: 64, objectFit: "contain", marginBottom: 30, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}
         />
       ) : (
-        <div style={{ fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7 * interpolate(frame, [0, 12], [0, 1]), marginBottom: 30 }}>
+        <div style={{ fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7 * interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), marginBottom: 30 }}>
           {brand.brokerageName}
         </div>
       )}
@@ -104,7 +105,7 @@ const IntroCard: React.FC<{
           display: "inline-block", padding: "8px 22px", borderRadius: 4,
           backgroundColor: brand.accentColor, color: brand.primaryColor,
           fontSize: 20, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-          marginBottom: 30, opacity: interpolate(frame, [4, 18], [0, 1]),
+          marginBottom: 30, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}
       >
         {eyebrow}
@@ -112,8 +113,8 @@ const IntroCard: React.FC<{
       <div
         style={{
           fontSize: 66, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 880,
-          opacity: interpolate(frame, [10, 32], [0, 1]),
-          transform: `translateY(${interpolate(frame, [10, 32], [24, 0], { extrapolateRight: "clamp" })}px)`,
+          opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+          translate: `0 ${interpolate(frame, [10, 32], [24, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
         }}
       >
         {title}
@@ -123,36 +124,9 @@ const IntroCard: React.FC<{
   )
 }
 
-/** Persistent lower-third: accent bar + agent name + brokerage. */
-const LowerThird: React.FC<{
-  agentName: string
-  brokerageName: string
-  primaryColor: string
-  accentColor: string
-}> = ({ agentName, brokerageName, primaryColor, accentColor }) => {
-  const frame = useCurrentFrame()
-  const slideIn = interpolate(frame, [0, 16], [-560, 0], { extrapolateRight: "clamp" })
-  return (
-    <div style={{ position: "absolute", left: 0, bottom: 168, transform: `translateX(${slideIn}px)` }}>
-      <div
-        style={{
-          display: "flex", alignItems: "stretch",
-          backgroundColor: `${primaryColor}E6`,
-          borderRadius: "0 8px 8px 0", overflow: "hidden",
-          boxShadow: "0 4px 18px rgba(0,0,0,0.35)",
-        }}
-      >
-        <div style={{ width: 10, backgroundColor: accentColor }} />
-        <div style={{ padding: "16px 28px 16px 20px" }}>
-          <div style={{ fontSize: 34, fontWeight: 800, color: "#fff", lineHeight: 1.1 }}>{agentName}</div>
-          <div style={{ fontSize: 20, fontWeight: 600, color: accentColor, letterSpacing: 1, marginTop: 4 }}>
-            {brokerageName}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+// TOMBSTONE (lane 77D): the private `LowerThird` that stood here moved to
+// remotion/components/LowerThird.tsx — the ONE lower-third, now also mounted
+// by AgentTalkingHeadReel (§6: one spelling of "who is speaking").
 
 /** Full-frame avatar body with watermark + lower-third. */
 const AvatarBody: React.FC<{
@@ -163,19 +137,20 @@ const AvatarBody: React.FC<{
   brand: TeammateExplainerReelProps["brand"]
 }> = ({ avatarVideoUrl, agentPhotoUrl, agentName, title, brand }) => {
   const frame = useCurrentFrame()
-  const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateRight: "clamp" })
+  const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
       {avatarVideoUrl ? (
         <Video
+          objectFit="cover"
           src={avatarVideoUrl}
-          style={{ width: "100%", height: "100%", objectFit: "cover", opacity: fadeIn }}
+          style={{ width: "100%", height: "100%", opacity: fadeIn }}
         />
       ) : agentPhotoUrl ? (
         // Honest fallback frame — the avatar clip has not been wired in.
         <AbsoluteFill style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 72, opacity: fadeIn }}>
           <div style={{ width: 460, height: 460, borderRadius: 230, overflow: "hidden", boxShadow: `0 0 0 8px ${brand.accentColor}` }}>
-            <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           </div>
           <div style={{ fontSize: 44, fontWeight: 700, color: "#fff", marginTop: 44, textAlign: "center", maxWidth: 860, lineHeight: 1.25 }}>
             {title}
@@ -191,7 +166,7 @@ const AvatarBody: React.FC<{
 
       {/* Logo watermark — top-right, subtle. */}
       {brand.logoUrl && (
-        <Img
+        <SafeImg
           src={brand.logoUrl}
           style={{ position: "absolute", top: 40, right: 40, height: 52, objectFit: "contain", opacity: 0.85 }}
         />
@@ -207,7 +182,10 @@ const AvatarBody: React.FC<{
   )
 }
 
-/** Branded outro CTA card. */
+// TOMBSTONE (lane 78D, §1.1): the private `OutroCard` (CTA + agent name +
+// brokerage/EHO footer + QrOutroBadge with mlsClean) was MERGED onto
+// remotion/components/EndCard.tsx — the ONE end card the four outros in this
+// fleet now share. OUTRO stays 3 s; TOTAL stays 900.
 const OutroCard: React.FC<{
   ctaLabel: string
   agentName: string
@@ -215,55 +193,25 @@ const OutroCard: React.FC<{
   qrCodeDataUrl?: string | null
   qrCaption?: string
   mlsClean?: boolean
-}> = ({ ctaLabel, agentName, brand, qrCodeDataUrl, qrCaption, mlsClean }) => {
-  const frame = useCurrentFrame()
-  const showEho = brand.showEhoMark ?? true
-  return (
-    <AbsoluteFill
-      style={{
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-        padding: 72, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
-      }}
-    >
-      {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1]) }} />
-      )}
-      <div
-        style={{
-          fontSize: 76, fontWeight: 800, lineHeight: 1.05, marginBottom: 24, maxWidth: 900,
-          opacity: interpolate(frame, [4, 20], [0, 1]),
-          transform: `translateY(${interpolate(frame, [4, 20], [20, 0], { extrapolateRight: "clamp" })}px)`,
-        }}
-      >
-        {ctaLabel}
-      </div>
-      <div style={{ fontSize: 38, color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [12, 26], [0, 1]) }}>
-        {agentName}
-      </div>
-      <div
-        style={{
-          position: "absolute", bottom: 26, left: 0, right: 0,
-          textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-        }}
-      >
-        {brand.brokerageName}
-        {showEho && " · Equal Housing Opportunity"}
-      </div>
-      <QrOutroBadge
-        qrCodeDataUrl={qrCodeDataUrl}
-        caption={qrCaption ?? "Scan to book a consult"}
-        primaryColor={brand.primaryColor}
-        accentColor={brand.accentColor}
-        mlsClean={mlsClean}
-      />
-    </AbsoluteFill>
-  )
-}
+}> = ({ ctaLabel, agentName, brand, qrCodeDataUrl, qrCaption, mlsClean }) => (
+  <EndCard
+    brand={brand}
+    headline={ctaLabel}
+    subline={agentName}
+    logoHeight={56}
+    qrCodeDataUrl={qrCodeDataUrl}
+    qrCaption={qrCaption ?? "Scan to book a consult"}
+    mlsClean={mlsClean}
+  />
+)
 
 export const TeammateExplainerReel: React.FC<TeammateExplainerReelProps> = ({
   eyebrow, title, ctaLabel, agentName, avatarVideoUrl, agentPhotoUrl,
   qrCodeDataUrl, qrCaption, mlsClean, brand, captionsCues, captionScript,
 }) => {
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: INTRO, outroFrames: OUTRO })
+  const BODY = timeline.body.durationInFrames
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       {/* INTRO — brand card */}
@@ -294,13 +242,18 @@ export const TeammateExplainerReel: React.FC<TeammateExplainerReelProps> = ({
         />
       </Sequence>
 
-      {/* Anchor frame keeps TOTAL authoritative for the registry (900). */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      {/* Anchor frame keeps the render's own durationInFrames authoritative. */}
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
       {/* Sound-off captions across the whole reel (default-off when absent). */}
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the outro/QR tile.
+          NO CAPTION OVER SILENCE (wave 59) — AvatarBody's clip starts at
+          INTRO, not frame 0 (no trimBefore — single-window, source frame 0 ==
+          absolute frame INTRO); see CaptionLayer.visibleFromFrame. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        visibleFromFrame={INTRO} hiddenFromFrame={INTRO + BODY} />
     </AbsoluteFill>
   )
 }

@@ -23,7 +23,7 @@
 // ones; dedupe skips are counted, never silently swallowed.
 
 import {
-  parseContactsCsv, parseListingsCsv, type CsvRowError,
+  parseContactsCsv, parseListingsCsv, type CsvRowError, type ParseContactsCsvResult,
 } from "@/lib/platform/tenant-import-parser"
 
 export {
@@ -136,14 +136,37 @@ export async function importContacts(params: {
   /** users.id of the platform actor — stamped into metadata.imported_by. */
   importedBy?: string | null
 }): Promise<TenantImportResult> {
-  const { svc, brokerageId } = params
   const parsed = parseContactsCsv(params.csvText)
+  return importParsedContacts({ ...params, parsed, emptyLabel: "CSV" })
+}
+
+/**
+ * The single INSERT lane for imported contacts, whatever produced the rows.
+ *
+ * A CSV upload and a vendor-API CRM pull are the same white-glove migration with
+ * two different row sources, and they used to run two separate pipelines — only
+ * one of which could target a brokerage other than the caller's. This is the one
+ * that lands the rows: tenant anchor, owner-agent resolution, dedupe against the
+ * TARGET tenant, and never importing a consent flag as true.
+ */
+export async function importParsedContacts(params: {
+  svc: any
+  brokerageId: string
+  agentId?: string | null
+  dedupe: ImportDedupeMode
+  importedBy?: string | null
+  parsed: ParseContactsCsvResult
+  /** What to call the source in the "nothing importable" message. */
+  emptyLabel?: string
+}): Promise<TenantImportResult> {
+  const { svc, brokerageId, parsed } = params
+  const label = params.emptyLabel ?? "source"
   const base: TenantImportResult = {
     ok: false, inserted: 0, skippedDuplicates: 0,
     errors: [...parsed.errors], totalDataRows: parsed.totalDataRows,
   }
   if (parsed.rows.length === 0) {
-    return { ...base, error: parsed.errors.length > 0 ? "No importable rows in CSV" : "CSV has no data rows" }
+    return { ...base, error: parsed.errors.length > 0 ? `No importable rows in ${label}` : `${label} has no data rows` }
   }
 
   const brkErr = await verifyBrokerage(svc, brokerageId)

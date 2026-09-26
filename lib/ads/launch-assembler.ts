@@ -11,6 +11,17 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { AdBuildInput, AdObjective } from "./connectors/ad-payload"
 import { getConnector, loadConnectorCredential } from "./connectors/registry"
 import { adCredentialPlatform } from "./connection-status"
+// THE LAST DOOR BEFORE THE PLATFORM. The define doors gate the exclusion slot
+// when it is written; this one gates it again on the way OUT, because the row
+// can be reached by paths that are not those doors (a support-time SQL update, a
+// future writer) and because this is the only place the ids become real Meta
+// audiences. Same gate, not a second one (CLAUDE.md §6).
+import {
+  verifyExclusionSlot,
+  excludedAudienceIdsIn,
+  includedAudienceIdsIn,
+  type ExclusionAudienceRow,
+} from "./audience-exclusion"
 
 export interface AssembleResult { ok: boolean; input?: AdBuildInput; error?: string }
 
@@ -47,6 +58,81 @@ export async function assembleAdFromCampaign(
   const tc = campaign.targeting_config ?? {}
   const locations = Array.isArray(tc.locations) ? tc.locations : []
 
+  // ── THE TWO AUDIENCE SLOTS BECOME REAL PLATFORM AUDIENCES HERE ─────────────
+  //
+  // `custom_audience_ids` was declared on both TargetingConfigs and written as
+  // `[]` by three writers with NO READER anywhere (CLAUDE.md §1). This is the
+  // reader: our audience-row ids resolve to the platform's own audience ids and
+  // reach the Meta payload. `excluded_audience_ids` is its new opposite, and it
+  // is GATED before it resolves — an audience that may not suppress must not
+  // reach the platform's Exclude field, and this is the last place to say so.
+  const includedIds = includedAudienceIdsIn(tc)
+  const excludedIds = excludedAudienceIdsIn(tc)
+
+  const exclusionVerdict = await verifyExclusionSlot({
+    supabase,
+    brokerageId: campaign.brokerage_id,
+    targeting: tc,
+    campaignLabel: campaign.campaign_name,
+  })
+  if (!exclusionVerdict.ok) return { ok: false, error: exclusionVerdict.refusal }
+
+  let audienceRows: ExclusionAudienceRow[] = []
+  if (includedIds.length > 0 || excludedIds.length > 0) {
+    // Tenant-scoped, and the error is READ: supabase-js RESOLVES refusals, so
+    // `data ?? []` on an unread error would silently launch a campaign with none
+    // of the audiences the operator chose (CLAUDE.md §3).
+    const { data: auds, error: audErr } = await supabase
+      .from("facebook_custom_audiences")
+      .select("id, audience_name, external_audience_id, status")
+      .eq("brokerage_id", campaign.brokerage_id)
+      .in("id", [...includedIds, ...excludedIds])
+    if (audErr) return { ok: false, error: `could not read this campaign's audiences: ${audErr.message}` }
+    audienceRows = (auds ?? []) as ExclusionAudienceRow[]
+  }
+
+  const externalOf = new Map<string, string | null>()
+  const nameOf = new Map<string, string>()
+  for (const a of audienceRows) {
+    externalOf.set(a.id, a.external_audience_id ?? null)
+    nameOf.set(a.id, (a.audience_name ?? a.id).toString())
+  }
+
+  /**
+   * FAIL CLOSED ON AN UNRESOLVABLE AUDIENCE, in BOTH slots and for opposite
+   * reasons. An include that silently vanishes delivers a campaign to the wrong
+   * people; an EXCLUDE that silently vanishes delivers it to people the operator
+   * declared must not receive it — and that second one is the failure this whole
+   * lane exists to prevent, so neither may be dropped quietly.
+   */
+  const resolveSlot = (ids: string[], slot: string): { ok: true; ids: string[] } | { ok: false; error: string } => {
+    const out: string[] = []
+    for (const id of ids) {
+      if (!externalOf.has(id)) {
+        return { ok: false, error: `${slot} names audience ${id}, which does not exist in this brokerage` }
+      }
+      const ext = externalOf.get(id) ?? null
+      if (!ext) {
+        return {
+          ok: false,
+          error:
+            `${slot} names audience "${nameOf.get(id) ?? id}", which has never synced to the platform ` +
+            `(no external_audience_id), so the platform cannot apply it. Sync that audience first — ` +
+            `launching without it would ${slot === "excluded_audience_ids"
+              ? "show this ad to the very people the campaign says to suppress"
+              : "deliver this campaign to a different set of people than the one chosen"}.`,
+        }
+      }
+      out.push(ext)
+    }
+    return { ok: true, ids: out }
+  }
+
+  const includedExternal = resolveSlot(includedIds, "custom_audience_ids")
+  if (!includedExternal.ok) return { ok: false, error: includedExternal.error }
+  const excludedExternal = resolveSlot(excludedIds, "excluded_audience_ids")
+  if (!excludedExternal.ok) return { ok: false, error: excludedExternal.error }
+
   const input: AdBuildInput = {
     platform:       campaign.platform as AdBuildInput["platform"],
     objective:      (campaign.objective as AdObjective) ?? "leads",
@@ -65,6 +151,14 @@ export async function assembleAdFromCampaign(
     targeting: {
       locations: locations.map((l: any) => ({ city: l.city, state: l.state, zip: l.zip, radiusMiles: l.radius_miles ?? l.radiusMiles })),
       audienceExternalId: (tc.audience_external_id as string | null) ?? null,
+      audienceExternalIds: includedExternal.ids,
+      excludedAudienceExternalIds: excludedExternal.ids,
+      // THE ONLY PLACE THIS IS SET, and it is set from the verdict rather than
+      // asserted: `validateAdReadiness` refuses an ad that carries excluded
+      // audiences without it, so deleting the gate call above does not quietly
+      // publish an ungoverned suppression — it makes the ad unlaunchable. The
+      // simulator mutation-tests exactly that.
+      exclusionGovernance: exclusionVerdict.ok ? "gated" : undefined,
     },
     specialAdCategory: "HOUSING",
   }

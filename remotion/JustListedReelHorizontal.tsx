@@ -26,15 +26,15 @@
  *   17–20s OUTRO CTA     — full-width CTA + agent contact + EHO
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelHorizontalProps {
   hook:      string
@@ -61,14 +61,26 @@ export interface JustListedReelHorizontalProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to tour". */
   qrCaption?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. Same prop shape as the
+   *  sibling JustListedReel/JustListedReelSquare. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
+  /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
+  mlsClean?: boolean
 }
 
 const FPS    = 30
-const TOTAL  = 20 * FPS              // 600
-const COVER  = 3  * FPS               // 90
-const PHOTOS = 10 * FPS               // 300
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `PHOTOS = 10 * FPS` stood here. Bookends come from the ONE registry; the
+// agent-facts tile is a fixed design beat INSIDE the body; the photo window
+// is whatever the render's durationInFrames leaves.
+const BOOKENDS = compositionBookends("JustListedReelHorizontal")
+const COVER  = BOOKENDS.introFrames
 const FACTS  = 4  * FPS               // 120
-const CTA    = 3  * FPS               // 90
+const CTA    = BOOKENDS.outroFrames
 
 const BrandHeader: React.FC<{
   logoUrl?: string; brokerageName?: string
@@ -78,7 +90,7 @@ const BrandHeader: React.FC<{
     display: "flex", alignItems: "center", justifyContent: "space-between",
   }}>
     {logoUrl ? (
-      <Img src={logoUrl} style={{ height: 40, objectFit: "contain" }} />
+      <SafeImg src={logoUrl} style={{ height: 40, objectFit: "contain" }} />
     ) : <div />}
     <div style={{
       width: 8, height: 8, borderRadius: 4, backgroundColor: "#fff", opacity: 0.5,
@@ -88,12 +100,12 @@ const BrandHeader: React.FC<{
 
 const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const frame = useCurrentFrame()
-  const scale = interpolate(frame, [0, span], [1, 1.05], { extrapolateRight: "clamp" })
+  const scale = interpolate(frame, [0, span], [1, 1.05], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img src={url} style={{
+      <SafeImg src={url} style={{
         width: "100%", height: "100%", objectFit: "cover",
-        transform: `scale(${scale})`, transformOrigin: "center center",
+        scale, transformOrigin: "center center",
       }} />
     </AbsoluteFill>
   )
@@ -102,12 +114,18 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
 export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
+  captionsCues, captionScript, mlsClean,
 }) => {
   const frame    = useCurrentFrame()
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
+  const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
+  const PHOTOS   = BODY - FACTS_FRAMES
   const images   = imageUrls.slice(0, 2)
   const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho  = brand.showEhoMark ?? true
-  const finalCta = ctaLabel ?? "Tour this listing"
+  const finalCta = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")
 
   return (
     <AbsoluteFill style={{
@@ -122,22 +140,22 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 80, textAlign: "center",
         }}>
-          <BrandHeader logoUrl={brand.logoUrl} />
+          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} />
           <div style={{
             fontSize: 32, letterSpacing: 8, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 800,
-            opacity: interpolate(frame, [0, 18], [0, 1]),
+            opacity: interpolate(frame, [0, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 124, fontWeight: 900, color: "#fff", lineHeight: 1.0,
-            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1]),
+            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 44, color: "#fff", opacity: interpolate(frame, [28, 50], [0, 0.85]),
+            fontSize: 44, color: "#fff", opacity: interpolate(frame, [28, 50], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 20, letterSpacing: 4,
           }}>
             {cityState}
@@ -188,37 +206,37 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
       </Sequence>
 
       {/* SPLIT FACTS — 13-17s. Agent identity establishment. */}
-      <Sequence from={COVER + PHOTOS} durationInFrames={FACTS}>
+      <Sequence from={COVER + PHOTOS} durationInFrames={FACTS_FRAMES}>
         <AbsoluteFill style={{
           padding: 80, display: "flex", flexDirection: "column", justifyContent: "center",
           color: "#fff", backgroundColor: brand.primaryColor,
         }}>
-          <BrandHeader logoUrl={brand.logoUrl} />
+          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} />
           <div style={{ fontSize: 44, opacity: 0.85, letterSpacing: 4, textTransform: "uppercase", marginBottom: 20 }}>
-            Your agent
+            {mlsClean ? cityState : "Your agent"}
           </div>
-          {brand.agentName && (
+          {!mlsClean && brand.agentName && (
             <div style={{ fontSize: 124, fontWeight: 900, color: brand.accentColor, lineHeight: 1 }}>
               {brand.agentName}
             </div>
           )}
-          {brand.agentPhone && (
+          {!mlsClean && brand.agentPhone && (
             <div style={{ fontSize: 48, opacity: 0.8, marginTop: 24 }}>{brand.agentPhone}</div>
           )}
         </AbsoluteFill>
       </Sequence>
 
       {/* OUTRO CTA — 17-20s. */}
-      <Sequence from={COVER + PHOTOS + FACTS} durationInFrames={CTA}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 80, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
         }}>
-          <BrandHeader logoUrl={brand.logoUrl} />
+          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} />
           <div style={{ fontSize: 108, fontWeight: 900, lineHeight: 1.05, marginBottom: 32 }}>
             {finalCta}
           </div>
-          {brand.agentName && (
+          {!mlsClean && brand.agentName && (
             <div style={{ fontSize: 44, color: brand.accentColor, fontWeight: 700 }}>{brand.agentName}</div>
           )}
           <div style={{
@@ -228,6 +246,7 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
             {showEho && "Equal Housing Opportunity · "}{brand.licenseLine ?? ""}
           </div>
           <QrOutroBadge
+            mlsClean={mlsClean}
             qrCodeDataUrl={qrCodeDataUrl}
             caption={qrCaption ?? "Scan to tour"}
             primaryColor={brand.primaryColor}
@@ -236,9 +255,18 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA tile at COVER + BODY. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

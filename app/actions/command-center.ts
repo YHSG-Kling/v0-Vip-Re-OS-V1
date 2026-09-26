@@ -37,7 +37,11 @@ async function requireApprover(): Promise<{ userId: string; brokerageId: string 
     .eq("id", user.id)
     .maybeSingle()
   const role = u?.user_type ?? "agent"
-  if (!["admin", "broker", "superadmin"].includes(role)) return { error: "Not authorized to approve agent actions" }
+  // SCOPE LADDER (kept inline — isSuperadmin below hands wider scope): dead
+  // 'superadmin' removed from the array only — 0 live rows store that
+  // users.user_type, so it admitted nobody (isSuperadmin stays dead-false,
+  // unchanged behavior). broker_owner added: storable seat that owns the brokerage.
+  if (!["admin", "broker", "broker_owner"].includes(role)) return { error: "Not authorized to approve agent actions" }
   return { userId: user.id, brokerageId: u?.brokerage_id ?? null, isSuperadmin: role === "superadmin", role }
 }
 

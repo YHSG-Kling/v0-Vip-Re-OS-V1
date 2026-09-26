@@ -1,6 +1,23 @@
 "use client"
 
-import { useState, useEffect } from "react"
+/**
+ * Family / collaborative search — the buyer-portal surface over
+ * app/actions/collaborative-search.ts.
+ *
+ * ORPHAN BURN-DOWN: this dashboard only ever called 7 of the module's actions.
+ * Member removal, search-criteria editing, per-property ratings detail, property
+ * add/remove and portal activity tracking all existed server-side with no caller,
+ * so a family search could be created but never curated. Wired here; every call
+ * reads its outcome and a refusal is surfaced instead of silently doing nothing.
+ *
+ * DRIFT FIXED: the property rows returned by getSearchProperties key on
+ * `property_mls_id` (addPropertyToSearch's own comment records `property_id` as
+ * the phantom column it replaced). This component still read `prop.property_id`,
+ * which is undefined — so every vote and every consensus lookup was keyed on
+ * `undefined`. Now keyed on property_mls_id end to end.
+ */
+
+import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,23 +47,48 @@ import {
   CheckCircle2,
   Clock,
   Trophy,
+  Trash2,
+  SlidersHorizontal,
 } from "lucide-react"
 import {
   createCollaborativeSearch,
   getCollaborativeSearches,
+  getCollaborativeSearchById,
+  updateSearchCriteria,
   inviteFamilyMember,
+  removeMember,
   rateProperty,
+  getPropertyRatings,
   getSearchProperties,
+  addPropertyToSearch,
+  removePropertyFromSearch,
   getConsensus,
   markAsFinalist,
+  trackPortalActivity,
+  closeCollaborativeSearch,
 } from "@/app/actions/collaborative-search"
+
+export interface SavedPropertyOption {
+  listing_id: string
+  property_address: string | null
+  city: string | null
+  state: string | null
+  list_price: number | null
+  bedrooms: number | null
+  bathrooms: number | null
+}
 
 interface CollaborativeSearchDashboardProps {
   contactId: string
   contactEmail: string
+  savedProperties?: SavedPropertyOption[]
 }
 
-export function CollaborativeSearchDashboard({ contactId, contactEmail }: CollaborativeSearchDashboardProps) {
+export function CollaborativeSearchDashboard({
+  contactId,
+  contactEmail,
+  savedProperties = [],
+}: CollaborativeSearchDashboardProps) {
   const [searches, setSearches] = useState<any[]>([])
   const [activeSearch, setActiveSearch] = useState<any>(null)
   const [properties, setProperties] = useState<any[]>([])
@@ -58,66 +100,269 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
   const [inviteEmail, setInviteEmail] = useState("")
   const [inviteName, setInviteName] = useState("")
   const [inviteRole, setInviteRole] = useState<"editor" | "viewer">("viewer")
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    loadSearches()
-  }, [contactId])
+  // Criteria editor
+  const [showCriteria, setShowCriteria] = useState(false)
+  const [critMinPrice, setCritMinPrice] = useState("")
+  const [critMaxPrice, setCritMaxPrice] = useState("")
+  const [critBeds, setCritBeds] = useState("")
+  const [critBaths, setCritBaths] = useState("")
+  const [critAreas, setCritAreas] = useState("")
+  const [criteriaNotice, setCriteriaNotice] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (activeSearch) {
-      loadSearchData()
-    }
-  }, [activeSearch])
+  // Per-property ratings detail
+  const [ratingsFor, setRatingsFor] = useState<string | null>(null)
+  const [ratings, setRatings] = useState<any[]>([])
+  const [ratingsLoading, setRatingsLoading] = useState(false)
 
-  async function loadSearches() {
+  // Add-a-property
+  const [addListingId, setAddListingId] = useState("")
+  const [busy, setBusy] = useState(false)
+
+  const loadSearches = useCallback(async () => {
     setLoading(true)
     const data = await getCollaborativeSearches(contactId)
     setSearches(data)
-    if (data.length > 0 && !activeSearch) {
-      setActiveSearch(data[0])
-    }
+    setActiveSearch((prev: any) => {
+      if (prev) return data.find((s: any) => s.id === prev.id) ?? prev
+      return data.length > 0 ? data[0] : null
+    })
     setLoading(false)
-  }
+  }, [contactId])
 
-  async function loadSearchData() {
+  useEffect(() => {
+    loadSearches()
+  }, [loadSearches])
+
+  const loadSearchData = useCallback(async () => {
     if (!activeSearch) return
-    const [props, cons] = await Promise.all([getSearchProperties(activeSearch.id), getConsensus(activeSearch.id)])
+    const [props, cons] = await Promise.all([
+      getSearchProperties(activeSearch.id),
+      getConsensus(activeSearch.id),
+    ])
     setProperties(props)
     setConsensus(cons)
+  }, [activeSearch])
+
+  useEffect(() => {
+    loadSearchData()
+  }, [loadSearchData])
+
+  // Seed the criteria editor from whatever the active search already carries.
+  useEffect(() => {
+    const c = (activeSearch?.search_criteria ?? {}) as Record<string, any>
+    setCritMinPrice(c.min_price != null ? String(c.min_price) : "")
+    setCritMaxPrice(c.max_price != null ? String(c.max_price) : "")
+    setCritBeds(c.min_beds != null ? String(c.min_beds) : "")
+    setCritBaths(c.min_baths != null ? String(c.min_baths) : "")
+    setCritAreas(Array.isArray(c.areas) ? c.areas.join(", ") : "")
+    setCriteriaNotice(null)
+  }, [activeSearch?.id])
+
+  // Refresh ONLY the active search row (members + criteria) after a membership
+  // change, without re-pulling every search the contact owns.
+  async function refreshActiveSearch() {
+    if (!activeSearch) return
+    // Named for what it holds, not for its freshness: a bare `fresh` tells a
+    // reader nothing about WHICH thing came back empty, and the honesty guard
+    // reads the same way — it could not connect the tested value to the noun
+    // the message names.
+    const freshSearch = await getCollaborativeSearchById(activeSearch.id)
+    if (!freshSearch) {
+      setError("Could not reload the search after that change.")
+      return
+    }
+    setActiveSearch(freshSearch)
+    setSearches((prev) =>
+      prev.map((s) => (s.id === freshSearch.id ? { ...s, ...freshSearch } : s)),
+    )
+  }
+
+  /**
+   * Close the active search. Until this existed, `collaborative_searches.status`
+   * had a reader (`getCollaborativeSearches` filters status='active') and no
+   * writer at all, so a finished family search stayed at the top of this
+   * dashboard forever — there was no way to say "we bought it" or "we stopped
+   * looking".
+   */
+  async function handleCloseSearch(status: "completed" | "archived") {
+    if (!activeSearch) return
+    setError(null)
+    setBusy(true)
+    try {
+      const result = await closeCollaborativeSearch(activeSearch.id, status)
+      if (result.error) {
+        setError(result.error)
+        return
+      }
+      // The closed search drops out of the active list, so the selection has to
+      // be rebuilt rather than kept — reload rather than patching state.
+      setActiveSearch(null)
+      await loadSearches()
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function handleCreateSearch() {
     if (!newSearchName.trim()) return
+    setError(null)
     const result = await createCollaborativeSearch(contactId, newSearchName)
-    if (result.data) {
-      setShowCreateDialog(false)
-      setNewSearchName("")
-      loadSearches()
+    if ((result as any).error || !(result as any).data) {
+      setError((result as any).error ?? "The search was not created.")
+      return
     }
+    setShowCreateDialog(false)
+    setNewSearchName("")
+    await loadSearches()
   }
 
   async function handleInvite() {
     if (!inviteEmail.trim() || !activeSearch) return
+    setError(null)
     const result = await inviteFamilyMember(activeSearch.id, inviteEmail, inviteName, inviteRole)
-    if (result.data) {
-      setShowInviteDialog(false)
-      setInviteEmail("")
-      setInviteName("")
-      loadSearches()
+    if ((result as any).error || !(result as any).data) {
+      setError((result as any).error ?? "The invitation was not sent.")
+      return
     }
+    setShowInviteDialog(false)
+    setInviteEmail("")
+    setInviteName("")
+    await refreshActiveSearch()
+  }
+
+  async function handleRemoveMember(memberId: string) {
+    if (!activeSearch) return
+    setError(null)
+    setBusy(true)
+    const res = await removeMember(activeSearch.id, memberId)
+    setBusy(false)
+    if ((res as any).error) {
+      setError((res as any).error)
+      return
+    }
+    await refreshActiveSearch()
+  }
+
+  async function handleSaveCriteria() {
+    if (!activeSearch) return
+    setError(null)
+    setCriteriaNotice(null)
+    const toNum = (v: string) => (v.trim() === "" || Number.isNaN(Number(v)) ? undefined : Number(v))
+    const criteria: Record<string, any> = {
+      min_price: toNum(critMinPrice),
+      max_price: toNum(critMaxPrice),
+      min_beds: toNum(critBeds),
+      min_baths: toNum(critBaths),
+      areas: critAreas.split(",").map((a) => a.trim()).filter(Boolean),
+    }
+    setBusy(true)
+    const res = await updateSearchCriteria(activeSearch.id, criteria)
+    setBusy(false)
+    if ((res as any).error) {
+      setError((res as any).error)
+      return
+    }
+    setActiveSearch((prev: any) => (prev ? { ...prev, search_criteria: criteria } : prev))
+    setCriteriaNotice("Criteria saved — everyone on this search sees the update.")
+    await trackPortalActivity(contactId, "collaborative_search_criteria_updated", {
+      collaborative_search_id: activeSearch.id,
+    })
   }
 
   async function handleRate(propertyId: string, vote: "love" | "like" | "neutral" | "dislike" | "pass") {
-    if (!activeSearch) return
+    if (!activeSearch || !propertyId) return
+    setError(null)
     const ratingMap = { love: 5, like: 4, neutral: 3, dislike: 2, pass: 1 }
-    await rateProperty(activeSearch.id, propertyId, contactEmail, ratingMap[vote], vote)
-    loadSearchData()
+    const res = await rateProperty(activeSearch.id, propertyId, contactEmail, ratingMap[vote], vote)
+    if ((res as any).error) {
+      setError((res as any).error)
+      return
+    }
+    await trackPortalActivity(contactId, "collaborative_search_vote", {
+      collaborative_search_id: activeSearch.id,
+      vote,
+    }, propertyId)
+    await loadSearchData()
+    if (ratingsFor === propertyId) await loadRatings(propertyId)
+  }
+
+  async function loadRatings(propertyId: string) {
+    if (!activeSearch) return
+    setRatingsLoading(true)
+    const rows = await getPropertyRatings(activeSearch.id, propertyId)
+    setRatings(rows)
+    setRatingsLoading(false)
+  }
+
+  async function handleToggleRatings(propertyId: string) {
+    if (ratingsFor === propertyId) {
+      setRatingsFor(null)
+      setRatings([])
+      return
+    }
+    setRatingsFor(propertyId)
+    await loadRatings(propertyId)
+  }
+
+  async function handleAddProperty() {
+    if (!activeSearch || !addListingId) return
+    setError(null)
+    const saved = savedProperties.find((s) => s.listing_id === addListingId)
+    if (!saved) {
+      setError("That property is no longer in your saved list.")
+      return
+    }
+    setBusy(true)
+    const res = await addPropertyToSearch(
+      activeSearch.id,
+      saved.listing_id,
+      {
+        address: saved.property_address,
+        city: saved.city,
+        state: saved.state,
+        price: saved.list_price,
+        bedrooms: saved.bedrooms,
+        bathrooms: saved.bathrooms,
+      },
+      contactEmail,
+    )
+    setBusy(false)
+    if ((res as any).error || !(res as any).data) {
+      setError((res as any).error ?? "The property was not added.")
+      return
+    }
+    setAddListingId("")
+    await trackPortalActivity(contactId, "collaborative_search_property_added", {
+      collaborative_search_id: activeSearch.id,
+    }, saved.listing_id)
+    await loadSearchData()
+  }
+
+  async function handleRemoveProperty(propertyId: string) {
+    if (!activeSearch || !propertyId) return
+    setError(null)
+    setBusy(true)
+    const res = await removePropertyFromSearch(activeSearch.id, propertyId)
+    setBusy(false)
+    if ((res as any).error) {
+      setError((res as any).error)
+      return
+    }
+    if (ratingsFor === propertyId) { setRatingsFor(null); setRatings([]) }
+    await loadSearchData()
   }
 
   async function handleToggleFinalist(propertyId: string, currentStatus: boolean) {
-    if (!activeSearch) return
-    await markAsFinalist(activeSearch.id, propertyId, !currentStatus)
-    loadSearchData()
+    if (!activeSearch || !propertyId) return
+    setError(null)
+    const res = await markAsFinalist(activeSearch.id, propertyId, !currentStatus)
+    if ((res as any).error) {
+      setError((res as any).error)
+      return
+    }
+    await loadSearchData()
   }
 
   const voteButtons = [
@@ -149,6 +394,7 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
               Start a search to collaborate with family members on finding your perfect home
             </p>
           </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
           <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
             <DialogTrigger asChild>
               <Button>
@@ -183,8 +429,17 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
     )
   }
 
+  const alreadyAdded = new Set(properties.map((p) => p.property_mls_id))
+  const addableProperties = savedProperties.filter((s) => !alreadyAdded.has(s.listing_id))
+
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
       {/* Search Selector and Actions */}
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         <div className="flex items-center gap-2">
@@ -225,6 +480,38 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
               </div>
             </DialogContent>
           </Dialog>
+          <Button variant="outline" size="sm" onClick={() => setShowCriteria((v) => !v)}>
+            <SlidersHorizontal className="h-4 w-4 mr-2" />
+            {showCriteria ? "Hide criteria" : "Criteria"}
+          </Button>
+          {/* CLOSING A SEARCH — the writer `collaborative_searches.status` never
+              had. The list above filters status='active', so until now a search
+              could only ever be created, and a family that had already bought
+              still saw their old hunt at the top of the portal. Both terminal
+              states are real values of the live CHECK. */}
+          {activeSearch && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => handleCloseSearch("completed")}
+                title="We found our home — close this search"
+              >
+                <Trophy className="h-4 w-4 mr-2" />
+                We found it
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={() => handleCloseSearch("archived")}
+                title="Stop showing this search — nothing is deleted"
+              >
+                Archive
+              </Button>
+            </>
+          )}
         </div>
 
         <Dialog open={showInviteDialog} onOpenChange={setShowInviteDialog}>
@@ -237,7 +524,7 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Invite Family Member</DialogTitle>
-              <DialogDescription>They'll be able to view properties and add their ratings</DialogDescription>
+              <DialogDescription>They&apos;ll be able to view properties and add their ratings</DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
@@ -273,6 +560,49 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
         </Dialog>
       </div>
 
+      {/* Shared search criteria */}
+      {showCriteria && activeSearch && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <SlidersHorizontal className="h-5 w-5" />
+              Shared Criteria
+            </CardTitle>
+            <CardDescription>
+              What this family search is looking for. Everyone invited sees the same criteria.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-4">
+              <div className="space-y-1">
+                <Label className="text-xs">Min price</Label>
+                <Input inputMode="numeric" value={critMinPrice} onChange={(e) => setCritMinPrice(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Max price</Label>
+                <Input inputMode="numeric" value={critMaxPrice} onChange={(e) => setCritMaxPrice(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Min beds</Label>
+                <Input inputMode="numeric" value={critBeds} onChange={(e) => setCritBeds(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Min baths</Label>
+                <Input inputMode="numeric" value={critBaths} onChange={(e) => setCritBaths(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Areas / neighborhoods (comma separated)</Label>
+              <Input value={critAreas} onChange={(e) => setCritAreas(e.target.value)} placeholder="Westlake, Zilker, 78704" />
+            </div>
+            {criteriaNotice && <p className="text-sm text-emerald-600">{criteriaNotice}</p>}
+            <Button size="sm" onClick={handleSaveCriteria} disabled={busy}>
+              {busy ? "Saving…" : "Save criteria"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Members */}
       {activeSearch && (
         <Card>
@@ -297,6 +627,17 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
                   )}
                   {member.name || member.email}
                   <span className="text-xs opacity-70">({member.role})</span>
+                  {member.role !== "owner" && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${member.name || member.email}`}
+                      className="ml-1 rounded-sm opacity-70 hover:opacity-100 disabled:opacity-40"
+                      disabled={busy}
+                      onClick={() => handleRemoveMember(member.id)}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
                 </Badge>
               ))}
             </div>
@@ -318,6 +659,46 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
         </TabsList>
 
         <TabsContent value="properties" className="space-y-4">
+          {/* Add from the buyer's own saved properties — the only list this
+              portal can honestly offer; nothing is invented here. */}
+          {activeSearch && (
+            <Card>
+              <CardContent className="flex flex-col gap-2 py-4 sm:flex-row sm:items-end">
+                <div className="flex-1 space-y-1">
+                  <Label className="text-sm">Add one of your saved homes to this search</Label>
+                  {addableProperties.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      {savedProperties.length === 0
+                        ? "You have no saved homes yet — save one from your search results first."
+                        : "Every home you've saved is already in this search."}
+                    </p>
+                  ) : (
+                    <Select value={addListingId} onValueChange={setAddListingId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a saved home" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {addableProperties.map((s) => (
+                          <SelectItem key={s.listing_id} value={s.listing_id}>
+                            {s.property_address ?? "Property"}
+                            {s.list_price ? ` — $${s.list_price.toLocaleString()}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+                <Button
+                  onClick={handleAddProperty}
+                  disabled={busy || !addListingId || addableProperties.length === 0}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add to search
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           {properties.length === 0 ? (
             <Card>
               <CardContent className="flex flex-col items-center justify-center py-12">
@@ -330,8 +711,11 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
             <div className="grid md:grid-cols-2 gap-4">
               {properties.map((prop) => {
                 const propertyData = prop.property_data || {}
+                // The row's identifier is property_mls_id — the ratings and
+                // consensus tables key on the SAME value.
+                const propertyKey = prop.property_mls_id
                 const myRating = prop.property_family_ratings?.find((r: any) => r.member_email === contactEmail)
-                const consensusData = consensus.find((c) => c.property_id === prop.property_id)
+                const consensusData = consensus.find((c) => c.property_id === propertyKey)
 
                 return (
                   <Card key={prop.id} className={consensusData?.is_finalist ? "ring-2 ring-amber-400" : ""}>
@@ -401,7 +785,7 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
                               variant={myRating?.vote === vote ? "default" : "outline"}
                               size="sm"
                               className={myRating?.vote === vote ? "" : color}
-                              onClick={() => handleRate(prop.property_id, vote)}
+                              onClick={() => handleRate(propertyKey, vote)}
                             >
                               <Icon className="h-4 w-4 mr-1" />
                               {label}
@@ -410,16 +794,75 @@ export function CollaborativeSearchDashboard({ contactId, contactEmail }: Collab
                         </div>
                       </div>
 
-                      {/* Mark as Finalist */}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full bg-transparent"
-                        onClick={() => handleToggleFinalist(prop.property_id, consensusData?.is_finalist || false)}
-                      >
-                        <Trophy className="h-4 w-4 mr-2" />
-                        {consensusData?.is_finalist ? "Remove from Finalists" : "Mark as Finalist"}
-                      </Button>
+                      {/* Who voted what */}
+                      <div className="space-y-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="px-0 text-sm"
+                          onClick={() => handleToggleRatings(propertyKey)}
+                        >
+                          <Users className="h-4 w-4 mr-2" />
+                          {ratingsFor === propertyKey ? "Hide family votes" : "See family votes"}
+                        </Button>
+                        {ratingsFor === propertyKey && (
+                          <div className="rounded-lg border p-3 space-y-2">
+                            {ratingsLoading ? (
+                              <p className="text-sm text-muted-foreground">Loading votes…</p>
+                            ) : ratings.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">Nobody has voted on this home yet.</p>
+                            ) : (
+                              ratings.map((r: any) => (
+                                <div key={r.id} className="flex items-start justify-between gap-3 text-sm">
+                                  <div className="min-w-0">
+                                    <p className="font-medium truncate">
+                                      {r.collaborative_search_members?.name || r.member_email}
+                                      <span className="ml-1 text-xs text-muted-foreground">
+                                        ({r.collaborative_search_members?.role ?? "member"})
+                                      </span>
+                                    </p>
+                                    {r.comments && (
+                                      <p className="text-xs text-muted-foreground">{r.comments}</p>
+                                    )}
+                                    {(r.pros?.length > 0 || r.cons?.length > 0) && (
+                                      <p className="text-xs text-muted-foreground">
+                                        {r.pros?.length > 0 && <>+ {r.pros.join(", ")} </>}
+                                        {r.cons?.length > 0 && <>− {r.cons.join(", ")}</>}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <Badge variant="secondary" className="shrink-0 capitalize">
+                                    {r.vote}
+                                    {r.rating != null && ` · ${r.rating}/5`}
+                                  </Badge>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 bg-transparent"
+                          onClick={() => handleToggleFinalist(propertyKey, consensusData?.is_finalist || false)}
+                        >
+                          <Trophy className="h-4 w-4 mr-2" />
+                          {consensusData?.is_finalist ? "Remove from Finalists" : "Mark as Finalist"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive"
+                          disabled={busy}
+                          onClick={() => handleRemoveProperty(propertyKey)}
+                          aria-label="Remove property from this search"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </CardContent>
                   </Card>
                 )

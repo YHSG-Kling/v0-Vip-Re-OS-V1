@@ -7,10 +7,25 @@ export default async function SocialPage({ params }: { params: Promise<{ contact
   const { contactId } = await params
   const supabase = await createClient()
 
-  // Fetch contact and their listing
-  const { data: contact } = await supabase.from("contacts").select("*, listings(*)").eq("id", contactId).single()
+  // Fetch contact and their listing.
+  //
+  // contacts ↔ listings carries TWO FKs (listings_contact_id_fkey,
+  // listings_seller_contact_id_fkey), so the bare `listings(*)` was ambiguous and
+  // PostgREST refused the ENTIRE request (PGRST201) — supabase-js resolves that, so
+  // `contact` was null and this page redirected every seller straight back to "/".
+  // Named seller_contact_id: this surface is explicitly seller-facing ("available for
+  // sellers with an active listing" below), and seller_contact_id is the column the
+  // listing rails actually populate — legacy listings.contact_id is unset in practice.
+  // Embed names the columns PortalSocialHub reads (no `*` inside an embed, #214).
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("*, listings!listings_seller_contact_id_fkey(id, mls_number, address, bedrooms, bathrooms, list_price, property_type, photos, status)")
+    .eq("id", contactId)
+    .single()
 
-  if (!contact) {
+  // Check the error — an unchecked read reports a refusal as an absence, which is
+  // exactly what made the ambiguity above look like "this contact doesn't exist".
+  if (contactError || !contact) {
     redirect("/")
   }
 

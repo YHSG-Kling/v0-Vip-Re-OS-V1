@@ -1,9 +1,19 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { readRoleGrants, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { NextRequest, NextResponse } from "next/server"
 
+/**
+ * The note types this route can produce — and, not by coincidence, exactly the
+ * general-purpose half of the ai_assistant_notes.note_type CHECK. `noteType`
+ * arrives from the prepare_note model, which is *asked* for one of these but is
+ * not bound to comply; anything else is a rejected insert and a 500 the caller
+ * reads as "saving notes is broken". clampNoteType() keeps a creative answer
+ * from costing the user their note.
+ */
 const NOTE_TYPE_TITLE: Record<string, string> = {
   general: "Note",
   call_outcome: "Call Outcome",
@@ -16,27 +26,44 @@ const NOTE_TYPE_TITLE: Record<string, string> = {
   observation: "Observation",
 }
 
+const clampNoteType = (v: unknown): string =>
+  typeof v === "string" && v in NOTE_TYPE_TITLE ? v : "general"
+
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  // Resolve role, brokerage, vendor_id
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("role, brokerage_id, vendor_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .maybeSingle()
-  const { data: userData } = await supabase
-    .from("users")
-    .select("role, brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
+  // Resolve role, brokerage, vendor_id.
+  //
+  // WAS one `.limit(1).maybeSingle()` row asked for all three — the fail-ARBITRARY
+  // shape. With no ORDER BY the "chosen" grant is whatever the plan returned, so a
+  // multi-role seat could get its role, its TENANT and its vendor id from a row
+  // picked at random, and get different answers on the next request. Each of the
+  // three is now derived from the whole grant set by its own rule.
+  const [grantsResult, { data: userData }] = await Promise.all([
+    readRoleGrants(supabase, user.id),
+    supabase.from("users").select("role, brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
+  if (!grantsResult.ok) {
+    console.error("[ai-note] role grant read failed:", grantsResult.error)
+  }
+  const grants = grantsResult.ok ? grantsResult.grants : []
 
-  const role = (roleRow?.role ?? userData?.role ?? "agent").toLowerCase()
-  const brokerageId = (roleRow?.brokerage_id ?? userData?.brokerage_id) as string
-  const vendorId = (roleRow?.vendor_id ?? null) as string | null
+  // ONE role is genuinely required here — it names the writer in the system prompt
+  // and picks which extra note type is offered. The seat's own declared identity
+  // (users.role) wins when the user actually holds a grant for it; otherwise
+  // authority order decides, the same way on every call.
+  const role = (selectPrimaryRole(grants, userData?.role as string | null) ?? userData?.role ?? "agent").toLowerCase()
+  // Tenant: same grant-then-profile precedence as before, but the grant half is now
+  // chosen by explicit authority order instead of by row order, and an untenanted
+  // grant (contact/lender, brokerage_id NULL) can no longer win and blank it.
+  const brokerageId = (selectTenantBrokerageId(grants) ?? userData?.brokerage_id) as string
+  // Vendor: single-valued, and reported rather than guessed if it is not.
+  const { vendorId, ambiguous: vendorAmbiguous } = selectVendorId(grants)
+  if (vendorAmbiguous) {
+    console.error("[ai-note] user", user.id, "is linked to more than one vendor — vendor note targets suppressed")
+  }
 
   const body = await req.json()
   const { action } = body as { action: string }
@@ -148,6 +175,8 @@ Rules:
       }
     }
 
+    const safeNoteType = clampNoteType(noteType)
+
     // Resolve entity FK columns
     const contactId = entityType === "contact" ? entityId : null
     const transactionId = entityType === "transaction" ? entityId : null
@@ -158,13 +187,15 @@ Rules:
       .from("ai_assistant_notes")
       .insert({
         note_text: noteText,
-        note_type: noteType,
+        note_type: safeNoteType,
         brokerage_id: brokerageId,
         created_by: user.id,
         contact_id: contactId,
         transaction_id: transactionId,
         lead_id: leadId,
-        source: "internal_ai_assistant",
+        // PRODUCER CLASS, not subsystem. 'internal_ai_assistant' is not a value
+        // the CHECK admits, so every save_note here returned a 500.
+        source: "ai_assistant",
         content_hash: contentHash || null,
         ai_draft_prompt: sessionId || null,
       })
@@ -178,16 +209,20 @@ Rules:
     const noteId = noteRow.id
 
     // ── 2. activities (always) ────────────────────────────────────────────────
+    // activities.agent_id and tasks.assigned_to_agent_id both FK agents(id), not
+    // users(id) — writing user.id FK-rejected the row. Resolved once, reused below.
+    const actingAgentId = await resolveAgentId(service, user.id)
+
     const { data: activityRow } = await service
       .from("activities")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: user.id,
+        agent_id: actingAgentId,
         contact_id: contactId,
         transaction_id: transactionId,
         activity_type: "ai_assistant_note",
         entity_type: entityType !== "general" ? entityType : null,
-        title: NOTE_TYPE_TITLE[noteType] ?? "Note",
+        title: NOTE_TYPE_TITLE[safeNoteType] ?? "Note",
         notes: noteText,
         status: "completed",
         completed_at: new Date().toISOString(),
@@ -208,7 +243,14 @@ Rules:
       const appended = contact?.notes
         ? `${contact.notes}\n\n[AI Note - ${ts}]\n${noteText}`
         : `[AI Note - ${ts}]\n${noteText}`
-      await service.from("contacts").update({ notes: appended }).eq("id", contactId)
+      // The error is READ. This appends the AI's note to contact-authored text —
+      // a refusal loses the note outright, and the route answered 200 either way.
+      // Not failed over (the activity row above is the note's primary home), but
+      // a lost append is no longer invisible.
+      const { error: notesAppendError } = await service.from("contacts").update({ notes: appended }).eq("id", contactId)
+      if (notesAppendError) {
+        console.error(`[ai-note] contacts.notes append REFUSED for ${contactId}:`, notesAppendError.message)
+      }
     }
 
     // ── 4. leads.notes append (when entity is lead) ────────────────────────────
@@ -263,13 +305,16 @@ Rules:
 
     // ── 7. tasks (human-confirmed, optional) ──────────────────────────────────
     let taskId: string | null = null
-    if (createTask && taskTitle?.trim()) {
+    // tasks.assigned_to_agent_id is NOT NULL and FKs agents(id) — a caller with no
+    // agent profile cannot be assigned a task, so skip it rather than write an id
+    // the foreign key will reject anyway.
+    if (createTask && taskTitle?.trim() && actingAgentId) {
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0]
       const { data: task } = await service
         .from("tasks")
         .insert({
           brokerage_id: brokerageId,
-          assigned_to_agent_id: user.id,
+          assigned_to_agent_id: actingAgentId,
           contact_id: contactId,
           transaction_id: transactionId,
           title: taskTitle.trim(),

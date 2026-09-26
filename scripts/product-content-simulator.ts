@@ -66,8 +66,16 @@ async function main() {
 
   console.log("\n[Layer 2 · gating + wiring]")
   const actSrc = readFileSync(join(process.cwd(), "app/actions/superadmin/platform-content.ts"), "utf8")
+  // The calendar body moved out of the action into the ONE writer the button
+  // and the Monday cron share (lib/platform/product-content-autopilot.ts,
+  // 2026-09-07); the idempotency key lives there and the action delegates.
+  const writerSrc = readFileSync(join(process.cwd(), "lib/platform/product-content-autopilot.ts"), "utf8")
   check("actions marketing-gated (capability map) + audited + idempotent per (channel, date)",
-    /platformStaffCan\(role, "marketing"\)/.test(actSrc) && /superadmin_audit_log/.test(actSrc) && /eq\("scheduled_for", post\.scheduledFor\)/.test(actSrc))
+    // 2026-09-09: requireMarketing merged onto lib/auth/platform-guard.ts — gate asserted on the survivor.
+    (/platformStaffCan\(role, "marketing"\)/.test(actSrc) || (/\brequireMarketing\(\)/.test(actSrc) && /requirePlatformCapability\("marketing"\)/.test(readFileSync(join(process.cwd(), "lib/auth/platform-guard.ts"), "utf8")) && /platformStaffCan\(role, capability\)/.test(readFileSync(join(process.cwd(), "lib/auth/platform-guard.ts"), "utf8")))) && /superadmin_audit_log/.test(actSrc)
+    && /writeWeeklyProductCalendar\(svc/.test(actSrc)
+    && /export async function writeWeeklyProductCalendar/.test(writerSrc)
+    && /eq\("channel", post\.channel\)\.eq\("scheduled_for", post\.scheduledFor\)/.test(writerSrc))
   const pageSrc = readFileSync(join(process.cwd(), "app/dashboard/superadmin/growth/page.tsx"), "utf8")
   check("content board wired on the growth page", /ProductContentBoard/.test(pageSrc))
 

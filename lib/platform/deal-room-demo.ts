@@ -61,6 +61,7 @@
 // which is what the production pipeline's request-scoped client needs.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -70,14 +71,23 @@ type Svc = ReturnType<typeof createServiceClient>
 export const DEAL_ROOM_TAG = "deal-room-demo"
 /** Provenance label for staged analysis rows (call_analyses.analyzed_by). */
 export const DEAL_ROOM_PROVENANCE = "deal_room_demo"
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: DEAL_ROOM_PROSPECT, DEAL_ROOM_TRANSCRIPT_HEADER.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** The header line every synthetic transcript opens with — provenance in the artifact itself. */
-export const DEAL_ROOM_TRANSCRIPT_HEADER =
+const DEAL_ROOM_TRANSCRIPT_HEADER =
   "[deal-room-demo] SYNTHETIC TRANSCRIPT — staged showcase meeting on the sanctioned demo tenant; no real client, no real call."
 
 /**
  * Deterministic fixed ids — the demo-tenant.ts demoUuid idiom (same
  * dde00000-0000-4000-a000- prefix) but with entity blocks ≥ 9001, a range the
  * round-21 seeder (blocks 1–7) can never occupy. The id itself is a marker.
+ * CENSUS NOTE: internal-live (builds DEAL_ROOM_IDS just below); exported for
+ * scripts/deal-room-demo-simulator.ts:57-59 (determinism + the <9001 refusal).
  */
 export function dealRoomUuid(entity: number, n: number): string {
   if (entity < 9001) throw new Error("deal-room ids live in entity blocks ≥ 9001 (round-21 owns 1–7)")
@@ -141,7 +151,8 @@ export function hasDealRoomMarker(row: Record<string, unknown>): boolean {
 
 const DAY = 24 * 60 * 60 * 1000
 
-export interface DealRoomStoryPlanInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DealRoomStoryPlanInput {
   brokerageId: string
   /** The demo owner's agents.id (CRM rows hang off it) — null tolerated. */
   agentId: string | null
@@ -154,7 +165,8 @@ export interface DealRoomStoryPlanInput {
   now?: Date
 }
 
-export interface DealRoomStoryPlan {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DealRoomStoryPlan {
   market: Record<string, unknown>
   raw: Record<string, unknown>
   saves: Array<Record<string, unknown>>
@@ -171,7 +183,7 @@ export interface DealRoomStoryPlan {
 
 /** The scraped prospect — fictional idiom matching the round-21 dataset
  *  (RFC-2606 reserved domain, 555 phone, obviously-fictional surname). */
-export const DEAL_ROOM_PROSPECT = {
+const DEAL_ROOM_PROSPECT = {
   firstName: "Jordan",
   lastName: "Demoprospect",
   email: "jordan.demoprospect@demo-showcase.example.com",
@@ -299,7 +311,7 @@ export function buildDealRoomStoryPlan(input: DealRoomStoryPlanInput): DealRoomS
     started_at: iso(1 * DAY),
     duration_seconds: 26 * 60,
     transcription: transcript,
-    vapi_call_id: `zoom:${DEAL_ROOM_TAG}-showcase-meeting`,
+    vendor_call_id: `zoom:${DEAL_ROOM_TAG}-showcase-meeting`,
   }
 
   const callAnalysis = {
@@ -401,13 +413,15 @@ export function isRecognizedDemoRow(
   return false
 }
 
-export interface GuardSuspect {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface GuardSuspect {
   table: string
   count: number
   sampleIds: string[]
 }
 
-export interface DemoDayGuardResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DemoDayGuardResult {
   clean: boolean
   suspects: GuardSuspect[]
 }
@@ -625,7 +639,23 @@ export async function teardownDealRoomStory(svc: Svc, brokerageId: string): Prom
   if (contactIds.length > 0) add("contacts", (q) => B(q).in("id", contactIds), "id∈story")
   add("lead_scraping_markets", (q) => B(q).eq("id", DEAL_ROOM_IDS.market), "id=story")
 
-  for (const s of steps) await del(svc, report, s.table, s.apply, s.predicate)
+  // THE DECLARED ORDER IS THE ORDER RUN, not a comment beside the list (lane 80E:
+  // DEAL_ROOM_TEARDOWN_ORDER was exported for the simulator and read by nothing
+  // here, so the FK-critical orderings it "locks" were only ever locked in the
+  // proof). Steps are stable-sorted by their table's rank in the declaration;
+  // a step whose table the declaration never names is REFUSED before any row is
+  // deleted — deleting a parent ahead of an undeclared child is exactly the
+  // orphaning this order exists to prevent (§4: fail closed).
+  const rank = new Map<string, number>(DEAL_ROOM_TEARDOWN_ORDER.map((t, i) => [t, i]))
+  const undeclared = [...new Set(steps.map((s) => s.table).filter((t) => !rank.has(t)))]
+  if (undeclared.length > 0) {
+    report.error = `teardown REFUSED: table(s) not in DEAL_ROOM_TEARDOWN_ORDER — ${undeclared.join(", ")} (declare them, children before parents)`
+    report.errors.push(report.error)
+    return report
+  }
+  const ordered = steps.map((s, i) => ({ s, i })).sort((a, b) => (rank.get(a.s.table)! - rank.get(b.s.table)!) || (a.i - b.i)).map((x) => x.s)
+
+  for (const s of ordered) await del(svc, report, s.table, s.apply, s.predicate)
 
   // Revert the staged stall facts on the round-21 listing (the row itself stays).
   try {
@@ -660,7 +690,8 @@ export async function teardownDealRoomDemo(): Promise<TeardownReport> {
 
 // ─── The seeder ──────────────────────────────────────────────────────────────
 
-export interface DealRoomSeedStep {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DealRoomSeedStep {
   beat: string
   rail: "real" | "staged" | "unavailable"
   ok: boolean
@@ -798,7 +829,17 @@ export async function seedDealRoomDemo(): Promise<DealRoomSeedReport> {
         throw new Error(`Engine 2 did not convert (stage=${l?.lead_stage}, contact=${l?.contact_id ?? "none"})`)
       }
       ids.contactId = l.contact_id
-      await svc.from("contacts").update({ tags: [DEAL_ROOM_TAG, "buyer"] }).eq("id", l.contact_id).eq("brokerage_id", brokerageId)
+      await sentinelWrite(
+        svc,
+        svc.from("contacts").update({ tags: [DEAL_ROOM_TAG, "buyer"] }).eq("id", l.contact_id).eq("brokerage_id", brokerageId),
+        {
+          table: "contacts",
+          flow: "deal_room_demo_showcase_tag",
+          brokerageId,
+          reason:
+            "showcase-only tag so the demo cleanup can find its own rows; every assertion in this beat reads the REAL kernel rows (lead_stage, contact_id, assignment_log), never the tag",
+        },
+      )
       const { count: logCount } = await svc.from("assignment_log").select("id", { count: "exact", head: true }).eq("lead_id", ids.leadId!)
       steps.push({
         beat: "2 · AI-ISA qualification → conversion + policy assignment", rail: "real", ok: true,

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useTransition, useCallback } from "react"
+import { useState, useEffect, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Button }    from "@/components/ui/button"
@@ -8,7 +8,11 @@ import { Input }     from "@/components/ui/input"
 import { Badge }     from "@/components/ui/badge"
 import { cn }        from "@/lib/utils"
 import { searchProperties, smartSearch } from "@/app/actions/idx-search"
-import { isTourAllowed }                 from "@/lib/buyer-lifecycle/gating-helpers"
+// The gate runs on the SERVER. Importing gating-helpers directly into this client
+// component pulled the kernel (and the service-role client) into the browser bundle and
+// broke the production build; canBuyerScheduleTours is the server action that already
+// wraps exactly this check, with UUID validation in front of it.
+import { canBuyerScheduleTours }          from "@/app/actions/buyer-lifecycle-core"
 import { requestShowing }                from "@/app/actions/showings"
 import { createClient }                  from "@/lib/supabase/client"
 import { useToast }                      from "@/hooks/use-toast"
@@ -363,7 +367,7 @@ export function SearchClient({
   }
 
   async function handleScheduleShowing(property: Property) {
-    const gateResult = await isTourAllowed(buyerId)
+    const gateResult = await canBuyerScheduleTours(buyerId)
     if (!gateResult.allowed) {
       setShowGate(true)
       return

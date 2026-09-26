@@ -15,6 +15,9 @@ import { runQuarterlyTaxConcierge } from "@/lib/finance/quarterly-tax-concierge"
  * and proactively reminds them (amount + due date). No-op on days outside the ~12-day window before a
  * due date. Idempotent (one reminder per agent per quarter). Agent-owned — works for a solo agent
  * regardless of whether their brokerage is on the platform.
+ *
+ * TENANT OPTION (m574): only brokerages with tax_assistance_enabled = true are processed — the
+ * broker (or the solo-tier owner) flips it in Settings → Commission & Offerings.
  */
 export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)
@@ -36,7 +39,14 @@ export async function GET(req: NextRequest) {
   let dueQuarter: string | null = null
 
   try {
-    const { data: rows, error } = await supabase.from("brokerages").select("id").limit(1000)
+    // TENANT OPTION (m574): tax assistance is opt-in per brokerage — the same fail-closed filter
+    // shape the farm-mail cron uses (`.eq("farm_mail_enabled", true)`). A tenant that never enabled
+    // it gets no reminders; m574 backfilled true for brokerages already using the tax tools.
+    const { data: rows, error } = await supabase
+      .from("brokerages")
+      .select("id")
+      .eq("tax_assistance_enabled", true)
+      .limit(1000)
     if (error) throw error
     for (const b of (rows ?? []) as Array<{ id: string }>) {
       try {

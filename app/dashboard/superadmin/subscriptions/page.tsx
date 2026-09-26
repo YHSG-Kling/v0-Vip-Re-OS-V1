@@ -84,6 +84,77 @@ export default async function SuperadminSubscriptionsPage() {
         </div>
       </div>
 
+      {/* ── Your AI team's read ──────────────────────────────────────────────
+          A master console's job is to run the tenant base BY EXCEPTION: which
+          dollars are actively failing to collect, which are about to walk, and
+          where the book is fragile. Deterministic over the same oversight rows
+          the table below lists — no new queries. Signal ownership: subscription
+          + dunning oversight is the platform_sentinel domain
+          (lib/kernel/manager-registry.ts). */}
+      {(() => {
+        const reads: Array<{ severity: "urgent" | "warn" | "good"; text: string }> = []
+        const pastDue = rows.filter((r) => r.state === "past_due")
+        const pastDueMrr = pastDue.reduce((s, r) => s + (r.mrrCents ?? 0), 0)
+        const expiring = rows.filter((r) => r.state === "trial_expiring")
+        const noSub = rows.filter((r) => r.state === "no_subscription")
+
+        if (pastDue.length > 0) {
+          reads.push({
+            severity: "urgent",
+            text: `${fmtCents(pastDueMrr)} of MRR is past due across ${pastDue.length} tenant${pastDue.length === 1 ? "" : "s"} — this is billed revenue actively failing to collect, not forecast. Every day in dunning lowers the odds it lands.`,
+          })
+        }
+        if (expiring.length > 0) {
+          const expiringMrr = expiring.reduce((s, r) => s + (r.mrrCents ?? 0), 0)
+          const soonest = expiring.reduce((a, b) =>
+            (a.daysToTrialEnd ?? 99) <= (b.daysToTrialEnd ?? 99) ? a : b)
+          reads.push({
+            severity: "warn",
+            text: `${expiring.length} trial${expiring.length === 1 ? "" : "s"} expiring${expiringMrr > 0 ? ` (${fmtCents(expiringMrr)} at stake)` : ""} — soonest is ${soonest.name} in ${soonest.daysToTrialEnd ?? 0} day${soonest.daysToTrialEnd === 1 ? "" : "s"}. A trial that ends without a conversation converts by accident, not by design.`,
+          })
+        }
+        if (noSub.length > 0) {
+          reads.push({
+            severity: "warn",
+            text: `${noSub.length} tenant${noSub.length === 1 ? " has" : "s have"} no subscription attached — they're on the platform without a billing relationship. That's either intentional (comp/pilot) or silent leakage; either way it should be a decision, not a default.`,
+          })
+        }
+        // Concentration: how exposed is the book to its largest account?
+        if (totalMrrCents > 0 && rows.length > 1) {
+          const top = rows.reduce((a, b) => ((a.mrrCents ?? 0) >= (b.mrrCents ?? 0) ? a : b))
+          const share = Math.round(((top.mrrCents ?? 0) / totalMrrCents) * 100)
+          if (share >= 40) {
+            reads.push({
+              severity: "warn",
+              text: `${top.name} is ${share}% of total MRR — the book is concentrated. Losing one account would move the whole number, so treat their health as a platform metric.`,
+            })
+          }
+        }
+        if (reads.length === 0) {
+          reads.push({
+            severity: "good",
+            text: `Nothing needs intervention — no past-due balances, no trials about to lapse, every tenant on a subscription. ${fmtCents(totalMrrCents)} MRR is collecting cleanly.`,
+          })
+        }
+
+        const STYLE: Record<string, string> = {
+          urgent: "border-red-200 bg-red-50/60", warn: "border-amber-200 bg-amber-50/60", good: "border-emerald-200 bg-emerald-50/60",
+        }
+        const DOT: Record<string, string> = { urgent: "bg-red-500", warn: "bg-amber-500", good: "bg-emerald-500" }
+
+        return (
+          <section className="rounded-lg border border-indigo-200 p-4 space-y-2">
+            <h2 className="text-sm font-semibold">Your AI team&apos;s read</h2>
+            {reads.map((r, i) => (
+              <div key={i} className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 ${STYLE[r.severity]}`}>
+                <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${DOT[r.severity]}`} />
+                <p className="text-sm leading-relaxed">{r.text}</p>
+              </div>
+            ))}
+          </section>
+        )
+      })()}
+
       {/* Revenue trend — collected (paid) revenue by month + churn, from billing_invoices */}
       {revenue && (
         <section className="rounded-lg border p-4 space-y-3">
@@ -132,6 +203,16 @@ export default async function SuperadminSubscriptionsPage() {
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium truncate">{r.name}</p>
                   <p className="text-xs text-muted-foreground truncate">{r.reason}</p>
+                  {/* THE DUNNING CONTACT. Merged from the deleted
+                      app/actions/billing.ts:getDelinquentAccounts, whose only
+                      advantage over this queue was carrying the brokerage email
+                      — an attention row that says a tenant is past due without
+                      saying who to reach is half an alert. */}
+                  {r.email ? (
+                    <p className="text-xs text-muted-foreground/80 truncate">{r.email}</p>
+                  ) : (
+                    <p className="text-xs italic text-muted-foreground/60 truncate">No billing email on file</p>
+                  )}
                 </div>
                 <span className="shrink-0 text-sm font-semibold">{fmtCents(r.mrrCents)}<span className="text-xs text-muted-foreground">/mo</span></span>
                 <span className="shrink-0 text-xs font-medium text-indigo-600">Manage →</span>

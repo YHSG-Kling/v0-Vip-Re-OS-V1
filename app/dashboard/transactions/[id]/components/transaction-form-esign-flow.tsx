@@ -49,6 +49,7 @@ import {
 import {
   prefillFormAction,
   saveFormDraftAction,
+  loadFormDraftAction,
   launchEsignAction,
   getFormFieldsAction,
 } from "@/app/actions/forms-kernel"
@@ -128,6 +129,7 @@ export function TransactionFormEsignFlow({
   const [launching, setLaunching] = useState(false)
   const [savingDraft, setSavingDraft] = useState(false)
   const [draftSaved, setDraftSaved] = useState(false)
+  const [draftRestoredAt, setDraftRestoredAt] = useState<string | null>(null)
 
   // Reset state when sheet opens
   useEffect(() => {
@@ -137,6 +139,7 @@ export function TransactionFormEsignFlow({
       setFormSubmissionId(null)
       setLaunching(false)
       setDraftSaved(false)
+      setDraftRestoredAt(null)
       setSigners(
         defaultSigners.length > 0
           ? defaultSigners.map(s => ({ ...s }))
@@ -154,19 +157,45 @@ export function TransactionFormEsignFlow({
     }).catch(() => {})
     // Prefill from context when we have a real context ID
     if (contextId === "pending") return
+    let cancelled = false
     setPrefilling(true)
-    prefillFormAction({
-      form_name: formTemplate.name,
-      context_type: contextType,
-      context_id: contextId,
-    })
-      .then(res => {
-        if (res.success && res.data) {
-          setPrefillData(res.data.prefill?.fields ?? {})
+    ;(async () => {
+      let fields: Record<string, any> = {}
+      try {
+        const res = await prefillFormAction({
+          form_name: formTemplate.name,
+          context_type: contextType,
+          context_id: contextId,
+        })
+        if (res.success && res.data) fields = res.data.prefill?.fields ?? {}
+      } catch {/* prefill is best-effort */}
+
+      // RESTORE THE SAVED DRAFT. "Save Draft" below has always written to
+      // form_submissions, but nothing ever read it back — a draft was
+      // write-only, so an agent who saved and closed lost every edit and got
+      // the raw context prefill again on reopen. The draft is the NEWER truth
+      // (it is the agent's own corrections), so it wins over the context
+      // prefill, and its id is adopted as the submission id so the next save
+      // updates that row instead of racing a second draft.
+      try {
+        const draftRes: any = await loadFormDraftAction({
+          form_name:  formTemplate.name,
+          context_id: contextId,
+        })
+        const draft = draftRes?.success ? draftRes?.data?.draft : null
+        if (draft && !cancelled) {
+          fields = { ...fields, ...(draft.field_values ?? {}) }
+          if (draft.id) setFormSubmissionId(draft.id as string)
+          setDraftRestoredAt((draft.updated_at ?? draft.created_at) ?? null)
         }
-      })
-      .catch(() => {/* prefill is best-effort */})
-      .finally(() => setPrefilling(false))
+      } catch {/* no draft is the normal case, not an error */}
+
+      if (!cancelled) {
+        setPrefillData(fields)
+        setPrefilling(false)
+      }
+    })()
+    return () => { cancelled = true }
   }, [open, step, formTemplate.id, formTemplate.name, contextType, contextId])
 
   // Debounced draft save
@@ -274,6 +303,15 @@ export function TransactionFormEsignFlow({
           <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4 shrink-0">Required</Badge>
         )}
       </div>
+
+      {draftRestoredAt && !prefilling && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2">
+          <Pencil className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+          <p className="text-xs text-amber-900">
+            Restored your saved draft from {new Date(draftRestoredAt).toLocaleString()} — your edits are below, not the raw transaction values.
+          </p>
+        </div>
+      )}
 
       {prefilling ? (
         <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground">

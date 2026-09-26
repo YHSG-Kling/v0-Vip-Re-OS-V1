@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { runScrapeTestAction } from "@/app/actions/admin/run-scrape-test"
+import { runScrapeTestAction, verifyScrapeTestCronDoorAction } from "@/app/actions/admin/run-scrape-test"
 import { retryFailedSourceBatch } from "@/lib/kernel/scraping"
 import type { ScrapingDiagnosticsData } from "@/lib/kernel/scraping"
 
@@ -128,6 +128,8 @@ export function ScrapeDiagnosticsClient({
   const [dryRunResult,    setDryRunResult]    = useState<DryRunResult | null>(null)
   const [dryRunError,     setDryRunError]     = useState<string | null>(null)
   const [dryRunLoading,   setDryRunLoading]   = useState(false)
+  const [cronDoorResult,  setCronDoorResult]  = useState<string | null>(null)
+  const [cronDoorLoading, setCronDoorLoading] = useState(false)
   const [retryingId,      setRetryingId]      = useState<string | null>(null)
   const [retryMessages,   setRetryMessages]   = useState<Record<string, string>>({})
   const [isPending,       startTransition]    = useTransition()
@@ -165,6 +167,27 @@ export function ScrapeDiagnosticsClient({
       setDryRunError(String(err))
     } finally {
       setDryRunLoading(false)
+    }
+  }
+
+  // Platform-staff-only check that the CRON_SECRET door (GET /api/admin/
+  // scrape-test) is still live and answering — the same route the scraping
+  // cron's own operators use, exercised here through the server-side self-call
+  // in verifyScrapeTestCronDoorAction (app/actions/admin/run-scrape-test.ts).
+  async function handleVerifyCronDoor() {
+    if (!selectedMarketId) return
+    setCronDoorLoading(true)
+    setCronDoorResult(null)
+    try {
+      const result = await verifyScrapeTestCronDoorAction(selectedMarketId, selectedSource)
+      if (result.error) { setCronDoorResult(`Error: ${result.error}`); return }
+      setCronDoorResult(
+        `Door answered ${result.doorStatus} — would_insert ${result.body?.would_insert ?? "—"}, est. cost $${(result.body?.estimated_cost_usd ?? 0).toFixed(4)}`,
+      )
+    } catch (err) {
+      setCronDoorResult(`Error: ${String(err)}`)
+    } finally {
+      setCronDoorLoading(false)
     }
   }
 
@@ -207,6 +230,32 @@ export function ScrapeDiagnosticsClient({
           </span>
         </div>
       </div>
+
+      {/* A REFUSED READ SAYS SO. Without this, a dimension whose query failed
+          renders as an empty panel and a zero in the stat cards below — a
+          diagnostics page reporting health for an outage. The counts that
+          follow are computed from whatever DID load, so the banner also warns
+          that they are partial rather than authoritative. */}
+      {data.readErrors.length > 0 && (
+        <div className="mx-auto max-w-7xl px-8 pt-8">
+          <div className="rounded-lg border border-red-800 bg-red-950/40 p-5">
+            <p className="text-xs font-mono uppercase tracking-wide text-red-400">
+              {data.readErrors.length} of 6 diagnostic reads failed
+            </p>
+            <p className="mt-2 text-sm text-red-200">
+              The counts and panels below are computed from the reads that succeeded — they are
+              incomplete, not a healthy zero.
+            </p>
+            <ul className="mt-3 space-y-1">
+              {data.readErrors.map(e => (
+                <li key={e.dimension} className="font-mono text-xs text-red-300">
+                  <span className="text-red-400">{e.dimension}</span> — {e.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="mx-auto max-w-7xl px-8 pt-8">
@@ -496,6 +545,45 @@ export function ScrapeDiagnosticsClient({
         {/* TAB: Cron History */}
         {activeTab === "cron" && (
           <section>
+            <SectionHeader title="BatchData Smart Search subscriptions" count={data.smartSearchSubscriptions.length} />
+            <p className="mb-4 text-xs text-zinc-600">
+              One outbound Property Subscription per market × quicklist. Reconciled on every lead-scraping tick;
+              a non-empty error column means the last registration or renewal was refused.
+            </p>
+            <TableContainer>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800">
+                    <th className="px-2 py-1 text-left">Market</th>
+                    <th className="px-2 py-1 text-left">Quicklist</th>
+                    <th className="px-2 py-1 text-left">Status</th>
+                    <th className="px-2 py-1 text-left">Subscription</th>
+                    <th className="px-2 py-1 text-left">Webhook</th>
+                    <th className="px-2 py-1 text-left">Reconciled</th>
+                    <th className="px-2 py-1 text-left">Renewed</th>
+                    <th className="px-2 py-1 text-left">Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.smartSearchSubscriptions.length === 0 && (
+                    <tr><td colSpan={8} className="px-2 py-2 text-zinc-500">No subscriptions registered yet.</td></tr>
+                  )}
+                  {data.smartSearchSubscriptions.map((sub) => (
+                    <tr key={sub.id} className="border-b border-zinc-900">
+                      <td className="px-2 py-1">{data.markets.find((m) => m.id === sub.market_id)?.name ?? sub.market_id}</td>
+                      <td className="px-2 py-1">{sub.quicklist}</td>
+                      <td className="px-2 py-1">{sub.status}</td>
+                      <td className="px-2 py-1 font-mono text-xs">{sub.subscription_id ?? "—"}</td>
+                      <td className="px-2 py-1 truncate max-w-[220px]" title={sub.webhook_url}>{sub.webhook_url}</td>
+                      <td className="px-2 py-1">{sub.last_reconciled_at ? new Date(sub.last_reconciled_at).toLocaleString() : "—"}</td>
+                      <td className="px-2 py-1">{sub.renewed_at ? new Date(sub.renewed_at).toLocaleString() : "—"}</td>
+                      <td className="px-2 py-1 text-red-400">{sub.last_error ?? ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableContainer>
+            <div className="h-6" />
             <SectionHeader title="Cron Run History" count={data.cronHistory.length} />
             <p className="mb-4 text-xs text-zinc-600">
               Each row is one execution of the lead-scraping cron job.
@@ -629,7 +717,29 @@ export function ScrapeDiagnosticsClient({
                 >
                   {dryRunLoading ? "Running..." : "Run Dry Test"}
                 </button>
+                {isSuperadmin && (
+                  <button
+                    onClick={handleVerifyCronDoor}
+                    disabled={cronDoorLoading || !selectedMarketId}
+                    title="Exercises GET /api/admin/scrape-test — the Bearer CRON_SECRET door the scraping cron itself uses — through a server-side self-call so no secret ever reaches the browser."
+                    className="rounded border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-400 transition-colors hover:bg-zinc-800 disabled:opacity-50"
+                  >
+                    {cronDoorLoading ? "Checking..." : "Verify Cron Door"}
+                  </button>
+                )}
               </div>
+
+              {cronDoorResult && (
+                <div
+                  className={`mt-3 rounded border p-3 text-sm ${
+                    cronDoorResult.startsWith("Error")
+                      ? "border-red-800 bg-red-950 text-red-400"
+                      : "border-emerald-800 bg-emerald-950 text-emerald-400"
+                  }`}
+                >
+                  {cronDoorResult}
+                </div>
+              )}
 
               {dryRunError && (
                 <div className="mt-4 rounded border border-red-800 bg-red-950 p-3 text-sm text-red-400">{dryRunError}</div>

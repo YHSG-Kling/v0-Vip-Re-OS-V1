@@ -18,15 +18,22 @@
 
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getPlaybook, CREATIVE_PLAYBOOKS, type PlaybookStep } from "@/lib/marketing/creative-playbooks"
+import { getPlaybook, type PlaybookStep } from "@/lib/marketing/creative-playbooks"
 import { revalidatePath } from "next/cache"
 
-export async function listCreativePlaybooks() {
-  return CREATIVE_PLAYBOOKS.map((p) => ({
-    key: p.key, title: p.title, strategy: p.strategy, whyItWorks: p.whyItWorks, ridesOn: p.ridesOn,
-    channels: p.steps.map((s) => s.kind).filter((k) => k !== "bundle"),
-  }))
-}
+// ─── listCreativePlaybooks — DELETED (orphan burn-down lane C) ────────────────
+//
+// FUNCTIONALITY ALREADY ELSEWHERE. The catalog is a CODE-VERSIONED constant,
+// not a query: lib/marketing/creative-playbooks.ts:44 exports CREATIVE_PLAYBOOKS
+// and the only surface that lists plays — app/settings/campaign-bundles/client.tsx:257
+// — imports that constant DIRECTLY and maps over it. This wrapper added a network
+// round-trip (and a public HTTP endpoint, since this file is "use server") to hand
+// back data the client already had at build time.
+//
+// NOTHING TO MERGE, and the derived field was the WEAKER of the two: this filtered
+// only `bundle` out of the channel list, so it advertised `lead_magnet`, `qr` and
+// `video` as "channels". The client filters all four
+// (client.tsx:284) and is the version that ships.
 
 // ── The ONE author: brief → charter-governed copy JSON ───────────────────────
 async function authorPlaybookCopy(args: {
@@ -41,13 +48,23 @@ async function authorPlaybookCopy(args: {
   try {
     const { generateTextRouted } = await import("@/lib/ai/models")
     const { withScriptStandards } = await import("@/lib/ai/script-standards")
+    // LANE 77D — the Director gate on EVERY spoken writer. A shape that carries
+    // a `script` key is the VIDEO channel: its text is stored as
+    // ai_video_projects.script_content and handed to dispatchVideo (D-ID +
+    // ElevenLabs), i.e. SPOKEN by the agent's avatar. That channel gets the
+    // SHARED spoken-delivery standards (withSpokenScriptStandards = the charter
+    // withScriptStandards already applied here PLUS the spoken directive:
+    // contractions, no self-intro, no stage directions); written channels keep
+    // the charter alone. Found by test:video-type-matrix's derived writer scan.
+    const { withSpokenScriptStandards } = await import("@/lib/video/realism-profile")
+    const systemAsk = `You write real-estate marketing copy for ${args.brandLine}. Fair-Housing safe: never reference protected classes, family status, or steer. Write like a sharp human, never like a template.`
     const keys = Object.entries(args.shape).map(([k, hint]) => `"${k}": ${hint}`).join(", ")
     const { text } = await generateTextRouted({
       feature: "client_message",
       brokerageId: args.brokerageId,
-      system: withScriptStandards(
-        `You write real-estate marketing copy for ${args.brandLine}. Fair-Housing safe: never reference protected classes, family status, or steer. Write like a sharp human, never like a template.`,
-      ),
+      system: "script" in args.shape
+        ? withSpokenScriptStandards(systemAsk)
+        : withScriptStandards(systemAsk),
       prompt:
         `Campaign: "${args.playbookTitle}". Channel: ${args.kind}.\n` +
         `Strategy brief (write copy that accomplishes exactly this):\n${args.brief}\n\n` +
@@ -82,7 +99,13 @@ export interface InstallPlaybookResult {
   }
 }
 
-export async function installCreativePlaybook(playbookKey: string): Promise<InstallPlaybookResult> {
+export async function installCreativePlaybook(
+  playbookKey: string,
+  /** Wave 80D — the tenant's "Zestimate & co." pick for the zestimate_challenge
+   *  play: which estimate source the still comes from and (optionally) which
+   *  listing's address it is captured for. Tenant is the SESSION's, never here. */
+  opts: { estimateSource?: string | null; listingId?: string | null } = {},
+): Promise<InstallPlaybookResult> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const playbook = getPlaybook(playbookKey)
@@ -97,6 +120,100 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
   let qrCodeId: string | null = null
   let videoProjectId: string | null = null
 
+  // ── 0. THE STILL (wave 80D — owner: "screenshots can be used by tenants";
+  //      the play's own whyItWorks: "their online estimate framing the
+  //      background"). AUTONOMOUS: when this is the Zestimate Challenge and the
+  //      tenant has no still for the chosen source + address, the OS captures
+  //      one through lib/marketing/tenant-screenshot-door.ts into the tenant's
+  //      marketing assets, PENDING — queued for the human on the existing
+  //      approval rail, never used until approved. An APPROVED still is what
+  //      the postcard art and the video's screenshot slot consume below.
+  let approvedStillUrl: string | null = null
+  let approvedStillId: string | null = null
+  // Wave 84B — the campaign's OWN video takes the still only when THE ONE USE
+  // RULE (lib/assets/screenshot-uses.ts) and the row's uses admit
+  // campaign_video; and the Zestimate Challenge's copy may quote Zillow's
+  // figure once a human confirmed it off the approved still.
+  let campaignVideoStillUrl: string | null = null
+  let zestimateFigureLine: string | null = null
+  // Wave 84A — the campaign video's asset provenance (the still reused from the
+  // tenant's bucket, or why none rides it), stamped on the video row below.
+  const stillLedger: import("@/lib/video/plan-asset-readiness").ProvenanceEntry[] = []
+  // Address: the named listing, else the tenant's most recent listing (own
+  // DB — the cheapest rail; no provider is asked for an address). Shared by
+  // the Zestimate Challenge and the Estimate Comparison (wave 82D).
+  const resolvePlayAddress = async (): Promise<string | null> => {
+    if (opts.listingId) {
+      const { data: l, error: lErr } = await svc.from("listings").select("address, city, state").eq("id", opts.listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      if (lErr) notes.push(`Still: listing read refused — ${lErr.message}`)
+      return l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
+    }
+    const { data: l, error: lErr } = await svc.from("listings").select("address, city, state").eq("brokerage_id", ctx.brokerageId).not("address", "is", null).order("updated_at", { ascending: false }).limit(1).maybeSingle()
+    if (lErr) notes.push(`Still: listing read refused — ${lErr.message}`)
+    return l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
+  }
+  if (playbook.key === "estimate_comparison") {
+    // WAVE 82D — the comparison piece: an APPROVED composite is the postcard
+    // art and the video's screenshot slot; otherwise the OS gathers every
+    // source (pending) and says exactly what the human still has to do. 83C:
+    // Zillow is the campaign still; realtor.com / redfin / homes.com figures
+    // come from an AI web search (never a screenshot), staged for approval.
+    const address = await resolvePlayAddress()
+    if (!address) notes.push("Comparison: no listing address on file — enter one under Estimate Comparison.")
+    else {
+      const { approvedComparisonCreative, listComparisonEvidence, gatherEstimateComparisonEvidence } = await import("@/lib/marketing/estimate-comparison")
+      const postcard = await approvedComparisonCreative(svc, ctx.brokerageId, address, "postcard_6x9")
+      const square = await approvedComparisonCreative(svc, ctx.brokerageId, address, "social_square")
+      if (postcard) { approvedStillUrl = postcard.url; approvedStillId = postcard.id; notes.push("Comparison: using your approved estimate comparison as the postcard art.") }
+      if (square && !approvedStillUrl) { approvedStillUrl = square.url; approvedStillId = square.id }
+      // The approved comparison COMPOSITE is this campaign's own creative
+      // (Zillow still + text figures) — its campaign video shows it.
+      campaignVideoStillUrl = approvedStillUrl
+      if (campaignVideoStillUrl) stillLedger.push({ kind: "screenshots", status: "reused", source: "estimate_comparison_creative", count: 1, urls: [campaignVideoStillUrl], assetIds: approvedStillId ? [approvedStillId] : [] })
+      if (!postcard && !square) {
+        const have = await listComparisonEvidence(svc, ctx.brokerageId, address)
+        if (have.length === 0) {
+          const cap = await gatherEstimateComparisonEvidence({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null })
+          if (!cap.ok) notes.push(`Comparison: not gathered — ${cap.reason}`)
+          else notes.push(`Comparison: gathered ${cap.outcomes.filter((o) => o.ok).length}/${cap.outcomes.length} websites for ${address} (Zillow still + web-searched figures) — approve each, then compose under Estimate Comparison. ${cap.outcomes.filter((o) => !o.ok).map((o) => `${o.source}: ${(o as { reason: string }).reason}${(o as { fallback?: boolean }).fallback ? " — type the figure the site shows" : ""}`).join("; ")}`.trim())
+        } else notes.push(`Comparison: ${have.length} capture(s) on file for ${address} — approve, confirm figures and compose under Estimate Comparison (the QR stays the postcard art until then).`)
+      }
+    }
+  }
+  if (playbook.key === "zestimate_challenge") {
+    const { ensureZestimateChallengeStill } = await import("@/lib/marketing/tenant-screenshot-door")
+    const address = await resolvePlayAddress()
+    const still = await ensureZestimateChallengeStill({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null, source: opts.estimateSource ?? null })
+    // Wave 84A — the campaign video's still, as provenance: reused when the
+    // ONE use rule and the row admit campaign_video, else why it rides nothing.
+    const { campaignStillProvenance } = await import("@/lib/video/plan-asset-readiness")
+    if (still.state === "approved") {
+      approvedStillUrl = still.url; approvedStillId = still.assetId
+      const { screenshotUseAllowed } = await import("@/lib/assets/screenshot-capture")
+      if (still.uses.includes("campaign_video") && screenshotUseAllowed("zillow_zestimate", "campaign_video")) campaignVideoStillUrl = still.url
+      notes.push(`Still: using your approved ${still.source.replace(/_/g, " ")} still as the postcard art${campaignVideoStillUrl ? " and the campaign video's screenshot slot" : " (it is not marked for the campaign video)"}.`)
+      // The REAL Zestimate (owner, 84B: "it is oky to have a real number as
+      // we aren't using it as our true value") — this play only, only a
+      // figure a human confirmed off the approved still, always as Zillow's.
+      const { playMayQuoteZestimate, zestimateFigureBrief } = await import("@/lib/marketing/creative-playbooks")
+      if (playMayQuoteZestimate(playbook.key) && still.figureUsd != null) {
+        const { formatUsd, validateConfirmedFigure } = await import("@/lib/marketing/estimate-comparison")
+        const fig = validateConfirmedFigure(still.figureUsd)
+        if (fig.ok) {
+          zestimateFigureLine = zestimateFigureBrief(formatUsd(fig.figureUsd), still.capturedAt ? still.capturedAt.slice(0, 10) : null)
+          notes.push(`Still: the copy may quote Zillow's Zestimate (${formatUsd(fig.figureUsd)}), always attributed to Zillow — never as your value.`)
+        }
+      } else if (playMayQuoteZestimate(playbook.key)) {
+        notes.push("Still: confirm the Zestimate shown on your approved still to let the copy quote Zillow's figure.")
+      }
+    }
+    else if (still.state === "captured") notes.push(`Still: captured a ${still.source.replace(/_/g, " ")} still for ${address} — awaiting your approval under Zestimate & co. stills (the QR stays the postcard art until then).`)
+    else if (still.state === "pending") notes.push(`Still: a ${still.source.replace(/_/g, " ")} still for ${address} is awaiting your approval under Zestimate & co. stills.`)
+    else if (still.state === "refused") notes.push(`Still: not captured — ${still.reason}`)
+    else notes.push("Still: no listing address on file to capture an estimate still for — add one under Zestimate & co. stills.")
+    stillLedger.push(campaignStillProvenance(still, { forCampaignVideo: !!campaignVideoStillUrl }))
+  }
+
   // Brand voice grounding — THE single brand source of truth (tier cascade).
   let brandLine = "the agent's brokerage"
   try {
@@ -105,8 +222,10 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
     brandLine = [brand.displayName, (brand as any).tagline].filter(Boolean).join(" — ") || brandLine
   } catch { /* brand grounding is best-effort; the charter still governs */ }
 
+  // 84B: the confirmed Zestimate rides every brief of the Zestimate Challenge
+  // (null for every other play — zestimateFigureLine is set only above).
   const author = (kind: string, brief: string, shape: Record<string, string>) =>
-    authorPlaybookCopy({ brokerageId: ctx.brokerageId!, kind, brief, playbookTitle: playbook.title, brandLine, shape })
+    authorPlaybookCopy({ brokerageId: ctx.brokerageId!, kind, brief: zestimateFigureLine ? `${brief}\n\n${zestimateFigureLine}` : brief, playbookTitle: playbook.title, brandLine, shape })
 
   // ── 1. Lead magnet (AI-authored name/description + landing copy) ──────────
   const magnetStep = playbook.steps.find((s) => s.kind === "lead_magnet")
@@ -150,11 +269,19 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
 
   // ── 2. THE AUTO-RENDERED VIDEO (the differentiator) ───────────────────────
   const videoStep = playbook.steps.find((s) => s.kind === "video")
-  if (videoStep && ctx.agentId) {
-    videoProjectId = await createPlaybookVideo({
-      svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
-      playbook, videoStep, brandLine, magnetId, notes, author,
-    })
+  if (videoStep) {
+    if (!ctx.agentId) {
+      // The project row is stamped with the agents id; without an agent profile
+      // there is nothing to attribute the video to, and the step says so.
+      notes.push(`${videoStep.label}: no agent profile on your account yet — finish agent setup and reinstall to get the video.`)
+    } else {
+      videoProjectId = await createPlaybookVideo({
+        svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
+        playbook, videoStep, brandLine, magnetId, notes, author,
+        screenshotUrls: campaignVideoStillUrl ? [campaignVideoStillUrl] : [],
+        stillLedger,
+      })
+    }
   }
 
   // ── 3. Tracked QR pointing at the magnet ──────────────────────────────────
@@ -210,7 +337,12 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
         locked_headline: isPostcard ? fill(copy.headline) : null,
         locked_body: isPostcard ? fill(copy.body) : null,
         locked_cta: isPostcard ? copy.cta : null,
-        property_photo_url: qrImageUrl, // the QR IS the art focus on these plays
+        // The QR IS the art focus on these plays — unless the tenant has
+        // APPROVED an estimate still (wave 80D): the industry's ZMA / "the
+        // Zestimate was wrong" piece puts the portal's own number on the card
+        // (Inman 2024-12-08; Listing Leads ZMA), so an approved still wins and
+        // the QR rides the copy's scan CTA. Never a pending still.
+        property_photo_url: approvedStillUrl ?? qrImageUrl,
         locked_letter_greeting: !isPostcard ? copy.greeting : null,
         locked_letter_body: !isPostcard ? fill(copy.body) : null,
         locked_letter_signoff: !isPostcard ? copy.signoff : null,
@@ -270,6 +402,7 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
         qrCodeId,
         bundleId,
         videoProjectId,
+        estimateStillAssetId: approvedStillId,
         installedAt: new Date().toISOString(),
       },
     }).eq("id", magnetId)
@@ -348,6 +481,14 @@ async function createPlaybookVideo(args: {
   magnetId: string | null
   notes: string[]
   author: (kind: string, brief: string, shape: Record<string, string>) => Promise<Record<string, string> | null>
+  /** Wave 80D — the APPROVED tenant estimate still(s) that frame the
+   *  presentation's background: staged as input_props.screenshotUrls, the key
+   *  lib/video/body-visual-model.ts assetsFromProps reads for the `screenshot`
+   *  treatment. Empty when none is approved — never a pending still. */
+  screenshotUrls?: string[]
+  /** Wave 84A — provenance of the still (lib/video/plan-asset-readiness.ts
+   *  campaignStillProvenance), stamped at video_metadata.asset_readiness. */
+  stillLedger?: import("@/lib/video/plan-asset-readiness").ProvenanceEntry[]
 }): Promise<string | null> {
   const { svc, notes } = args
 
@@ -388,12 +529,24 @@ async function createPlaybookVideo(args: {
     }
   } catch { /* gate unavailable → proceed; the send-side gates still stand */ }
 
-  // Project row (the reactor shape: agent_id carries users.id on this table).
+  // agentRecordId is the agents id already resolved by the caller's context —
+  // the same one the voice-profile gate above keys on. agentUserId stays for
+  // the compliance/dispatch calls, which are users-class.
+  // AI-tell scan on the OUTPUT (lane 77D) — the deterministic backstop for
+  // what the prompt could not prevent. ADVISORY (§5: warnings pass through;
+  // only a hard fair-housing flag escalates): the finding rides the install
+  // notes the broker reads, and the render proceeds.
+  {
+    const { scanForAiTells } = await import("@/lib/video/realism-profile")
+    const tells = scanForAiTells(copy.script)
+    if (tells.length > 0) notes.push(`${args.videoStep.label}: AI-tell scan flagged the spoken script (advisory) — ${tells.join("; ")}`)
+  }
+
   const { data: project, error: projErr } = await svc
     .from("ai_video_projects")
     .insert({
       brokerage_id: args.brokerageId,
-      agent_id: args.agentUserId,
+      agent_id: args.agentRecordId,
       title: copy.title,
       script_content: copy.script,
       video_type: "education",
@@ -404,7 +557,12 @@ async function createPlaybookVideo(args: {
       compliance_status: "passed",
       compliance_evaluated_at: new Date().toISOString(),
       is_ai_generated: true,
-      video_metadata: { playbook_key: args.playbook.key, lead_magnet_id: args.magnetId },
+      video_metadata: {
+        playbook_key: args.playbook.key, lead_magnet_id: args.magnetId,
+        ...(args.stillLedger && args.stillLedger.length > 0
+          ? { asset_readiness: (await import("@/lib/video/plan-asset-readiness")).readinessStamp(null, null, args.stillLedger, []) }
+          : {}),
+      },
     })
     .select("id")
     .single()
@@ -443,6 +601,10 @@ async function createPlaybookVideo(args: {
       mode: voiceProfile.did_video_url ? "clip" : "talk",
       lead_magnet_id: args.magnetId,
       playbook_key: args.playbook.key,
+      // The approved still rides the SAME input_props key every producer
+      // stages (screenshotUrls) so the body-visual `screenshot` treatment sees
+      // it when this clip is composited into a composition.
+      input_props: { screenshotUrls: args.screenshotUrls ?? [] },
     },
   }).eq("id", (project as any).id)
 

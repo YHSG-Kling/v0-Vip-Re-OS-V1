@@ -5,6 +5,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getConversations } from "@/app/actions/ai-communication-hub"
 import { getLeadInboxThreads } from "@/app/actions/inbox"
 import InboxClient from "./InboxClient"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
   title: "Inbox",
@@ -20,6 +21,13 @@ export default async function InboxPage() {
 
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Resolve user profile → brokerageId, agentId, assistant_wake_name, role
   const service = createServiceClient()
 

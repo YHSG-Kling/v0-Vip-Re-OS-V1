@@ -6,6 +6,7 @@
 // dispatch with no per-provider glue scattered around. Unit-tested in the simulator.
 
 import { domainsForScope, type ConnectionScope, type ConnectorDomain } from "./scope"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 /** External-partner roles — vendor-type actors (landscapers, lenders, title, etc.). Leaf scope:
  *  they may only own calendar/social/financial (their own scheduling/presence/payout). */
@@ -72,10 +73,20 @@ export const DOMAIN_AUTH: Record<ConnectorDomain, DomainAuthSpec> = {
     ],
   },
   financial: {
-    // Both financial providers are OAuth/Connect — NEVER a pasted secret key. Per Stripe Apps API
-    // auth (platform key / OAuth / restricted key), our platform uses the PLATFORM-KEY model for
-    // charging (env STRIPE_SECRET_KEY) and Stripe CONNECT account onboarding for per-actor payouts
-    // (initiateStripeConnectOnboarding → /settings/payments). QuickBooks is OAuth 2.0.
+    // Both financial providers are OAuth/Connect here — NEVER a pasted secret key on THIS form.
+    // QuickBooks is OAuth 2.0; Stripe is per-actor CONNECT onboarding
+    // (app/actions/connections/connection-center.ts :: startStripeConnect → an owner-scoped
+    // acct_… in platform_credentials).
+    //
+    // CORRECTED BY OWNER RULING ("the stripe account will be per tenant and platform so no
+    // configuration should be hardcoded"): this comment used to say the product "uses the
+    // PLATFORM-KEY model for charging (env STRIPE_SECRET_KEY)". That is the platform's half
+    // only. A tenant's own Stripe account is resolved per tenant by
+    // lib/billing/resolve-stripe-account.ts in EITHER shape — a Connect acct_… (what this form
+    // produces) or the tenant's own secret key stored on the credential row. The second shape
+    // has no field spec yet, which is why a tenant who owns a standalone Stripe account cannot
+    // paste its key through this form; that is a known gap, not a decision that they must use
+    // the platform's key.
     method: "oauth",
     fields: [],
   },
@@ -241,17 +252,35 @@ export function isConnectSupported(
   return caps.hasBrokerage ? { available: true } : { available: false, reason: "Requires a brokerage to store this connection." }
 }
 
-/** Pure: map an app userType to its connection ownership scope + whether it manages brokerage-level
+/** Pure: map an app identity to its connection ownership scope + whether it manages brokerage-level
  *  connections. External partners (vendor/lender/title/…) are leaf actors; brokers/admins manage the
- *  brokerage; team leads own team-level; superadmin owns platform defaults; STAFF and solo/team
- *  agents are agent-scoped for ownership (staff's self-connect surface is narrowed separately). */
+ *  brokerage; team leads own team-level; the platform superadmin owns platform defaults; STAFF and
+ *  solo/team agents are agent-scoped for ownership (staff's self-connect surface is narrowed separately).
+ *
+ *  TWO identity columns, not one (CLAUDE.md §4; measured in lib/platform/platform-staff-roster.ts).
+ *  Until 2026-09-02 this took `userType` alone and answered "platform" only for
+ *  user_type='superadmin' — a value NO live `users` row carries. The platform's one human staff
+ *  row is (user_type='admin', platform_role='superadmin'), so it fell through to "brokerage":
+ *  the OAuth callback then stored the company's Zoom as owner_type='brokerage'/platform='zoom',
+ *  the platform card (which reads owner_type='platform'/platform='platform_zoom') could never show
+ *  it connected, zoomHostCascade never produced a platform host, and the TENANT transcript lane
+ *  (lib/connections/zoom-transcripts.ts, resolveZoomAttachTarget kind 'tenant') had no trigger
+ *  condition at all. Same break for 'platform_quickbooks'.
+ *
+ *  `platformRole` defaults to null so a caller that has not read the column FAILS CLOSED — toward
+ *  the tenant scopes, never toward "platform". Every live call site that reaches this from a
+ *  `users` row now selects `platform_role` and passes it. The superadmin test is THE ONE predicate
+ *  (isPlatformSuperadminIdentity — both columns, service accounts refused), never re-spelled here
+ *  (§6); the 'system' arm keeps the ISA service accounts (user_type='system') on the platform
+ *  scope exactly as before. */
 export function connectionScopeForUserType(
   userType: string,
+  platformRole: string | null | undefined = null,
 ): { scope: ConnectionScope; isBrokerageManager: boolean } {
   const t = (userType ?? "").toLowerCase()
   if (EXTERNAL_PARTNER_ROLES.has(t)) return { scope: "vendor", isBrokerageManager: false }
   if (t === "contact") return { scope: "contact", isBrokerageManager: false }
-  if (t === "superadmin" || t === "system") return { scope: "platform", isBrokerageManager: false }
+  if (t === "system" || isPlatformSuperadminIdentity(t, platformRole)) return { scope: "platform", isBrokerageManager: false }
   if (["broker", "broker_owner", "admin"].includes(t)) return { scope: "brokerage", isBrokerageManager: true }
   if (["team_lead", "team_leader"].includes(t)) return { scope: "team", isBrokerageManager: false }
   return { scope: "agent", isBrokerageManager: false } // staff + agents own at agent scope

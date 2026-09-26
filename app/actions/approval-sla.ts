@@ -15,7 +15,9 @@ import { createClient } from "@/lib/supabase/server"
 import { loadApprovalSla, type ApprovalKindSla } from "@/lib/kernel/approval-sla"
 
 // Mirrors app/actions/exception-center.ts PRINCIPAL_TYPES — the operations owners.
-const PRINCIPAL_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin", "solo_agent", "team_lead"])
+// SCOPE LADDER (kept inline): 'superadmin' removed — dead as users.user_type
+// (0 live rows); broker_owner added — storable seat that OWNS the subscription.
+const PRINCIPAL_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin", "solo_agent", "team_lead"])
 
 export async function getApprovalSlaTelemetry(): Promise<
   { success: true; rows: ApprovalKindSla[] } | { success: false; error: string }

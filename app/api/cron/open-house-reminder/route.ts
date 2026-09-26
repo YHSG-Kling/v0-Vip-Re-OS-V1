@@ -54,7 +54,8 @@ export async function GET(req: NextRequest) {
     .select("id, listing_id, brokerage_id, agent_id, event_date, start_time, status")
     .gte("event_date", dateCutoffStart)
     .lte("event_date", dateCutoffEnd)
-    .in("status", ["scheduled", "confirmed"])
+    // open_house_events has no 'confirmed'; these are the pre-completion states.
+    .in("status", ["scheduled", "marketing", "active"])
     .limit(200)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 

@@ -8,7 +8,6 @@ import Link from "next/link"
 import {
   Heart,
   ArrowRight,
-  AlertTriangle,
   User,
 } from "lucide-react"
 

@@ -23,6 +23,22 @@ interface NegotiationRecommendationCardProps {
   daysOnMarket?: number
 }
 
+/**
+ * How long a listing has been out before its leverage is gone. Heuristic, and named
+ * so it reads as one — the same status as the 5% / 10% / 3-offer / 20%-down numbers
+ * this card has always used.
+ */
+const FRESH_MARKET_DAYS = 14
+const STALE_MARKET_DAYS = 45
+
+/**
+ * `daysOnMarket` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — while the
+ * REJECT branch's own comment promised "significantly below ask, weak terms, or stale
+ * market". The stale-market half was never written, so this card gave a seller
+ * eighty days into a listing exactly the advice it gives one on day two: hold out for
+ * more offers, reject the low one. Time on market is the single biggest thing that
+ * moves a seller's leverage, and it was sitting in the signature unread.
+ */
 function deriveRecommendation(
   offer: NegotiationRecommendationCardProps["offer"],
   listPrice: number,
@@ -52,16 +68,26 @@ function deriveRecommendation(
     }
   }
 
-  // Hold: multiple offers, market is active
-  if (totalOffers >= 3 && priceDiffPercent >= -3) {
+  // Hold: multiple offers on a listing that is still FRESH. Waiting is leverage only
+  // while buyers are still arriving; on a listing that has been out for weeks it is
+  // the advice that loses the only offer on the table.
+  if (totalOffers >= 3 && priceDiffPercent >= -3 && daysOnMarket <= FRESH_MARKET_DAYS) {
     return {
       type: "hold",
-      reason: `You have ${totalOffers} active offers. Consider waiting to see all offers before responding to maximize leverage.`,
+      reason: `You have ${totalOffers} active offers and the listing is only ${daysOnMarket} day${daysOnMarket === 1 ? "" : "s"} old. Consider waiting to see all offers before responding to maximize leverage.`,
     }
   }
 
-  // Reject: significantly below ask, weak terms, or stale market
+  // Reject: significantly below ask or weak terms — UNLESS the market has already
+  // spoken. A listing past the stale mark has lost the leverage a rejection assumes,
+  // so the same offer becomes something to counter rather than to send away.
   if (priceDiffPercent < -10 || (contingencyCount >= 3 && priceDiffPercent < -5)) {
+    if (daysOnMarket >= STALE_MARKET_DAYS) {
+      return {
+        type: "counter",
+        reason: `Offer is ${Math.abs(priceDiffPercent).toFixed(1)}% below asking, but the listing has been on the market ${daysOnMarket} days. Counter rather than reject — this may be the market's answer on price.`,
+      }
+    }
     return {
       type: "reject",
       reason: `Offer is ${Math.abs(priceDiffPercent).toFixed(1)}% below asking with ${contingencyCount > 0 ? `${contingencyCount} contingencies` : "weak terms"}. May not be worth pursuing.`,

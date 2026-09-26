@@ -14,20 +14,49 @@
 // (legal name, EIN, address, contact) — validated pure, honest missing-field
 // list, nothing submitted until complete.
 
+import {
+  normalizeEin, isEmail, isHttpUrl, repTitleForUserType, loadBusinessRegistrationSources, BUSINESS_REGISTRATION_SETTINGS_LABEL,
+  REGISTRATION_BUSINESS_TYPES, REGISTRATION_COMPANY_TYPES, REGISTRATION_JOB_POSITIONS, REGISTRATION_DEFAULTS,
+  type BusinessRegistration, type BrokerageIdentityRow, type RepresentativeSeat,
+} from "@/lib/branding/business-registration"
+
 // ── The business profile (what carriers require) ─────────────────────────────
 
 export interface A2pBusinessProfile {
   legalName: string
+  /** The trade name the brokerage advertises under (brokerages.dba) — falls
+   *  back to the legal name; the name printed in message samples. */
+  brandName: string
   ein: string
+  /** TrustHub business_type (lib/branding/business-registration.ts
+   *  REGISTRATION_BUSINESS_TYPES). Wave 84D: was HARD-CODED to "Limited
+   *  Liability Corporation" for every tenant — an invented fact that TCR vets
+   *  against the IRS record; it is now the tenant's own answer. */
+  businessType: string
+  industry: string
+  regionsOfOperation: string
+  /** us_a2p_messaging_profile_information.company_type (was hard-coded "private"). */
+  companyType: string
+  stockExchange: string
+  stockTicker: string
+  socialMediaUrl: string
   website: string
   street: string
+  street2: string
   city: string
   region: string
   postalCode: string
+  /** The AUTHORIZED REPRESENTATIVE (TrustHub authorized_representative_1). */
   contactFirstName: string
   contactLastName: string
+  contactTitle: string
+  contactJobPosition: string
   contactEmail: string
   contactPhone: string
+  /** The brokerage's public support line (brokerages.email / phone) — named in
+   *  the HELP reply carriers require. Optional. */
+  supportEmail: string
+  supportPhone: string
   /** REQUIRED on every campaign since June 30, 2026 — submissions without
    *  them hard-400 (contract-verified against Twilio's current docs). */
   privacyPolicyUrl: string
@@ -41,21 +70,35 @@ export type A2pProfileValidation = { ok: true; value: A2pBusinessProfile } | { o
 const REQUIRED: Array<[keyof A2pBusinessProfile, string]> = [
   ["legalName", "Legal business name"],
   ["ein", "EIN (federal tax ID)"],
+  ["businessType", "Business type (LLC, corporation, …)"],
+  ["industry", "Industry"],
+  ["regionsOfOperation", "Regions of operation"],
+  ["companyType", "Company type (private / public)"],
   ["website", "Business website"],
   ["street", "Street address"],
   ["city", "City"],
   ["region", "State"],
   ["postalCode", "ZIP code"],
-  ["contactFirstName", "Contact first name"],
-  ["contactLastName", "Contact last name"],
-  ["contactEmail", "Contact email"],
-  ["contactPhone", "Contact phone"],
+  ["contactFirstName", "Authorized representative first name"],
+  ["contactLastName", "Authorized representative last name"],
+  ["contactTitle", "Authorized representative title"],
+  ["contactJobPosition", "Authorized representative job position"],
+  ["contactEmail", "Authorized representative email"],
+  ["contactPhone", "Authorized representative phone"],
   ["privacyPolicyUrl", "Privacy policy URL"],
   ["termsUrl", "Terms & conditions URL"],
 ]
 
-/** PURE: validate the tenant's business profile — an honest missing list, and
- *  nothing is submitted to carriers until every required field is present. */
+/** Every profile key the derivation fills (REQUIRED + the optional ones). */
+const PROFILE_KEYS: ReadonlyArray<keyof A2pBusinessProfile> = [
+  ...REQUIRED.map(([k]) => k), "brandName", "stockExchange", "stockTicker", "socialMediaUrl", "street2", "supportEmail", "supportPhone", "useCaseDescription",
+]
+
+/** PURE: validate the merged business profile — an honest missing-field list,
+ *  and nothing is submitted to carriers until every required field is present.
+ *  Formats go through the ONE set of validators the Branding card saves with
+ *  (lib/branding/business-registration.ts), so a value the card accepted can
+ *  never be refused here, nor the reverse. */
 export function validateA2pProfile(raw: any): A2pProfileValidation {
   const r = raw ?? {}
   const missing: string[] = []
@@ -63,33 +106,158 @@ export function validateA2pProfile(raw: any): A2pProfileValidation {
   for (const [key, label] of REQUIRED) {
     if (!get(key)) missing.push(label)
   }
-  const ein = get("ein").replace(/\D/g, "")
-  if (get("ein") && ein.length !== 9) missing.push("EIN must be 9 digits")
-  if (get("contactEmail") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(get("contactEmail"))) missing.push("Contact email must be valid")
-  if (get("website") && !/^https?:\/\//.test(get("website"))) missing.push("Website must start with http(s)://")
+  const ein = get("ein") ? normalizeEin(get("ein")) : null
+  if (ein && !ein.ok) missing.push(ein.error)
+  if (get("contactEmail") && !isEmail(get("contactEmail"))) missing.push("Authorized representative email must be valid")
+  if (get("website") && !isHttpUrl(get("website"))) missing.push("Website must be a full web address starting with http(s)://")
   for (const k of ["privacyPolicyUrl", "termsUrl"] as const) {
-    if (get(k) && !/^https?:\/\//.test(get(k))) missing.push(`${k === "privacyPolicyUrl" ? "Privacy policy" : "Terms"} URL must start with http(s)://`)
+    if (get(k) && !isHttpUrl(get(k))) missing.push(`${k === "privacyPolicyUrl" ? "Privacy policy" : "Terms"} URL must start with http(s)://`)
   }
-  if (missing.length > 0) return { ok: false, missing }
+  if (get("businessType") && !(REGISTRATION_BUSINESS_TYPES as readonly string[]).includes(get("businessType"))) missing.push(`Business type must be one of: ${REGISTRATION_BUSINESS_TYPES.join(", ")}`)
+  if (get("companyType") && !(REGISTRATION_COMPANY_TYPES as readonly string[]).includes(get("companyType"))) missing.push(`Company type must be one of: ${REGISTRATION_COMPANY_TYPES.join(", ")}`)
+  if (get("contactJobPosition") && !(REGISTRATION_JOB_POSITIONS as readonly string[]).includes(get("contactJobPosition"))) missing.push(`Representative job position must be one of: ${REGISTRATION_JOB_POSITIONS.join(", ")}`)
+  if (get("companyType") === "public" && (!get("stockExchange") || !get("stockTicker"))) missing.push("Stock exchange and ticker (public company)")
+  if (missing.length > 0 || !ein || !ein.ok) return { ok: false, missing }
+  const isPublic = get("companyType") === "public"
   return {
     ok: true,
     value: {
       legalName: get("legalName").slice(0, 100),
-      ein,
+      brandName: (get("brandName") || get("legalName")).slice(0, 100),
+      ein: ein.value,
+      businessType: get("businessType"),
+      industry: get("industry"),
+      regionsOfOperation: get("regionsOfOperation"),
+      companyType: get("companyType"),
+      // Twilio: stock_* must be OMITTED unless company_type is public (30796).
+      stockExchange: isPublic ? get("stockExchange").slice(0, 10) : "",
+      stockTicker: isPublic ? get("stockTicker").slice(0, 10) : "",
+      socialMediaUrl: isHttpUrl(get("socialMediaUrl")) ? get("socialMediaUrl").slice(0, 300) : "",
       website: get("website").slice(0, 200),
       street: get("street").slice(0, 100),
+      street2: get("street2").slice(0, 100),
       city: get("city").slice(0, 60),
       region: get("region").slice(0, 30),
       postalCode: get("postalCode").slice(0, 12),
       contactFirstName: get("contactFirstName").slice(0, 60),
       contactLastName: get("contactLastName").slice(0, 60),
+      contactTitle: get("contactTitle").slice(0, 80),
+      contactJobPosition: get("contactJobPosition"),
       contactEmail: get("contactEmail").slice(0, 120),
       contactPhone: get("contactPhone").slice(0, 24),
+      supportEmail: isEmail(get("supportEmail")) ? get("supportEmail").slice(0, 120) : "",
+      supportPhone: get("supportPhone").slice(0, 24),
       privacyPolicyUrl: get("privacyPolicyUrl").slice(0, 300),
       termsUrl: get("termsUrl").slice(0, 300),
       useCaseDescription: (get("useCaseDescription") || "Real estate brokerage: appointment confirmations, showing reminders, and replies to client-initiated conversations.").slice(0, 400),
     },
   }
+}
+
+// ── The profile, PULLED from the brokerage's branding settings (84D) ─────────
+// Wave 83D derived blanks from the brokerages row + the owner seat and asked
+// the tenant (on the phone-settings card) only for the EIN and the privacy /
+// terms URLs, storing what was typed PLUS a derived copy of every other field
+// in brokerage_settings.settings.a2p_business_profile.
+// Wave 84D (owner: "add the registration info needed for registration in as a
+// branding setting so that info is pulled for registration."): the facts only
+// registration needs are a BRANDING SETTING —
+// brokerage_settings.settings.business_registration, edited on the Branding
+// page's "Business registration" card (app/components/settings/
+// BusinessRegistrationCard.tsx) — and everything is pulled through its ONE
+// reader (lib/branding/business-registration.ts loadBusinessRegistrationSources):
+//   registration record → EIN, entity type, industry, regions, company type
+//                         (+ stock listing), privacy / terms / social URLs, the
+//                         authorized representative
+//   brokerages row      → legal name, DBA, address, website, support e-mail/phone
+//   owner seat          → the representative when none is on the record
+//   defaults            → industry REAL_ESTATE, regions USA_AND_CANADA, company
+//                         type private, job position Director (REGISTRATION_DEFAULTS)
+//   storefront          → /site/<slug> when no website is on file (wave 81D)
+// Nothing is invented: the EIN and the entity type are never guessed, and no
+// derived copy is persisted any more — every reader derives from the same
+// sources, so there is no second store to drift.
+
+export type A2pFieldSource = "registration" | "brokerage" | "owner_seat" | "default" | "storefront"
+
+export interface A2pProfileSources {
+  /** brokerage_settings.settings.business_registration (the branding setting). */
+  registration?: Partial<BusinessRegistration> | null
+  brokerage?: BrokerageIdentityRow | null
+  owner?: RepresentativeSeat | null
+  /** NEXT_PUBLIC_APP_URL — the storefront's origin (no trailing slash). */
+  appUrl?: string | null
+}
+
+export interface A2pDerivation {
+  validation: A2pProfileValidation
+  draft: Record<string, string>
+  /** Profile keys NOT supplied by the registration record (compat with 83D). */
+  derivedKeys: string[]
+  /** Where each filled key came from — the cards label pulled fields with it. */
+  sources: Record<string, A2pFieldSource>
+}
+
+/** PURE: pull every field from its one home, then validate. */
+export function deriveA2pProfile(src: A2pProfileSources): A2pDerivation {
+  const reg = (src.registration ?? {}) as Partial<BusinessRegistration>
+  const b = src.brokerage ?? {}
+  const o = src.owner ?? {}
+  const t = (v: unknown) => (typeof v === "string" ? v.trim() : "")
+  const layers: Array<[A2pFieldSource, Partial<Record<keyof A2pBusinessProfile, string>>]> = [
+    ["registration", {
+      ein: t(reg.ein), businessType: t(reg.businessType), industry: t(reg.industry), regionsOfOperation: t(reg.regionsOfOperation),
+      companyType: t(reg.companyType), stockExchange: t(reg.stockExchange), stockTicker: t(reg.stockTicker),
+      socialMediaUrl: t(reg.socialMediaUrl), privacyPolicyUrl: t(reg.privacyPolicyUrl), termsUrl: t(reg.termsUrl),
+      contactFirstName: t(reg.repFirstName), contactLastName: t(reg.repLastName), contactTitle: t(reg.repTitle),
+      contactJobPosition: t(reg.repJobPosition), contactEmail: t(reg.repEmail), contactPhone: t(reg.repPhone),
+      useCaseDescription: t(reg.useCaseDescription),
+    }],
+    ["brokerage", {
+      legalName: t(b.name), brandName: t(b.dba) || t(b.name),
+      website: t(b.website) ? (/^https?:\/\//i.test(t(b.website)) ? t(b.website) : `https://${t(b.website)}`) : "",
+      street: t(b.address), street2: t(b.address_line2), city: t(b.city), region: t(b.state), postalCode: t(b.zip),
+      supportEmail: t(b.email), supportPhone: t(b.phone),
+    }],
+    ["owner_seat", {
+      contactFirstName: t(o.first_name), contactLastName: t(o.last_name), contactTitle: repTitleForUserType(o.user_type),
+      contactEmail: t(o.email) || t(b.email), contactPhone: t(o.phone) || t(b.phone),
+    }],
+    ["default", {
+      industry: REGISTRATION_DEFAULTS.industry, regionsOfOperation: REGISTRATION_DEFAULTS.regionsOfOperation,
+      companyType: REGISTRATION_DEFAULTS.companyType, contactJobPosition: REGISTRATION_DEFAULTS.repJobPosition,
+    }],
+    ["storefront", { website: t(src.appUrl) && t(b.slug) ? `${t(src.appUrl).replace(/\/$/, "")}/site/${t(b.slug)}` : "" }],
+  ]
+  const draft: Record<string, string> = {}
+  const sources: Record<string, A2pFieldSource> = {}
+  for (const key of PROFILE_KEYS) {
+    for (const [source, layer] of layers) {
+      const v = t(layer[key])
+      if (v) { draft[key] = v; sources[key] = source; break }
+    }
+  }
+  const derivedKeys = Object.keys(sources).filter((k) => sources[k] !== "registration")
+  return { validation: validateA2pProfile(draft), draft, derivedKeys, sources }
+}
+
+/**
+ * IMPURE: read the registration branding setting + the brokerage row + the
+ * representative seat through the ONE reader and derive. READ-ONLY since
+ * wave 84D (the 83D persist-a-derived-copy write is retired — every reader
+ * derives from the same sources). A refused settings read is a refusal (an
+ * unreadable profile is never "incomplete, please type it").
+ */
+export async function resolveA2pProfile(svc: any, brokerageId: string): Promise<A2pProfileValidation & { draft?: Record<string, string>; derivedKeys?: string[]; sources?: Record<string, A2pFieldSource> }> {
+  const src = await loadBusinessRegistrationSources(svc, brokerageId)
+  if (!src.ok) return { ok: false, missing: [src.error] }
+  const { validation, draft, derivedKeys, sources } = deriveA2pProfile({
+    registration: src.registration,
+    brokerage: src.brokerage,
+    owner: src.owner,
+    appUrl: process.env.NEXT_PUBLIC_APP_URL ?? null,
+  })
+  return { ...validation, draft, derivedKeys, sources }
 }
 
 // ── The step machine ──────────────────────────────────────────────────────────
@@ -127,7 +295,37 @@ export interface A2pState {
   shaken_trust_product_sid?: string
   shaken_status?: string
   voice_integrity_error?: string | null
+  // ── Toll-free verification (wave 81D) — the 8xx lane; same store. Status
+  // is Twilio's own (PENDING_REVIEW | IN_REVIEW | TWILIO_APPROVED |
+  // TWILIO_REJECTED), polled by sid; tollfree_error is kept SEPARATE from
+  // last_error for the same reason voice_integrity_error is.
+  tollfree_verification_sid?: string
+  tollfree_status?: string
+  tollfree_error?: string | null
+  // ── Wave 83D: every active number SID pooled into the messaging service.
+  // number_attached was a one-shot boolean, so a number bought (or a port that
+  // completed) AFTER the first attach never joined the campaign's sender pool;
+  // the runner now attaches any active SID missing from this list on every run.
+  attached_number_sids?: string[]
+  /** Wave 83D: the last phase the hourly loop announced
+   *  (lib/voice/carrier-registration-loop.ts carrierRegistrationPhase) — the
+   *  loop rings the tenant only when this CHANGES. */
+  loop_phase?: string
 }
+
+/** Wave 83D: persist the loop's announced phase on the same state row. Loads
+ *  fresh (never a stale snapshot) so it cannot clobber a runner's save. */
+export async function recordLoopPhase(svc: any, brokerageId: string, phase: string): Promise<boolean> {
+  const ref = await loadA2pState(svc, brokerageId)
+  const state = ref.state
+  return saveA2pState(svc, brokerageId, ref, { ...state, loop_phase: phase })
+}
+
+/** Twilio BrandRegistration statuses (twilio.com/docs/messaging/compliance/
+ *  a2p-10dlc, 2026-09-26): PENDING | IN_REVIEW (manual vetting, 7+ business
+ *  days) | APPROVED | FAILED | SUSPENDED. Terminal = no further review. */
+const BRAND_TERMINAL: readonly string[] = ["APPROVED", "FAILED", "SUSPENDED"]
+const BRAND_REJECTED: readonly string[] = ["FAILED", "SUSPENDED"]
 
 /** PURE: the next step to run given persisted state (resumable, idempotent). */
 export function nextA2pStep(s: A2pState): A2pStep | "done" {
@@ -149,7 +347,10 @@ export function describeA2pState(s: A2pState): string {
     if (c === "FAILED") return `Campaign review failed${s.last_error ? `: ${s.last_error}` : ""} — fix the profile and re-run.`
     return `Submitted — campaign under carrier review (${s.campaign_status ?? "pending"}). This normally takes hours to a few days.`
   }
-  if (step === "brand" || (s.brand_sid && (s.brand_status ?? "").toUpperCase() === "PENDING")) {
+  if (s.brand_sid && BRAND_REJECTED.includes((s.brand_status ?? "").toUpperCase())) {
+    return `Brand review ${(s.brand_status ?? "").toUpperCase()}${s.last_error ? `: ${s.last_error}` : ""} — the business profile needs correcting.`
+  }
+  if (step === "brand" || (s.brand_sid && !BRAND_TERMINAL.includes((s.brand_status ?? "").toUpperCase()))) {
     return `Brand ${s.brand_sid ? `under review (${s.brand_status ?? "pending"})` : "not yet submitted"} — registration resumes automatically.`
   }
   return `In progress — next step: ${step.replace(/_/g, " ")}.${s.last_error ? ` Last error: ${s.last_error}` : ""}`
@@ -168,33 +369,99 @@ const A2P_TRUST_POLICY = "QE2c6890da8086d771620e9b13fadeba0b"
 
 type Creds = { accountSid: string; authToken: string }
 
-async function twilio<T = any>(creds: Creds, baseUrl: string, path: string, method: "GET" | "POST", body?: Record<string, unknown>) {
+/** The Twilio REST call the step machine makes — the connector gateway in
+ *  production. Wave 83D: an INJECTABLE seam (CarrierRunDeps.transport) so the
+ *  business-registration-loop proof walks the REAL step machine tick by tick
+ *  against a simulated TrustHub / Messaging API instead of asserting source. */
+export type TwilioTransport = <T = any>(req: { creds: Creds; baseUrl: string; path: string; method: "GET" | "POST"; body?: Record<string, unknown> }) =>
+  Promise<{ ok: boolean; status?: number | null; data?: T | null; error?: string | null }>
+
+const connectorTransport: TwilioTransport = async <T = any>(req: { creds: Creds; baseUrl: string; path: string; method: "GET" | "POST"; body?: Record<string, unknown> }) => {
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   return callConnector<T>({
-    connector: "twilio", baseUrl, path, method,
-    ...(body ? { bodyType: "form" as const, body } : {}),
-    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+    connector: "twilio", baseUrl: req.baseUrl, path: req.path, method: req.method,
+    ...(req.body ? { bodyType: "form" as const, body: req.body } : {}),
+    auth: { style: "basic", username: req.creds.accountSid, password: req.creds.authToken },
   })
+}
+
+/** Injectable dependencies for the runners (production passes none). */
+export interface CarrierRunDeps {
+  transport?: TwilioTransport
+  /** Master creds (default: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN). */
+  master?: Creds | null
+  /** Tenant creds (default: lib/voice/twilio-tenancy resolveTenantTwilioCreds). */
+  tenantCreds?: (svc: any, brokerageId: string) => Promise<(Creds & { tier: string }) | null>
+}
+
+function bindTwilio(deps?: CarrierRunDeps) {
+  const transport = deps?.transport ?? connectorTransport
+  return async <T = any>(creds: Creds, baseUrl: string, path: string, method: "GET" | "POST", body?: Record<string, unknown>) =>
+    transport<T>({ creds, baseUrl, path, method, ...(body ? { body } : {}) })
+}
+
+/** The production-bound caller for the voice-integrity lane (no deps seam there). */
+const twilio = bindTwilio()
+
+function masterCreds(deps?: CarrierRunDeps): Creds | null {
+  if (deps && "master" in deps) return deps.master ?? null
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  return sid && token ? { accountSid: sid, authToken: token } : null
+}
+
+async function tenantCredsFor(svc: any, brokerageId: string, deps?: CarrierRunDeps) {
+  if (deps?.tenantCreds) return deps.tenantCreds(svc, brokerageId)
+  const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
+  return resolveTenantTwilioCreds(svc, brokerageId)
 }
 
 /** Load the persisted A2P state row (platform_credentials 'twilio_a2p'). */
 export async function loadA2pState(svc: any, brokerageId: string): Promise<{ rowId: string | null; state: A2pState }> {
-  const { data } = await svc.from("platform_credentials")
+  const { data, error } = await svc.from("platform_credentials")
     .select("id, config").eq("brokerage_id", brokerageId)
     .eq("platform", "twilio_a2p").eq("is_active", true).maybeSingle()
+  // Wave 83D — FAIL CLOSED. A refused read used to come back as an EMPTY state
+  // with rowId null, so the next save INSERTED a second twilio_a2p row and the
+  // machine re-filed from step one (a duplicate TrustHub profile + brand fee).
+  // With the hourly loop driving it that would repeat every hour; throw instead.
+  if (error) throw new Error(`carrier registration state could not be read (${error.message}) — nothing was filed`)
   return { rowId: (data as any)?.id ?? null, state: ((data as any)?.config ?? {}) as A2pState }
 }
 
-async function saveA2pState(svc: any, brokerageId: string, rowId: string | null, state: A2pState): Promise<void> {
+/**
+ * Persist the A2P state. NOT best-effort: this row IS the OS's memory of the
+ * brand/campaign registration with the carrier. Both writes dropped their result,
+ * and supabase-js resolves a rejected write, so a failed save left the tenant's
+ * registration progress silently un-recorded — the next read would re-derive an
+ * earlier state and the operator would be told to redo a step that had already
+ * been submitted. Returns whether it landed so callers can stop pretending.
+ */
+async function saveA2pState(svc: any, brokerageId: string, ref: { rowId: string | null }, state: A2pState): Promise<boolean> {
   const config = { ...state, updated_at: new Date().toISOString() }
-  if (rowId) {
-    await svc.from("platform_credentials").update({ config }).eq("id", rowId)
+  if (ref.rowId) {
+    const { error } = await svc.from("platform_credentials").update({ config }).eq("id", ref.rowId)
+    if (error) {
+      console.error(`[a2p] state NOT saved for brokerage ${brokerageId}:`, error.message)
+      return false
+    }
   } else {
-    await svc.from("platform_credentials").insert({
+    // Wave 83D — the new row's id is carried back on `ref`. Before, rowId stayed
+    // null for the whole first run, so EVERY step's save INSERTED another
+    // twilio_a2p row (profile, trust product, brand … each on its own row) and
+    // the next load's .maybeSingle() hit several rows. Found by the
+    // business-registration-loop proof's first tick.
+    const { data, error } = await svc.from("platform_credentials").insert({
       brokerage_id: brokerageId, platform: "twilio_a2p",
       owner_type: "brokerage", owner_id: brokerageId, is_active: true, config,
-    })
+    }).select("id").maybeSingle()
+    if (error) {
+      console.error(`[a2p] state NOT created for brokerage ${brokerageId}:`, error.message)
+      return false
+    }
+    ref.rowId = (data as any)?.id ?? null
   }
+  return true
 }
 
 export interface A2pRunResult {
@@ -213,27 +480,26 @@ export interface A2pRunResult {
  * (BrandRegistrations Mock=true) — the documented way to exercise the WHOLE
  * ISV chain end-to-end without a real TCR filing (pre-production verification).
  */
-export async function runA2pRegistration(svc: any, brokerageId: string, opts?: { mock?: boolean }): Promise<A2pRunResult> {
-  const { rowId, state } = await loadA2pState(svc, brokerageId)
+export async function runA2pRegistration(svc: any, brokerageId: string, opts?: { mock?: boolean; deps?: CarrierRunDeps }): Promise<A2pRunResult> {
+  const twilio = bindTwilio(opts?.deps)
+  const ref = await loadA2pState(svc, brokerageId)
+  const state = ref.state
   const fail = async (error: string): Promise<A2pRunResult> => {
     const s = { ...state, last_error: error.slice(0, 400) }
-    await saveA2pState(svc, brokerageId, rowId, s)
+    await saveA2pState(svc, brokerageId, ref, s)
     return { ok: false, state: s, advancedTo: nextA2pStep(s), error }
   }
 
-  // Prerequisites: business profile + master + subaccount creds.
-  const { data: bs } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
-  const profileV = validateA2pProfile((bs as any)?.settings?.a2p_business_profile)
+  // Prerequisites: business profile (derived from the brokerage's own profile
+  // where the tenant typed nothing — wave 83D) + master + subaccount creds.
+  const profileV = await resolveA2pProfile(svc, brokerageId)
   if (!profileV.ok) return fail(`Business profile incomplete — missing: ${profileV.missing.join(", ")}`)
   const profile = profileV.value
 
-  const masterSid = process.env.TWILIO_ACCOUNT_SID
-  const masterToken = process.env.TWILIO_AUTH_TOKEN
-  if (!masterSid || !masterToken) return fail("Twilio master account not configured (TWILIO_ACCOUNT_SID/AUTH_TOKEN)")
-  const master: Creds = { accountSid: masterSid, authToken: masterToken }
+  const master = masterCreds(opts?.deps)
+  if (!master) return fail("Twilio master account not configured (TWILIO_ACCOUNT_SID/AUTH_TOKEN)")
 
-  const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
-  const sub = await resolveTenantTwilioCreds(svc, brokerageId)
+  const sub = await tenantCredsFor(svc, brokerageId, opts?.deps)
   if (!sub || sub.tier === "master") return fail("Tenant has no Twilio subaccount yet — provision a phone number first")
 
   // Walk as many steps as possible in one call.
@@ -252,11 +518,16 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       const biz = await twilio<{ sid?: string }>(master, TRUSTHUB, "/v1/EndUsers", "POST", {
         FriendlyName: `${profile.legalName} business info`,
         Type: "customer_profile_business_information",
+        // Wave 84D: business_type / industry / regions are the tenant's own
+        // answers from the Branding page's Business registration card (they
+        // were hard-coded "Limited Liability Corporation" / REAL_ESTATE /
+        // USA_AND_CANADA for every tenant — a corporation was filed as an LLC).
         Attributes: JSON.stringify({
           business_name: profile.legalName, business_identity: "direct_customer",
-          business_type: "Limited Liability Corporation", business_industry: "REAL_ESTATE",
+          business_type: profile.businessType, business_industry: profile.industry,
           business_registration_identifier: "EIN", business_registration_number: profile.ein,
-          business_regions_of_operation: "USA_AND_CANADA", website_url: profile.website,
+          business_regions_of_operation: profile.regionsOfOperation, website_url: profile.website,
+          ...(profile.socialMediaUrl ? { social_media_profile_urls: profile.socialMediaUrl } : {}),
         }),
       })
       if (!biz.ok || !biz.data?.sid) return fail(`Business info failed: ${biz.error ?? biz.status}`)
@@ -267,13 +538,13 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
         Attributes: JSON.stringify({
           first_name: profile.contactFirstName, last_name: profile.contactLastName,
           email: profile.contactEmail, phone_number: profile.contactPhone,
-          business_title: "Broker", job_position: "Director",
+          business_title: profile.contactTitle, job_position: profile.contactJobPosition,
         }),
       })
       if (!rep.ok || !rep.data?.sid) return fail(`Authorized rep failed: ${rep.error ?? rep.status}`)
 
       const addr = await twilio<{ sid?: string }>(master, "https://api.twilio.com", `/2010-04-01/Accounts/${master.accountSid}/Addresses.json`, "POST", {
-        CustomerName: profile.legalName, Street: profile.street, City: profile.city,
+        CustomerName: profile.legalName, Street: profile.street, ...(profile.street2 ? { StreetSecondary: profile.street2 } : {}), City: profile.city,
         Region: profile.region, PostalCode: profile.postalCode, IsoCountry: "US",
       })
       if (!addr.ok || !addr.data?.sid) return fail(`Address failed: ${addr.error ?? addr.status}`)
@@ -293,7 +564,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       if (!submit.ok) return fail(`Customer profile submit failed: ${submit.error ?? submit.status}`)
       state.customer_profile_sid = cpSid
       state.last_error = null
-      await saveA2pState(svc, brokerageId, rowId, state)
+      await saveA2pState(svc, brokerageId, ref, state)
       continue
     }
 
@@ -306,7 +577,13 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       const msgProfile = await twilio<{ sid?: string }>(master, TRUSTHUB, "/v1/EndUsers", "POST", {
         FriendlyName: `${profile.legalName} messaging profile`,
         Type: "us_a2p_messaging_profile_information",
-        Attributes: JSON.stringify({ company_type: "private" }),
+        // Wave 84D: company_type from the registration record (was hard-coded
+        // "private"); a PUBLIC brand carries its listing and a brand contact
+        // e-mail for TCR's 2FA attestation — and ONLY a public one (30796).
+        Attributes: JSON.stringify({
+          company_type: profile.companyType,
+          ...(profile.companyType === "public" ? { stock_exchange: profile.stockExchange, stock_ticker: profile.stockTicker, brand_contact_email: profile.contactEmail } : {}),
+        }),
       })
       if (!msgProfile.ok || !msgProfile.data?.sid) return fail(`Messaging profile failed: ${msgProfile.error ?? msgProfile.status}`)
       for (const objectSid of [state.customer_profile_sid!, msgProfile.data.sid]) {
@@ -318,7 +595,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       const submit = await twilio(master, TRUSTHUB, `/v1/TrustProducts/${tpSid}`, "POST", { Status: "pending-review" })
       if (!submit.ok) return fail(`Trust product submit failed: ${submit.error ?? submit.status}`)
       state.trust_product_sid = tpSid
-      await saveA2pState(svc, brokerageId, rowId, state)
+      await saveA2pState(svc, brokerageId, ref, state)
       continue
     }
 
@@ -331,7 +608,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       if (!brand.ok || !brand.data?.sid) return fail(`Brand registration failed: ${brand.error ?? brand.status}`)
       state.brand_sid = brand.data.sid
       state.brand_status = brand.data.status ?? "PENDING"
-      await saveA2pState(svc, brokerageId, rowId, state)
+      await saveA2pState(svc, brokerageId, ref, state)
       continue
     }
 
@@ -349,15 +626,15 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       })
       if (!ms.ok || !ms.data?.sid) return fail(`Messaging service create failed: ${ms.error ?? ms.status}`)
       state.messaging_service_sid = ms.data.sid
-      await saveA2pState(svc, brokerageId, rowId, state)
+      await saveA2pState(svc, brokerageId, ref, state)
       continue
     }
 
     if (step === "number_attached") {
-      const { data: numbers } = await svc.from("vapi_phone_numbers")
-        .select("byoc_credential_id").eq("brokerage_id", brokerageId).eq("is_active", true)
-        .not("byoc_credential_id", "is", null).limit(10)
-      const sids = ((numbers ?? []) as any[]).map((n) => n.byoc_credential_id).filter(Boolean)
+      const { data: numbers } = await svc.from("tenant_phone_numbers")
+        .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+        .not("twilio_number_sid", "is", null).limit(10)
+      const sids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean)
       if (sids.length === 0) return fail("No active tenant numbers to attach — provision a number first")
       for (const phoneSid of sids) {
         const attach = await twilio({ accountSid: sub.accountSid, authToken: sub.authToken }, MESSAGING, `/v1/Services/${state.messaging_service_sid}/PhoneNumbers`, "POST", { PhoneNumberSid: phoneSid })
@@ -365,15 +642,33 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
         if (!attach.ok && attach.status !== 409) return fail(`Number attach failed: ${attach.error ?? attach.status}`)
       }
       state.number_attached = true
-      await saveA2pState(svc, brokerageId, rowId, state)
+      state.attached_number_sids = sids
+      await saveA2pState(svc, brokerageId, ref, state)
       continue
     }
 
     if (step === "campaign") {
+      // Wave 83D — RE-POLL the brand here. Before this, the brand was read only
+      // inside the messaging_service step (once); every later run landed on
+      // this step, saw the STALE "PENDING", and returned the honest pause below
+      // before the end-of-run poll could execute — so the campaign was never
+      // filed, not even by the human button. Found by the business-registration
+      // loop proof walking the real machine tick by tick.
+      if (!BRAND_TERMINAL.includes((state.brand_status ?? "").toUpperCase())) {
+        const brand = await twilio<{ status?: string; failure_reason?: string }>(master, MESSAGING, `/v1/a2p/BrandRegistrations/${state.brand_sid}`, "GET")
+        if (brand.ok && brand.data?.status) state.brand_status = brand.data.status
+        if (brand.ok && brand.data?.failure_reason) state.last_error = String(brand.data.failure_reason).slice(0, 400)
+      }
+      if (BRAND_REJECTED.includes((state.brand_status ?? "").toUpperCase())) {
+        // Wave 83D: a FAILED / SUSPENDED brand used to sit here as an "honest
+        // pause" with last_error cleared — forever, with nothing telling the
+        // tenant. It is a needs-input state: name it.
+        return fail(`Brand review ${(state.brand_status ?? "").toUpperCase()}${state.last_error ? ` (${state.last_error})` : ""} — correct the business profile (legal name / EIN / address must match the IRS record), then the brand must be re-submitted by platform support (automatic brand re-submission is not built)`)
+      }
       if ((state.brand_status ?? "").toUpperCase() !== "APPROVED") {
         // Honest pause: the campaign can't be filed until the brand clears.
         state.last_error = null
-        await saveA2pState(svc, brokerageId, rowId, state)
+        await saveA2pState(svc, brokerageId, ref, state)
         return { ok: true, state, advancedTo: "campaign" }
       }
       // CONTRACT-VERIFIED (Twilio Usa2p resource docs, July 2026):
@@ -390,7 +685,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
           MessageFlow: "Contacts opt in by texting or calling the office first, submitting a web form with consent language, or signing in at an open house with express written consent. Consent language and records are retained. Every message honors opt-out; STOP is processed immediately.",
           MessageSamples: [
             "Hi {first name}, confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule. Reply STOP to opt out.",
-            `Hi {first name}, this is ${profile.legalName}. The open house at {address} starts at {time} — see you there! Reply STOP to opt out.`,
+            `Hi {first name}, this is ${profile.brandName}. The open house at {address} starts at {time} — see you there! Reply STOP to opt out.`,
           ],
           UsAppToPersonUsecase: "LOW_VOLUME",
           HasEmbeddedLinks: true,
@@ -398,7 +693,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
           SubscriberOptIn: true,
           AgeGated: false,
           DirectLending: false,
-          OptInMessage: `${profile.legalName}: You're opted in to appointment and listing updates (up to 4 msgs/mo). Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
+          OptInMessage: `${profile.brandName}: You're opted in to appointment and listing updates (up to 4 msgs/mo). Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
           OptInKeywords: ["START", "YES", "UNSTOP"],
           PrivacyPolicyUrl: profile.privacyPolicyUrl,
           TermsAndConditionsUrl: profile.termsUrl,
@@ -407,15 +702,35 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       state.campaign_sid = campaign.data.sid
       state.campaign_status = campaign.data.campaign_status ?? "PENDING"
       state.last_error = null
-      await saveA2pState(svc, brokerageId, rowId, state)
+      await saveA2pState(svc, brokerageId, ref, state)
       continue
     }
   }
 
-  // Poll async reviews on every run so the status line stays honest.
-  if (state.brand_sid && (state.brand_status ?? "").toUpperCase() === "PENDING") {
+  // Poll async reviews on every run so the status line stays honest. Wave 83D:
+  // poll the brand while it is NOT terminal — the old `=== "PENDING"` test
+  // never re-read a brand in IN_REVIEW (TCR manual vetting, 7+ business days),
+  // so such a tenant's campaign could never be filed.
+  if (state.brand_sid && !BRAND_TERMINAL.includes((state.brand_status ?? "").toUpperCase())) {
     const brand = await twilio<{ status?: string }>(master, MESSAGING, `/v1/a2p/BrandRegistrations/${state.brand_sid}`, "GET")
     if (brand.ok && brand.data?.status) state.brand_status = brand.data.status
+  }
+  // Wave 83D: numbers that arrived AFTER the first attach (a second purchase, a
+  // completed port) join the messaging service's sender pool too.
+  if (state.messaging_service_sid && state.number_attached) {
+    const { data: live, error: liveErr } = await svc.from("tenant_phone_numbers")
+      .select("twilio_number_sid, phone_number").eq("brokerage_id", brokerageId).eq("is_active", true)
+      .not("twilio_number_sid", "is", null).limit(10)
+    if (!liveErr) {
+      const have = new Set(state.attached_number_sids ?? [])
+      const fresh = ((live ?? []) as any[]).filter((n) => n.twilio_number_sid && !have.has(n.twilio_number_sid) && !isTollFreeNumber(n.phone_number)).map((n) => n.twilio_number_sid as string)
+      for (const phoneSid of fresh) {
+        const attach = await twilio({ accountSid: sub.accountSid, authToken: sub.authToken }, MESSAGING, `/v1/Services/${state.messaging_service_sid}/PhoneNumbers`, "POST", { PhoneNumberSid: phoneSid })
+        if (!attach.ok && attach.status !== 409) return fail(`Number attach failed: ${attach.error ?? attach.status}`)
+        have.add(phoneSid)
+      }
+      state.attached_number_sids = [...have]
+    }
   }
   if (state.campaign_sid && !["VERIFIED", "APPROVED", "FAILED"].includes((state.campaign_status ?? "").toUpperCase())) {
     // Poll by the campaign's OWN sid (returned at creation) — never a constant.
@@ -423,7 +738,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       `/v1/Services/${state.messaging_service_sid}/Compliance/Usa2p/${state.campaign_sid}`, "GET")
     if (c.ok && c.data?.campaign_status) state.campaign_status = c.data.campaign_status
   }
-  await saveA2pState(svc, brokerageId, rowId, state)
+  await saveA2pState(svc, brokerageId, ref, state)
   return { ok: true, state, advancedTo: nextA2pStep(state) }
 }
 
@@ -505,18 +820,18 @@ async function assignNumbersToBundle(master: Creds, bundlePath: string, phoneSid
  * mock run are submitted on the next real run, and async reviews are polled.
  */
 export async function runVoiceIntegrityRegistration(svc: any, brokerageId: string, opts?: { mock?: boolean }): Promise<VoiceIntegrityRunResult> {
-  const { rowId, state } = await loadA2pState(svc, brokerageId)
+  const ref = await loadA2pState(svc, brokerageId)
+  const state = ref.state
   const fail = async (error: string): Promise<VoiceIntegrityRunResult> => {
     const s = { ...state, voice_integrity_error: error.slice(0, 400) }
-    await saveA2pState(svc, brokerageId, rowId, s)
+    await saveA2pState(svc, brokerageId, ref, s)
     return { ok: false, state: s, advancedTo: nextVoiceIntegrityStep(s), error }
   }
 
   if (!a2pCampaignApproved(state)) return fail("A2P campaign not yet carrier-approved — voice integrity (CNAM + SHAKEN/STIR) registers AFTER campaign approval")
   if (!state.customer_profile_sid) return fail("No TrustHub customer profile on file — run A2P registration first")
 
-  const { data: bs } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
-  const profileV = validateA2pProfile((bs as any)?.settings?.a2p_business_profile)
+  const profileV = await resolveA2pProfile(svc, brokerageId)
   if (!profileV.ok) return fail(`Business profile incomplete — missing: ${profileV.missing.join(", ")}`)
   const profile = profileV.value
 
@@ -525,10 +840,10 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
   if (!masterSid || !masterToken) return fail("Twilio master account not configured (TWILIO_ACCOUNT_SID/AUTH_TOKEN) — nothing was filed")
   const master: Creds = { accountSid: masterSid, authToken: masterToken }
 
-  const { data: numbers } = await svc.from("vapi_phone_numbers")
-    .select("byoc_credential_id").eq("brokerage_id", brokerageId).eq("is_active", true)
-    .not("byoc_credential_id", "is", null).limit(10)
-  const phoneSids = ((numbers ?? []) as any[]).map((n) => n.byoc_credential_id).filter(Boolean) as string[]
+  const { data: numbers } = await svc.from("tenant_phone_numbers")
+    .select("twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+    .not("twilio_number_sid", "is", null).limit(10)
+  const phoneSids = ((numbers ?? []) as any[]).map((n) => n.twilio_number_sid).filter(Boolean) as string[]
   if (phoneSids.length === 0) return fail("No active tenant numbers to register — provision a number first")
 
   // Prerequisite: numbers must belong to the CUSTOMER PROFILE before either
@@ -566,7 +881,7 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
     const endUser = await twilio<{ sid?: string }>(master, TRUSTHUB, "/v1/EndUsers", "POST", {
       FriendlyName: `${profile.legalName} caller ID`,
       Type: "cnam_information",
-      Attributes: JSON.stringify({ cnam_display_name: profile.legalName.slice(0, CNAM_DISPLAY_NAME_MAX).trim() }),
+      Attributes: JSON.stringify({ cnam_display_name: profile.brandName.slice(0, CNAM_DISPLAY_NAME_MAX).trim() }),
     })
     if (!endUser.ok || !endUser.data?.sid) return fail(`CNAM display-name end user failed: ${endUser.error ?? endUser.status}`)
     const r = await registerBundle("cnam", CNAM_TRUST_POLICY, [endUser.data.sid])
@@ -574,7 +889,7 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
     state.cnam_trust_product_sid = r.sid
     state.cnam_status = r.status
     state.voice_integrity_error = null
-    await saveA2pState(svc, brokerageId, rowId, state)
+    await saveA2pState(svc, brokerageId, ref, state)
   }
 
   // ── SHAKEN/STIR ──
@@ -584,7 +899,7 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
     state.shaken_trust_product_sid = r.sid
     state.shaken_status = r.status
     state.voice_integrity_error = null
-    await saveA2pState(svc, brokerageId, rowId, state)
+    await saveA2pState(svc, brokerageId, ref, state)
   }
 
   // Drafts left by a mock run: submit on a real run; then poll async reviews
@@ -604,6 +919,219 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
     }
   }
   state.voice_integrity_error = null
-  await saveA2pState(svc, brokerageId, rowId, state)
+  await saveA2pState(svc, brokerageId, ref, state)
   return { ok: true, state, advancedTo: nextVoiceIntegrityStep(state) }
+}
+
+// ── TOLL-FREE VERIFICATION (wave 81D) ────────────────────────────────────────
+// A toll-free number (8xx) is NOT registered through 10DLC — it is VERIFIED
+// through Twilio's Tollfree Verifications resource
+// (POST https://messaging.twilio.com/v1/Tollfree/Verifications; Exa,
+// 2026-09-24: unverified toll-free traffic is BLOCKED since 2023-11-08 /
+// 2024-01-31; statuses PENDING_REVIEW → IN_REVIEW → TWILIO_APPROVED |
+// TWILIO_REJECTED, polled by sid). Same business profile, same
+// platform_credentials 'twilio_a2p' jsonb, same honesty: nothing is marked
+// verified that Twilio did not say.
+
+const TOLLFREE_PREFIXES = ["800", "833", "844", "855", "866", "877", "888"] as const
+
+/** PURE: is this E.164 (or 10/11-digit) number a US toll-free number? */
+export function isTollFreeNumber(phone: string | null | undefined): boolean {
+  const d = (phone ?? "").replace(/\D/g, "")
+  const ten = d.length === 11 && d.startsWith("1") ? d.slice(1) : d
+  return ten.length === 10 && (TOLLFREE_PREFIXES as readonly string[]).includes(ten.slice(0, 3))
+}
+
+// Module-private (wave 81 integration, opposite-missing C3): no importer existed; the
+// terminal list below is its reader, so a status outside the vocabulary cannot be terminal.
+type TollfreeStatus = "PENDING_REVIEW" | "IN_REVIEW" | "TWILIO_APPROVED" | "TWILIO_REJECTED"
+const TOLLFREE_TERMINAL: readonly TollfreeStatus[] = ["TWILIO_APPROVED", "TWILIO_REJECTED"]
+
+/** PURE: one honest status line for the toll-free lane. */
+export function describeTollfreeState(s: A2pState): string {
+  if (!s.tollfree_verification_sid) return `Toll-free verification not yet submitted.${s.tollfree_error ? ` Last error: ${s.tollfree_error}` : ""}`
+  const st = (s.tollfree_status ?? "PENDING_REVIEW").toUpperCase()
+  if (st === "TWILIO_APPROVED") return "Toll-free number verified — carrier-approved texting is active."
+  if (st === "TWILIO_REJECTED") return `Toll-free verification REJECTED${s.tollfree_error ? `: ${s.tollfree_error}` : ""} — fix the profile / opt-in evidence and resubmit.`
+  return `Toll-free verification under carrier review (${st}). Sending is restricted until approved.`
+}
+
+/** PURE (wave 84D): Twilio Tollfree Verifications BusinessType from the
+ *  registration record (was hard-coded PRIVATE_PROFIT for every tenant). */
+export function tollfreeBusinessType(p: Pick<A2pBusinessProfile, "businessType" | "companyType">): "PRIVATE_PROFIT" | "PUBLIC_PROFIT" | "NON_PROFIT" | "SOLE_PROPRIETOR" | "GOVERNMENT" {
+  if (p.companyType === "government") return "GOVERNMENT"
+  if (p.companyType === "non-profit" || p.businessType === "Non-profit Corporation") return "NON_PROFIT"
+  if (p.businessType === "Sole Proprietorship") return "SOLE_PROPRIETOR"
+  return p.companyType === "public" ? "PUBLIC_PROFIT" : "PRIVATE_PROFIT"
+}
+
+/** PURE (wave 84D): the HELP reply names the brokerage's support line when the
+ *  brokerage record has one (brokerages.phone / email via the branding card). */
+function helpContact(p: Pick<A2pBusinessProfile, "supportPhone" | "supportEmail">): string {
+  const via = p.supportPhone || p.supportEmail
+  return via ? `for help contact ${via}; ` : "reply HELP for help or "
+}
+
+export interface TollfreeRunResult { ok: boolean; state: A2pState; status: string | null; error?: string }
+
+/**
+ * Submit (once) and poll the toll-free verification for the tenant's toll-free
+ * number(s). Idempotent: an existing verification sid is polled, never
+ * re-filed. Needs the SAME complete business profile the 10DLC machine needs.
+ */
+export async function runTollfreeVerification(svc: any, brokerageId: string, opts?: { mock?: boolean; deps?: CarrierRunDeps }): Promise<TollfreeRunResult> {
+  const twilio = bindTwilio(opts?.deps)
+  const ref = await loadA2pState(svc, brokerageId)
+  const state = ref.state
+  const fail = async (error: string): Promise<TollfreeRunResult> => {
+    const s = { ...state, tollfree_error: error.slice(0, 400) }
+    await saveA2pState(svc, brokerageId, ref, s)
+    return { ok: false, state: s, status: s.tollfree_status ?? null, error }
+  }
+
+  const profileV = await resolveA2pProfile(svc, brokerageId)
+  if (!profileV.ok) return fail(`Business profile incomplete — missing: ${profileV.missing.join(", ")}`)
+  const profile = profileV.value
+
+  const creds = await tenantCredsFor(svc, brokerageId, opts?.deps)
+  if (!creds) return fail("Twilio not configured for this tenant — nothing was filed")
+
+  // Poll an existing verification by its own sid (never a constant).
+  if (state.tollfree_verification_sid) {
+    if (!TOLLFREE_TERMINAL.includes((state.tollfree_status ?? "").toUpperCase() as TollfreeStatus)) {
+      const poll = await twilio<{ status?: string; rejection_reason?: string }>({ accountSid: creds.accountSid, authToken: creds.authToken }, MESSAGING, `/v1/Tollfree/Verifications/${state.tollfree_verification_sid}`, "GET")
+      if (poll.ok && poll.data?.status) {
+        state.tollfree_status = poll.data.status
+        if (poll.data.status.toUpperCase() === "TWILIO_REJECTED") state.tollfree_error = (poll.data.rejection_reason ?? "rejected — see Twilio console").slice(0, 400)
+      }
+    }
+    await saveA2pState(svc, brokerageId, ref, state)
+    return { ok: true, state, status: state.tollfree_status ?? null }
+  }
+
+  const { data: numbers } = await svc.from("tenant_phone_numbers")
+    .select("phone_number, twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true)
+    .not("twilio_number_sid", "is", null).limit(10)
+  const tollFree = ((numbers ?? []) as Array<{ phone_number: string; twilio_number_sid: string }>).find((n) => isTollFreeNumber(n.phone_number))
+  if (!tollFree) return fail("No active toll-free number to verify — provision one first")
+
+  if (opts?.mock) {
+    // Honest mock: the form is validated and nothing is filed; state records
+    // the intent so a later real run submits.
+    state.tollfree_error = null
+    await saveA2pState(svc, brokerageId, ref, state)
+    return { ok: true, state, status: null }
+  }
+
+  // CONTRACT (Twilio Tollfree Verifications, 2026-09-24 docs): business identity
+  // + contact + opt-in evidence + use case + samples + volume + the number's SID;
+  // Privacy/Terms URLs and the EIN (BusinessRegistrationNumber/Authority) are
+  // required for every business type but SOLE_PROPRIETOR.
+  const created = await twilio<{ sid?: string; status?: string }>({ accountSid: creds.accountSid, authToken: creds.authToken }, MESSAGING, "/v1/Tollfree/Verifications", "POST", {
+    BusinessName: profile.legalName,
+    BusinessWebsite: profile.website,
+    BusinessStreetAddress: profile.street,
+    BusinessCity: profile.city,
+    BusinessStateProvinceRegion: profile.region,
+    BusinessPostalCode: profile.postalCode,
+    BusinessCountry: "US",
+    BusinessContactFirstName: profile.contactFirstName,
+    BusinessContactLastName: profile.contactLastName,
+    BusinessContactEmail: profile.contactEmail,
+    BusinessContactPhone: profile.contactPhone,
+    NotificationEmail: profile.contactEmail,
+    UseCaseCategories: ["CUSTOMER_CARE", "ACCOUNT_NOTIFICATIONS"],
+    UseCaseSummary: profile.useCaseDescription,
+    ProductionMessageSample: `Hi {first name}, this is ${profile.brandName}. Confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule. Reply STOP to opt out.`,
+    OptInImageUrls: [profile.website],
+    OptInType: "WEB_FORM",
+    MessageVolume: "1,000",
+    TollfreePhoneNumberSid: tollFree.twilio_number_sid,
+    PrivacyPolicyUrl: profile.privacyPolicyUrl,
+    TermsAndConditionsUrl: profile.termsUrl,
+    BusinessRegistrationNumber: profile.ein,
+    BusinessRegistrationAuthority: "EIN",
+    BusinessRegistrationCountry: "US",
+    BusinessType: tollfreeBusinessType(profile),
+    OptInKeywords: ["START", "YES"],
+    HelpMessageSample: `${profile.brandName}: ${helpContact(profile)}reply STOP to opt out. Msg&data rates may apply.`,
+    OptInConfirmationMessage: `${profile.brandName}: You're opted in to appointment and listing updates. Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
+  })
+  if (!created.ok || !created.data?.sid) return fail(`Toll-free verification submit failed: ${created.error ?? created.status}`)
+  state.tollfree_verification_sid = created.data.sid
+  state.tollfree_status = created.data.status ?? "PENDING_REVIEW"
+  state.tollfree_error = null
+  await saveA2pState(svc, brokerageId, ref, state)
+  return { ok: true, state, status: state.tollfree_status }
+}
+
+// ── AUTOMATIC KICK-OFF AFTER A PURCHASE / PORT-IN (wave 81D) ─────────────────
+// Owner: "automatic registering business after phone number purchase/port over
+// so can use the phone/test feature." Until this wave the step machine ran only
+// when a human pressed "Run / resume registration". Now the number pipeline
+// (lib/voice/number-provisioning.ts provisionNumber) and the port-in door
+// (app/actions/phone-provisioning.ts manuallyAddAgentPhone) call this the
+// moment a number lands: best-effort, NEVER blocks or undoes the purchase,
+// audited on phone_number_events, and HONEST when the business profile is
+// incomplete — it says which fields the tenant still owes instead of pretending
+// a registration is under way.
+
+export interface CarrierKickoffResult {
+  kicked: boolean
+  lane: "10dlc" | "tollfree"
+  statusLine: string
+  reason?: string
+}
+
+export async function kickCarrierRegistration(svc: any, args: { brokerageId: string; phoneNumber: string; trigger: "purchased" | "ported_in" | "manually_added"; deps?: CarrierRunDeps }): Promise<CarrierKickoffResult> {
+  const lane: CarrierKickoffResult["lane"] = isTollFreeNumber(args.phoneNumber) ? "tollfree" : "10dlc"
+  let result: CarrierKickoffResult
+  try {
+    // Wave 83D: the profile is DERIVED from the brokerage's own record first
+    // (resolveA2pProfile); only what no record holds is asked of the tenant.
+    const profileV = await resolveA2pProfile(svc, args.brokerageId)
+    if (!profileV.ok) {
+      result = { kicked: false, lane, statusLine: `Business registration waiting on the business profile — missing: ${profileV.missing.join(", ")} (${BUSINESS_REGISTRATION_SETTINGS_LABEL}). It resumes on its own once these are saved.`, reason: "profile_incomplete" }
+    } else if (lane === "tollfree") {
+      const r = await runTollfreeVerification(svc, args.brokerageId, { deps: args.deps })
+      result = { kicked: r.ok, lane, statusLine: describeTollfreeState(r.state), reason: r.error }
+    } else {
+      const r = await runA2pRegistration(svc, args.brokerageId, { deps: args.deps })
+      result = { kicked: r.ok, lane, statusLine: describeA2pState(r.state), reason: r.error }
+    }
+  } catch (err) {
+    result = { kicked: false, lane, statusLine: "Business registration could not start — it will resume from Phone settings.", reason: (err as Error)?.message ?? "unknown" }
+  }
+  // Audit line on the SAME table the manual button writes (event_type from the
+  // live CHECK — webhooks_bound is the value the a2p_registration source has
+  // always used; the source names this automatic path).
+  const { error } = await svc.from("phone_number_events").insert({
+    brokerage_id: args.brokerageId, phone_number: args.phoneNumber,
+    event_type: "webhooks_bound", source: "a2p_auto_kickoff",
+    notes: `auto ${lane} registration after ${args.trigger}: ${result.kicked ? "kicked" : "not kicked"} — ${result.statusLine}${result.reason ? ` (${result.reason.slice(0, 160)})` : ""}`.slice(0, 500),
+  })
+  if (error) console.warn("[a2p] auto-kickoff audit line refused:", error.message)
+  return result
+}
+
+// ── THE PHONE TEST FEATURE IS GATED ON REGISTRATION (wave 81D) ───────────────
+
+export interface PhoneTestReadiness {
+  ready: boolean
+  /** Which lanes the tenant's active numbers need, and each lane's status. */
+  lanes: Array<{ lane: "10dlc" | "tollfree"; registered: boolean; statusLine: string }>
+  reason: string | null
+}
+
+/** PURE, FAIL-CLOSED: the test feature runs only when EVERY lane the tenant's
+ *  active numbers need is carrier-registered. No numbers → not ready. */
+export function assessPhoneTestReadiness(state: A2pState, numbers: ReadonlyArray<{ phone_number: string }>): PhoneTestReadiness {
+  if (!numbers.length) return { ready: false, lanes: [], reason: "No active phone number — provision or port one first." }
+  const needTollfree = numbers.some((n) => isTollFreeNumber(n.phone_number))
+  const needLocal = numbers.some((n) => !isTollFreeNumber(n.phone_number))
+  const lanes: PhoneTestReadiness["lanes"] = []
+  if (needLocal) lanes.push({ lane: "10dlc", registered: a2pCampaignApproved(state), statusLine: describeA2pState(state) })
+  if (needTollfree) lanes.push({ lane: "tollfree", registered: (state.tollfree_status ?? "").toUpperCase() === "TWILIO_APPROVED", statusLine: describeTollfreeState(state) })
+  const blocked = lanes.filter((l) => !l.registered)
+  return { ready: blocked.length === 0, lanes, reason: blocked.length ? `Registration not complete — ${blocked.map((l) => `${l.lane}: ${l.statusLine}`).join(" · ")}` : null }
 }

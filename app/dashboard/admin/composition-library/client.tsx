@@ -15,8 +15,13 @@
  * my inventory" view that solves the "feature shipped, no visibility"
  * problem the broker hit before.
  */
-import { useMemo, useState } from "react"
-import type { CompositionLibrarySnapshot, CompositionLibraryRow } from "@/app/actions/composition-library"
+import { Fragment, useMemo, useState } from "react"
+import {
+  getCompositionRenderHistory,
+  type CompositionLibrarySnapshot,
+  type CompositionLibraryRow,
+  type CompositionRenderHistoryRow,
+} from "@/app/actions/composition-library"
 
 const ORIENTATION_LABEL: Record<string, string> = {
   square:      "1:1",
@@ -55,9 +60,47 @@ function freshnessLabel(iso: string | null): string {
   return `${Math.floor(days / 365)}y ago`
 }
 
+type HistoryState =
+  | { phase: "loading" }
+  | { phase: "error"; message: string }
+  | { phase: "done"; renders: CompositionRenderHistoryRow[] }
+
 export function CompositionLibraryClient({ snapshot }: { snapshot: CompositionLibrarySnapshot }) {
   const [category, setCategory] = useState<string | null>(null)
   const [reachableOnly, setReachableOnly] = useState(true)
+
+  // Per-row render-history inspection — the half the header of
+  // app/actions/composition-library.ts promised in wave 39. Clicking a row
+  // toggles its recent renders: outcome, WHY a failure failed
+  // (error_message), which door requested it (requested_via), and which
+  // brand assets the coordinator actually baked in (used_* attribution).
+  const [openHistory, setOpenHistory] = useState<string | null>(null)
+  const [history, setHistory] = useState<Record<string, HistoryState>>({})
+
+  function toggleHistory(compositionId: string) {
+    if (openHistory === compositionId) {
+      setOpenHistory(null)
+      return
+    }
+    setOpenHistory(compositionId)
+    if (history[compositionId]?.phase === "done") return
+    setHistory((h) => ({ ...h, [compositionId]: { phase: "loading" } }))
+    getCompositionRenderHistory(compositionId)
+      .then((res) => {
+        setHistory((h) => ({
+          ...h,
+          [compositionId]: res.success
+            ? { phase: "done", renders: res.renders }
+            : { phase: "error", message: res.error },
+        }))
+      })
+      .catch((e) => {
+        setHistory((h) => ({
+          ...h,
+          [compositionId]: { phase: "error", message: e?.message ?? "Failed to load render history" },
+        }))
+      })
+  }
 
   const filtered: CompositionLibraryRow[] = useMemo(() => {
     return snapshot.rows.filter((r) => {
@@ -172,8 +215,10 @@ export function CompositionLibraryClient({ snapshot }: { snapshot: CompositionLi
                   No compositions match this filter.
                 </td></tr>
               ) : filtered.map((r) => (
-                <tr key={r.composition_id}
-                  className={`border-b border-gray-100 ${r.reachable_for_tier ? "" : "opacity-40"}`}>
+                <Fragment key={r.composition_id}>
+                <tr
+                  onClick={() => toggleHistory(r.composition_id)}
+                  className={`border-b border-gray-100 cursor-pointer hover:bg-gray-50 ${r.reachable_for_tier ? "" : "opacity-40"}`}>
                   <td className="px-3 py-2 font-medium text-gray-900">
                     <div>{r.display_name}</div>
                     <div className="text-[10px] text-gray-400 font-mono">{r.composition_id}</div>
@@ -205,11 +250,83 @@ export function CompositionLibraryClient({ snapshot }: { snapshot: CompositionLi
                     {r.requires_voiceover && <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Voice</span>}
                   </td>
                 </tr>
+                {openHistory === r.composition_id && (
+                  <tr className="border-b border-gray-100 bg-gray-50">
+                    <td colSpan={9} className="px-3 py-3">
+                      <RenderHistory state={history[r.composition_id]} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+    </div>
+  )
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  succeeded: "bg-green-50 text-green-700",
+  failed:    "bg-red-50 text-red-700",
+  cancelled: "bg-gray-100 text-gray-600",
+  queued:    "bg-blue-50 text-blue-700",
+  rendering: "bg-blue-50 text-blue-700",
+}
+
+function RenderHistory({ state }: { state: HistoryState | undefined }) {
+  if (!state || state.phase === "loading") {
+    return <p className="text-xs text-gray-500">Loading render history…</p>
+  }
+  if (state.phase === "error") {
+    return <p className="text-xs text-red-700">Render history could not be read: {state.message}</p>
+  }
+  if (state.renders.length === 0) {
+    return <p className="text-xs text-gray-500 italic">This brokerage has never rendered this composition.</p>
+  }
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[10px] uppercase tracking-wide text-gray-500 font-semibold">
+        Recent renders (last {state.renders.length})
+      </p>
+      {state.renders.map((h) => (
+        <div key={h.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-700">
+          <span className={`px-1.5 py-0.5 rounded ${STATUS_COLOR[h.render_status ?? ""] ?? "bg-gray-100 text-gray-600"}`}>
+            {h.render_status ?? "unknown"}
+          </span>
+          <span className="text-gray-500">
+            {h.completed_at ?? h.created_at
+              ? new Date((h.completed_at ?? h.created_at) as string).toLocaleString()
+              : "—"}
+          </span>
+          {h.requested_via && <span className="text-gray-500">via {h.requested_via.replace(/_/g, " ")}</span>}
+          {(h.used_intro_title || h.used_outro_title || h.used_music_title) && (
+            <span className="text-gray-500">
+              assets:{" "}
+              {[
+                h.used_intro_title ? `intro ${h.used_intro_title}` : null,
+                h.used_outro_title ? `outro ${h.used_outro_title}` : null,
+                h.used_music_title ? `music ${h.used_music_title}` : null,
+              ].filter(Boolean).join(" · ")}
+            </span>
+          )}
+          {h.used_voiceover && <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">voiceover</span>}
+          {h.used_did_avatar && <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">D-ID</span>}
+          {h.output_url && (
+            <a href={h.output_url} target="_blank" rel="noreferrer"
+              className="text-blue-600 hover:underline"
+              onClick={(e) => e.stopPropagation()}>
+              open
+            </a>
+          )}
+          {h.error_message && (
+            <span className="w-full font-mono text-red-700 truncate" title={h.error_message}>
+              {h.error_message}
+            </span>
+          )}
+        </div>
+      ))}
     </div>
   )
 }

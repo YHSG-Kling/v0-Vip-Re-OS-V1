@@ -14,7 +14,6 @@
  */
 
 import { generateTextRouted as generateText } from '@/lib/ai/models'
-import { resolveModel } from '@/lib/ai/resolve-model'
 import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding, haltEngagementForNegativeReply } from '@/lib/ai-isa/conversation-handler'
 import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'
@@ -23,18 +22,33 @@ import { evaluateOutbound } from '@/lib/kernel'
 import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { buildISATools } from '@/lib/ai-isa/tools'
+import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
+import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
+import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
+import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
+import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
+import { TENANT_ADMIN_USER_TYPES } from '@/lib/auth/resolve-user-role'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 /**
  * processInboundEmail
  *
- * AUTH MODEL: This entry point has no in-tree caller — it is intended to be
- * invoked either from an authenticated session (e.g. an "agent replies as
- * AI" tool) or from a trusted server-to-server caller (an inbound-email
- * webhook route that has already verified the provider signature, or an
- * internal cron). Because no inbound-email webhook currently exists for
- * this path, we require ONE of:
+ * WAVE 72A CORRECTION: the paragraph below used to claim "this entry point
+ * has no in-tree caller" — stale. The caller IS wired: app/api/providers/
+ * inbound/route.ts (Step 8b) calls this for every inbound message that
+ * resolved to a LEAD (never a contact — Step 3 of that route matches
+ * CONTACTS first, so a contact's email never reaches this lead-only path),
+ * forwarding CRON_SECRET as `internalSecret` exactly as this doc always said
+ * a webhook ingress should. Kept documented below because the auth model
+ * itself (trusted-internal OR session) is still accurate and still the
+ * contract new callers must honour.
+ *
+ * AUTH MODEL: invoked either from an authenticated session (e.g. an "agent
+ * replies as AI" tool) or from a trusted server-to-server caller (an
+ * inbound-email webhook route that has already verified the provider
+ * signature, or an internal cron). We require ONE of:
  *
  *   1. A valid authenticated session whose brokerage matches the lead.
  *   2. A trusted internal call: process.env.CRON_SECRET is configured AND
@@ -119,12 +133,23 @@ export async function processInboundEmail(params: {
   }
 
   if (leadForDnc?.brokerage_id) {
-    const halted = await haltEngagementForNegativeReply({
+    const halt = await haltEngagementForNegativeReply({
       leadId: params.leadId,
       body: params.body,
       brokerageId: leadForDnc.brokerage_id,
     })
-    if (halted) {
+    if (halt.halted) {
+      // FAIL CLOSED (CLAUDE.md §4). We still stop responding either way — but if
+      // the contact-side DNC write was REFUSED, the row does not carry the
+      // opt-out, so this must not report `negative_reply_dnc_set`.
+      if (halt.contactSuppressionError) {
+        return {
+          success: false,
+          responded: false,
+          reason: 'negative_reply_dnc_write_refused',
+          error: halt.contactSuppressionError,
+        }
+      }
       return { success: true, responded: false, reason: 'negative_reply_dnc_set' }
     }
   }
@@ -191,11 +216,23 @@ export async function processInboundEmail(params: {
         brokerageId: leadForDnc.brokerage_id,
         message: params.body,
       })
+      // PROVENANCE IS PART OF THE REASON. `classifierSource` says which layer
+      // classified (the model, or the keyword floor); `classifierDegraded` says
+      // why the floor answered. A model outage now reads as an outage in the
+      // logs instead of a quietly keyword-driven day, and a conversion carries
+      // who decided it. A degraded bare positive is HELD by the classifier
+      // (outcome 'nurtured', reason 'degraded_held') and falls through to the
+      // normal nurturing reply below — never converted on a guess.
+      if (routed.classifierDegraded) {
+        console.warn(
+          `[handle-inbound-email] intent classifier DEGRADED (${routed.classifierDegraded}) for lead ${params.leadId}: outcome=${routed.outcome} reason=${routed.reason ?? '-'} source=${routed.classifierSource}`,
+        )
+      }
       if (routed.outcome === 'converted') {
         return {
           success: true,
           responded: false,
-          reason: `intent_converted:${routed.classified?.side}:${routed.classified?.reason}`,
+          reason: `intent_converted:${routed.classified?.side}:${routed.classified?.reason}:${routed.classifierSource ?? 'unknown'}`,
           contactId: routed.contactId,
         }
       }
@@ -214,7 +251,8 @@ export async function processInboundEmail(params: {
       `id, first_name, last_name, email, brokerage_id, agent_id,
        motivation_type, property_interest, budget_min, budget_max,
        timeline, lead_score, lifecycle_state, lead_type,
-       contact_id, preferred_channel, call_stop_flag`
+       contact_id, preferred_channel, call_stop_flag,
+       persona, home_owner_status, dnc_status, email_opt_out`
     )
     .eq('id', params.leadId)
   if (callerBrokerageId) {
@@ -232,7 +270,7 @@ export async function processInboundEmail(params: {
         .from('contacts')
         .select(
           `id, first_name, last_name, email, phone,
-           contact_type, persona:contact_persona, buyer_stage,
+           contact_type, persona:contact_persona, buyer_stage, home_owner_status,
            lifecycle_state, status, tcpa_consent, tcpa_consent_date,
            isa_reengage_allowed, dnc_status, brokerage_id, team_id, agent_id`
         )
@@ -241,24 +279,40 @@ export async function processInboundEmail(params: {
     : { data: null }
 
   // ── Guard 2: kernel compliance gate — correct EvaluateOutboundParams ──────
-  const complianceContact = contact ?? {
-    id: lead.id,
-    first_name: lead.first_name ?? '',
-    last_name: lead.last_name ?? '',
-    email: lead.email ?? undefined,
-    contact_type: 'buyer' as const,
-    tcpa_consent: false,
-    isa_reengage_allowed: false,
-    dnc_status: false,
+  //
+  // IDENTITY CLASS (lane 76A fixes, CLAUDE.md §3 — owner: "you made some
+  // mistakes with assigning contactid with leadid"):
+  //   (a) A lead-only thread used to pass `{ id: lead.id, … }` as the gate's
+  //       CONTACT: evaluateOutbound then queried `contacts` by a leads.id
+  //       (always empty), called hasActiveRepresentation with it, and wrote
+  //       compliance_events.entity_type='contact' / entity_id=<leads.id>. The
+  //       lead-side opt-out is now checked HERE against the LEAD's own columns
+  //       (fail closed) and the gate receives no contact for a lead-only
+  //       thread — the documented "contact omitted" mode. Once the lead is
+  //       linked, the real contacts row goes in as before.
+  //   (b) actorContext.userId carried lead.brokerage_id — a brokerages.id in a
+  //       users.id slot. compliance_events.actor_user_id FKs users(id)
+  //       (scripts/schema-fk-map.ts), so EVERY ISA-email compliance ledger row
+  //       was refused (23503) and logged as "this decision is UNRECORDED". The
+  //       actor is now the lead's assigned agent's users.id (agents.user_id —
+  //       the one legal crossing), else a tenant admin user; no resolvable
+  //       actor refuses the reply rather than forging one.
+  if (!contact && (lead.dnc_status === true || lead.email_opt_out === true)) {
+    return { success: false, responded: false, reason: 'compliance:lead_opted_out' }
   }
 
   const messageType: MessageType = 'email'
   const persona: Persona = (lead.motivation_type as Persona) ?? 'other'
   const journeyType = (lead.lead_type === 'seller' ? 'seller' : 'buyer') as 'buyer' | 'seller'
 
+  const actorUserId = await resolveIsaActorUserId(supabase, lead.brokerage_id, lead.agent_id ?? null)
+  if (!actorUserId) {
+    return { success: false, responded: false, reason: 'compliance:no_actor_user_for_brokerage' }
+  }
+
   const compliance = await evaluateOutbound({
     actorContext: {
-      userId: lead.brokerage_id,
+      userId: actorUserId,
       role: 'isa',
       brokerageId: lead.brokerage_id,
     },
@@ -266,7 +320,7 @@ export async function processInboundEmail(params: {
     persona,
     messageType,
     content: params.body,
-    contact: complianceContact,
+    contact: contact ?? undefined,
   })
 
   if (!compliance.allowed) {
@@ -284,10 +338,28 @@ export async function processInboundEmail(params: {
   }
 
   // ── Load brand voice for system prompt ────────────────────────────────────
+  // knowledgeQuery = the lead's actual message → the reply is grounded in the
+  // brokerage's OWN uploaded knowledge base (RAG), not generic boilerplate.
   const brandVoice = await loadBrandVoicePrompt({
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
+    knowledgeQuery: `${params.subject ?? ''} ${params.body ?? ''}`.trim(),
+    // Extend the AI's knowledge to THIS contact when the lead is linked to one.
+    contactId: lead.contact_id ?? undefined,
   })
+
+  // Wave 75 — business processes/SOPs, brand KB, office hours, service
+  // areas. `preloadedVoice: brandVoice` + `omitVoiceBlock: true` because
+  // `brandVoice.systemBlock` is appended onto `systemPrompt` below already —
+  // never restated twice in one prompt.
+  const brandPlaybook = await loadBrandPlaybookContext({
+    brokerageId: lead.brokerage_id,
+    agentId: lead.agent_id ?? null,
+    contactId: lead.contact_id ?? null,
+    preloadedVoice: brandVoice,
+    omitVoiceBlock: true,
+    knowledgeQuery: `${params.subject ?? ''} ${params.body ?? ''}`.trim(),
+  }).catch(() => null)
 
   // ── Conversation context from the LEAD-class ledgers ─────────────────────
   // DEAD READ REPLACED (pass 4): this used to read messages by
@@ -329,20 +401,39 @@ export async function processInboundEmail(params: {
     .slice(-10)
     .map(({ role, content }) => ({ role, content }))
 
+  // Persona is DERIVED (resolveToolPersona, lib/ai-isa/persona-tool-policy.ts)
+  // from the linked CONTACT's own contact_type/contact_persona/home_owner_
+  // status when this lead already carries one, else the LEAD's own persona/
+  // home_owner_status/lead_type — never a request body. Computed BEFORE the
+  // system prompt so buildQualificationPrompt can persona-flavor its goal
+  // list (lane 74B).
+  const toolPersona = resolveToolPersona({
+    contactType: contact?.contact_type ?? (lead.lead_type === 'seller' ? 'seller' : 'buyer'),
+    contactPersona: contact?.persona ?? lead.persona ?? null,
+    homeOwnerStatus: contact?.home_owner_status ?? lead.home_owner_status ?? null,
+  })
+
   // ── Build system prompt with brand voice ──────────────────────────────────
+  // TOMBSTONE (lane 74B) — the hand-rolled "Qualify leads with genuine
+  // warmth… ending with one qualifying question" bullet list stood here.
+  // SURVIVOR: lib/ai-isa/qualification-playbook.ts::buildQualificationPrompt
+  // (CLAUDE.md §6 — one vocabulary; four surfaces hand-rolled this prose
+  // independently before this lane merged them onto one builder).
   const baseSystem = [
     'You are an AI Inside Sales Agent (ISA) for a real estate brokerage.',
-    'Qualify leads with genuine warmth — no pushy sales tactics.',
-    'Keep replies concise (3–5 sentences max), conversational, ending with one qualifying question.',
+    'Keep replies concise (3–5 sentences max), conversational.',
     'Never reveal you are an AI unless directly asked.',
     'If the lead seems highly motivated or mentions a specific timeline, reflect urgency back.',
     'Do not make up property details, pricing, or market data.',
     'Respect TCPA, DNC, and fair housing requirements in every message.',
     '',
+    buildQualificationPrompt({ surface: 'isa_email', persona: toolPersona, brand: brandPlaybook }),
+    '',
     'You can take real CRM actions via tools:',
     '- escalate_to_agent: when the lead asks for a human or needs urgent attention',
     '- mark_qualification: when the lead reveals stronger or weaker buying signals',
     '- request_appointment: when the lead asks to meet, call, or tour',
+    '- record_qualification: when you learn their intent, persona, property address, criteria, timeline, or financing status',
     '- mark_do_not_contact: when the lead clearly opts out (TCPA — irreversible)',
     'Call tools BEFORE generating your reply text. The reply should reflect any actions you took (e.g., "I just looped in your agent — they\'ll reach out shortly").',
   ].join('\n')
@@ -355,17 +446,55 @@ export async function processInboundEmail(params: {
   // Tools share a single context bound to (lead, brokerage, agent). Each
   // tool re-checks brokerage_id; mark_do_not_contact reuses the existing
   // TCPA halt path so the same notifications + sequence stops fire.
-  const isaTools = buildISATools({
+  const isaTools = await buildISATools({
     leadId: lead.id,
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
     inboundExcerpt: params.body.slice(0, 280),
   })
 
+  // BatchData/RentCast property-intelligence tools (wave 71, widened lane 73B)
+  // — gated: {} when BatchData's MCP is unconfigured (batchDataIsaTools
+  // resolves the SAME token lib/external/batchdata-mcp.ts itself uses), so an
+  // ISA conversation with no BatchData token behaves exactly as before.
+  // conversationKey = leadId scopes the ordering (page-before-preview/count)
+  // and per-persona spend budget to THIS lead's thread across turns.
+  const batchDataTools = await batchDataIsaTools({
+    brokerageId: lead.brokerage_id,
+    agentId: lead.agent_id ?? null,
+    persona: toolPersona,
+    conversationKey: lead.id,
+    contactId: lead.contact_id ?? null,
+  })
+  // RentCast MCP tools (wave 69), narrowed per persona (buyer: listing/valuation-
+  // shaped tools; renter: rental-shaped tools; relocation: market/listing-shaped
+  // tools; seller/investor/sphere: {} — persona-tool-policy.ts's rentCastEnabled).
+  const rentCastTools = filterRentCastToolsForPersona(
+    await rentCastMcpTools({ brokerageId: lead.brokerage_id, userId: null }),
+    toolPersona,
+  )
+  // Free internal tools (own context, showing/call request, our own listings) —
+  // lib/ai-isa/customer-context-tools.ts, shared with every other customer surface.
+  const freeTools = await buildCustomerFreeTools({
+    brokerageId: lead.brokerage_id,
+    contactId: lead.contact_id ?? null,
+    leadId: lead.id,
+    agentId: lead.agent_id ?? null,
+    persona: toolPersona,
+  })
+
+  // Lane 74B — cost-ranked order: free tools first, RentCast next, BatchData
+  // last, and a BatchData tool a cheaper same-registry tool already covers
+  // (property lookup → RentCast; comps → RentCast comps) is DROPPED — the
+  // ONE selector (persona-tool-policy.ts::selectToolsForPersona), never a
+  // second ordering rule per surface (§6). isaTools (escalate_to_agent,
+  // mark_qualification, request_appointment, mark_do_not_contact) are CRM
+  // actions, not property-data tools, so they are spread in separately.
+  const propertyAndFreeTools = selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools })
   const { text: replyBody } = await generateText({
     feature: 'ai_isa_response',
     system: systemPrompt,
-    tools: isaTools,
+    tools: { ...isaTools, ...propertyAndFreeTools },
     maxSteps: 5,
     messages: [
       {
@@ -459,7 +588,9 @@ export async function processInboundEmail(params: {
   }).catch(() => null)
 
   // ── Activity log — entity refs carry the lead; contact_id stays honest ────
-  await supabase.from('activities').insert({
+  // THE record that the ISA replied to this lead. A lost row is a reply the
+  // assistant no longer knows it sent — read the error rather than assume.
+  const { error: isaReplyActivityError } = await supabase.from('activities').insert({
     contact_id: null, // leads are NOT contacts
     entity_type: 'lead',
     entity_id: params.leadId,
@@ -469,6 +600,9 @@ export async function processInboundEmail(params: {
     notes: JSON.stringify({ provider_key: sendResult.providerKey, source: 'ai_isa_reply', channel: 'email' }),
     created_at: new Date().toISOString(),
   })
+  if (isaReplyActivityError) {
+    console.error('[handleInboundEmail] ai_isa_conversation activity REJECTED — the reply is sent but unrecorded:', isaReplyActivityError.message)
+  }
 
   // ── Qualification signals ─────────────────────────────────────────────────
   const qualificationSignals = await evaluateLeadQualification(params.leadId).catch(() => null)
@@ -483,4 +617,35 @@ export async function processInboundEmail(params: {
     qualificationSignals,
     responsePreview: replyBody.slice(0, 200),
   }
+}
+
+/**
+ * Module-private (a 'use server' file's EXPORTS are public endpoints — this is
+ * deliberately not one). The users.id the ISA acts AS for the compliance ledger
+ * (compliance_events.actor_user_id FKs users(id)): the lead's assigned agent
+ * crossed through agents.user_id — the ONE legal agents→users crossing
+ * (CLAUDE.md §3: agents.id and users.id are disjoint) — else a tenant admin of
+ * the SAME brokerage (the roster is spread from TENANT_ADMIN_USER_TYPES, never
+ * restated). Null when neither resolves; the caller refuses rather than forging
+ * an actor.
+ */
+async function resolveIsaActorUserId(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  agentRecordId: string | null,
+): Promise<string | null> {
+  if (agentRecordId) {
+    const { data: agentRow } = await supabase
+      .from('agents').select('user_id').eq('id', agentRecordId).eq('brokerage_id', brokerageId).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (userId) return userId
+  }
+  const { data: adminRow } = await supabase
+    .from('users').select('id')
+    .eq('brokerage_id', brokerageId)
+    .in('user_type', [...TENANT_ADMIN_USER_TYPES])
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  return (adminRow as { id?: string } | null)?.id ?? null
 }

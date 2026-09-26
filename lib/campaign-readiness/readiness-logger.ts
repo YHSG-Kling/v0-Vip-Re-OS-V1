@@ -125,9 +125,34 @@ export async function batchLogReadinessEvaluations(
 }
 
 /**
- * Query readiness history for specific content
+ * TENANT SCOPE — READ THIS BEFORE ADDING A READ TO THIS MODULE.
+ *
+ * Every query below runs on the SERVICE-ROLE client, which bypasses RLS. RLS is
+ * therefore NOT the tenant boundary here; the explicit
+ * `.eq("brokerage_id", brokerageId)` on each query IS. `activities.brokerage_id`
+ * is uuid NOT NULL (verified against information_schema.columns), so there is no
+ * "rows without a brokerage" case to accommodate.
+ *
+ * `brokerageId` is the FIRST and REQUIRED parameter of every read. It is
+ * deliberately not optional and has no default: an optional tenant filter is the
+ * same platform-wide leak one careless caller later. A caller that cannot supply
+ * one gets a refusal, never an unfiltered aggregate.
+ *
+ * A refused read NEVER degrades into an empty result. supabase-js RESOLVES a
+ * failed query, so `const { data } = await …` turns a refusal into `data: null`
+ * and an aggregate over null reads as a legitimate zero. Every read destructures
+ * `error` and returns `{ success: false, error }` with NO statistics/trends/
+ * evaluations payload, so "could not be computed" is structurally distinct from
+ * "computed, and the answer is 0".
+ */
+const TENANT_REQUIRED =
+  "brokerageId is required — readiness reads are tenant-scoped and will not be computed across brokerages"
+
+/**
+ * Query readiness history for specific content, within ONE brokerage.
  */
 export async function getReadinessHistory(
+  brokerageId: string,
   contentId: string,
   limit: number = 50
 ): Promise<{
@@ -141,11 +166,14 @@ export async function getReadinessHistory(
   error?: string
 }> {
   try {
+    if (!brokerageId) return { success: false, error: TENANT_REQUIRED }
+
     const supabase = await createServiceClient()
 
     const { data, error } = await supabase
       .from("activities")
       .select("id, activity_type, metadata, created_at")
+      .eq("brokerage_id", brokerageId)
       .eq("entity_type", "content")
       .eq("entity_id", contentId)
       .in("activity_type", ["campaign_ready", "campaign_blocked"])
@@ -168,9 +196,10 @@ export async function getReadinessHistory(
 }
 
 /**
- * Get readiness statistics for a time period
+ * Get readiness statistics for a time period, within ONE brokerage.
  */
 export async function getReadinessStatistics(
+  brokerageId: string,
   startDate: string,
   endDate: string
 ): Promise<{
@@ -185,11 +214,14 @@ export async function getReadinessStatistics(
   error?: string
 }> {
   try {
+    if (!brokerageId) return { success: false, error: TENANT_REQUIRED }
+
     const supabase = await createServiceClient()
 
     const { data, error } = await supabase
       .from("activities")
       .select("activity_type, metadata")
+      .eq("brokerage_id", brokerageId)
       .eq("entity_type", "content")
       .in("activity_type", ["campaign_ready", "campaign_blocked"])
       .gte("created_at", startDate)
@@ -296,9 +328,10 @@ export async function logChannelReadinessCheck(
 }
 
 /**
- * Get readiness trends over time (daily aggregates)
+ * Get readiness trends over time (daily aggregates), within ONE brokerage.
  */
 export async function getReadinessTrends(
+  brokerageId: string,
   startDate: string,
   endDate: string
 ): Promise<{
@@ -312,11 +345,14 @@ export async function getReadinessTrends(
   error?: string
 }> {
   try {
+    if (!brokerageId) return { success: false, error: TENANT_REQUIRED }
+
     const supabase = await createServiceClient()
 
     const { data, error } = await supabase
       .from("activities")
       .select("activity_type, created_at")
+      .eq("brokerage_id", brokerageId)
       .eq("entity_type", "content")
       .in("activity_type", ["campaign_ready", "campaign_blocked"])
       .gte("created_at", startDate)

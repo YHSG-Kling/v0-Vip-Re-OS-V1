@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, CreditCard } from "lucide-react"
-import { VENDOR_TIERS, type VendorTier } from "@/lib/kernel/vendor-subscription"
+import { VENDOR_TIERS, effectiveCapabilities, type VendorTier } from "@/lib/kernel/vendor-subscription"
 import { createVendorSubscriptionCheckout, createVendorBillingPortalSession } from "@/app/actions/vendor-billing"
 
 const ORDER: VendorTier[] = ["basic", "standard", "premium", "preferred_network"]
@@ -42,8 +42,22 @@ export function VendorBillingClient({ currentTier, status }: { currentTier: Vend
       )}
       <div className="grid gap-3 md:grid-cols-4">
         {ORDER.map((t) => {
-          const cap = VENDOR_TIERS[t]
           const isCurrent = t === currentTier
+          // ── WHAT YOU HAVE vs WHAT YOU'D BUY (wave 26) ────────────────────
+          // Every card used to read the raw CATALOG, so a past_due or cancelled
+          // vendor saw their current plan's three capabilities still ticked
+          // while the sentence above told them surfacing was paused. The card
+          // and the prose disagreed, and the card is the one people believe.
+          // The CURRENT plan now renders its EFFECTIVE capabilities (a
+          // non-current subscription collapses to basic); the other tiers keep
+          // showing the catalog, which is what upgrading would actually buy.
+          // PRICE ALWAYS FROM THE CATALOG. effectiveCapabilities collapses a
+          // delinquent vendor to the BASIC row, whose monthlyPriceUsd is $49 —
+          // rendering that as the current plan's price would tell a lapsed
+          // premium vendor they are on a $49 plan. Only the three eligibility
+          // flags are status-dependent.
+          const catalog = VENDOR_TIERS[t]
+          const cap = isCurrent ? effectiveCapabilities(t, status) : catalog
           return (
             <Card key={t} className={isCurrent ? "border-primary" : ""}>
               <CardHeader className="pb-2">
@@ -51,13 +65,13 @@ export function VendorBillingClient({ currentTier, status }: { currentTier: Vend
                   {t.replace("_", " ")}
                   {isCurrent && <Badge variant="secondary" className="text-[10px]">Current</Badge>}
                 </CardTitle>
-                <div className="text-2xl font-bold">${cap.monthlyPriceUsd}<span className="text-sm font-normal text-muted-foreground">/mo</span></div>
+                <div className="text-2xl font-bold">${catalog.monthlyPriceUsd}<span className="text-sm font-normal text-muted-foreground">/mo</span></div>
               </CardHeader>
               <CardContent className="space-y-2 text-xs">
                 <Cap ok={cap.surfacingEligible} label="AI client surfacing" />
                 <Cap ok={cap.preferredEligible} label="Brokerage preferred lists" />
                 <Cap ok={cap.featuredEligible} label="Featured placement" />
-                <div className="text-muted-foreground">{cap.serviceAreaZones >= 999 ? "Unlimited" : cap.serviceAreaZones} service areas · {cap.packageLimit >= 999 ? "Unlimited" : cap.packageLimit} packages</div>
+                <div className="text-muted-foreground">{catalog.serviceAreaZones >= 999 ? "Unlimited" : catalog.serviceAreaZones} service areas · {catalog.packageLimit >= 999 ? "Unlimited" : catalog.packageLimit} packages</div>
                 <Button size="sm" className="w-full mt-1" disabled={busy !== null || isCurrent} onClick={() => subscribe(t)}>
                   {isCurrent ? "Current plan" : busy === t ? "Redirecting…" : "Choose"}
                 </Button>

@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { produceEducationDelivery } from "@/lib/agents/education-delivery-producer"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 /**
  * Weekly EDUCATION DELIVERY sweep — push the next stage-matched lesson to active
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
     const { data: txns, error } = await supabase
       .from("transactions")
       .select("brokerage_id, contact_id, buyer_contact_id, seller_contact_id")
-      .in("status", ["active", "under_contract", "closing"])
+      .in("status", [...TRANSACTION_STATUSES_OPEN])
       .limit(3000)
     if (error) throw error
 

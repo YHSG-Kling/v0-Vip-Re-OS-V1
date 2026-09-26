@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { IsaEngagementStatusSheet } from './components/isa-engagement-status-sheet'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import Link from 'next/link'
@@ -16,14 +17,10 @@ import {
   CheckCircle,
   AlertTriangle,
   ShieldOff,
-  Clock,
   Mail,
   MailOpen,
   Phone,
   PhoneCall,
-  MessageSquare,
-  Home,
-  Layers,
   Pause,
   Play,
   RefreshCw,
@@ -131,12 +128,41 @@ function ChannelTruth({ record }: { record: any }) {
 // Main client component
 // ──────────────────────────────────────────────────────────────
 
+/**
+ * ONE pending row of the agent_handoffs LEDGER, curated for the card. This is
+ * the record of a handoff the ISA actually issued (lib/kernel/ai-isa.ts
+ * handoffToHumanAgent) — not the console's per-lead forecast of readiness.
+ * The page resolves every id to a name tenant-scoped before it gets here; the
+ * raw context_package jsonb never reaches this component.
+ */
+export interface IsaLedgerHandoff {
+  id: string
+  /** leads.id — joined onto the console's lead cards by this key. */
+  leadId: string
+  reason: string | null
+  issuedAt: string
+  /** CHECK vocabulary: human | isa_agent | tc_agent | … — what the ISA handed TO. */
+  toAgentType: string | null
+  /** context_package.from_user_id → users first/last name, or null when the package carried none. */
+  fromUserName: string | null
+  /** context_package.contact_id — the contact the human should open when the lead already converted. */
+  contactId: string | null
+  /** human_agent_id → the assigned agent's name; null = unassigned (broker routes manually). */
+  assignedAgentName: string | null
+  assignedAgentId: string | null
+}
+
 interface AIISAConsoleClientProps {
   records: any[]
   pendingDrafts: any[]
   userId: string
   brokerageId: string
-  vapiConfigured?: boolean
+  /** Pending rows of the handoff ledger, already scoped by the page (see there). */
+  ledgerHandoffs?: IsaLedgerHandoff[]
+  /** Whether an AI outbound call could actually be placed — resolved from the
+   *  real Twilio-lane gates, not from a retired vendor's assistant id. */
+  callingReady?: boolean
+  callingBlockedReason?: string | null
 }
 
 const TAB_FILTERS: { label: string; value: string; states: AIISAState[] | 'all' }[] = [
@@ -149,11 +175,19 @@ const TAB_FILTERS: { label: string; value: string; states: AIISAState[] | 'all' 
   { label: 'Completed',              value: 'completed',        states: ['handoff_complete'] },
 ]
 
-export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId, vapiConfigured = false }: AIISAConsoleClientProps) {
+export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId, ledgerHandoffs = [], callingReady = false, callingBlockedReason = null }: AIISAConsoleClientProps) {
   const router = useRouter()
   const supabase = createClient()
   const [activeTab, setActiveTab] = useState('all')
   const [isPending, startTransition] = useTransition()
+
+  // The ledger, indexed by lead. One pending handoff per lead is the norm; if
+  // the ISA issued two, the newest wins (the page orders newest-first).
+  const ledgerByLead = useMemo(() => {
+    const m = new Map<string, IsaLedgerHandoff>()
+    for (const h of ledgerHandoffs) if (!m.has(h.leadId)) m.set(h.leadId, h)
+    return m
+  }, [ledgerHandoffs])
 
   // ── Priority queue derivation ──────────────────────────────
   const aiisaPriorityQueue = useMemo(() => {
@@ -170,6 +204,8 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
           record.created_at
 
         let priorityBoost = 0
+        // A handoff the ISA has actually ISSUED outranks one it merely forecasts.
+        if (ledgerByLead.has(record.id))        priorityBoost += 110
         if (state === 'agent_handoff_required') priorityBoost += 100
         if (state === 'handoff_ready')          priorityBoost += 80
         if (state === 'awaiting_approval')      priorityBoost += 60
@@ -187,7 +223,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       })
       .sort((a: any, b: any) => b.priority_score - a.priority_score)
       .slice(0, 12)
-  }, [records])
+  }, [records, ledgerByLead])
 
   // ── Blocker stats ──────────────────────────────────────────
   const blockerStats = useMemo(() => ({
@@ -246,8 +282,11 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
 
   async function handleForceReassess(leadId: string) {
     try {
-      const { evaluateLeadQualification } = await import('@/lib/ai-isa/qualification-evaluator')
-      await evaluateLeadQualification(leadId)
+      // The gated door (session tenant pinned on the lead) — the evaluator
+      // module itself is server-only since 2026-09-03.
+      const { evaluateLeadQualificationAction } = await import('@/app/actions/ai-isa/evaluate-lead-qualification')
+      const evaluated = await evaluateLeadQualificationAction(leadId)
+      if (!evaluated.success) throw new Error(evaluated.error)
       toast.success('AI-ISA is reassessing this lead')
       router.refresh()
     } catch {
@@ -256,9 +295,13 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
   }
 
   function handleAcceptHandoff(record: any) {
-    if (record.contact_id) {
+    // The ledger's package names the contact to open when the lead had already
+    // converted at handoff time — honour it the same way the lead's own
+    // contact_id is honoured (both are contacts.id, the PK).
+    const contactOnFile = record.contact_id ?? ledgerByLead.get(record.id)?.contactId ?? null
+    if (contactOnFile) {
       toast.success('Opening assigned contact')
-      router.push(`/crm?contact=${record.contact_id}`)
+      router.push(`/crm?contact=${contactOnFile}`)
       return
     }
 
@@ -309,7 +352,18 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
     if (!record.email) { toast.error('No email address on this record'); return }
     try {
       const { initiateAIISAEngagement } = await import('@/app/actions/ai-isa/initiate-engagement')
-      await initiateAIISAEngagement(record.id, { forceChannel: 'email' })
+      // initiateAIISAEngagement RETURNS { success:false, error } — it never
+      // throws — so the catch below could never fire and this used to report
+      // EVERY refusal as a send. Its refusals include 'stop:dnc',
+      // 'stop:reengage_blocked' and 'stop:max_touches': the agent was told a
+      // do-not-call block was "queued for immediate send", believed contact
+      // was made, and stopped following up. That is the most expensive
+      // possible place in this product to discard an outcome.
+      const res = await initiateAIISAEngagement(record.id, { forceChannel: 'email' })
+      if (!res?.success) {
+        toast.error(res?.error ?? 'The email was not sent')
+        return
+      }
       toast.success('AI email queued for immediate send')
       router.refresh()
     } catch (err: any) {
@@ -325,7 +379,13 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
     }
     try {
       const { initiateAIISAEngagement } = await import('@/app/actions/ai-isa/initiate-engagement')
-      await initiateAIISAEngagement(record.id, { forceChannel: 'direct_mail' })
+      // Same contract, same consequence — a suppressed contact was reported as
+      // dispatched, and direct mail costs real money per piece.
+      const res = await initiateAIISAEngagement(record.id, { forceChannel: 'direct_mail' })
+      if (!res?.success) {
+        toast.error(res?.error ?? 'The direct mail piece was not queued')
+        return
+      }
       toast.success('Direct mail piece queued for dispatch')
       router.refresh()
     } catch (err: any) {
@@ -352,12 +412,13 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       })
       const data = await res.json()
       if (!res.ok) {
-        if (data.vapiNotConfigured) {
-          toast.error('Configure VAPI to enable AI calling', {
-            description: 'Go to Settings → AI-ISA to add your VAPI assistant ID.',
-            action: { label: 'Configure', onClick: () => router.push('/settings?tab=ai-isa') },
-          })
-        } else if (data.blocked) {
+        // A `vapiNotConfigured` branch used to live here, telling the agent to
+        // add a VAPI assistant id. No route has ever returned that field, so it
+        // was dead — and it pointed at a vendor the voice lane retired. The
+        // executor's own refusal is precise ("No active tenant phone number to
+        // dial from — provision a number first. No call was placed."), so it is
+        // shown verbatim instead of being replaced by a worse guess.
+        if (data.blocked) {
           toast.error(`Call blocked: ${data.reason}`)
         } else {
           toast.error(data.error ?? 'Failed to initiate call')
@@ -629,6 +690,35 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </div>
                         )}
 
+                        {/* THE HANDOFF PACKAGE — agent_handoffs.context_package, curated.
+                            Rendered only when the ledger holds a pending handoff for
+                            this lead; the forecast badges above say "looks ready", this
+                            box says "the ISA handed it over, here is what it left you". */}
+                        {ledgerByLead.get(item.id) && (() => {
+                          const h = ledgerByLead.get(item.id)!
+                          return (
+                            <div className="mt-2 rounded border border-indigo-200 bg-indigo-50 p-2 space-y-1">
+                              <p className="text-xs font-medium text-indigo-900 flex items-center gap-1">
+                                <UserCheck className="h-3 w-3 shrink-0" />
+                                ISA handoff issued {formatDistanceToNow(new Date(h.issuedAt), { addSuffix: true })}
+                                {h.toAgentType && h.toAgentType !== 'human' && (
+                                  <Badge variant="outline" className="text-[10px] ml-1">to {h.toAgentType.replace(/_/g, ' ')}</Badge>
+                                )}
+                              </p>
+                              {h.reason && <p className="text-xs text-indigo-800">{h.reason}</p>}
+                              <p className="text-[11px] text-indigo-700">
+                                Handed off by {h.fromUserName ?? 'the AI-ISA'} ·{' '}
+                                {h.assignedAgentName ? `assigned to ${h.assignedAgentName}` : 'unassigned — route manually'}
+                              </p>
+                              {h.contactId && (
+                                <Link href={`/crm?contact=${h.contactId}`} className="text-[11px] text-indigo-700 underline">
+                                  Contact already on file — open it
+                                </Link>
+                              )}
+                            </div>
+                          )
+                        })()}
+
                         {/* Compliance hold notice */}
                         {item.aiisa_state === 'compliance_hold' && (
                           <div className="mt-2 rounded border border-gray-300 bg-white p-2">
@@ -652,13 +742,27 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Link>
                         </Button>
 
-                        {/* AI Call Now — triggers VAPI outbound via /api/voice/initiate-call */}
+                        {/* THE READ SIDE. This console could dispatch email, calls
+                            and direct mail through initiateAIISAEngagement and had
+                            no way to show what had already been sent to the same
+                            lead — getAIISAEngagementStatus had no caller anywhere. */}
+                        <IsaEngagementStatusSheet
+                          leadId={item.id}
+                          leadName={[item.first_name, item.last_name].filter(Boolean).join(' ') || item.email || 'This lead'}
+                        />
+
+                        {/* AI Call Now — Twilio-native outbound via /api/voice/initiate-call.
+                            Disabled up-front when the brokerage cannot place AI
+                            calls at all, so the agent learns it before spending
+                            a click and a lead's turn on a refusal. */}
                         {item.phone && !item.call_stop_flag && (
                           <Button
                             size="sm"
                             variant="outline"
                             className="w-full justify-start text-green-700 border-green-300 hover:bg-green-50"
                             onClick={() => handleAICallNow(item)}
+                            disabled={!callingReady}
+                            title={callingReady ? undefined : callingBlockedReason ?? undefined}
                           >
                             <PhoneCall className="h-3.5 w-3.5 mr-1.5" />
                             AI Call Now
@@ -691,11 +795,14 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Button>
                         )}
 
-                        {/* Hand Off to Human Agent — handoff_ready, agent_handoff_required, awaiting_approval */}
+                        {/* Hand Off to Human Agent — handoff_ready, agent_handoff_required,
+                            awaiting_approval, OR a pending row in the handoff ledger (the
+                            ISA already issued it; the human's job is to accept). */}
                         {(
                           item.aiisa_state === 'handoff_ready' ||
                           item.aiisa_state === 'agent_handoff_required' ||
-                          item.aiisa_state === 'awaiting_approval'
+                          item.aiisa_state === 'awaiting_approval' ||
+                          ledgerByLead.has(item.id)
                         ) && (
                           <Button
                             size="sm"
@@ -705,7 +812,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                             disabled={isPending}
                           >
                             <UserCheck className="h-3.5 w-3.5 mr-1.5" />
-                            Hand Off to Human Agent
+                            {ledgerByLead.has(item.id) ? 'Accept ISA Handoff' : 'Hand Off to Human Agent'}
                           </Button>
                         )}
 

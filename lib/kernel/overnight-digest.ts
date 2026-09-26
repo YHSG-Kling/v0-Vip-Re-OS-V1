@@ -80,12 +80,13 @@ export async function runOvernightDigest(svc: any, now: Date = new Date()): Prom
       })
       if (!digest) { r.silent += 1; continue }
 
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: a.user_id, brokerage_id: a.brokerage_id, type: "overnight_ai_digest",
         title: "Your AI answered while you slept",
         body: `${digest} [${day}]`.slice(0, 480),
         priority: "medium", channel: "in_app", is_read: false,
       })
+      if (notifyError) console.warn("[overnight-digest.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       r.digested += 1
     } catch { r.errors += 1 }
   }

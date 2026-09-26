@@ -95,7 +95,7 @@ export async function pushListingToSellerPortal(
       .eq("id", l.contact_id)
       .maybeSingle()
     if (contactUser?.contact_user_id) {
-      await supabase.from("notifications").insert({
+      const { error: notifyError } = await supabase.from("notifications").insert({
         user_id: contactUser.contact_user_id,
         brokerage_id: input.brokerageId,
         type: "share_my_home",
@@ -107,6 +107,7 @@ export async function pushListingToSellerPortal(
         is_read: false,
         created_at: new Date().toISOString(),
       })
+      if (notifyError) console.warn("[push-listing-to-seller-portal.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
   }
 

@@ -8,7 +8,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { canAccessFeature, KernelEvent, processKernelEvent } from "@/lib/kernel"
-import { revalidatePath } from "next/cache"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -239,142 +238,15 @@ export async function getVideoWithProgress(videoId: string): Promise<{
 }
 
 // ─── recordVideoProgress ─────────────────────────────────────────────────────
-// Updates progress tracking for a video (called periodically during playback)
-
-export async function recordVideoProgress(
-  videoId: string,
-  positionSeconds: number,
-  percentWatched: number
-): Promise<{
-  success: boolean
-  data?: {
-    completed: boolean
-    allRequiredComplete: boolean
-  }
-  error?: string
-}> {
-  try {
-    const { userId, agentId, brokerageId } = await getAgentContext()
-
-    if (!agentId) return { success: false, error: "Missing agent context" }
-
-    const supabase = await createClient()
-
-    // Check if completion record exists
-    const { data: existing } = await supabase
-      .from("video_completion_tracking")
-      .select("*")
-      .eq("agent_id", agentId)
-      .eq("training_video_id", videoId)
-      .maybeSingle()
-
-    const wasCompleted = existing?.completed === true
-    const shouldComplete = percentWatched >= 90 && !wasCompleted
-    const newPercentWatched = Math.max(existing?.percent_watched || 0, percentWatched)
-
-    if (existing) {
-      // Update existing record
-      const updateData: Record<string, unknown> = {
-        last_position_seconds: positionSeconds,
-        percent_watched: newPercentWatched,
-        updated_at: new Date().toISOString(),
-      }
-
-      if (shouldComplete) {
-        updateData.completed = true
-        updateData.completed_at = new Date().toISOString()
-      }
-
-      const { error: updateError } = await supabase
-        .from("video_completion_tracking")
-        .update(updateData)
-        .eq("id", existing.id)
-
-      if (updateError) {
-        console.error("[Training] Error updating progress:", updateError)
-        return { success: false, error: "Failed to update progress" }
-      }
-    } else {
-      // Insert new record
-      const insertData = {
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        training_video_id: videoId,
-        last_position_seconds: positionSeconds,
-        percent_watched: percentWatched,
-        completed: shouldComplete,
-        completed_at: shouldComplete ? new Date().toISOString() : null,
-      }
-
-      const { error: insertError } = await supabase
-        .from("video_completion_tracking")
-        .insert(insertData)
-
-      if (insertError) {
-        console.error("[Training] Error inserting progress:", insertError)
-        return { success: false, error: "Failed to record progress" }
-      }
-    }
-
-    // Fire kernel events if video was just completed
-    let allRequiredComplete = false
-
-    if (shouldComplete) {
-      if (brokerageId) {
-        await processKernelEvent({
-          event: KernelEvent.TRAINING_VIDEO_COMPLETED,
-          brokerageId,
-          entityType: "training_video",
-          entityId: videoId,
-        })
-      }
-
-      // Check if all required videos are now complete
-      const { data: allVideos } = await supabase
-        .from("training_videos")
-        .select("id, is_required")
-        .or(brokerageId ? `brokerage_id.is.null,brokerage_id.eq.${brokerageId}` : "brokerage_id.is.null")
-
-      const requiredVideoIds = (allVideos || [])
-        .filter((v) => v.is_required)
-        .map((v) => v.id)
-
-      const { data: completedVideos } = await supabase
-        .from("video_completion_tracking")
-        .select("training_video_id")
-        .eq("agent_id", agentId!)
-        .eq("completed", true)
-        .in("training_video_id", requiredVideoIds)
-
-      allRequiredComplete =
-        requiredVideoIds.length > 0 &&
-        (completedVideos?.length || 0) >= requiredVideoIds.length
-
-      if (allRequiredComplete && brokerageId) {
-        await processKernelEvent({
-          event: KernelEvent.TRAINING_COURSE_COMPLETED,
-          brokerageId,
-          entityType: "agent",
-          entityId: agentId!,
-        })
-      }
-    }
-
-    revalidatePath("/dashboard/onboarding/training")
-    revalidatePath(`/dashboard/onboarding/training/${videoId}`)
-
-    return {
-      success: true,
-      data: {
-        completed: shouldComplete || wasCompleted,
-        allRequiredComplete,
-      },
-    }
-  } catch (error) {
-    console.error("[Training] recordVideoProgress error:", error)
-    return { success: false, error: "An unexpected error occurred" }
-  }
-}
+// TOMBSTONE (orphan tranche 3): recordVideoProgress deleted — a duplicate no
+// surface called. The live survivor is
+// app/api/onboarding/training/progress/route.ts (POST), which the training
+// player (app/dashboard/onboarding/training/[id]/video-player-client.tsx)
+// already polls every 10 seconds. The route does everything this action did —
+// same video_completion_tracking upsert, same 90% completion rule, same
+// TRAINING_VIDEO_COMPLETED / TRAINING_COURSE_COMPLETED kernel events, same
+// allRequiredComplete answer — and adds the per-agent rate limiting this
+// action lacked.
 
 // ─── markVideoStarted ────────────────────────────────────────────────────────
 // Records that the agent started watching a video (fires kernel event)

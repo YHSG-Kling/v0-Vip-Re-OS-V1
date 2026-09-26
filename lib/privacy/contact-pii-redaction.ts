@@ -20,7 +20,10 @@ export const CONTACT_PII_NULL_COLUMNS = [
   "address", "city", "state", "zip_code", "mailing_address", "mailing_city", "mailing_state", "mailing_zip",
   // demographics / sensitive
   "birthday", "home_anniversary", "gender", "marital_status", "occupation", "education_level",
-  "household_income", "age_range", "credit_score_band", "credit_status",
+  // credit_score_band (agent-tracked credit-repair pipeline, app/actions/credit-copilot.ts) and
+  // credit_score_range (PeopleData estimate, m640, written by lib/lead-pipeline/enrichment-orchestrator.ts)
+  // are TWO DIFFERENT columns (CLAUDE.md §6) — both are a person's credit posture and both null on erasure.
+  "household_income", "age_range", "credit_score_band", "credit_score_range", "credit_status",
   // records / enrichment (free-form PII)
   "court_records", "public_records", "enrichment_profile", "property_records", "social_handles", "metadata",
   "qualification_summary", "isa_handoff_brief", "referral_approach",

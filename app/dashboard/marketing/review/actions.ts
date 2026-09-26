@@ -61,6 +61,8 @@ export interface MarketingReviewSnapshot {
     listing_id:   string | null
     scan_count:   number
     created_at:   string
+    /** Server-rendered PNG of the tracked scan link (wave 81D) — null when the render failed. */
+    image_data_url: string | null
   }>
 }
 
@@ -112,7 +114,7 @@ export async function loadMarketingReview(params: {
     .from("listing_media")
     .select(`
       id, listing_id, media_type, file_url, thumbnail_url, created_at,
-      listings!listing_id(property_address, agent_id)
+      listings!listing_id(address, agent_id)
     `)
     .eq("brokerage_id", params.brokerageId)
     .eq("approval_required", true)
@@ -177,16 +179,22 @@ export async function loadMarketingReview(params: {
     .map((m: any) => ({
       id:            m.id,
       listing_id:    m.listing_id,
-      listing_label: m.listings?.property_address ?? null,
+      listing_label: m.listings?.address ?? null,
       media_type:    m.media_type,
       file_url:      m.file_url,
       thumbnail_url: m.thumbnail_url ?? null,
       created_at:    m.created_at,
     }))
 
-  const recentQrCodes = (qrRes.data ?? [])
+  // The PNG is rendered here by the ONE QR image source (renderQrPng) and encodes
+  // the tracked scan URL. The review board used to point an <img> at
+  // api.qrserver.com with that URL in the query string — the lead-bearing scan
+  // link handed to a third party on every page view (wave 81D).
+  const { renderQrPng, normalizeOrigin } = await import("@/lib/marketing/tracked-qr")
+  const scanOrigin = normalizeOrigin()
+  const recentQrCodes = await Promise.all((qrRes.data ?? [])
     .filter((q: any) => !params.isAgentScope || q.agent_id === agentRowId)
-    .map((q: any) => ({
+    .map(async (q: any) => ({
       id:         q.id,
       label:      q.label,
       slug:       q.slug,
@@ -195,7 +203,8 @@ export async function loadMarketingReview(params: {
       listing_id: q.listing_id ?? null,
       scan_count: q.scan_count ?? 0,
       created_at: q.created_at,
-    }))
+      image_data_url: await renderQrPng(`${scanOrigin}/api/qr/scan?slug=${q.slug}`, 240).catch(() => null),
+    })))
 
   return { drafts, socialPosts, pendingMedia, recentQrCodes }
 }

@@ -113,10 +113,44 @@ export const draftDocumentAdapter: ChannelAdapter = {
           }).eq("id", docId)
         }
       } else if (docType === "invoice") {
-        const m = await import("@/app/actions/ai-financial-management")
-        const fn = (m as any).generateInvoice ?? (m as any).createExpense ?? null
-        if (typeof fn === "function") {
-          await fn({ brokerageId, contactId: contact?.id, agentUserId, documentId: docId })
+        // ── THIS STEP REPORTED SUCCESS AND WROTE NOTHING, FOR AS LONG AS IT EXISTED ──
+        //
+        // It called the "use server" action app/actions/ai-financial-management.ts
+        // ::generateInvoice, which built its OWN cookie (RLS) client. A workflow step
+        // runs in CRON with no session, so `current_user_brokerage_id()` was NULL, the
+        // `documents` UPDATE matched nothing, and the action's bare `await` swallowed
+        // it — supabase-js resolves a refusal. Every AI-drafted invoice in a sequence
+        // was a silent no-op that returned success:true.
+        //
+        // The drafter body now lives in lib/finance/invoice-draft.ts and takes its db
+        // client EXPLICITLY, so this session-less caller passes the one it already
+        // holds: `ctx.supabase`, the service client the step executor built, with the
+        // tenant off `enrollment.brokerage_id` (lib/campaign-sequences/step-executor.ts:77).
+        // Server-resolved from the row that owns the job — a workflow step is not a
+        // browsing user, and there is no request body in this path to lie in. The
+        // action remains as the SESSION-gated entry point for a UI caller.
+        //
+        // The old `generateInvoice ?? createExpense` fallback is gone with it: the
+        // survivor is imported by name and cannot be absent, and createExpense takes
+        // an ExpenseEntry — calling it with these params would have written garbage.
+        const { generateInvoice } = await import("@/lib/finance/invoice-draft")
+        const drafted = await generateInvoice(supabase, {
+          brokerageId,
+          contactId: contact?.id ?? null,
+          agentUserId,
+          documentId: docId,
+        })
+        if (!drafted.success) {
+          // The document row exists; say why it is not a finished draft rather than
+          // letting the status reconciliation below flip it to draft_ready over an
+          // invoice that was never written.
+          if (docId) {
+            await supabase.from("documents").update({
+              status: "review",
+              metadata: { error: drafted.error ?? "Invoice draft failed" },
+            }).eq("id", docId)
+          }
+          return { status: "error", providerKey: "document", error: drafted.error ?? "Invoice draft failed" }
         }
       } else if (docType === "market_report") {
         const m = await import("@/app/actions/ai-market-intelligence")
@@ -154,17 +188,18 @@ export const draftDocumentAdapter: ChannelAdapter = {
 
     // Notify agent that a document draft was created and may need review
     if (agentUserId) {
-      void Promise.resolve(
-        supabase.from("notifications").insert({
-          brokerage_id: brokerageId,
-          type: "document_draft_ready",
-          title: `Document Draft Created: ${docType.replace(/_/g, " ")}`,
-          body: contact
-            ? `A ${docType.replace(/_/g, " ")} draft has been created for ${contact.first_name ?? ""} ${contact.last_name ?? ""}. Review and finalize in Documents.`
-            : `A ${docType.replace(/_/g, " ")} draft requires your review.`,
-          priority: "medium",
-        })
-      ).catch(() => {})
+      // Awaited and error-read (lane 76C): the fire-and-forget `.catch(() => {})`
+      // made a refused insert indistinguishable from a delivered bell.
+      const { error: notifyError } = await supabase.from("notifications").insert({
+        brokerage_id: brokerageId,
+        type: "document_draft_ready",
+        title: `Document Draft Created: ${docType.replace(/_/g, " ")}`,
+        body: contact
+          ? `A ${docType.replace(/_/g, " ")} draft has been created for ${contact.first_name ?? ""} ${contact.last_name ?? ""}. Review and finalize in Documents.`
+          : `A ${docType.replace(/_/g, " ")} draft requires your review.`,
+        priority: "medium",
+      })
+      if (notifyError) console.warn("[draft-document] notifications insert refused — the bell will not ring:", notifyError.message)
     }
 
     return {

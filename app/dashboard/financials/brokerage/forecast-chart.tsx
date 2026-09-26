@@ -9,8 +9,8 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  ReferenceLine,
 } from "recharts"
+import { axisCompactDollars, usd } from "@/lib/format/money"
 
 interface ForecastChartProps {
   data: Array<{
@@ -21,23 +21,11 @@ interface ForecastChartProps {
 }
 
 export function ForecastChart({ data }: ForecastChartProps) {
-  const formatCurrency = (val: number) => {
-    if (val >= 1000000) {
-      return `$${(val / 1000000).toFixed(1)}M`
-    }
-    if (val >= 1000) {
-      return `$${(val / 1000).toFixed(0)}K`
-    }
-    return `$${val}`
-  }
-
-  const formatTooltipCurrency = (val: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    }).format(val)
-  }
+  // `formatCurrency`/`formatTooltipCurrency` — same-body census, round 4
+  // (2026-09-09, lane FC): DELETED, byte-identical to
+  // lib/format/money.ts `axisCompactDollars` and `usd` (both imported above).
+  const formatCurrency = axisCompactDollars
+  const formatTooltipCurrency = usd
 
   const chartData = data.map(item => {
     const month = new Date(item.forecast_month).toLocaleDateString("en-US", {

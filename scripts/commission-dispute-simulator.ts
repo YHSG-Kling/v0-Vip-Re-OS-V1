@@ -32,7 +32,12 @@ function sourceLayer() {
   check("stamps dispute_reason + disputed_at + emits COMMISSION_DISPUTED", /dispute_reason:\s*trimmed[\s\S]*?disputed_at/.test(fin) && /COMMISSION_DISPUTED/.test(fin))
 
   console.log("\n[resolveCommissionDispute — broker-only resolution]")
-  check("broker/admin only", /resolveCommissionDispute[\s\S]*?\["broker",\s*"admin",\s*"superadmin"\]/.test(fin))
+  // Pinned to the GATE, not the roster literal (#211): the local array named a
+  // superadmin user_type with zero live rows and refused broker_owner from
+  // resolving disputes over their own brokerage's money. The gate is now the
+  // shared BROKERAGE-MONEY predicate (m472 tier — team_lead excluded), which is
+  // the stronger claim: the same roster the RLS carries.
+  check("broker/admin only", /resolveCommissionDispute[\s\S]*?if \(!isBrokerageFinanceAdmin\(\{ user_type/.test(fin))
   check("only a disputed commission can be resolved", /resolveCommissionDispute[\s\S]*?Only a disputed commission can be resolved/.test(fin))
   check("reopened → pending, upheld/corrected → approved", /resolution === "reopened" \? "pending" : "approved"/.test(fin))
 

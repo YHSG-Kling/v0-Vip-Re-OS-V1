@@ -25,15 +25,24 @@ import {
   parseCraigslistHtml,
   normalizeBatchDataRecord,
   buildPropertySearchUrl,
+  buildRealtySiteChatterUrl,
+  parseContactAgentChatter,
 } from "../lib/lead-pipeline/scraper-parsers"
 import { mergeEnrichment, shouldGapFill } from "../lib/lead-pipeline/enrichment-merge"
 import {
   isViableRecord,
-  hasPromotionEligibleIdentity,
   buildLeadIdentityKey,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
-import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, expandEnabledSources } from "../lib/lead-pipeline/source-intent-map"
+import { getSourceSemantics, resolveSourceKey, SOURCE_VENDOR, vendorForSource, expandEnabledSources, buildAgentSeekingPhrases, buildNewConstructionPhrases, hasScoringEntry } from "../lib/lead-pipeline/source-intent-map"
+import { normalizeSiteVisitorRow, SITE_VISITOR_MIN_DWELL_SECONDS, SITE_VISITOR_LOOKBACK_HOURS } from "../lib/lead-pipeline/site-visitor-sourcer"
+// lib/lead-pipeline/rental-graduation-sourcer.ts statically imports lib/avm/provider-chain.ts,
+// which imports `server-only` (throws outside a Server Component) — NOT imported at the top of
+// this file for that reason; testLane74DRemainingAcquisitionLanes below shims the require cache
+// and loads it via a deferred dynamic import instead, the same idiom
+// scripts/accounting-scopes-simulator.ts established for the identical class of defect.
+import { normalizeReviewAcquisitionEntry, sourceReviewAcquisitionIntent } from "../lib/lead-pipeline/review-acquisition-sourcer"
+import { classifyReviewIntent } from "../lib/external/review-extract"
 import {
   detectIntent,
   isInvestor,
@@ -44,7 +53,26 @@ import {
   normalizeFacebookPost,
   normalizeRentalListing,
   normalizeLinkedInPost,
+  normalizeRedditRelocationPost,
+  normalizeFacebookRecommendRealtorPost,
+  normalizeAgentSeekingResult,
+  sourceRedditRelocation,
+  sourceFacebookRecommendRealtor,
+  sourceAgentSeekingPhraseIntent,
+  sourceRealtySiteChatter,
+  normalizeNewConstructionResult,
+  sourceNewConstructionIntent,
 } from "../lib/lead-pipeline/social-sourcer"
+import {
+  buildPermitSearchQueries,
+  normalizePermitSearchResult,
+  extractApplicantName,
+  extractPropertyAddress,
+  sourcePermitPrelistingIntent,
+  routePermitPrelistingHits,
+  EXA_PERMIT_DETECTED_VIA,
+} from "../lib/lead-pipeline/permit-sourcer"
+import { PERMIT_SIGNAL_TYPE } from "../lib/external/permit-signals"
 import { activeSubscriberBrokerageIds, isActiveSubscriptionStatus } from "../lib/lead-pipeline/subscription-gate"
 import { parseTerritoryCourtRecords, recordTypeIntent } from "../lib/osint-client"
 import { normalizeCourtFiling } from "../lib/lead-pipeline/osint-sourcer"
@@ -65,7 +93,7 @@ import { BATCHDATA_MOTIVATION_TYPES, BATCHDATA_QUICKLISTS, fetchMotivatedSellers
 import { runApifyActor } from "../lib/external/apify-client"
 import { syncContactToHubSpot } from "../lib/crm/providers/hubspot"
 import { publishToSocialPlatform } from "../lib/social/publisher"
-import { meterVendorSpend, scraperTypeToVendor, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
+import { meterVendorSpend, estimatePlatformVendorCost, PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
 import { evaluateVendorBudget, vendorBudgetForTier, MONTHLY_VENDOR_BUDGET_USD, aggregateBrokerageSpend } from "../lib/vendor-governance/budget-eval"
 import { budgetLevel, redactBudgetForActor } from "../lib/vendor-governance/budget-visibility"
 import { resolveVendorAction, freeAlternativeFor } from "../lib/vendor-governance/vendor-policy"
@@ -85,7 +113,11 @@ import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agent
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
 import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported, selfConnectableDomains } from "../lib/connections/field-spec"
-import { isPlatformStaff } from "../lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "../lib/auth/resolve-user-role"
+import { isPlatformStaffRole } from "../lib/platform/platform-staff-roster"
+import { readFileSync } from "node:fs"
+import { blankComments } from "./strip-comments"
+import { join } from "node:path"
 import { matchTriggersForEvent, isCooldownActive, type LifecycleTrigger } from "../lib/marketing/trigger-match"
 import { findReusableRun, type ExistingRun } from "../lib/workflow-orchestrator/run-dedupe"
 
@@ -105,6 +137,53 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 const MARKET = { city: "Tampa", state: "FL" }
+
+// ── 0. Diagnostics honesty ───────────────────────────────────────────────────
+// STRUCTURAL, and deliberately so. loadScrapingDiagnostics needs a service-role
+// client and six live tables; there is no fixture that makes a Postgres read
+// FAIL on demand, so the thing worth proving is the shape of the code, not a
+// round trip. What is asserted is the CONSTRUCT — that every one of the six
+// reads has its `error` inspected and that the page has somewhere to say so —
+// never a particular variable name or message string.
+//
+// The defect this pins: all six reads were `result.data ?? []`. supabase-js
+// RESOLVES a failed query, so a refused read rendered as an empty panel and a
+// zero in the stat cards — a DIAGNOSTICS page reporting health for an outage,
+// with nothing thrown and nothing logged. Empty is a legitimate answer for this
+// page today, which is exactly why it could not be told apart from a failure.
+function testDiagnosticsHonesty() {
+  console.log("\n[scrape diagnostics — a refused read is stated, not rendered as empty]")
+  const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+
+  const kernel = src("lib/kernel/scraping.ts")
+  const client = src("app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx")
+
+  // The loader must CARRY the failures out, not just log them: a console line on
+  // a server render is invisible to the operator looking at the page.
+  check("ScrapingDiagnosticsData carries the failed dimensions to the surface",
+    /readErrors\s*:\s*Array<\{[^}]*dimension[^}]*message[^}]*\}>/.test(kernel))
+  check("the loader returns readErrors (not only computes it)",
+    /return\s*\{[\s\S]{0,800}?\breadErrors\b/.test(kernel))
+
+  // N reads, N inspections. BOTH sides are counted from the source (the
+  // Promise.all destructure names one `…Result` per read; each read must
+  // reach `collect(...)`), so adding a diagnostic read — wave 65 added the
+  // Smart Search subscriptions read — cannot pin this to a stale literal.
+  const destructure = kernel.match(/const \[([\s\S]*?)\] = await Promise\.all\(\[/)?.[1] ?? ""
+  const reads = [...destructure.matchAll(/\b[a-zA-Z]+Result\b/g)].length
+  const inspected = [...kernel.matchAll(/collect\(\s*['"][a-zA-Z]+['"]\s*,/g)].length
+  check(`every diagnostic read has its error inspected (${inspected} of ${reads})`, reads >= 6 && inspected === reads,
+    `found ${inspected} inspections for ${reads} reads`)
+  check("the inspection reads `.error`, so a RESOLVED failure is still caught",
+    /if\s*\(\s*result\.error\s*\)/.test(kernel))
+
+  // A failure the page cannot render is a failure nobody sees.
+  check("the page renders the failed dimensions instead of an empty state",
+    /data\.readErrors\.length\s*>\s*0/.test(client) &&
+    /data\.readErrors\.map/.test(client))
+  check("the banner warns the counts below are partial, not a healthy zero",
+    /incomplete|partial/i.test(client) && /readErrors/.test(client))
+}
 
 // ── 1. Zillow JSON parse ─────────────────────────────────────────────────────
 function testZillow() {
@@ -213,7 +292,10 @@ function testGates() {
     email: "ann.lee@example.com", city: "Tampa", state: "FL", motivationScore: 70, rawPayload: {},
   }
   check("record with email is viable", isViableRecord(withContact))
-  check("record with full name + email is promotion-eligible", hasPromotionEligibleIdentity(withContact))
+  // REPOINTED (orphan doctrine §1.1, wave 65A): hasPromotionEligibleIdentity was
+  // byte-identical to isViableRecord and was merged onto it — see the tombstone
+  // at lib/lead-pipeline/raw-record-types.ts (where the function used to be).
+  check("record with full name + email is promotion-eligible", isViableRecord(withContact))
   const key = buildLeadIdentityKey(withContact)
   check("identity key built", !!key && key.length > 0, String(key))
 
@@ -221,7 +303,7 @@ function testGates() {
     sourceRecordId: "t-2", source: "zillow", behaviorType: "property_view",
     intentType: "buyer", intentSignals: ["x"], motivationScore: 40, rawPayload: {},
   }
-  check("anonymous (no contact/address/name) not promotion-eligible", !hasPromotionEligibleIdentity(anonymous))
+  check("anonymous (no contact/address/name) not promotion-eligible", !isViableRecord(anonymous))
 }
 
 // ── 7. URL builder ───────────────────────────────────────────────────────────
@@ -321,29 +403,43 @@ async function testVendorConnectors() {
   check("BatchData builder: andQuickLists → AND-ed quickLists (intersection narrowing)", (() => { const b = buildPropertySearchBody({ state: "FL", motivationTypes: ["high_equity"], andQuickLists: ["out-of-state-owner"] }).searchCriteria as any; return b.orQuickLists.includes("high-equity") && b.quickLists.includes("out-of-state-owner") })())
   check("BatchData builder: searchCriteria passthrough is the structured 'third type' escape hatch", (() => { const b = buildPropertySearchBody({ state: "FL", searchCriteria: { building: { minBedroomCount: 3 } } }).searchCriteria as any; return b.building.minBedroomCount === 3 })())
 
-  // runApifyActor → run-sync-get-dataset-items with slug `/`→`~`.
-  let apifyUrl = ""
-  globalThis.fetch = (async (url: any) => {
-    apifyUrl = String(url)
-    return { ok: true, status: 200, json: async () => [{ id: "post1" }] }
-  }) as unknown as typeof fetch
-  const apifyRes = await runApifyActor("apify/facebook-posts-scraper", { maxPosts: 10 })
-  check("Apify slug '/'→'~' normalized in path", apifyUrl.includes("acts/apify~facebook-posts-scraper"))
-  check("Apify uses run-sync-get-dataset-items endpoint", apifyUrl.endsWith("/run-sync-get-dataset-items"))
-  check("Apify returns dataset items array", Array.isArray(apifyRes.data) && apifyRes.data.length === 1)
+  // runApifyActor → the official apify-client adapter (wave 70: SDK, same
+  // run-sync-get-dataset-items semantics). The REST URL shape is the SDK's
+  // business now; what this proof owns is (a) the route goes through the ONE
+  // adapter, (b) with no token nothing touches the network — a bare "no rule
+  // or allowlist entry allows host api.apify.com" refusal is exactly what an
+  // adapter that does not fail closed produced in the wave-70 sweep.
+  let apifyFetchCalls = 0
+  globalThis.fetch = (async () => { apifyFetchCalls++; return { ok: true, status: 200, json: async () => [] } }) as unknown as typeof fetch
+  const savedApifyToken = process.env.APIFY_TOKEN; const savedApifyKey = process.env.APIFY_API_TOKEN
+  delete process.env.APIFY_TOKEN; delete process.env.APIFY_API_TOKEN
+  let apifyRefusal = ""
+  try { await runApifyActor("apify/facebook-posts-scraper", { maxPosts: 10 }) } catch (e) { apifyRefusal = e instanceof Error ? e.message : String(e) }
+  if (savedApifyToken !== undefined) process.env.APIFY_TOKEN = savedApifyToken
+  if (savedApifyKey !== undefined) process.env.APIFY_API_TOKEN = savedApifyKey
+  check("Apify without a token refuses as 'unconfigured' — never a network call", /unconfigured/.test(apifyRefusal) && apifyFetchCalls === 0)
+  const apifyExternalSrc = blankComments(readFileSync(join(process.cwd(), "lib/external/apify-client.ts"), "utf8"))
+  check("runApifyActor routes through the official SDK adapter (lib/providers/apify/client.ts)", /from\s+["']@\/lib\/providers\/apify\/client["']/.test(apifyExternalSrc) && /runActorSyncGetDatasetItems\(/.test(apifyExternalSrc))
+  const apifyAdapterSrc = blankComments(readFileSync(join(process.cwd(), "lib/providers/apify/client.ts"), "utf8"))
+  check("the adapter itself fails closed on an empty token (positive control: the guard line exists)", /if \(!token\) return \{ ok: false/.test(apifyAdapterSrc))
 
-  // HubSpot CRM sync-out (gateway) — upsert by email, Bearer auth, result mapping.
-  let hsReq: { url: string; body: any; auth: string } | null = null
-  globalThis.fetch = (async (url: any, init: any) => {
-    hsReq = { url: String(url), body: JSON.parse(init.body), auth: init.headers?.Authorization ?? init.headers?.authorization ?? "" }
-    return { ok: true, status: 200, json: async () => ({ results: [{ id: "hs-123" }] }) }
-  }) as unknown as typeof fetch
-  const hsRes = await syncContactToHubSpot({ firstName: "Dana", lastName: "Buyer", email: "dana@example.com", phone: "+15557654321" }, "HSTOKEN")
-  check("HubSpot upserts via /crm/v3/objects/contacts/batch/upsert", !!hsReq && (hsReq as any).url.endsWith("/crm/v3/objects/contacts/batch/upsert"))
-  check("HubSpot upsert keyed by email idProperty", !!hsReq && (hsReq as any).body.inputs[0].idProperty === "email" && (hsReq as any).body.inputs[0].id === "dana@example.com")
-  check("HubSpot maps name/email/phone to properties", !!hsReq && (hsReq as any).body.inputs[0].properties.firstname === "Dana" && (hsReq as any).body.inputs[0].properties.email === "dana@example.com" && (hsReq as any).body.inputs[0].properties.phone === "+15557654321")
-  check("HubSpot uses Bearer auth", !!hsReq && (hsReq as any).auth === "Bearer HSTOKEN")
-  check("HubSpot returns contactId from results[0].id", hsRes.success && hsRes.contactId === "hs-123")
+  // HubSpot CRM sync-out — wave 71A moved this off a mockable raw `fetch` onto
+  // the official `@hubspot/api-client` SDK (lib/providers/hubspot/client.ts),
+  // whose internal Transport expects a spec-compliant fetch Response (a
+  // Headers object, etc.) that the old plain-object mock above does not
+  // provide — so the request-SHAPE assertions are re-anchored on SOURCE TEXT
+  // (the same pattern already used for the Apify SDK migration two blocks
+  // up), not a captured URL/body, per the wave-70 lesson: "re-anchor on the
+  // EARLIEST marker of either spelling (REST or SDK method name)".
+  const hubspotExternalSrc = blankComments(readFileSync(join(process.cwd(), "lib/crm/providers/hubspot.ts"), "utf8"))
+  check("HubSpot sync routes through the official SDK adapter (lib/providers/hubspot/client.ts)", /from\s+["']@\/lib\/providers\/hubspot\/client["']/.test(hubspotExternalSrc) && /upsertContactByEmail\(/.test(hubspotExternalSrc) && /createContact\(/.test(hubspotExternalSrc))
+  check("HubSpot upsert is keyed by email (idProperty=email call site preserved)", /upsertContactByEmail\(apiKey, contact\.email, properties\)/.test(hubspotExternalSrc))
+  const hubspotAdapterSrc = blankComments(readFileSync(join(process.cwd(), "lib/providers/hubspot/client.ts"), "utf8"))
+  check("the HubSpot adapter itself fails closed on an empty token (positive control: the guard line exists)", /if \(!accessToken\) return \{ ok: false/.test(hubspotAdapterSrc))
+  // No real-token call here on purpose: the SDK's Transport calls the real
+  // global `fetch`, and this suite must never make live outbound HTTP. Only
+  // the no-token branch (an early return before any network reach) is
+  // exercised live; the with-token request SHAPE is proven above by source.
   check("HubSpot without token → requiresConfiguration", (await syncContactToHubSpot({ firstName: "X", lastName: "Y" }, null)).requiresConfiguration === true)
 
   // Gateway arraybuffer mode (binary egress, e.g. ElevenLabs TTS audio) — returns raw bytes as Buffer.
@@ -378,19 +474,26 @@ async function testVendorConnectors() {
   check("gateway form: body is urlencoded (incl bracket keys)", !!formReq && (formReq as any).body.includes("amount=5000") && (formReq as any).body.includes("metadata%5Btxn%5D=abc"))
   check("gateway form: bearer auth + parsed json response", !!formReq && (formReq as any).auth === "Bearer sk_test" && formRes.ok && (formRes.data as any).id === "tr_1")
 
-  // Social publisher now egresses through the connector-gateway — verify routing + auth per platform.
+  // Social publisher: LinkedIn still egresses through the connector-gateway
+  // (mockable via globalThis.fetch) — Facebook/Instagram moved to the
+  // official `facebook-nodejs-business-sdk` adapter (wave 71A,
+  // lib/providers/meta/client.ts), whose transport is axios, NOT
+  // globalThis.fetch — mocking fetch does not intercept it, so the request
+  // it makes cannot be captured this way any more (and must never be made
+  // live in this suite). Re-anchored on SOURCE TEXT per the wave-70 lesson:
+  // "re-anchor on the EARLIEST marker of either spelling".
   let socReq: { url: string; auth: string; restli: string } | null = null
   globalThis.fetch = (async (url: any, init: any) => {
     socReq = { url: String(url), auth: init?.headers?.Authorization ?? "", restli: init?.headers?.["X-Restli-Protocol-Version"] ?? "" }
     return { ok: true, status: 200, json: async () => ({ id: "post_1" }) }
   }) as unknown as typeof fetch
-  const fb = await publishToSocialPlatform("facebook", { content: "hi", accessToken: "FBTOK", accountId: "123" })
-  check("social: Facebook routes through gateway to graph.facebook.com w/ access_token query", !!socReq && (socReq as any).url.startsWith("https://graph.facebook.com/v18.0/123/feed") && (socReq as any).url.includes("access_token=FBTOK") && fb.success && fb.externalPostId === "post_1")
   const li = await publishToSocialPlatform("linkedin", { content: "hi", accessToken: "LITOK", accountId: "u1" })
   check("social: LinkedIn uses Bearer + X-Restli header through the gateway", !!socReq && (socReq as any).url === "https://api.linkedin.com/v2/ugcPosts" && (socReq as any).auth === "Bearer LITOK" && (socReq as any).restli === "2.0.0" && li.success)
-  globalThis.fetch = (async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "bad page" } }) })) as unknown as typeof fetch
-  const fbErr = await publishToSocialPlatform("facebook", { content: "x", accessToken: "T", accountId: "1" })
-  check("social: gateway error surfaces provider message (success:false)", !fbErr.success && (fbErr.error ?? "").includes("bad page"))
+  const publisherSrc = blankComments(readFileSync(join(process.cwd(), "lib/social/publisher.ts"), "utf8"))
+  check("Facebook publish routes through the official Meta SDK adapter (lib/providers/meta/client.ts)", /from\s+["']@\/lib\/providers\/meta\/client["']/.test(publisherSrc) && /graphPost[<(][^;]*params\.accessToken, \[params\.accountId, "feed"\]/.test(publisherSrc))
+  check("Instagram publish routes through the same Meta SDK adapter (container + media_publish)", /graphPost[<(][^;]*params\.accessToken, \[params\.accountId, "media"\]/.test(publisherSrc) && /graphPost[<(][^;]*params\.accessToken, \[params\.accountId, "media_publish"\]/.test(publisherSrc))
+  const metaAdapterSrc = blankComments(readFileSync(join(process.cwd(), "lib/providers/meta/client.ts"), "utf8"))
+  check("the Meta adapter itself fails closed on an empty token (positive control: the guard line exists)", /if \(!accessToken\) return \{ ok: false/.test(metaAdapterSrc))
 
   // ShowingTime scheduling now egresses through the connector-gateway (was a bespoke fetch).
   // Verify the connector contract: bearer auth, POST /v2/appointments, json appointment body.
@@ -469,11 +572,12 @@ async function testVendorConnectors() {
 // ── 8c. Unified vendor-spend gateway (meterVendorSpend) ──────────────────────
 async function testVendorGateway() {
   console.log("\n[Unified vendor-spend gateway — meterVendorSpend]")
-  // scraper_type → canonical vendor mapping (the ledger's vendor_name).
-  check("zillow_behavior → zenrows", scraperTypeToVendor("zillow_behavior") === "zenrows")
-  check("batchdata_motivated → batchdata", scraperTypeToVendor("batchdata_motivated") === "batchdata")
-  check("social_intent → apify_social", scraperTypeToVendor("social_intent") === "apify_social")
-  check("osint_signal → osint", scraperTypeToVendor("osint_signal") === "osint")
+  // source → canonical vendor mapping (the ledger's vendor_name). Lane 83E: re-pointed from the
+  // deleted scraperTypeToVendor duplicate to its survivor, SOURCE_VENDOR via vendorForSource.
+  check("zillow → zenrows (alias → zenrows_zillow)", vendorForSource("zillow") === "zenrows")
+  check("batchdata_motivated → batchdata", vendorForSource("batchdata_motivated") === "batchdata")
+  check("exa_buyer_intent → exa (never the retired apify_social composite)", vendorForSource("exa_buyer_intent") === "exa")
+  check("osint_signal → osint", vendorForSource("osint_signal") === "osint")
 
   // Captured logger records exactly what the gateway forwards.
   const calls: any[] = []
@@ -530,10 +634,26 @@ async function testVendorGateway() {
   check("zero/invalid budget falls back to default ceiling", evaluateVendorBudget(0, 0, 1).budget === MONTHLY_VENDOR_BUDGET_USD.solo_agent)
 
   // ── Role-scoped visibility (PRIVACY: brokerages never see vendor names/$) ───
-  check("support is platform staff", isPlatformStaff("support"))
-  check("superadmin is platform staff", isPlatformStaff("superadmin"))
-  check("broker is NOT platform staff", !isPlatformStaff("broker"))
-  check("agent is NOT platform staff", !isPlatformStaff("agent"))
+  // The ROSTER — one definition, four roles (lib/platform/platform-staff-roster.ts),
+  // the same four as users_platform_role_check and public.is_platform_staff() (m408).
+  check("support is platform staff", isPlatformStaffRole("support"))
+  check("superadmin is platform staff", isPlatformStaffRole("superadmin"))
+  check("admin is platform staff", isPlatformStaffRole("admin"))
+  check("marketing is platform staff", isPlatformStaffRole("marketing"))
+  check("broker is NOT platform staff", !isPlatformStaffRole("broker"))
+  check("agent is NOT platform staff", !isPlatformStaffRole("agent"))
+  check("ai_isa_system is NOT platform staff (service account, not a person)", !isPlatformStaffRole("ai_isa_system"))
+  // DUAL-COLUMN IDENTITY. The gate takes (user_type, platform_role) because the two
+  // columns hold different vocabularies. These four cases are the ones the old
+  // single-column isPlatformStaff(user_type) got wrong on live data.
+  check("live superadmin shape (user_type=admin, platform_role=superadmin) IS staff",
+    isPlatformStaffIdentity("admin", "superadmin"))
+  check("marketing staff shape (user_type=system, platform_role=marketing) IS staff",
+    isPlatformStaffIdentity("system", "marketing"))
+  check("TENANT user_type=support with no platform_role is NOT staff",
+    !isPlatformStaffIdentity("support", null))
+  check("legacy user_type=superadmin marker alone IS staff",
+    isPlatformStaffIdentity("superadmin", null))
 
   check("budgetLevel ok/approaching/paused", budgetLevel({ allowed: true, softWarning: false }) === "ok" && budgetLevel({ allowed: true, softWarning: true }) === "approaching" && budgetLevel({ allowed: false, softWarning: false }) === "paused")
 
@@ -884,10 +1004,22 @@ async function testVendorGateway() {
   const noOwnCaps = { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }
   const platformNoBrokerage = { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: false }
   check("availability: api_key supported when actor can own + has a brokerage (esign docusign)", isConnectSupported("esign", "docusign", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
-  check("availability: stripe Connect available to any owner; quickbooks needs brokerage manager", isConnectSupported("financial", "stripe", vendorCaps).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  // QuickBooks is OWNER-scoped, not brokerage-only. These two assertions predate
+  // the scope-aware accounting layer ("QuickBooks/Stripe options at every level"),
+  // which made every scope in lib/connections/accounting-scopes.ts —
+  // platform | brokerage | team | agent | VENDOR — able to connect its OWN
+  // QuickBooks company, stored under its own (owner_type, owner_id). A vendor
+  // connecting their books is the designed behaviour, not a leak: the platform's
+  // own company stays unreachable behind the distinct 'platform_quickbooks' key.
+  check("availability: stripe Connect AND quickbooks are available to any owner-capable actor",
+    isConnectSupported("financial", "stripe", vendorCaps).available
+    && isConnectSupported("financial", "quickbooks", vendorCaps).available)
   check("availability: social OAuth supported for any owner (stored by user_id)", isConnectSupported("social", "meta", vendorCaps).available && isConnectSupported("social", "linkedin", agentCaps).available)
   check("availability: email/calendar OAuth available to any owner with a brokerage (incl vendor/contact)", isConnectSupported("calendar", "gmail", agentCaps).available && isConnectSupported("email", "gmail", vendorCaps).available && !isConnectSupported("email", "gmail", platformNoBrokerage).available)
-  check("availability: QuickBooks OAuth needs brokerage manager", isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  check("availability: QuickBooks needs only an owner — NOT a brokerage manager, and not even a brokerage anchor (platform connects its own books)",
+    isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available
+    && isConnectSupported("financial", "quickbooks", platformNoBrokerage).available
+    && !isConnectSupported("financial", "quickbooks", noOwnCaps).available)
   check("availability: api_key unavailable without a brokerage anchor (platform/superadmin)", !isConnectSupported("esign", "docusign", platformNoBrokerage).available && !isConnectSupported("transaction", "dotloop", platformNoBrokerage).available)
   check("availability: nothing is connectable without an owner id", !isConnectSupported("esign", "docusign", noOwnCaps).available && !isConnectSupported("social", "meta", noOwnCaps).available)
 }
@@ -1288,12 +1420,25 @@ function testRentcastMarketStats() {
 // ── 19e. Neighborhood intelligence — tier gate, livability, Fair-Housing ─────
 function testNeighborhoodIntelligence() {
   console.log("\n[Neighborhood intelligence — tier gate + livability + Fair-Housing]")
-  // Tier gate: only the most advanced plans.
+  // TIER PARITY (owner ruling) — this block asserted the OPPOSITE until the
+  // ruling landed: "tier gate denies solo_agent / team / null" pinned a
+  // brokerage-and-up floor. OWNER, verbatim: "when we have the team and solo
+  // agent subscription tiers, those subscriptions get the same level of
+  // features as brokerages." Tiers differ by SEAT COUNT, not by feature set,
+  // so those three assertions were pinning a policy that no longer exists and
+  // they are INVERTED here rather than deleted — the direction of the change is
+  // the finding (CLAUDE.md §2), and a silent deletion would leave no record
+  // that this gate was ever closed.
+  //
+  // The AI cost of the report is platform-covered with per-tier overage
+  // (CLAUDE.md §5); that is the lever that scales with plan, not this gate.
+  // Enforcement of the parity lives in scripts/tier-entitlement-simulator.ts
+  // alongside its positive controls.
   check("tier gate allows brokerage", isNeighborhoodReportAllowed("brokerage"))
   check("tier gate allows multi_location", isNeighborhoodReportAllowed("multi_location"))
-  check("tier gate denies solo_agent", !isNeighborhoodReportAllowed("solo_agent"))
-  check("tier gate denies team", !isNeighborhoodReportAllowed("team"))
-  check("tier gate denies null", !isNeighborhoodReportAllowed(null))
+  check("tier parity: solo_agent is ALLOWED (was denied)", isNeighborhoodReportAllowed("solo_agent"))
+  check("tier parity: team is ALLOWED (was denied)", isNeighborhoodReportAllowed("team"))
+  check("tier parity: an unreadable/NULL tier no longer denies either", isNeighborhoodReportAllowed(null))
 
   const rich = {
     lat: 27.95, lon: -82.45,
@@ -1338,10 +1483,576 @@ function testBatchDataTypes() {
   check("batchdata_motivated → seller intent", getSourceSemantics("batchdata_motivated").intentType === "seller")
 }
 
+// ── 21. WAVE 65 LANES — Reddit relocation / Facebook "recommend a realtor" /
+// agent-seeking phrase intent / realty-site saved-search + contact-agent chatter ─────────────
+// Each is its own section with a POSITIVE CONTROL proving the territory gate would catch a
+// lane that forgot it (CLAUDE.md §2): a market with no city/state must yield zero phrases /
+// zero records, never a global sweep.
+function testWave65Lanes() {
+  console.log("\n[Wave 65 · Reddit relocation lane]")
+  const relocPost = normalizeRedditRelocationPost(
+    { id: "r1", title: "Moving to Austin next month, need advice", author: "reloc_jane", url: "https://reddit.com/r/moving/r1" },
+    { city: "Austin", state: "TX" },
+  )
+  check("reddit_relocation → source tagged", relocPost.source === "reddit_relocation")
+  check("reddit_relocation → buyer intent (relocation is inbound-buyer)", relocPost.intentType === "buyer")
+  check("reddit_relocation → intent signals include relocating", relocPost.intentSignals.includes("relocating"))
+  check("reddit_relocation → identity anchored on username", relocPost.username === "reloc_jane")
+  check("reddit_relocation semantics registered + distinct from reddit_intent", getSourceSemantics("reddit_relocation").motivationType === "relocation_buyer")
+  check("reddit_relocation is its OWN vendor-routed source (not folded into reddit_intent)", resolveSourceKey("reddit_relocation") === "reddit_relocation" && resolveSourceKey("reddit_relocation") !== resolveSourceKey("reddit"))
+
+  console.log("\n[Wave 65 · Facebook 'recommend a realtor' lane]")
+  const recPost = normalizeFacebookRecommendRealtorPost(
+    { postId: "fb1", authorName: "Sam Buyer", url: "https://facebook.com/groups/x/posts/fb1" },
+    { city: "Tampa", state: "FL" },
+  )
+  check("facebook_recommend_realtor → source tagged", recPost.source === "facebook_recommend_realtor")
+  check("facebook_recommend_realtor → agent-referral signal present", recPost.intentSignals.includes("recommend_a_realtor"))
+  check("facebook_recommend_realtor → name split from author handle", recPost.firstName === "Sam" && recPost.lastName === "Buyer")
+  check("facebook_recommend_realtor is DISTINCT from facebook_group (never merged)", "facebook_recommend_realtor" in SOURCE_VENDOR && resolveSourceKey("facebook_recommend_realtor") !== resolveSourceKey("facebook"))
+
+  console.log("\n[Wave 65 · Agent-seeking phrase intent lane]")
+  const agentResult = normalizeAgentSeekingResult(
+    { url: "https://example.com/thread", title: "Looking for a realtor in Denver" },
+    { city: "Denver", state: "CO" },
+  )
+  check("agent_seeking_phrase_intent → source tagged", agentResult.source === "agent_seeking_phrase_intent")
+  check("agent_seeking_phrase_intent → referral signal present", agentResult.intentSignals.includes("agent_referral_request"))
+  check("agent_seeking_phrase_intent is DISTINCT from google_phrase_intent (never merged)", resolveSourceKey("agent_seeking_phrase_intent") !== resolveSourceKey("google"))
+
+  console.log("\n[Wave 65 · buildAgentSeekingPhrases — territory-centric query builder]")
+  const phrasesAustin = buildAgentSeekingPhrases({ city: "Austin", state: "TX" })
+  check("phrases built for a real market", phrasesAustin.phrases.length > 0)
+  check("every phrase names the territory (no generic global phrase)", phrasesAustin.phrases.every((p) => p.includes("Austin")))
+  check("phrase set covers 'looking for a realtor' + 'recommend a realtor'",
+    phrasesAustin.phrases.some((p) => p.includes("looking for a realtor")) && phrasesAustin.phrases.some((p) => p.includes("recommend a realtor")))
+  // POSITIVE CONTROL — a lane without a territory gate IS caught: an empty market must
+  // never fall back to a global/borderless query.
+  const phrasesEmpty = buildAgentSeekingPhrases({ city: null, state: null })
+  check("POSITIVE CONTROL: no territory ⇒ zero phrases (never a global sweep)", phrasesEmpty.phrases.length === 0)
+
+  console.log("\n[Wave 65 · Zillow/Realtor/Homes.com chatter — URL builder + contact-agent parser]")
+  const zUrl = buildRealtySiteChatterUrl("zillow", { city: "Austin", state: "TX" })
+  const rUrl = buildRealtySiteChatterUrl("realtor", { city: "Austin", state: "TX" })
+  const hUrl = buildRealtySiteChatterUrl("homes", { city: "Austin", state: "TX" })
+  check("zillow chatter URL targets zillow.com", zUrl.includes("zillow.com"))
+  check("realtor chatter URL targets realtor.com", rUrl.includes("realtor.com"))
+  check("NEW COVERAGE: homes.com chatter URL targets homes.com (never wired before wave 65)", hUrl.includes("homes.com"))
+  check("chatter URLs are DISTINCT per site (never one shared URL)", new Set([zUrl, rUrl, hUrl]).size === 3)
+
+  const chatterHtml = `<html><body>
+    <div class="contact-agent-widget" data-id="ca1">
+      <span class="agent-contact-name">Pat Homebuyer</span>
+      <span class="home-address">456 Elm St</span>
+    </div>
+  </body></html>`
+  const chatterRecords = parseContactAgentChatter(chatterHtml, "zillow", { city: "Austin", state: "TX" })
+  check("contact-agent chatter block parsed into a record", chatterRecords.length === 1)
+  check("contact-agent record anchored on the handle (name split)", chatterRecords[0]?.firstName === "Pat" && chatterRecords[0]?.lastName === "Homebuyer")
+  check("contact-agent record tagged with the contact_agent signal", chatterRecords[0]?.intentSignals.includes("contact_agent"))
+  // POSITIVE CONTROL — an anonymous CTA block (no handle) must never fabricate an identity.
+  const anonHtml = `<html><body><div class="contact-agent-widget"></div></body></html>`
+  check("POSITIVE CONTROL: anonymous contact-agent block ⇒ zero records (never fabricated)", parseContactAgentChatter(anonHtml, "zillow", { city: "Austin", state: "TX" }).length === 0)
+
+  console.log("\n[Wave 65 · sourcer territory honesty — no geography ⇒ no scrape]")
+  check("realty_site_chatter, reddit_relocation, facebook_recommend_realtor, agent_seeking_phrase_intent all have SOURCE_MAP semantics",
+    ["realty_site_chatter", "reddit_relocation", "facebook_recommend_realtor", "agent_seeking_phrase_intent"].every((k) => !!getSourceSemantics(k)))
+  check("expandEnabledSources activates every wave-65 gate token from its canonical key",
+    ["realty_site_chatter", "reddit_relocation", "facebook_recommend_realtor", "agent_seeking_phrase_intent"].every((k) => {
+      const gated = expandEnabledSources([k])
+      return gated.has(k)
+    }))
+}
+
+// ── 21b. LANE 72C — new-construction / builder intent (docs/lead-acquisition-coverage-2026-09.md
+// item #23, the next coverage lane after site_visitor_intent (wave 70) and email_engagement_intent
+// (lane 71C)). Same territory-honesty positive control as the wave-65 lanes: a market with no
+// city/state must yield zero phrases / zero records, never a global sweep.
+function testLane72CNewConstruction() {
+  console.log("\n[Lane 72C · New-construction / builder intent lane]")
+  const ncResult = normalizeNewConstructionResult(
+    { url: "https://example.com/new-homes", title: "New construction homes for sale in Denver — builder incentives, move in ready" },
+    { city: "Denver", state: "CO" },
+  )
+  check("new_construction_intent → source tagged", ncResult.source === "new_construction_intent")
+  check("new_construction_intent → buyer intent (a new-build search is definitionally a buyer signal)", ncResult.intentType === "buyer")
+  check("new_construction_intent → new_construction signal always present", ncResult.intentSignals.includes("new_construction"))
+  check("new_construction_intent → builder_incentive signal detected from text", ncResult.intentSignals.includes("builder_incentive"))
+  check("new_construction_intent → move_in_ready signal detected from text", ncResult.intentSignals.includes("move_in_ready"))
+  check("new_construction_intent is DISTINCT from google_phrase_intent and agent_seeking_phrase_intent (never merged)",
+    resolveSourceKey("new_construction_intent") !== resolveSourceKey("google") &&
+    resolveSourceKey("new_construction_intent") !== resolveSourceKey("agent_seeking_phrase_intent"))
+  check("new_construction_intent has a REAL scoring entry (not the fallback)", hasScoringEntry("new_construction_intent"))
+  check("new_construction_intent is apify-vendor-routed (reuses the already-registered google task)", SOURCE_VENDOR["new_construction_intent"] === "apify")
+
+  console.log("\n[Lane 72C · buildNewConstructionPhrases — territory-centric query builder]")
+  const ncPhrasesAustin = buildNewConstructionPhrases({ city: "Austin", state: "TX" })
+  check("phrases built for a real market", ncPhrasesAustin.phrases.length > 0)
+  check("every phrase names the territory (no generic global phrase)", ncPhrasesAustin.phrases.every((p) => p.includes("Austin")))
+  check("phrase set covers 'new construction' + 'builder incentives'",
+    ncPhrasesAustin.phrases.some((p) => p.includes("new construction")) && ncPhrasesAustin.phrases.some((p) => p.includes("builder incentives")))
+  // POSITIVE CONTROL — a lane without a territory gate IS caught: an empty market must never
+  // fall back to a global/borderless query.
+  const ncPhrasesEmpty = buildNewConstructionPhrases({ city: null, state: null })
+  check("POSITIVE CONTROL: no territory ⇒ zero phrases (never a global sweep)", ncPhrasesEmpty.phrases.length === 0)
+
+  check("new_construction_intent aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("new_construction") === "new_construction_intent" &&
+    resolveSourceKey("builder_intent") === "new_construction_intent")
+  check("expandEnabledSources activates the new_construction_intent gate token from its canonical key",
+    expandEnabledSources(["new_construction_intent"]).has("new_construction_intent"))
+}
+
+async function testLane72CSourcerHonestlyNoOp() {
+  console.log("\n[Lane 72C · sourcer async wrapper — POSITIVE CONTROL: no territory ⇒ no network call]")
+  const emptyMarket = { city: null, state: null }
+  const nc = await sourceNewConstructionIntent(emptyMarket)
+  check("sourceNewConstructionIntent: no territory ⇒ zero records, zero cost", nc.records.length === 0 && nc.cost === 0)
+}
+
+// ── 21c. LANE 73D — permit / pre-listing intent (Exa) (owner ruling wave 73, verbatim:
+// "exa is good at looking for leads like permit"). DISTINCT from lib/external/
+// permit-signals.ts's Socrata/ArcGIS ATTACH-ONLY lane and from exa_buyer_intent
+// (buyer-only). Covers: territory-centric query builder, normalizer classification,
+// the fail-closed no-network positive control, and the attach-vs-mint decision.
+function testLane73DPermitSourcerPure() {
+  console.log("\n[Lane 73D · permit/pre-listing intent (Exa) — territory-centric query builder]")
+  const queries = buildPermitSearchQueries({ city: "Austin", state: "TX" })
+  check("queries built for a real territory", queries.length > 0)
+  check("every query names the territory (no generic global query)", queries.every((q) => q.query.includes("Austin")))
+  check("all four owner-named evidence categories present (permit/probate/coming_soon/contractor_bid)",
+    (["permit", "probate", "coming_soon", "contractor_bid"] as const).every((c) => queries.some((q) => q.category === c)))
+  // POSITIVE CONTROL — a lane without a territory gate IS caught: an empty market must
+  // never fall back to a global/borderless query.
+  const emptyQueries = buildPermitSearchQueries({ city: null, state: null })
+  check("POSITIVE CONTROL: no territory ⇒ zero queries (never a global sweep)", emptyQueries.length === 0)
+
+  console.log("\n[Lane 73D · normalizer — applicant name / property address extraction + classification]")
+  const permitHit = normalizePermitSearchResult(
+    {
+      id: "p1", url: "https://county.gov/permits/1",
+      title: "Permit issued to John Smith for 123 Main St, Austin",
+      text: "A building permit was issued to John Smith at 123 Main St for a kitchen remodel and roof replacement.",
+      author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+  check("permit hit → source tagged permit_prelisting_intent", permitHit.source === "permit_prelisting_intent")
+  check("permit hit → seller intent (a permit/pre-listing hit is definitionally a seller signal, never buyer)", permitHit.intentType === "seller")
+  check("permit hit → applicant name extracted from 'permit was issued to <Name>'", permitHit.firstName === "John" && permitHit.lastName === "Smith")
+  check("permit hit → property address extracted", permitHit.propertyAddress === "123 Main St")
+  check("permit hit → category + lane signal present", permitHit.intentSignals.includes("permit_prelisting_intent") && permitHit.intentSignals.includes("permit"))
+  check("permit hit is viable (name + city)", isViableRecord(permitHit))
+
+  const demoHit = normalizePermitSearchResult(
+    {
+      id: "p2", url: "https://x/2", title: "Demolition permit filed for teardown at 45 Oak Ave, Austin",
+      text: "A demolition permit was filed to raze the structure at 45 Oak Ave.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+  check("demolition language → demolition signal + the strong-tier motivation score (classifyPermitStrength reused, not re-derived)",
+    demoHit.intentSignals.includes("demolition") && (demoHit.motivationScore ?? 0) >= 65)
+
+  const probateHit = normalizePermitSearchResult(
+    {
+      id: "p3", url: "https://x/3", title: "Estate of Mary Jones — property to be sold",
+      text: "The estate of Mary Jones is preparing the probate property for sale.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "probate",
+  )
+  check("probate hit → applicant name extracted from 'estate of <Name>'", probateHit.firstName === "Mary" && probateHit.lastName === "Jones")
+  check("probate hit → probate signal present", probateHit.intentSignals.includes("probate"))
+
+  // POSITIVE CONTROLS — the extractors must never fabricate a match out of unrelated text.
+  check("POSITIVE CONTROL: extractApplicantName never fabricates a name from unrelated text", extractApplicantName("Nothing here mentions anyone at all.") === null)
+  check("POSITIVE CONTROL: extractPropertyAddress never fabricates an address from unrelated text", extractPropertyAddress("Nothing here mentions any address at all.") === null)
+
+  check("permit_prelisting_intent has a REAL scoring entry (not the silent fallback)", hasScoringEntry("permit_prelisting_intent"))
+  check("permit_prelisting_intent is exa-vendor-routed (owner: 'exa is good at looking for leads like permit')", SOURCE_VENDOR.permit_prelisting_intent === "exa")
+  check("permit_prelisting_intent is DISTINCT from exa_buyer_intent — never merged (seller vs buyer, CLAUDE.md §6)",
+    resolveSourceKey("permit_prelisting_intent") !== resolveSourceKey("exa"))
+  check("permit_prelisting_intent aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("permit_intent") === "permit_prelisting_intent" && resolveSourceKey("pre_listing_intent") === "permit_prelisting_intent")
+  check("expandEnabledSources activates the permit_prelisting_intent gate token from its canonical key",
+    expandEnabledSources(["permit_prelisting_intent"]).has("permit_prelisting_intent"))
+}
+
+async function testLane73DSourcerHonestlyNoOp() {
+  console.log("\n[Lane 73D · sourcer async wrapper — POSITIVE CONTROL: no territory ⇒ no network call]")
+  const emptyMarket = { city: null, state: null }
+  const nc = await sourcePermitPrelistingIntent(emptyMarket)
+  check("sourcePermitPrelistingIntent: no territory ⇒ zero records, zero cost", nc.records.length === 0 && nc.cost === 0)
+
+  console.log("\n[Lane 73D · fail-closed — POSITIVE CONTROL: no EXA_API_KEY ⇒ no network call even with a real territory]")
+  const savedKey = process.env.EXA_API_KEY
+  delete process.env.EXA_API_KEY
+  try {
+    const r = await sourcePermitPrelistingIntent({ city: "Austin", state: "TX" })
+    check("sourcePermitPrelistingIntent: real territory but no EXA_API_KEY ⇒ zero records, zero cost, no throw (exaSearch's own fail-closed gate)",
+      r.records.length === 0 && r.cost === 0)
+  } finally {
+    if (savedKey === undefined) delete process.env.EXA_API_KEY
+    else process.env.EXA_API_KEY = savedKey
+  }
+}
+
+/** A supabase double for `routePermitPrelistingHits` — RESOLVES its refusals exactly
+ *  as supabase-js does (CLAUDE.md §3), never throws. Tables: leads, contacts,
+ *  motivated_seller_signals (existing-read + insert). Modeled on
+ *  batchdata-seller-signal-simulator.ts's `fakeSupabase`. */
+function fakePermitSupabase(opts: {
+  leads?: Array<{ id: string; address: string | null }>
+  contacts?: Array<{ id: string; address: string | null }>
+  existing?: Array<{ signal_details: { dedupe_key?: string } | null }>
+  insertError?: { message: string }
+}) {
+  const inserted: any[] = []
+  const client = {
+    from(table: string) {
+      const q: any = {
+        select: () => q,
+        eq: () => q,
+        is: () => q,
+        not: () => q,
+        limit: () => q,
+        insert: (rows: any) => {
+          const arr = Array.isArray(rows) ? rows : [rows]
+          if (opts.insertError) return { select: () => Promise.resolve({ data: null, error: opts.insertError }) }
+          inserted.push(...arr)
+          return { select: () => Promise.resolve({ data: arr.map((_: any, i: number) => ({ id: `id-${inserted.length + i}` })), error: null }) }
+        },
+        then: (res: any) => {
+          if (table === "leads") return Promise.resolve({ data: opts.leads ?? [], error: null }).then(res)
+          if (table === "contacts") return Promise.resolve({ data: opts.contacts ?? [], error: null }).then(res)
+          return Promise.resolve({ data: opts.existing ?? [], error: null }).then(res)
+        },
+      }
+      return q
+    },
+  }
+  return { client, inserted }
+}
+
+async function testLane73DAttachVsMint() {
+  console.log("\n[Lane 73D · attach-vs-mint routing — the permit-signals reuse]")
+  const owned = normalizePermitSearchResult(
+    {
+      id: "p4", url: "https://x/4", title: "Roof permit issued to Pat Owner for 500 Congress Ave, Austin",
+      text: "A roof replacement permit was issued to Pat Owner at 500 Congress Ave.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+  const unowned = normalizePermitSearchResult(
+    {
+      id: "p5", url: "https://x/5", title: "Remodel permit issued to Sam Stranger for 900 Elm St, Austin",
+      text: "A remodel permit was issued to Sam Stranger at 900 Elm St.", author: null, publishedDate: "2026-09-01",
+    } as any,
+    { city: "Austin", state: "TX" }, "permit",
+  )
+
+  const f = fakePermitSupabase({ leads: [{ id: "lead-1", address: "500 Congress Ave, Austin, TX" }] })
+  const routed = await routePermitPrelistingHits({ supabase: f.client as any, brokerageId: "brok-1", records: [owned, unowned] })
+  check("a hit whose address matches a lead THIS BROKERAGE already owns is ATTACHED, not minted",
+    !routed.toMint.some((r) => r.sourceRecordId === owned.sourceRecordId))
+  check("an unmatched hit is left to MINT as a normal raw lead", routed.toMint.some((r) => r.sourceRecordId === unowned.sourceRecordId))
+  check("attached count reflects the one match, filed under lead_id", routed.attached === 1 && routed.attachedByEntity.lead === 1)
+  check("the written signal carries THIS lane's own detected_via ('exa'), distinct from the Socrata/ArcGIS lane's ('socrata'/'arcgis')",
+    f.inserted[0]?.detected_via === EXA_PERMIT_DETECTED_VIA && f.inserted[0]?.signal_type === PERMIT_SIGNAL_TYPE)
+  check("the written row points at the tenant's OWN lead (never a body/provider-supplied id)", f.inserted[0]?.lead_id === "lead-1")
+
+  // Re-run with the SAME dedupe_key already recorded — idempotent, writes nothing new,
+  // but the owned address still never mints (matched ⇒ excluded regardless of idempotency).
+  const dedupeKey = f.inserted[0]?.signal_details?.dedupe_key
+  const f2 = fakePermitSupabase({
+    leads: [{ id: "lead-1", address: "500 Congress Ave, Austin, TX" }],
+    existing: [{ signal_details: { dedupe_key: dedupeKey } }],
+  })
+  const routed2 = await routePermitPrelistingHits({ supabase: f2.client as any, brokerageId: "brok-1", records: [owned] })
+  check("a re-run against an already-recorded dedupe_key writes NOTHING new (idempotent)", f2.inserted.length === 0 && routed2.alreadyRecorded === 1)
+  check("…and the owned address still never mints on the idempotent path", routed2.toMint.length === 0)
+
+  // POSITIVE CONTROL — a hit with no address at all has nothing to attach-match on and
+  // always mints, with NO database read even attempted (no leads/contacts fetch needed).
+  const noAddress: NormalizedScrapedRecord = { ...unowned, propertyAddress: null, sourceRecordId: "permit-exa-no-addr" }
+  const f3 = fakePermitSupabase({})
+  const routed3 = await routePermitPrelistingHits({ supabase: f3.client as any, brokerageId: "brok-1", records: [noAddress] })
+  check("POSITIVE CONTROL: a hit with no property address always mints (nothing to match on)", routed3.toMint.length === 1 && f3.inserted.length === 0)
+}
+
+// ── 22. WAVE 66 CHANNELS — every new sourceChannel scores as ITSELF, never a stranger ────────
+// Owner ruling (wave 66, lane 66C): "processRawRecord must accept the new sourceChannels ...
+// in source-intent-map.ts scoring — a channel with no scoring entry must be a proof failure
+// (positive control)". hasScoringEntry(k) must be true (a real SOURCE_MAP entry, not the
+// silent FALLBACK_DEFINITION) for every one of the 11 wave-65/66 channels named in the ruling.
+function testWave66Channels() {
+  console.log("\n[Wave 66 · every named sourceChannel has its OWN scoring entry]")
+  const WAVE_66_CHANNELS = [
+    "batchdata_smart_search", "batchdata_buybox",
+    "zillow_chatter", "realtor_chatter", "homes_chatter",
+    "reddit_relocation", "facebook_recommend_realtor", "agent_seeking_phrase_intent",
+    "nextdoor_chatter", "google_intent", "external_behavior",
+  ]
+  for (const ch of WAVE_66_CHANNELS) {
+    check(`"${ch}" has a REAL scoring entry (not the fallback)`, hasScoringEntry(ch))
+  }
+  check("buyer-side channel batchdata_buybox scores buyer intent", getSourceSemantics("batchdata_buybox").intentType === "buyer")
+  check("seller-side channel batchdata_smart_search scores seller intent", getSourceSemantics("batchdata_smart_search").intentType === "seller")
+  check("batchdata_smart_search is its OWN vendor-routed key (not folded into batchdata_motivated)",
+    resolveSourceKey("batchdata_smart_search") === "batchdata_smart_search" && resolveSourceKey("batchdata_smart_search") !== resolveSourceKey("batchdata_motivated"))
+  check("nextdoor_chatter aliases onto nextdoor_intent (one vocabulary, CLAUDE.md §6)", resolveSourceKey("nextdoor_chatter") === "nextdoor_intent")
+  check("google_intent aliases onto google_phrase_intent (one vocabulary, CLAUDE.md §6)", resolveSourceKey("google_intent") === "google_phrase_intent")
+
+  // POSITIVE CONTROL — a made-up channel with no entry MUST read false, or the check above
+  // is not actually checking anything (CLAUDE.md §2: every absence assertion needs a positive
+  // control that still recognises the defect it exists to catch).
+  check("POSITIVE CONTROL: a bogus/unregistered channel has NO scoring entry", hasScoringEntry("zz_totally_made_up_channel_wave66") === false)
+
+  // processRawRecord's own fallback logic, exercised directly: source unresolved but
+  // source_channel resolved → scoring uses the channel, never the fallback definition.
+  const preferred = hasScoringEntry("some_unknown_source") ? "some_unknown_source"
+    : (hasScoringEntry("batchdata_buybox") ? "batchdata_buybox" : "some_unknown_source")
+  check("processRawRecord fallback chain: unresolved source + resolved source_channel → channel wins", preferred === "batchdata_buybox")
+}
+
+async function testWave65SourcersHonestlyNoOp() {
+  console.log("\n[Wave 65 · sourcer async wrappers — POSITIVE CONTROL: no territory ⇒ no network call]")
+  const emptyMarket = { city: null, state: null }
+  const reloc = await sourceRedditRelocation(emptyMarket)
+  check("sourceRedditRelocation: no territory ⇒ zero records, zero cost", reloc.records.length === 0 && reloc.cost === 0)
+  const agentSeek = await sourceAgentSeekingPhraseIntent(emptyMarket)
+  check("sourceAgentSeekingPhraseIntent: no territory ⇒ zero records, zero cost", agentSeek.records.length === 0 && agentSeek.cost === 0)
+  const fbRec = await sourceFacebookRecommendRealtor([], emptyMarket)
+  check("sourceFacebookRecommendRealtor: no group URLs ⇒ zero records, zero cost (no default sweep)", fbRec.records.length === 0 && fbRec.cost === 0)
+  const chatter = await sourceRealtySiteChatter("zillow", { city: "", state: "" })
+  check("sourceRealtySiteChatter: no territory ⇒ zero records, zero cost, no provider call", chatter.records.length === 0 && chatter.cost === 0 && chatter.provider === null)
+}
+
+// ── 22. Apify actor registry re-verification (2026) — see docs/lead-acquisition-coverage-2026-09.md
+function testActorRegistryFreshness() {
+  console.log("\n[Wave 65 · Apify actor registry — 2026-verified primaries]")
+  check("reddit primary is the Search actor (Reddit's logged-out search.json is 403'd mid-2026)", ACTOR_REGISTRY.reddit[0] === "clearpath/reddit-search-scraper")
+  check("facebook primary is a 2026-confirmed-live group-posts actor", ACTOR_REGISTRY.facebook[0] === "memo23/facebook-public-group-posts-scraper")
+  check("craigslist primary is a 2026-confirmed-live actor", ACTOR_REGISTRY.craigslist[0] === "solidcode/craigslist-scraper")
+  check("linkedin primary uses the REAL live slug (-no-cookies suffix)", ACTOR_REGISTRY.linkedin[0] === "apimaestro/linkedin-posts-search-scraper-no-cookies")
+  check("instagram primary stays the confirmed-live apify/instagram-hashtag-scraper", ACTOR_REGISTRY.instagram[0] === "apify/instagram-hashtag-scraper")
+  check("every task still resolves ≥1 candidate (resilience preserved)", (Object.keys(ACTOR_REGISTRY) as (keyof typeof ACTOR_REGISTRY)[]).every((t) => pickActors(t).length > 0))
+}
+
+// ── 23. Zyte client + ZenRows/Zyte provider picker (fetch mocked, no real keys) ──────────────
+async function testZyteClientAndProviderPicker() {
+  console.log("\n[Wave 65 · Zyte client — response handling (fetch mocked)]")
+  const { scrapeWithZyte, decodeBase64Body, estimateZyteCost, zyteConfigured } = await import("../lib/external/zyte-client")
+
+  const savedZyteKey = process.env.ZYTE_API_KEY
+  delete process.env.ZYTE_API_KEY
+  check("zyteConfigured() is false with no key", zyteConfigured() === false)
+  const noKeyRes = await scrapeWithZyte("https://example.com")
+  check("no ZYTE_API_KEY ⇒ fails closed (ok:false, no throw)", noKeyRes.ok === false && noKeyRes.error?.includes("ZYTE_API_KEY") === true)
+
+  process.env.ZYTE_API_KEY = "sim-test-zyte-key"
+  check("zyteConfigured() is true once the key is set", zyteConfigured() === true)
+
+  const realFetch = globalThis.fetch
+  // httpResponseBody comes back base64-encoded.
+  const b64 = Buffer.from("<html>zyte body</html>", "utf-8").toString("base64")
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK",
+    json: async () => ({ url: "https://example.com", statusCode: 200, httpResponseBody: b64 }),
+    text: async () => JSON.stringify({ url: "https://example.com", statusCode: 200, httpResponseBody: b64 }),
+  })) as unknown as typeof fetch
+  const httpRes = await scrapeWithZyte("https://example.com", { jsRender: false })
+  check("scrapeWithZyte: httpResponseBody decoded correctly", httpRes.ok && httpRes.html.includes("zyte body"))
+  check("scrapeWithZyte: mode recorded as httpResponseBody", httpRes.mode === "httpResponseBody")
+
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK",
+    json: async () => ({ url: "https://example.com", statusCode: 200, browserHtml: "<html>rendered</html>" }),
+    text: async () => JSON.stringify({ url: "https://example.com", statusCode: 200, browserHtml: "<html>rendered</html>" }),
+  })) as unknown as typeof fetch
+  const browserRes = await scrapeWithZyte("https://example.com", { jsRender: true })
+  check("scrapeWithZyte: browserHtml (jsRender) returned as plain string", browserRes.ok && browserRes.html.includes("rendered"))
+  check("scrapeWithZyte: mode recorded as browserHtml", browserRes.mode === "browserHtml")
+
+  globalThis.fetch = (async () => ({ ok: false, status: 401, statusText: "Unauthorized", text: async () => "" })) as unknown as typeof fetch
+  const failRes = await scrapeWithZyte("https://example.com")
+  check("scrapeWithZyte: a refused request comes back ok:false (never throws)", failRes.ok === false)
+  globalThis.fetch = realFetch
+
+  check("decodeBase64Body: pure decode", decodeBase64Body(b64) === "<html>zyte body</html>")
+  check("decodeBase64Body: defensive on garbage/undefined", decodeBase64Body(undefined) === "" && decodeBase64Body("") === "")
+  check("estimateZyteCost: browser rendering costs more than plain HTTP", estimateZyteCost("browserHtml") > estimateZyteCost("httpResponseBody"))
+
+  console.log("\n[Wave 65 · scrapeSiteWithBestProvider — pick by CONFIGURED KEY, fail closed with none]")
+  const { scrapeSiteWithBestProvider } = await import("../lib/external/zenrows-client")
+  const savedZenrowsKey = process.env.ZENROWS_API_KEY
+
+  // Neither key set ⇒ fail closed, no network call at all.
+  delete process.env.ZENROWS_API_KEY
+  delete process.env.ZYTE_API_KEY
+  const noProvider = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/")
+  check("POSITIVE CONTROL: no scrape keys ⇒ fails closed (no provider, no cost)", noProvider.ok === false && noProvider.provider === null && noProvider.cost === 0)
+
+  // Only ZYTE_API_KEY set ⇒ Zyte is used directly (ZenRows skipped, not attempted).
+  process.env.ZYTE_API_KEY = "sim-test-zyte-key"
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK",
+    json: async () => ({ url: "https://zillow.com/austin-tx/", statusCode: 200, browserHtml: "<html>zyte-only</html>" }),
+    text: async () => "",
+  })) as unknown as typeof fetch
+  const zyteOnly = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/", { jsRender: true })
+  check("ZYTE_API_KEY alone ⇒ Zyte provider used", zyteOnly.ok && zyteOnly.provider === "zyte" && zyteOnly.html.includes("zyte-only"))
+
+  // Both keys set, ZenRows succeeds ⇒ ZenRows is primary on a NON-portal host (Zyte never called).
+  // Re-anchored lane 82B: the real-estate PORTAL hosts (zillow/realtor/homes/redfin/trulia) now try
+  // Zyte first (2026 benchmarks: Zyte 100% on Zillow vs ZenRows 45%/0%) — assert the ORDER RULE per host.
+  process.env.ZENROWS_API_KEY = "sim-test-zenrows-key"
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: "OK", text: async () => "<html>zenrows-primary</html>",
+  })) as unknown as typeof fetch
+  const zenrowsPrimary = await scrapeSiteWithBestProvider("https://www.biggerpockets.com/forums/austin", { jsRender: true })
+  check("both keys set + ZenRows succeeds on a non-portal host ⇒ ZenRows stays primary", zenrowsPrimary.ok && zenrowsPrimary.provider === "zenrows" && zenrowsPrimary.html.includes("zenrows-primary"))
+  const { scrapeProviderOrder } = await import("../lib/external/zenrows-client")
+  check("lane 82B: portal hosts order Zyte first (zillow, www.realtor.com, homes.com, redfin, trulia)",
+    ["https://zillow.com/austin-tx/", "https://www.realtor.com/x", "https://www.homes.com/x", "https://www.redfin.com/x", "https://www.trulia.com/x"].every((u) => scrapeProviderOrder(u)[0] === "zyte"))
+  check("lane 82B POSITIVE CONTROL: non-portal hosts (nextdoor, craigslist, a look-alike zillow.com.evil.io) keep ZenRows first",
+    ["https://nextdoor.com/x", "https://austin.craigslist.org/x", "https://zillow.com.evil.io/x"].every((u) => scrapeProviderOrder(u)[0] === "zenrows"))
+  // Both keys set on a PORTAL host ⇒ Zyte serves it (ZenRows never called).
+  let zenrowsCalled = false
+  globalThis.fetch = (async (input: any) => {
+    const u = typeof input === "string" ? input : (input?.url ?? input?.href ?? String(input))
+    if (!String(u).includes("zyte")) { zenrowsCalled = true; return { ok: true, status: 200, statusText: "OK", text: async () => "<html>zenrows</html>" } }
+    return { ok: true, status: 200, statusText: "OK", json: async () => ({ url: "https://zillow.com/austin-tx/", statusCode: 200, browserHtml: "<html>zyte-portal</html>" }), text: async () => "" }
+  }) as unknown as typeof fetch
+  const portal = await scrapeSiteWithBestProvider("https://zillow.com/austin-tx/", { jsRender: true })
+  check("lane 82B: both keys + a portal host ⇒ Zyte serves it and ZenRows is never called", portal.ok && portal.provider === "zyte" && portal.html.includes("zyte-portal") && !zenrowsCalled)
+
+  globalThis.fetch = realFetch
+  // restore env
+  if (savedZenrowsKey === undefined) delete process.env.ZENROWS_API_KEY; else process.env.ZENROWS_API_KEY = savedZenrowsKey
+  if (savedZyteKey === undefined) delete process.env.ZYTE_API_KEY; else process.env.ZYTE_API_KEY = savedZyteKey
+}
+
+// ── WAVE 70 — SITE VISITOR INTENT (behavioral acquisition coverage audit) ────────────────────
+// $0-cost lane: own first-party website_visitors traffic, never a vendor call. Proves the pure
+// classifier + the SOURCE_MAP/SOURCE_VENDOR/GATE_TOKEN wiring, mirroring the wave-65 lane pattern.
+function testWave70SiteVisitorLane() {
+  console.log("\n[Wave 70 · Site visitor intent lane]")
+
+  const listingRow = {
+    session_id: "sess-abc123",
+    page_url: "https://tenant-site.example.com/listings/123-main-st",
+    referrer: "https://google.com",
+    time_on_page_seconds: 90,
+    first_seen_at: "2026-09-17T10:00:00.000Z",
+    last_seen_at: "2026-09-17T10:01:30.000Z",
+    utm_source: "google",
+    utm_medium: "cpc",
+    utm_campaign: null,
+    agent_id: null,
+  }
+  const listingRec = normalizeSiteVisitorRow(listingRow)
+  check("site_visitor_intent → normalizes a qualifying row", listingRec !== null)
+  check("site_visitor_intent → source tagged", listingRec?.source === "site_visitor_intent")
+  check("site_visitor_intent → buyer intent (browsing the tenant's own listings)", listingRec?.intentType === "buyer")
+  check("site_visitor_intent → identity anchored on session id (username)", listingRec?.username === "sess-abc123")
+  check("site_visitor_intent → sourceUrl carries the page", listingRec?.sourceUrl === listingRow.page_url)
+  check("site_visitor_intent → listing-page URL is detected", !!listingRec?.intentSignals.includes("listing_page_view"))
+  check("site_visitor_intent → campaign-referred signal present (utm_source set)", !!listingRec?.intentSignals.includes("campaign_referred"))
+  check("site_visitor_intent → long_dwell always present on a qualifying row", !!listingRec?.intentSignals.includes("long_dwell"))
+  check("site_visitor_intent → rawPayload preserves the full visitor row for audit", (listingRec?.rawPayload as any)?.visitor?.session_id === "sess-abc123")
+
+  // POSITIVE CONTROL (CLAUDE.md §2): a page with no listing/property/search path must NOT
+  // read as a listing-page view — proves the pattern actually discriminates, not a blanket true.
+  const genericRow = { ...listingRow, session_id: "sess-generic", page_url: "https://tenant-site.example.com/about-us" }
+  const genericRec = normalizeSiteVisitorRow(genericRow)
+  check("site_visitor_intent → a non-listing page is NOT tagged listing_page_view (positive control)", !genericRec?.intentSignals.includes("listing_page_view"))
+
+  // A short single-visit span must NOT be tagged return_visit — proves the return-visit
+  // heuristic actually measures a gap beyond the dwell itself, not just "more than 0".
+  const singleVisitRow = { ...listingRow, session_id: "sess-single", first_seen_at: listingRow.last_seen_at }
+  const singleVisitRec = normalizeSiteVisitorRow(singleVisitRow)
+  check("site_visitor_intent → a single short visit is NOT tagged return_visit (positive control)", !singleVisitRec?.intentSignals.includes("return_visit"))
+
+  // A visit spanning well beyond its own dwell IS a return visit.
+  const returnRow = { ...listingRow, session_id: "sess-return", first_seen_at: "2026-09-16T08:00:00.000Z" }
+  const returnRec = normalizeSiteVisitorRow(returnRow)
+  check("site_visitor_intent → a session spanning far beyond its own dwell IS tagged return_visit", !!returnRec?.intentSignals.includes("return_visit"))
+
+  // Missing session or page → not viable at all, never a half-built record.
+  check("site_visitor_intent → no session id → null (not sourceable)", normalizeSiteVisitorRow({ ...listingRow, session_id: null }) === null)
+  check("site_visitor_intent → no page url → null (not sourceable)", normalizeSiteVisitorRow({ ...listingRow, page_url: null }) === null)
+
+  // Viability + dedup-key gate (isViableRecord / buildLeadIdentityKey — the shared contract
+  // every lane in this pipeline is gated by, CLAUDE.md §6: one vocabulary per function).
+  check("site_visitor_intent → passes isViableRecord (username present)", !!listingRec && isViableRecord(listingRec))
+  check("site_visitor_intent → identity key anchors on session+page (dedup)", !!listingRec && buildLeadIdentityKey(listingRec) === `user:sess-abc123|src:${listingRow.page_url}`)
+
+  // Registry wiring — mirrors every other lane's positive controls in this file.
+  check("site_visitor_intent → semantics registered (hasScoringEntry, not the silent fallback)", hasScoringEntry("site_visitor_intent"))
+  check("site_visitor_intent → buyer-side motivation registered", getSourceSemantics("site_visitor_intent").intentType === "buyer")
+  check("site_visitor_intent → enrichment-first identity policy (anonymous by construction)", getSourceSemantics("site_visitor_intent").identityPolicy === "enrichment_first")
+  check("site_visitor_intent → first-party vendor routing ('internal', $0, never a paid call)", SOURCE_VENDOR.site_visitor_intent === "internal")
+  check("site_visitor_intent → DISTINCT from every other lane (never merged)", resolveSourceKey("site_visitor_intent") === "site_visitor_intent")
+  check("site_visitor_intent → alias 'website_visitor' resolves to the canonical key", resolveSourceKey("website_visitor") === "site_visitor_intent")
+  check("site_visitor_intent → cron gate token present (expandEnabledSources wires it)", expandEnabledSources(["site_visitor_intent"]).has("site_visitor_intent"))
+  check("site_visitor_intent → min-dwell constant is a sane positive bar", SITE_VISITOR_MIN_DWELL_SECONDS > 0 && SITE_VISITOR_MIN_DWELL_SECONDS <= 300)
+  check("site_visitor_intent → lookback matches the cron's own 6-hour cadence", SITE_VISITOR_LOOKBACK_HOURS === 6)
+}
+
+async function testLane74DRemainingAcquisitionLanes() {
+  console.log("\n[Lane 74D · rental-to-buyer graduation + review-as-acquisition — wiring]")
+  console.log("(full pure-classifier + positive-control coverage lives in scripts/rental-graduation-sourcer-simulator.ts")
+  console.log(" and scripts/review-acquisition-sourcer-simulator.ts — this block proves the source-intent-map.ts wiring")
+  console.log(" both lanes register against, same as testWave70SiteVisitorLane does for its own lane.)")
+
+  // Deferred dynamic import — see the header comment on this file's import block for why.
+  const { createRequire } = await import("module")
+  const _require = createRequire(import.meta.url)
+  try {
+    const soPath = _require.resolve("server-only")
+    _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
+  } catch { /* server-only not resolvable — nothing to shim */ }
+  const { normalizeRentalGraduationSignal, RENTAL_GRADUATION_MIN_TENURE_YEARS } = await import("../lib/lead-pipeline/rental-graduation-sourcer")
+
+  check("rental_to_buyer_graduation has a REAL scoring entry (not the silent fallback)", hasScoringEntry("rental_to_buyer_graduation"))
+  check("rental_to_buyer_graduation is internal-vendor-routed ($0, first-party contacts data)", SOURCE_VENDOR.rental_to_buyer_graduation === "internal")
+  check("rental_to_buyer_graduation aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("rental_graduation") === "rental_to_buyer_graduation" && resolveSourceKey("rental_to_buyer") === "rental_to_buyer_graduation")
+  check("expandEnabledSources activates the rental_to_buyer_graduation gate token", expandEnabledSources(["rental_to_buyer_graduation"]).has("rental_to_buyer_graduation"))
+  // POSITIVE CONTROL — an owner never qualifies (tenure/renter gate actually gates).
+  check("POSITIVE CONTROL: normalizeRentalGraduationSignal refuses a non-renter",
+    normalizeRentalGraduationSignal({ contactId: "c1", firstName: "A", lastName: "B", city: null, state: null, homeOwnerStatus: "owner", lengthOfResidence: "5 years", householdIncome: null, fundsMaxPurchase: null }) === null)
+  check("a qualifying renter (tenure ≥ bar) DOES normalize",
+    normalizeRentalGraduationSignal({ contactId: "c2", firstName: "A", lastName: "B", city: "Austin", state: "TX", homeOwnerStatus: "renter", lengthOfResidence: `${RENTAL_GRADUATION_MIN_TENURE_YEARS + 0.5} years`, householdIncome: null, fundsMaxPurchase: null }) !== null)
+
+  check("review_acquisition_intent has a REAL scoring entry (not the silent fallback)", hasScoringEntry("review_acquisition_intent"))
+  check("review_acquisition_intent is zenrows-vendor-routed (Zyte fallback by configured key, same posture as realty_site_chatter)", SOURCE_VENDOR.review_acquisition_intent === "zenrows")
+  check("review_acquisition_intent aliases resolve onto the canonical key (CLAUDE.md §6)",
+    resolveSourceKey("review_acquisition") === "review_acquisition_intent" && resolveSourceKey("review_intent") === "review_acquisition_intent")
+  check("expandEnabledSources activates the review_acquisition_intent gate token", expandEnabledSources(["review_acquisition_intent"]).has("review_acquisition_intent"))
+  check("both lane 74D SourceKeys are DISTINCT from every other lane (never merged)",
+    resolveSourceKey("rental_to_buyer_graduation") !== resolveSourceKey("review_acquisition_intent") &&
+    resolveSourceKey("review_acquisition_intent") !== resolveSourceKey("permit_prelisting_intent"))
+
+  // POSITIVE CONTROL — ordinary review praise (no real-estate question) never becomes a candidate.
+  check("POSITIVE CONTROL: classifyReviewIntent + normalizeReviewAcquisitionEntry refuse ordinary praise",
+    normalizeReviewAcquisitionEntry(
+      { reviewer_name: "Chris Lee", review_text: "Wonderful experience, thank you!", rating: 5, url: null, posted_at: null, matched_signals: [], intentType: classifyReviewIntent("Wonderful experience, thank you!").intentType, extraction: "llm_schema" },
+      { city: "Austin", state: "TX" }, "google",
+    ) === null)
+
+  // POSITIVE CONTROL — territory-honesty: no configured review_source_urls ⇒ zero scrape, no network call.
+  const noUrls = await sourceReviewAcquisitionIntent({ city: "Austin", state: "TX" }, [])
+  check("POSITIVE CONTROL: sourceReviewAcquisitionIntent with no configured URLs makes NO network call (zero records/cost/urlsScanned)",
+    noUrls.records.length === 0 && noUrls.cost === 0 && noUrls.urlsScanned === 0)
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
   console.log("══════════════════════════════════════════════════")
+  testDiagnosticsHonesty()
   testZillow()
   testRealtor()
   testRedfin()
@@ -1368,6 +2079,18 @@ async function main() {
   testNeighborhoodIntelligence()
   testBatchDataTypes()
   await testZenRowsClient()
+  testWave65Lanes()
+  await testWave65SourcersHonestlyNoOp()
+  testLane72CNewConstruction()
+  await testLane72CSourcerHonestlyNoOp()
+  testLane73DPermitSourcerPure()
+  await testLane73DSourcerHonestlyNoOp()
+  await testLane73DAttachVsMint()
+  testWave66Channels()
+  testWave70SiteVisitorLane()
+  await testLane74DRemainingAcquisitionLanes()
+  testActorRegistryFreshness()
+  await testZyteClientAndProviderPicker()
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

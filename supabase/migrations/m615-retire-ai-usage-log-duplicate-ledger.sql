@@ -1,0 +1,42 @@
+-- m615 — RETIRE ai_usage_log, A DUPLICATE OF THE CANONICAL ai_tool_usage LEDGER
+--
+-- APPLIED to hrvaqgvukzxfskkcrwbt on 2026-09-09 by the integrator (measured first; see the wave-46 commit).
+-- integrator applies them).
+--
+-- readerless-write-census.ts flagged four columns of ai_usage_log as written
+-- but never read: action_type, input_data, output_data, tokens_used. Its only
+-- writer was app/actions/ai-listing-intake.ts::aiEnrichPropertyData, which has
+-- been repointed (this same change) to lib/ai/cost-tracking.ts:122 logAIUsage
+-- — the canonical AI cost ledger CLAUDE.md §5 names: "ai_tool_usage is the
+-- cost ledger; it feeds meter_readings.ai_tokens and the overage projection."
+--
+-- ai_usage_log and ai_tool_usage are the SAME CAPABILITY twice: both carry
+-- agent_id, brokerage_id, cost_cents, tokens_used, model (schema-snapshot.ts).
+-- The removed insert even hardcoded tokens_used: 500 instead of the real
+-- token count generateObject already returned — so ai_usage_log was not only
+-- unread, it was recording a fabricated number no invoice could have used.
+-- logAIUsage books the real usage.inputTokens/outputTokens onto ai_tool_usage,
+-- which the increment_ai_usage_monthly RPC then rolls into
+-- meter_readings.ai_tokens — the rail this call never reached before.
+--
+-- ── EVIDENCE, LIVE (2026-09-09, read-only, hrvaqgvukzxfskkcrwbt) ───────────
+--   · ROW COUNT: 0. Nothing is destroyed.
+--   · TRIGGERS: 1 (ai_usage_log_set_brokerage_trg, dropped below with the
+--     table) — no other trigger, so no other writer hides behind it.
+--   · INBOUND FKs: 0. Nothing else's data model depends on this table's rows.
+--   · CODE: 0 `.from("ai_usage_log")` call sites anywhere in app/lib after
+--     this change (grep, comment-stripped source per §2 — a tombstone is not
+--     a call site). The table was built in
+--     supabase/migrations/053-notes-photos-ai-usage.sql specifically and only
+--     for the writer this migration repoints — its own header says so
+--     ("ai_usage_log ← app/actions/ai-listing-intake.ts:144").
+--
+-- RESTRICT, NOT CASCADE (m519/m578 precedent) — refuses instead of silently
+-- dropping any dependent this evidence missed.
+--
+-- NO EXPLICIT BEGIN/COMMIT — the migration runner wraps this file in one
+-- transaction.
+
+DROP TRIGGER IF EXISTS ai_usage_log_set_brokerage_trg ON public.ai_usage_log;
+DROP FUNCTION IF EXISTS public.ai_usage_log_set_brokerage();
+DROP TABLE IF EXISTS public.ai_usage_log RESTRICT;

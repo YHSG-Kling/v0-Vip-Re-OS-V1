@@ -1,13 +1,12 @@
 "use client"
 
-import { Component, type ReactNode, useEffect, useState } from "react"
-import { getListingCoaching, refreshSellerCoaching } from "@/app/actions/seller-coaching"
+import { Component, type ReactNode, useEffect, useState, useRef } from "react"
+import { getListingCoaching, refreshSellerCoaching, dismissCoachingCard } from "@/app/actions/seller-coaching"
 import type { SellerCoachingContent, SellerPersona } from "@/lib/seller-coaching"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button }   from "@/components/ui/button"
 import { cn }       from "@/lib/utils"
 import {
-  ChevronDown,
   ChevronUp,
   RefreshCw,
   Target,
@@ -80,14 +79,25 @@ function CoachingCardSkeleton() {
 }
 
 // ── Main card inner ───────────────────────────────────────────────────────────
-interface CardProps {
+// NAME FIX (wave 53, CLAUDE.md §2 measurement discipline): this was `CardProps`.
+// hidden-wire-census.ts's category (c) strips the "Props" suffix to derive a
+// component name, and with no `SellerCoachingCard` function to match in THIS
+// file, fell back to a corpus-wide search for a function literally named
+// "Card" — which hit the generic app/components/ui/card.tsx primitive. That
+// misattributed listingId/listingStage/brokerageId/agentUserId as props
+// "declared on Card, never passed", when they were always fully wired at the
+// real call site (app/dashboard/listings/[id]/lifecycle/page.tsx:943-947,
+// tenant-scoped from the session: brokerageId=userRow.brokerage_id,
+// agentUserId=user.id). Renaming to match this file's actual component
+// removes the false attribution.
+interface SellerCoachingCardProps {
   listingId:    string
   listingStage: string
   brokerageId:  string
   agentUserId?: string
 }
 
-function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUserId }: CardProps) {
+function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUserId }: SellerCoachingCardProps) {
   const [coaching,    setCoaching]    = useState<SellerCoachingContent | null>(null)
   const [persona,     setPersona]     = useState<SellerPersona>(null)
   const [generatedAt, setGeneratedAt] = useState<string | undefined>()
@@ -95,6 +105,26 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
   const [refreshing,  setRefreshing]  = useState(false)
   const [error,       setError]       = useState(false)
   const [collapsed,   setCollapsed]   = useState(false)
+  /**
+   * `dismissCoachingCard` records the `coaching.dismissed` activity that tells us
+   * whether this AI coaching is worth generating at all — it is the only signal of
+   * "the agent didn't want this". It had no caller, so the analytics lane was empty
+   * while the card's collapse control (its actual dismissal) stayed purely local.
+   *
+   * Fire-and-forget: the collapse must never wait on, or be blocked by, an analytics
+   * write. Recorded at most once per mount so repeatedly collapsing/expanding does
+   * not inflate the signal.
+   */
+  const dismissRecorded = useRef(false)
+
+  function collapseCard() {
+    setCollapsed(true)
+    if (dismissRecorded.current) return
+    dismissRecorded.current = true
+    void dismissCoachingCard(listingId).catch((err) => {
+      console.error("[seller-coaching] dismissal not recorded:", err)
+    })
+  }
 
   const load = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
@@ -207,7 +237,7 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
             Refresh
           </Button>
           <button
-            onClick={() => setCollapsed(true)}
+            onClick={collapseCard}
             className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
             title="Collapse"
           >
@@ -283,10 +313,20 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
 }
 
 // ── Public export (wrapped in error boundary) ─────────────────────────────────
-export function SellerCoachingCard(props: CardProps) {
+// Props are passed through BY NAME (not `{...props}`): the hidden-wire census
+// (scripts/hidden-wire-census.ts, category c "passed-never-read") attributes
+// SellerCoachingCardProps to this exported signature, and a bare spread reads
+// none of them by name — it filed all four as passed-never-read phantoms
+// (wave 54). Naming them keeps the census honest without a scanner special case.
+export function SellerCoachingCard({ listingId, listingStage, brokerageId, agentUserId }: SellerCoachingCardProps) {
   return (
     <CoachingErrorBoundary>
-      <SellerCoachingCardInner {...props} />
+      <SellerCoachingCardInner
+        listingId={listingId}
+        listingStage={listingStage}
+        brokerageId={brokerageId}
+        agentUserId={agentUserId}
+      />
     </CoachingErrorBoundary>
   )
 }

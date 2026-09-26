@@ -15,9 +15,10 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import {
   vendorGapForStage, rankVendors, pickVendorForGap, composeQuoteRequestFallback,
-  runVendorOrchestration, resolvePreferredVendorIds, type BenchVendor, type DealCoverage,
+  runVendorOrchestration, type BenchVendor, type DealCoverage,
 } from "../lib/kernel/vendor-orchestration"
 
 let passed = 0, failed = 0; const fails: string[] = []
@@ -40,11 +41,11 @@ function layer1() {
 
   // Stage → category mapping.
   check("UNDER_CONTRACT with no inspection → Inspector gap",
-    vendorGapForStage("UNDER_CONTRACT", covered)?.category === "Inspector")
+    vendorGapForStage("UNDER_CONTRACT", covered)?.category === "inspector")
   check("APPRAISAL with no lender → Lender gap",
-    vendorGapForStage("APPRAISAL", { ...covered, hasInspection: true })?.category === "Lender")
+    vendorGapForStage("APPRAISAL", { ...covered, hasInspection: true })?.category === "lender")
   check("CLOSING_PREP with no title → Title Company gap",
-    vendorGapForStage("CLOSING_PREP", { ...covered })?.category === "Title Company")
+    vendorGapForStage("CLOSING_PREP", { ...covered })?.category === "title")
   check("CLOSED → no gap", vendorGapForStage("CLOSED", covered) === null)
 
   // FIRST uncovered gap: inspection covered at UNDER_CONTRACT, staging off → no gap.
@@ -55,15 +56,15 @@ function layer1() {
   check("staging SUPPRESSED when disabled",
     vendorGapForStage("CLOSING_PREP", { ...covered, hasTitle: true, stagingEnabled: false }) === null)
   check("staging SURFACED when enabled + uncovered",
-    vendorGapForStage("CLOSING_PREP", { ...covered, hasTitle: true, stagingEnabled: true })?.category === "Stager")
+    vendorGapForStage("CLOSING_PREP", { ...covered, hasTitle: true, stagingEnabled: true })?.category === "stager")
   check("staging NOT surfaced when already covered even if enabled",
     vendorGapForStage("CLOSING_PREP", { ...covered, hasTitle: true, hasStager: true, stagingEnabled: true }) === null)
 
   // PREFERENCE-FIRST ranking: preferred beats higher rating.
   const vendors: BenchVendor[] = [
-    { id: "hi", name: "High Rated", category: "Inspector", email: "h@x.co", rating: 5 },
-    { id: "pref", name: "Preferred Lower", category: "Inspector", email: "p@x.co", rating: 3, preferred: true },
-    { id: "lo", name: "Low Rated", category: "Inspector", email: "l@x.co", rating: 1 },
+    { id: "hi", name: "High Rated", category: "inspector", email: "h@x.co", rating: 5 },
+    { id: "pref", name: "Preferred Lower", category: "inspector", email: "p@x.co", rating: 3, preferred: true },
+    { id: "lo", name: "Low Rated", category: "inspector", email: "l@x.co", rating: 1 },
   ]
   const ranked = rankVendors(vendors)
   check("preferred vendor outranks higher rating", ranked[0].id === "pref", ranked.map((v) => v.id).join(","))
@@ -71,7 +72,7 @@ function layer1() {
 
   // preferredVendorIds set path.
   const rankedBySet = rankVendors(
-    [{ id: "a", name: "A", category: "Inspector", email: null, rating: 5 }, { id: "b", name: "B", category: "Inspector", email: null, rating: 2 }],
+    [{ id: "a", name: "A", category: "inspector", email: null, rating: 5 }, { id: "b", name: "B", category: "inspector", email: null, rating: 2 }],
     { preferredVendorIds: ["b"] },
   )
   check("preferredVendorIds set picks the preferred id first", rankedBySet[0].id === "b")
@@ -80,36 +81,45 @@ function layer1() {
   const gap = vendorGapForStage("UNDER_CONTRACT", covered)!
   check("pickVendorForGap returns the preferred Inspector", pickVendorForGap(vendors, gap)?.id === "pref")
   check("pickVendorForGap returns null when bench lacks the category",
-    pickVendorForGap([{ id: "t", name: "T", category: "Title Company", email: null, rating: 5 }], gap) === null)
+    pickVendorForGap([{ id: "t", name: "T", category: "title", email: null, rating: 5 }], gap) === null)
 
   // fallback copy is real (never a stub).
   const fb = composeQuoteRequestFallback({ vendorName: "Acme", gap, propertyAddress: "1 St", dealName: "Deal X" })
   check("fallback quote copy mentions vendor + service", fb.body.includes("Acme") && fb.body.includes(gap.label))
 
-  // ── PREFERENCE SOURCE-OF-TRUTH — resolvePreferredVendorIds bridges vendor_directory → the bench. ──
-  console.log("\n── Layer 1b: preference resolved from vendor_directory (drift fix) ──")
+  // ── PREFERENCE SOURCE-OF-TRUTH — one table, one read (m355). ──
+  console.log("\n── Layer 1b: preference resolved from vendors.preferred (m355) ──")
   const bench: BenchVendor[] = [
-    { id: "v1", name: "Ace Inspections", category: "Inspector", email: null, rating: 3 },
-    { id: "v2", name: "Budget Home Inspect", category: "Inspector", email: null, rating: 5 },
-    { id: "v3", name: "Summit Title", category: "Title Company", email: null, rating: 4 },
+    { id: "v1", name: "Ace Inspections", category: "inspector", email: null, rating: 3 },
+    { id: "v2", name: "Budget Home Inspect", category: "inspector", email: null, rating: 5 },
+    { id: "v3", name: "Summit Title", category: "title", email: null, rating: 4 },
   ]
-  const directory = [
-    { name: "Ace Inspections", category: "Inspector", preferred: true },   // broker's preferred pick
-    { name: "Summit Title", category: "Title Company", preferred: false },
-  ]
-  const prefIds = resolvePreferredVendorIds(bench, directory)
-  check("directory preferred=true resolves to the matching bench id", prefIds.has("v1") && prefIds.size === 1)
-  check("a NON-preferred directory row does not mark its bench vendor", !prefIds.has("v3"))
-  check("case/space-insensitive name+category match", resolvePreferredVendorIds(bench, [{ name: " ace inspections ", category: "inspector", preferred: true }]).has("v1"))
-  check("no directory rows → empty set (honest, no false preference)", resolvePreferredVendorIds(bench, []).size === 0)
-  // The resolved set makes ranking preference-first even though the LOWER-rated vendor is preferred.
-  const pickInspector: any = { category: "Inspector", serviceType: "home_inspection", label: "home inspection" }
-  check("preferred (lower-rated) beats the higher-rated non-preferred when sourced from the directory",
+  // PREFERENCE IS A COLUMN ON THE RANKED ROW NOW (m355).
+  // Three generations of this: (1) resolvePreferredVendorIds, a bridge matching
+  // the broker's `preferred` flag from a separate vendor_directory table onto the
+  // bench by (name, category), because the two tables had no FK; (2) after that
+  // bridge was retired, a stand-in that read `vendors` a SECOND time and treated
+  // broker approval (status='active') as preference — which made EVERY approved
+  // vendor preferred, so preference-first ranking sorted nothing at all;
+  // (3) m355 merged the tables, so `preferred` comes back on the same read as the
+  // bench and the promise in the orchestrator's docstring is finally kept.
+  const prefIds = new Set(["v1"])   // as runVendorOrchestration builds it: rows with preferred = true
+  const pickInspector: any = { category: "inspector", serviceType: "home_inspection", label: "home inspection" }
+  check("preference beats rating — the preferred v1 wins over higher-rated v2",
     pickVendorForGap(bench, pickInspector, { preferredVendorIds: prefIds })?.id === "v1")
+  check("no preferred ids → highest rating wins (honest, no false preference)",
+    pickVendorForGap(bench, pickInspector, { preferredVendorIds: new Set<string>() })?.id === "v2")
 
-  const orchSrc = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
-  check("runVendorOrchestration loads vendor_directory preferred rows + resolves them",
-    /from\("vendor_directory"\)[\s\S]*?resolvePreferredVendorIds\(bench/.test(orchSrc))
+  const orchRaw = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
+  // Comments stripped: this file legitimately DOCUMENTS the retired bridge.
+  const orchSrc = stripComments(orchRaw)
+  check("the retired bridge is gone — no resolvePreferredVendorIds, no second vendor table",
+    !/resolvePreferredVendorIds/.test(orchSrc) && !/vendor_directory/.test(orchSrc))
+  check("preference is the broker's actual `preferred` flag, not approval standing in for it",
+    /\.select\("id, name, category, email, rating, estimated_turnaround_days, preferred"\)/.test(orchSrc)
+    && /\.filter\(\(r\) => r\.preferred === true\)/.test(orchSrc))
+  check("…and it comes from the SAME read as the bench — no second query to drift",
+    (orchSrc.match(/from\("vendors"\)/g) ?? []).length === 1)
   check("the resolved preferred set is passed into the pick", /pickVendorForGap\(eligibleBench, gap, \{ preferredVendorIds, slaByVendor \}\)/.test(orchSrc))
   check("a rating-suppressed vendor is filtered out of the eligible bench before the pick", /loadSuppressedVendorIds\(supabase, brokerageId\)[\s\S]*?eligibleBench =/.test(orchSrc))
   check("runVendorOrchestration computes SLA (incl. no-shows) + passes it so proven breachers demote", /computeVendorSla\(\(slaBookings/.test(orchSrc) && /status\.eq\.no_show/.test(orchSrc))
@@ -149,19 +159,19 @@ async function layer2() {
     // Two Inspector vendors on the bench: one higher-rated (the preference-first winner),
     // one lower. (vendors has no preferred flag — preference-first falls back to rating.)
     const { data: vTop } = await svc.from("vendors").insert({
-      brokerage_id: brokerageId, name: `${TAG} TopInspector`, category: "Inspector",
+      brokerage_id: brokerageId, name: `${TAG} TopInspector`, category: "inspector",
       email: "top@x.co", rating: 5, access_level: "transaction_only",
     }).select("id").single()
     cleanup.push({ table: "vendors", id: (vTop as any).id })
     const { data: vLow } = await svc.from("vendors").insert({
-      brokerage_id: brokerageId, name: `${TAG} LowInspector`, category: "Inspector",
+      brokerage_id: brokerageId, name: `${TAG} LowInspector`, category: "inspector",
       email: "low@x.co", rating: 2, access_level: "transaction_only",
     }).select("id").single()
     cleanup.push({ table: "vendors", id: (vLow as any).id })
 
     // A Stager on the bench too — to prove staging is SKIPPED while the setting is off.
     const { data: vStager } = await svc.from("vendors").insert({
-      brokerage_id: brokerageId, name: `${TAG} Stager`, category: "Stager",
+      brokerage_id: brokerageId, name: `${TAG} Stager`, category: "stager",
       email: "stage@x.co", rating: 5, access_level: "transaction_only",
     }).select("id").single()
     cleanup.push({ table: "vendors", id: (vStager as any).id })

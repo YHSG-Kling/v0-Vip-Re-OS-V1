@@ -14,6 +14,7 @@
  *   3. notify_parties      — agent + TC + compliance manager notified
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
 
@@ -26,17 +27,52 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
       key: "validate_signatures",
       label: "Validate All Signatures + Initials",
       handler: async (ctx) => {
-        const scan = ctx.metadata.signature_scan ?? {}
-        if (!scan.allRequiredSignaturesPresent) {
-          return {
-            success: false,
-            error: "Compliance scan reports missing signatures — cannot auto-create transaction",
+        // THE PAYLOAD IS ONE LEVEL DEEPER THAN THIS READ ASSUMED.
+        //
+        // Emitters pass `signature_scan: signatureScan`, whose shape is
+        // { signatureCompleteness: { allRequiredSignaturesPresent, missingInitials,
+        // missingSignatures }, ... }. This handler read those keys off the TOP
+        // level, so `allRequiredSignaturesPresent` was always undefined, the first
+        // guard always tripped, and the run was written `failed` every time. An
+        // executed purchase agreement could never auto-create its transaction.
+        // (The listing branch in app/actions/documents.ts reads the nested form
+        // correctly — the two sides of the same file disagreed.)
+        //
+        // Both shapes are accepted so an older emitter cannot silently regress it.
+        const raw  = ctx.metadata.signature_scan ?? {}
+        const scan = raw.signatureCompleteness ?? raw
+
+        // A purchase agreement is executed when BUYER and SELLER have both signed
+        // and initialed. Same predicate the listing gate uses — one answer to
+        // "is it signed", and absence never reads as signed.
+        const { evaluateExecution } = await import("@/lib/compliance/signature-completeness")
+        const verdict = evaluateExecution(
+          { signatures: scan.signatures, initials: scan.initials },
+          ["buyer", "seller"],
+        )
+
+        // Prefer the explicit per-role evidence when the scan carried it; fall back
+        // to the aggregate flags for scans that only reported those.
+        const hasPerRole = Array.isArray(scan.signatures) && scan.signatures.length > 0
+        if (hasPerRole) {
+          if (!verdict.executed) {
+            return {
+              success: false,
+              error: `Not fully executed — missing: ${verdict.missing.join(", ")}`,
+            }
           }
-        }
-        if (scan.missingInitials?.length > 0) {
-          return {
-            success: false,
-            error: `Missing initials on ${scan.missingInitials.length} required pages`,
+        } else {
+          if (!scan.allRequiredSignaturesPresent) {
+            return {
+              success: false,
+              error: "Compliance scan reports missing signatures — cannot auto-create transaction",
+            }
+          }
+          if (scan.missingInitials?.length > 0) {
+            return {
+              success: false,
+              error: `Missing initials on ${scan.missingInitials.length} required pages`,
+            }
           }
         }
         return { success: true, output: { validated: true } }
@@ -98,7 +134,8 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
         if (ctx.agentUserId) notifyTargets.push(ctx.agentUserId)
 
         // Notify the deal's TC + compliance officer. user_type is stored in the
-        // canonical lowercase vocabulary (see lib/auth/permissions.ts Role) — the
+        // canonical lowercase vocabulary (see lib/security/types.ts CanonicalRole,
+        // which lib/auth/permissions.ts's deleted `Role` copy used to restate) — the
         // TC role is 'tc', and 'compliance_manager' is a legacy alias of
         // 'compliance_officer'. The prior ['TC','compliance_manager'] filter
         // matched no rows, so TCs were never notified.
@@ -122,7 +159,7 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
             priority: "high",
             is_read: false,
           }))
-          await svc.from("notifications").insert(rows)
+          await sentinelWrite(svc, svc.from("notifications").insert(rows), { table: "notifications", flow: "compliance_transaction_auto_create_notify", reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
 
         return { success: true, output: { notifiedCount: notifyTargets.length } }

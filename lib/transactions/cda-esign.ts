@@ -87,7 +87,7 @@ export async function dispatchCdaSignerEsign(
 
     // Always stage the envelope for the CONFIGURED provider — the signer is told their CDA
     // is ready to sign via that provider, with the filled PDF. This is provider-agnostic.
-    await supabase.from("notifications").insert({
+    const { error: notifyError } = await supabase.from("notifications").insert({
       user_id: args.signerUserId,
       brokerage_id: args.brokerageId,
       type: "cda_esign_ready",
@@ -97,7 +97,8 @@ export async function dispatchCdaSignerEsign(
       entity_id: args.transactionId,
       priority: "high",
       channel: "in_app",
-    }).then(() => {}, () => {})
+    })
+    if (notifyError) console.warn("[cda-esign.ts] notifications insert refused — the bell will not ring:", notifyError.message)
 
     // Where an inline provider integration exists, fire it through the configured provider.
     // (Dotloop is the only inline-wired provider today — used ONLY when it IS the configured
@@ -113,7 +114,6 @@ export async function dispatchCdaSignerEsign(
         const tx = await dotloop.createTransaction({
           propertyAddress: args.propertyAddress ?? "Commission Disbursement Authorization",
           transactionType: "purchase",
-          agentId: args.signerUserId,
           transactionId: args.transactionId,
         })
         if (tx.success && tx.externalTransactionId) {

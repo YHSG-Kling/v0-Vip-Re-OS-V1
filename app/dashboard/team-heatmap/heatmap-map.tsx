@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import type { HeatmapSnapshot, OpportunityZone } from "@/app/actions/team-heatmap"
+import { googleMapsBrowserKey } from "@/lib/env/aliases"
 
 interface HeatmapMapProps {
   snapshots: HeatmapSnapshot[]
@@ -202,9 +203,13 @@ export function HeatmapMap({
 
   return (
     <>
-      {/* Load Google Maps Script */}
+      {/* Load Google Maps Script. ONE SPELLING (§6, 2026-09-03): this was the
+          only reader of NEXT_PUBLIC_GOOGLE_MAPS_KEY — every other map reads
+          NEXT_PUBLIC_GOOGLE_MAPS_API_KEY — so the heatmap was dark unless BOTH
+          were set. lib/env/aliases.ts resolves the survivor with the old
+          spelling as a one-release fallback (literal reads, so Next inlines). */}
       <script
-        src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}&libraries=places`}
+        src={`https://maps.googleapis.com/maps/api/js?key=${googleMapsBrowserKey() ?? ""}&libraries=places`}
         async
         defer
       />

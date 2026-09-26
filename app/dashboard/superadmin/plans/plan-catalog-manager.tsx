@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Loader2, Plus, Save, Trash2, RefreshCw, Star } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
-import { upsertPlanTierAction, removePlanTierAction, syncPlanTierFromStripeAction, publishTierToStripeAction, listPlanTiersAction } from '@/app/actions/superadmin/plan-catalog'
+import { upsertPlanTierAction, removePlanTierAction, syncPlanTierFromStripeAction, publishTierToStripeAction, listPlanTiersAction, syncCatalogFromStripeAction } from '@/app/actions/superadmin/plan-catalog'
 
 const CANON = ['solo_agent', 'team', 'brokerage', 'multi_location']
 
@@ -25,11 +25,15 @@ interface Tier {
   is_active: boolean
   max_agents: number | null
   stripe_price_id: string | null
+  seat_package_size?: number | null
+  seat_package_price_cents?: number | null
+  stripe_seat_price_id?: string | null
 }
 
 const BLANK: Tier = {
   tier_name: 'solo_agent', display_name: '', description: '', monthly_price_cents: 0, annual_price_cents: 0,
   setup_fee_cents: 0, marketing_bullets: [], is_featured: false, is_active: true, max_agents: null, stripe_price_id: null,
+  seat_package_size: null, seat_package_price_cents: null, stripe_seat_price_id: null,
 }
 
 const dollars = (c: number) => (c / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })
@@ -60,9 +64,24 @@ export function PlanCatalogManager({ initialTiers }: { initialTiers: Tier[] }) {
         isActive: editing.is_active,
         maxAgents: editing.max_agents,
         stripePriceId: editing.stripe_price_id,
+        seatPackageSize: editing.seat_package_size ?? null,
+        seatPackagePriceCents: editing.seat_package_price_cents ?? null,
+        stripeSeatPriceId: editing.stripe_seat_price_id ?? null,
       })
       if (r.ok) { toast({ title: 'Saved' }); setEditing(null); reload() }
       else toast({ title: 'Error', description: r.error, variant: 'destructive' })
+    })
+  }
+
+  // STRIPE IS THE CATALOGUE SOURCE (wave 79A): one click pulls every active
+  // recurring price (plan + seat package, by tier_name metadata) onto the tiers.
+  function syncAll() {
+    startTransition(async () => {
+      const r = await syncCatalogFromStripeAction()
+      if (r.ok) {
+        toast({ title: `Synced ${r.updated.length} tier${r.updated.length === 1 ? '' : 's'} from Stripe`, description: [r.unmatched.length ? `${r.unmatched.length} price(s) not placed` : null, r.tiersWithoutPlanPrice.length ? `no plan price for: ${r.tiersWithoutPlanPrice.join(', ')}` : null].filter(Boolean).join(' · ') || undefined })
+        reload()
+      } else toast({ title: 'Sync failed', description: r.error, variant: 'destructive' })
     })
   }
 
@@ -95,7 +114,8 @@ export function PlanCatalogManager({ initialTiers }: { initialTiers: Tier[] }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="outline" disabled={pending} onClick={syncAll} title="Pull every active Stripe price (plan + seat package, by tier_name metadata) onto the catalogue"><RefreshCw className="h-4 w-4 mr-1.5" />Sync catalogue from Stripe</Button>
         <Button size="sm" onClick={() => setEditing({ ...BLANK })}><Plus className="h-4 w-4 mr-1.5" />New plan</Button>
       </div>
 
@@ -113,6 +133,7 @@ export function PlanCatalogManager({ initialTiers }: { initialTiers: Tier[] }) {
               <div className="text-right">
                 <p className="text-lg font-bold">${dollars(t.monthly_price_cents)}<span className="text-xs font-normal text-muted-foreground">/mo</span></p>
                 {t.setup_fee_cents > 0 && <p className="text-[11px] text-muted-foreground">+${dollars(t.setup_fee_cents)} setup</p>}
+                <p className="text-[11px] text-muted-foreground">{t.max_agents == null ? 'custom seats' : `${t.max_agents} seats`}{t.seat_package_size ? ` · +${t.seat_package_size}-seat pack ${t.seat_package_price_cents ? `$${dollars(t.seat_package_price_cents)}/mo` : '(unpriced)'}` : ''}</p>
               </div>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -148,6 +169,9 @@ export function PlanCatalogManager({ initialTiers }: { initialTiers: Tier[] }) {
               <textarea className="w-full rounded border p-2 text-sm" rows={4} value={(editing.marketing_bullets ?? []).join('\n')} onChange={(e) => setEditing({ ...editing, marketing_bullets: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) })} />
             </div>
             <div className="md:col-span-2"><Label className="text-xs">Stripe price id (optional)</Label><Input value={editing.stripe_price_id ?? ''} onChange={(e) => setEditing({ ...editing, stripe_price_id: e.target.value || null })} placeholder="price_..." /></div>
+            <div><Label className="text-xs">Seat package size (seats per pack; blank = none)</Label><Input type="number" value={editing.seat_package_size ?? ''} onChange={(e) => setEditing({ ...editing, seat_package_size: e.target.value === '' ? null : Number(e.target.value) })} /></div>
+            <div><Label className="text-xs">Seat package price ($/mo per pack; blank = unpriced)</Label><Input type="number" value={editing.seat_package_price_cents == null ? '' : editing.seat_package_price_cents / 100} onChange={(e) => setEditing({ ...editing, seat_package_price_cents: e.target.value === '' ? null : Math.round(Number(e.target.value) * 100) })} /></div>
+            <div className="md:col-span-2"><Label className="text-xs">Stripe seat-package price id (metadata kind=seat_package)</Label><Input value={editing.stripe_seat_price_id ?? ''} onChange={(e) => setEditing({ ...editing, stripe_seat_price_id: e.target.value || null })} placeholder="price_..." /></div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editing.is_featured} onChange={(e) => setEditing({ ...editing, is_featured: e.target.checked })} />Highlighted plan</label>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editing.is_active} onChange={(e) => setEditing({ ...editing, is_active: e.target.checked })} />Active (shown at signup)</label>
             <div className="md:col-span-2 flex gap-2">

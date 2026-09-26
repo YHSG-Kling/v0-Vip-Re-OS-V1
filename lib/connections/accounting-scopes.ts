@@ -105,7 +105,7 @@ export const ACCOUNTING_OFFERINGS: Record<AccountingScope, Record<AccountingConn
       status: "managed-elsewhere",
       connectPath: "/dashboard/superadmin/plans",
       verdict:
-        "Stripe IS the platform's billing spine (env STRIPE_SECRET_KEY: tier publishing, subscriptions, stripe-drift cron) — a platform-level Stripe 'connection' would duplicate the spine, so none is offered here.",
+        "Stripe IS the platform's billing spine (tier publishing, subscriptions, stripe-drift cron), and the PLATFORM's own account is one of the two the owner ruled on — resolved by lib/billing/resolve-stripe-account.ts from a platform-owned platform_credentials row, with STRIPE_SECRET_KEY as the platform's own floor. It is administered from Superadmin → Plans rather than offered as a connection card here, because there is exactly one of it.",
     },
   },
   brokerage: {
@@ -117,8 +117,17 @@ export const ACCOUNTING_OFFERINGS: Record<AccountingScope, Record<AccountingConn
     stripe: {
       status: "managed-elsewhere",
       connectPath: "/settings/billing",
+      // CORRECTED. This said "There is no brokerage-owned Stripe credential to
+      // connect", which the owner ruling replaced: "the stripe account will be
+      // per tenant and platform". A brokerage HAS its own Stripe account, and it
+      // is the merchant on every path where the brokerage collects or pays —
+      // vendor package fees, vendor job bills, client payments, agent payouts.
+      // The card here still points at Settings → Billing because THIS surface is
+      // about the brokerage's books as a billing CUSTOMER of the platform; the
+      // brokerage's own merchant account is connected in Settings → Connections
+      // (app/actions/connections/connection-center.ts :: startStripeConnect).
       verdict:
-        "The brokerage transacts on the platform's Stripe as a billing customer (subscription + metered usage). There is no brokerage-owned Stripe credential to connect — billing lives in Settings → Billing.",
+        "Two different Stripe relationships, and this card is the first: as a billing CUSTOMER the brokerage pays the platform on the PLATFORM's account (subscription + metered usage) — Settings → Billing. Separately the brokerage has its OWN Stripe account, connected in Settings → Connections, which is the merchant on money the brokerage collects or pays; lib/billing/resolve-stripe-account.ts resolves it per tenant and REFUSES rather than settling that money into the platform's account.",
     },
   },
   team: {
@@ -212,7 +221,10 @@ export function accountingOwnerFilter(
 
 // ─── Live: scoped QuickBooks credential (generalizes vendor-quickbooks) ──────
 
-const INTUIT_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+// KEPT ON REST (wave 71A): no official Intuit Node SDK for the QBO
+// business-object surface — see lib/providers/accounting/quickbooks.ts's
+// header for the full reasoning (node-quickbooks verified + declined as
+// community, not Intuit; intuit-oauth adopted for the token lifecycle above).
 const QBO_API_BASE = "https://quickbooks.api.intuit.com/v3/company"
 
 export interface ScopedQuickBooksCredential {
@@ -286,30 +298,33 @@ export async function ensureFreshQuickBooksToken(
     throw new Error("QuickBooks app credentials not configured (QUICKBOOKS_CLIENT_ID/SECRET)")
   }
 
-  const tokenUrl = new URL(INTUIT_TOKEN_URL)
-  const res = await callConnector<{ access_token: string; refresh_token: string; expires_in: number }>({
-    connector: "quickbooks-oauth",
-    baseUrl: tokenUrl.origin,
-    path: tokenUrl.pathname,
-    method: "POST",
-    auth: { style: "basic", username: clientId, password: clientSecret },
-    bodyType: "form",
-    body: { grant_type: "refresh_token", refresh_token: cred.refreshToken },
-  })
+  // Wave 71A: routes through the official `intuit-oauth` SDK adapter
+  // (lib/providers/quickbooks/client.ts) instead of a hand-built Basic-auth
+  // form POST — see that file's header for the official-SDK reasoning.
+  const { refreshQuickBooksToken } = await import("@/lib/providers/quickbooks/client")
+  const res = await refreshQuickBooksToken(clientId, clientSecret, cred.refreshToken)
   if (!res.ok || !res.data) {
     throw new Error(`QuickBooks token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
   }
-  const tokenExpiresAt = new Date(Date.now() + (res.data.expires_in ?? 3600) * 1000).toISOString()
-  await svc
+  const tokenExpiresAt = new Date(Date.now() + res.data.expiresIn * 1000).toISOString()
+  // INTUIT ROTATES THE REFRESH TOKEN on every exchange: the one just spent is
+  // dead. A silently refused persist leaves the spent token on the row, so the
+  // QuickBooks connection dies at the next refresh — hours later, with nothing
+  // pointing back here. This function already throws when the refresh fails;
+  // failing to STORE the result is the same failure.
+  const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token,
+      access_token: res.data.accessToken,
+      refresh_token: res.data.refreshToken,
       token_expires_at: tokenExpiresAt,
       updated_at: new Date().toISOString(),
     })
     .eq("id", cred.id)
-  return res.data.access_token
+  if (persistError) {
+    throw new Error(`QuickBooks token refreshed but could not be stored — the stored refresh token is now spent: ${persistError.message}`)
+  }
+  return res.data.accessToken
 }
 
 /** Single egress choke point for QBO API calls (Bearer, via the connector-gateway). */

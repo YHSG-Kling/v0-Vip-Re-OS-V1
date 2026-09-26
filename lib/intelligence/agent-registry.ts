@@ -10,13 +10,22 @@
  *     is VALID_AGENT_TYPES below.
  *  2. Managed-agent runtime plane (lib/agents/*): the autonomous per-entity
  *     "manager" agents (deal_coordinator, shopping_agent, listing_concierge,
- *     sphere_of_influence, campaign_orchestrator, marketing_agent, asset_manager)
- *     persisted in managed_agents / managed_agent_sessions. SEPARATE vocabulary.
+ *     sphere_of_influence, campaign_orchestrator, asset_manager — m618: marketing_agent
+ *     retired, survivor campaign_orchestrator) persisted in managed_agents /
+ *     managed_agent_sessions. SEPARATE vocabulary.
  *
  * The two planes are intentionally separate and never join. The canonical
  * conversation-routing vocabulary is unified across all three tables by
  * migration m178 and asserted by scripts/agent-governance-simulator.ts so it
  * cannot drift again.
+ *
+ * THE ABSENT `lib` FIELD. Each entry used to carry a module path, e.g.
+ * tc_agent -> '@/app/actions/ai-transaction-coordinator'. NOTHING read it.
+ * The router uses this registry for names, capabilities and SESSION
+ * bookkeeping; it never loads a module from an entry. The field cost real
+ * time during the m373 audit, where it made an unwired action look reachable
+ * and nearly sent a fix into dead code. A registry entry is not evidence that
+ * an action is wired — so the field that implied otherwise is gone.
  */
 
 export const AGENT_REGISTRY = {
@@ -25,7 +34,6 @@ export const AGENT_REGISTRY = {
     handles: ['lead_qualification', 'outreach_scheduling', 'isa_followup', 'initial_appointment'],
     entityTypes: ['lead', 'contact'],
     triggerConditions: ['new_lead', 'isa_followup_due', 'qualification_incomplete'],
-    lib: '@/lib/ai-isa',
     color: 'blue',
     icon: 'UserCheck',
   },
@@ -34,7 +42,6 @@ export const AGENT_REGISTRY = {
     handles: ['milestone_tracking', 'task_generation', 'deadline_alerts', 'transaction_review'],
     entityTypes: ['transaction'],
     triggerConditions: ['transaction_created', 'milestone_due', 'deal_at_risk', 'stage_changed'],
-    lib: '@/app/actions/ai-transaction-coordinator',
     color: 'green',
     icon: 'ClipboardList',
   },
@@ -43,7 +50,6 @@ export const AGENT_REGISTRY = {
     handles: ['weekly_report', 'stage_playbook', 'objection_coaching', 'deal_strategy'],
     entityTypes: ['contact', 'transaction', 'listing'],
     triggerConditions: ['deal_health_low', 'coaching_requested', 'weekly_cron'],
-    lib: '@/lib/intelligence/coaching-engine',
     color: 'purple',
     icon: 'GraduationCap',
   },
@@ -52,7 +58,6 @@ export const AGENT_REGISTRY = {
     handles: ['listing_announcement', 'social_post', 'email_drip', 'video_script'],
     entityTypes: ['listing', 'contact'],
     triggerConditions: ['listing_published', 'drip_sequence_due', 'content_requested'],
-    lib: '@/lib/content-generation',
     color: 'orange',
     icon: 'Sparkles',
   },
@@ -80,13 +85,24 @@ export type AgentCapability =
 // Expand AgentType to include short aliases used in coordination dashboard
 export type AgentType = keyof typeof AGENT_REGISTRY | 'human' | 'none' | 'isa' | 'tc' | 'coach' | 'coordinator'
 
+/** The dashboard's short aliases → their canonical conversation-routing spelling. */
+const AGENT_TYPE_ALIASES: Record<string, string> = { isa: 'isa_agent', tc: 'tc_agent', coordinator: 'tc_agent', coach: 'coaching_agent' }
+
+/**
+ * Lane 82B — the BOUNDARY NORMALIZER for an agent_type read off a session/handoff row (the
+ * session-status shape the coordination dashboard renders). Alias → canonical, then admitted only
+ * by MEMBERSHIP in VALID_AGENT_TYPES (the m178 CHECK roster); anything else is null, never a guess.
+ */
+export function canonicalAgentType(agentType: string | null | undefined): (typeof VALID_AGENT_TYPES)[number] | null {
+  const raw = String(agentType ?? '').trim()
+  const canonical = AGENT_TYPE_ALIASES[raw] ?? raw
+  return (VALID_AGENT_TYPES as readonly string[]).includes(canonical) ? (canonical as (typeof VALID_AGENT_TYPES)[number]) : null
+}
+
 export function getAgentConfig(agentType: AgentType) {
-  if (agentType === 'human' || agentType === 'none') return null
-  if (agentType === 'isa') return AGENT_REGISTRY.isa_agent
-  if (agentType === 'tc' || agentType === 'coordinator') return AGENT_REGISTRY.tc_agent
-  if (agentType === 'coach') return AGENT_REGISTRY.coaching_agent
-  const key = agentType as keyof typeof AGENT_REGISTRY
-  return AGENT_REGISTRY[key] ?? null
+  const canonical = canonicalAgentType(agentType)
+  if (!canonical || canonical === 'human' || canonical === 'none' || canonical === 'router') return null
+  return AGENT_REGISTRY[canonical] ?? null
 }
 
 export function getAgentColor(agentType: AgentType): string {
@@ -99,7 +115,13 @@ export function getAgentColor(agentType: AgentType): string {
 export function getAgentDisplayName(agentType: AgentType): string {
   if (agentType === 'human') return 'Human Agent'
   if (agentType === 'none') return 'Unassigned'
-  return (AGENT_REGISTRY as Record<string, { name: string }>)[agentType]?.name || agentType
+  if (canonicalAgentType(agentType) === 'router') return 'Router'
+  // Through getAgentConfig, not a raw index (orphan burn-down, lane O). The raw
+  // lookup could not resolve the four short aliases this type exists to admit —
+  // 'isa', 'tc', 'coach', 'coordinator' — and returned the bare enum value for
+  // each. That is exactly what the coordination dashboard was rendering before
+  // it adopted this function.
+  return getAgentConfig(agentType)?.name || agentType
 }
 
 /**
@@ -116,6 +138,7 @@ export function getAgentDisplayName(agentType: AgentType): string {
  *   human          — a human real-estate agent (handoff target)
  *   none           — unassigned
  */
+/** The CHECK roster (m178, three tables), held equal by scripts/agent-governance-simulator.ts and READ AT RUNTIME since lane 82B by canonicalAgentType above — the boundary normalizer getAgentConfig/getAgentDisplayName route every session-row agent_type through (an off-roster value renders as unknown, never as a registry entry). */
 export const VALID_AGENT_TYPES = [
   'isa_agent', 'tc_agent', 'coaching_agent', 'content_agent', 'router', 'human', 'none',
 ] as const

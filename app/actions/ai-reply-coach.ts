@@ -232,16 +232,58 @@ ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first
     }
 
     // ── 9. Write smart_assistant_suggestions row ─────────────────────────────
-    await supabase.from("smart_assistant_suggestions").insert({
-      agent_id:            params.agentUserId,
-      title:               `AI Reply Ready — ${contact.first_name} ${contact.last_name}`,
-      description:         `${resolvedTone} draft prepared for ${params.channel} reply (confidence: ${confidenceScore}%)`,
-      context_type:        "inbox_reply",
-      action_type:         "accept_or_edit_draft",
-      action_payload_json: JSON.stringify({ draftId: draft.id, conversationId: params.conversationId }),
-      priority:            confidenceScore >= 80 ? "high" : "medium",
-      status:              "pending",
-    })
+    // smart_assistant_suggestions.agent_id is agents-class. Writing the USERS id was
+    // FK-rejected, so the draft was saved but the "AI Reply Ready" nudge that tells
+    // the agent it exists never reached the assistant panel.
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const suggestionAgentId = await resolveUserIdToAgentRecord(params.agentUserId, params.brokerageId)
+
+    // TENANT: the RECIPIENT AGENT'S `users.brokerage_id`, resolved through the
+    // user this suggestion is addressed to — NOT `params.brokerageId`.
+    // `getContactCopilotSuggestions` (app/actions/contact-details.ts) reads
+    // `.eq("agent_id", ctx.agentId).eq("brokerage_id", ctx.brokerageId)` with both
+    // halves from ONE `getAgentContext()`, whose `brokerageId` is that session
+    // user's `users.brokerage_id`. The two agree on every live row today, and the
+    // point of resolving rather than assuming is that when they ever disagree the
+    // READER decides which is right — and the reader reads `users`.
+    const { resolveRecipientBrokerageId } = await import("@/lib/notifications/recipient-tenant")
+    const suggestionTenant = await resolveRecipientBrokerageId(supabase, params.agentUserId)
+
+    // NO AGENT ROW, NO SUGGESTION. Both readers of this table filter `agent_id`;
+    // an unattributed suggestion reaches nobody however it is stamped, and
+    // `smart_assistant_suggestions.agent_id` is agents-class, so a null here is
+    // not "the desk's" — it is nobody's.
+    if (!suggestionAgentId) {
+      console.error(
+        `[ai-reply-coach] suggestion skipped — users.id ${params.agentUserId} has no agents row in brokerage ` +
+        `${params.brokerageId}; the draft was saved but no nudge was written`,
+      )
+    } else if (!suggestionTenant.ok) {
+      console.error(`[ai-reply-coach] suggestion skipped — recipient tenant unresolved: ${suggestionTenant.reason}`)
+    } else if (!suggestionTenant.brokerageId) {
+      console.error(
+        `[ai-reply-coach] suggestion skipped — users.id ${params.agentUserId} has no users.brokerage_id; ` +
+        "an untenanted suggestion is filtered out of the surface that owns it",
+      )
+    } else {
+      const { error: suggestionError } = await supabase.from("smart_assistant_suggestions").insert({
+        agent_id:            suggestionAgentId,
+        brokerage_id:        suggestionTenant.brokerageId,
+        title:               `AI Reply Ready — ${contact.first_name} ${contact.last_name}`,
+        description:         `${resolvedTone} draft prepared for ${params.channel} reply (confidence: ${confidenceScore}%)`,
+        context_type:        "inbox_reply",
+        action_type:         "accept_or_edit_draft",
+        action_payload_json: JSON.stringify({ draftId: draft.id, conversationId: params.conversationId }),
+        priority:            confidenceScore >= 80 ? "high" : "medium",
+        status:              "pending",
+      })
+      // supabase-js RESOLVES a refused insert; undestructured, the "AI Reply
+      // Ready" nudge could fail on every call and this action still reported the
+      // draft as delivered.
+      if (suggestionError) {
+        console.error("[ai-reply-coach] smart_assistant_suggestions insert refused:", suggestionError.message)
+      }
+    }
 
     // ── 10. Kernel event — non-blocking ─────────────────────────────────────
     await processKernelEvent({
@@ -362,6 +404,8 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
     channel: string
     created_at: string
     status: string
+    listing_id: string | null
+    source_message_id: string | null
   }>
   error?: string
 }> {
@@ -374,7 +418,7 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
 
   const { data, error } = await supabase
     .from("ai_message_drafts")
-    .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status")
+    .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status, listing_id, source_message_id")
     .eq("conversation_id", conversationId)
     .eq("brokerage_id", ctx.brokerageId)
     .eq("status", "pending")
@@ -383,4 +427,72 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
 
   if (error) return { success: false, error: error.message }
   return { success: true, drafts: data ?? [] }
+}
+
+// ─── ACTION 5: RECORD THE MESSAGE A DRAFT WAS ACTUALLY SENT AS ──────────────
+//
+// acceptDraft only stages the draft's body into the compose bar — the agent
+// can still edit further before sending, and the send itself goes through the
+// unrelated messages pipeline (sendMessage in app/actions/communications.ts).
+// sent_message_id is the RECONCILIATION column: it closes the loop from
+// "the AI proposed this" to "and this is what actually went out", which
+// outcomeForConversationDrafts below reads to grade acceptance-vs-real-send.
+
+export async function recordDraftSent(params: {
+  draftId: string
+  messageId: string
+}): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const supabase = createServiceClient()
+  const { error } = await supabase
+    .from("ai_message_drafts")
+    .update({ sent_message_id: params.messageId, status: "sent" })
+    .eq("id", params.draftId)
+    .eq("brokerage_id", ctx.brokerageId)
+    // Only a draft the agent actually accepted can be reconciled to a send —
+    // a still-pending or already-dismissed draft has no business being marked
+    // sent underneath the agent.
+    .in("status", ["accepted", "edited"])
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+// ─── ACTION 6: RECENT DRAFT OUTCOMES FOR A CONVERSATION ─────────────────────
+//
+// The reconciliation surface: for a conversation's last few AI drafts, whether
+// each one was actually sent (sent_message_id set) or accepted-then-abandoned
+// (accepted with no sent_message_id — the agent edited it away from the
+// compose bar, or navigated off before sending). Read by AIReplyCoachPanel's
+// "Recent AI drafts" strip.
+
+export async function loadRecentDraftOutcomes(conversationId: string): Promise<{
+  success: boolean
+  outcomes?: Array<{
+    id: string
+    status: string
+    confidence_score: number | null
+    listing_id: string | null
+    sent_message_id: string | null
+    created_at: string
+  }>
+  error?: string
+}> {
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("ai_message_drafts")
+    .select("id, status, confidence_score, listing_id, sent_message_id, created_at")
+    .eq("conversation_id", conversationId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("status", ["accepted", "edited", "sent"])
+    .order("created_at", { ascending: false })
+    .limit(5)
+
+  if (error) return { success: false, error: error.message }
+  return { success: true, outcomes: data ?? [] }
 }

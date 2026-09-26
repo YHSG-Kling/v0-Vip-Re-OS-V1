@@ -1,4 +1,31 @@
 // ─── CLASS ALIAS (backward compat for callers using `new PeopleDataClient()`) ─
+// ONE VOCABULARY for PeopleData's per-record charge (wave 72 integration):
+// the enrichment orchestrator pre-flights the vendor budget with the MATCHED
+// price (the worst case a call can cost) and the ledger records what the call
+// actually reported.
+//
+// PRICED FROM THE PUBLISHED SCHEDULE (lane 81B, Exa 2026-09-24 —
+// support.peopledatalabs.com "Pricing & credits", 2025-10-24; docs.peopledatalabs.com
+// "Reference - Person Enrichment API"): Person Enrichment consumes ONE credit per
+// SUCCESSFUL match (HTTP 200); a 404 no-match is NOT charged ("We charge per
+// match"). Pro monthly credits are $0.28 (350–2,500/mo) → $0.265 → $0.25
+// (5,001–8,333/mo); annual $0.224 → $0.20. The repo keeps $0.25 as the ledger
+// figure (the Pro tier a platform account lands in once volume exceeds 5k/mo —
+// the monthly floor; $0.28 is the entry tier and the platform-paid ledger should
+// not understate, so a re-price to 0.28 is one line here if the account stays
+// under 5k). The old NO_MATCH = 0.10 was the wave-64 client's guess and booked
+// $0.10 of spend PDL never bills — corrected to 0. Every reader derives from
+// these two names; a third literal is the §6 defect.
+// SEE ALSO lib/ai-isa/property-lookup-rail.ts::CONTACT_PROVIDER_ROUTES — the
+// per-capability price table that routes owner-contact skip traces to the
+// CHEAPER provider (BatchData $0.07/match) and reaches this one only as the
+// fallback / for the person-profile capability BatchData does not sell.
+export const PEOPLEDATA_MATCH_COST_USD = 0.25
+export const PEOPLEDATA_NO_MATCH_COST_USD = 0
+/** PDL Email Validation API — a separate endpoint, a separate (unpublished-in-tier)
+ *  per-call price the repo has carried as $0.01 since wave 5; ONE name for it. */
+export const PEOPLEDATA_EMAIL_VALIDATE_COST_USD = 0.01
+
 export class PeopleDataClient {
   async enrich(data: { email?: string; phone?: string; firstName?: string; lastName?: string }) {
     return skipTraceWithPeopleData({
@@ -28,7 +55,17 @@ export interface PeopleDataEnrichment {
   workPhone?: string
   age?: number
   ageRange?: string
+  /** Lane 83A — PDL birth_year (the source of age / ageRange). */
+  birthYear?: number
   gender?: string
+  /** Lane 83A — PDL inferred_salary (the person's salary band, NOT household income). */
+  inferredSalary?: string
+  jobTitleRole?: string
+  jobTitleLevels?: string[]
+  jobStartDate?: string
+  metro?: string
+  locationHistory?: string[]
+  interests?: string[]
   city?: string
   state?: string
   country?: string
@@ -92,31 +129,33 @@ export async function skipTraceWithPeopleData(params: {
   phone?: string
   email?: string
   address?: string
+  /** lane 72B — a social profile URL (built from a raw lead's scraped handle by
+   *  lib/lead-pipeline/social-identity-resolve.ts::deriveSocialProfileUrl). Lets
+   *  a record that arrived with ONLY a post author / social handle (no name,
+   *  email or phone) still be identified via PDL's `profile` match param,
+   *  instead of the "at least one of name/phone/email" guard below refusing it
+   *  outright. Same endpoint, same per-match price — PDL bills the match
+   *  regardless of which identifying param resolved it. */
+  profileUrl?: string
 }): Promise<{
   data: PeopleDataEnrichment | null
   cost: number
 }> {
-  if (!params.name && !params.phone && !params.email) {
-    throw new Error('At least one of name, phone, or email required for skip trace')
+  if (!params.name && !params.phone && !params.email && !params.profileUrl) {
+    throw new Error('At least one of name, phone, email, or profileUrl required for skip trace')
   }
 
-  // Single egress: route through the connector-gateway (one way in/out). Preserves the
-  // throw-on-error contract this enrichment caller expects.
-  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<any>({
-    connector: "peopledata",
-    baseUrl: PEOPLEDATA_API_URL,
-    path: "person/enrich",
-    method: "POST",
-    auth: { style: "header", name: "X-Api-Key", value: PEOPLEDATA_API_KEY },
-    body: {
-      name: params.name,
-      phone: params.phone,
-      email: params.email,
-      location: params.address,
-      min_likelihood: 6,
-      required: 'emails OR phones',
-    },
+  // Official SDK adapter (wave 71A) — see lib/providers/peopledata/client.ts.
+  // Preserves the throw-on-error contract this enrichment caller expects.
+  const { enrichPerson } = await import("@/lib/providers/peopledata/client")
+  const res = await enrichPerson(PEOPLEDATA_API_KEY, {
+    name: params.name,
+    phone: params.phone,
+    email: params.email,
+    location: params.address,
+    profile: params.profileUrl,
+    minLikelihood: 6,
+    required: 'emails OR phones',
   })
 
   if (!res.ok) {
@@ -128,18 +167,52 @@ export async function skipTraceWithPeopleData(params: {
   if (data.status !== 200 || !data.data) {
     return {
       data: null,
-      cost: 0.10,
+      cost: PEOPLEDATA_NO_MATCH_COST_USD,
     }
   }
 
-  const person = data.data
+  return {
+    // PDL returns `likelihood` on the RESPONSE envelope, beside `data` — not inside the person.
+    data: mapPeopleDataPerson(data.data, { name: params.name, likelihood: (data as any).likelihood }),
+    cost: PEOPLEDATA_MATCH_COST_USD,
+  }
+}
 
+/** PURE — PDL birth_year / birth_date → whole years at `now` (null when PDL returned neither). */
+export function pdlAgeFromBirth(birthYear: unknown, birthDate: unknown, now: Date = new Date()): number | null {
+  const y = typeof birthYear === 'number' ? birthYear
+    : typeof birthDate === 'string' && /^\d{4}/.test(birthDate) ? Number(birthDate.slice(0, 4))
+    : null
+  if (!y || y < 1900 || y > now.getUTCFullYear()) return null
+  return now.getUTCFullYear() - y
+}
+
+/** PURE — the cohort band the persona / reel-brief readers parse ("35-44"). */
+export function ageRangeForAge(age: number | null | undefined): string | undefined {
+  if (age == null || !Number.isFinite(age)) return undefined
+  const bands: Array<[number, number]> = [[18, 24], [25, 34], [35, 44], [45, 54], [55, 64], [65, 74]]
+  for (const [lo, hi] of bands) if (age >= lo && age <= hi) return `${lo}-${hi}`
+  return age >= 75 ? '75+' : undefined
+}
+
+/**
+ * PURE — one PDL person record → PeopleDataEnrichment. Lane 83A: reads the fields PDL's person
+ * schema ACTUALLY carries (docs.peopledatalabs.com person-data-field-bundles, 2026-09-26):
+ * birth_year / birth_date (→ age, age_range), sex (→ gender), inferred_salary, location_locality /
+ * location_region / location_postal_code / location_street_address / location_metro /
+ * location_names, inferred_years_experience, job_title_role / job_title_levels / job_start_date,
+ * interests. The old mapping read age / age_range / gender / location_city / location_state /
+ * experience_years — names the PDL schema does not have — so those "demographics" were always
+ * empty; they stay as fallbacks for a payload that does carry them.
+ */
+export function mapPeopleDataPerson(person: any, params: { name?: string; likelihood?: number } = {}, now: Date = new Date()): PeopleDataEnrichment {
   // Derive verification flags up-front so callers (canonical lead-eligibility gate, AI-ISA channel
   // resolver) have what they need. PDL returns `likelihood` 1-10 — treat ≥7 as a strong identity
   // match. Email is "verified-as-real-person-email" when a matching/personal email surfaces on the
   // matched profile; mailing address is verified when PDL returns a structured street address with
   // city + state (street_addresses[0] preferred, location_* fallback).
-  const likelihood = typeof person.likelihood === 'number' ? person.likelihood : 0
+  const likelihood = typeof params.likelihood === 'number' ? params.likelihood
+    : typeof person.likelihood === 'number' ? person.likelihood : 0
   const pdlEmailList: any[] = Array.isArray(person.emails) ? person.emails : []
   const pdlPersonalEmails = pdlEmailList
     .map(e => typeof e === 'string' ? { address: e, type: undefined } : e)
@@ -155,9 +228,10 @@ export async function skipTraceWithPeopleData(params: {
     ?? undefined
   const hasStructuredAddress =
     !!streetAddress &&
-    !!(person.location_city  ?? primaryStreet?.locality)  &&
-    !!(person.location_state ?? primaryStreet?.region)
+    !!(person.location_locality ?? person.location_city  ?? primaryStreet?.locality)  &&
+    !!(person.location_region   ?? person.location_state ?? primaryStreet?.region)
   const mailingAddressVerified = likelihood >= 6 && hasStructuredAddress
+  const age = pdlAgeFromBirth(person.birth_year, person.birth_date, now)
 
   const enrichment: PeopleDataEnrichment = {
     peopledataId: person.id ?? undefined,
@@ -169,18 +243,29 @@ export async function skipTraceWithPeopleData(params: {
     phones: person.phone_numbers || [],
     mobilePhone: person.mobile_phone,
     workPhone: person.work_phone,
-    age: person.age,
-    ageRange: person.age_range,
-    gender: person.gender,
-    city: person.location_city,
-    state: person.location_state,
+    age: typeof person.age === 'number' ? person.age : (age ?? undefined),
+    ageRange: person.age_range ?? ageRangeForAge(typeof person.age === 'number' ? person.age : age),
+    birthYear: typeof person.birth_year === 'number' ? person.birth_year : undefined,
+    gender: person.sex ?? person.gender,
+    city: person.location_locality ?? person.location_city,
+    state: person.location_region ?? person.location_state,
     country: person.location_country,
     zipCode: person.location_postal_code,
-    address: person.location_address,
+    address: person.location_street_address ?? person.location_address,
+    metro: person.location_metro ?? undefined,
+    // location_names = every place PDL has seen the person — a mover's history (relocation signal).
+    locationHistory: Array.isArray(person.location_names) ? person.location_names : undefined,
     currentEmployer: person.job_company_name,
     currentTitle: person.job_title,
+    jobTitleRole: person.job_title_role ?? undefined,
+    jobTitleLevels: Array.isArray(person.job_title_levels) ? person.job_title_levels : undefined,
+    jobStartDate: person.job_start_date ?? undefined,
     currentIndustry: person.industry,
-    yearsOfExperience: person.experience_years,
+    yearsOfExperience: person.inferred_years_experience ?? person.experience_years,
+    // PDL's inferred_salary is the PERSON's salary band ("70,000-85,000"), never a household income —
+    // kept under its own name; household_income stays whatever a payload actually labels household.
+    inferredSalary: person.inferred_salary ?? undefined,
+    interests: Array.isArray(person.interests) ? person.interests : undefined,
     education: person.education?.map((edu: any) => ({
       school: edu.school?.name,
       degree: edu.degree,
@@ -203,17 +288,14 @@ export async function skipTraceWithPeopleData(params: {
     facebookUrl: person.facebook_url,
     twitterUrl: person.twitter_url,
     githubUrl: person.github_url,
-    enrichmentConfidence: person.likelihood / 10,
+    enrichmentConfidence: likelihood / 10,
     dataQualityScore: person.data_quality_score || 75,
     emailVerified,
     mailingAddressVerified,
     streetAddress,
   }
 
-  return {
-    data: enrichment,
-    cost: 0.25,
-  }
+  return enrichment
 }
 
 /**
@@ -248,6 +330,11 @@ export async function validateEmailViaPeopleData(email: string): Promise<{
   if (!email || !email.includes("@")) {
     return { data: null, cost: 0 }
   }
+  // KEPT ON REST (wave 71A): `peopledatalabs@14.6.0` exposes no `email`
+  // namespace at all (person/company/school/location/autocomplete/jobTitle/
+  // jobPosting/ip only — confirmed by reading the SDK's bundled dist/index.cjs,
+  // no "email" token anywhere in it) — the official SDK has no equivalent for
+  // PDL's separate Email Validation API. Stays on the connector gateway.
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   const res = await callConnector<any>({
     connector: "peopledata",
@@ -259,7 +346,7 @@ export async function validateEmailViaPeopleData(email: string): Promise<{
   })
 
   if (!res.ok || !res.data) {
-    return { data: null, cost: 0.01 }
+    return { data: null, cost: PEOPLEDATA_EMAIL_VALIDATE_COST_USD }
   }
   const d = res.data
   const status = typeof d.status === "string" ? d.status.toLowerCase() : null
@@ -278,6 +365,6 @@ export async function validateEmailViaPeopleData(email: string): Promise<{
       isCatchAll:    catchAll,
       raw:           d,
     },
-    cost: 0.01,
+    cost: PEOPLEDATA_EMAIL_VALIDATE_COST_USD,
   }
 }

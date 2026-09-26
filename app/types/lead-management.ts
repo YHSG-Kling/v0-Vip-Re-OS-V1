@@ -26,5 +26,21 @@ export interface Lead {
   reengagement_status?: string | null
   lifecycle_state?: string | null
   assigned_agent_id?: string | null
+  // Merged 2026-09-01 from the deleted lib/domain/types.ts Lead (§1.1): the
+  // enrichment/conversion fields it documented that are REAL leads columns
+  // (verified against scripts/schema-snapshot.ts). Its urgency_score, location,
+  // external_id, assigned_to_agent_id, assigned_at and converted_to_contact_id
+  // were NOT merged — no such columns exist (the live spellings are
+  // urgency_level, city/state/zip_code, raw_record_id, agent_id,
+  // handed_to_agent_at and contact_id).
+  lead_score?: number | null
+  budget_min?: number | null
+  budget_max?: number | null
+  timeline?: string | null
+  property_type?: string | null
+  updated_at?: string
+  last_activity_at?: string | null
+  converted_at?: string | null
+  contact_id?: string | null
   [key: string]: any
 }

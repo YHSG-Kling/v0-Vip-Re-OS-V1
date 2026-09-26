@@ -28,17 +28,15 @@
  * Cooperation status before queuing the render.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface ComingSoonReelProps {
   /** Property address line. NULL when the brokerage wants a
@@ -78,6 +76,15 @@ export interface ComingSoonReelProps {
   qrCodeDataUrl?:  string | null
   qrCaption?:      string
   mlsClean?:       boolean
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. render-just-listed already
+   *  stages both of these into input_props for every promo composition it selects
+   *  (buildCaptionPlan against voiceoverAlignment/script); this composition simply
+   *  had nowhere to draw them until now. See CaptionLayer. */
+  captionsCues?:   CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?:  string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -89,15 +96,19 @@ export interface ComingSoonReelProps {
 }
 
 const FPS    = 30
-const COVER  = 3  * FPS
-const BODY   = 7  * FPS
-const CTA    = 2  * FPS
-const TOTAL  = COVER + BODY + CTA  // 360 frames = 12s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = 7 * FPS` stood here. Bookends come from the ONE registry; the body
+// is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("ComingSoonReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   address, cityState, teaser, heroImageUrl, whenString, ctaLabel,
   brollClips, contextCues, avatarVideoUrl, agentPhotoUrl, agentName,
   voiceoverUrl, brand, qrCodeDataUrl, qrCaption, mlsClean,
+  captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -106,6 +117,9 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   const clips    = brollClips ?? []
   const hasBroll = clips.length > 0
   const overlay  = `${brand.primaryColor}B3`  // ~70% alpha tint
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
 
   return (
     <AbsoluteFill style={{
@@ -118,9 +132,11 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
       {hasBroll && (
         <BrollLayer
           clips={clips}
-          totalFrames={TOTAL}
+          totalFrames={durationInFrames}
           overlayColor={overlay}
           loop
+          filmGrain
+          handheldDrift
         />
       )}
 
@@ -131,9 +147,9 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
@@ -141,19 +157,19 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
             padding: "14px 36px", borderRadius: 6,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 36, fontWeight: 900, letterSpacing: 8, textTransform: "uppercase",
-            transform: `scale(${interpolate(frame, [0, 18], [0.85, 1])})`,
-            opacity: interpolate(frame, [0, 14], [0, 1]),
+            scale: interpolate(frame, [0, 18], [0.85, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" }),
+            opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             Coming Soon
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1]),
+            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {whenString}
           </div>
           <div style={{
-            fontSize: 28, color: "#fff", opacity: interpolate(frame, [24, 48], [0, 0.7]),
+            fontSize: 28, color: "#fff", opacity: interpolate(frame, [24, 48], [0, 0.7], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 12, letterSpacing: 3,
           }}>
             {cityState}
@@ -174,7 +190,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
               boxShadow: `0 0 0 6px ${brand.accentColor}, 0 32px 64px rgba(0,0,0,0.45)`,
               filter: "blur(2px) saturate(1.05)",
             }}>
-              <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
           )}
           {address ? (
@@ -214,11 +230,22 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
-                <Video src={avatarVideoUrl}
-                  startFrom={COVER + BODY} endAt={COVER + BODY + CTA}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER + BODY}> already offsets this child's
+                // clock — trimBefore={COVER + BODY} therefore skipped 10s of an
+                // opt-in PIP clip whose content starts at source frame 0 (the
+                // D-ID convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0}); no producer authors a full-reel-spanning
+                // avatar for this composition (requires_did_avatar=false in the
+                // registry; promo-composition stages avatarVideoUrl:null).
+                // MarketUpdateReel / ExplainerAnimReel differ on purpose — they
+                // slice one continuous narration track across consecutive
+                // sequences by absolute frame ranges.
+                <Video src={avatarVideoUrl} objectFit="cover"
+                  trimBefore={0} trimAfter={CTA}
+                  style={{ width: "100%", height: "100%" }} />
               ) : (
-                <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <SafeImg src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               )}
             </div>
           )}
@@ -243,9 +270,18 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA tile at COVER + BODY. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

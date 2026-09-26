@@ -12,9 +12,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
-
-const MAX_SIZE_MB = 50
-const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
+import { isDocumentClassBucket, bucketClassReason, issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -79,11 +78,38 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 })
     }
 
-    if (file.size > MAX_SIZE_BYTES) {
+    // The BUCKET is caller-supplied. This endpoint exists for temporary agent
+    // MEDIA (D-ID photos, voice samples) and it hands back a URL — so it must
+    // not be usable as a door into a document-class bucket. Refuse by class
+    // rather than by a hand-kept deny-list.
+    if (isDocumentClassBucket(bucket)) {
+      // Say WHY, from the one classification — a refusal the caller cannot
+      // understand gets worked around rather than fixed.
       return NextResponse.json(
-        { error: `File exceeds ${MAX_SIZE_MB}MB limit` },
-        { status: 400 }
+        {
+          error: `'${bucket}' is a document-class bucket — use the governed document upload routes, not upload-temp`,
+          reason: bucketClassReason(bucket),
+        },
+        { status: 400 },
       )
+    }
+
+    // THE SIZE GATE. This route used to advertise a 50MB limit of its own
+    // invention, which was a promise nothing could keep: the bytes arrive in a
+    // Vercel Function request body, and that is capped at 4.5 MB by
+    // infrastructure ahead of this handler. A 30 MB file never reached the line
+    // that told the user 30 MB was fine — it 413'd at the edge with no message
+    // this code chose. The ceiling is now the real one (transport ∧ bucket) and
+    // it is answered from one place; 413 rather than 400, because that is what
+    // the platform returns for the same condition.
+    const gate = checkUpload({
+      bucket,
+      transport: "route_handler",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      return NextResponse.json({ error: gate.reason }, { status: 413 })
     }
 
     if (!ALLOWED_MIME_TYPES.has(file.type)) {
@@ -128,9 +154,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: uploadError.message }, { status: 500 })
     }
 
-    const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(safeName)
+    // One issuer. The class check above already guarantees this is a public-media
+    // bucket, so this returns a public URL — routed through the issuer anyway so
+    // there is a single spelling and a reclassification cannot be missed here.
+    const issued = await issueBucketObjectUrl(supabase as never, { bucket, objectPath: safeName })
+    if (!issued.ok) {
+      return NextResponse.json({ error: issued.reason }, { status: 502 })
+    }
 
-    return NextResponse.json({ url: publicData.publicUrl, path: safeName, warnings })
+    return NextResponse.json({ url: issued.url, path: safeName, warnings })
   } catch (error: any) {
     console.error("[upload-temp] Error:", error)
     return NextResponse.json({ error: error.message ?? "Upload failed" }, { status: 500 })

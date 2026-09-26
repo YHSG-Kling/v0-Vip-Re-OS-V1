@@ -35,6 +35,7 @@ import path from "node:path"
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { MAX_BRAND_BOOKEND_SECONDS } from "@/lib/video/realism-profile"
 
 export interface VideoAttributionBrand {
   brokerageName?: string | null
@@ -375,20 +376,33 @@ export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<Com
     // Build the input order: intro? -> main -> outro?
     const inputs: string[] = []
     if (introPath) inputs.push(introPath)
+    const mainIdx = inputs.length
     inputs.push(mainPath)
     if (outroPath) inputs.push(outroPath)
+    // Every index that is a BRAND BOOKEND (intro or outro), never the main
+    // video — wave 56 realism ruling: a brokerage-curated bookend longer than
+    // MAX_BRAND_BOOKEND_SECONDS reads as a canned corporate sting, not a
+    // person. The main video is a talking-head/voiceover reel and must never
+    // be truncated by this cap.
+    const bookendIdx = new Set(inputs.map((_, i) => i).filter((i) => i !== mainIdx))
 
     // Build the filter graph. Each input segment gets scaled+padded to (W,H)
-    // and re-encoded audio to stereo AAC so concat doesn't choke.
+    // and re-encoded audio to stereo AAC so concat doesn't choke. A bookend
+    // segment is ALSO trimmed to MAX_BRAND_BOOKEND_SECONDS first (§realism,
+    // wave 56) — a clip shorter than the cap is untouched (trim only ever
+    // shortens, never pads).
     const normalised: string[] = []
     inputs.forEach((_, i) => {
+      const isBookend = bookendIdx.has(i)
+      const vTrim = isBookend ? `trim=duration=${MAX_BRAND_BOOKEND_SECONDS},setpts=PTS-STARTPTS,` : ""
+      const aTrim = isBookend ? `atrim=duration=${MAX_BRAND_BOOKEND_SECONDS},asetpts=PTS-STARTPTS,` : ""
       // Normalise video: scale to fit inside W:H, then pad to exact W:H with black bars,
       // setsar=1 to avoid aspect-ratio mismatch warnings.
-      normalised.push(`[${i}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`)
+      normalised.push(`[${i}:v]${vTrim}scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`)
       // Normalise audio: take whatever the input has (or generate silence) and
       // resample to a common rate. anullsrc creates a silent track when
       // the segment has no audio so concat=...a=1 doesn't fail.
-      normalised.push(`[${i}:a]aresample=async=1:first_pts=0,aformat=channel_layouts=stereo:sample_rates=48000[a${i}]`)
+      normalised.push(`[${i}:a]${aTrim}aresample=async=1:first_pts=0,aformat=channel_layouts=stereo:sample_rates=48000[a${i}]`)
     })
     const concatList = inputs.map((_, i) => `[v${i}][a${i}]`).join("")
     const filter = `${normalised.join(";")};${concatList}concat=n=${inputs.length}:v=1:a=1[outv][outa]`
@@ -670,6 +684,35 @@ async function probeDuration(filePath: string): Promise<number | null> {
     })
     proc.on("error", () => resolve(null))
   })
+}
+
+/**
+ * PUBLIC — the same ffmpeg-stderr Duration probe `compositeBrollCutaways` uses
+ * on its downloaded main-video buffer, exported so a caller OUTSIDE this file
+ * can measure a rehosted D-ID clip's real length (wave 62 — PartnersMeetingReel
+ * `avatarDurationSeconds` plumbing: lib/intelligence/partners-meeting.ts has no
+ * ffmpeg dependency of its own and must not grow one — this is the one probe
+ * the render coordinator already trusts). Downloads via the same
+ * `downloadVideoBytes` connector path every compositor in this file uses.
+ * Best-effort: null on any failure (no ffmpeg binary, a 4xx, a corrupt file) —
+ * the caller's contract (avatarPipWindowFade / avatarFadeOutFrame) already
+ * treats "no measurement" as "render exactly as before", never as "empty".
+ */
+export async function probeRemoteVideoDurationSeconds(url: string): Promise<number | null> {
+  if (!FFMPEG_BIN) return null
+  let workDir: string | null = null
+  try {
+    const dl = await downloadVideoBytes(url)
+    if (!dl.ok || !dl.bytes) return null
+    workDir = await mkdtemp(path.join(tmpdir(), "vip-dur-"))
+    const filePath = path.join(workDir, "clip.mp4")
+    await writeFile(filePath, dl.bytes)
+    return await probeDuration(filePath)
+  } catch {
+    return null
+  } finally {
+    if (workDir) { try { await rm(workDir, { recursive: true, force: true }) } catch { /* best-effort cleanup */ } }
+  }
 }
 
 export async function compositeBrollCutaways(opts: {

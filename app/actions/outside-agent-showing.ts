@@ -17,6 +17,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export interface OutsideAgentShowingInput {
   listingId: string
@@ -118,7 +119,9 @@ export async function submitOutsideAgentShowingRequest(
         .eq("id", listing.agent_id)
         .maybeSingle()
       if (agentRow?.user_id) {
-        await supabase.from("notifications").insert({
+        // Blind-spot burn-down (lane 75D, notification fan-out census) —
+        // sentinelWrite: `supabase` here is the service-role client.
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id:      agentRow.user_id,
           brokerage_id: listing.brokerage_id,
           type:         "showing.request.listing.external_agent",
@@ -128,7 +131,7 @@ export async function submitOutsideAgentShowingRequest(
           entity_id:    showing.id,
           priority:     "high",
           channel:      "in_app",
-        })
+        }), { table: "notifications", flow: "outside_agent_showing_listing_agent_notify", brokerageId: listing.brokerage_id, reason: "the showing request itself already saved; this is only the agent heads-up" })
       }
     } catch { /* non-critical */ }
   }
@@ -136,7 +139,7 @@ export async function submitOutsideAgentShowingRequest(
   // Surface to the seller's portal too.
   if (listing.seller_contact_id) {
     try {
-      await supabase.from("notifications").insert({
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         contact_id:   listing.seller_contact_id,
         brokerage_id: listing.brokerage_id,
         type:         "showing.request.seller",
@@ -146,7 +149,7 @@ export async function submitOutsideAgentShowingRequest(
         entity_id:    showing.id,
         priority:     "high",
         channel:      "in_app",
-      })
+      }), { table: "notifications", flow: "outside_agent_showing_seller_notify", brokerageId: listing.brokerage_id, reason: "the showing request itself already saved; this is only the seller's portal heads-up" })
     } catch { /* non-critical */ }
   }
 

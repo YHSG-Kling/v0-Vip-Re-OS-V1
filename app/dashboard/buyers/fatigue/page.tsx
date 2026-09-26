@@ -221,7 +221,12 @@ export default function BrokerageFatiguePage() {
                   return (
                     <tr
                       key={row.contact_id}
-                      onClick={() => router.push(`/dashboard/buyers/${contactId}/fatigue`)}
+                      // REPOINTED (dangling-link sweep, 2026-09-02): was
+                      // `/dashboard/buyers/${id}/fatigue` — [contactId] has no fatigue
+                      // child and itself permanently redirects to /crm/contacts/[contactId],
+                      // whose buyer view carries the Fatigue tab (FatiguePanel) and the
+                      // FatigueWidget on Overview. Gate there: assertCanActOnContact(read).
+                      onClick={() => router.push(`/crm/contacts/${contactId}`)}
                       className={cn(
                         "border-b border-border last:border-0 cursor-pointer hover:bg-muted/30 transition-colors",
                         RISK_BG[row.risk_level],

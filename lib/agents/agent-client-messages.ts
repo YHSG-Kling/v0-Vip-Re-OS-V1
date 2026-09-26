@@ -7,8 +7,10 @@
  * Command Center; APPROVING sends it (portal card) and records the audit trail.
  * Nothing reaches a client without a human in the loop.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { inferOutreachReason } from "@/lib/kernel/outreach-reasons"
+import { evalManagerMessage } from "@/lib/agents/manager-outbound-eval"
 
 export interface ProposeClientMessageInput {
   brokerageId:           string
@@ -35,6 +37,28 @@ export async function proposeClientMessage(
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
   const supabase = client ?? createServiceClient()
   if (!input.brokerageId || !input.body?.trim()) return { ok: false, error: "brokerageId + body required" }
+
+  // REVIEWER NOTES (wired 2026-09-03). evalManagerMessage is the deterministic
+  // audit instrument (superlatives / ungrounded numbers vs the rationale's
+  // facts / Fair-Housing patterns / auto-send). It is NOT a second gate — the
+  // runtime gate is evaluateOutbound, run by the producers and again before
+  // dispatch in approveClientMessage — so it never blocks. Its findings are put
+  // where the approver READS: appended to the rationale, so the human sees the
+  // flags beside the draft they are asked to approve.
+  let rationale = input.rationale ?? null
+  try {
+    const ev = evalManagerMessage({
+      managerKind: input.agentKind, subject: input.subject ?? null, body: input.body,
+      status: "proposed", allowedFacts: rationale ? [rationale] : [],
+    })
+    if (!ev.ok) {
+      const notes = ev.findings.map((f) => `[${f.dimension}/${f.severity}] ${f.detail}`).join(" ")
+      rationale = `${rationale ?? ""}${rationale ? " " : ""}Reviewer notes (automated, not a block): ${notes}`.slice(0, 4000)
+    }
+  } catch (e) {
+    console.error("[proposeClientMessage] outbound eval annotation failed (proposal continues):", (e as Error).message)
+  }
+
   const { data, error } = await supabase.from("agent_client_messages").insert({
     brokerage_id: input.brokerageId,
     managed_agent_session_id: input.managedAgentSessionId ?? null,
@@ -46,7 +70,7 @@ export async function proposeClientMessage(
     audience: input.audience,
     subject: input.subject ?? null,
     body: input.body,
-    rationale: input.rationale ?? null,
+    rationale,
     channel: input.channel ?? "portal",
     outreach_reason: input.outreachReason ?? inferOutreachReason({ rationale: input.rationale, subject: input.subject }),
     status: "proposed",
@@ -70,12 +94,12 @@ export async function proposeClientMessage(
       const label = (input.agentKind in MANAGERS)
         ? MANAGERS[input.agentKind as keyof typeof MANAGERS].label
         : "A manager"
-      await supabase.from("notifications").insert({
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: agentUserId, brokerage_id: input.brokerageId, type: "approval_needed",
         title: `${label} needs your approval`,
         body: input.subject ? `${input.subject} — tap to review & approve.` : "A client message is awaiting your approval — tap to review.",
         entity_type: "agent_client_message", entity_id: messageId, priority: "medium", is_read: false,
-      })
+      }), { table: "notifications", flow: "agent_client_messages_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
   } catch (e) {
     console.error("[proposeClientMessage] real-time approval alert failed:", e)
@@ -91,19 +115,45 @@ export interface ClientMessageResult { status: "sent" | "skipped" | "failed"; re
  * delivers it to the recipient's portal (best-effort), stamps sent. `editedBody`
  * lets the human revise before it goes out. Idempotent — only proposed/approved
  * rows send. Never throws.
+ *
+ * `approverUserId` MAY be null, and null means exactly one thing: NO HUMAN
+ * APPROVED THIS. It is the shape a settings-authorised auto-send takes
+ * (lib/ai-isa/lead-action-plan.ts — the brokerage's own `require_broker_approval
+ * = false` is the standing authorisation, and there is no person to name).
+ * Recording the machine's send under some human's user id would be a false audit
+ * trail, and `agent_client_messages.approved_by` is a NULLABLE FK to users(id)
+ * precisely so the honest answer fits. Every caller that HAS a human still passes
+ * one; the release path stamps its own rationale so a null approver is never
+ * ambiguous.
  */
 export async function approveClientMessage(
-  messageId: string, approverUserId: string, editedBody?: string,
+  messageId: string, approverUserId: string | null, editedBody?: string,
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<ClientMessageResult> {
   const supabase = client ?? createServiceClient()
-  const patch: Record<string, unknown> = { status: "approved", approved_by: approverUserId, approved_at: new Date().toISOString() }
+  const patch: Record<string, unknown> = { status: "approved", approved_by: approverUserId ?? null, approved_at: new Date().toISOString() }
   if (editedBody?.trim()) patch.body = editedBody
   const { data: claimed } = await supabase.from("agent_client_messages")
     .update(patch).eq("id", messageId).in("status", ["proposed", "approved"])
     .select("brokerage_id, entity_type, entity_id, recipient_contact_id, recipient_lead_id, audience, subject, body, channel").single()
   if (!claimed) return { status: "skipped", result: { reason: "not in proposed/approved state" } }
   const m = claimed as { brokerage_id: string; entity_type: string; entity_id: string | null; recipient_contact_id: string | null; recipient_lead_id: string | null; audience: string; subject: string | null; body: string; channel: string }
+
+  // WAVE 83C — a PRINTED client message carries a TRACKED QR (82D open item:
+  // agent-client-message direct mail passed no qrScanUrl). ONE registered code
+  // per approved message, minted/reused through THE ONE minter; null (and
+  // said) when the mint refuses — the piece still mails with its CTA.
+  const printedQrScanUrl = async (): Promise<string | null> => {
+    try {
+      const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+      const minted = await mintTrackedQr({ brokerageId: m.brokerage_id, label: `agent_client_message:${messageId}`, purpose: "campaign" }, supabase as any)
+      if (!minted) console.error(`[agent-client-messages] no tracked QR for message ${messageId} — the piece mails without one`)
+      return minted?.scanUrl ?? null
+    } catch (err) {
+      console.error(`[agent-client-messages] tracked QR unavailable for message ${messageId}:`, (err as Error)?.message)
+      return null
+    }
+  }
 
   try {
     const channel = m.channel ?? "portal"
@@ -135,6 +185,7 @@ export async function approveClientMessage(
           brokerageId: m.brokerage_id, presetId, leadId: m.recipient_lead_id,
           recipientName: `${lead.first_name ?? ""} ${lead.last_name ?? ""}`.trim() || "Neighbor",
           mailingAddress: lead.mailing_address, city: lead.mailing_city, state: lead.mailing_state, zip: lead.mailing_zip,
+          qrScanUrl: await printedQrScanUrl(),
           systemSource: "agent_client_message",
         })
         if (!r.success) return await fail(supabase, messageId, r.error ?? r.fellBackReason ?? "direct mail send failed")
@@ -201,6 +252,7 @@ export async function approveClientMessage(
         brokerageId: m.brokerage_id, presetId, contactId: m.recipient_contact_id,
         recipientName: `${dm.first_name ?? ""} ${dm.last_name ?? ""}`.trim() || "Neighbor",
         mailingAddress: addr.street, city: addr.city, state: addr.state, zip: addr.zip,
+        qrScanUrl: await printedQrScanUrl(),
         systemSource: "agent_client_message",
       })
       if (!r.success) return await fail(supabase, messageId, r.error ?? r.fellBackReason ?? "direct mail send failed")

@@ -22,15 +22,14 @@
  * and passes inputProps.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
-import { QrOutroBadge } from "./components/QrOutroBadge"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
+import { EndCard } from "./components/EndCard"
+import { CaptionLayer } from "./components/CaptionLayer"
+import { computeAssemblyTimeline, evenShotSlots } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface NewsletterDigestVideoProps {
   subject:        string
@@ -41,6 +40,15 @@ export interface NewsletterDigestVideoProps {
     accentColor:   string
     logoUrl?:      string
     brokerageName: string
+    /** Equal Housing Opportunity mark on the outro. Defaults true. This is
+     *  MARKET/listing-facing content (median price, inventory, DOM figures)
+     *  mailed to every recipient's inbox, so it carries the same fair-housing
+     *  mark every other listing/market reel in remotion/** renders (JustListedReel,
+     *  MarketUpdateReel, CMAReel, …) — this composition was the one video-shaped
+     *  composition in the registry with no showEhoMark prop at all (found in the
+     *  wave-48 assembly audit; scripts/video-assembly-simulator.ts §branding
+     *  asserts every MARKETING/CHART_REEL composition declares + renders it). */
+    showEhoMark?:  boolean
   }
   voiceoverUrl?:  string
   /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
@@ -48,49 +56,75 @@ export interface NewsletterDigestVideoProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to read". */
   qrCaption?:     string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL ElevenLabs alignment — preferred. See CaptionLayer. */
+  captionsCues?:  CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
+  /** WAVE 83 (lane 83B) — the voiceover explainer (lib/video/custom-video-archetypes.ts
+   *  voiceover_explainer) rides this composition for agents with no ready twin: a topic
+   *  is not "this week's digest", so the four chrome labels are props. Absent → the
+   *  newsletter wording below, unchanged. */
+  beatLabel?:     string | null
+  sectionsLabel?: string | null
+  endHeadline?:   string | null
+  endSubline?:    string | null
 }
 
-const FRAMES = {
-  INTRO_END:    60,
-  MARKET_START: 60,
-  MARKET_END:   300,
-  SECTIONS_START: 300,
-  SECTIONS_END:   510,
-  OUTRO_START:    510,
-  OUTRO_END:      600,
-} as const
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts). A
+// FRAMES table (INTRO_END 60 … OUTRO_END 600) stood here. Bookends come from
+// the ONE registry; the market beat and the section highlights split whatever
+// body the render's durationInFrames leaves, in the same 8:7 proportion.
+const BOOKENDS = compositionBookends("NewsletterDigestVideo")
+const INTRO = BOOKENDS.introFrames
+const OUTRO = BOOKENDS.outroFrames
 
 export const NewsletterDigestVideo: React.FC<NewsletterDigestVideoProps> = (props) => {
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: INTRO, outroFrames: OUTRO })
+  const BODY     = timeline.body.durationInFrames
+  const MARKET   = Math.round(BODY * 8 / 15)
+  const SECTIONS = BODY - MARKET
   return (
     <AbsoluteFill style={{ backgroundColor: props.brand.primaryColor }}>
       {props.voiceoverUrl && <Audio src={props.voiceoverUrl} />}
 
-      <Sequence from={0} durationInFrames={FRAMES.INTRO_END}>
+      <Sequence from={0} durationInFrames={INTRO}>
         <IntroFrame {...props} />
       </Sequence>
 
-      <Sequence from={FRAMES.MARKET_START} durationInFrames={FRAMES.MARKET_END - FRAMES.MARKET_START}>
+      <Sequence from={INTRO} durationInFrames={MARKET}>
         <MarketBeat {...props} />
       </Sequence>
 
-      <Sequence from={FRAMES.SECTIONS_START} durationInFrames={FRAMES.SECTIONS_END - FRAMES.SECTIONS_START}>
-        <SectionHighlights titles={props.sectionTitles.slice(0, 3)} brand={props.brand} />
+      <Sequence from={INTRO + MARKET} durationInFrames={SECTIONS}>
+        <SectionHighlights titles={props.sectionTitles.slice(0, 3)} brand={props.brand} windowFrames={SECTIONS} label={props.sectionsLabel} />
       </Sequence>
 
-      <Sequence from={FRAMES.OUTRO_START} durationInFrames={FRAMES.OUTRO_END - FRAMES.OUTRO_START}>
+      <Sequence from={INTRO + BODY} durationInFrames={OUTRO}>
         <OutroCta {...props} />
       </Sequence>
+
+      {/* NO CAPTION OVER THE OUTRO CTA/QR TILE (wave 61, mirrors JustListedReel.tsx) —
+          clip before the outro at INTRO + BODY. */}
+      <CaptionLayer
+        cues={props.captionsCues}
+        script={props.captionScript}
+        accentColor={props.brand.accentColor}
+        hiddenFromFrame={INTRO + BODY}
+      />
     </AbsoluteFill>
   )
 }
 
 const IntroFrame: React.FC<NewsletterDigestVideoProps> = ({ subject, brand }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.9], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.9], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 220, height: "auto", marginBottom: 48 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 220, height: "auto", marginBottom: 48 }} />
       )}
       <p style={{ color: brand.accentColor, fontSize: 38, fontWeight: 600, marginBottom: 12 }}>
         {brand.brokerageName}
@@ -102,21 +136,21 @@ const IntroFrame: React.FC<NewsletterDigestVideoProps> = ({ subject, brand }) =>
   )
 }
 
-const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand }) => {
+const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand, beatLabel }) => {
   const frame = useCurrentFrame()
-  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateRight: "clamp" })
-  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateRight: "clamp" })
+  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: "#fff", padding: 80, justifyContent: "center" }}>
       <div style={{
         backgroundColor: brand.primaryColor,
         padding: 64,
         borderRadius: 24,
-        transform: `translateY(${enter}px)`,
+        translate: `0 ${enter}px`,
         opacity,
       }}>
         <p style={{ color: brand.accentColor, fontSize: 32, fontWeight: 700, marginBottom: 24, textTransform: "uppercase", letterSpacing: 2 }}>
-          This week in your market
+          {beatLabel || "This week in your market"}
         </p>
         <h2 style={{ color: "white", fontSize: 72, margin: 0, fontWeight: 800, lineHeight: 1.15 }}>
           {marketBeat}
@@ -126,17 +160,33 @@ const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand })
   )
 }
 
-const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVideoProps["brand"] }> = ({ titles, brand }) => {
+const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVideoProps["brand"]; windowFrames: number; label?: string | null }> = ({ titles, brand, windowFrames, label }) => {
   const frame = useCurrentFrame()
-  const slideFrames = 70 // ~2.3s per title
-  const idx = Math.min(titles.length - 1, Math.floor(frame / slideFrames))
-  const localFrame = frame - idx * slideFrames
-  const opacity = interpolate(localFrame, [0, 10, slideFrames - 10, slideFrames], [0, 1, 1, 0], { extrapolateRight: "clamp" })
+  // The SECTIONS window is divided across however many titles actually
+  // arrived — the same idiom remotion/JustListedReel.tsx's PropertyImages
+  // already uses (lib/video/assembly-timeline.ts evenShotSlots, §6, wave
+  // 48's finding replicated here). This used to be a fixed 70 frames
+  // (~2.3s/title), sized for exactly 3 titles (`sectionTitles.slice(0, 3)`
+  // above): with fewer than 3, `idx` clamped at `titles.length - 1` while
+  // `localFrame` kept climbing past `slideFrames`, so the interpolate's
+  // `extrapolateRight: "clamp"` held opacity at its LAST breakpoint value —
+  // 0 — for the remainder of the 210-frame window. A 1- or 2-title digest
+  // (the common case) faded the last title out by frame 70 and then showed
+  // BLANK for the rest of SectionHighlights while the voiceover kept
+  // narrating over it. `windowFrames` is the COMPUTED sections window the
+  // parent derived from the render's own durationInFrames (wave 78).
+  const slots = evenShotSlots(windowFrames, Math.max(1, titles.length))
+  const idxFound = slots.findIndex((s) => frame < s.from + s.durationInFrames)
+  const idx = idxFound >= 0 ? idxFound : Math.max(0, slots.length - 1)
+  const activeSlot = slots[idx] ?? { from: 0, durationInFrames: windowFrames }
+  const slideFrames = activeSlot.durationInFrames
+  const localFrame = frame - activeSlot.from
+  const opacity = interpolate(localFrame, [0, 10, slideFrames - 10, slideFrames], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const t = titles[idx] ?? ""
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center" }}>
       <p style={{ color: brand.accentColor, fontSize: 36, fontWeight: 600, marginBottom: 16, opacity: 0.9 }}>
-        Inside this week's digest
+        {label || "Inside this week's digest"}
       </p>
       <h1 style={{ color: "white", fontSize: 104, fontWeight: 800, lineHeight: 1.05, margin: 0, opacity }}>
         {t}
@@ -145,26 +195,19 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
   )
 }
 
-const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, qrCaption }) => {
-  const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: "clamp" })
-  return (
-    <AbsoluteFill style={{ padding: 80, justifyContent: "center", opacity }}>
-      {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 180, height: "auto", marginBottom: 32 }} />
-      )}
-      <h1 style={{ color: "white", fontSize: 72, margin: 0, fontWeight: 800, lineHeight: 1.1 }}>
-        Open the email
-      </h1>
-      <p style={{ color: brand.accentColor, fontSize: 48, marginTop: 16, fontWeight: 600 }}>
-        for this week's full digest
-      </p>
-      <QrOutroBadge
-        qrCodeDataUrl={qrCodeDataUrl}
-        caption={qrCaption ?? "Scan to read"}
-        primaryColor={brand.primaryColor}
-        accentColor={brand.accentColor}
-      />
-    </AbsoluteFill>
-  )
-}
+// TOMBSTONE (lane 78D, §1.1): the private `OutroCta` ("Open the email" /
+// "for this week's full digest" + brokerage/EHO footer + QrOutroBadge) was
+// MERGED onto remotion/components/EndCard.tsx — the ONE end card the four
+// outros in this fleet now share. FRAMES.OUTRO_START..OUTRO_END is unchanged.
+const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, qrCaption, endHeadline, endSubline }) => (
+  <EndCard
+    brand={brand}
+    headline={endHeadline || "Open the email"}
+    subline={endSubline || "for this week's full digest"}
+    align="start"
+    logoHeight={64}
+    qrCodeDataUrl={qrCodeDataUrl}
+    qrCaption={qrCaption ?? "Scan to read"}
+    fadeInFrames={15}
+  />
+)

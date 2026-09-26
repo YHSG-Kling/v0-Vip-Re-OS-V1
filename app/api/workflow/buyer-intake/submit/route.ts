@@ -20,6 +20,7 @@
  *   }
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -108,7 +109,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // Notify the agent that intake is complete
   if (tokenRow.agent_user_id) {
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id:        tokenRow.agent_user_id,
       brokerage_id:   tokenRow.brokerage_id,
       type:           "buyer_intake_submitted",
@@ -118,7 +119,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       entity_type:    "contact",
       entity_id:      tokenRow.contact_id,
       channel:        "in_app",
-    })
+    }), { table: "notifications", flow: "route_notify", brokerageId: tokenRow.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   return NextResponse.json({ success: true, contactId: tokenRow.contact_id })

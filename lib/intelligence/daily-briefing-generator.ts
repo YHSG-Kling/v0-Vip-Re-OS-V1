@@ -44,6 +44,20 @@ export interface HotLead {
   name: string
   status: string
   suggested_action: string
+  /**
+   * The contact this lead IS, so the UI can act on it.
+   *
+   * Without this the "Draft Message" button on the Hot Leads card was
+   * unwireable by construction — the card knew a NAME and nothing addressable,
+   * so there was no contact to draft for. The data snapshot the model reads
+   * already carries the ids (top_priority_actions is instructed to populate
+   * entity_id from exactly that), so this costs nothing to fill.
+   *
+   * NULLABLE and treated as untrusted: it comes back from a model, so the UI
+   * only offers the action when it is a well-formed id, and draftSmartEmail
+   * re-checks the contact belongs to the caller's brokerage regardless.
+   */
+  contact_id?: string | null
 }
 
 export interface DealAtRisk {
@@ -196,12 +210,14 @@ export async function generateDailyBriefing(
       .order("start_at", { ascending: true })
       .limit(10),
 
-    // Contacts: hot status
+    // Contacts running hot. 'hot' is a TEMPERATURE, not a status — no writer has
+    // ever stored it on contacts.status, so this briefing line was permanently
+    // empty; the flag lives on contacts.lead_temperature (live CHECK: cold/hot/warm).
     supabase
       .from("contacts")
       .select("id, first_name, last_name, status, intent_score, last_scored_at")
       .eq("agent_id", agentsId)
-      .eq("status", "hot")
+      .eq("lead_temperature", "hot")
       .limit(5),
   ])
 
@@ -416,12 +432,26 @@ export async function generateDailyBriefing(
     const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     const owningAgentId = agentsId
 
-    const { data: acts } = await supabase
+    // THE READ SIDE OF THE SAME TENANT DEFECT. This is a SERVICE-client read (RLS bypassed), and
+    // it carried no tenant bound at all: it took the newest 500 activity rows PLATFORM-WIDE and
+    // then narrowed by contacts this agent owns. Two consequences, one of them silent and bad —
+    //   · it reads other brokerages' client engagement to build one agent's briefing; and
+    //   · the 500-row cap is spent on rows that will be discarded, so a busy neighbouring tenant
+    //     pushes this agent's OWN clients out of the window and their briefing quietly loses the
+    //     signals it exists to surface. "Nothing came back" is never health.
+    // Scoping by brokerage_id is only possible because the writers now stamp it; that is the
+    // whole point of stamping them. The error is destructured for the same reason as everywhere
+    // else: supabase-js RESOLVES a refused read, so a refusal arrived as "a quiet evening".
+    const { data: acts, error: actsError } = await supabase
       .from("client_portal_activity")
       .select("contact_id, activity_type, created_at")
+      .eq("brokerage_id", brokerageId)
       .gte("created_at", since24)
       .order("created_at", { ascending: false })
       .limit(500)
+    if (actsError) {
+      console.error("[DailyBriefing] portal-activity read refused — 'I saw you' is incomplete, not empty:", actsError.message)
+    }
     const actsByContact = new Map<string, { count: number; latestType: string | null }>()
     for (const a of ((acts ?? []) as Array<{ contact_id: string | null; activity_type: string | null }>)) {
       if (!a.contact_id) continue
@@ -679,7 +709,7 @@ Output ONLY valid JSON matching this exact schema (no markdown, no extra text):
   ],
   "market_pulse": "1 sentence market observation based on the data",
   "hot_leads": [
-    {"name": "lead name", "status": "current status", "suggested_action": "recommended next step"}
+    {"name": "lead name", "status": "current status", "suggested_action": "recommended next step", "contact_id": "uuid or null"}
   ],
   "deals_at_risk": [
     {"transaction_id": "uuid", "address": "property address", "reason": "why it's at risk"}
@@ -695,7 +725,9 @@ Rules:
 - Pick action_type based on what the agent should DO: 'draft_followup' if
   they should reply to a contact; 'view_transaction' if they should review
   a deal; 'complete_task' if they should mark a task done; etc.
-- hot_leads: max 3 items
+- hot_leads: max 3 items. Populate contact_id from the matching contact row in
+  the data snapshot so the agent can act on it; use null if the lead has no
+  contact row. NEVER invent an id.
 - deals_at_risk: only include transactions with health issues
 - Be specific and actionable
 - Focus on what needs attention TODAY`
@@ -716,6 +748,8 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     // cost accounting. AI_MODEL is left as a label for `ai_model_used` below; the actual model is
     // chosen by AI_TASK_ROUTING['coaching_insight'].
     const result = await generateTextRouted({
+      brokerageId,
+      userId: briefingUserId,
       feature:     "coaching_insight",
       system:      systemPrompt,
       prompt:      userPrompt,
@@ -825,25 +859,64 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     throw new Error(`Failed to save briefing: ${upsertError.message}`)
   }
 
-  // 5. INSERT lifecycle_events
-  await supabase
-    .from("lifecycle_events")
+  // 5. DELIVER IT. Merged in from copilot.ts:handleMorningKickoff, which was an
+  // orphan whose ONLY unique contribution was this notification — the rest of it
+  // read one task list where this function reads seven sources, so the reading
+  // half died and the delivery half moved here.
+  //
+  // Until now this function wrote the briefing and emitted
+  // DAILY_BRIEFING_GENERATED, and that event has ZERO consumers — no
+  // notification-engine mapping, no handler anywhere in the tree. So a briefing
+  // was generated every morning and the agent was never told it existed.
+  //
+  // user_id is briefingUserId (users.id), NOT agentsId — notifications.user_id
+  // FKs users and the two id spaces are disjoint (pass 12 resolved both above;
+  // sending the agents.id here is the FK throw that kept briefings uncached).
+  //
+  // A failed delivery is LOGGED, not thrown: the briefing itself is saved and
+  // returning it is still correct. What must not happen is the silent discard
+  // the orphan did — it swallowed the insert error and reported success either
+  // way, so nobody could tell a delivered briefing from an undelivered one.
+  const { error: notifyError } = await supabase
+    .from("notifications")
     .insert({
+      user_id:     briefingUserId,
       brokerage_id: brokerageId,
+      type:        "daily_briefing",
+      title:       "Your morning briefing is ready",
+      body:        `${tasks.length} task${tasks.length === 1 ? "" : "s"} today` +
+                   (finalDealsAtRisk.length > 0 ? ` · ${finalDealsAtRisk.length} deal${finalDealsAtRisk.length === 1 ? "" : "s"} needing attention` : ""),
       entity_type: "ai_daily_briefing",
-      entity_id: upsertedBriefing.id,
-      event_type: KernelEvent.DAILY_BRIEFING_GENERATED,
-      metadata: {
-        agent_id: agentsId,
-        briefing_date: today,
-        tasks_count: tasks.length,
-        transactions_count: transactions.length,
-        deals_at_risk_count: finalDealsAtRisk.length,
-        listings_at_risk_count: listingsAtRisk.length,
-      },
+      entity_id:   upsertedBriefing.id,
+      priority:    finalDealsAtRisk.length > 0 ? "high" : "medium",
+      is_read:     false,
     })
+  if (notifyError) {
+    console.error(
+      `[DailyBriefing] briefing ${upsertedBriefing.id} saved but NOT delivered to ${briefingUserId}: ${notifyError.message}`,
+    )
+  }
 
-  // 6. Return briefing data
+  // 6. Kernel event — audit row + reactor (was a bare insert nobody downstream heard).
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  await emitKernelEvent({
+    brokerageId,
+    entityType: "ai_daily_briefing",
+    entityId: upsertedBriefing.id,
+    event: KernelEvent.DAILY_BRIEFING_GENERATED,
+    agentId: agentsId,
+    actorUserId: briefingUserId,
+    metadata: {
+      agent_id: agentsId,
+      briefing_date: today,
+      tasks_count: tasks.length,
+      transactions_count: transactions.length,
+      deals_at_risk_count: finalDealsAtRisk.length,
+      listings_at_risk_count: listingsAtRisk.length,
+    },
+  })
+
+  // 7. Return briefing data
   return upsertedBriefing as DailyBriefing
 }
 

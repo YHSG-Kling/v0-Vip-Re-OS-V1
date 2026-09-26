@@ -12,7 +12,8 @@
  * block also gets room for a quote from the agent.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface PostcardBack6x9Props {
   body:    string
@@ -38,7 +39,10 @@ const SAFE_INSET = 70
 export const PostcardBack6x9: React.FC<PostcardBack6x9Props> = ({
   body, pullQuote, signoff, agentPhotoUrl, agentName, brand,
 }) => {
-  const messagePanelRight = 1875 - Math.floor(1875 * 0.52)  // ~900px
+  // Indicia keep-out width from the registration — it used to be `1875`
+  // typed twice here (test:remotion-setup §5 refuses that literal now).
+  const { width } = useVideoConfig()
+  const messagePanelRight = width - Math.floor(width * 0.52)  // ~900px at 1875
 
   return (
     <AbsoluteFill style={{
@@ -55,7 +59,7 @@ export const PostcardBack6x9: React.FC<PostcardBack6x9Props> = ({
         color: "#fff",
       }}>
         {brand.logoUrl ? (
-          <Img src={brand.logoUrl} style={{ height: 80, width: "auto", objectFit: "contain", marginRight: 24 }} />
+          <SafeImg src={brand.logoUrl} style={{ height: 80, width: "auto", objectFit: "contain", marginRight: 24 }} />
         ) : (
           <div style={{
             width: 72, height: 72, borderRadius: 12, marginRight: 24,
@@ -107,7 +111,7 @@ export const PostcardBack6x9: React.FC<PostcardBack6x9Props> = ({
         display: "flex", alignItems: "center", gap: 22,
       }}>
         {agentPhotoUrl ? (
-          <Img src={agentPhotoUrl} style={{
+          <SafeImg src={agentPhotoUrl} style={{
             width: 120, height: 120, objectFit: "cover", borderRadius: 60,
             border: `4px solid ${brand.accentColor}`,
           }} />

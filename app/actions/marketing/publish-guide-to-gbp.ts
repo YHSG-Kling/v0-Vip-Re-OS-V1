@@ -40,15 +40,27 @@ export async function publishGuideToGbpAction(input: { magnetType: string; area?
   const content = `${deliverable.title}\n\n${summary}${cta}`
 
   try {
+    // contentType is the post_type COLUMN VALUE, and "lead_magnet_guide" is not in
+    // the social_posts.post_type CHECK — every call here used to reject with 23514.
+    // The brief still records which magnet this came from.
     const post = await createSocialPost({
       content,
       platforms: ["google_business"],
       scheduledFor: new Date().toISOString(),
-      contentType: "lead_magnet_guide",
+      contentType: "custom",
       generatedByAi: true,
       aiPrompt: `gbp_guide:${magnetType}`,
       forceApprovalPending: true, // gated — surfaces in the Command Center Social approval queue
     })
+    // createSocialPost now returns a real verdict: a run that reached zero
+    // channels (no connected Google Business account, content held for
+    // compliance) must not be reported as posted.
+    if ((post as { success?: boolean }).success === false) {
+      return {
+        success: false,
+        error: (post as { message?: string }).message ?? "GBP publish was not scheduled",
+      }
+    }
     return { success: true, postId: (post as any)?.id ?? (post as any)?.postId }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "GBP publish failed" }

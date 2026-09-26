@@ -33,6 +33,8 @@ import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+import { OFFER_EVENT, EVENT_TO_STATUS, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -100,11 +102,30 @@ export async function finalizeVoiceCockpitPacket(
       })
       .eq("id", docRow.id)
 
+    // ESIGN_PACKET_SIGNED IS already fanned out (logEventAndTrigger's own 2026-09-03
+    // fix routes any KernelEvent-valued event_type through emitKernelEvent with
+    // skipInsert, reaching the reactor's staff bell + sequence enrollment + the
+    // event-fanout.ts "Document signed" portal card) — the kernel-event-census-z1
+    // static scan just cannot see a fan-out that isn't a literal emitKernelEvent(
+    // call (CLAUDE.md §2 blind-spot warning). What WAS missing: `payload` carried
+    // no `contact_id`, only `user_id` (the EventInput field, which lands on
+    // lifecycle_events.actor_user_id — a users(id) FK a contacts.id can never
+    // satisfy as "who"). emitKernelEvent's contactId forward reads `pl.contact_id`
+    // specifically, and entityType "document" has no resolveEventContacts branch
+    // (lib/kernel/resolve-event-contacts.ts), so with neither, the portal card and
+    // sequence enrollment silently had zero contacts to write to. Added below —
+    // the contact this document belongs to was already loaded on docRow.
     await logEventAndTrigger({
       brokerage_id: docRow.brokerage_id as string,
       event_type:   KernelEvent.ESIGN_PACKET_SIGNED,
       user_id:      (docRow.contact_id as string | null) ?? "",
-      payload:      { documentId: docRow.id, documentType: docRow.document_type, envelopeId, provider },
+      payload:      {
+        documentId: docRow.id,
+        documentType: docRow.document_type,
+        envelopeId,
+        provider,
+        contact_id: docRow.contact_id ?? undefined,
+      },
       source:       "webhook",
       dedupe_key:   `voice-packet-signed-${docRow.id}`,
     } as any)
@@ -228,6 +249,26 @@ async function finalizeMatchingOffer(
   if (matchedOffer.transaction_id) return  // already converted — idempotent
   if (matchedOffer.esign_status === "fully_signed") return  // already past this step
 
+  // REDELIVERY GUARD (carried note, lane FA wave 47 → wave 48) — the
+  // buyer-first branch below was NOT idempotent the way the counter-executed
+  // branch already is. `esign_status === "fully_signed"` above stops a
+  // redelivered COUNTER-completed webhook cold, but a redelivered BUYER-FIRST
+  // webhook (the common e-sign-provider "at least once" delivery guarantee —
+  // DocuSign/Dotloop/etc. retry on anything but a clean 200) would sail past
+  // both guards, since esign_status only reaches "partially_signed" on the
+  // buyer-first path and seller_signed_at is still null either way. Every
+  // redelivery would then re-run the buyer-first branch below: re-insert the
+  // "Buyer signed the offer" audit activity, re-insert
+  // OFFER_EVENT.SUBMITTED, re-run the packet-completeness scan — silent
+  // duplication on the agent's own feed, not a corrupted offer, but a false
+  // audit trail is still a false audit trail. The guard mirrors the shape of
+  // the one two lines up: nothing has changed since the LAST time this
+  // function did anything for this row (still buyer-first, still no seller
+  // response) is exactly "already past this step, once" — a genuine seller
+  // counter arriving in between sets seller_signed_at, which turns this OFF
+  // and lets the (now counter-executed) branch below run for real.
+  if (matchedOffer.esign_status === "partially_signed" && !matchedOffer.seller_signed_at) return
+
   // Counter case: when seller_signed_at is already set, the buyer's signature
   // landing means BOTH sides have signed → the counter is FULLY EXECUTED.
   // No separate "seller signs back" step. The combined original offer +
@@ -246,6 +287,51 @@ async function finalizeMatchingOffer(
         status:                           "accepted",
       })
       .eq("id", matchedOffer.id)
+
+    // OFFER_OS_ESIGN_COMPLETED — read by event-fanout.ts ("Your offer is signed
+    // / all parties have e-signed... fully executed and on file") but nothing
+    // ever emitted it (CLAUDE.md §1: a reader with no writer). This IS the real
+    // moment: esign_status just flipped to 'fully_signed' because BOTH sides'
+    // signatures landed (isCounterFullyExecuted). Deliberately NOT the
+    // buyer-first branch below (only one side signed there — that path already
+    // documents why it withholds an acceptance-shaped event until the
+    // compliance gate runs). void'd — a fan-out failure must never undo the
+    // esign_status flip already committed above; emitKernelEvent never throws
+    // (lib/kernel/emit.ts).
+    void emitKernelEvent({
+      event:       KernelEvent.OFFER_OS_ESIGN_COMPLETED,
+      brokerageId: matchedOffer.brokerage_id as string,
+      entityType:  "offer",
+      entityId:    matchedOffer.id as string,
+      contactId:   (matchedOffer.contact_id as string | null) ?? undefined,
+      buyerContactId: (matchedOffer.contact_id as string | null) ?? undefined,
+      metadata: {
+        envelope_id: envelopeId,
+        provider,
+        signed_at:   now,
+      },
+    }).catch((e) => {
+      console.error("[finalize-packet] OFFER_OS_ESIGN_COMPLETED emit failed:", e)
+    })
+
+    // THE OFFER COMPLIANCE LOOP STARTS HERE (owner, 2026-09-06: "…looped for
+    // offers turning into active transactions after pass and if fail, same as
+    // the listing autonomous loop"). Both sides have now signed; the loop asks
+    // the ONE gate (submitOfferToCompliance) and on a pass the transaction is
+    // created under contract with no click. Until this wire existed a counter
+    // executed through this webhook sat fully signed forever unless a human
+    // pressed "submit to compliance". Best-effort: a webhook never fails on it.
+    try {
+      const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+      await runOfferComplianceLoop(supabase, {
+        brokerageId: matchedOffer.brokerage_id as string,
+        offerId:     matchedOffer.id as string,
+        trigger:     "agreement_executed",
+        actorUserId: null,
+      })
+    } catch (err) {
+      console.error("[finalize-packet] offer compliance loop failed (non-fatal):", (err as Error).message)
+    }
   } else {
     // Standard buyer-first path (original offer, not yet seller-countered):
     // mark buyer side as signed; seller side still pending the agent's
@@ -266,14 +352,21 @@ async function finalizeMatchingOffer(
   // the agents table join so both surfaces fire together.
   const agentId = (matchedOffer.agent_id as string | null) ?? null
   if (agentId) {
-    const { data: activityRow } = await supabase.from("activities").insert({
+    // `{ data }` alone cannot tell a REJECTED insert from one that landed —
+    // both come back with data null-ish. This row records a SIGNED document,
+    // so the error is read too.
+    const { data: activityRow, error: signedActivityError } = await supabase.from("activities").insert({
       brokerage_id:  matchedOffer.brokerage_id,
       agent_id:      agentId,           // agents(id) FK
       contact_id:    matchedOffer.contact_id,
       entity_type:   "offer",
+      // THE OFFER KEY. This row carried entity_type='offer' with NO entity_id,
+      // so it was unreachable from the offer it describes — the same defect
+      // wave 7 closed across the writer set (docs/wave7-offer-lifecycle-audit.md).
+      entity_id:     matchedOffer.id,
       activity_type: isCounterFullyExecuted
-                       ? "buyer.offer.counter.fully_executed"
-                       : "buyer.offer.buyer_signed",
+                       ? OFFER_AUDIT_EVENT.COUNTER_FULLY_EXECUTED
+                       : OFFER_AUDIT_EVENT.BUYER_SIGNED,
       title:         isCounterFullyExecuted
                        ? "Counter fully executed — both sides signed"
                        : "Buyer signed the offer",
@@ -285,6 +378,68 @@ async function finalizeMatchingOffer(
       status:        "completed",
       priority:      "high",
     }).select("id").maybeSingle()
+    if (signedActivityError) {
+      console.error(`[finalize-packet] buyer-signed activity REJECTED for offer ${matchedOffer.id} — the signature is on the offer row but not on the audit feed:`, signedActivityError.message)
+    }
+
+    // ── THE LIFECYCLE EVENT (wave 7) ─────────────────────────────────────────
+    // The row above is an AUDIT/QUEUE row: its title and description are written
+    // for the agent's feed, and `buyer.offer.buyer_signed` is not a state in the
+    // canonical machine. Nothing in the tree emitted `buyer.offer.submitted`,
+    // so every real offer's DERIVED state was stuck at DRAFT — which is why the
+    // /api/cron/offer-expiry sweep refused every offer it ever scanned (it
+    // requires PENDING, correctly, and nothing ever reached PENDING).
+    //
+    // This is the moment the offer is in front of the seller. The docblock on
+    // this function already says so in its own words: "Forward to listing agent
+    // and await seller response." So the canonical DRAFT → PENDING transition
+    // belongs exactly here, and it is filed on the offer key.
+    //
+    // ONLY on the buyer-first path. When the counter is fully executed both
+    // sides have signed, and the state that follows is ACCEPTED — which in this
+    // system is reachable ONLY through the compliance gate
+    // (submit-to-compliance.ts emits OFFER_EVENT.ACCEPTED after
+    // buyer.offer.compliance.passed). Emitting an acceptance here would walk
+    // straight past that gate, so this branch deliberately files nothing:
+    // `buyer.offer.counter.fully_executed` above is the audit record, and
+    // compliance remains the only door.
+    if (!isCounterFullyExecuted) {
+      const { error: submittedEventError } = await supabase.from("activities").insert({
+        brokerage_id:  matchedOffer.brokerage_id,
+        agent_id:      agentId,
+        contact_id:    matchedOffer.contact_id,
+        entity_type:   "offer",
+        entity_id:     matchedOffer.id,
+        activity_type: OFFER_EVENT.SUBMITTED,
+        title:         "Offer submitted to the seller",
+        description:   `Buyer signature complete; the offer is with the listing side awaiting a seller response.`,
+        notes:         JSON.stringify({ offer_id: matchedOffer.id, envelopeId, provider, submitted_at: now }),
+        metadata:      { offer_id: matchedOffer.id, envelopeId, provider, submitted_at: now },
+        status:        "completed",
+      })
+
+      // Not fire-and-forget. If this row is lost the offer stays DRAFT forever:
+      // it can never expire on its deadline, and every surface that gates on
+      // PENDING treats a live offer as a draft. Say so rather than move on.
+      if (submittedEventError) {
+        console.error(
+          `[finalize-packet] offer ${matchedOffer.id}: buyer signed but the ${OFFER_EVENT.SUBMITTED} lifecycle event did NOT land — the offer will read as DRAFT:`,
+          submittedEventError.message,
+        )
+      } else {
+        // The operational index the screens read, kept in step with the event.
+        const { error: statusError } = await supabase
+          .from("offers")
+          .update({ status: EVENT_TO_STATUS[OFFER_EVENT.SUBMITTED] })
+          .eq("id", matchedOffer.id)
+        if (statusError) {
+          console.error(
+            `[finalize-packet] offer ${matchedOffer.id}: ${OFFER_EVENT.SUBMITTED} filed but offers.status did not move:`,
+            statusError.message,
+          )
+        }
+      }
+    }
 
     // Resolve agents.id → users.id for the notification recipient
     const { data: agentRow } = await supabase
@@ -389,10 +544,28 @@ export async function finalizeLegacyEsignArtifacts(
         eventType:   "listing_agreement_signed",
         metadata:    { agreementId: matchedAgreement.id, envelopeId, source: "webhook" },
       }, supabase)
+      // stage_entered_at is the stage machine's clock; listings.status is NOT written here —
+      // transitionLifecycle synced it (listing_signed) from the shared map one call above.
       await supabase
         .from("listings")
-        .update({ status: "coming_soon", stage_entered_at: now })
+        .update({ stage_entered_at: now })
         .eq("id", matchedAgreement.listing_id)
+      // ── THE COMPLIANCE LOOP'S FIRST RUN (owner ruling 2026-09-05) ─────────
+      // The executed agreement is where compliance STARTS. The kernel transition above
+      // already stamped `listing_signed` through the shared map; the explicit
+      // `status: coming_soon` write that stood here overwrote it and declared the
+      // gate passed before it had run. Now the loop runs the ONE gate: a pass walks the
+      // listing to COMING_SOON_PREP (status coming_soon), a fail names what is missing
+      // to the TC, the compliance officer and the agent, and every later upload
+      // re-enters it. Non-fatal — the webhook has already recorded the signature.
+      try {
+        const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+        await runListingComplianceLoop(supabase as any, {
+          brokerageId: (listingRow as any).brokerage_id, listingId: matchedAgreement.listing_id, trigger: "agreement_executed", actorUserId: null,
+        })
+      } catch (err: any) {
+        console.error("[finalize-packet] listing compliance loop failed (non-fatal):", err?.message ?? err)
+      }
     }
   }
 

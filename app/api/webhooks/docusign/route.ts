@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } from "@/lib/esign-webhooks/finalize-packet"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId } from "@/lib/forms/esign-execution-loop"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOCUSIGN CONNECT WEBHOOK HANDLER
@@ -92,9 +92,25 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Voice-cockpit packet + legacy artifacts — shared helpers handle both.
-    const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "docusign")
-    const legacy = await finalizeLegacyEsignArtifacts(supabase as any, envelopeId)
+    // PROVIDER-AGNOSTIC LOOP-EXECUTION GATE (wave 47 lane FA, generalized off
+    // app/api/webhooks/dotloop/route.ts's wave-46 gate — see
+    // lib/forms/esign-execution-loop.ts). DocuSign's own envelope-completed
+    // event only proves ONE envelope finished; a transaction/listing tracking
+    // MORE than one envelope (a purchase agreement plus a later addendum,
+    // say) isn't actually done until every tracked document is. The gate
+    // reads BOTH client_documents and transaction_documents, and only when
+    // every one of them is signed does it call finalizeVoiceCockpitPacket +
+    // stamp the offer/listing-agreement — otherwise it signals
+    // compliance_officer → deal_coordinator (esign_loop_partially_signed)
+    // instead of finalizing early.
+    const brokerageId = await resolveEnvelopeBrokerageId(supabase as any, envelopeId)
+    const execution = brokerageId
+      ? await evaluateEnvelopeExecution(supabase as any, {
+          brokerageId,
+          providerSource: "docusign",
+          externalEnvelopeId: envelopeId,
+        })
+      : null
 
     // INGRESS CONTINUITY: an envelope that matched NOTHING (dispatch race /
     // transient failure) is parked as a dead letter for the daily reconciler
@@ -103,11 +119,12 @@ export async function POST(request: NextRequest) {
     await ensureEsignIngressContinuity(supabase as any, { provider: "docusign", envelopeId })
 
     return NextResponse.json({
-      received:    true,
+      received:   true,
       envelopeId,
-      docs_signed: voice.docs_signed,
-      bba_signed:  voice.bba_signed,
-      legacy,
+      evaluated:  execution?.evaluated ?? false,
+      fully_executed: execution?.fullyExecuted ?? false,
+      ready_writes_applied: execution?.readyWritesApplied ?? false,
+      signal_published: execution?.signalPublished ?? false,
     })
   } catch (error: any) {
     console.error("[docusign-webhook] Error:", error)

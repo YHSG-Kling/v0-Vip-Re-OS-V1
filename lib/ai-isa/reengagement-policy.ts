@@ -40,7 +40,7 @@ export const DEFAULT_MAX_HORIZON_ATTEMPTS = 13
 
 /** Phase-1 (fresh ghost) send days: Mon/Wed/Fri only — aggressive while the lead is
  *  still warm. getDay(): 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat. */
-export const PHASE1_SEND_DAYS = [1, 3, 5] as const
+const PHASE1_SEND_DAYS = [1, 3, 5] as const
 /** The window (days from first outreach) that counts as Phase 1. */
 export const PHASE1_WINDOW_DAYS = 14
 /** Phase-2 (long-haul) minimum spacing between sends, in days. */
@@ -300,6 +300,35 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The minimal contact shape the eligibility predicate reads. */
+/**
+ * contacts.status values that make a contact NON-ENGAGEABLE by the ISA.
+ *
+ * 'do_not_contact' was the only one this predicate knew about, and that was a
+ * MEASURED gap rather than a judgement: two hand-rolled copies of the same
+ * stale-contact query — app/api/cron/stale-contact-monitor/route.ts and
+ * app/dashboard/stale/actions.ts — each excluded 'archived' and 'inactive' at
+ * the query, and this predicate (the declared single source of truth) did not.
+ * So the canonical detector would have re-engaged an archived contact that both
+ * inline copies correctly skipped. Collapsing those copies into the detector
+ * therefore had to bring their exclusions WITH them, not drop them.
+ *
+ * Exported so the detector can pre-filter at the query for efficiency and still
+ * be checked against the SAME list post-fetch — one vocabulary, two uses.
+ *
+ * 'do_not_contact' REMOVED 2026-08-31 (§1.1 merge — SURVIVOR: the dnc_status
+ * boolean, which staleContactEligibility below already hard-stops on BEFORE this
+ * list is consulted, and which every writer of the DNC fact actually sets).
+ * No writer has ever stored 'do_not_contact' on contacts.status — the member
+ * matched nothing — and m587 (pending apply) puts a CHECK behind the column
+ * that does not admit it, so keeping it would be a permanently-dead spelling.
+ * Not folded into 'inactive' here: this list is the STATUS half of the gate,
+ * and DNC is a compliance rail, not a lifecycle state. Vocabulary:
+ * lib/contact-promotion/qualification.ts CONTACT_STATUSES / TERMINAL_CONTACT_STATUSES
+ * ('deleted' is deliberately absent from THIS list because both detectors
+ * already gate on `deleted_at`).
+ */
+export const NON_ENGAGEABLE_CONTACT_STATUSES = ["archived", "inactive"] as const
+
 export interface StaleEligibilityInput {
   last_contacted_at: string | null
   dnc_status: boolean | null
@@ -312,21 +341,44 @@ export interface StaleEligibilityInput {
   /** True for a lifetime / past client (the detector resolves it via contact_type). When set, the
    *  long-horizon LIFETIME_STALE_DAYS threshold applies instead of the active-contact staleDays. */
   is_lifetime?: boolean
+  /** contacts.agent_id — the assigned agent, or null. */
+  agent_id?: string | null
 }
 
 export type StaleIneligibleReason =
   | "dnc"
   | "outreach_paused"
   | "reengage_disallowed"
-  | "do_not_contact_status"
+  | "non_engageable_status"
   | "deleted"
   | "active_transaction"
+  | "unassigned"
   | "not_yet_stale"
 
 export interface StaleEligibilityResult {
+  /** May the ISA AUTO-SEND to this contact? Every exclusion applies. */
   eligible: boolean
   reason: StaleIneligibleReason | "stale"
   daysSinceContact: number
+  /**
+   * Is this contact DORMANT — past the threshold and not hard-blocked — REGARDLESS
+   * of whether the ISA switch is on?
+   *
+   * `eligible` and `dormant` differ on exactly two inputs: ai_outreach_paused and
+   * isa_reengage_allowed. That is a deliberate split, not a convenience. An
+   * automated sender must key on `eligible`; an AGENT-FACING console must key on
+   * `dormant`, because a contact whose ISA switch is OFF still needs to appear in
+   * the agent's dormant list — turning the switch back ON is only possible from a
+   * row the agent can still see. app/dashboard/stale/actions.ts held that
+   * behaviour in its own hand-written query (it never filtered those two flags and
+   * its UI badges such rows "ISA off"); folding that query into the canonical
+   * detector required bringing the behaviour with it, or a paused contact would
+   * have silently become invisible and therefore unrecoverable.
+   *
+   * A hard stop — DNC, do-not-contact status, deleted, an open transaction, or
+   * unassigned when the caller requires an agent — clears BOTH.
+   */
+  dormant: boolean
 }
 
 /**
@@ -339,7 +391,7 @@ export interface StaleEligibilityResult {
  */
 export function staleContactEligibility(
   c: StaleEligibilityInput,
-  opts: { now: Date; staleDays?: number },
+  opts: { now: Date; staleDays?: number; requireAssignedAgent?: boolean },
 ): StaleEligibilityResult {
   // Lifetime/past clients are long-horizon — only stale after the longer LIFETIME_STALE_DAYS, so the
   // generic re-engagement stays a light quarterly-ish touch (newsletter + situational triggers lead).
@@ -347,15 +399,40 @@ export function staleContactEligibility(
   const lastMs = toMs(c.last_contacted_at)
   const daysSinceContact = lastMs === null ? 999 : Math.floor((opts.now.getTime() - lastMs) / DAY_MS)
 
-  if (c.dnc_status === true) return { eligible: false, reason: "dnc", daysSinceContact }
-  if (c.ai_outreach_paused === true) return { eligible: false, reason: "outreach_paused", daysSinceContact }
-  if (c.isa_reengage_allowed === false) return { eligible: false, reason: "reengage_disallowed", daysSinceContact }
-  if (c.status === "do_not_contact") return { eligible: false, reason: "do_not_contact_status", daysSinceContact }
-  if (c.deleted_at !== null) return { eligible: false, reason: "deleted", daysSinceContact }
-  if (c.hasActiveTransaction) return { eligible: false, reason: "active_transaction", daysSinceContact }
-  if (daysSinceContact < staleDays) return { eligible: false, reason: "not_yet_stale", daysSinceContact }
+  // ── HARD STOPS — these clear `dormant` as well as `eligible`. No surface, human
+  //    or automated, should present these as re-engageable dormancy. ──
+  const hard = (reason: StaleIneligibleReason): StaleEligibilityResult =>
+    ({ eligible: false, reason, daysSinceContact, dormant: false })
 
-  return { eligible: true, reason: "stale", daysSinceContact }
+  if (c.dnc_status === true) return hard("dnc")
+  if ((NON_ENGAGEABLE_CONTACT_STATUSES as readonly string[]).includes(String(c.status ?? ""))) {
+    // Reason renamed from "non_engageable_status" (2026-08-31): the statuses in
+    // this set are archived/inactive — dormancy and departure, not DNC. The DNC
+    // fact lives on dnc_status and reports its own reason "dnc" above; a reason
+    // that said do_not_contact for an archived row was blaming a suppression
+    // that was never recorded.
+    return hard("non_engageable_status")
+  }
+  if (c.deleted_at !== null) return hard("deleted")
+  if (c.hasActiveTransaction) return hard("active_transaction")
+  // AN UNASSIGNED CONTACT CANNOT BE ENGAGED, so detecting one wastes the batch.
+  // initiateAIISAContactEngagement refuses it outright ("Contact not yet assigned
+  // to agent") and engageContact's portal touch needs agent_id (NOT NULL on
+  // client_portal_messages). The cron copy encoded this as `.not('agent_id','is',null)`;
+  // it is opt-IN here because the per-agent dashboard read is already scoped to
+  // one agent and the ISA console legitimately wants to SEE unassigned dormancy.
+  if (opts.requireAssignedAgent && !c.agent_id) return hard("unassigned")
+  if (daysSinceContact < staleDays) return hard("not_yet_stale")
+
+  // ── THE ISA SWITCH — blocks the SEND, not the LISTING. See `dormant` above. ──
+  if (c.ai_outreach_paused === true) {
+    return { eligible: false, reason: "outreach_paused", daysSinceContact, dormant: true }
+  }
+  if (c.isa_reengage_allowed === false) {
+    return { eligible: false, reason: "reengage_disallowed", daysSinceContact, dormant: true }
+  }
+
+  return { eligible: true, reason: "stale", daysSinceContact, dormant: true }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -21,15 +21,173 @@
 // NOT server-only (the simulator drives it end-to-end); only ever writes through a
 // caller-supplied/service client.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { createServiceClient } from "@/lib/supabase/service"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import { LISTING_STAGES_AFTER } from "@/lib/enrichment/deal-vocabulary"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Transaction statuses that mean a deal is IN FLIGHT — such a contact is always
- *  reassigned to the successor, never archived (the client is never dropped mid-deal). */
-export const ACTIVE_DEAL_STATUSES = [
-  "active", "under_contract", "pending", "closing", "accepted", "in_escrow",
-] as const
+/** Task statuses that mean the work is DONE and stays as history (same list the
+ *  per-contact reassignment uses — one spelling, §6). */
+export const CLOSED_TASK_STATUSES = ["completed", "cancelled", "done", "closed"] as const
+const OPEN_TASK_EXCLUDE = `(${CLOSED_TASK_STATUSES.join(",")})`
+
+/** The three columns on `transactions` that name an agent's ROLE on the deal. */
+export const TRANSACTION_AGENT_ROLE_COLUMNS = ["agent_id", "buyer_agent_id", "seller_agent_id"] as const
+export type TransactionAgentRoleColumn = (typeof TRANSACTION_AGENT_ROLE_COLUMNS)[number]
+
+/**
+ * What ONE move of an agent's open work touched — row ids per kind, COUNTED from
+ * the `.select("id")` of each update (CLAUDE.md §3: an UPDATE that matches
+ * nothing resolves with no error; the ids are the proof). The ids are what a
+ * TEMPORARY transfer records so it can be reverted (lib/agents/agent-books.ts).
+ */
+export interface MovedWork {
+  leads: string[]
+  /** Per role column — a revert must restore the column it moved, not any column. */
+  transactions: Record<TransactionAgentRoleColumn, string[]>
+  /** Sum of the per-column moves (one deal where two roles moved counts 2). */
+  transactionRoleMoves: number
+  tasks: string[]
+  transactionTasks: string[]
+  listings: string[]
+  calendarEvents: string[]
+  propertyAlerts: string[]
+  /** Refusals by kind, verbatim from the database — reported, never swallowed. */
+  refused: string[]
+}
+
+export function emptyMovedWork(): MovedWork {
+  return {
+    leads: [], transactions: { agent_id: [], buyer_agent_id: [], seller_agent_id: [] }, transactionRoleMoves: 0,
+    tasks: [], transactionTasks: [], listings: [], calendarEvents: [], propertyAlerts: [], refused: [],
+  }
+}
+
+/**
+ * moveAgentWork — THE ONE move set for "an agent's open work goes to another
+ * agent" (wave 81A merge, CLAUDE.md §1.1): leads, IN-FLIGHT deal roles, OPEN
+ * tasks (general + transaction), ACTIVE listings, FUTURE calendar events and
+ * ACTIVE property alerts. Contacts are deliberately NOT here — deactivation
+ * classifies them one by one (agent book vs system-acquired, archive vs
+ * reassign) while a books transfer moves them in bulk; both call this for the
+ * rest. Closed deals, closed tasks, past events and terminal listings are LEFT
+ * as history (commission attribution stays with the original agent).
+ *
+ * agents.id vs users.id (disjoint, §3): leads/transactions/tasks/listings key on
+ * agents.id; transaction_tasks.assigned_user_id, calendar_events.agent_user_id
+ * and property_alerts.agent_user_id key on users.id and move only when BOTH
+ * user ids are known. Every update is `.select("id")`-counted.
+ */
+export async function moveAgentWork(
+  svc: Svc,
+  params: {
+    brokerageId: string
+    fromAgentId: string
+    fromUserId: string | null
+    toAgentId: string
+    toUserId: string | null
+    nowIso?: string
+  },
+): Promise<MovedWork> {
+  const { brokerageId, fromAgentId, fromUserId, toAgentId, toUserId } = params
+  const nowIso = params.nowIso ?? new Date().toISOString()
+  const out = emptyMovedWork()
+  const ids = (rows: unknown): string[] => ((rows ?? []) as Array<{ id: string }>).map((r) => r.id)
+
+  // Leads — brokerage-owned, always follow.
+  {
+    const { data, error } = await svc.from("leads")
+      .update({ agent_id: toAgentId, updated_at: nowIso })
+      .eq("brokerage_id", brokerageId).eq("agent_id", fromAgentId)
+      .select("id")
+    if (error) out.refused.push(`leads: ${error.message}`); else out.leads = ids(data)
+  }
+  // In-flight deal roles — closed deals keep historical attribution.
+  for (const roleCol of TRANSACTION_AGENT_ROLE_COLUMNS) {
+    const { data, error } = await svc.from("transactions")
+      .update({ [roleCol]: toAgentId, updated_at: nowIso })
+      .eq("brokerage_id", brokerageId).eq(roleCol, fromAgentId)
+      .in("status", ACTIVE_DEAL_STATUSES as unknown as string[])
+      .select("id")
+    if (error) out.refused.push(`transactions.${roleCol}: ${error.message}`)
+    else { out.transactions[roleCol] = ids(data); out.transactionRoleMoves += out.transactions[roleCol].length }
+  }
+  // Open general tasks.
+  {
+    const { data, error } = await svc.from("tasks")
+      .update({ assigned_to_agent_id: toAgentId })
+      .eq("brokerage_id", brokerageId).eq("assigned_to_agent_id", fromAgentId)
+      .not("status", "in", OPEN_TASK_EXCLUDE)
+      .select("id")
+    if (error) out.refused.push(`tasks: ${error.message}`); else out.tasks = ids(data)
+  }
+  // Open transaction tasks (users.id).
+  if (fromUserId && toUserId) {
+    const { data, error } = await svc.from("transaction_tasks")
+      .update({ assigned_user_id: toUserId })
+      .eq("brokerage_id", brokerageId).eq("assigned_user_id", fromUserId)
+      .not("status", "in", OPEN_TASK_EXCLUDE)
+      .select("id")
+    if (error) out.refused.push(`transaction_tasks: ${error.message}`); else out.transactionTasks = ids(data)
+  }
+  // Active listings — a terminal stage (closed / cancelled / expired / declined /
+  // lifetime) stays with the agent who carried it (lib/enrichment/deal-vocabulary.ts).
+  {
+    const { data, error } = await svc.from("listings")
+      .update({ agent_id: toAgentId, updated_at: nowIso })
+      .eq("brokerage_id", brokerageId).eq("agent_id", fromAgentId)
+      .is("deleted_at", null)
+      .not("lifecycle_stage", "in", `(${LISTING_STAGES_AFTER.join(",")})`)
+      .select("id")
+    if (error) out.refused.push(`listings: ${error.message}`); else out.listings = ids(data)
+  }
+  // Future calendar events (users.id) — past ones are history.
+  if (fromUserId && toUserId) {
+    const { data, error } = await svc.from("calendar_events")
+      .update({ agent_user_id: toUserId })
+      .eq("brokerage_id", brokerageId).eq("agent_user_id", fromUserId)
+      .gte("start_at", nowIso)
+      .select("id")
+    if (error) out.refused.push(`calendar_events: ${error.message}`); else out.calendarEvents = ids(data)
+  }
+  // Active property alerts (users.id) so alert delivery follows the book.
+  if (fromUserId && toUserId) {
+    const { data, error } = await svc.from("property_alerts")
+      .update({ agent_user_id: toUserId, updated_at: nowIso })
+      .eq("brokerage_id", brokerageId).eq("agent_user_id", fromUserId)
+      .eq("is_active", true)
+      .select("id")
+    if (error) out.refused.push(`property_alerts: ${error.message}`); else out.propertyAlerts = ids(data)
+  }
+  return out
+}
+
+/**
+ * Transaction statuses that mean a deal is IN FLIGHT — such a contact is always
+ * reassigned to the successor, never archived (the client is never dropped mid-deal).
+ *
+ * THIS IS THE CANONICAL SET, NOT A LOCAL COPY. The hand-written list that used to
+ * live here read:
+ *
+ *     ["active", "under_contract", "pending", "closing", "accepted", "in_escrow"]
+ *
+ * Three of those six — `closing`, `accepted`, `in_escrow` — are not values
+ * transactions.status can hold. The live CHECK admits lead | qualifying | active |
+ * under_contract | pending | clear_to_close | closed | funded | lost | archived, so
+ * those three matched nothing, ever. Worse, the list MISSED `clear_to_close` — the
+ * lender has issued clear-to-close, the deal is days from funding, and this said
+ * the deal was not in flight. A deactivating agent's client could be archived
+ * instead of handed to their successor at the single most fragile moment in the
+ * transaction.
+ *
+ * `closing` is the tell: lib/transactions/transaction-status.ts records that the
+ * column once admitted it and that it was dropped deliberately — "a scheduling
+ * word, not a milestone". This copy was written against the old vocabulary and
+ * never moved.
+ */
+export const ACTIVE_DEAL_STATUSES = TRANSACTION_STATUSES_OPEN
 
 export type ContactOwnership = "agent_book" | "system_acquired"
 
@@ -152,6 +310,13 @@ export interface DeactivationResult {
   reassignedDealRoles: number
   /** Open tasks (general + transaction) the departed agent owed, moved to the successor. */
   reassignedOpenTasks: number
+  /** Wave 81A (merged move set): ACTIVE listings, FUTURE calendar events and
+   *  ACTIVE property alerts that followed the book. */
+  reassignedListings: number
+  reassignedCalendarEvents: number
+  reassignedPropertyAlerts: number
+  /** Database refusals inside the move set — reported, never swallowed. */
+  moveRefusals: string[]
 }
 
 /**
@@ -178,7 +343,7 @@ export async function executeAgentDeactivation(
   const result: DeactivationResult = {
     ok: false, reassignedContacts: 0, archivedContacts: 0, reassignedLeads: 0,
     inFlightForcedReassign: 0, agentDeactivated: false, reintroductionsProposed: 0, reassignedDealRoles: 0,
-    reassignedOpenTasks: 0,
+    reassignedOpenTasks: 0, reassignedListings: 0, reassignedCalendarEvents: 0, reassignedPropertyAlerts: 0, moveRefusals: [],
   }
   const reassignedContactIds: string[] = []
   if (!brokerageId || !agentId) return { ...result, reason: "brokerageId + agentId required" }
@@ -249,45 +414,22 @@ export async function executeAgentDeactivation(
     }
   }
 
-  // ── Leads (always system/brokerage-owned → reassign to the successor) ──
-  if (successorAgentId && plan.leadIds.length > 0) {
-    const { error, count } = await svc.from("leads")
-      .update({ agent_id: successorAgentId, updated_at: nowIso }, { count: "exact" })
-      .eq("brokerage_id", brokerageId).eq("agent_id", agentId)
-    if (!error) result.reassignedLeads = count ?? plan.leadIds.length
-  }
-
-  // ── In-flight DEAL OWNERSHIP follows the client. Reassign the departed agent's role on
-  //    ACTIVE transactions (agent / buyer-agent / seller-agent) to the successor so deal
-  //    ownership is never orphaned to an inactive agent. CLOSED deals are LEFT untouched —
-  //    historical attribution + commission credit must stay with the original agent. ──
+  // ── OPEN WORK FOLLOWS THE BOOK — leads (always brokerage-owned), IN-FLIGHT deal
+  //    roles (closed deals keep historical attribution + commission credit),
+  //    OPEN tasks (general + transaction), ACTIVE listings, FUTURE calendar
+  //    events and ACTIVE property alerts. ONE move set, shared with the
+  //    temporary/permanent books transfer (wave 81A): moveAgentWork above. ──
   if (successorAgentId) {
-    for (const roleCol of ["agent_id", "buyer_agent_id", "seller_agent_id"] as const) {
-      const { count } = await svc.from("transactions")
-        .update({ [roleCol]: successorAgentId, updated_at: nowIso }, { count: "exact" })
-        .eq("brokerage_id", brokerageId).eq(roleCol, agentId)
-        .in("status", ACTIVE_DEAL_STATUSES as unknown as string[])
-      result.reassignedDealRoles += count ?? 0
-    }
-  }
-
-  // ── OPEN WORK FOLLOWS THE BOOK — the departed agent's INCOMPLETE tasks (general +
-  //    transaction) move to the successor so nothing the agent owed sits unactioned. Closed/
-  //    cancelled tasks are left as history. ──
-  if (successorAgentId) {
-    const OPEN_TASK_EXCLUDE = "(completed,cancelled,done,closed)"
-    const { count: genTasks } = await svc.from("tasks")
-      .update({ assigned_to_agent_id: successorAgentId }, { count: "exact" })
-      .eq("brokerage_id", brokerageId).eq("assigned_to_agent_id", agentId)
-      .not("status", "in", OPEN_TASK_EXCLUDE)
-    result.reassignedOpenTasks += genTasks ?? 0
-    if (successorUserId && userId) {
-      const { count: txTasks } = await svc.from("transaction_tasks")
-        .update({ assigned_user_id: successorUserId }, { count: "exact" })
-        .eq("brokerage_id", brokerageId).eq("assigned_user_id", userId)
-        .not("status", "in", OPEN_TASK_EXCLUDE)
-      result.reassignedOpenTasks += txTasks ?? 0
-    }
+    const moved = await moveAgentWork(svc, {
+      brokerageId, fromAgentId: agentId, fromUserId: userId, toAgentId: successorAgentId, toUserId: successorUserId, nowIso,
+    })
+    result.reassignedLeads = moved.leads.length
+    result.reassignedDealRoles = moved.transactionRoleMoves
+    result.reassignedOpenTasks = moved.tasks.length + moved.transactionTasks.length
+    result.reassignedListings = moved.listings.length
+    result.reassignedCalendarEvents = moved.calendarEvents.length
+    result.reassignedPropertyAlerts = moved.propertyAlerts.length
+    result.moveRefusals = moved.refused
   }
 
   // ── Deactivate the agent ──
@@ -309,12 +451,12 @@ export async function executeAgentDeactivation(
 
   // ── Notify the successor of the inherited book (one summary notification) ──
   if (successorUserId && (result.reassignedContacts > 0 || result.reassignedLeads > 0)) {
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: successorUserId, brokerage_id: brokerageId, type: "book_reassigned",
       title: "You've inherited a departing agent's book",
       body: `${result.reassignedContacts} contact(s) and ${result.reassignedLeads} lead(s) were reassigned to you${result.inFlightForcedReassign > 0 ? `, including ${result.inFlightForcedReassign} with an in-flight deal — review those first` : ""}.`,
       entity_type: "agent", entity_id: agentId, priority: result.inFlightForcedReassign > 0 ? "high" : "medium", is_read: false,
-    }).then(() => {}, () => {})
+    }), { table: "notifications", flow: "agent_deactivation_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   // ── Managers working together: the Deal Coordinator realigns the transaction team for
@@ -338,7 +480,12 @@ export async function executeAgentDeactivation(
 }
 
 /** Subject the warm hand-off re-introduction uses (also the idempotency key per contact). */
-export const SUCCESSOR_REINTRO_SUBJECT = "A quick introduction from your new point of contact"
+const SUCCESSOR_REINTRO_SUBJECT = "A quick introduction from your new point of contact"
+
+/** Subject the TEMPORARY cover introduction uses (wave 82E) — its own idempotency
+ *  key, so a cover intro never suppresses a later permanent re-introduction and
+ *  the revert can withdraw exactly the cover intros still unapproved. */
+export const COVER_INTRO_SUBJECT = "Your point of contact while your agent is away"
 
 /**
  * proposeSuccessorReintroductions — for every CONTACT inherited by the successor, propose a
@@ -351,21 +498,71 @@ async function proposeSuccessorReintroductions(
   svc: Svc,
   params: { brokerageId: string; successorAgentId: string; contactIds: string[] },
 ): Promise<number> {
-  const { brokerageId, successorAgentId, contactIds } = params
+  return proposeSuccessorIntroductions(svc, params)
+}
+
+/** The same successor re-introduction, for the books door's permanent-but-agent-stays
+ *  path (lib/agents/agent-books.ts, wave 82E) — one wording, one idempotency key. */
+export async function proposeSuccessorIntroductions(
+  svc: Svc,
+  params: { brokerageId: string; successorAgentId: string; contactIds: string[] },
+): Promise<number> {
+  return proposeBookIntroductions(svc, {
+    brokerageId: params.brokerageId, introducingAgentId: params.successorAgentId, contactIds: params.contactIds, cover: null,
+  })
+}
+
+/**
+ * proposeCoverIntroductions — the TEMPORARY half (wave 82E; lane 81A left it open:
+ * "temporary covers queue no re-introductions"). A client whose agent is away for
+ * weeks and who writes in hears from a stranger unless someone says who is covering.
+ * Same gated rail as the permanent hand-off (proposeClientMessage → the approval
+ * queue → evaluateOutbound again at dispatch): the covering agent approves before
+ * anything sends. The wording is the TEMPORARY one — the away agent is named as
+ * coming back, with the return date — so a cover never reads as a hand-off.
+ * Idempotent per contact on COVER_INTRO_SUBJECT. Returns how many were proposed.
+ */
+export async function proposeCoverIntroductions(
+  svc: Svc,
+  params: { brokerageId: string; coveringAgentId: string; awayAgentId: string; untilIso: string | null; contactIds: string[] },
+): Promise<number> {
+  return proposeBookIntroductions(svc, {
+    brokerageId: params.brokerageId, introducingAgentId: params.coveringAgentId, contactIds: params.contactIds,
+    cover: { awayAgentId: params.awayAgentId, untilIso: params.untilIso },
+  })
+}
+
+/** An agent's display name through agents.user_id → users (the two ids are disjoint, §3). */
+async function agentDisplayName(svc: Svc, agentId: string): Promise<string | null> {
+  const { data: a } = await svc.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+  const uid = (a as { user_id: string | null } | null)?.user_id ?? null
+  if (!uid) return null
+  const { data: u } = await svc.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+  const nm = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+  return nm || null
+}
+
+/** ONE introduction engine for both hand-offs (permanent successor, temporary cover). */
+async function proposeBookIntroductions(
+  svc: Svc,
+  params: {
+    brokerageId: string
+    introducingAgentId: string
+    contactIds: string[]
+    cover: { awayAgentId: string; untilIso: string | null } | null
+  },
+): Promise<number> {
+  const { brokerageId, introducingAgentId, contactIds, cover } = params
   if (contactIds.length === 0) return 0
 
-  // Successor's display name + the brokerage trade name (best-effort; the message still
+  // Introducer's display name + the brokerage trade name (best-effort; the message still
   // reads cleanly without them).
-  const { data: succAgent } = await svc.from("agents").select("user_id").eq("id", successorAgentId).maybeSingle()
-  const succUserId = (succAgent as { user_id: string | null } | null)?.user_id ?? null
-  let successorName = "your new agent"
-  if (succUserId) {
-    const { data: su } = await svc.from("users").select("first_name, last_name").eq("id", succUserId).maybeSingle()
-    const nm = [(su as any)?.first_name, (su as any)?.last_name].filter(Boolean).join(" ").trim()
-    if (nm) successorName = nm
-  }
+  const introducerName = (await agentDisplayName(svc, introducingAgentId)) ?? (cover ? "a colleague on the team" : "your new agent")
+  const awayName = cover ? ((await agentDisplayName(svc, cover.awayAgentId))?.split(" ")[0] ?? "your agent") : null
   const { data: brk } = await svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
   const brokerageName = (brk as { name: string | null } | null)?.name?.trim() || "our team"
+  const subject = cover ? COVER_INTRO_SUBJECT : SUCCESSOR_REINTRO_SUBJECT
+  const back = cover?.untilIso ? ` until ${new Date(cover.untilIso).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}` : " for a little while"
 
   const { data: contactRows } = await svc.from("contacts")
     .select("id, first_name, contact_type").in("id", contactIds).eq("brokerage_id", brokerageId)
@@ -374,27 +571,57 @@ async function proposeSuccessorReintroductions(
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   let proposed = 0
   for (const c of contacts) {
-    // Idempotency — skip a contact that already has an open/approved re-intro.
+    // Idempotency — skip a contact that already has an open/approved intro of THIS kind.
     const { data: dup } = await svc.from("agent_client_messages").select("id")
       .eq("brokerage_id", brokerageId).eq("recipient_contact_id", c.id)
-      .eq("subject", SUCCESSOR_REINTRO_SUBJECT).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+      .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
     if (dup) continue
 
     const isSeller = c.contact_type === "seller"
     const audience: "seller" | "buyer" = isSeller ? "seller" : "buyer"
     const agentKind = isSeller ? "listing_concierge" : "shopping_agent"
     const firstName = c.first_name || "there"
-    const body =
-      `Hi ${firstName}, I'm ${successorName} with ${brokerageName} — I'll be your point of contact going forward. ` +
-      `Nothing about your plans changes; you've still got the whole team behind you, and I'm here for anything you need. ` +
-      `Reply anytime and I'll take it from there.`
+    const body = cover
+      ? `Hi ${firstName}, I'm ${introducerName} with ${brokerageName}. ${awayName} is away${back} and asked me to look after you in the meantime. ` +
+        `Nothing about your plans changes, and ${awayName} will pick things back up when they return. ` +
+        `If anything comes up before then, reply here and I'll take care of it.`
+      : `Hi ${firstName}, I'm ${introducerName} with ${brokerageName} — I'll be your point of contact going forward. ` +
+        `Nothing about your plans changes; you've still got the whole team behind you, and I'm here for anything you need. ` +
+        `Reply anytime and I'll take it from there.`
     const res = await proposeClientMessage({
       brokerageId, agentKind, entityType: "contact", entityId: c.id,
-      recipientContactId: c.id, audience, subject: SUCCESSOR_REINTRO_SUBJECT, body,
-      rationale: "Warm hand-off — the successor re-introduces themselves to an inherited client (agent off-boarding).",
+      recipientContactId: c.id, audience, subject, body,
+      rationale: cover
+        ? "Temporary cover — the covering agent introduces themselves to the away agent's client for the cover window (agent books transfer)."
+        : "Warm hand-off — the successor re-introduces themselves to an inherited client (agent off-boarding).",
       channel: "portal",
     }, svc)
     if (res.ok) proposed += 1
   }
   return proposed
+}
+
+/**
+ * withdrawCoverIntroductions — the revert's other half: a cover intro still
+ * waiting for approval when the away agent returns would tell the client
+ * someone else is covering AFTER the cover ended. Withdrawn (status 'rejected',
+ * the CHECK's closed-without-sending value) for exactly the contacts handed
+ * back; approved/sent ones are history and stay. COUNTED from `.select("id")`
+ * (§3 — an update matching nothing resolves like one that worked).
+ */
+export async function withdrawCoverIntroductions(
+  svc: Svc,
+  params: { brokerageId: string; contactIds: string[] },
+): Promise<{ withdrawn: number; error: string | null }> {
+  let withdrawn = 0
+  for (let i = 0; i < params.contactIds.length; i += 200) {
+    const { data, error } = await svc.from("agent_client_messages")
+      .update({ status: "rejected" })
+      .eq("brokerage_id", params.brokerageId).eq("subject", COVER_INTRO_SUBJECT).eq("status", "proposed")
+      .in("recipient_contact_id", params.contactIds.slice(i, i + 200))
+      .select("id")
+    if (error) return { withdrawn, error: error.message }
+    withdrawn += ((data ?? []) as unknown[]).length
+  }
+  return { withdrawn, error: null }
 }

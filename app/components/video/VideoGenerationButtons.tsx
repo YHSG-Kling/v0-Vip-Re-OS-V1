@@ -1,5 +1,13 @@
 "use client"
 
+// TOMBSTONE (orphan doctrine §1.3, wave 60B): app/components/features/video/
+// VideoGenerationButtons.tsx (a pure `export {VideoGenerationButtons} from
+// here` re-export shim) and its sibling app/components/features/video/index.ts
+// barrel are deleted — this file is the canonical implementation and every
+// real caller (app/dashboard/videos/library/page.tsx, app/video-assistant/
+// page.tsx, app/social-planner/social-planner-content.tsx) already imports it
+// directly, never through either deleted door.
+
 import { useState } from "react"
 import { Video, Mic, ShieldCheck, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -12,16 +20,32 @@ import { toast } from "sonner"
 interface VideoGenerationButtonsProps {
   script: string
   title: string
-  userId?: string
+  /**
+   * When this script is already a `video_scripts_library` row, pass its id. The
+   * action then renders THAT row (tenant-checked server-side) instead of writing
+   * a second copy of the same script into the library on every render.
+   */
+  scriptId?: string
+  // TOMBSTONE (hidden-wire census category c, 2026-09-10): `userId?: string` stood here —
+  // declared, never passed by any of the 3 callers, and dead on BOTH ends it was threaded to:
+  // app/actions/agent-settings.ts:11 getAgentSettings(_userId?) and app/actions/video-
+  // generation.ts:1451 generateVideoFromScript({ userId? // ignored — derived from session })
+  // both already resolve the acting user from the SESSION (CLAUDE.md §4 "tenant/identity from
+  // the session, never a parameter") — a client-threaded userId prop was always a no-op.
+  /** optional by design: a "video queued for generation" toast already confirms success to
+   *  the user — this is an extra hook for a caller (e.g. a video library list) that wants to
+   *  react further, such as an immediate refresh; none of the 3 current callers need it. */
   onSuccess?: () => void
   size?: "sm" | "md" | "lg"
+  /** optional by design: a pure layout override — every current caller is happy with the
+   *  component's own default spacing. */
   className?: string
 }
 
 export function VideoGenerationButtons({
   script,
   title,
-  userId,
+  scriptId,
   onSuccess,
   size = "md",
   className = "",
@@ -74,7 +98,7 @@ export function VideoGenerationButtons({
 
     try {
       // Get agent settings
-      const settings = await getAgentSettings(userId || "")
+      const settings = await getAgentSettings()
 
       if (!settings?.avatarId || !settings?.voiceId) {
         toast.error("Avatar or voice not set up — visit Settings → Voice & Avatar (D-ID + ElevenLabs)")
@@ -83,12 +107,14 @@ export function VideoGenerationButtons({
 
       // Generate video
       const result = await generateVideoFromScript({
+        // `scriptId` wins server-side when present: the script text and tenant
+        // are read from the stored row rather than trusted from the browser.
+        scriptId,
         script,
         title,
         type,
         avatarId: settings.avatarId,
         voiceId: settings.voiceId,
-        userId,
       })
 
       if (result.success) {

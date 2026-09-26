@@ -9,6 +9,7 @@
 import { z } from "zod"
 import { generateObjectRouted } from "@/lib/ai/models"
 import { webSearch, formatWebSearchContext } from "@/lib/ai/web-search"
+import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
 import type { PerplexityFindings } from "./enrichment-merge"
 
 // Re-export the pure merge helpers so existing importers keep one entry point;
@@ -42,6 +43,19 @@ export async function enrichViaPerplexity(params: {
       mode: "research",
     }).catch(() => null)
     const context = grounding ? formatWebSearchContext(grounding) : ""
+    // Lane 83A — closes 82A's open item: the grounding search (Tavily-first, Exa fallback) was never
+    // booked. Platform-paid ledger under the provider that ACTUALLY served it, at the cost the client
+    // reported ($0 / "none" books nothing — meterVendorSpend skips cost <= 0 and a missing tenant).
+    if (grounding && grounding.provider !== "none" && grounding.cost > 0) {
+      await meterVendorSpend({
+        vendorName: grounding.provider,
+        usageType: "lead_enrichment_research",
+        cost: grounding.cost,
+        brokerageId: params.brokerageId ?? null,
+        systemSource: "lead_enrichment",
+        metadata: { hits: grounding.hits.length, mode: "research" },
+      }).catch(() => false)
+    }
 
     const { object } = await generateObjectRouted({
       feature: "lead_enrichment_research",

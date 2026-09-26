@@ -5,9 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { saveTenantConnectionAction, type TenantConnectionStatus } from "@/app/actions/tenant-connections"
+import IDXBrokerSettingsPage from "@/app/dashboard/settings/integrations/idx-broker/page"
 
 const FIELD_LABEL: Record<string, string> = {
-  api_key: "API key / token", api_url: "API base URL", account_id: "Account / publisher ID",
+  api_key: "API key / token", api_secret: "API secret / client secret", api_url: "API base URL", account_id: "Account / publisher ID",
 }
 
 export function LeadSourcesClient({
@@ -24,7 +25,7 @@ export function LeadSourcesClient({
     const v = values[key] ?? {}
     start(async () => {
       const r = await saveTenantConnectionAction({
-        platform: key, apiKey: v.api_key, apiUrl: v.api_url, accountId: v.account_id,
+        platform: key, apiKey: v.api_key, apiSecret: v.api_secret, apiUrl: v.api_url, accountId: v.account_id,
       })
       setMsg((m) => ({ ...m, [key]: r.ok ? "Connected ✓" : (r.error ?? "Failed") }))
     })
@@ -70,6 +71,25 @@ export function LeadSourcesClient({
         </CardContent>
       </Card>
 
+      {/* IDX connection setup — wave 69 owner ruling: "the setting page should only allow them
+          to setup their idx connection." RentCast is platform-provided and never a tenant
+          setting; this REUSES the existing IDX Broker form (never a second one) — the same
+          component app/dashboard/settings/integrations/idx-broker/page.tsx mounts on its own
+          route, so there is exactly one place this credential is entered.
+          Wording fixed wave 70 (owner, verbatim): "the settings page needs to not say
+          otherwise platforms rentcast feed just platform feed" — this copy previously named
+          RentCast to the tenant as their fallback ("otherwise the platform's RentCast feed …
+          there is nothing to configure for RentCast"); the tenant never sees that name here,
+          only "the platform feed". The legally-required RentCast attribution still appears
+          wherever a RentCast-fed listing is actually DISPLAYED to a buyer/seller — see
+          lib/listings/attribution.ts — this is a SEPARATE surface (settings), not that one. */}
+      <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        For-sale listings: your IDX feed when connected, otherwise the platform feed. Connect
+        your IDX Broker account below to switch your buyers&apos; smart search to your own board
+        — there is nothing to configure otherwise, the platform covers it.
+      </div>
+      <IDXBrokerSettingsPage />
+
       {/* Vendor credential slots */}
       {connections.map((c) => (
         <Card key={c.key}>
@@ -82,7 +102,7 @@ export function LeadSourcesClient({
               {c.fields.map((f) => (
                 <Input
                   key={f}
-                  type={f === "api_key" ? "password" : "text"}
+                  type={f === "api_key" || f === "api_secret" ? "password" : "text"}
                   placeholder={FIELD_LABEL[f] ?? f}
                   value={values[c.key]?.[f] ?? ""}
                   onChange={(e) => setValues((v) => ({ ...v, [c.key]: { ...(v[c.key] ?? {}), [f]: e.target.value } }))}

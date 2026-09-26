@@ -13,12 +13,14 @@ import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
-import { validatePlanTierInput, type PlanTierInput } from "@/lib/billing/plan-catalog"
+import { validatePlanTierInput, validateAIOverageTermsInput, CANONICAL_TIERS, type PlanTierInput, type AIOverageTermsInput } from "@/lib/billing/plan-catalog"
+import { AI_OVERAGE_METRIC } from "@/lib/billing/ai-overage"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // Audit — same conventions as the other superadmin billing actions (coupons /
 // brokerage-management): every catalog mutation → superadmin_audit_log,
 // non-fatal on failure (audit never blocks the action).
-async function audit(actorUserId: string, action: string, targetId: string | null, details: Record<string, unknown>): Promise<void> {
+async function audit(actorUserId: string, action: string, targetId: string | null, details: Record<string, unknown>, targetType: string = "subscription_tier"): Promise<void> {
   try {
     const svc = createServiceClient()
     const hdrs = await headers()
@@ -27,7 +29,7 @@ async function audit(actorUserId: string, action: string, targetId: string | nul
       actor_user_id: actorUserId,
       actor_email: (actor as any)?.email ?? null,
       action,
-      target_type: "subscription_tier",
+      target_type: targetType,
       target_id: targetId,
       details,
       ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
@@ -43,12 +45,12 @@ async function requireSuperadmin(): Promise<{ ok: true; userId: string } | { ok:
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
+  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
   return { ok: true, userId: user.id }
 }
 
-const TIER_COLS = "id, tier_name, display_name, description, monthly_price_cents, annual_price_cents, setup_fee_cents, marketing_bullets, is_featured, is_active, max_agents, max_brokerages, stripe_price_id, features"
+const TIER_COLS = "id, tier_name, display_name, description, monthly_price_cents, annual_price_cents, setup_fee_cents, marketing_bullets, is_featured, is_active, max_agents, max_brokerages, stripe_price_id, features, seat_package_size, seat_package_price_cents, stripe_seat_price_id"
 
 export async function listPlanTiersAction(): Promise<{ ok: true; tiers: any[] } | { ok: false; error: string }> {
   const auth = await requireSuperadmin()
@@ -78,6 +80,9 @@ export async function upsertPlanTierAction(input: PlanTierInput & { id?: string 
     is_active: v.value.isActive,
     max_agents: v.value.maxAgents,
     stripe_price_id: v.value.stripePriceId,
+    seat_package_size: v.value.seatPackageSize,
+    seat_package_price_cents: v.value.seatPackagePriceCents,
+    stripe_seat_price_id: v.value.stripeSeatPriceId,
   }
 
   if (input.id) {
@@ -141,6 +146,46 @@ export async function syncPlanTierFromStripeAction(tierId: string): Promise<{ ok
 }
 
 /**
+ * SYNC THE WHOLE CATALOGUE FROM STRIPE (wave 79A — owner: "subscriptions will
+ * be setup in stripe so they sync"). Stripe is the catalogue source: every
+ * ACTIVE recurring price whose metadata names a canonical `tier_name` lands
+ * on its tier — a monthly plan price → stripe_price_id + monthly_price_cents,
+ * a yearly one → annual_price_cents, and a `kind = seat_package` price →
+ * stripe_seat_price_id + seat_package_price_cents (+ seat_package_size from
+ * metadata / transform_quantity). Prices it cannot place are RETURNED by id
+ * with the reason, never guessed; tiers Stripe holds no plan price for are
+ * named so a "synced" catalogue is never read as complete. Every tier write
+ * is COUNTED and audited. Pure mapping: lib/billing/seat-packages.ts
+ * catalogFromStripePrices. `dryRun` returns the patches without writing.
+ */
+export async function syncCatalogFromStripeAction(opts: { dryRun?: boolean } = {}): Promise<
+  | { ok: true; updated: Array<{ tierName: string; patch: Record<string, unknown> }>; unmatched: Array<{ priceId: string; reason: string }>; tiersWithoutPlanPrice: string[]; dryRun: boolean }
+  | { ok: false; error: string }
+> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const { stripeListActivePrices } = await import("@/lib/billing/stripe-subscription-ops")
+  const listed = await stripeListActivePrices()
+  if (!listed.ok) return { ok: false, error: listed.skipped ? "Stripe is not configured (STRIPE_SECRET_KEY) — nothing to sync from" : `Stripe price list failed: ${listed.error ?? "unknown"}` }
+  const { catalogFromStripePrices, priceFactsOf } = await import("@/lib/billing/seat-packages")
+  const mapped = catalogFromStripePrices(listed.prices.map(priceFactsOf))
+
+  const svc = createServiceClient()
+  const updated: Array<{ tierName: string; patch: Record<string, unknown> }> = []
+  for (const { tierName, patch } of mapped.patches) {
+    if (Object.keys(patch).length === 0) continue
+    if (opts.dryRun) { updated.push({ tierName, patch }); continue }
+    const { data, error } = await svc.from("subscription_tiers").update(patch).eq("tier_name", tierName).select("id")
+    if (error) return { ok: false, error: `subscription_tiers update refused for ${tierName}: ${error.message}` }
+    if (!data || data.length === 0) return { ok: false, error: `no subscription_tiers row for '${tierName}' — a tier is a migration decision, never minted by a sync` }
+    updated.push({ tierName, patch })
+    await audit(auth.userId, "plan_tier.catalog_synced_from_stripe", (data[0] as any).id, { tierName, patch })
+  }
+  if (!opts.dryRun) { revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup") }
+  return { ok: true, updated, unmatched: mapped.unmatched, tiersWithoutPlanPrice: mapped.tiersWithoutPlanPrice, dryRun: opts.dryRun === true }
+}
+
+/**
  * PUBLISH a tier's CURRENT DB pricing to Stripe — pricing day is one click:
  * edit the tier in the plan catalog, press Publish. Creates a fresh Stripe
  * product+price from the tier's monthly_price_cents (Stripe prices are
@@ -189,4 +234,81 @@ export async function publishTierToStripeAction(tierId: string): Promise<{ ok: t
   } catch (err: any) {
     return { ok: false, error: `Stripe publish failed: ${err?.message ?? "unknown"}` }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI OVERAGE TERMS (m479) — administrable exactly like tier pricing.
+// Owner ruling (verbatim): "the billing for overage needs to be coded so that
+// we can pass in the cent per limit so the same as how we are handling the
+// subscription tier amount." The per-tier terms (plan_limits.overage_allowed +
+// overage_rate_cents_per_1k on the ai_tokens_monthly rows) are configured HERE,
+// through the same superadmin gate, the same pure-validator discipline, and the
+// same audit trail as the tier price — never hardcoded, never edited raw.
+// Consumers (lib/ai/fair-use.ts serving, lib/billing/ai-overage.ts billing)
+// read the columns unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AIOverageTermsRow {
+  id: string
+  plan_tier: string
+  metric: string
+  /** Included monthly tokens for the tier (plan_limits.limit_value; -1 = unlimited). */
+  limit_value: number
+  overage_allowed: boolean
+  /** Integer CENTS per 1K tokens — meaningful only when overage_allowed. */
+  overage_rate_cents_per_1k: number
+}
+
+/** The four (canonical tier, ai_tokens_monthly) rows: included limit + overage terms. */
+export async function listAIOverageTermsAction(): Promise<{ ok: true; terms: AIOverageTermsRow[] } | { ok: false; error: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("plan_limits")
+    .select("id, plan_tier, metric, limit_value, overage_allowed, overage_rate_cents_per_1k")
+    .eq("metric", AI_OVERAGE_METRIC)
+    .in("plan_tier", [...CANONICAL_TIERS])
+    .order("limit_value", { ascending: true })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, terms: (data ?? []) as AIOverageTermsRow[] }
+}
+
+/**
+ * Set a tier's AI overage terms. UPDATE-only on the live (tier, ai_tokens_monthly)
+ * row — this action can never mint a plan_limits row (a new metric or tier is a
+ * migration decision, not a form submit), and the validator refuses any metric
+ * other than ai_tokens_monthly, so m479's postcondition (no non-AI metric is
+ * overage-enabled) stays true by construction.
+ */
+export async function upsertAIOverageTermsAction(input: AIOverageTermsInput): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const v = validateAIOverageTermsInput(input)
+  if (!v.ok) return { ok: false, error: v.error }
+
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("plan_limits")
+    .update({
+      overage_allowed: v.value.overageAllowed,
+      overage_rate_cents_per_1k: v.value.overageRateCentsPer1k,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("plan_tier", v.value.planTier)
+    .eq("metric", AI_OVERAGE_METRIC)
+    .select("id")
+  if (error) return { ok: false, error: error.message }
+  if (!data || data.length === 0) {
+    return { ok: false, error: `no plan_limits row for (${v.value.planTier}, ${AI_OVERAGE_METRIC}) — seed the included limit first; overage terms are never created out of thin air` }
+  }
+  const id = (data[0] as any).id as string
+  await audit(auth.userId, "plan_limits.ai_overage_terms_updated", id, {
+    planTier: v.value.planTier,
+    metric: AI_OVERAGE_METRIC,
+    overageAllowed: v.value.overageAllowed,
+    overageRateCentsPer1k: v.value.overageRateCentsPer1k,
+  }, "plan_limit")
+  revalidatePath("/dashboard/superadmin/plans")
+  return { ok: true, id }
 }

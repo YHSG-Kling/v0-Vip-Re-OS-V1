@@ -1,0 +1,502 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/contact-vocabulary-guard.ts  (npm run test:contact-vocabulary) — pure, no DB.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE VOCABULARY, DEFINED SO IT CANNOT DRIFT.
+ *
+ * OWNER, verbatim: "vocabulary needs to be defined to prevent drifting."
+ * OWNER, on contact_type admitting three spellings of one idea: "collapse".
+ * OWNER, on personas: "luxury is a persona also."
+ * OWNER, on pricing: "pricing for the platform for tenants are solo agent tier
+ *   subscription, team tier subscription, brokerage tier subscription and multiple
+ *   location brokerage subscription; all are paying and global platform oversees
+ *   the whole os/app."
+ *
+ * ── WHY A GUARD AND NOT A COMMENT ───────────────────────────────────────────
+ *
+ * A vocabulary is not "defined" by being written down once. It is defined when
+ * something FAILS the moment code and database stop agreeing. This repo has paid
+ * for that lesson repeatedly — timeline drifted to six spellings, video status to
+ * twenty-two, vendor category to its own set — and most recently contact_type,
+ * where migration 433 renamed past_client → lifetime_customer and left every
+ * `contact_type === 'lifetime'` reader behind, so canonical past clients were
+ * silently classed as BUYERS and handed a buyer's reel, voicemail and portal.
+ * Nothing threw. Nothing failed. The wrong people simply got the wrong message.
+ *
+ * THREE VOCABULARIES ARE HELD HERE, each against the LIVE CHECK constraints as
+ * cached in the GENERATED scripts/check-vocabularies.ts (CLAUDE.md §3):
+ *
+ *   1. contacts.contact_type + campaign_sequences.contact_type  (m539)
+ *   2. contacts.contact_persona + campaign_sequences.persona    (13, incl. luxury)
+ *   3. the FOUR SUBSCRIPTION TIERS, across every column that carries them
+ *
+ * ── THE ASYMMETRY THIS GUARD ENFORCES ───────────────────────────────────────
+ *
+ * READERS may still accept a retired spelling — a CRM sync or a hand-typed CSV
+ * can carry `past_client` for years, and `canonicalContactType` maps it forward.
+ * WRITERS and DB FILTERS may not: the database refuses a retired spelling on
+ * write (23514) and matches nothing on read, and supabase-js RESOLVES both, so
+ * the row is lost or the query is empty in silence. So the repo scan below flags
+ * a retired spelling ONLY where it reaches Postgres — a `.insert/.update/.upsert`
+ * payload key or an `.eq/.neq/.in/.or` filter on contact_type — and deliberately
+ * leaves alias tables and normalizers alone.
+ *
+ * ── MEASUREMENT DISCIPLINE (CLAUDE.md §2) ───────────────────────────────────
+ * Comments are stripped with scripts/strip-comments.ts, never a hand-rolled
+ * regex. Every absence assertion carries a POSITIVE CONTROL: the finder is shown
+ * a fixture containing the defect it exists to catch, and must still see it.
+ * The denominator (files scanned) is printed beside the count.
+ */
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
+import { dirname, join, relative } from "node:path"
+import { fileURLToPath } from "node:url"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
+import {
+  CONTACT_TYPES,
+  LIFETIME_CONTACT_TYPES,
+  SPHERE_CONTACT_TYPES,
+  RETIRED_CONTACT_TYPES,
+  LIFETIME_CUSTOMER_TYPE,
+  canonicalContactType,
+  isLifetimeCustomerType,
+  isStorableContactType,
+  isLifetimeRelationshipType,
+} from "../lib/contact-types"
+import { CAMPAIGN_CONTACT_TYPES, CAMPAIGN_PERSONAS } from "../lib/campaigns/contact-sources"
+import { ADS_ELIGIBLE_PERSONAS } from "../lib/ads/audience-persona-basis"
+import { FB_AUDIENCE_TEMPLATES } from "../lib/ads/fb-audience-templates"
+import { TIER_ORDER, TIER_SEAT_LIMITS, TIER_LABELS, isCanonicalTier } from "../lib/kernel/tier-role-matrix"
+import { CANONICAL_TIERS, TIER_SEAT_BANDS } from "../lib/billing/plan-catalog"
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+
+let pass = 0
+let fail = 0
+const fails: string[] = []
+function check(name: string, cond: boolean, detail?: string) {
+  if (cond) { pass++; console.log(`  ✓ ${name}`) }
+  else { fail++; fails.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? `\n      ${detail}` : ""}`) }
+}
+
+const same = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && [...a].sort().join("|") === [...b].sort().join("|")
+
+console.log("══════════════════════════════════════════════════")
+console.log(" Contact / persona / tier vocabulary — code and database, held together")
+console.log("══════════════════════════════════════════════════")
+
+// ─── 1. contact_type ─────────────────────────────────────────────────────────
+console.log("\n[1 · contact_type — one spelling per idea (m539)]")
+
+const liveContactType = CHECK_VOCABULARIES.contacts?.contact_type ?? []
+const liveSequenceType = CHECK_VOCABULARIES.campaign_sequences?.contact_type ?? []
+
+check(`the live contacts.contact_type CHECK is non-empty (${liveContactType.length} values)`,
+  liveContactType.length > 0,
+  "an empty vocabulary would make every assertion below vacuously true")
+
+check("CONTACT_TYPES is EXACTLY the live contacts.contact_type CHECK",
+  same(CONTACT_TYPES, liveContactType),
+  `code=[${[...CONTACT_TYPES].sort().join(",")}] db=[${[...liveContactType].sort().join(",")}]`)
+
+check("campaign_sequences.contact_type is a SUBSET of contacts.contact_type (one vocabulary, two grains)",
+  liveSequenceType.every((v) => (CONTACT_TYPES as readonly string[]).includes(v)),
+  liveSequenceType.filter((v) => !(CONTACT_TYPES as readonly string[]).includes(v)).join(",") || "—")
+
+check("CAMPAIGN_CONTACT_TYPES is EXACTLY the live campaign_sequences.contact_type CHECK",
+  same(CAMPAIGN_CONTACT_TYPES, liveSequenceType),
+  `code=[${[...CAMPAIGN_CONTACT_TYPES].sort().join(",")}] db=[${[...liveSequenceType].sort().join(",")}]`)
+
+check("the two contact_type columns agree on how they spell the lifetime customer",
+  liveContactType.includes(LIFETIME_CUSTOMER_TYPE) && liveSequenceType.includes(LIFETIME_CUSTOMER_TYPE))
+
+const retired = Object.keys(RETIRED_CONTACT_TYPES)
+check(`no RETIRED spelling is still admitted anywhere (${retired.join(", ")})`,
+  retired.every((r) => !liveContactType.includes(r) && !liveSequenceType.includes(r)),
+  retired.filter((r) => liveContactType.includes(r) || liveSequenceType.includes(r)).join(",") || "—")
+
+check("every retired spelling maps to a survivor the database DOES admit",
+  Object.values(RETIRED_CONTACT_TYPES).every((v) => liveContactType.includes(v)))
+
+check("LIFETIME_CONTACT_TYPES is entirely storable (the audience/sphere filters can match)",
+  LIFETIME_CONTACT_TYPES.every(isStorableContactType),
+  LIFETIME_CONTACT_TYPES.filter((t) => !isStorableContactType(t)).join(",") || "—")
+
+check("SPHERE_CONTACT_TYPES is entirely storable and is a superset of the lifetime roster",
+  SPHERE_CONTACT_TYPES.every(isStorableContactType)
+  && LIFETIME_CONTACT_TYPES.every((t) => (SPHERE_CONTACT_TYPES as readonly string[]).includes(t)))
+
+console.log("\n[1b · the reader stays tolerant, the writer does not]")
+check("canonicalContactType maps every retired spelling onto its survivor",
+  retired.every((r) => canonicalContactType(r) === RETIRED_CONTACT_TYPES[r]))
+check("canonicalContactType passes a storable value through unchanged",
+  CONTACT_TYPES.every((t) => canonicalContactType(t) === t))
+check("canonicalContactType returns null for a value that is not a contact_type at all",
+  canonicalContactType("tenant") === null && canonicalContactType("") === null && canonicalContactType(null) === null)
+check("isStorableContactType REFUSES a retired spelling (this is the write-side rule)",
+  retired.every((r) => !isStorableContactType(r)))
+// REWRITTEN 2026-08-31 (§2): this used to assert every retired spelling reads
+// as lifetime — true only while the RETIRED map had one destination. m593 added
+// `investor: "buyer"` (the owner's persona ruling: the retired TYPE maps to its
+// SIDE), so the assertion now states the RULE: each retired spelling reads as
+// lifetime exactly when its mapping says lifetime, and never otherwise. The old
+// waypoint form would have gone red because the vocabulary work SUCCEEDED.
+check("isLifetimeCustomerType agrees with each retired spelling's OWN mapping",
+  isLifetimeCustomerType(LIFETIME_CUSTOMER_TYPE) && retired.every((r) =>
+    isLifetimeCustomerType(r) === (RETIRED_CONTACT_TYPES[r] === LIFETIME_CUSTOMER_TYPE)))
+check("isLifetimeCustomerType is false for a buyer/seller",
+  !isLifetimeCustomerType("buyer") && !isLifetimeCustomerType("seller") && !isLifetimeCustomerType(null))
+check("isLifetimeRelationshipType covers the whole roster, and no more",
+  LIFETIME_CONTACT_TYPES.every(isLifetimeRelationshipType)
+  && !isLifetimeRelationshipType("buyer") && !isLifetimeRelationshipType("lead"))
+// Same §2 rewrite as above: a legacy row is not orphaned means each retired
+// spelling resolves as a lifetime relationship IFF its survivor is one — an
+// investor-typed legacy row resolves as a buyer, which is not orphaned either,
+// it is simply not a lifetime relationship.
+check("a retired spelling resolves as a lifetime RELATIONSHIP exactly when its survivor is one",
+  retired.every((r) =>
+    isLifetimeRelationshipType(r) === isLifetimeRelationshipType(RETIRED_CONTACT_TYPES[r])))
+
+// ─── 2. the repo scan ────────────────────────────────────────────────────────
+console.log("\n[2 · repo scan — no retired spelling may reach Postgres]")
+
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries
+// blog_posts, brokerages, users and tenant_custom_domains with a SERVICE client on
+// EVERY request — was outside this guard's corpus. A file that is never opened
+// reports green. `rootRuntimeFiles()` from the same survivor supplies the root
+// files, so the directory loop is no longer the whole answer to "what ships".
+
+export interface RetiredHit { file: string; line: number; kind: "write" | "filter"; value: string; text: string }
+
+/**
+ * PURE — every place a RETIRED contact_type spelling reaches the database.
+ *
+ * TWO SHAPES, and only two:
+ *   · `contact_type: "past_client"` inside an .insert/.update/.upsert payload
+ *   · `.eq/.neq("contact_type", "past_client")`, `.in("contact_type", [… ])`,
+ *     `.or("contact_type.eq.past_client…")`
+ *
+ * A bare `x === "past_client"` is NOT flagged: comparing a value already read out
+ * of the database against a legacy spelling is the tolerant-reader behaviour this
+ * vocabulary deliberately keeps.
+ */
+export function scanRetiredContactTypes(rawSrc: string, file: string): RetiredHit[] {
+  const src = stripComments(rawSrc)
+  const out: RetiredHit[] = []
+  const lineOf = (i: number) => src.slice(0, i).split("\n").length
+  const alt = retired.map((r) => r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")
+  if (!alt) return out
+
+  // Payload key inside a mutation argument.
+  const writeRe = new RegExp(`\\.(?:insert|update|upsert)\\s*\\(([\\s\\S]{0,900}?)\\)`, "g")
+  let m: RegExpExecArray | null
+  while ((m = writeRe.exec(src))) {
+    const payload = m[1]
+    const keyRe = new RegExp(`\\bcontact_type\\s*:\\s*["'](${alt})["']`, "g")
+    let k: RegExpExecArray | null
+    while ((k = keyRe.exec(payload))) {
+      const at = m.index + m[0].indexOf(payload) + k.index
+      out.push({ file, line: lineOf(at), kind: "write", value: k[1], text: k[0] })
+    }
+  }
+
+  // Filters.
+  const eqRe = new RegExp(`\\.(?:eq|neq)\\(\\s*["']contact_type["']\\s*,\\s*["'](${alt})["']\\s*\\)`, "g")
+  while ((m = eqRe.exec(src))) out.push({ file, line: lineOf(m.index), kind: "filter", value: m[1], text: m[0] })
+
+  const inRe = /\.in\(\s*["']contact_type["']\s*,\s*\[([^\]]*)\]/g
+  while ((m = inRe.exec(src))) {
+    const litRe = new RegExp(`["'](${alt})["']`, "g")
+    let l: RegExpExecArray | null
+    while ((l = litRe.exec(m[1]))) out.push({ file, line: lineOf(m.index), kind: "filter", value: l[1], text: m[0] })
+  }
+
+  const orRe = /\.or\(\s*["'`]([^"'`\n]*)["'`]/g
+  while ((m = orRe.exec(src))) {
+    for (const clause of m[1].split(",")) {
+      const parts = clause.split(".")
+      if (parts.length >= 3 && parts[0] === "contact_type" && (parts[1] === "eq" || parts[1] === "neq")) {
+        const v = parts.slice(2).join(".")
+        if (retired.includes(v)) out.push({ file, line: lineOf(m.index), kind: "filter", value: v, text: clause })
+      }
+    }
+  }
+  return out
+}
+
+console.log("\n  [positive controls — the finder must still recognise the defect]")
+check("POSITIVE CONTROL · flags a retired spelling in a write payload",
+  scanRetiredContactTypes(`svc.from("contacts").update({ contact_type: "past_client" })`, "t").length === 1)
+check("POSITIVE CONTROL · flags a retired spelling in an .eq filter",
+  scanRetiredContactTypes(`svc.from("contacts").select("*").eq("contact_type", "lifetime")`, "t").length === 1)
+check("POSITIVE CONTROL · flags every retired element of an .in list",
+  scanRetiredContactTypes(`q.in("contact_type", ["past_client", "sphere", "lifetime"])`, "t").length === 2)
+check("POSITIVE CONTROL · flags a retired spelling inside a PostgREST .or clause",
+  scanRetiredContactTypes(`q.or("contact_type.eq.past_client,nurture_status.eq.closed")`, "t").length === 1)
+check("accepts the SURVIVOR in all four shapes",
+  scanRetiredContactTypes(
+    `svc.from("contacts").update({ contact_type: "lifetime_customer" })\n` +
+    `q.eq("contact_type", "lifetime_customer")\n` +
+    `q.in("contact_type", ["lifetime_customer", "sphere"])\n` +
+    `q.or("contact_type.eq.lifetime_customer")`, "t").length === 0)
+check("does NOT flag a tolerant READER comparing a stored value to a legacy spelling",
+  scanRetiredContactTypes(`if (c.contact_type === "past_client") return "homeowner"`, "t").length === 0)
+check("does NOT flag nurture_status, which is a different column with no CHECK",
+  scanRetiredContactTypes(`q.or("nurture_status.eq.past_client")`, "t").length === 0)
+check("never reads its own documentation",
+  scanRetiredContactTypes(`// q.eq("contact_type", "past_client")`, "t").length === 0)
+
+const files: string[] = []
+for (const d of ["app", "lib", "services", "scripts", "components", "hooks", "contexts", "constants", "workflows"]) {
+  for (const f of walkTs(join(ROOT, d))) files.push(f)
+}
+// Root-level runtime FILES are not directories, so the loop above cannot reach them.
+for (const f of rootRuntimeFiles(ROOT)) files.push(f)
+const hits: RetiredHit[] = []
+for (const f of files) {
+  let src = ""
+  try { src = readFileSync(f, "utf8") } catch { continue }
+  const rel = relative(ROOT, f).replace(/\\/g, "/")
+  // This file's own POSITIVE CONTROLS are retired spellings on purpose — scanning
+  // them would make the guard permanently red at itself.
+  if (rel === "scripts/contact-vocabulary-guard.ts") continue
+  if (!/lifetime|past_client|past_seller/.test(src)) continue
+  hits.push(...scanRetiredContactTypes(src, rel))
+}
+console.log(`  · ${files.length} .ts/.tsx files scanned across app/ lib/ services/ scripts/ components/ hooks/ contexts/ constants/ workflows/`)
+console.log(`  · BLIND SPOTS, stated: remote/e2e/ and remotion/ are not scanned; a filter built through a`)
+console.log(`    variable rather than a literal is invisible here, as is one assembled by string concat.`)
+check(`no retired contact_type spelling reaches Postgres (${hits.length} found)`,
+  hits.length === 0,
+  hits.slice(0, 10).map((h) => `${h.file}:${h.line} ${h.kind} "${h.value}"`).join("; "))
+
+// ─── 3. the lifetime-customer promotion invariant ────────────────────────────
+console.log("\n[3 · promotion writers — contact_type and lifecycle_state are one fact in two columns]")
+//
+// m539 DROPPED `contacts_lifetime_consistent` rather than re-pointing it onto the
+// survivor: all three promotion writers swallow their result, so a refused UPDATE
+// would look exactly like a success and closed deals would stop becoming lifetime
+// customers in silence (CLAUDE.md §3 — supabase-js RESOLVES refusals). The
+// invariant lives at the writers instead, and this is what keeps it there.
+const PROMOTION_WRITERS = [
+  "lib/kernel/transactions.ts",
+  "lib/transactions/stage-progression.ts",
+  // 2026-09-09 (wave 46): handleSellerToLifetimeTransition MOVED from
+  // app/actions/listing-lifecycle-core.ts onto the surviving stage writer's module when the
+  // listing two-writer hazard was merged (§1) — the promotion write lives here now.
+  "lib/application/listing-lifecycle.ts",
+]
+for (const rel of PROMOTION_WRITERS) {
+  let src = ""
+  try { src = stripComments(readFileSync(join(ROOT, rel), "utf8")) } catch { /* reported below */ }
+  const mutations = [...src.matchAll(/\.update\s*\(\s*\{([\s\S]{0,700}?)\}\s*\)/g)].map((m) => m[1])
+  const promotions = mutations.filter((p) => /\bcontact_type\s*:\s*(?:LIFETIME_CUSTOMER_TYPE|["']lifetime_customer["'])/.test(p))
+  check(`${rel} promotes to lifetime_customer at least once`, promotions.length > 0)
+  check(`${rel} sets lifecycle_state in EVERY lifetime promotion it makes`,
+    promotions.length > 0 && promotions.every((p) => /\blifecycle_state\s*:/.test(p)),
+    `${promotions.filter((p) => !/\blifecycle_state\s*:/.test(p)).length} promotion(s) without it`)
+}
+check("POSITIVE CONTROL — that promotion scanner sees a promotion that FORGETS lifecycle_state",
+  (() => {
+    const p = `.update({ contact_type: LIFETIME_CUSTOMER_TYPE, updated_at: now })`
+    const m = [...p.matchAll(/\.update\s*\(\s*\{([\s\S]{0,700}?)\}\s*\)/g)].map((x) => x[1])
+    return m.length === 1 && /\bcontact_type\s*:\s*LIFETIME_CUSTOMER_TYPE/.test(m[0]) && !/\blifecycle_state\s*:/.test(m[0])
+  })())
+
+// ─── 4. persona ──────────────────────────────────────────────────────────────
+console.log("\n[4 · persona — thirteen, and luxury is one of them]")
+
+const livePersona = CHECK_VOCABULARIES.contacts?.contact_persona ?? []
+const liveSeqPersona = CHECK_VOCABULARIES.campaign_sequences?.persona ?? []
+
+check(`the live contacts.contact_persona CHECK is non-empty (${livePersona.length} values)`, livePersona.length > 0)
+check("CAMPAIGN_PERSONAS is EXACTLY the live contacts.contact_persona CHECK",
+  same(CAMPAIGN_PERSONAS, livePersona),
+  `code=[${[...CAMPAIGN_PERSONAS].sort().join(",")}] db=[${[...livePersona].sort().join(",")}]`)
+check("contacts.contact_persona and campaign_sequences.persona are the SAME vocabulary",
+  same(livePersona, liveSeqPersona),
+  `contacts=[${[...livePersona].sort().join(",")}] sequences=[${[...liveSeqPersona].sort().join(",")}]`)
+
+// OWNER: "luxury is a persona also."
+check("OWNER RULING — `luxury` is a persona the DATABASE admits, on both columns",
+  livePersona.includes("luxury") && liveSeqPersona.includes("luxury"))
+check("OWNER RULING — `luxury` is in the canonical code union",
+  (CAMPAIGN_PERSONAS as readonly string[]).includes("luxury"))
+check("OWNER RULING — `luxury` is ads-ELIGIBLE (nothing treats it as questionable)",
+  (ADS_ELIGIBLE_PERSONAS as readonly string[]).includes("luxury"))
+check("OWNER RULING — `luxury` ships an ad audience template like the other eligible personas",
+  FB_AUDIENCE_TEMPLATES.some((t) => t.id === "persona_luxury" && t.description.trim().length > 0))
+check("EVERY ads-eligible persona ships a template — luxury is not a special case",
+  ADS_ELIGIBLE_PERSONAS.every((p) => FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)),
+  ADS_ELIGIBLE_PERSONAS.filter((p) => !FB_AUDIENCE_TEMPLATES.some((t) => t.id === `persona_${p}`)).join(",") || "—")
+check("POSITIVE CONTROL — the template finder reports a MISS for a persona that has none",
+  !FB_AUDIENCE_TEMPLATES.some((t) => t.id === "persona_not_a_persona"))
+
+// The two axes overlap in exactly ONE place, by design: both vocabularies carry the
+// catch-all `other`, which names the absence of an answer on whichever axis it sits on
+// rather than a shared meaning. Every OTHER collision would be the m531 defect — a
+// contact TYPE stored in the persona column — so the assertion is written to allow that
+// one word and nothing else.
+const AXIS_CATCH_ALL = "other"
+check("the two axes do not overlap, apart from the shared catch-all `other`",
+  CAMPAIGN_PERSONAS.every((p) => p === AXIS_CATCH_ALL || !(CONTACT_TYPES as readonly string[]).includes(p)),
+  CAMPAIGN_PERSONAS.filter((p) => p !== AXIS_CATCH_ALL && (CONTACT_TYPES as readonly string[]).includes(p)).join(",") || "—")
+// The control runs on a SYNTHETIC list, not on [...CAMPAIGN_PERSONAS, "sphere"]
+// (§2 — that spelling derived the expected count from the live rosters, so any
+// real overlap the assertion above reports also broke the control, and a broken
+// control reads as a broken finder). The finder is proven on fixed input.
+check("POSITIVE CONTROL — that overlap scanner catches a contact TYPE wearing a persona label",
+  (["first_time", "sphere", AXIS_CATCH_ALL] as readonly string[])
+    .filter((p) => p !== AXIS_CATCH_ALL && (CONTACT_TYPES as readonly string[]).includes(p)).length === 1)
+
+// ─── 5. the four subscription tiers ──────────────────────────────────────────
+console.log("\n[5 · the FOUR subscription tiers — all paying, seats 2/5/50/unlimited]")
+//
+// OWNER: "pricing for the platform for tenants are solo agent tier subscription, team
+// tier subscription, brokerage tier subscription and multiple location brokerage
+// subscription; all are paying and global platform oversees the whole os/app."
+//
+// FOUR AXES STAY SEPARATE (lib/kernel/tier-role-matrix.ts): tier / seats / user type /
+// permission roles. A TIER RESTRICTS HOW MANY SEATS, NEVER WHICH USER TYPES — so this
+// section asserts the seat ladder and says nothing about the role menu, which is
+// deliberately identical on every tier.
+
+const TIER_COLUMNS: Array<[string, string]> = [
+  ["brokerages", "plan_tier"],
+  ["plan_limits", "plan_tier"],
+  ["subscription_tiers", "tier_name"],
+  ["platform_coupons", "applies_to_tier"],
+]
+
+check(`TIER_ORDER names exactly four tiers (${TIER_ORDER.join(", ")})`, TIER_ORDER.length === 4)
+
+for (const [table, column] of TIER_COLUMNS) {
+  const live = CHECK_VOCABULARIES[table]?.[column] ?? []
+  check(`${table}.${column} admits EXACTLY the four canonical tiers`,
+    same(TIER_ORDER, live),
+    `code=[${[...TIER_ORDER].sort().join(",")}] db=[${[...live].sort().join(",")}]`)
+}
+
+// platform_prospects.role_interest is the ONE tier-shaped column that legitimately
+// carries a fifth value: a prospect who has not said which plan they want. That is a
+// sales-funnel fact, not a tier — asserted explicitly so it can never quietly widen.
+const prospectTiers = CHECK_VOCABULARIES.platform_prospects?.role_interest ?? []
+check("platform_prospects.role_interest is the four tiers PLUS 'unknown', and nothing else",
+  same(prospectTiers, [...TIER_ORDER, "unknown"]),
+  `db=[${[...prospectTiers].sort().join(",")}]`)
+
+check("lib/billing/plan-catalog.ts CANONICAL_TIERS agrees with TIER_ORDER",
+  same(CANONICAL_TIERS, TIER_ORDER),
+  `catalog=[${[...CANONICAL_TIERS].sort().join(",")}] matrix=[${[...TIER_ORDER].sort().join(",")}]`)
+
+check("isCanonicalTier accepts all four and refuses anything else",
+  TIER_ORDER.every(isCanonicalTier)
+  && !isCanonicalTier("free") && !isCanonicalTier("enterprise") && !isCanonicalTier(null))
+
+// OWNER (wave 79A, 2026-09-23): solo_agent 2 · team 10 · brokerage 30 · multi_location custom.
+// DERIVED from the one table (lib/billing/plan-catalog.ts TIER_SEAT_BANDS), never restated (CLAUDE.md §2).
+const SEAT_LADDER: Record<string, number | null> = TIER_SEAT_BANDS
+check("the seat ladder is the plan catalogue's TIER_SEAT_BANDS, exactly (one derivation)",
+  TIER_ORDER.every((t) => TIER_SEAT_LIMITS[t] === SEAT_LADDER[t]),
+  TIER_ORDER.filter((t) => TIER_SEAT_LIMITS[t] !== SEAT_LADDER[t]).map((t) => `${t}=${TIER_SEAT_LIMITS[t]}`).join(",") || "—")
+check("the capped tiers ascend strictly, and once a tier is unlimited every tier above it is too",
+  (() => {
+    let prev = 0, unlimited = false
+    for (const t of TIER_ORDER) {
+      const v = TIER_SEAT_LIMITS[t]
+      if (v === null) { unlimited = true; continue }
+      if (unlimited || v <= prev) return false
+      prev = v
+    }
+    return unlimited
+  })())
+check("ALL FOUR tiers are PAYING — there is no free tier in the vocabulary",
+  !TIER_ORDER.some((t) => /free|trial|starter_free/i.test(t))
+  && TIER_ORDER.every((t) => (TIER_LABELS[t] ?? "").trim().length > 0),
+  "live subscription_tiers on 2026-08-23: 9900 / 29900 / 79900 / 199900 cents monthly, all is_active")
+check("POSITIVE CONTROL — the tier finder rejects a tier the vocabulary does not name",
+  !same([...TIER_ORDER, "free"], TIER_ORDER) && !isCanonicalTier("free"))
+
+// ─── 6 · credit_score_band vs credit_score_range — two columns, one each ──────
+//
+// wave 68C carry (c). `contacts.credit_score_band` is the AGENT-TRACKED
+// credit-repair pipeline band (app/actions/credit-copilot.ts, hand-advanced by
+// a human). `contacts.credit_score_range` is PeopleData's own passive estimate
+// (m640, written only by lib/lead-pipeline/enrichment-orchestrator.ts). CLAUDE.md
+// §6: two spellings of one idea are a defect, but these are NOT that — they are
+// two DIFFERENT ideas that happen to share a shape ("a credit score band/range
+// string"), so the check here is the opposite of a merge: no writer may cross
+// the streams and put a value meant for one column into the other.
+{
+  function writesBothInOnePayload(raw: string): boolean {
+    const src = stripComments(raw)
+    // A write call's object-literal payload: `.insert({...})`, `.update({...})`,
+    // `.upsert({...})`. Windowed like the rest of this file's scans — generous
+    // enough for a real payload, short enough that an unrelated later object
+    // literal in the same file cannot be mistaken for one write's payload.
+    const WRITE_RE = /\.(?:insert|update|upsert)\(\s*\{/g
+    let m: RegExpExecArray | null
+    while ((m = WRITE_RE.exec(src))) {
+      const window = src.slice(m.index, m.index + 1200)
+      if (/\bcredit_score_band\s*:/.test(window) && /\bcredit_score_range\s*:/.test(window)) return true
+    }
+    return false
+  }
+
+  const controlBad = writesBothInOnePayload(
+    `await supabase.from("contacts").update({ credit_score_band: x, credit_score_range: y }).eq("id", id)`,
+  )
+  const controlGood = writesBothInOnePayload(
+    `await supabase.from("contacts").update({ credit_score_band: x }).eq("id", id)`,
+  )
+  check("POSITIVE CONTROL — a single write payload naming BOTH columns is caught", controlBad === true)
+  check("POSITIVE CONTROL — a write naming only one column is NOT flagged", controlGood === false)
+
+  const bandWriter = join(ROOT, "app/actions/credit-copilot.ts")
+  // Lane 83A: the PeopleData profile object moved to THE ONE builder
+  // (enrichment-column-map.ts::buildPeopleDataProfile), which the orchestrator and the raw-record
+  // path both call — the writer of credit_score_range is that builder now.
+  const rangeWriter = join(ROOT, "lib/lead-pipeline/enrichment-column-map.ts")
+  check("the orchestrator builds its PeopleData profile through that builder",
+    /buildPeopleDataProfile\(enriched\)/.test(stripComments(readFileSync(join(ROOT, "lib/lead-pipeline/enrichment-orchestrator.ts"), "utf8"))))
+  const bandSrc = stripComments(readFileSync(bandWriter, "utf8"))
+  const rangeSrc = stripComments(readFileSync(rangeWriter, "utf8"))
+  check("the AGENT-TRACKED writer (credit-copilot.ts) writes credit_score_band",
+    /\bcredit_score_band\s*:/.test(bandSrc))
+  check("...and never writes credit_score_range (that is the PeopleData column, not this pipeline's)",
+    !/\bcredit_score_range\s*:/.test(bandSrc))
+  check("the PEOPLEDATA writer (enrichment-orchestrator.ts) writes credit_score_range",
+    /\bcredit_score_range\s*:/.test(rangeSrc))
+  check("...and never writes credit_score_band (that is the agent-tracked pipeline's column, not this one's)",
+    !/\bcredit_score_band\s*:/.test(rangeSrc))
+
+  // Repo-wide: no OTHER write payload anywhere sets both in one call (would mean
+  // a third writer conflating the two, or one of the two writers above growing a
+  // second column it should not touch).
+  const crossFiles: string[] = []
+  for (const abs of [...walkTs(join(ROOT, "app")), ...walkTs(join(ROOT, "lib")), ...rootRuntimeFiles(ROOT)]) {
+    const raw = readFileSync(abs, "utf8")
+    if (!raw.includes("credit_score_band") || !raw.includes("credit_score_range")) continue
+    if (writesBothInOnePayload(raw)) crossFiles.push(relative(ROOT, abs))
+  }
+  check("no write payload anywhere sets BOTH credit_score_band and credit_score_range in one call",
+    crossFiles.length === 0, crossFiles.join(", "))
+}
+
+// ─── Result ──────────────────────────────────────────────────────────────────
+console.log("\n──────────────────────────────────────────────────")
+console.log(` RESULT: ${pass} passed, ${fail} failed`)
+if (fail > 0) {
+  console.log(" ✗ Failures:")
+  for (const f of fails) console.log(`   - ${f}`)
+  console.log(" ❌ CONTACT_VOCABULARY_FAIL — code and the live CHECK constraints have drifted apart")
+  process.exit(1)
+}
+console.log(" ✅ CONTACT_VOCABULARY_PASS — contact_type, persona and tier each mean one thing in code and in the database")

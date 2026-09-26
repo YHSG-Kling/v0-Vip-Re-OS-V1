@@ -23,8 +23,10 @@
  * flows through context, not prompt rewrites.
  */
 import "server-only"
+import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
 import { createServiceClient } from "@/lib/supabase/service"
 import { applyBrandVoice }     from "@/lib/kernel/brand-voice"
+import { toPlanTier } from "@/lib/billing/plan-tier"
 
 const TIER_LABEL: Record<string, string> = {
   solo_agent:     "Solo",
@@ -78,11 +80,16 @@ export async function resolveBrokerageContext(params: {
   // 1. Brokerage name + tier.
   const { data: bk } = await svc
     .from("brokerages")
-    .select("name, subscription_tier, plan_tier")
+    // plan_tier only. This read was `subscription_tier ?? plan_tier`, and
+    // brokerages.subscription_tier has no writer — so the preferred value was
+    // whatever happened to be there when the row was created. A live tenant had
+    // plan_tier='solo_agent' with subscription_tier='brokerage', which made this
+    // module disagree with the lead router about the same tenant. m306 drops it.
+    .select("name, plan_tier")
     .eq("id", params.brokerageId)
     .maybeSingle()
   const brokerageName = (bk?.name as string | null)?.trim() || `Brokerage ${params.brokerageId.slice(0, 8)}`
-  const tierKey       = ((bk?.subscription_tier ?? bk?.plan_tier) as string | null) ?? "solo_agent"
+  const tierKey       = toPlanTier(bk?.plan_tier as string | null)
   const tierLabel     = TIER_LABEL[tierKey] ?? tierKey
 
   // 2. Brand voice — call the canonical resolver with empty content so we get back
@@ -116,7 +123,7 @@ export async function resolveBrokerageContext(params: {
       .from("vendors")
       .select("id, name, email, phone, rating")
       .eq("brokerage_id", params.brokerageId)
-      .eq("category", "Lender")
+      .eq("category", VENDOR_CATEGORY_LENDER)
       .eq("status", "active")
       // Stable, deterministic tie-break: rating DESC (nulls last), then id
       // so a brokerage with multiple equally-rated approved lenders sees the

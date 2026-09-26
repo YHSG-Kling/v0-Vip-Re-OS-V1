@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSms } from "@/lib/providers/dispatch"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 interface NotificationParams {
   /**
@@ -149,7 +150,13 @@ export class NotificationService {
       created_at:   new Date().toISOString(),
     }))
 
-    await this.supabase.from("notifications").insert(notifications)
+    await sentinelWrite(this.supabase, this.supabase.from("notifications").insert(notifications), {
+      table: "notifications",
+      flow: "transaction_notification_in_app_fanout",
+      brokerageId: params.brokerageId,
+      reason:
+        "in-app mirror of a multi-channel send; email/SMS/push on the same call are attempted independently and each logs its own outcome to notification_log, so a lost in-app row must still be observable rather than silently indistinguishable from 'nothing to send'",
+    })
   }
 
   private async sendEmailNotification(
@@ -170,21 +177,31 @@ export class NotificationService {
 
     // Queue emails for each recipient
     for (const profile of recipientProfiles) {
-      await this.supabase.from("email_queue").insert({
-        to_email: profile.email,
-        to_name: `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() || null,
-        subject: params.title,
-        body: this.formatEmailBody(params.message, params.metadata),
-        template: "transaction_notification",
-        brokerage_id: params.brokerageId,
-        metadata: {
-          transaction_id: params.transactionId,
-          event_type: params.eventType,
-          ...params.metadata
+      await sentinelWrite(
+        this.supabase,
+        this.supabase.from("email_queue").insert({
+          to_email: profile.email,
+          to_name: `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() || null,
+          subject: params.title,
+          body: this.formatEmailBody(params.message, params.metadata),
+          template: "transaction_notification",
+          brokerage_id: params.brokerageId,
+          metadata: {
+            transaction_id: params.transactionId,
+            event_type: params.eventType,
+            ...params.metadata
+          },
+          status: "pending",
+          created_at: new Date().toISOString()
+        }),
+        {
+          table: "email_queue",
+          flow: "transaction_notification_email_enqueue",
+          brokerageId: params.brokerageId,
+          reason:
+            "the SAME event is also delivered in-app above (checked) and, per the caller, may go by SMS/push too — a lost enqueue for one recipient's email is one missed channel on an event the recipient still sees in-app, not a lost event",
         },
-        status: "pending",
-        created_at: new Date().toISOString()
-      })
+      )
     }
   }
 
@@ -228,13 +245,17 @@ export class NotificationService {
       created_at: new Date().toISOString(),
     }))
 
-    await (async () => {
-      try {
-        await this.supabase.from("push_notification_queue").insert(pushPayloads)
-      } catch (err: unknown) {
-        // Table may not exist yet — fail silently
-      }
-    })()
+    await sentinelWrite(
+      this.supabase,
+      this.supabase.from("push_notification_queue").insert(pushPayloads),
+      {
+        table: "push_notification_queue",
+        flow: "transaction_notification_push_enqueue",
+        brokerageId: params.brokerageId,
+        reason:
+          "the caller already gated on the brokerage's push_notifications_enabled setting; a lost enqueue means this one push never reaches app/api/cron/queue-drain's push rail, but the SAME event already landed in-app and by email above, so the alert itself is not lost",
+      },
+    )
   }
 
   /**
@@ -264,13 +285,41 @@ export class NotificationService {
       created_at: new Date().toISOString(),
     }))
 
-    await (async () => {
-      try {
-        await this.supabase.from("notification_log").insert(logEntries)
-      } catch (err: unknown) {
-        // Log failure silently to avoid blocking notifications
-      }
-    })()
+    await sentinelWrite(this.supabase, this.supabase.from("notification_log").insert(logEntries), {
+      table: "notification_log",
+      flow: "transaction_notification_delivery_log",
+      brokerageId: params.brokerageId,
+      reason:
+        "the send attempt this logs has already happened (success or failure) by the time this runs; losing the audit row must not re-throw and block the notification pipeline, but escalateFailedNotificationDeliveries above depends on this table, so the loss itself must be ledgered rather than silently dropped",
+    })
+  }
+
+  /**
+   * READER — the transaction workspace's delivery-status panel
+   * (notification-delivery-section.tsx). `notification_log` has no
+   * `transaction_id` column, so the filter runs against the jsonb `response`
+   * this class already stamps with `transaction_id` on every write above.
+   * TENANT-SCOPED FROM THE CALLER'S ALREADY-RESOLVED brokerageId (§4) — never
+   * a request body — and explicit column selects only (no `select("*")`).
+   */
+  async getDeliveryLogForTransaction(
+    transactionId: string,
+    brokerageId: string,
+    limit = 50
+  ): Promise<Array<{ id: string; delivery_channel: string; status: string; response: Record<string, any> | null; created_at: string }>> {
+    const { data, error } = await this.supabase
+      .from("notification_log")
+      .select("id, delivery_channel, status, response, created_at")
+      .eq("brokerage_id", brokerageId)
+      .eq("response->>transaction_id", transactionId)
+      .order("created_at", { ascending: false })
+      .limit(limit)
+
+    if (error) {
+      console.error("[NotificationService] getDeliveryLogForTransaction refused:", error.message)
+      return []
+    }
+    return data ?? []
   }
 
   private formatEmailBody(message: string, metadata?: Record<string, any>): string {
@@ -372,4 +421,89 @@ export class NotificationService {
       }
     })
   }
+}
+
+/**
+ * READER — delivery outcome reconciliation for the deal_coordinator's
+ * autonomous loop (app/api/cron/notification-delivery-escalation/route.ts).
+ *
+ * `notification_log.status` / `.response` were written by `logNotification`
+ * above on every send attempt and never read by anything (readerless-write-
+ * census). A single failed send is normal (a bounced number, a transient SMTP
+ * refusal) and the next event will just try again — RETRYING blind here would
+ * need a recipient to retarget, and `notification_log` carries none (only
+ * `response.transaction_id` / `event_type`, no user id), so a synthetic retry
+ * would either resend to nobody or to every past recipient. What the data DOES
+ * support, honestly: noticing a CHANNEL that keeps failing for the SAME deal
+ * and putting a human in the loop — which is what "or escalate" means here.
+ *
+ * Scoped to a bounded recent window (not the whole table) so this stays a
+ * cheap periodic scan, not a full-table read every run.
+ */
+export async function escalateFailedNotificationDeliveries(
+  windowHours = 2,
+  failureThreshold = 2
+): Promise<{ scanned: number; escalated: number }> {
+  const supabase = createServiceClient()
+  const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString()
+
+  const { data: failed, error } = await supabase
+    .from("notification_log")
+    .select("id, brokerage_id, delivery_channel, status, response, created_at")
+    .eq("status", "failed")
+    .gte("created_at", since)
+    .order("created_at", { ascending: true })
+
+  if (error) {
+    console.error("[NotificationService] escalation scan refused:", error.message)
+    return { scanned: 0, escalated: 0 }
+  }
+  if (!failed || failed.length === 0) return { scanned: 0, escalated: 0 }
+
+  // Group repeat failures by (brokerage, transaction, channel) — response is
+  // the same jsonb payload logNotification stamped with transaction_id.
+  type Group = { brokerageId: string; transactionId: string; channel: string; count: number; lastError: string | null }
+  const groups = new Map<string, Group>()
+  for (const row of failed) {
+    const txnId = (row.response as Record<string, any> | null)?.transaction_id
+    if (!txnId || !row.brokerage_id) continue // only transaction-scoped sends escalate here
+    const key = `${row.brokerage_id}::${txnId}::${row.delivery_channel}`
+    const g = groups.get(key) ?? { brokerageId: row.brokerage_id, transactionId: txnId, channel: row.delivery_channel, count: 0, lastError: null }
+    g.count++
+    g.lastError = (row.response as Record<string, any> | null)?.error_message ?? g.lastError
+    groups.set(key, g)
+  }
+
+  const service = new NotificationService()
+  let escalated = 0
+  for (const g of groups.values()) {
+    if (g.count < failureThreshold) continue
+
+    // Tenant-scoped lookup of who to alert — explicit columns, brokerage
+    // filter matches the failing rows' own brokerage_id (§4).
+    const { data: txn } = await supabase
+      .from("transactions")
+      .select("id, agent_id, coordinator_id, property_address, brokerage_id")
+      .eq("id", g.transactionId)
+      .eq("brokerage_id", g.brokerageId)
+      .maybeSingle()
+    if (!txn?.agent_id) continue
+
+    const recipients = [txn.agent_id]
+    if (txn.coordinator_id) recipients.push(txn.coordinator_id)
+
+    await service.sendMultiChannelNotification({
+      transactionId: g.transactionId,
+      brokerageId: g.brokerageId,
+      recipientIds: recipients,
+      eventType: "transaction.notification.delivery_failed",
+      title: "Client notification delivery failing",
+      message: `${g.count} ${g.channel} notifications for ${txn.property_address ?? "this transaction"} failed to deliver. Contact the client directly.`,
+      priority: "high",
+      metadata: { failed_channel: g.channel, failure_count: g.count, last_error: g.lastError },
+    })
+    escalated++
+  }
+
+  return { scanned: failed.length, escalated }
 }

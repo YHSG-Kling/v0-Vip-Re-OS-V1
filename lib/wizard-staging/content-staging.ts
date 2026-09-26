@@ -332,12 +332,19 @@ export async function stagePodcastEpisode(
 
   // Fallback — direct insert
   const svc = createServiceClient()
-  const agentId = await resolveAgentRowId(svc, ctx.userId)
+  // podcast_episodes.agent_id is a NOT NULL FK to agents(id). Scoped resolve —
+  // ctx carries the brokerage, and this is the webhook path where the caller is
+  // whichever user the wizard is acting for, who may hold rows in two tenants.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const episodeAgentId = await resolveAgentIdInBrokerage(svc, ctx.userId, ctx.brokerageId)
+  if (!episodeAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — the episode has no owner to file it under." }
+  }
   const { data, error } = await svc
     .from("podcast_episodes")
     .insert({
       brokerage_id: ctx.brokerageId,
-      agent_id: agentId,
+      agent_id: episodeAgentId,
       title: intake.title,
       description: intake.description ?? null,
       script: intake.script ?? null,
@@ -376,10 +383,24 @@ export async function stageVideoProject(
   try {
     const { createVideoProject } = await import("@/app/actions/video/create-video-project")
     const svc = createServiceClient()
-    const agentId = await resolveAgentRowId(svc, ctx.userId)
+    // IDENTITY CLASS (m363) — INVERTED, not merely loose. createVideoProject
+    // writes ai_video_projects.agent_id, one of the twenty columns that FK
+    // USERS, and uses the same value as actorUserId for brand voice and as
+    // userId for the compliance actor context. It wants ctx.userId. This
+    // resolved users→AGENTS first and passed that, so the correct value was
+    // reachable ONLY through the `??` fallback — i.e. the feature worked only
+    // for users who had no agents row, and was FK-rejected for everyone else.
+    // The resolve is deleted rather than reordered: nothing here needs it.
+    //
+    // The field is `agentUserId`, not `agentId` — it was renamed when the
+    // users->agents resolve moved inside createVideoProject, and the `as never`
+    // cast at the end of this call kept the stale name compiling. The param
+    // arrived undefined, so isValidUUID rejected it and this lane returned
+    // "Invalid brokerage or agent ID" for EVERY user. Named correctly now; the
+    // value was already the right one (users-class ctx.userId).
     const result = await createVideoProject({
       brokerageId: ctx.brokerageId,
-      agentId: agentId ?? ctx.userId,
+      agentUserId: ctx.userId,
       title: intake.title,
       script: intake.script ?? "",
       videoType: (intake.videoType ?? "market_update") as never,
@@ -429,8 +450,14 @@ export async function stageDirectMailCampaign(
       intake.pieceType === "letter" || intake.pieceType === "handwritten" || intake.pieceType === "thank_you_note"
         ? "letter"
         : "postcard"
+    // IDENTITY CLASS (wave 84E). This passed `agentId: ctx.userId` — a USERS id — and the
+    // action wrote it into direct_mail_campaigns.agent_id, which FKs AGENTS (23503). The
+    // action now derives both classes from the SESSION (users.id for the gate/created_by,
+    // agents.id via lib/kernel/agent-identity.ts resolveAgentIdInBrokerage), and the
+    // brokerage here is a cross-check it refuses on mismatch. The ElevenLabs webhook
+    // caller has no cookie session, so it is REFUSED ("Not signed in") rather than
+    // filed under an id of the wrong class — see lane84E notes (unresolved door).
     const result = await createDirectMailCampaign({
-      agentId: ctx.userId,
       brokerageId: ctx.brokerageId,
       campaignName: intake.campaignName,
       targetAudience: intake.targetAudience,
@@ -441,7 +468,9 @@ export async function stageDirectMailCampaign(
       trackingEnabled: true,
     })
     if (!result.success) return { success: false, error: result.error ?? "Direct mail creation failed" }
-    const campaignId = (result as { campaignId?: string; campaign?: { id?: string } }).campaignId
+    // The action returns `campaign.id`; it has never returned a `campaignId`, so this
+    // read was writerless and every staged mailer lost its draftId / deep link.
+    const campaignId = (result as { campaign?: { id?: string } | null }).campaign?.id
     return {
       success: true,
       draftId: campaignId,
@@ -492,6 +521,10 @@ export async function stageAdCampaign(
         : [],
       interests: [],
       custom_audience_ids: [],
+      // NO SUPPRESSION LIST, said explicitly rather than omitted. A staged draft
+      // suppresses nobody; the agent adds exclusions in the ads dashboard, where
+      // every one of them is gated (lib/ads/audience-exclusion.ts).
+      excluded_audience_ids: [],
       lookalike_source_audience_id: null,
       income_percentile: "any" as const,
       homeowner_status: "any" as const,

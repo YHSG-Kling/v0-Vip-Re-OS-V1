@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -131,13 +132,16 @@ export async function sendDocumentForSignature(params: {
     .update({ status: "pending_signature", updated_at: new Date().toISOString() })
     .eq("id", documentId)
 
-  // ── Emit kernel event for audit ───────────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "transaction_document",
-    entity_id:     documentId,
-    event_type:    KernelEvent.CONTRACT_SENT_FOR_SIGNATURE ?? "document.signature.requested",
-    actor_user_id: userId,
+  // ── Emit kernel event — audit row + reactor ───────────────────────────────
+  // (was a bare insert with a `?? "document.signature.requested"` fallback that
+  // could never fire — the enum member is always defined — and a swallowed outcome.)
+  await emitKernelEvent({
+    brokerageId,
+    entityType:    "transaction_document",
+    entityId:      documentId,
+    event:         KernelEvent.CONTRACT_SENT_FOR_SIGNATURE,
+    transactionId,
+    actorUserId:   userId,
     metadata: {
       transaction_id:  transactionId,
       signature_id:    sig.id,
@@ -146,7 +150,7 @@ export async function sendDocumentForSignature(params: {
       signer_count:    signers.length,
     },
   })
-  .then(() => {}, () => {}) // fire-and-forget: silent fail on audit log errors
+  .then(() => {}, () => {}) // fire-and-forget: the send already succeeded
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true, signatureId: sig.id }
@@ -216,15 +220,44 @@ export async function getTransactionSignatureStatuses(
   if (!callerRow?.brokerage_id) return []
 
   const supabase = createServiceClient()
+
+  // 🐛 THE transactionId ARGUMENT WAS IGNORED ENTIRELY. This returned EVERY
+  // contract_signatures row in the brokerage — every other deal's signatures —
+  // from a function named "for transaction". Any surface that trusted the name
+  // would have shown one deal's page the signature state of all the others.
+  //
+  // Verified live: `contract_signatures` carries brokerage_id, agent_id,
+  // contract_type and form_id, and NO transaction_id / listing_id. So the
+  // transaction link genuinely does not exist on the row and cannot simply be
+  // filtered on. What DOES exist is the same resolution the sibling
+  // `getUnsignedDocumentBlockers` already uses correctly: `transaction_documents`
+  // IS transaction-scoped, so the transaction's own signable doc_types are the
+  // bridge, and signatures are narrowed to those contract_types.
+  //
+  // RESIDUAL LIMIT, stated rather than hidden: two open deals in one brokerage
+  // that need the same doc_type still share these rows, because the row has no
+  // column that could tell them apart. Closing that needs a `transaction_id` (or
+  // `transaction_document_id`) column on `contract_signatures` and a backfill —
+  // a migration, deliberately not invented here. Until then this is scoped to the
+  // doc types this transaction actually has instead of to nothing at all.
+  const { data: docs } = await supabase
+    .from("transaction_documents")
+    .select("doc_type")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", callerRow.brokerage_id)
+
+  const signableTypes = Array.from(
+    new Set((docs ?? []).map((d) => d.doc_type).filter((t): t is string => !!t && isSignableDocType(t))),
+  )
+  if (signableTypes.length === 0) return []
+
   const { data } = await supabase
     .from("contract_signatures")
     .select("id, contract_type, provider_name, provider_envelope_id, esign_status, sent_at, agent_signed_at, fully_signed_at, document_url, created_at")
     .eq("brokerage_id", callerRow.brokerage_id)
+    .in("contract_type", signableTypes)
     .order("created_at", { ascending: false })
 
-  // contract_signatures has no transaction_id FK — we filter by those inserted
-  // during this transaction's documents workflow (they share brokerage_id + agent context).
-  // Return all for the brokerage; the caller filters by transaction doc types.
   return data ?? []
 }
 

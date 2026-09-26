@@ -27,10 +27,17 @@ export function pickLeadOutreachChannel(input: {
   emailUsable: boolean
   mailingVerified: boolean
 }): LeadOutreachChannel {
-  const requested = input.requestedChannel ?? "email"
+  // The roster IS the rule: a requested channel outside LEAD_ALLOWED_CHANNELS
+  // (sms/phone/social/…) is treated as if nothing was requested and falls into
+  // the email-first ladder — so the compliance floor is decided by membership in
+  // the one exported list the simulator proves, not by a literal comparison that
+  // could drift from it (lane 80E: the roster was exported for the proof and
+  // read by no runtime code).
+  const raw = input.requestedChannel ?? "email"
+  const requested = (LEAD_ALLOWED_CHANNELS as readonly string[]).includes(raw) ? raw : "email"
   if (requested === "direct_mail") {
     return input.mailingVerified ? "direct_mail" : input.emailUsable ? "email" : "no_outreach"
   }
-  // email, or any non-allowed channel (sms/phone/social/...) → email-first ladder
+  // email (or any non-allowed channel, collapsed above) → email-first ladder
   return input.emailUsable ? "email" : input.mailingVerified ? "direct_mail" : "no_outreach"
 }

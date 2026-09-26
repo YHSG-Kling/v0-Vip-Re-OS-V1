@@ -31,6 +31,10 @@ import { upsertCampaignPreset, deactivateCampaignPreset, type PresetChannel } fr
 import type { PlaybookScore } from "@/app/actions/creative-playbooks"
 import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
 import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
+import { EstimateStillsCard } from "./estimate-stills-card"
+import { EstimateComparisonCard } from "./estimate-comparison-card"
+import { LearnedVisualRulesCard } from "./learned-visual-rules-card"
+import { TopicVideoCadenceCard } from "./topic-video-cadence-card"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -309,6 +313,12 @@ export function CampaignBundlesClient({
               </div>
             ))}
           </div>
+          {/* Wave 80D — the Zestimate Challenge's still: tenant-picked source + address, pending approval. */}
+          <EstimateStillsCard />
+          <EstimateComparisonCard />
+          <LearnedVisualRulesCard />
+          {/* Wave 83B — the autonomous topic-video cadence (default 3/week). */}
+          <TopicVideoCadenceCard />
         </section>
       )}
 

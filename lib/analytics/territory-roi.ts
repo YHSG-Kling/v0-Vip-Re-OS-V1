@@ -45,7 +45,7 @@ import { raiseReferralDeduped, type SlaReferralSweepResult } from "@/lib/manager
 /** Days of scrape activity the ROI funnel grades. */
 export const TERRITORY_ROI_WINDOW_DAYS = 30
 /** Row cap per bounded read — a hit cap is reported, never silently truncated. */
-export const TERRITORY_ROI_ROW_CAP = 5000
+const TERRITORY_ROI_ROW_CAP = 5000
 /** Both sides (the outlier market AND the pooled rest) need at least this many
  *  promoted leads before the cost divergence is worth arguing. */
 export const TERRITORY_ROI_MIN_PROMOTED = 5
@@ -412,9 +412,10 @@ const MAX_BROKERAGES_PER_SWEEP = 25
  */
 export async function publishTerritoryRoiReferrals(client?: any): Promise<SlaReferralSweepResult> {
   const { createServiceClient } = await import("@/lib/supabase/service")
+  const { usd2: usd } = await import("@/lib/format/money")
   const svc = client ?? createServiceClient()
   const result: SlaReferralSweepResult = { candidates: 0, published: 0, skippedRecent: 0, errors: [] }
-  const usd = (n: number) => `$${n.toFixed(2)}`
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd2
   try {
     // Candidate tenants: active subscription (the resolver predicate, reused)
     // AND at least two active markets (one market has nothing to diverge from).

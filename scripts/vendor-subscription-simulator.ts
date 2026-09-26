@@ -24,6 +24,7 @@ import {
   resolveTierPrice,
   resolveVendorTiers,
 } from "../lib/kernel/vendor-subscription"
+import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -61,10 +62,37 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — Stripe SDK checkout, webhook applier, UI, owned]")
   const act = src("app/actions/vendor-billing.ts")
-  check("checkout + portal reuse the canonical lib/stripe proxy", /from "@\/lib\/stripe"/.test(act) && /stripe\.checkout\.sessions\.create/.test(act) && /stripe\.billingPortal\.sessions\.create/.test(act))
+  // The portal call moved OUT of this action into lib/billing/stripe-portal.ts —
+  // the billing-convergence keep-one, shared with the brokerage-tenant portal so
+  // the two paths cannot drift. Asserting the inline stripe.billingPortal call
+  // here pinned the old shape and failed on the consolidation that was the point.
+  const portal = src("lib/billing/stripe-portal.ts")
+  check("checkout + portal reuse the canonical lib/stripe proxy",
+    /from "@\/lib\/stripe"/.test(act) && /stripe\.checkout\.sessions\.create/.test(act)
+    && /createBillingPortalUrl/.test(act)
+    // The helper reaches the proxy via a DYNAMIC import — same canonical module,
+    // different syntax; match either so this tests the dependency, not the form.
+    && /(from|import\()\s*"@\/lib\/stripe"/.test(portal) && /stripe\.billingPortal\.sessions\.create/.test(portal))
   check("applyVendorSubscriptionEvent maps Stripe events → status + suspend", /applyVendorSubscriptionEvent/.test(act) && /mapStripeEventToStatus/.test(act) && /update\.status = "suspended"/.test(act))
   const wh = src("app/api/webhooks/stripe/vendor/route.ts")
-  check("the webhook verifies the signature + calls the applier", /constructEvent\(body, sig, secret\)/.test(wh) && /applyVendorSubscriptionEvent\(/.test(wh))
+  // WAS PINNED TO A WAYPOINT (CLAUDE.md §2). This asserted the literal
+  // `constructEvent(body, sig, secret)` — the ONE-hardcoded-secret shape — so it
+  // could only pass while the route verified every delivery against
+  // STRIPE_VENDOR_WEBHOOK_SECRET. The owner ruling ("the stripe account will be
+  // per tenant and platform so no configuration should be hardcoded") makes that
+  // shape wrong: with N+1 Stripe accounts, one secret cannot verify deliveries
+  // from the others, and the route now resolves the roster and identifies the
+  // SIGNING account cryptographically (lib/billing/stripe-webhook-secrets.ts).
+  // So the RULE is asserted instead of the syntax: the delivery is
+  // signature-verified before anything is applied, and only a PLATFORM-signed one
+  // reaches the applier — the vendor marketplace tier is money the vendor pays
+  // the PLATFORM (VENDOR_PLATFORM_TIER), so a tenant's own Stripe account has no
+  // authority to move a vendor's subscription status.
+  check("the webhook signature-verifies before applying, and only a platform-signed delivery reaches the applier",
+    /verifyStripeWebhook\(/.test(wh)
+    && /verification\.status === "verified"|verification\.ownerType !== "platform"/.test(wh)
+    && wh.indexOf("verifyStripeWebhook(") < wh.indexOf("applyVendorSubscriptionEvent(")
+    && /applyVendorSubscriptionEvent\(/.test(wh))
   const ui = src("app/vendor/billing/billing-client.tsx")
   check("the billing UI wires checkout + portal actions", /createVendorSubscriptionCheckout/.test(ui) && /createVendorBillingPortalSession/.test(ui))
   check("editable pricing: an admin setter writes brokerage_settings + the approval UI edits prices", /setVendorTierPricing/.test(src("app/actions/vendor-verification.ts")) && /vendor_tier_pricing/.test(src("app/actions/vendor-verification.ts")) && /setVendorTierPricing\(p\.tier/.test(src("app/dashboard/admin/vendor-approvals/approval-client.tsx")))
@@ -72,6 +100,53 @@ function sourceLayer() {
   check("burn domain owned by finance_manager with a runnable proof", /vendor_subscription_billing:\s*\{\s*manager:\s*"finance_manager",\s*proof:\s*"test:vendor-subscription"/.test(reg))
   check("new billing columns are in the schema snapshot", /vendor_marketplace_profiles:\s*\[[^\]]*"stripe_customer_id"[^\]]*"subscription_tier"/.test(src("scripts/schema-snapshot.ts")))
   check("package.json wires the proof", /"test:vendor-subscription":\s*"tsx scripts\/vendor-subscription-simulator\.ts"/.test(src("package.json")))
+}
+
+// ── NO DEFAULTS ON THE MARKETPLACE (owner ruling 2026-08-27, verbatim: "the
+// vendor marketplace should not have any default"). The live defaults included
+// subscription_status 'active' — in PLATFORM_USE_PAYING_STATUSES, so a
+// defaulted row was born already paying the platform — and tier 'basic'.
+// m571 drops every business-value default; the covered column list is DERIVED
+// from the schema snapshot cache (§2: assert the rule, derive the number),
+// never retyped here.
+
+/** Bookkeeping columns whose defaults the ruling deliberately keeps. */
+const NO_DEFAULT_ALLOWLIST = new Set(["id", "created_at", "updated_at"])
+
+/** Columns the migration must DROP DEFAULT on that it does not. PURE for the mutation control. */
+function missingDropDefaults(migrationSql: string, snapshotColumns: string[]): string[] {
+  return snapshotColumns
+    .filter((c) => !NO_DEFAULT_ALLOWLIST.has(c))
+    .filter((c) => !new RegExp(`alter\\s+column\\s+${c}\\s+drop\\s+default`, "i").test(migrationSql))
+}
+
+function noDefaultLayer() {
+  console.log("\n[no defaults — m571 covers every business column, derived from the snapshot]")
+  const MIGRATION = "supabase/migrations/m571-the-vendor-marketplace-should-not-have-any-default.sql"
+  const cols = SCHEMA_SNAPSHOT.vendor_marketplace_profiles ?? []
+  check("the snapshot cache knows the table (denominator exists)", cols.length > 0)
+  const sql = src(MIGRATION)
+  const missing = missingDropDefaults(sql, cols)
+  check(`m571 drops the default on all ${cols.length - NO_DEFAULT_ALLOWLIST.size} business columns (snapshot-derived; id/timestamps kept)`,
+    missing.length === 0)
+  if (missing.length) console.log("    missing:", missing.join(", "))
+  check("m571 self-checks the RULE in the database (derives offenders from information_schema, allowlist only id/timestamps)",
+    /information_schema\.columns/.test(sql) && /not in \('id', 'created_at', 'updated_at'\)/.test(sql))
+  check("MUTATION CONTROL — the coverage checker flags a migration missing one column",
+    missingDropDefaults(sql.replace(/alter column subscription_status\s+drop default,?/i, ""), cols)
+      .includes("subscription_status"))
+
+  // Every writer now provides the de-defaulted NOT NULL values EXPLICITLY —
+  // fail-closed means a value-less insert REFUSES, so legitimate flows must say
+  // what they mean. Stripped-scan (2026-08-27) found exactly two inserts.
+  const invite = src("app/actions/vendor-invite.ts")
+  check("the ONE app insert (vendor-invite) sets subscription_tier + subscription_status + status explicitly",
+    /subscription_tier:\s*"basic"/.test(invite) &&
+    /subscription_status:\s*"canceled"/.test(invite) &&
+    /status:\s*"pending"/.test(invite))
+  const self = src("scripts/vendor-subscription-simulator.ts")
+  check("this simulator's own live insert sets tier + subscription_status + status explicitly",
+    /subscription_tier:\s*"premium",\s*subscription_status:\s*"active"/.test(self) && /status:\s*"approved"/.test(self))
 }
 
 async function liveLayer() {
@@ -105,11 +180,48 @@ async function liveLayer() {
     for (const c of cleanup) { const { count } = await svc.from(c.table).select("id", { count: "exact", head: true }).eq("id", c.id); left += count ?? 0 }
     check("live: cleanup count == 0", left === 0)
   }
+
+  // ── NO-DEFAULT FAIL-CLOSED PROBE. An insert omitting subscription_status /
+  // subscription_tier must REFUSE once m571 is applied (NOT NULL, no default).
+  // Files are not the database (§3): until the integrator applies m571 this
+  // probe reports PENDING rather than passing or failing — and while pending it
+  // proves the finder can still SEE defaults (the positive control §2 demands).
+  console.log("\n[live] no-default probe — an insert that omits tier/status must refuse (post-m571)")
+  {
+    const { data: usr2 } = await svc.from("users").select("id").limit(1).maybeSingle()
+    if (!usr2) { console.log("  ⊘ no user — skipping probe"); return }
+    const { data: bare, error: bareErr } = await svc.from("vendor_marketplace_profiles").insert({
+      user_id: (usr2 as any).id, company_name: "ZZ No-Default Probe Vendor", category: "service",
+      // subscription_tier / subscription_status / status DELIBERATELY omitted.
+    }).select("id, subscription_tier, subscription_status, status").single()
+    if (bareErr && !bare) {
+      check("live: value-less insert REFUSES (m571 applied — fail closed, nothing defaulted)",
+        /null value|not-null|violates/i.test(bareErr.message))
+      console.log(`    refusal: ${bareErr.message}`)
+    } else if (bare) {
+      const b = bare as any
+      // REPORT THE OBSERVATION, DO NOT NAME A CAUSE THIS PROBE CANNOT SEE (§2).
+      // This line asserted "m571 is WRITTEN, NOT APPLIED" as the explanation and
+      // kept asserting it after m571 landed (verified live 2026-09-05:
+      // vendor_marketplace_profiles.subscription_tier and .subscription_status are
+      // both NOT NULL with no default, which is exactly what m571 does). A probe
+      // that saw a row appear cannot tell WHY; a defaulted insert surviving now
+      // would mean something new and worse, not a pending migration.
+      console.log("  ⊘ UNEXPECTED — the value-less insert SUCCEEDED. The columns should be NOT NULL")
+      console.log("     with no default; a row landing here means the fail-closed shape is gone.")
+      check("live: (positive control while pending) the probe still SEES the defaults it exists to remove",
+        b.subscription_status === "active" && b.subscription_tier === "basic" && b.status === "pending")
+      await svc.from("vendor_marketplace_profiles").delete().eq("id", b.id)
+      const { count } = await svc.from("vendor_marketplace_profiles").select("id", { count: "exact", head: true }).eq("id", b.id)
+      check("live: probe cleanup count == 0", (count ?? 0) === 0)
+    }
+  }
 }
 
 async function main() {
   pureLayer()
   sourceLayer()
+  noDefaultLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

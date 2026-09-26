@@ -23,6 +23,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { loadBuyerCriteria, type BuyerCriteria } from "./buyer-criteria"
 export { loadBuyerCriteria, type BuyerCriteria }
 
+// Wave 68 — the ONE resolver for the brokerage's active-listing source order (cost ruling: the
+// billed BatchData on-market feed is OFF by default). See lib/buyer-search/listing-source-order.ts.
+import { resolveActiveListingSources } from "./listing-source-order"
+
 export interface ListingFacts {
   list_price?: number | null
   bedrooms?:   number | null
@@ -58,15 +62,28 @@ export const MATCH_FIT_THRESHOLD = 70
 export interface MarketWatchResult { matched: number; newMatches: number; reason?: string }
 
 /**
- * Run the market watch for ONE buyer over OUR active listings: score by criteria, upsert
+ * Run the market watch for ONE buyer over ACTIVE-FOR-SALE inventory: score by criteria, upsert
  * property_matches for fits ≥ threshold. Idempotent (upsert on contact_id, property_id).
  * Returns how many matched + how many are NEW (so the cron can gate a touch). The external
  * RentCast/IDX path is layered on by the cron (connector-gated, compliant references).
+ *
+ * PERSONA GATE (wave 67, owner verbatim: "smart search is also to help regular buyers find
+ * properties with their known criteria… sending them active for sale listings" vs. an
+ * investor-intent contact who gets OFF-MARKET candidates instead — see
+ * lib/buyer-search/investor-offmarket-runner.ts). A contact_persona='investor' contact is served
+ * by that OTHER rail exclusively; this function refuses to hand them on-market listings so the
+ * two rails never overlap on the same buyer. The persona resolver is the ONE this codebase has
+ * (contacts.contact_persona, m589/m593) — no second gate.
  */
 export async function runMarketWatchForBuyer(
   supabase: ReturnType<typeof createServiceClient>, brokerageId: string, contactId: string,
 ): Promise<MarketWatchResult> {
   if (!brokerageId || !contactId) return { matched: 0, newMatches: 0, reason: "missing ids" }
+  const { data: contact } = await supabase.from("contacts")
+    .select("contact_persona").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+  if ((contact as { contact_persona: string | null } | null)?.contact_persona === "investor") {
+    return { matched: 0, newMatches: 0, reason: "investor_offmarket_only" }
+  }
   const criteria = await loadBuyerCriteria(supabase, contactId)
   if (!criteria) return { matched: 0, newMatches: 0, reason: "no criteria" }
 
@@ -78,7 +95,34 @@ export async function runMarketWatchForBuyer(
   if (criteria.maxPrice != null) q = q.lte("list_price", criteria.maxPrice)
   if (criteria.minBeds != null) q = q.gte("bedrooms", criteria.minBeds)
   const { data: listings } = await q
-  const rows = (listings ?? []) as Array<ListingFacts & { id: string }>
+  const listingRows = ((listings ?? []) as Array<ListingFacts & { id: string }>)
+    .map((r) => ({ ...r, __source: "market_watch" as const }))
+
+  // TERRITORY-WIDE active-listing feed (m636/m639) — BatchData's on-market discovery for this
+  // brokerage's OWN active territories, BESIDE our own inventory above. A DIFFERENT source of
+  // active-for-sale properties (not necessarily this brokerage's own listing) that still fits the
+  // buyer's box — the same criteria-fit scorer, the same delivery path, never a second matcher.
+  //
+  // COST GATE (wave 68, owner: "that is a lot of money to spend for leads…"). This pull is the
+  // BILLED BatchData on-market quicklist feed (lib/kernel/listings-batchdata-feed.ts::
+  // runActiveListingDiscoveryForMarket bills per record on every re-walk). It runs ONLY when this
+  // brokerage's resolved active_listing_sources names "batchdata_on_market" — the m642 default is
+  // ["idx","rentcast"], which excludes it. IDX/RentCast run through runExternalMarketWatchForBuyer
+  // beside this function (lib/buyer-search/external-match.ts), which reads the SAME resolver.
+  const sources = await resolveActiveListingSources(brokerageId)
+  let marketRows: Array<ListingFacts & { id: string; __source: "market_watch_active_feed" }> = []
+  if (sources.includes("batchdata_on_market")) {
+    let mq = supabase.from("market_active_listings")
+      .select("id, list_price, beds, baths, property_type, city")
+      .eq("brokerage_id", brokerageId).eq("current_status", "active").limit(200)
+    if (criteria.maxPrice != null) mq = mq.lte("list_price", criteria.maxPrice)
+    if (criteria.minBeds != null) mq = mq.gte("beds", criteria.minBeds)
+    const { data: marketActive } = await mq
+    marketRows = ((marketActive ?? []) as Array<{ id: string; list_price: number | null; beds: number | null; baths: number | null; property_type: string | null; city: string | null }>)
+      .map((m) => ({ id: m.id, list_price: m.list_price, bedrooms: m.beds, bathrooms: m.baths, city: m.city, __source: "market_watch_active_feed" as const }))
+  }
+
+  const rows = [...listingRows, ...marketRows]
   if (rows.length === 0) return { matched: 0, newMatches: 0, reason: "no inventory" }
 
   // Which of these are already matched for this buyer (to count NEW).
@@ -97,7 +141,7 @@ export async function runMarketWatchForBuyer(
     upserts.push({
       brokerage_id: brokerageId, contact_id: contactId, property_id: l.id,
       match_score: score, ai_generated: false,
-      match_reasons: { source: "market_watch", fit_score: score },
+      match_reasons: { source: l.__source, fit_score: score },
     })
   }
   if (upserts.length > 0) {

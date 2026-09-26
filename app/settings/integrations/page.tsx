@@ -1,19 +1,19 @@
-import { Suspense } from "react"
-import IntegrationsContent from "./integrations-content"
+import { redirect } from "next/navigation"
 
-export default function IntegrationsPage() {
-  return (
-    <div className="container mx-auto py-8 px-4">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">Integrations & API Connections</h1>
-        <p className="text-muted-foreground">
-          Connect your external services to sync data and publish content seamlessly.
-        </p>
-      </div>
-
-      <Suspense fallback={<div>Loading integrations...</div>}>
-        <IntegrationsContent />
-      </Suspense>
-    </div>
-  )
+/**
+ * KEEP-ONE (2026-07 walkthrough [28] "Integrations — another provider list"):
+ * this page duplicated the Connection Center's provider list with a narrower
+ * crm/listing/social/voice tab set. The Connection Center is the ONE tenant
+ * provider hub — full domain coverage (email, phone/SMS, calendar, social,
+ * CRM sync-out with api-key connect + "Sync a contact now", IDX/listings,
+ * financial, transaction, e-sign, showings, podcast) with real
+ * connect/disconnect machinery. Voice/AI-calling setup lives at
+ * /dashboard/settings/isa-calling; direct mail at /settings/direct-mail.
+ * Inbound links to this route keep working via this redirect. (The admin
+ * credential surface at /dashboard/settings/integrations — platform
+ * credentials, provider overrides, IDX Broker, lead sources — is a DIFFERENT
+ * surface and stays.)
+ */
+export default function IntegrationsRedirect() {
+  redirect("/settings/connections")
 }

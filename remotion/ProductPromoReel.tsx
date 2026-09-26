@@ -13,15 +13,27 @@
  * pulse) · CTA 330–450.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  spring,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion"
+import { loadFont } from "@remotion/google-fonts/Inter"
+import { SafeImg } from "./components/SafeImg"
+import { CaptionLayer } from "./components/CaptionLayer"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, sceneWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import type { CaptionCue } from "../lib/video/caption-plan"
+
+// REPLACES the tombstone that used to sit where `base.fontFamily` is built
+// below (lane 73D, wave 73). The tombstone made the declaration truthful
+// (system-ui, matching every other composition) after the prior "Inter" name
+// was a lie — nothing in the bundle loaded it. This is the real fix the
+// tombstone pointed at: `@remotion/google-fonts` (installed at 4.0.521,
+// pinned to the same 4.0.x line as `remotion` itself — `npm view
+// @remotion/google-fonts version` / `npm view remotion version` both resolve
+// 4.0.521 exactly) + `loadFont()` (see .claude/skills/remotion-best-practices
+// → remotion-markup/google-fonts.md) blocks rendering until Inter is ready,
+// so `fontFamily` below is the REAL Google Font, not a name the renderer
+// silently falls through past.
+const { fontFamily: loadedInterFamily } = loadFont("normal", { weights: ["400", "700", "800"], subsets: ["latin"] })
 
 export interface ProductPromoReelProps {
   hook: string
@@ -32,6 +44,23 @@ export interface ProductPromoReelProps {
   imageUrls?: string[]
   brand?: { primaryColor?: string; accentColor?: string; name?: string; tagline?: string }
   ctaDomain?: string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61 caption-consolidation
+   *  audit). Precomputed word-accurate cues built upstream from REAL alignment —
+   *  preferred. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text (composeProductVideoSpec's
+   *  own `script` — hook + beats + CTA, the SAME text this composition already
+   *  renders on screen, §6); CaptionLayer estimates timing in-composition when no
+   *  cues are supplied. Absent → no captions. */
+  captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 79C, lib/video/body-visual-model.ts): the segment
+   * plan composeProductVideoSpec stages — hook / three beats / CTA weighted by
+   * their spoken words, each beat's `screenshot` still index, the CTA on the
+   * brand tile. Re-fitted to the duration this render actually has. Additive:
+   * absent, the scenes split the body as before (hook target + even beats).
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 /** Staggered word-by-word reveal — the "system thinking out loud" feel. */
@@ -44,7 +73,7 @@ const WordReveal: React.FC<{ text: string; size: number; weight?: number; delay?
       {words.map((w, i) => {
         const t = spring({ frame: frame - delay - i * 3, fps, config: { damping: 200 } })
         return (
-          <span key={i} style={{ opacity: t, transform: `translateY(${interpolate(t, [0, 1], [26, 0])}px)`, display: "inline-block" }}>
+          <span key={i} style={{ opacity: t, translate: `0 ${interpolate(t, [0, 1], [26, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`, display: "inline-block" }}>
             {w}
           </span>
         )
@@ -90,12 +119,18 @@ const HANDOFFS: Array<[string, string]> = [
 
 const CAPABILITIES = ["Leads", "Deals", "Video", "Social", "Recruiting", "Vendors", "Compliance", "Reporting"]
 
+// The CTA tile is the outro from the ONE registry (lib/video/duration-model.ts);
+// the hook shot's design length — the body's proof beats are derived around it.
+const BOOKENDS = compositionBookends("ProductPromoReel")
+const CTA = BOOKENDS.outroFrames
+const HOOK_TARGET = 90
+
 const CapabilityChip: React.FC<{ label: string; index: number; accent: string; width: number; height: number }> = ({ label, index, accent, width, height }) => {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   const t = spring({ frame: frame - 20 - index * 4, fps, config: { damping: 200 } })
   return (
-    <span style={{ opacity: t, transform: `scale(${0.8 + 0.2 * t})`, border: `1.5px solid ${accent}66`, color: "#ffffffcc", borderRadius: 999, padding: `${height * 0.006}px ${width * 0.02}px`, fontSize: width * 0.018, fontWeight: 600 }}>
+    <span style={{ opacity: t, scale: 0.8 + 0.2 * t, border: `1.5px solid ${accent}66`, color: "#ffffffcc", borderRadius: 999, padding: `${height * 0.006}px ${width * 0.02}px`, fontSize: width * 0.018, fontWeight: 600 }}>
       {label}
     </span>
   )
@@ -106,13 +141,15 @@ const KenBurnsShot: React.FC<{ src: string; primary: string }> = ({ src, primary
   const scale = 1.06 + 0.10 * (frame / 120)
   return (
     <AbsoluteFill>
-      <Img src={src} style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})`, opacity: 0.34 }} />
+      <SafeImg src={src} style={{ width: "100%", height: "100%", objectFit: "cover", scale, opacity: 0.34 }} />
       <AbsoluteFill style={{ background: `linear-gradient(${primary}d9, ${primary}f0)` }} />
     </AbsoluteFill>
   )
 }
 
-export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs, cta, brand, ctaDomain, imageUrls }) => {
+export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
+  hook, proofs, cta, brand, ctaDomain, imageUrls, captionsCues, captionScript, bodyVisualPlan,
+}) => {
   const primary = brand?.primaryColor ?? "#0F172A"
   const accent = brand?.accentColor ?? "#F59E0B"
   const name = (brand?.name ?? "VIP Agents").toUpperCase()
@@ -121,12 +158,55 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
   const frame = useCurrentFrame()
   const { width, height } = useVideoConfig()
   const pad = Math.round(width * 0.09)
+  // FONT: `loadedInterFamily` (module scope, above) is the real, loaded Inter
+  // family name @remotion/google-fonts hands back — never the bare string
+  // "Inter" again, which is the exact lie this line used to tell. The
+  // system-ui fallback chain stays appended so this composition keeps the
+  // SAME fallback vocabulary the other 37 compositions in remotion/ use
+  // (§6) for the (offline-render / font-block-timeout) case where the
+  // Google Font hasn't resolved yet — it is a fallback tail now, not the
+  // primary declaration.
   const base: React.CSSProperties = {
     backgroundColor: primary, color: "white",
-    fontFamily: "Inter, Helvetica, Arial, sans-serif", padding: pad, justifyContent: "center",
+    fontFamily: `${loadedInterFamily}, system-ui, -apple-system, sans-serif`, padding: pad, justifyContent: "center",
   }
   const beats = (proofs ?? []).slice(0, 3)
   const grid = Math.round(width / 14)
+  // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts).
+  // Literal shot frames (0/90/170/250/330, CTA at 330 for 120) stood here.
+  // The CTA tile is the outro from the ONE registry; the narrated hook + three
+  // proof beats fill whatever body the render's durationInFrames leaves — the
+  // proofs split evenly and the hook absorbs the rounding so the three keyed
+  // beats stay an exact repeat.
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: 0, outroFrames: CTA })
+  const BODY  = timeline.body.durationInFrames
+  const PROOF = Math.floor(Math.max(0, BODY - HOOK_TARGET) / 3)
+  const HOOK  = BODY - PROOF * 3
+  // THE SCENE WINDOWS FOLLOW THE PLAN (wave 79C): the hook and each beat get
+  // the frames their WORDS take (weightedShotSlots in the plan), the last beat
+  // running to the end of the body so the CTA line lands on the CTA tile. No
+  // plan (or a plan short of beats) → the hook-target + even split above.
+  // The ONE helper (sceneWindowsFromPlan) is what the proofs tile with, so
+  // the chain is verified by the same arithmetic that renders it — this
+  // composition is a derived split (scripts/composition-segments.ts
+  // NON_CHAIN_COMPOSITIONS), like PhotoWalkthroughReel and MemoryVideoReel.
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "ProductPromoReel", durationInFrames)
+  const scenes = sceneWindowsFromPlan(plan, BODY, beats.length) ?? {
+    hook: { from: 0, durationInFrames: HOOK },
+    beats: beats.map((_, i) => ({ from: HOOK + i * PROOF, durationInFrames: PROOF })),
+  }
+  // The Ken Burns still slots: the plan's `screenshot` segments (each carrying
+  // the still index it starts on) plus the CTA tile; else one per scene.
+  const stillShots: Array<{ from: number; len: number; idx: number }> = plan && plan.screenshotSlots.length > 0
+    ? [
+        ...plan.segments.filter((s) => s.treatment === "screenshot").map((s) => ({ from: s.from, len: s.durationInFrames, idx: s.assetIndex ?? s.index })),
+        { from: BODY, len: CTA, idx: plan.segments.length },
+      ]
+    : [
+        { from: 0, len: HOOK, idx: 0 }, { from: HOOK, len: PROOF, idx: 1 }, { from: HOOK + PROOF, len: PROOF, idx: 2 },
+        { from: HOOK + PROOF * 2, len: PROOF, idx: 3 }, { from: BODY, len: CTA, idx: 4 },
+      ]
   // Scene fills stay TRANSPARENT so the command-center grid + brand eyebrow show through.
   const scene: React.CSSProperties = { ...base, backgroundColor: "transparent" }
 
@@ -141,12 +221,12 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
         }}
       />
       {/* optional platform-screenshot slideshow (dimmed, Ken Burns) — one per scene */}
-      {(imageUrls ?? []).length > 0 && [0, 90, 170, 250, 330].map((from, idx) => (
-        <Sequence key={`shot-${idx}`} from={from} durationInFrames={idx === 4 ? 120 : idx === 0 ? 90 : 80}>
-          <KenBurnsShot src={imageUrls![idx % imageUrls!.length]} primary={primary} />
+      {(imageUrls ?? []).length > 0 && stillShots.map((shot, i) => (
+        <Sequence key={`shot-${i}`} from={shot.from} durationInFrames={Math.max(1, shot.len)}>
+          <KenBurnsShot src={imageUrls![shot.idx % imageUrls!.length]} primary={primary} />
         </Sequence>
       ))}
-      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, 450], [15, 85])}% 12%, ${accent}26, transparent 55%)` }} />
+      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, durationInFrames], [15, 85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}% 12%, ${accent}26, transparent 55%)` }} />
 
       {/* persistent brand eyebrow + live-status dot */}
       <div style={{ position: "absolute", top: pad, left: pad, right: pad, display: "flex", alignItems: "center", gap: 12 }}>
@@ -155,17 +235,17 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
         <span style={{ fontSize: width * 0.016, color: "#ffffff88", marginLeft: "auto" }}>COMMAND CENTER · LIVE</span>
       </div>
 
-      <Sequence from={0} durationInFrames={90}>
+      <Sequence from={scenes.hook.from} durationInFrames={scenes.hook.durationInFrames}>
         <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
           <WordReveal text={hook} size={width * 0.06} />
-          <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
+          <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
             {tagline}
           </div>
         </AbsoluteFill>
       </Sequence>
 
       {beats.map((p, i) => (
-        <Sequence key={i} from={90 + i * 80} durationInFrames={80}>
+        <Sequence key={i} from={scenes.beats[i].from} durationInFrames={scenes.beats[i].durationInFrames}>
           <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
             <div style={{ fontSize: width * 0.026, color: accent, fontWeight: 800 }}>{`0${i + 1}`}</div>
             <div style={{ marginTop: 14 }}>
@@ -176,7 +256,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
         </Sequence>
       ))}
 
-      <Sequence from={330} durationInFrames={120}>
+      <Sequence from={BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
           <WordReveal text={cta} size={width * 0.052} />
           <div style={{ marginTop: 30, display: "inline-block", backgroundColor: accent, color: primary, fontWeight: 800, fontSize: width * 0.03, padding: "18px 36px", borderRadius: 14 }}>
@@ -190,6 +270,15 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
           </div>
         </AbsoluteFill>
       </Sequence>
+
+      {/* NO CAPTION OVER THE CTA/DOMAIN TILE (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA scene at BODY. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={accent}
+        hiddenFromFrame={BODY}
+      />
     </AbsoluteFill>
   )
 }

@@ -13,6 +13,8 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
+import { isIntegrationConnected } from "@/lib/integrations/integration-status"
+import type { IntegrationStatus } from "@/lib/integrations/integration-status"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +22,7 @@ export interface ProviderStatus {
   provider: ProviderName
   displayName: string
   providerType: string
-  status: "connected" | "error" | "not_configured"
+  status: IntegrationStatus
   lastTestedAt: string | null
   lastError: string | null
   hasCredentials: boolean
@@ -36,6 +38,50 @@ export interface IntegrationStatusResult {
 
 // ─── GET INTEGRATION STATUS ───────────────────────────────────────────────────
 
+/**
+ * Roles allowed to administer the BROKERAGE's shared provider credentials.
+ *
+ * Every export in this file already verified that the caller belongs to the brokerage
+ * they passed — so this was never cross-tenant. What it did not check was PRIVILEGE:
+ * these rows are written with owner_type "brokerage", so any producing agent could
+ * overwrite or delete the credentials the whole tenant runs on. Same defect, and same
+ * fix, as app/actions/settings/integrations.ts.
+ */
+// TENANT ADMIN GATE (kept inline, tenant credentials — deliberately no team_lead):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage these credentials run.
+const TECH_STACK_ADMIN_ROLES = ["admin", "broker", "broker_owner", "broker_admin"]
+
+/** Authenticate, confirm tenant membership, AND confirm the caller may administer it. */
+async function requireBrokerageAdmin(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  brokerageId: string,
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  if (authError || !user) return { ok: false, error: "Unauthorized" }
+
+  const { data: userData } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type, role")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  if (!userData || userData.brokerage_id !== brokerageId) {
+    return { ok: false, error: "Unauthorized: Brokerage mismatch" }
+  }
+
+  const resolvedRole = String(
+    (userData as { user_type?: string | null; role?: string | null }).user_type ??
+      (userData as { role?: string | null }).role ??
+      "",
+  )
+  if (!TECH_STACK_ADMIN_ROLES.includes(resolvedRole)) {
+    return { ok: false, error: "Forbidden: provider credentials are managed by your broker or admin" }
+  }
+
+  return { ok: true, userId: user.id }
+}
+
 export async function getIntegrationStatus(
   brokerageId: string
 ): Promise<{ data: IntegrationStatusResult | null; error: string | null }> {
@@ -43,21 +89,8 @@ export async function getIntegrationStatus(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { data: null, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { data: null, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { data: null, error: gate.error }
 
     // Get all brokerage_integrations records
     const { data: integrations } = await supabase
@@ -92,12 +125,19 @@ export async function getIntegrationStatus(
 
     // Calculate required completion
     // Required: Twilio (sms) + SendGrid (email) + (DocuSign OR DotLoop) (esign)
-    const smsConnected = providers.some(p => p.providerType === "sms" && p.status === "connected")
-    const emailConnected = providers.some(p => p.providerType === "email" && p.status === "connected")
-    const esignConnected = providers.some(p => p.providerType === "esign" && p.status === "connected")
-    
+    // ONE VOCABULARY (§6, wave 26). These four were hand-rolled
+    // `p.status === "connected"` comparisons; `isIntegrationConnected`
+    // (lib/integrations/integration-status.ts:39) is the declared predicate for
+    // exactly this, and its module header names the trap it exists to stop:
+    // "The value 'active' was never one of these." A fifth spelling appearing
+    // anywhere would make an unusable provider read as ready and let onboarding
+    // report itself complete.
+    const smsConnected = providers.some(p => p.providerType === "sms" && isIntegrationConnected(p.status))
+    const emailConnected = providers.some(p => p.providerType === "email" && isIntegrationConnected(p.status))
+    const esignConnected = providers.some(p => p.providerType === "esign" && isIntegrationConnected(p.status))
+
     const requiredComplete = smsConnected && emailConnected && esignConnected
-    const connectedCount = providers.filter(p => p.status === "connected").length
+    const connectedCount = providers.filter(p => isIntegrationConnected(p.status)).length
     const totalRequired = 3 // SMS + Email + E-Sign
 
     return {
@@ -126,21 +166,8 @@ export async function saveCredentials(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { success: false, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { success: false, error: gate.error }
 
     const metadata = PROVIDER_METADATA[provider]
     if (!metadata) {
@@ -154,7 +181,15 @@ export async function saveCredentials(
       }
     }
 
-    // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
+    // Owner-keyed update-or-insert. The unique key is (owner_type, owner_id,
+    // platform) and it is REAL — VERIFIED LIVE, not assumed: m104 created it as
+    // `platform_credentials_owner_uniq`, a PARTIAL UNIQUE INDEX
+    // `WHERE owner_type IS NOT NULL`, and a duplicate insert is refused with 23505.
+    // It is spelled out here because it lives in pg_index and NOT in pg_constraint:
+    // a check that dumps pg_constraint for this table sees only the two FKs and the
+    // three CHECKs, reads the key as absent, and reports this comment as a lie. It
+    // is not. A concurrent OAuth callback racing this read-then-write cannot
+    // duplicate the credential — the second writer gets 23505, not a second row.
     // Store credentials as config JSONB (encrypted at rest by Supabase).
     const credRow = {
       brokerage_id: brokerageId,
@@ -214,21 +249,8 @@ export async function deleteCredentials(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { success: false, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { success: false, error: gate.error }
 
     // Delete platform_credentials
     const { error: credError } = await supabase
@@ -270,21 +292,8 @@ export async function markTechStackComplete(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { success: false, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { success: false, error: gate.error }
 
     // Verify required integrations are connected
     const { data: statusData, error: statusError } = await getIntegrationStatus(brokerageId)
@@ -297,7 +306,7 @@ export async function markTechStackComplete(
     }
 
     // Resolve agent ID
-    const agentId = await resolveAgentId(supabase, user.id)
+    const agentId = await resolveAgentId(supabase, gate.userId)
 
     // Insert agent_step_completions
     const { error: stepError } = await supabase
@@ -342,7 +351,7 @@ export async function markTechStackComplete(
         entityId: onboarding.id,
         fromState: onboarding.status || "brand_configured",
         toState: "integrations_configured",
-        actorUserId: user.id,
+        actorUserId: gate.userId,
         eventType: "integrations_configured",
         metadata: {
           connectedCount: statusData.connectedCount,
@@ -378,21 +387,8 @@ export async function getMaskedCredentials(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { data: null, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { data: null, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { data: null, error: gate.error }
 
     // Get credentials
     const { data: credential } = await supabase

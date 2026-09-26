@@ -1,29 +1,71 @@
 "use server"
 
 import { isValidUUID } from "@/lib/validations"
-import * as TransactionKernel from "@/lib/kernel/transactions"
+import { DEADLINE_STATUSES, isDeadlineStatus } from "@/lib/transactions/coordination-status"
 import * as TransactionService from "@/lib/application/transactions"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { createContactManually } from "@/lib/kernel/crm"
 
 // ============================================
 // TRANSACTION CRUD
 // ============================================
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `transactions` branch:
+ * the SESSION-DERIVED tenant scope and the session-pinned agent scope.
+ *
+ * Both used to be optional caller-supplied arguments and neither was applied by
+ * default, so `getTransactions()` read every deal on the platform and
+ * `getTransactions({ agent_id })` read any agent's book by id. A caller-supplied
+ * agent id may now only NARROW, only inside the caller's own tenant, and only
+ * for a broker/admin; everyone else is pinned to their own agents.id.
+ *
+ * It also returned a bare `[]` for a rejected argument, which the caller could
+ * not tell from an empty pipeline. Every exit is now the discriminated shape.
+ */
 export async function getTransactions(filters?: {
   status?: string
   agent_id?: string
   agentId?: string
-  brokerage_id?: string
 }) {
-  const agentIdValue = filters?.agent_id || filters?.agentId
-  if (agentIdValue && !isValidUUID(agentIdValue)) {
-    console.warn("[transactions.ts] getTransactions called with invalid UUID:", agentIdValue)
-    return []
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { success: false as const, error: "Not authenticated", data: [] as unknown[] }
   }
+  if (!ctx.brokerageId) {
+    return {
+      success: false as const,
+      error: "Your account is not linked to a brokerage yet.",
+      data: [] as unknown[],
+    }
+  }
+
+  const requestedAgentId = filters?.agent_id || filters?.agentId
+  if (requestedAgentId && !isValidUUID(requestedAgentId)) {
+    return { success: false as const, error: "Invalid agent ID", data: [] as unknown[] }
+  }
+
+  // agents.id — resolved from the session, never a users.id substituted with `??`.
+  let agentFilter: string | undefined
+  if (isAdminOrBroker({ user_type: ctx.userType })) {
+    // A broker/admin may narrow to one agent; the tenant filter below is what
+    // keeps that id inside their own brokerage.
+    agentFilter = requestedAgentId
+  } else {
+    if (!ctx.agentId) {
+      return { success: false as const, error: "Agent profile not found", data: [] as unknown[] }
+    }
+    agentFilter = ctx.agentId
+  }
+
   // Use application service for now - kernel doesn't have direct list function
   // TODO: Migrate to kernel when loadTransactionWorkspace is refactored for listing
-  return TransactionService.getTransactions(filters)
+  return TransactionService.getTransactions({
+    status: filters?.status,
+    agent_id: agentFilter,
+    brokerage_id: ctx.brokerageId,
+  })
 }
 
 export async function getTransactionById(transactionId: string) {
@@ -481,6 +523,24 @@ export async function updateDeadline(
   updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
   if (!isValidUUID(deadlineId)) return { success: false, error: "Invalid deadline ID" }
+
+  // VOCABULARY GATE (wave 26). `status` arrives here as free text on a
+  // "use server" export — a public HTTP endpoint — and
+  // lib/application/transactions.ts:1101 passes it straight into
+  // transaction_deadlines.status, which is CHECK-constrained. An unadmitted
+  // value therefore reached the database and came back as a raw constraint
+  // error naming none of the valid states. Validated against the ONE canonical
+  // list (lib/transactions/coordination-status.ts:49), the same shape
+  // updateListingStatus already uses for listings.status, so the two cannot
+  // drift. `completeDeadline` below writes 'completed' as a literal and is
+  // unaffected.
+  if (updates.status !== undefined && !isDeadlineStatus(updates.status)) {
+    return {
+      success: false,
+      error: `'${String(updates.status)}' is not a deadline status. Valid: ${DEADLINE_STATUSES.join(", ")}`,
+    }
+  }
+
   return TransactionService.updateDeadline(deadlineId, updates)
 }
 
@@ -589,8 +649,25 @@ export async function generateStatusUpdate(transactionId: string) {
 }
 
 export async function generateSmartChecklist(transactionId: string, stage: string) {
-  if (!isValidUUID(transactionId)) return { success: false }
+  if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
   return TransactionService.generateSmartChecklist(transactionId, stage)
+}
+
+// ── Smart checklist card (transaction detail page) ─────────────────────────
+// The reader + completion writer for smart_checklists / task_items. The
+// generator above wrote per-deal compliance checklists that no surface could
+// show; these are the two halves the card in
+// app/dashboard/transactions/[id]/smart-checklist-panel.tsx stands on.
+
+export async function getSmartChecklists(transactionId: string) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.getSmartChecklists(transactionId)
+}
+
+export async function setTaskItemCompleted(taskItemId: string, transactionId: string, completed: boolean) {
+  if (!isValidUUID(taskItemId)) return { success: false as const, error: "Invalid task ID" }
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.setTaskItemCompleted(taskItemId, transactionId, completed)
 }
 
 export async function detectTransactionIssues(transactionId: string) {

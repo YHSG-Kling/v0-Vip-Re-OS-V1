@@ -19,6 +19,7 @@
  *   - on-demand action (agent presses "Prepare for appointment now")
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -64,6 +65,13 @@ export interface ListingPresentationInput {
   contactId:       string | null
   appointmentId?:  string | null
   appointmentAt?:  string | null
+  /**
+   * The listing this appointment is for, when there is one. Used to load the
+   * seller's recorded improvements (property_upgrades) so the CMA narrative
+   * accounts for what the seller has done to the home since buying it — the
+   * last clause of the owner's CMA ruling. Tenant-anchored on read.
+   */
+  listingId?:      string | null
   propertyAddress: string
   state:           string                                    // 2-letter
   city?:           string | null
@@ -73,6 +81,37 @@ export interface ListingPresentationInput {
   bathrooms?:      number | null
   sqft?:           number | null
   yearBuilt?:      number | null
+  /**
+   * A CMA THE CALLER HAS ALREADY PAID FOR. Supply it and this builder will NOT run
+   * its own — the one lever that stops the same property being valued twice.
+   *
+   * WHY THIS EXISTS. lib/workflow-orchestrator/chains/listing-appt-prep.ts runs
+   * generate_cma as step 1 (writing a cma_reports row) and then builds the
+   * presentation as step 2. Both call the SAME engine, lib/cma/ai-cma-orchestrator
+   * ::runAiCma, and each sources comps from a PAID provider — so every autonomous
+   * appointment bought two valuations of one house. Worse than the spend: the two
+   * runs are independent, so the number in the agent's CMA report could disagree
+   * with the number in the seller's presentation and in the pricing chapter reel,
+   * for the same home on the same day.
+   *
+   * IT IS A NARROW STRUCTURAL TYPE, NOT AiCmaResult, on purpose. These five fields
+   * are exactly what this builder reads. Accepting the full result would invite a
+   * caller to hand over a partially-built one and would couple this file to the
+   * whole orchestrator surface; naming the five keeps the contract honest and lets
+   * the compiler refuse anything short.
+   *
+   * UNITS: confidenceScore is the engine's native 0..1, NOT the 0..100
+   * `confidenceLevel` that generateAICMA also returns for display. Passing the
+   * percentage here would render a confidence of 8500% and would look right in
+   * every type check — which is why generateAICMA now returns both.
+   */
+  cma?: {
+    estimatedValueLow:  number
+    estimatedValueMid:  number
+    estimatedValueHigh: number
+    confidenceScore:    number
+    aiNarrative:        string
+  }
 }
 
 export interface ListingPresentationResult {
@@ -89,9 +128,12 @@ export interface ListingPresentationResult {
   slideDeck:      SlideDeckSlide[]
   packetDocumentId: string | null
   // ── 3 appointment-prep additions ─────────────────────────────────────
-  /** Real property data pulled from OSINT/BatchData (or AI estimate when both miss). */
+  /** Real property facts from the ONE property rail (lib/ai-isa/property-lookup-rail.ts,
+   *  purpose listing_intake — cache → tenant IDX → RentCast → public records; never
+   *  BatchData), or its labelled AI estimate when every rung misses. `source` is the
+   *  rail's own vocabulary (§6) — the old "osint" spelling is gone with enrichment-chain.ts. */
   propertyEnrichment?: {
-    source:        "osint" | "batchdata" | "ai_estimate"
+    source:        import("@/lib/ai-isa/property-lookup-rail").PropertyLookupSource
     isEstimate:    boolean
     sourceNote:    string
     beds?:         number | null
@@ -155,6 +197,10 @@ async function buildMarketingPlan(input: {
   bedrooms?:       number | null
   bathrooms?:      number | null
   sqft?:           number | null
+  /** Tenant + actor for the AI cost ledger, from ListingPresentationInput —
+   *  resolved server-side by the cron and the workflow route (§4). */
+  brokerageId?:    string | null
+  agentUserId?:    string | null
 }): Promise<MarketingPlan> {
   // Recommend tier from value
   const tier: MarketingPlan["recommendedTier"] =
@@ -180,6 +226,8 @@ Return ONLY JSON matching this shape (no prose, no markdown):
   let parsed: Partial<Omit<MarketingPlan, "recommendedTier">> = {}
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.agentUserId ?? null,
       feature: "listing_marketing_plan",
       messages: [{ role: "user", content: prompt }],
     })
@@ -268,8 +316,14 @@ export async function buildListingPresentation(
   try {
     const svc = createServiceClient()
 
-    // 0a. APPOINTMENT-PREP ADDITION: property enrichment chain.
-    //     OSINT (free) → BatchData (paid) → AI estimate (last resort).
+    // 0a. APPOINTMENT-PREP ADDITION: property facts through THE ONE property
+    //     rail (lib/ai-isa/property-lookup-rail.ts) with purpose "listing_intake":
+    //     own DB → tenant IDX → RentCast → public records, NEVER BatchData; the
+    //     free geocode fills lat/lon; a facts-only AI estimate (flagged
+    //     isEstimate) is the last resort. Replaces the deleted
+    //     lib/property/enrichment-chain.ts ladder (wave 80 lane B — survivor
+    //     named in the rail's header). Tenant from the caller's session context
+    //     (input.brokerageId), audience "staff" (the agent's own prep deck).
     //     Best-effort: if every source misses, we still proceed using
     //     whatever the agent passed in (bedrooms/bathrooms/sqft/yearBuilt).
     //     This does NOT replace manual entry at MLS go-live — that path
@@ -278,23 +332,32 @@ export async function buildListingPresentation(
     let lat: number | null = null
     let lon: number | null = null
     try {
-      const { enrichPropertyChain } = await import("@/lib/property/enrichment-chain")
-      const enriched = await enrichPropertyChain(input.propertyAddress)
-      propertyEnrichment = {
-        source:        enriched.source,
-        isEstimate:    enriched.isEstimate,
-        sourceNote:    enriched.sourceNote,
-        beds:          enriched.beds          ?? input.bedrooms  ?? null,
-        baths:         enriched.baths         ?? input.bathrooms ?? null,
-        sqft:          enriched.sqft          ?? input.sqft      ?? null,
-        yearBuilt:     enriched.yearBuilt     ?? input.yearBuilt ?? null,
-        lotSize:       enriched.lotSize       ?? null,
-        propertyType:  enriched.propertyType  ?? null,
-        lat:           enriched.lat ?? null,
-        lon:           enriched.lon ?? null,
+      const { lookupPropertyForConversation, splitOneLineAddress } = await import("@/lib/ai-isa/property-lookup-rail")
+      const r = await lookupPropertyForConversation({
+        brokerageId: input.brokerageId,
+        purpose: "listing_intake",
+        audience: "staff",
+        address: splitOneLineAddress(input.propertyAddress),
+        userId: input.agentUserId ?? null,
+      })
+      if (r.found && r.facts) {
+        const enriched = r.facts
+        propertyEnrichment = {
+          source:        enriched.source,
+          isEstimate:    enriched.isEstimate,
+          sourceNote:    enriched.sourceNote,
+          beds:          enriched.beds          ?? input.bedrooms  ?? null,
+          baths:         enriched.baths         ?? input.bathrooms ?? null,
+          sqft:          enriched.sqft          ?? input.sqft      ?? null,
+          yearBuilt:     enriched.yearBuilt     ?? input.yearBuilt ?? null,
+          lotSize:       enriched.lotSize       ?? null,
+          propertyType:  enriched.propertyType  ?? null,
+          lat:           enriched.lat ?? null,
+          lon:           enriched.lon ?? null,
+        }
+        lat = enriched.lat ?? null
+        lon = enriched.lon ?? null
       }
-      lat = enriched.lat ?? null
-      lon = enriched.lon ?? null
     } catch { /* enrichment is best-effort */ }
 
     // 0b. APPOINTMENT-PREP ADDITION: cover photo via Google Street View.
@@ -302,7 +365,7 @@ export async function buildListingPresentation(
     let coverPhotoUrl: string | null = null
     try {
       const { getStreetViewImageUrl, getStaticMapImageUrl } =
-        await import("@/lib/property/enrichment-chain")
+        await import("@/lib/property/street-view")
       const street = getStreetViewImageUrl({
         address: input.propertyAddress,
         lat:     lat ?? undefined,
@@ -320,8 +383,24 @@ export async function buildListingPresentation(
     const effectiveSqft      = input.sqft      ?? propertyEnrichment?.sqft      ?? null
     const effectiveYearBuilt = input.yearBuilt ?? propertyEnrichment?.yearBuilt ?? null
 
-    // 1. Run CMA (existing infrastructure) — now feeds enriched fields when available
-    const cma = await runAiCma({
+    // 0c. Seller-reported improvements since purchase — the last clause of the
+    //     CMA ruling. Already stored on property_upgrades; loaded here so the CMA
+    //     narrative and the appraiser packet describe the SAME upgrade list.
+    const sellerUpgrades = input.listingId
+      ? await (async () => {
+          const { loadSellerUpgradesForListing } = await import("@/lib/cma/seller-upgrades")
+          return loadSellerUpgradesForListing({
+            listingId: input.listingId as string,
+            brokerageId: input.brokerageId,
+          })
+        })()
+      : []
+
+    // 1. THE CMA. Reuse the caller's when it supplied one — see ListingPresentationInput.cma
+    //    — otherwise run the engine here as before. `??` and not `||`: a caller
+    //    passing a legitimately zero-valued field must not fall through to a second
+    //    paid run.
+    const cma = input.cma ?? await runAiCma({
       mode: "standard",
       brokerageId: input.brokerageId,
       agentUserId: input.agentUserId ?? null,
@@ -336,6 +415,7 @@ export async function buildListingPresentation(
         sqftLiving: effectiveSqft,
         yearBuilt:  effectiveYearBuilt,
         propertyType: "single_family",
+        sellerUpgrades,
       } as any,
     })
 
@@ -350,6 +430,10 @@ export async function buildListingPresentation(
       bedrooms:        input.bedrooms,
       bathrooms:       input.bathrooms,
       sqft:            input.sqft,
+      // §4 — resolved server-side by both callers (the prep cron and the
+      // workflow route), carried on ListingPresentationInput.
+      brokerageId:     input.brokerageId,
+      agentUserId:     input.agentUserId,
     })
 
     // 4. State forms (used in the deck + linked packet)
@@ -539,7 +623,9 @@ export async function buildListingPresentation(
 
     // 8. Notify agent
     if (input.agentUserId) {
-      void Promise.resolve(svc.from("notifications").insert({
+      // Ledgered, not swallowed (lane 76C): the fire-and-forget `.catch(() => {})`
+      // hid a refused insert; sentinelWrite reads the error and records the loss.
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id:      input.agentUserId,
         brokerage_id: input.brokerageId,
         type:         "listing_presentation_ready",
@@ -549,7 +635,7 @@ export async function buildListingPresentation(
         entity_type:  "listing_presentation",
         entity_id:    pres.id,
         channel:      "in_app",
-      })).catch(() => {})
+      }), { table: "notifications", flow: "listing_presentation_builder_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the presentation it follows" })
     }
 
     return {

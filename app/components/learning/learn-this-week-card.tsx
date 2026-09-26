@@ -81,9 +81,14 @@ export function LearnThisWeekCard({ actorKind, actorId, limit = 3 }: Props) {
         )}
 
         {picks.map((p: LearningModulePick) => (
+          // REPOINTED (dangling-link sweep, 2026-09-02): was `/learn/${id}` —
+          // app/learn does not exist. `p.id` is a learning_modules.id
+          // (lib/learning-router/composer.ts:314) and the in-app module reader
+          // by that id is app/academy/module/[id]/page.tsx, gated by
+          // getModuleForLearner (authenticated + brokerage isolation + published).
           <Link
             key={p.id}
-            href={`/learn/${p.id}`}
+            href={`/academy/module/${p.id}`}
             className="rounded-md border p-3 hover:bg-muted/40 transition-colors flex items-start gap-3"
           >
             {p.coverImageUrl ? (

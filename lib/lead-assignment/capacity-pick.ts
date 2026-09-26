@@ -10,15 +10,17 @@
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import { pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount } from "@/lib/kernel/capacity-guardian"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** An agent's WORKING LOAD = active contacts + owned leads + active deals. */
-export async function agentWorkingLoad(supabase: Svc, brokerageId: string, agentId: string): Promise<number> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function agentWorkingLoad(supabase: Svc, brokerageId: string, agentId: string): Promise<number> {
   const [c, l, d] = await Promise.all([
     supabase.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).is("deleted_at", null),
     supabase.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId),
-    supabase.from("transactions").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).in("status", ["active", "under_contract", "closing"]),
+    supabase.from("transactions").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).in("status", [...TRANSACTION_STATUSES_OPEN]),
   ])
   return (c.count ?? 0) + (l.count ?? 0) + (d.count ?? 0)
 }

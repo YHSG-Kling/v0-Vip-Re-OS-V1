@@ -160,3 +160,57 @@ export function qualifiedOffMarketDeals(matches: OffMarketMatch[]): OffMarketMat
 export function boxHasGeography(box: InvestorBox | null): boolean {
   return !!box && ((box.cities?.length ?? 0) > 0 || (box.zipCodes?.length ?? 0) > 0)
 }
+
+// ─── LIKELIHOOD BAND — the investor portal card's "most likely to sell" signal ────────────────────
+//
+// Wave 69 owner ruling, verbatim: "investor buyers portal persona is different than the regular real
+// estate buyer… if it is for the investor with giving them just off market but most likely to sell,
+// that is just showing them the properties nothing else." And: "likelihood_band = batchrank_band when
+// present else a quicklist-derived proxy (pre-foreclosure → high; tired-landlord / absentee +
+// high-equity → medium; vacant / inherited → low; document the proxy in one exported pure function
+// with a proof and label it 'signal-based' in the UI)."
+//
+// BatchRank (lib/external/batchdata-batchrank.ts) is an OPTIONAL, custom-priced, fail-closed add-on —
+// most candidates will never carry a batchrank_band. This function is what the investor portal card
+// shows for THOSE candidates: a band derived from the SAME quicklist vocabulary
+// INVESTOR_OFFMARKET_QUICKLISTS already carries on every row, never a second distress taxonomy.
+
+export type LikelihoodBand = "high" | "medium" | "low"
+
+export interface LikelihoodBandResult {
+  band: LikelihoodBand
+  /** "batchrank" when a licensed BatchRank verdict was available; "signal-based" when this function
+   *  derived the band from the candidate's own quicklists (the UI MUST label the difference — an
+   *  AI-priced provider score and a quicklist heuristic are not the same claim). */
+  source: "batchrank" | "signal-based"
+}
+
+const norm1 = (s: string) => s.trim().toLowerCase()
+
+/**
+ * PURE: the investor-facing "most likely to sell" band. `batchrankBand`, when present (a licensed
+ * BatchRank verdict already resolved onto the candidate row), is authoritative and passed through
+ * unchanged. Otherwise this derives a band from the candidate's own BatchData quicklists, in the
+ * owner-ruled priority order:
+ *   1. pre-foreclosure                                    → high   (imminent forced sale)
+ *   2. tired-landlord, OR (absentee-owner AND high-equity) → medium (motivated but not urgent)
+ *   3. vacant, OR inherited                                → low    (distressed but no sale signal yet)
+ *   4. anything else the off-market rail admitted (e.g. a bare high-equity or absentee tag with no
+ *      stronger signal) → medium, the honest middle rather than a fabricated high or low for a
+ *      quicklist this function was not given a rule for.
+ */
+export function deriveLikelihoodBand(
+  quicklists: readonly string[] | null | undefined,
+  batchrankBand: LikelihoodBand | null | undefined,
+): LikelihoodBandResult {
+  if (batchrankBand === "high" || batchrankBand === "medium" || batchrankBand === "low") {
+    return { band: batchrankBand, source: "batchrank" }
+  }
+  const q = new Set((quicklists ?? []).map(norm1))
+  if (q.has("preforeclosure")) return { band: "high", source: "signal-based" }
+  if (q.has("tired-landlord") || (q.has("absentee-owner") && q.has("high-equity"))) {
+    return { band: "medium", source: "signal-based" }
+  }
+  if (q.has("vacant") || q.has("inherited")) return { band: "low", source: "signal-based" }
+  return { band: "medium", source: "signal-based" }
+}

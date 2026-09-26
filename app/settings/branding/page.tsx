@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getGlobalSettings } from '@/app/actions/settings/get-global-settings';
 import { BrandingForm } from '@/app/components/settings/BrandingForm';
 import { YourWebsiteCard } from '@/app/components/settings/YourWebsiteCard';
+import { BusinessRegistrationCard } from '@/app/components/settings/BusinessRegistrationCard';
 
 export default function BrandingPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -42,6 +43,10 @@ export default function BrandingPage() {
       {/* The zero-hosting sites this branding feeds — live URLs, finally discoverable. */}
       <YourWebsiteCard />
       <BrandingForm initialData={settings} />
+      {/* Wave 84D — the registration info carrier registration (A2P 10DLC /
+          toll-free) and the number-port form are PULLED from. Self-gated:
+          the card renders its own refusal for a non-admin seat. */}
+      <BusinessRegistrationCard />
     </div>
   );
 }

@@ -16,7 +16,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 
 export interface WeeklyMetric {
   label: string
@@ -36,8 +36,8 @@ export interface WeeklyInsights {
 }
 
 export async function getWeeklyInsights(): Promise<WeeklyInsights> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
     return EMPTY_INSIGHTS()
   }
 

@@ -9,11 +9,20 @@ import { generateTextRouted } from "@/lib/ai/models"
 
 export type SourceFamily = "raw" | "lead" | "contact_direct"
 
+// The wording-vs-quality discriminator (pure).
+import { diagnoseSource } from "@/lib/lead-pipeline/source-wording-diagnostic"
+// Lane 82B — lead cost by source: SOURCE_VENDOR's runtime reader + the ledger reconcile.
+import { ALL_SOURCE_KEYS, vendorForSource, type ScrapeVendor } from "@/lib/lead-pipeline/source-intent-map"
+import { leadCostBySource, type LeadCostLedger } from "@/lib/lead-pipeline/source-cost-ledger"
+
 export interface SourceMetrics {
   source: string
   source_family: SourceFamily
   source_channel: string | null
   source_subtype: string | null
+  /** Lane 82B — the scraping vendor SOURCE_VENDOR names for this source (null = not a scraped
+   *  source, e.g. a website form or a manual entry). Platform-paid; shown for lead-cost tracking. */
+  vendor: ScrapeVendor | null
 
   // Stage counts — populated per source family
   raw_record_count: number    // raw only
@@ -35,6 +44,10 @@ export interface SourceMetrics {
   roi_multiple: number
   cost_per_record: number
   cost_per_contact: number
+  /** spend / closed_count — the brokerage lead-cost report's headline number: what a CLOSED
+   *  deal from this source actually cost, not just what a raw record or a contact cost.
+   *  0 when nothing has closed yet (never divides by zero, never fabricates a figure). */
+  cost_per_conversion: number
 
   // Agent performance
   agent_count: number
@@ -47,6 +60,12 @@ export interface SourceMetrics {
 
   created_at_oldest: string | null
   created_at_newest: string | null
+
+  /**
+   * Is a weak source actually BAD, or is our copy not landing? Downranking a good
+   * source over a fixable opener throws away real leads. Null below min volume.
+   */
+  diagnostic: { verdict: string; recommendation: string; why: string } | null
 }
 
 export interface SourcePerformanceResult {
@@ -63,6 +82,9 @@ export interface SourcePerformanceResult {
     top_volume_source: string | null
     top_direct_source: string | null
   }
+  /** Lane 82B — per-source recorded lead cost reconciled to the platform vendor ledger
+   *  (vendor_usage_tracking rows booked per SourceKey by source-cost-ledger.ts::bookSourceSpend). */
+  lead_cost_ledger?: LeadCostLedger
   error?: string
 }
 
@@ -111,11 +133,10 @@ export interface SourceDrilldownResult {
   error?: string
 }
 
-export interface SourceComparisonResult {
-  success: boolean
-  sources: SourceMetrics[]
-  error?: string
-}
+// TOMBSTONE: SourceComparisonResult went with getSourceComparison — see the
+// tombstone at the former call site below. Its only referent was that
+// function's return type; the surviving path types the same rows as
+// SourceMetrics[], which is what CompareDialog already accepts.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Filters
@@ -150,7 +171,7 @@ export async function getSourcePerformance(
     // ── 1. Contacts grouped by source + source_family ──────────────────────────
     let contactsQuery = supabase
       .from("contacts")
-      .select("id, source, source_family, source_channel, source_subtype, agent_id, cost_per_record, campaign_attribution_id, created_at")
+      .select("id, source, source_family, source_channel, source_subtype, agent_id, cost_per_record, acquisition_cost, campaign_attribution_id, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
@@ -163,9 +184,14 @@ export async function getSourcePerformance(
     if (cErr) throw cErr
 
     // ── 2. Leads grouped by source ─────────────────────────────────────────────
+    // acquisition_cost (m634, applied live 2026-09-15) is the FULLER lead-cost figure
+    // (cost_per_record + enrichment spend + campaign cost share — lib/contact-promotion/
+    // acquisition-cost.ts). Same fallback rule as lib/lead-pipeline/source-conversion-runner.ts
+    // (loadSourceConversions): prefer acquisition_cost, fall back to the narrower
+    // cost_per_record for rows that never got the richer figure computed.
     let leadsQuery = supabase
       .from("leads")
-      .select("id, source, source_family, source_channel, agent_id, cost_per_record, campaign_attribution_id, lifecycle_state, created_at, contact_id")
+      .select("id, source, source_family, source_channel, agent_id, cost_per_record, acquisition_cost, campaign_attribution_id, lifecycle_state, created_at, contact_id")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
@@ -264,6 +290,7 @@ export async function getSourcePerformance(
           source_family: family,
           source_channel: channel ?? null,
           source_subtype: subtype ?? null,
+          vendor: vendorForSource(source || "unknown"),
           raw_record_count: 0,
           lead_count: 0,
           contact_count: 0,
@@ -274,11 +301,13 @@ export async function getSourcePerformance(
           contact_to_appt_rate: 0,
           appt_to_transaction_rate: 0,
           close_rate: 0,
+          diagnostic: null,
           total_spend: 0,
           revenue_attributed: 0,
           roi_multiple: 0,
           cost_per_record: 0,
           cost_per_contact: 0,
+          cost_per_conversion: 0,
           agent_count: 0,
           top_agent_id: null,
           top_agent_name: null,
@@ -304,7 +333,9 @@ export async function getSourcePerformance(
       const family = (l.source_family as SourceFamily) ?? "lead"
       const m = getOrCreate(l.source ?? "manual_entry", family, l.source_channel)
       m.lead_count++
-      m.total_spend += l.cost_per_record ?? 0
+      // acquisition_cost preferred, cost_per_record fallback — same rule as
+      // source-conversion-runner.ts::loadSourceConversions.
+      m.total_spend += (l as any).acquisition_cost ?? l.cost_per_record ?? 0
       if (l.contact_id) m.contact_count++
       if (l.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = l.campaign_attribution_id
@@ -323,11 +354,16 @@ export async function getSourcePerformance(
 
     // Process contacts
     const contactAgentCounts: Record<string, Record<string, number>> = {}
+    // contact_id → the sourceMap key, so engagement can be attributed per source.
+    const contactSourceKey = new Map<string, string>()
     contacts?.forEach(c => {
       const family = (c.source_family as SourceFamily) ?? "contact_direct"
       const m = getOrCreate(c.source ?? "website", family, c.source_channel, c.source_subtype)
+      contactSourceKey.set(c.id, `${m.source}::${m.source_family}`)
       m.contact_count++
-      m.total_spend += c.cost_per_record ?? 0
+      // acquisition_cost preferred, cost_per_record fallback — same rule as
+      // source-conversion-runner.ts::loadSourceConversions.
+      m.total_spend += (c as any).acquisition_cost ?? c.cost_per_record ?? 0
       if (c.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = c.campaign_attribution_id
         m.campaign_name = campaignNames[c.campaign_attribution_id] ?? null
@@ -406,10 +442,69 @@ export async function getSourcePerformance(
         m.roi_multiple = parseFloat((m.revenue_attributed / m.total_spend).toFixed(2))
         m.cost_per_record = parseFloat((m.total_spend / Math.max(upstream, 1)).toFixed(2))
         m.cost_per_contact = parseFloat((m.total_spend / Math.max(m.contact_count, 1)).toFixed(2))
+        // Cost-per-CONVERSION — the brokerage lead-cost report's headline: what a closed deal
+        // from this source/channel actually cost. Denominator is closed_count, not contact_count
+        // or upstream — a source can be cheap per-contact and still be a money pit if nothing
+        // it produces ever closes. Stays 0 (never divides, never fabricates) with no closes yet.
+        if (m.closed_count > 0) {
+          m.cost_per_conversion = parseFloat((m.total_spend / m.closed_count).toFixed(2))
+        }
+      }
+    }
+
+    // ── Engagement per source: replies to our outbound touches ────────────────
+    // The discriminator is ENGAGEMENT vs DOWNSTREAM CONVERSION. Open tracking does
+    // not exist on messages, so reply rate carries it (the stronger signal anyway).
+    const sentBySource = new Map<string, number>()
+    const repliedBySource = new Map<string, number>()
+    const allContactIds = [...contactSourceKey.keys()]
+    if (allContactIds.length > 0) {
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("contact_id, direction")
+        .eq("brokerage_id", brokerageId)
+        .in("contact_id", allContactIds.slice(0, 1000))
+        .gte("created_at", fromDate)
+      for (const m of (msgs ?? []) as Array<{ contact_id: string; direction: string | null }>) {
+        const src = contactSourceKey.get(m.contact_id)
+        if (!src) continue
+        const bucket = m.direction === "inbound" ? repliedBySource : sentBySource
+        bucket.set(src, (bucket.get(src) ?? 0) + 1)
       }
     }
 
     let sources = Array.from(sourceMap.values())
+
+    // Brokerage medians — "low" must be relative to this brokerage, not absolute.
+    const median = (xs: number[]) => {
+      const v = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b)
+      return v.length === 0 ? 0 : v[Math.floor(v.length / 2)]
+    }
+    const benchmarks = {
+      leadToContactRate: median(sources.map((x) => x.lead_to_contact_rate)),
+      contactToApptRate: median(sources.map((x) => x.contact_to_appt_rate)),
+      earlyStepReplyRate: median(
+        sources.map((x) => {
+          const k = `${x.source}::${x.source_family}`
+          const sent = sentBySource.get(k) ?? 0
+          return sent > 0 ? (repliedBySource.get(k) ?? 0) / sent : 0
+        }),
+      ),
+    }
+    for (const m of sources) {
+      const key = `${m.source}::${m.source_family}`
+      const sent = sentBySource.get(key) ?? 0
+      m.diagnostic = diagnoseSource({
+        leadToContactRate: m.lead_to_contact_rate,
+        contactToApptRate: m.contact_to_appt_rate,
+        closeRate: m.close_rate,
+        earlyStepOpenRate: null,
+        earlyStepReplyRate: sent > 0 ? (repliedBySource.get(key) ?? 0) / sent : null,
+        sentVolume: sent,
+        benchmarks,
+      })
+    }
+
 
     // Sort
     const sortFn: Record<string, (a: SourceMetrics, b: SourceMetrics) => number> = {
@@ -440,7 +535,25 @@ export async function getSourcePerformance(
         .sort((a, b) => b.close_rate - a.close_rate)[0]?.source ?? null,
     }
 
-    return { success: true, sources, summary }
+    // ── Lead cost by source, reconciled to the platform vendor ledger (lane 82B) ──
+    // Rows booked by bookSourceSpend carry usage_type = the SourceKey, so the ledger read is
+    // scoped to scraping spend only (skip-trace/AI/etc. never enter this reconcile).
+    const { data: ledgerRows, error: ledgerErr } = await supabase
+      .from("vendor_usage_tracking")
+      .select("vendor_name, total_cost")
+      .eq("brokerage_id", brokerageId)
+      .in("usage_type", ALL_SOURCE_KEYS as string[])
+      .gte("created_at", fromDate)
+      .lte("created_at", toDate)
+    if (ledgerErr) console.warn("[source-analytics] vendor ledger read refused — lead cost shows recorded cost only:", ledgerErr.message)
+    const lead_cost_ledger = leadCostBySource(
+      [
+        ...((leads ?? []) as Array<{ source: string | null; source_channel: string | null; cost_per_record: number | null; acquisition_cost?: number | null }>),
+      ],
+      (ledgerRows ?? []) as Array<{ vendor_name: string | null; total_cost: number | null }>,
+    )
+
+    return { success: true, sources, summary, lead_cost_ledger }
   } catch (err) {
     console.error("[source-analytics] getSourcePerformance error:", err)
     return {
@@ -758,18 +871,18 @@ export async function exportSourceCSV(
     if (!result.success) return { success: false, csv: "", error: result.error }
 
     const headers = [
-      "Source", "Source Family", "Channel", "Subtype",
+      "Source", "Source Family", "Channel", "Subtype", "Vendor",
       "Raw Records", "Leads", "Contacts", "Appointments", "Transactions", "Closed",
       "Lead→Contact Rate", "Contact→Appt Rate", "Close Rate",
-      "Total Spend", "Revenue Attributed", "ROI Multiple", "Cost Per Contact",
+      "Total Spend", "Revenue Attributed", "ROI Multiple", "Cost Per Contact", "Cost Per Conversion",
       "Top Agent", "Campaign",
     ]
 
     const rows = result.sources.map(s => [
-      s.source, s.source_family, s.source_channel ?? "", s.source_subtype ?? "",
+      s.source, s.source_family, s.source_channel ?? "", s.source_subtype ?? "", s.vendor ?? "",
       s.raw_record_count, s.lead_count, s.contact_count, s.appointment_count, s.transaction_count, s.closed_count,
       `${s.lead_to_contact_rate}%`, `${s.contact_to_appt_rate}%`, `${s.close_rate}%`,
-      `$${s.total_spend.toFixed(2)}`, `$${s.revenue_attributed.toFixed(2)}`, `${s.roi_multiple}x`, `$${s.cost_per_contact.toFixed(2)}`,
+      `$${s.total_spend.toFixed(2)}`, `$${s.revenue_attributed.toFixed(2)}`, `${s.roi_multiple}x`, `$${s.cost_per_contact.toFixed(2)}`, `$${s.cost_per_conversion.toFixed(2)}`,
       s.top_agent_name ?? "", s.campaign_name ?? "",
     ])
 
@@ -827,7 +940,7 @@ export async function emailSourceReport(
 </table>
 `
 
-    await supabase.from("email_queue").insert({
+    const { error: notifyError } = await supabase.from("email_queue").insert({
       brokerage_id: brokerageId,
       to_email: toEmail,
       to_name: toName,
@@ -836,6 +949,7 @@ export async function emailSourceReport(
       status: "pending",
       attempts: 0,
     })
+    if (notifyError) console.warn("[source-analytics.ts] email_queue insert refused — the bell will not ring:", notifyError.message)
 
     return { success: true }
   } catch (err) {
@@ -844,19 +958,33 @@ export async function emailSourceReport(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getSourceComparison — compare 2-4 sources side by side
-// ─────────────────────────────────────────────────────────────────────────────
-
-export async function getSourceComparison(
-  brokerageId: string,
-  sourceKeys: string[], // ["source_name::family", ...]
-  filter: SourceAnalyticsFilter
-): Promise<SourceComparisonResult> {
-  try {
-    const result = await getSourcePerformance({ ...filter, brokerageId })
-    const sources = result.sources.filter(s => sourceKeys.includes(`${s.source}::${s.source_family}`))
-    return { success: true, sources }
-  } catch (err) {
-    return { success: false, sources: [], error: err instanceof Error ? err.message : "Comparison failed" }
-  }
-}
+// TOMBSTONE: getSourceComparison + SourceComparisonResult were removed here.
+// SURVIVOR: app/dashboard/analytics/source/source-analytics-client.tsx:501
+//
+//     const selectedSources = sources.filter(
+//       s => selectedKeys.has(`${s.source}::${s.source_family}`))
+//
+// which is handed straight to <CompareDialog sources={selectedSources} />.
+//
+// This action was IMPORTED by that client and never called — the compare
+// feature was fully built (row checkboxes, a Compare button gated on
+// `selectedKeys.size >= 2`, and CompareDialog) and wired to the client-side
+// filter instead. The two produced the same rows by construction: the user can
+// only tick sources that are already rendered, and both filter on the identical
+// `${source}::${source_family}` key.
+//
+// So the survivor is not merely equivalent, it is better on two counts. It
+// needs no round-trip for data the page already holds; and it does not take
+// `brokerageId: string` FROM THE CALLER, which this action did — a
+// caller-supplied tenant handed to a server action is the IDOR shape CLAUDE.md
+// §4 rules out, and it was live on this export.
+//
+// Nothing was merged onto the survivor because nothing was missing from it: the
+// deleted function's whole body was `getSourcePerformance(...)` followed by the
+// same key filter, and getSourcePerformance remains exported and reached.
+//
+// (This was first mistaken for a plain "dead import" and removed from the
+// client alone. That left the action orphaned — capability deleted rather than
+// resolved — and scripts/wired-surface-guard.ts caught it by name. A dead
+// import whose target is a server action is never just a dead import: it is one
+// half of an unwired pair, and it has to be decided, not swept.)

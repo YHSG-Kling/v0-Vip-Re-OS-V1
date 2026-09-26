@@ -13,11 +13,14 @@
  *
  * Run: npx tsx scripts/esign-anchor-simulator.ts   (npm run test:esign-anchors)
  */
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { PDFDocument } from "pdf-lib"
 import { deriveEsignAnchors } from "../lib/forms/esign-anchors"
 import { anchorsForProvider, recipientRolesForProvider, docusignTabsByRecipient, tabsByCanonicalRole, type EsignProvider } from "../lib/forms/esign-anchor-adapters"
 import { evalAnchorPlacement, evalAnchorExecution } from "../lib/forms/esign-anchor-eval"
 import { buildEsignAnchorPlan } from "../lib/forms/esign-anchor-plan"
+import { blankComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -91,6 +94,26 @@ async function main() {
   ])
   check("a tagged-but-unsigned form blocks completion", !exec.allExecuted && exec.incomplete.includes("disclosure") && !exec.incomplete.includes("info_sheet"))
   check("all tagged forms signed → executed", evalAnchorExecution([{ formKey: "pa", anchorCount: 2, signed: true }]).allExecuted)
+
+  console.log("\n[runtime wire — the dotloop webhook calls the provider-agnostic core, and gates on it]")
+  // RULE, not a waypoint (§2): wave 47 lane FA extracted the inline gate this
+  // section used to check directly into lib/forms/esign-execution-loop.ts
+  // (one core, wired from every provider) — see
+  // scripts/esign-execution-loop-simulator.ts for the full provider-agnostic
+  // proof (single core, every webhook + the sweep call it, no provider name
+  // hardcoded, positive control). This section keeps just the dotloop-side
+  // half: the webhook still calls the (now-shared) gate rather than deciding
+  // "fully signed" on its own.
+  const dotloopWebhookSrc = blankComments(readFileSync(resolve(process.cwd(), "app/api/webhooks/dotloop/route.ts"), "utf8"))
+
+  check("the webhook imports evaluateEnvelopeExecution from lib/forms/esign-execution-loop",
+    /import\s*\{[^}]*\bevaluateEnvelopeExecution\b[^}]*\}\s*from\s*["']@\/lib\/forms\/esign-execution-loop["']/.test(dotloopWebhookSrc))
+  check("the webhook actually CALLS evaluateEnvelopeExecution (not just imports it)",
+    /evaluateEnvelopeExecution\s*\(/.test(dotloopWebhookSrc))
+  check("a gate variable is derived from the core's own verdict (.fullyExecuted), not hand-typed",
+    /loopFullyExecuted\s*=\s*execution\.evaluated\s*&&\s*execution\.fullyExecuted/.test(dotloopWebhookSrc))
+  check("the inline per-provider gate is gone from the webhook (extracted, not duplicated — §1.1)",
+    !/const\s+execResult\s*=\s*evalAnchorExecution\(/.test(dotloopWebhookSrc))
 
   console.log("\n[end-to-end plan against a REAL PDF]")
   const pdf = await makeSignablePdf()

@@ -6,6 +6,7 @@
 // Director reel pipeline, marks genuinely-stalled rows failed (so they surface + stop being re-scanned),
 // and notifies the responsible agent. Idempotent (marking failed removes it from the scan). Never throws.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStaleVideo, VIDEO_STALE_HOURS } from "./video-pipeline-reaper-policy"
@@ -36,14 +37,22 @@ export async function reapStaleVideoWorkflows(
       await svc.from("ai_video_projects")
         .update({ status: "failed", error_message: `stalled in '${r.status}' for ${Math.round(ageHours)}h — reaped by the Asset Manager`, updated_at: now.toISOString() })
         .eq("id", r.id)
-      // ai_video_projects.agent_id is the agent's USER id (FK users) — notify them directly.
-      if (r.agent_id) {
-        await svc.from("notifications").insert({
-          user_id: r.agent_id, brokerage_id: brokerageId, type: "video_stalled",
+      // ai_video_projects.agent_id is agents-class since m366 while
+      // notifications.user_id FKs users — resolve across. Null ⇒ the row is still
+      // marked failed (that part is the point), but the notify is skipped with a
+      // line naming it rather than FK-rejected into silence.
+      const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+      const ownerUserId = r.agent_id ? await resolveAgentRecordToUserId(r.agent_id) : null
+      if (r.agent_id && !ownerUserId) {
+        console.warn(`[video-pipeline-reaper] no users row behind agents.id=${r.agent_id} (project ${r.id}) — stall notice skipped`)
+      }
+      if (ownerUserId) {
+        await sentinelWrite(svc, svc.from("notifications").insert({
+          user_id: ownerUserId, brokerage_id: brokerageId, type: "video_stalled",
           title: "A video stalled and was flagged",
           body: `${r.title ?? "A commissioned video"} got stuck in rendering and your AI team flagged it. You can re-request it from the listing's video tools.`,
           entity_type: "video_project", entity_id: r.id, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "video_pipeline_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
       result.escalated++
     } catch { /* best-effort per row */ }

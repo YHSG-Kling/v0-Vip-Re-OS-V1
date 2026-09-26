@@ -18,7 +18,6 @@ import {
 interface ClosingReadinessGateProps {
   transactionId: string
   transactionStage: string
-  agentId: string
   brokerageId?: string
 }
 
@@ -31,7 +30,6 @@ interface ReadinessResult {
 export function ClosingReadinessGate({
   transactionId,
   transactionStage,
-  agentId,
   brokerageId = "",
 }: ClosingReadinessGateProps) {
   const [result, setResult] = useState<ReadinessResult | null>(null)

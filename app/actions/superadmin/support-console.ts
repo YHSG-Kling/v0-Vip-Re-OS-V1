@@ -16,6 +16,38 @@ import { evaluateTicketSla, rollupCsat, type SlaBreachKind } from "@/lib/support
 
 const STAFF_ROLES = new Set(["superadmin", "support"])
 
+/**
+ * THE LANE THIS CONSOLE ANSWERS, AND THE ONLY ONE IT MAY TOUCH.
+ *
+ * Owner ruling: a user_to_brokerage ticket is "agents and vendors support ticket
+ * to the brokerage office staff" — the platform is NOT a party to it. Before
+ * support_tickets carried a lane this console listed and acted on EVERY ticket in
+ * the database, so a platform staffer read, replied inside, assigned and closed
+ * conversations between a brokerage and its own agents.
+ *
+ * RLS still lets platform staff REACH a lane 2 row (public.is_platform_staff() is
+ * the first branch of can_access_support_ticket, carried through unchanged from the
+ * superseded policies) — that door is deliberately left for break-glass. This is the
+ * product deciding not to walk through it by accident.
+ */
+const CONSOLE_LANE = "tenant_to_platform"
+
+/** Resolve a ticket this console is allowed to act on, or say why not. */
+async function requireConsoleTicket(
+  svc: ReturnType<typeof createServiceClient>,
+  ticketId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data, error } = await svc.from("support_tickets").select("id, lane").eq("id", ticketId).maybeSingle()
+  // supabase-js RESOLVES a refused read. Without this the refusal reads as
+  // "Ticket not found" and a platform staffer is told the ticket does not exist.
+  if (error) return { ok: false, error: `Could not read the ticket: ${error.message}` }
+  if (!data) return { ok: false, error: "Ticket not found" }
+  if ((data as { lane?: string | null }).lane !== CONSOLE_LANE) {
+    return { ok: false, error: "That ticket belongs to a brokerage's own office queue — the platform is not a party to it" }
+  }
+  return { ok: true }
+}
+
 // Audit — staff mutations on ANOTHER tenant's ticket land in superadmin_audit_log
 // (same conventions as coupons/brokerage-management: non-fatal, never blocks).
 async function audit(actorUserId: string, action: string, ticketId: string, details: Record<string, unknown>): Promise<void> {
@@ -74,15 +106,24 @@ export async function listAllTicketsAction(filter?: { status?: string }): Promis
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  let q = svc.from("support_tickets").select("id, brokerage_id, subject, status, priority, category, assigned_to, first_response_at, resolved_at, satisfaction_rating, created_at, updated_at").order("updated_at", { ascending: false }).limit(500)
+  let q = svc.from("support_tickets").select("id, brokerage_id, lane, subject, status, priority, category, assigned_to, first_response_at, resolved_at, satisfaction_rating, created_at, updated_at")
+    // THE LANE FILTER. Without it this queue is every brokerage's internal support
+    // conversation as well as the platform's own, and the SLA/CSAT rollups below
+    // are computed over work the platform does not owe.
+    .eq("lane", CONSOLE_LANE)
+    .order("updated_at", { ascending: false }).limit(500)
   if (filter?.status) q = q.eq("status", filter.status)
-  const { data: tickets } = await q
+  const { data: tickets, error: qErr } = await q
+  // An unchecked read here renders the platform's entire support queue as "no
+  // tickets" whenever the query is refused — the emptiest possible lie.
+  if (qErr) return { ok: false, error: qErr.message }
 
   const rows0 = (tickets ?? []) as any[]
   const brokerageIds = Array.from(new Set(rows0.map((t) => t.brokerage_id).filter(Boolean)))
   const nameById = new Map<string, string>()
   if (brokerageIds.length) {
-    const { data: brks } = await svc.from("brokerages").select("id, name").in("id", brokerageIds)
+    const { data: brks, error: bErr } = await svc.from("brokerages").select("id, name").in("id", brokerageIds)
+    if (bErr) console.error("[support-console] brokerage names read refused:", bErr.message)
     for (const b of (brks ?? []) as any[]) nameById.set(b.id, b.name)
   }
 
@@ -110,7 +151,10 @@ export async function listAllTicketsAction(filter?: { status?: string }): Promis
 export async function getTicketThreadAction(ticketId: string): Promise<{ ok: true; thread: TicketThread } | { ok: false; error: string }> {
   const auth = await requireStaff()
   if (!auth.ok) return auth
-  const thread = await loadTicketThread(createServiceClient(), ticketId)
+  const svc = createServiceClient()
+  const lane = await requireConsoleTicket(svc, ticketId)
+  if (!lane.ok) return lane
+  const thread = await loadTicketThread(svc, ticketId)
   if (!thread) return { ok: false, error: "Ticket not found" }
   return { ok: true, thread }
 }
@@ -118,7 +162,10 @@ export async function getTicketThreadAction(ticketId: string): Promise<{ ok: tru
 export async function replyToTicketAction(params: { ticketId: string; body: string }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireStaff()
   if (!auth.ok) return auth
-  const r = await postTicketReply(createServiceClient(), { ticketId: params.ticketId, authorUserId: auth.userId, authorKind: "staff", body: params.body })
+  const svc = createServiceClient()
+  const lane = await requireConsoleTicket(svc, params.ticketId)
+  if (!lane.ok) return lane
+  const r = await postTicketReply(svc, { ticketId: params.ticketId, authorUserId: auth.userId, authorKind: "staff", body: params.body })
   if (!r.ok) return { ok: false, error: r.error }
   await audit(auth.userId, "support_ticket.staff_replied", params.ticketId, { bodyLength: params.body.length })
   revalidatePath(`/dashboard/superadmin/support/${params.ticketId}`)
@@ -130,9 +177,14 @@ export async function assignTicketAction(params: { ticketId: string; assigneeUse
   const auth = await requireStaff()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+  const lane = await requireConsoleTicket(svc, params.ticketId)
+  if (!lane.ok) return lane
   const assignee = params.assigneeUserId ?? auth.userId
-  const { error } = await svc.from("support_tickets").update({ assigned_to: assignee, updated_at: new Date().toISOString() }).eq("id", params.ticketId)
+  // `.select("id")` + a length check: a zero-row refusal is error:null, so an
+  // unchecked update reports an assignment that never happened.
+  const { data: rows, error } = await svc.from("support_tickets").update({ assigned_to: assignee, updated_at: new Date().toISOString() }).eq("id", params.ticketId).select("id")
   if (error) return { ok: false, error: error.message }
+  if ((rows?.length ?? 0) === 0) return { ok: false, error: "Ticket not found" }
   await audit(auth.userId, "support_ticket.assigned", params.ticketId, { assigneeUserId: assignee })
   revalidatePath(`/dashboard/superadmin/support/${params.ticketId}`)
   return { ok: true }
@@ -142,11 +194,14 @@ export async function setTicketStatusAction(params: { ticketId: string; status: 
   const auth = await requireStaff()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+  const lane = await requireConsoleTicket(svc, params.ticketId)
+  if (!lane.ok) return lane
   const patch: Record<string, unknown> = { status: params.status, updated_at: new Date().toISOString() }
   if (params.status === "resolved" || params.status === "closed") patch.resolved_at = new Date().toISOString()
   else patch.resolved_at = null
-  const { error } = await svc.from("support_tickets").update(patch).eq("id", params.ticketId)
+  const { data: rows, error } = await svc.from("support_tickets").update(patch).eq("id", params.ticketId).select("id")
   if (error) return { ok: false, error: error.message }
+  if ((rows?.length ?? 0) === 0) return { ok: false, error: "Ticket not found" }
   await audit(auth.userId, "support_ticket.status_changed", params.ticketId, { status: params.status })
   revalidatePath(`/dashboard/superadmin/support/${params.ticketId}`)
   revalidatePath("/dashboard/superadmin/support")

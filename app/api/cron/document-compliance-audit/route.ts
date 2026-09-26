@@ -7,14 +7,15 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { runDocumentComplianceAudit } from "@/lib/kernel/document-compliance-audit"
+import { runDocumentComplianceAudit, defaultTextChecker } from "@/lib/kernel/document-compliance-audit"
 
 /**
  * DOCUMENT-TEXT COMPLIANCE AUDIT cron (hourly) — the live equivalent of the legacy
  * workflows/audit-document.json + workflows/broker-audit.json. Sweeps recently-uploaded
  * deal documents (client_documents tied to a transaction or contact) that have NOT yet been
- * audited, runs the TEXT-extraction compliance pass per document (ocr-pdf text layer +
- * deterministic checklist — NO vision), records the result on the doc's ai_metadata, and on
+ * audited, runs the hybrid compliance pass per document (ocr-pdf text layer + deterministic
+ * checklist + the semantic gateway-TEXT pass, plus the default gateway VISION pass for
+ * execution marks), records the result on the doc's ai_metadata, and on
  * findings escalates to the broker via the existing notifications rail + the manager-signals
  * bus. The sweep is the lower-risk trigger (no upload-path coupling); idempotent per
  * (document, extracted-text content) so re-runs are cheap and never double-escalate.
@@ -59,7 +60,11 @@ export async function GET(req: NextRequest) {
       if (prior && prior.status && prior.status !== "not_audited" && prior.status !== "partial_audit") continue
       scanned += 1
       try {
-        const r = await runDocumentComplianceAudit({ documentId: row.id }, {}, supabase)
+        // The semantic gateway-TEXT pass is opt-in by module contract (the simulator injects
+        // seams so the live test spends no tokens); PRODUCTION opts in here so the content
+        // checks (correct form, names/addresses consistency, disclosure clauses) actually run.
+        // defaultTextChecker degrades honestly to null (deterministic-only) without a gateway key.
+        const r = await runDocumentComplianceAudit({ documentId: row.id }, { textChecker: defaultTextChecker }, supabase)
         if (r.status === "not_audited") notAudited += 1
         else {
           audited += 1

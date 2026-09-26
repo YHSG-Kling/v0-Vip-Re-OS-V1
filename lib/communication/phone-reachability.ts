@@ -23,7 +23,7 @@ export interface PhoneReachabilityInput {
   phone_secondary_status?: string | null
 }
 
-export interface ReachablePhone {
+interface ReachablePhone {
   /** The number to dial, or null when neither line is voice-reachable. */
   number: string | null
   /** Which column the number came from (audit / which gate to honor downstream). */
@@ -50,7 +50,8 @@ function lineReachable(num: string | null | undefined, dnc: unknown, optOut: unk
  * to a clean secondary line. Returns { number: null } when neither line may be called — the
  * caller must then choose a non-voice channel (or no_outreach).
  */
-export function pickReachablePhone(c: PhoneReachabilityInput | null | undefined): ReachablePhone {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function pickReachablePhone(c: PhoneReachabilityInput | null | undefined): ReachablePhone {
   if (!c) return { number: null, field: null, usedFallback: false }
 
   const primaryOk = lineReachable(c.phone, c.dnc_status, c.phone_opt_out ?? c.call_stop_flag, c.phone_status)

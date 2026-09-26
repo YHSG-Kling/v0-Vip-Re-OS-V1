@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveInboundContext, planReceptionTurn, planTurnWithPrompt, bookShowingFromCall, rsvpOpenHouseFromCall, proposeSellerLeadFromCall } from "@/lib/voice/twilio-voice"
+import { resolveInboundContext, planReceptionTurn, planTurnWithPrompt, bookShowingFromCall, rsvpOpenHouseFromCall, proposeSellerLeadFromCall, createCallbackTaskFromCall } from "@/lib/voice/twilio-voice"
 import { appendTranscript, buildOutboundPrompt } from "@/lib/voice/reception-brain"
 import { parseRelayPlanRequest, composePacingRule, type RelayPlanResponse } from "@/lib/voice/conversation-relay"
-import { isPlatformNumber, resolvePlatformReceptionContext, planPlatformReceptionTurn, capturePhoneProspect } from "@/lib/voice/platform-reception"
+import { isPlatformNumber, resolvePlatformReceptionContext, capturePhoneProspect } from "@/lib/voice/platform-reception"
 import { decodeOutboundBrief } from "@/lib/voice/twilio-outbound"
 
 export const dynamic = "force-dynamic"
@@ -38,9 +38,11 @@ export async function POST(request: NextRequest) {
     const pctx = await resolvePlatformReceptionContext(svc)
     if (!pctx) return json({ say: "Sorry, something went wrong. Goodbye.", endSession: true })
     const { data: call } = await svc.from("platform_reception_calls")
-      .select("id, transcript").eq("call_sid", req.callSid).maybeSingle()
+      .select("id, transcript, prospect_id").eq("call_sid", req.callSid).maybeSingle()
     const transcript = (call as any)?.transcript ?? null
-    const plan = await planPlatformReceptionTurn(pctx, transcript, req.utterance, composePacingRule(req.interrupts))
+    // Lane 76B — same server-resolved prospect identity the <Gather> turn passes.
+    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: req.utterance, extraRules: composePacingRule(req.interrupts),
+      prospect: { phone: req.from ?? null, prospectId: (call as any)?.prospect_id ?? null, callId: (call as any)?.id ?? null } })
     const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
     if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
@@ -70,13 +72,16 @@ export async function POST(request: NextRequest) {
   if (!ctx) ctx = await resolveInboundContext(svc, req.from)
   if (!ctx) return json({ say: "Sorry, something went wrong. Goodbye.", endSession: true })
 
-  const { data: call } = await svc.from("voice_calls").select("id, contact_id, agent_id, transcription, ai_notes, direction")
-    .eq("vapi_call_id", req.callSid).maybeSingle()
+  const { data: call } = await svc.from("voice_calls").select("id, contact_id, lead_id, agent_id, transcription, ai_notes, direction")
+    .eq("vendor_call_id", req.callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
   const brief = (call as any)?.direction === "outbound" ? decodeOutboundBrief((call as any)?.ai_notes) : null
 
   // Deterministic opt-out on outbound — same law, same writer as the turn route.
-  if (brief && call && (call as any).contact_id) {
+  // Lane 76A identity fix: a LEAD-only outbound leg (voice_calls.lead_id, no
+  // contact_id) was skipped here entirely — the turn route already honoured it
+  // under entityType "lead". Same rule, same entity class, both transports.
+  if (brief && call && ((call as any).contact_id || (call as any).lead_id)) {
     const { detectOptOutIntent } = await import("@/lib/ai-isa/opt-out-utils")
     const opt = detectOptOutIntent(req.utterance)
     if (opt.isOptOut && opt.confidence === "high") {
@@ -84,7 +89,9 @@ export async function POST(request: NextRequest) {
       try {
         const { processOptOut } = await import("@/app/actions/ai-isa/process-opt-out")
         await processOptOut({
-          entityType: "contact", entityId: (call as any).contact_id,
+          // Leads are NOT contacts — the opt-out lands on the right entity class.
+          entityType: (call as any).contact_id ? "contact" : "lead",
+          entityId: (call as any).contact_id ?? (call as any).lead_id,
           channel: opt.channel === "all" ? "all" : "phone",
           source: "inbound_call", rawMessage: req.utterance.slice(0, 300), brokerageId: ctx.brokerageId,
         })
@@ -99,7 +106,11 @@ export async function POST(request: NextRequest) {
     ? await planTurnWithPrompt(
         `${buildOutboundPrompt(ctx.identity, { objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt }).systemPrompt}${pacing ? `\n\n${pacing}` : ""}`,
         transcript, req.utterance)
-    : await planReceptionTurn(ctx, transcript, req.utterance, svc, pacing)
+    : await planReceptionTurn({
+        deployment: "tenant", ctx, transcript, utterance: req.utterance, svc, extraRules: pacing,
+        // agentId = voice_calls.agent_id (agents.id) — never ctx.agentUserId (users.id). Lane 76A.
+        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null, agentId: (call as any).agent_id ?? null } : undefined,
+      })
   const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
   if (call) await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
@@ -138,6 +149,9 @@ export async function POST(request: NextRequest) {
   }
   if (plan.action.kind === "seller_lead" && call) {
     await proposeSellerLeadFromCall(svc, ctx, call as any, plan.action.address)
+  }
+  if (plan.action.kind === "callback" && call) {
+    await createCallbackTaskFromCall(svc, ctx, call as any, plan.action.phone, plan.action.whenPhrase, plan.action.reason)
   }
   if (plan.action.kind === "hangup" && call) {
     await svc.from("voice_calls").update({ status: "completed", outcome: "completed", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})

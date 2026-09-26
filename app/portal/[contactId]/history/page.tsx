@@ -1,11 +1,10 @@
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { determinePortalView, getPortalMilestones, type PortalMilestone } from "@/lib/kernel/portal"
 import { getTransactionHistory } from "@/app/actions/portal-lifetime"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import {
   ArrowLeft,
   CheckCircle2,
@@ -33,9 +32,24 @@ export default async function HistoryPage({
 
   const history = await getTransactionHistory(contactId)
 
+  // MOUNTED, orphan doctrine §1.2, wave 55: getPortalMilestones (lib/kernel/portal.ts)
+  // had zero callers anywhere — only re-exported, unused, through
+  // lib/kernel/index.ts. getTransactionHistory above is scoped to the ONE
+  // most-recently-closed transaction (`.limit(1)`); a repeat client with more
+  // than one past transaction with this brokerage had every earlier one
+  // invisible on their own History page. getPortalMilestones reads
+  // lifecycle_events for buyer./seller./transaction.-prefixed events across
+  // the WHOLE contact, with no transaction scope — the real cross-transaction
+  // relationship timeline this page was missing. Additive: it never replaces
+  // the single-transaction summary above, and when there is truly nothing to
+  // show (a brand-new contact) it degrades to an empty array, not an error.
+  const fullTimeline = await getPortalMilestones({ contactId })
+  const formatTimelineDate = (date: string) =>
+    new Date(date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+
   if (!history) {
     return (
-      <div className="container mx-auto p-6">
+      <div className="container mx-auto p-6 space-y-6">
         <Card>
           <CardContent className="p-8 text-center">
             <p className="text-muted-foreground">No transaction history found.</p>
@@ -47,6 +61,27 @@ export default async function HistoryPage({
             </Button>
           </CardContent>
         </Card>
+        {fullTimeline.length > 0 && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Clock className="h-5 w-5 text-green-600" />
+                <CardTitle>Your Relationship Timeline</CardTitle>
+              </div>
+              <CardDescription>Every milestone across your history with us</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {fullTimeline.map((m: PortalMilestone, i: number) => (
+                  <div key={`${m.eventType}-${i}`} className="flex items-start justify-between gap-4 border-b pb-2 last:border-0">
+                    <p className="text-sm">{m.description}</p>
+                    <p className="text-xs text-muted-foreground whitespace-nowrap">{formatTimelineDate(m.date)}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     )
   }
@@ -248,6 +283,32 @@ export default async function HistoryPage({
                 <div key={index} className="p-3 rounded-lg bg-muted/50">
                   <p className="text-sm text-muted-foreground">{item.label}</p>
                   <p className="font-medium">{formatDate(item.date!)}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Full Relationship Timeline — MOUNTED wave 55 (see the fullTimeline
+          fetch above). Additive to the single-transaction summary above it:
+          a repeat client sees every past transaction's events here, not only
+          the one getTransactionHistory picked as "most recent". */}
+      {fullTimeline.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-green-600" />
+              <CardTitle>Your Full Relationship Timeline</CardTitle>
+            </div>
+            <CardDescription>Every milestone across your history with us</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {fullTimeline.map((m: PortalMilestone, i: number) => (
+                <div key={`${m.eventType}-${i}`} className="flex items-start justify-between gap-4 border-b pb-2 last:border-0">
+                  <p className="text-sm">{m.description}</p>
+                  <p className="text-xs text-muted-foreground whitespace-nowrap">{formatTimelineDate(m.date)}</p>
                 </div>
               ))}
             </div>

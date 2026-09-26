@@ -23,6 +23,8 @@ export interface MilestoneProgressBarProps {
   milestones: TransactionMilestone[]
   contactId: string
   labelMap?: Record<string, string>
+  /** optional by design: style-override passthrough onto the root element; no
+   *  current caller needs a non-default look. */
   className?: string
 }
 

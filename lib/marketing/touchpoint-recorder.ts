@@ -16,6 +16,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { touchpointManagerForChannel } from "@/lib/campaign-sequences/touchpoint-bridge"
 
 export interface RecordTouchpointInput {
   brokerageId:    string
@@ -47,7 +48,18 @@ export async function recordCampaignTouchpointSafe(
         external_id:    input.externalId    ?? null,
         status:         input.status        ?? "sent",
         source:         input.source        ?? "launch",
-        metadata:       input.metadata      ?? {},
+        // metadata.manager is what the Manager Standup keys its receipts on
+        // (lib/intelligence/manager-touch-provenance.ts). This recorder never
+        // stamped it, so every launch/trigger/manual/retarget touch aggregated to
+        // "unattributed" — matching no ManagerKey, and therefore dropped from the
+        // standup entirely. The receipts surface was showing sequence-engine sends
+        // ONLY. Resolved through the same pure helper the sequence bridge uses, so
+        // one channel cannot be credited to two different managers depending on
+        // which writer recorded it (§6). An explicit caller-supplied manager wins.
+        metadata: {
+          manager: touchpointManagerForChannel(input.channel),
+          ...(input.metadata ?? {}),
+        },
         sent_at:        new Date().toISOString(),
       })
       .select("id")

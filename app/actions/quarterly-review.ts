@@ -20,11 +20,12 @@ export async function getQuarterlyReviewAction(): Promise<
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Not authenticated" }
-  const { data: me } = await supabase.from("users").select("brokerage_id, role").eq("id", user.id).maybeSingle()
+  // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+  const { data: me } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   const brokerageId = (me as any)?.brokerage_id as string | null
   if (!brokerageId) return { ok: false, error: "No brokerage" }
   const svc = createServiceClient()
-  const principal = await isTenancyPrincipal(svc, { userId: user.id, brokerageId, role: String((me as any)?.role ?? "") })
+  const principal = await isTenancyPrincipal(svc, { userId: user.id, brokerageId, role: String((me as any)?.user_type ?? "") })
   if (!principal) return { ok: false, error: "Principals only" }
 
   const { review, pulse } = await loadQuarterlyReview(svc, brokerageId)

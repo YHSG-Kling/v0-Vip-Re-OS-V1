@@ -41,16 +41,19 @@
  * trusts what it's handed and DOES NOT redraft on its own.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { BrollLayer } from "./_BrollLayer"
+import { CaptionLayer } from "./components/CaptionLayer"
+import { LowerThird } from "./components/LowerThird"
+import { SceneFade } from "./components/SceneFade"
+import { avatarFadeOutFrame } from "../lib/video/script-structure"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, safeInsets, segmentAtFrame, type BodyTreatment, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentTalkingHeadReelProps {
   /** Top hook label — short eyebrow (e.g. "MARKET UPDATE", "JUST LISTED",
@@ -85,6 +88,43 @@ export interface AgentTalkingHeadReelProps {
    *  for caption legibility) and the avatar shrinks to a floating card —
    *  the scroll-stopping pattern. Absent → the original solid-brand layout. */
   brollClips?: Array<{ url: string; caption?: string }>
+  /**
+   * D-ID's OWN measured render duration in seconds (lib/video/
+   * avatar-render-orchestrator.ts, wave 55 realism ruling). When the avatar
+   * clip is SHORTER than the BODY window — the common case, since
+   * NARRATION_HEADROOM deliberately under-claims the window — the avatar
+   * fades out at its real end instead of Remotion holding a frozen last
+   * frame for the remainder. Optional + additive: absent renders EXACTLY as
+   * before (the raw hold), so an older render row with no measurement is
+   * unaffected.
+   */
+  avatarDurationSeconds?: number | null
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. Distinct from the
+   *  static `caption` strip above (a single hand-picked line); these sync to the
+   *  FULL spoken narration across the BODY window. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw narration script text; CaptionLayer
+   *  estimates timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 79C, lib/video/body-visual-model.ts): the director's
+   * per-segment screen plan — which stretch of the body is the presenter full
+   * frame (`full_avatar`), the presenter as a floating card over cutaway
+   * footage (`avatar_pip`), or pure cutaway with the presenter off screen
+   * (`broll`). Re-fitted here to the duration this render actually has.
+   * Additive: absent renders EXACTLY as before (b-roll present → card over
+   * footage for the whole body; none → the near-full-bleed presenter).
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
+  /**
+   * WAVE 80C — the avatar clip is a KEYED (transparent webm) presenter
+   * (lib/did/contract.ts transparentPresenterConfig; merged by lib/video/
+   * avatar-render-orchestrator.ts). The floating card loses its frame, ring
+   * and fill so the person is composited straight over the footage / brand
+   * background; absent/false renders the opaque card exactly as before.
+   */
+  avatarVideoTransparent?: boolean | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -96,35 +136,100 @@ export interface AgentTalkingHeadReelProps {
   }
 }
 
+/** The lower-third's band under the floating card, in px — the strap needs a
+ *  strip of its own above the platform UI (see safeInsets). */
+const LOWER_THIRD_BAND = 120
+
 const FPS    = 30
-const TOTAL  = 14 * FPS
-const COVER  = 2  * FPS
-const BODY   = 10 * FPS
-const OUTRO  = 2  * FPS
+// THE BODY IS COMPUTED, NOT TYPED (wave 78 — owner: "the video needs to be long
+// enough to achieve the reason for making the video"). `const BODY = 10 * FPS`
+// stood here; the bookends are the composition's design chrome, read from the
+// ONE registry (lib/video/duration-model.ts COMPOSITION_DURATION_RULES), and
+// the BODY is whatever the render's durationInFrames leaves between them —
+// Root.tsx's calculateMetadata sizes that duration to the fitted narration.
+const BOOKENDS = compositionBookends("AgentTalkingHeadReel")
+const COVER  = BOOKENDS.introFrames
+const OUTRO  = BOOKENDS.outroFrames
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
-  qrCodeDataUrl, qrCaption, brand, brollClips,
+  voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips, avatarDurationSeconds,
+  captionsCues, captionScript, bodyVisualPlan, avatarVideoTransparent,
 }) => {
   const frame   = useCurrentFrame()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })
+  const BODY = timeline.body.durationInFrames
   const showEho = brand.showEhoMark ?? true
   const hasBroll = (brollClips?.length ?? 0) > 0
-  // With B-roll behind, the avatar floats as a card (bottom-left) so the
-  // footage reads; without it, the original near-full-bleed layout stands.
-  const avatarBox: React.CSSProperties = hasBroll
-    ? { position: "absolute", bottom: 130, left: 48, width: 560, height: 560 }
+  // THE TREATMENT AT THIS FRAME (wave 79C). The plan is re-fitted to the
+  // render's own duration; the segment under the playhead says what the body
+  // shows. A `broll` treatment with no clips on hand degrades to the full
+  // presenter (never a black frame); an avatar treatment with clips keeps the
+  // footage behind the card. No plan → the pre-79C behaviour, unchanged.
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "AgentTalkingHeadReel", durationInFrames)
+  const planned: BodyTreatment | null = plan ? segmentAtFrame(plan, frame)?.treatment ?? null : null
+  const treatment: "full_avatar" | "avatar_pip" | "broll" =
+    planned === "broll" && hasBroll ? "broll"
+    : planned === "avatar_pip" && hasBroll ? "avatar_pip"
+    : planned === "full_avatar" || planned === "broll" || planned === "avatar_pip" ? "full_avatar"
+    : hasBroll ? "avatar_pip" : "full_avatar"
+  const showBroll = hasBroll && treatment !== "full_avatar"
+  const safe = safeInsets(width, height)
+  // REALISM (wave 55) — null when no measurement or the clip fills the
+  // window; a real frame otherwise. `frame` is GLOBAL (called at the
+  // composition root, not inside the BODY <Sequence>), and BODY starts at
+  // COVER, so the local frame within BODY is `frame - COVER`.
+  const avatarFadeStart = avatarFadeOutFrame(avatarDurationSeconds, BODY, FPS)
+  const avatarOpacity = avatarFadeStart != null
+    ? interpolate(frame - COVER, [avatarFadeStart, avatarFadeStart + 12], [1, 0], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      })
+    : 1
+  // With B-roll behind, the avatar floats as a card (bottom-left, INSIDE the
+  // frame's safe insets with a band left under it for the lower-third — wave
+  // 79C; it sat at a typed bottom:130 before) so the footage reads; full
+  // frame, the original near-full-bleed layout stands. On a pure cutaway
+  // (`broll`) the presenter is off screen: the voice continues, the footage
+  // carries the beat.
+  const avatarBox: React.CSSProperties = treatment !== "full_avatar"
+    ? { position: "absolute", bottom: safe.bottom + LOWER_THIRD_BAND, left: safe.left, width: 560, height: 560, opacity: treatment === "broll" ? 0 : 1 }
     : { position: "absolute", top: 90, left: 90, width: 900, height: 900 }
+  // The keyed presenter (wave 80C) — no frame, no ring, no fill: the alpha is
+  // the crop and the footage / brand background shows through around the person.
+  const keyed = avatarVideoTransparent === true && !!avatarVideoUrl
+  const avatarChrome: React.CSSProperties = keyed
+    ? {}
+    : { borderRadius: 12, boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)` }
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {/* THE SEPARATE NARRATION TRACK the `voiceoverUrl` prop has always
+          promised. It was DECLARED and documented above and read by nothing:
+          buildAvatarRenderRow (lib/video/avatar-render-orchestrator.ts) writes
+          input_props.voiceoverUrl on every avatar render and stamps
+          used_voiceover, and the coordinator only muxes the DIFFERENT key
+          input_props.voiceover_url (lib/remotion/render-coordinator.ts) — so a
+          brokerage on the separate-TTS path (multi-language) got a ledger row
+          saying "narrated" over a video with no narration. §1: the capability
+          is wanted and documented, so the missing half is BUILT rather than the
+          prop deleted. Guarded, and null on the normal D-ID path, so the
+          avatar's own lip-synced audio is never doubled — exactly as the prop
+          doc says. Same shape as the 13 sibling compositions that already do
+          this (TestimonialReel, ComingSoonReel, NeighborhoodSpotlightReel, …). */}
+      {voiceoverUrl && <Audio src={voiceoverUrl} />}
       {/* COVER — 0-2s. Brand badge + hook + agent name. */}
       <Sequence from={0} durationInFrames={COVER}>
+        {/* SceneFade (lane 77D): a dissolve at every cut, timeline untouched —
+            see remotion/components/SceneFade.tsx for why not TransitionSeries. */}
+        <SceneFade>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl ? (
-            <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1]) }} />
+            <SafeImg src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
           ) : (
             <div style={{
               fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7, marginBottom: 32,
@@ -133,46 +238,61 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 700,
-            opacity: interpolate(frame, [5, 20], [0, 1]),
+            opacity: interpolate(frame, [5, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 72, fontWeight: 800, color: "#fff", lineHeight: 1.05, marginTop: 24,
-            opacity: interpolate(frame, [15, 35], [0, 1]),
+            opacity: interpolate(frame, [15, 35], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {agentName}
           </div>
         </AbsoluteFill>
+        </SceneFade>
       </Sequence>
 
       {/* BODY — 2-12s. Avatar video centered in a brand letterbox,
           caption strip on top, brokerage chrome at corners. */}
       <Sequence from={COVER} durationInFrames={BODY}>
+        <SceneFade>
         <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
           {/* B-roll background (TikTok pattern): cutaway footage behind the
               floating avatar, brand-tinted so the caption strip stays legible. */}
           {hasBroll && (
-            <BrollLayer
-              clips={brollClips!}
-              totalFrames={BODY}
-              overlayColor={`${brand.primaryColor}59`}
-            />
+            /* Mounted for the WHOLE body so the clip chain keeps its cadence
+               (brollSlots tiles [0, BODY) once); a full-frame presenter
+               segment hides it rather than remounting it mid-chain. */
+            <div style={{ position: "absolute", inset: 0, opacity: showBroll ? 1 : 0 }}>
+              <BrollLayer
+                clips={brollClips!}
+                totalFrames={BODY}
+                overlayColor={`${brand.primaryColor}59`}
+                filmGrain
+                handheldDrift
+              />
+            </div>
           )}
           {avatarVideoUrl ? (
+            /* ONE continuous <Video> for the body (trimBefore 0 → BODY): the
+               plan changes its BOX per segment, never remounts the player. */
             <Video
+              objectFit={keyed ? "contain" : "cover"}
               src={avatarVideoUrl}
-              startFrom={0}
-              endAt={BODY}
+              trimBefore={0}
+              trimAfter={BODY}
               style={{
                 ...avatarBox,
-                objectFit: "cover",
-                borderRadius: 12,
-                boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
+                ...avatarChrome,
+                // Wave 55 — fades to the branded/broll background at the
+                // avatar's REAL end instead of holding a frozen last frame;
+                // wave 79C — a `broll` cutaway segment takes the presenter
+                // off screen (the box's own opacity 0).
+                opacity: Math.min(avatarOpacity, typeof avatarBox.opacity === "number" ? avatarBox.opacity : 1),
               }}
             />
           ) : agentPhotoUrl ? (
-            <Img
+            <SafeImg
               src={agentPhotoUrl}
               style={{
                 ...avatarBox,
@@ -206,22 +326,28 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             {caption}
           </div>
 
-          {/* Bottom-left brand chip — persistent so any frame
-              screenshot stays attributable. */}
-          <div style={{
-            position: "absolute", bottom: 24, left: 24,
-            padding: "8px 16px", borderRadius: 6,
-            backgroundColor: "rgba(0,0,0,0.55)", color: "#fff",
-            fontSize: 18, fontWeight: 600,
-          }}>
-            {brand.brokerageName}
-          </div>
+          {/* Lower-third — agent name + brokerage, persistent so any frame
+              screenshot stays attributable. Lane 77D: this was a brokerage-only
+              chip; the PERSONAL reel never named the person speaking. The ONE
+              lower-third (remotion/components/LowerThird.tsx) replaces it —
+              wave 79C: at the frame's safe bottom inset (it sat at a typed
+              24 px, inside a feed's caption/actions band), in the band the
+              floating card leaves under itself. */}
+          <LowerThird
+            agentName={agentName}
+            brokerageName={brand.brokerageName}
+            primaryColor={brand.primaryColor}
+            accentColor={brand.accentColor}
+            bottom={safe.bottom}
+          />
         </AbsoluteFill>
+        </SceneFade>
       </Sequence>
 
       {/* OUTRO — 12-14s. CTA + phone + EHO mark. Solid brand
           background so the avatar-to-card transition is clean. */}
       <Sequence from={COVER + BODY} durationInFrames={OUTRO}>
+        <SceneFade>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -254,12 +380,26 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             accentColor={brand.accentColor}
           />
         </AbsoluteFill>
+        </SceneFade>
       </Sequence>
 
       {/* Total duration sanity sentinel. */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER SILENCE/BRANDING (wave 61, mirrors MarketUpdateReel.tsx):
+          the COVER tile is silent (no avatar/voiceover audio plays until BODY),
+          and the OUTRO CTA/QR tile must stay clean. Distinct from the static
+          `caption` strip above, which shows one hand-picked line for the whole
+          BODY — this syncs the FULL spoken narration when a script/cues are supplied. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        visibleFromFrame={COVER}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

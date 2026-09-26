@@ -16,7 +16,7 @@
 // browser's stale list). Double-book protection = calendar busy ∪ already-
 // scheduled showings.
 
-import { computeFreeSlots, type FreeSlot } from "@/lib/providers/calendar/free-slots"
+import { type FreeSlot } from "@/lib/providers/calendar/free-slots"
 
 export const SELF_BOOK_DEFAULTS = {
   durationMinutes: 45,
@@ -204,12 +204,13 @@ export async function bookShowingSlot(
     body: `Your showing is booked ✓ You're confirmed for ${l.address} on ${when.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${when.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}. Your agent's calendar is updated — reply here if anything changes.`,
   }).then(undefined, () => {})
   if (avail.agentUserId) {
-    await svc.from("notifications").insert({
+    const { error: notifyError } = await svc.from("notifications").insert({
       user_id: avail.agentUserId, brokerage_id: l.brokerage_id, type: "showing_self_booked",
       title: "A client booked a showing on your calendar",
       body: `${(contact as any).first_name ?? "A client"} booked ${l.address} — ${when.toLocaleString()}. It's on your calendar.`,
       entity_type: "showing", entity_id: showingId, priority: "high", channel: "in_app", is_read: false,
     }).then(undefined, () => {})
+    if (notifyError) console.warn("[self-book.ts] notifications insert refused — the bell will not ring:", notifyError.message)
   }
   return { ok: true, showingId }
 }

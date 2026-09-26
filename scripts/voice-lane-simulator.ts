@@ -9,9 +9,10 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   buildReceptionPrompt, buildOutboundPrompt, parseTurnPlan, transcriptToMessages, appendTranscript,
-  twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS,
+  twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS, PLATFORM_TURN_INSTRUCTIONS,
 } from "../lib/voice/reception-brain"
 import { encodeOutboundBrief, decodeOutboundBrief, composeVoicemailMessage } from "../lib/voice/twilio-outbound"
+import { OUTBOUND_CALL_GATE_ORDER } from "../lib/voice/outbound-call-gates"
 import { relayConfigured, twimlConnectRelay, parseRelayFrame, relaySpeak, relayEnd, parseRelayPlanRequest, composePacingRule } from "../lib/voice/conversation-relay"
 import { validateA2pProfile, nextA2pStep, describeA2pState } from "../lib/voice/a2p-registration"
 import { rollupVoiceActivity, composeVoiceActivityBrief } from "../lib/kernel/call-intelligence"
@@ -23,7 +24,7 @@ import { resolveProductBrand, DEFAULT_PRODUCT_BRAND } from "../lib/platform/prod
 import { buildPlatformReceptionPrompt as buildPlatformPromptForBrandCheck } from "../lib/voice/platform-reception"
 import { computeTwilioSignature, validateTwilioSignature } from "../lib/voice/twilio-voice"
 import {
-  isPlatformNumber, composeTierLines, buildPlatformReceptionPrompt, parsePlatformTurnPlan, PLATFORM_TURN_INSTRUCTIONS,
+  isPlatformNumber, composeTierLines, buildPlatformReceptionPrompt,
 } from "../lib/voice/platform-reception"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -123,9 +124,16 @@ console.log("\n── PURE: the OUTBOUND lane (ISA calls off Vapi) ──")
     decoded !== null && decoded.objective === brief.objective && decoded.systemPrompt === "PERSONA: speak like Dana.")
   check("legacy/foreign ai_notes decode to null (reception fallback, never a crash)",
     decodeOutboundBrief("engine:twilio") === null && decodeOutboundBrief(null) === null && decodeOutboundBrief('{"engine":"vapi"}') === null)
-  const vm = composeVoicemailMessage(brief, "VIP Premier")
+  // `recorded` is explicit now that call recording is real: the voicemail has to
+  // state that the call is being recorded when it is, and must NOT claim it when
+  // it is not. Both directions are asserted below — a disclosure that is right
+  // only in the default case is the shape that lies to the callee.
+  const vm = composeVoicemailMessage(brief, "VIP Premier", { recorded: false })
   check("machine answer → HONEST voicemail: identifies the AI + office, capped",
     /\bAI\b/i.test(vm) && vm.includes("VIP Premier") && vm.length <= 450)
+  const vmRecorded = composeVoicemailMessage(brief, "VIP Premier", { recorded: true })
+  check("recorded call → the voicemail SAYS it is recorded; unrecorded does not",
+    /record/i.test(vmRecorded) && !/record/i.test(vm) && vmRecorded.length <= 450)
 }
 
 console.log("\n── PURE: the PLATFORM scope (the app's own line) ──")
@@ -147,16 +155,19 @@ console.log("\n── PURE: the PLATFORM scope (the app's own line) ──")
   check("no forward number → the prompt FORBIDS claiming a transfer", p.systemPrompt.includes("Never claim you can transfer"))
   check("forward number configured → transfer offered", buildPlatformReceptionPrompt({ brandName: "X", tagline: "t", tierLines: [], hasTransfer: true }).systemPrompt.includes("action 'transfer'"))
 
-  const pr = parsePlatformTurnPlan('{"say":"Got it — the team will reach out.","action":"prospect","name":"Dana","email":"dana@broker.com","company":"Kling Group","role_interest":"brokerage","note":"Wants a demo"}')
-  check("prospect action parsed with contact fields", pr.action.kind === "prospect" && (pr.action as any).name === "Dana" && (pr.action as any).email === "dana@broker.com" && (pr.action as any).roleInterest === "brokerage")
-  const bad = parsePlatformTurnPlan('{"say":"ok","action":"prospect","email":"not-an-email","role_interest":"ceo"}')
+  // Lane 75D — ONE voice receptionist engine: the platform "prospect" action
+  // now parses through the SAME parseTurnPlan the tenant deployment uses
+  // (TOMBSTONE: lib/voice/platform-reception.ts's former parsePlatformTurnPlan).
+  const pr = parseTurnPlan('{"say":"Got it — the team will reach out.","action":"prospect","name":"Dana","email":"dana@broker.com","company":"Kling Group","role_interest":"brokerage","note":"Wants a demo"}')
+  check("prospect action parsed with contact fields (via the ONE parseTurnPlan)", pr.action.kind === "prospect" && (pr.action as any).name === "Dana" && (pr.action as any).email === "dana@broker.com" && (pr.action as any).roleInterest === "brokerage")
+  const bad = parseTurnPlan('{"say":"ok","action":"prospect","email":"not-an-email","role_interest":"ceo"}')
   check("garbage email DROPPED (not stored) + unknown role normalized to the funnel CHECK list",
     bad.action.kind === "prospect" && (bad.action as any).email === null && (bad.action as any).roleInterest === "unknown")
-  check("platform transfer/hangup/malformed all safe",
-    parsePlatformTurnPlan('{"say":"Connecting.","action":"transfer"}').action.kind === "transfer"
-    && parsePlatformTurnPlan('{"say":"Bye!","action":"hangup"}').action.kind === "hangup"
-    && parsePlatformTurnPlan("no json here").action.kind === "say")
-  check("PLATFORM_TURN_INSTRUCTIONS pin the prospect contract (caller ID already captured)",
+  check("platform transfer/hangup/malformed all safe (the SAME parser tenant turns use)",
+    parseTurnPlan('{"say":"Connecting.","action":"transfer"}').action.kind === "transfer"
+    && parseTurnPlan('{"say":"Bye!","action":"hangup"}').action.kind === "hangup"
+    && parseTurnPlan("no json here").action.kind === "say")
+  check("PLATFORM_TURN_INSTRUCTIONS pin the prospect contract (caller ID already captured) — now exported from reception-brain.ts beside TURN_INSTRUCTIONS, not a second file's own contract",
     PLATFORM_TURN_INSTRUCTIONS.includes('"prospect"') && PLATFORM_TURN_INSTRUCTIONS.includes("caller ID"))
 }
 
@@ -193,6 +204,11 @@ console.log("\n── PURE: A2P 10DLC step machine ──")
     street: "1 Main St", city: "Austin", region: "TX", postalCode: "78701",
     contactFirstName: "D", contactLastName: "K", contactEmail: "d@kling.example", contactPhone: "+15125550100",
     privacyPolicyUrl: "https://kling.example/privacy", termsUrl: "https://kling.example/terms",
+    // Wave 84D: the merged profile now carries the entity facts the runner used
+    // to hard-code (business type, industry, regions, company type, rep title /
+    // job position) — pulled from the Business registration branding setting.
+    businessType: "Limited Liability Corporation", industry: "REAL_ESTATE", regionsOfOperation: "USA_AND_CANADA",
+    companyType: "private", contactTitle: "Broker / Owner", contactJobPosition: "Director",
   })
   check("complete profile normalizes (EIN digits-only, default use-case supplied)", good.ok && (good as any).value.ein === "123456789" && (good as any).value.useCaseDescription.length > 10)
   check("step machine resumes in order and finishes",
@@ -208,8 +224,8 @@ console.log("\n── PURE: A2P 10DLC step machine ──")
 console.log("\n── PURE: voice-lane activity → the Monday brief ──")
 {
   const v = rollupVoiceActivity([
-    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
-    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
+    { direction: "inbound", call_type: "ai_inbound", status: "completed", outcome: "completed" },
+    { direction: "inbound", call_type: "ai_inbound", status: "completed", outcome: "completed" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "completed" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "voicemail" },
     { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "no_answer" },
@@ -291,36 +307,54 @@ console.log("\n── SOURCE: wiring ──")
   check("turn: book → real scheduled showing on the SAME rails (via the shared bookShowingFromCall); transfer → Dial; hangup → complete",
     turn.includes("bookShowingFromCall") && turn.includes("twimlTransfer") && turn.includes("finishCall")
     && src("lib/voice/twilio-voice.ts").includes('from("showings")'))
-  const binding = src("lib/voice/vapi-numbers.ts")
-  check("binding DEFAULTS to the Twilio lane; VOICE_ENGINE=vapi is legacy-only",
-    binding.includes('process.env.VOICE_ENGINE === "vapi" ? "vapi" : "twilio"') && binding.includes("bindNumberToTwilioLane"))
+  const binding = src("lib/voice/inbound-number-binding.ts")
+  check("binding is Twilio-ONLY (VAPI retired — no VOICE_ENGINE flag, no vapi assistant/number-import)",
+    binding.includes("bindNumberToTwilioLane") && !binding.includes("VOICE_ENGINE") && !binding.includes("registerNumberWithVapi"))
   const bind = src("lib/voice/twilio-voice.ts")
   check("bind sets VoiceUrl via the TENANT's creds — no vendor assistant object",
     bind.includes("VoiceUrl") && bind.includes("resolveTenantTwilioCreds") && bind.includes("IncomingPhoneNumbers/"))
   const matrix = src("lib/providers/tenancy-matrix.ts")
-  check("matrix: vapi = LEGACY, twilio-native default (no new vapi)", matrix.includes("LEGACY voice lane") && matrix.includes("VOICE_ENGINE=vapi"))
+  check("matrix: vapi = RETIRED, twilio-native is the single voice lane", matrix.includes("RETIRED voice lane") && matrix.includes("fully replaced by Twilio-native"))
   check("registry burn domain twilio_voice_lane (ai_isa)",
     "twilio_voice_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.twilio_voice_lane.manager === "ai_isa")
   check("PLATFORM scope: inbound + turn routes branch by the platform's own number; ledger is platform_reception_calls",
     inbound.includes("isPlatformNumber") && inbound.includes('from("platform_reception_calls")')
     && turn.includes("isPlatformNumber") && turn.includes("finishPlatformCall"))
-  check("PLATFORM scope: prospect hand-raise lands in the EXISTING growth funnel (capturePhoneProspect → platform_prospects)",
-    turn.includes("capturePhoneProspect") && src("lib/voice/platform-reception.ts").includes('from("platform_prospects")')
+  // Lane 76B — capturePhoneProspect is now a thin wrapper over the ONE
+  // platform_prospects writer (lib/platform/prospect-capture.ts); the phone
+  // line's source literal lives on the wrapper, the table write on the survivor.
+  check("PLATFORM scope: prospect hand-raise lands in the EXISTING growth funnel (capturePhoneProspect → upsertPlatformProspect → platform_prospects)",
+    turn.includes("capturePhoneProspect") && src("lib/voice/platform-reception.ts").includes("upsertPlatformProspect(")
+    && src("lib/platform/prospect-capture.ts").includes('from("platform_prospects")')
     && src("lib/voice/platform-reception.ts").includes('"phone:reception"'))
   check("PLATFORM scope: nothing about the product hardcoded — brand from platform_settings, pricing from subscription_tiers",
     src("lib/voice/platform-reception.ts").includes("loadProductBrand") && src("lib/voice/platform-reception.ts").includes('from("subscription_tiers")'))
+  // 2026-09-09: the three local requireProviders copies merged onto lib/auth/platform-guard.ts
+  // (§1/§6). "providers-gated" now means: the file calls the gate, and the gate is the capability check.
+  const PLATFORM_GUARD_SRC = src("lib/auth/platform-guard.ts")
+  const providersGated = (a: string) => a.includes('platformStaffCan(role, "providers")')
+    || (a.includes("requireProviders()") && PLATFORM_GUARD_SRC.includes('requirePlatformCapability("providers")') && PLATFORM_GUARD_SRC.includes("platformStaffCan(role, capability)"))
   check("PLATFORM bind action: providers-gated + audited, master account, VoiceUrl → the shared inbound webhook",
-    (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
+    (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return providersGated(a) && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
   check("registry burn domain platform_reception (data_steward)",
     "platform_reception" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.platform_reception.manager === "data_steward")
 
   // ── OUTBOUND lane wiring ──
   const outboundLib = src("lib/voice/twilio-outbound.ts")
-  check("OUTBOUND: TCPA chokepoint + budget gate run BEFORE the Twilio dial (fails closed)",
-    outboundLib.indexOf("enforceTCPACompliance") < outboundLib.indexOf("callConnector")
-    && outboundLib.includes("checkVendorBudget") && outboundLib.includes('estimatePlatformVendorCost("twilio_voice"'))
+  // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to read
+  // `indexOf("enforceTCPACompliance") < indexOf("callConnector")` in THIS file,
+  // which broke the moment the gates were correctly consolidated into
+  // lib/voice/outbound-call-gates.ts (wave 8). What must hold is: the executor
+  // runs the whole gate stack before it dials, and the stack really contains
+  // the TCPA and budget gates — both checked against the exported gate list.
+  check("OUTBOUND: the gate stack runs BEFORE the Twilio dial",
+    outboundLib.indexOf("runOutboundCallGates") >= 0
+    && outboundLib.indexOf("placeCall(") >= 0
+    && outboundLib.indexOf("runOutboundCallGates") < outboundLib.indexOf("placeCall("))
+  check("OUTBOUND: that stack still contains the TCPA chokepoint + the vendor budget ceiling",
+    OUTBOUND_CALL_GATE_ORDER.includes("tcpa") && OUTBOUND_CALL_GATE_ORDER.includes("vendor_budget"))
   check("OUTBOUND: machine detection + status callback registered at dial time",
-    outboundLib.includes('MachineDetection: "Enable"') && outboundLib.includes("/api/voice/twilio/status"))
+    /machineDetection:\s*"Enable"/.test(outboundLib) && outboundLib.includes("/api/voice/twilio/status"))
   const outboundRoute = src("app/api/voice/twilio/outbound/route.ts")
   check("OUTBOUND answer webhook: signature-validated; machine → HONEST voicemail + ledger closed; human → the shared turn loop",
     outboundRoute.includes("validateTwilioSignature") && outboundRoute.includes("composeVoicemailMessage") && outboundRoute.includes("twimlGatherTurn"))
@@ -329,8 +363,9 @@ console.log("\n── SOURCE: wiring ──")
   const statusRoute = src("app/api/voice/twilio/status/route.ts")
   check("status callback closes BOTH ledgers (voice_calls + platform_reception_calls) — no in_progress-forever rows",
     statusRoute.includes('from("voice_calls")') && statusRoute.includes('from("platform_reception_calls")') && statusRoute.includes("validateTwilioSignature"))
-  check("callers default to the Twilio lane (VOICE_ENGINE=vapi legacy-only): call-executor + AI-ISA",
-    src("lib/voice-engine/call-executor.ts").includes("placeOutboundAiCall") && src("lib/application/ai-isa.ts").includes("placeOutboundAiCall"))
+  check("callers place through the Twilio lane (VAPI retired — no flag branch): call-executor + AI-ISA",
+    src("lib/voice-engine/call-executor.ts").includes("placeOutboundAiCall") && src("lib/application/ai-isa.ts").includes("placeOutboundAiCall")
+    && !src("lib/voice-engine/call-executor.ts").includes("VOICE_ENGINE"))
 
   // ── INBOUND SMS → unified inbox wiring ──
   const smsLib = src("lib/voice/sms-inbound.ts")
@@ -357,8 +392,9 @@ console.log("\n── SOURCE: wiring ──")
   check("RELAY: inbound answers via the transport switch (relayConfigured → ConversationRelay; else Gather) at BOTH scopes",
     inbound.includes("answerTwiml") && inbound.includes("relayConfigured") && inbound.includes("twimlConnectRelay"))
   const relayPlan = src("app/api/voice/relay/plan/route.ts")
-  check("RELAY plan endpoint: timing-safe shared secret + the SAME planners/actors as the turn webhook (zero drift by construction)",
-    relayPlan.includes("timingSafeEqual") && relayPlan.includes("planReceptionTurn") && relayPlan.includes("planPlatformReceptionTurn")
+  check("RELAY plan endpoint: timing-safe shared secret + the SAME ONE planReceptionTurn engine (both deployment branches) as the turn webhook (zero drift by construction)",
+    relayPlan.includes("timingSafeEqual") && relayPlan.includes('planReceptionTurn({ deployment: "platform"')
+    && relayPlan.includes('deployment: "tenant"')
     && relayPlan.includes("bookShowingFromCall") && relayPlan.includes("processOptOut") && relayPlan.includes("capturePhoneProspect"))
   check("RELAY: human transfer executes SERVER-SIDE (live-call REST redirect) — the companion never holds Twilio creds",
     relayPlan.includes("redirectLiveCallToDial") && (() => { const c = src("tools/relay-companion/server.mjs"); return c.includes("x-relay-secret") && c.includes("/api/voice/relay/plan") && !c.includes("TWILIO_AUTH_TOKEN") })())
@@ -385,7 +421,7 @@ console.log("\n── SOURCE: wiring ──")
     ciRoute.includes("timingSafeEqual") && ciRoute.includes('"not found"')
     && ciRoute.includes("!(call as any).summary") && ciRoute.includes("intent_signals"))
   check("A2P MOCK VERIFY: providers-gated one-click action (Mock=true chain) + audited + card on the connectors page",
-    (() => { const a = src("app/actions/superadmin/a2p-verify.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("mock: true") && a.includes("superadmin_audit_log") })()
+    (() => { const a = src("app/actions/superadmin/a2p-verify.ts"); return providersGated(a) && a.includes("mock: true") && a.includes("superadmin_audit_log") })()
     && src("app/dashboard/superadmin/connectors/page.tsx").includes("A2pVerifyCard"))
   check("VOICE INTEGRITY: CNAM + SHAKEN/STIR appended to the SAME step machine state (twilio_a2p jsonb, no new tables) — gated on campaign approval, Twilio-published policy SIDs, statuses POLLED never assumed",
     a2pLib.includes("RNf3db3cd1fe25fcfd3c3ded065c8fea53") && a2pLib.includes("RN7a97559effdf62d00f4298208492a5ea")
@@ -394,7 +430,7 @@ console.log("\n── SOURCE: wiring ──")
   check("VOICE INTEGRITY: mock leaves bundles in Twilio's real 'draft' status (never a fabricated approval) + errors kept SEPARATE from last_error so the stall detector stays honest",
     a2pLib.includes('{ sid: tpSid, status: "draft" }') && a2pLib.includes("voice_integrity_error") && !a2pLib.includes('cnam_status = "twilio-approved"'))
   check("VOICE INTEGRITY: providers-gated + audited register button on the A2P board (per-tenant cell, board idiom)",
-    (() => { const a = src("app/dashboard/superadmin/a2p/actions.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("superadmin_audit_log") && a.includes("runVoiceIntegrityRegistration") })()
+    (() => { const a = src("app/dashboard/superadmin/a2p/actions.ts"); return providersGated(a) && a.includes("superadmin_audit_log") && a.includes("runVoiceIntegrityRegistration") })()
     && src("app/dashboard/superadmin/a2p/page.tsx").includes("VoiceIntegrityCell"))
   check("PORTAL CHAT gains the SAME live-inventory facts (additive: buyers only, share-freely exception stated, read failure never breaks the chat)",
     (() => { const p = src("app/api/portal/ai-chat/route.ts"); return p.includes("loadInventoryContext") && p.includes("portalView !== 'seller'") && p.includes("share freely") })())
@@ -442,10 +478,10 @@ console.log("\n── SOURCE: wiring ──")
     && src("lib/voice/call-analysis.ts").includes("voice_call_id") && src("lib/voice/call-analysis.ts").includes("agentUserId"))
   check("VOICE INTEL: the manual analyzer's sentiment now maps to the live CHECK vocabulary (very_* was silently dropped)",
     src("app/actions/ai-voice-transcription.ts").includes('replace(/^very_/, "")'))
-  check("INVENTORY: reception answers from LIVE listings — planReceptionTurn injects loadInventoryContext; BOTH transports pass svc",
+  check("INVENTORY: reception answers from LIVE listings — planReceptionTurn's tenant branch injects loadInventoryContext when svc is passed; BOTH transports pass it (lane 75D: the unified engine's tenant input object carries svc — assert the RULE, not a positional-arg waypoint, per CLAUDE.md §2)",
     src("lib/voice/twilio-voice.ts").includes("loadInventoryContext")
-    && turn.includes("planReceptionTurn(ctx, transcript, speech, svc)")
-    && src("app/api/voice/relay/plan/route.ts").includes("planReceptionTurn(ctx, transcript, req.utterance, svc"))
+    && turn.includes('deployment: "tenant", ctx, transcript, utterance: speech, svc')
+    && src("app/api/voice/relay/plan/route.ts").includes('deployment: "tenant", ctx, transcript, utterance: req.utterance, svc'))
   check("SETTINGS CASCADE: identity resolution walks agent → TEAM → brokerage (nothing hardcoded, brand flows all the way down)",
     src("lib/voice/twilio-voice.ts").includes('"team"') && src("lib/voice/twilio-voice.ts").includes("team_id"))
   check("FLYWHEEL: the Monday brief threads the draft-quality line (loadDraftQuality beside voice activity + call intel)",
@@ -461,6 +497,64 @@ console.log("\n── SOURCE: wiring ──")
     && "sms_unified_inbox" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.sms_unified_inbox.manager === "ai_isa")
   check("rentcast MCP fixes: rental long-term path + range params", src("lib/property/rentcast.ts").includes("/listings/rental/long-term") && src("lib/property/rentcast.ts").includes("MCP-verified contract"))
   check("package.json wires the proof", /"test:voice-lane":/.test(src("package.json")))
+
+  // ── Lane 73E: voice turn engine on native AI-SDK multi-step tool-calling ──
+  // (deep tool-round behavior — persona filtering, step/deadline bound,
+  // cost-avoidance, timeout fail-safe — is proved in
+  // scripts/ai-agent-tool-surfaces-simulator.ts Layer 5; these checks are the
+  // ConversationRelay-latency angle this file already owns: the turn/relay
+  // routes stay fast-path shaped, the JSON contract the routes consume is
+  // unchanged, and the manual toolRequest mechanism is actually gone from the
+  // prompt the model reads, not just unused.)
+  check("TURN_INSTRUCTIONS no longer teaches the model a manual tool_request JSON field — native AI-SDK tool-calling replaced it",
+    !TURN_INSTRUCTIONS.includes("tool_request"))
+  check("TOOL_TURN_GUIDANCE (appended only when real tools are offered) tells the model this is a LIVE call and to wrap up efficiently — the latency discipline lives in the prompt, not just the step cap",
+    src("lib/voice/reception-brain.ts").includes("TOOL_TURN_GUIDANCE") && src("lib/voice/reception-brain.ts").includes("LIVE phone call"))
+  check("twilio-voice.ts exports the bounded ceiling + deadline as NAMED constants (VOICE_TOOL_ROUND_MAX_STEPS / VOICE_TOOL_ROUND_DEADLINE_MS) — not inline magic numbers a proof can't pin",
+    voiceLib.includes("export const VOICE_TOOL_ROUND_MAX_STEPS = 3") && voiceLib.includes("export const VOICE_TOOL_ROUND_DEADLINE_MS ="))
+  check("the native tool round is gated behind a real persona-scoped registry lookup (resolveVoiceToolPersona / batchDataIsaTools), never a hardcoded tool list bypassing persona policy",
+    voiceLib.includes("resolveVoiceToolPersona") && voiceLib.includes("batchDataIsaToolsFn("))
+  check(".env.example documents the new deadline env var (test:env-var-parity's own domain, cross-checked here since this file owns the voice lane's env surface)",
+    src(".env.example").includes("VOICE_TOOL_ROUND_DEADLINE_MS"))
+  check("the turn/relay routes call planTurnWithPrompt for the outbound-brief lane exactly as before (that lane is tenant-only and never gained a deployment branch)",
+    src("app/api/voice/relay/plan/route.ts").includes("planTurnWithPrompt("))
+  check("platform-reception.ts carries no leftover toolRequest schema field now that it has a REAL tool (platform_faq_lookup)",
+    !src("lib/voice/platform-reception.ts").includes("toolRequest") && src("lib/voice/platform-reception.ts").includes("platform_faq_lookup"))
+
+  // ── Lane 75D: ONE voice receptionist engine (owner, wave 75) ──────────────
+  const platformReceptionSrc75d = src("lib/voice/platform-reception.ts")
+  const receptionBrainSrc = src("lib/voice/reception-brain.ts")
+  check("ONE engine: planReceptionTurn is the ONLY reception turn-planner exported from twilio-voice.ts and takes a `deployment` discriminant (tenant | platform)",
+    voiceLib.includes('export async function planReceptionTurn(input: ReceptionTurnInput') && voiceLib.includes('deployment: "tenant"') && voiceLib.includes('deployment: "platform"'))
+  // A tombstone NAMES the retired symbols (CLAUDE.md §1), so the check is for
+  // the ACTUAL DECLARATIONS being gone (never re-declared), not for the bare
+  // strings being absent — a bare-string check would fail on the tombstone
+  // comment itself (CLAUDE.md §2: a tombstone is not a call site).
+  check("TOMBSTONE: planPlatformReceptionTurn / PlatformTurnPlan / PlatformTurnAction / parsePlatformTurnPlan / PLATFORM_TURN_INSTRUCTIONS / PLATFORM_TOOL_TURN_GUIDANCE are no longer DECLARED in platform-reception.ts, and the file names the survivor",
+    !platformReceptionSrc75d.includes("export async function planPlatformReceptionTurn") && !platformReceptionSrc75d.includes("export function parsePlatformTurnPlan")
+    && !platformReceptionSrc75d.includes("export interface PlatformTurnPlan") && !platformReceptionSrc75d.includes("export type PlatformTurnAction")
+    && !platformReceptionSrc75d.includes("export const PLATFORM_TURN_INSTRUCTIONS") && !platformReceptionSrc75d.includes("export const PLATFORM_TOOL_TURN_GUIDANCE")
+    && platformReceptionSrc75d.includes("TOMBSTONE (lane 75D") && voiceLib.includes('if (input.deployment === "platform")'))
+  check("both deployments' turn contracts + parser live in ONE file (reception-brain.ts): VoiceTurnAction carries the platform 'prospect' variant, PLATFORM_TURN_INSTRUCTIONS/PLATFORM_TOOL_TURN_GUIDANCE are exported beside TURN_INSTRUCTIONS/TOOL_TURN_GUIDANCE, and parseTurnPlan accepts both",
+    receptionBrainSrc.includes('kind: "prospect"') && receptionBrainSrc.includes("export const PLATFORM_TURN_INSTRUCTIONS") && receptionBrainSrc.includes("export const PLATFORM_TOOL_TURN_GUIDANCE")
+    && (receptionBrainSrc.match(/export function parseTurnPlan/g) ?? []).length === 1)
+  check("both routes call the SAME unified planReceptionTurn for the platform scope, passing platformFaqTools() through the SAME runVoiceTurnRound the tenant branch uses (no second tool-round implementation)",
+    voiceLib.includes("platformFaqTools") && voiceLib.includes("runVoiceTurnRound"))
+  check("the tenant tool round now ALSO offers the SAME free capture/follow-up bundle every chat surface gets (buildCustomerFreeTools, incl. record_qualification) — capturing as much as an email/portal thread would (owner, wave 75)",
+    voiceLib.includes("buildCustomerFreeTools") && voiceLib.includes("record_qualification") && voiceLib.includes('leadId: toolCtx.leadId'))
+  check("VoiceToolExecContext carries leadId — the SAME identity fallback chat surfaces use so record_qualification/schedule_callback register on a pre-conversion lead call, not only a converted contact",
+    voiceLib.includes("leadId: string | null"))
+  check("both routes now select voice_calls.lead_id and thread it into voiceToolCtx",
+    turn.includes('"id, contact_id, lead_id, agent_id, transcription, ai_notes, direction"') && turn.includes("leadId: (call as any).lead_id")
+    && src("app/api/voice/relay/plan/route.ts").includes('"id, contact_id, lead_id, agent_id, transcription, ai_notes, direction"') && src("app/api/voice/relay/plan/route.ts").includes("leadId: (call as any).lead_id"))
+
+  // ── Lane 74B: the shared qualification playbook + cost-ranked tool order ──
+  check("reception-brain.ts mounts the shared qualification playbook on both the inbound reception and outbound prompts (never a hand-rolled job list)",
+    (src("lib/voice/reception-brain.ts").match(/buildQualificationPrompt\(/g) ?? []).length >= 2)
+  check("platform-reception.ts mounts the SAME shared builder (conversational-rules-only variant — a platform prospect is not a real-estate buyer/seller)",
+    src("lib/voice/platform-reception.ts").includes("buildQualificationPrompt("))
+  check("twilio-voice.ts routes the voice tool allowlist + free capture bundle through selectToolsForPersona (cost-ranked order, same rule as chat surfaces — CLAUDE.md §6)",
+    voiceLib.includes("selectToolsForPersona(merged)"))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

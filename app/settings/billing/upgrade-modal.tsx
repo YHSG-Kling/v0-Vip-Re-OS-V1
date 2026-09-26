@@ -11,13 +11,22 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Check, AlertTriangle, Loader2 } from "lucide-react"
+// TOMBSTONE (orphan doctrine §1.3): `Loader2` was imported here and rendered NOWHERE.
+// This modal holds no pending state to spin on — the one async step,
+// fetchClientSecret() at upgrade-modal.tsx:56, is handed to Stripe's
+// <EmbeddedCheckoutProvider>, and the SURVIVOR of the "checkout is loading"
+// affordance is <EmbeddedCheckout /> at upgrade-modal.tsx:105, which renders its own
+// loading state while that promise is in flight. A second spinner here would be a
+// second answer to one question (§6), and it would have to invent the state to know when
+// to stop.
+import { Check, AlertTriangle } from "lucide-react"
 import {
   EmbeddedCheckout,
   EmbeddedCheckoutProvider,
 } from "@stripe/react-stripe-js"
 import { loadStripe } from "@stripe/stripe-js"
 import { startSubscriptionCheckout } from "@/app/actions/billing"
+import { formatSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!)
 
@@ -149,10 +158,14 @@ export function UpgradeModal({
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    {/* NULL and -1 both mean unlimited in the catalogue; the live
+                        multi_location row uses NULL, so an `=== -1` test alone
+                        printed "Up to null agents" on the top plan. One fold,
+                        shared with the seat gate (lib/kernel/tier-role-matrix.ts). */}
                     <p className="text-sm text-center text-muted-foreground">
-                      {tier.max_agents === -1 
-                        ? "Unlimited agents" 
-                        : `Up to ${tier.max_agents} agent${tier.max_agents !== 1 ? "s" : ""}`}
+                      {normalizeCatalogSeatLimit(tier.max_agents) === null
+                        ? "Unlimited seats"
+                        : `Up to ${formatSeatLimit(tier.max_agents)} seat${normalizeCatalogSeatLimit(tier.max_agents) === 1 ? "" : "s"}`}
                     </p>
 
                     <ul className="space-y-2 text-sm">
@@ -184,7 +197,16 @@ export function UpgradeModal({
                     )}
 
                     {isUpgrade && (
-                      <Button className="w-full mt-2" size="sm">
+                      <Button
+                        className="w-full mt-2"
+                        size="sm"
+                        onClick={(e) => {
+                          // The Card also carries this handler; stop the bubble so
+                          // the tier is selected exactly once.
+                          e.stopPropagation()
+                          handleSelectTier(tier.id)
+                        }}
+                      >
                         Select
                       </Button>
                     )}

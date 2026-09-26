@@ -12,7 +12,9 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 import type { PropertyFacts } from "@/lib/property/resolve-property-facts"
+import { listingAttributionLine } from "@/lib/listings/attribution"
 
 export interface BuyerMatchReelResult { queued: boolean; renderId?: string; reason?: string }
 
@@ -25,7 +27,14 @@ const MAX_CARDS = 3
  *  (works whether the match is our listing OR an external MLS/RentCast/IDX property). */
 export function buildBuyerMatchReelProps(
   facts: PropertyFacts[],
-  ctx: { agentName: string; agentPhone: string; brokerageName: string },
+  ctx: {
+    agentName: string; agentPhone: string; brokerageName: string
+    /** The tenant's brand through the ONE cascade (lib/video/reel-brand.ts
+     *  resolveReelBrand). OPTIONAL so the pure proof runs without a database;
+     *  absent → the composition defaults (navy/amber). Lane 77D — see the
+     *  `brand:` note below. */
+    brand?: { primaryColor: string; accentColor: string; logoUrl?: string | null }
+  },
 ): Record<string, unknown> | null {
   const examples = facts
     .filter((f) => f && (f.address || f.city))
@@ -37,6 +46,11 @@ export function buildBuyerMatchReelProps(
       bedrooms:  f.bedrooms != null ? String(f.bedrooms) : "—",
       bathrooms: f.bathrooms != null ? String(f.bathrooms) : "—",
       photoUrl:  f.photoUrl ?? null,
+      // Wave 70 (owner: listing data provided by RentCast must be attributed wherever it
+      // displays): PropertyFacts.source carries the raw saved_properties.source vocabulary
+      // (rentcast | idx | mls | brokerage_listing | manual) when this card came from an
+      // external feed. "" for our own listing — the caption/composition renders nothing.
+      attribution: listingAttributionLine(f.source as any),
     }))
   if (examples.length === 0) return null
   const areaName = (examples[0].cityState.split(",")[0] || "your area").trim()
@@ -49,16 +63,97 @@ export function buildBuyerMatchReelProps(
     ctaLabel:        "See your full list",
     agentName:       ctx.agentName,
     agentPhone:      ctx.agentPhone,
-    brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", brokerageName: ctx.brokerageName, showEhoMark: true },
+    // BRAND FROM THE TENANT CASCADE (lane 77D). "#0F172A"/"#F59E0B" were
+    // literals here — the composition's stock navy/amber — so a wizard-branded
+    // brokerage's buyer-match reel never carried its own colours or logo. The
+    // cascade value wins; the literals remain only as the no-brand fallback.
+    brand: {
+      primaryColor: ctx.brand?.primaryColor ?? "#0F172A",
+      accentColor: ctx.brand?.accentColor ?? "#F59E0B",
+      ...(ctx.brand?.logoUrl ? { logoUrl: ctx.brand.logoUrl } : {}),
+      brokerageName: ctx.brokerageName,
+      showEhoMark: true,
+    },
+  }
+}
+
+/**
+ * THE FACTS this reel asserts — read-only (no QR minting, no writes), so the
+ * living-video sweep can re-derive them cheaply and tell whether the reel has
+ * started showing homes that are gone.
+ *
+ * Availability is the point. saved_properties (the external/MLS snapshot cache)
+ * has no status column, so third-party matches are counted as UNVERIFIABLE
+ * rather than assumed available — we do not invent bad news about a listing we
+ * cannot see.
+ */
+export async function buyerMatchFacts(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  contactId: string,
+): Promise<import("@/lib/video/living-video").LivingFacts | null> {
+  const { data: c } = await supabase
+    .from("contacts").select("id, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
+  const contact = c as { brokerage_id: string | null; agent_id: string | null } | null
+  if (!contact || contact.brokerage_id !== brokerageId) return null
+
+  const { data: pm } = await supabase.from("property_matches")
+    .select("property_id, match_score")
+    .eq("brokerage_id", brokerageId).eq("contact_id", contactId)
+    .gte("match_score", MATCH_SCORE_THRESHOLD)
+    .order("match_score", { ascending: false }).limit(MAX_CARDS)
+  const propertyIds = ((pm ?? []) as Array<{ property_id: string | null }>)
+    .map((r) => r.property_id).filter(Boolean) as string[]
+
+  const { resolvePropertyFacts, isUnavailableStatus, verifyExternalAvailability } =
+    await import("@/lib/property/resolve-property-facts")
+  const factsMap = await resolvePropertyFacts(supabase, brokerageId, propertyIds)
+  const resolved = propertyIds.map((id) => factsMap.get(id)).filter(Boolean) as PropertyFacts[]
+  // VERIFY the outside listings. This runs on the living sweep, whose entire job
+  // is telling the truth about what a buyer was shown, so a metered per-property
+  // vendor lookup is exactly the right trade here (and is opt-in precisely so
+  // the render-time path does not pay it). Anything still unknown after this is
+  // genuinely unknowable — no lane could answer.
+  const shown = await verifyExternalAvailability(brokerageId, resolved)
+
+  let agentName = "Your Agent"
+  if (contact.agent_id) {
+    const { data: a } = await supabase.from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
+    const uid = (a as { user_id: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: u } = await supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+      const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+      if (full) agentName = full
+    }
+  }
+
+  return {
+    shownCount: shown.length,
+    unavailableCount: shown.filter((f) => isUnavailableStatus(f.status)).length,
+    // Still unknown AFTER our own data and the vendor lookup — the honest
+    // residue, not a shrug at every external listing.
+    unverifiableCount: shown.filter((f) => f.statusSource === "unknown").length,
+    // Order matters — the cards are ordered by match score, so a re-order IS a
+    // different reel. Joined rather than hashed so a human can read the diff.
+    priceSignature: shown.map((f) => (f.price == null ? "?" : String(Math.round(f.price)))).join("|"),
+    // BOTH IDS, so the signature says which door each home came through: our
+    // listing id for in-house, the MLS/vendor id for outside.
+    matchSetSignature: shown.map((f) => f.listingId ?? f.propertyId ?? f.id).join("|"),
+    agentName,
   }
 }
 
 /**
  * Enqueue a personalized buyer property-match reel render (deliverable-gated).
- * Idempotent — at most one reel per buyer per REEL_COOLDOWN_DAYS.
+ *
+ * Idempotent — at most one reel per buyer per REEL_COOLDOWN_DAYS. `force` is the
+ * LIVING refresh: the cooldown is a spam guard against the cadence cron, not a
+ * rule that a buyer must keep being shown a home that went under contract on
+ * Tuesday.
  */
 export async function produceBuyerMatchReel(
   brokerageId: string, contactId: string, client?: ReturnType<typeof createServiceClient>,
+  opts: { force?: boolean; refreshedFromRenderId?: string | null } = {},
 ): Promise<BuyerMatchReelResult> {
   const supabase = client ?? createServiceClient()
   if (!brokerageId || !contactId) return { queued: false, reason: "missing ids" }
@@ -69,12 +164,22 @@ export async function produceBuyerMatchReel(
   if (!contact || contact.brokerage_id !== brokerageId) return { queued: false, reason: "contact not in brokerage" }
 
   // Idempotent — skip if a reel for this buyer was queued/rendered within the cooldown.
+  //
+  // A CANCELLED ROW IS NOT A REEL. Every render this producer staged without an
+  // agent phone was cancelled by the content-contract backstop (agentPhone is
+  // required on AffordabilitySnapshotReel), and this probe — which had no status
+  // filter — then read that cancelled row as "already produced" and suppressed
+  // every retry for REEL_COOLDOWN_DAYS. The refusal added below writes nothing
+  // at all, so it cannot re-arm the cooldown; this excludes the rows the OLD
+  // behaviour already left behind, so a buyer whose agent adds a phone number
+  // gets a reel on the next tick instead of never.
   const sinceIso = new Date(Date.now() - REEL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString()
   const { data: recent } = await supabase.from("remotion_composition_renders")
     .select("id").eq("brokerage_id", brokerageId).eq("composition_id", COMPOSITION_ID)
     .eq("entity_type", "contact").eq("entity_id", contactId)
+    .neq("render_status", "cancelled")
     .gte("created_at", sinceIso).limit(1).maybeSingle()
-  if (recent) return { queued: false, reason: "reel already produced this week" }
+  if (recent && !opts.force) return { queued: false, reason: "reel already produced this week" }
 
   // Top high-score matches → resolve facts from EITHER our listings OR the external/MLS
   // cache (RentCast / IDX), via the unified resolver. property_matches.property_id is a
@@ -106,12 +211,41 @@ export async function produceBuyerMatchReel(
       if ((u as any)?.phone) agentPhone = String((u as any).phone)
     }
   }
-  let brokerageName = "Your Brokerage"
-  const { data: b } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
-  if ((b as { name?: string } | null)?.name) brokerageName = String((b as { name: string }).name)
+  // TOMBSTONE (lane 77D): a private `brokerages.select("name")` read stood
+  // here beside literal brand colours. Name, colours and logo now come through
+  // the ONE brand cascade (lib/video/reel-brand.ts resolveReelBrand), agent-
+  // scoped so the team tier applies — the same call every other tenant reel
+  // makes; the adapter's own defaults cover a tenant with no brand configured.
+  const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+  const reelBrand = await resolveReelBrand(supabase, brokerageId, { agentUserId })
+  const brokerageName = reelBrand.brokerageName
 
-  const inputProps = buildBuyerMatchReelProps(facts, { agentName, agentPhone, brokerageName })
+  const inputProps = buildBuyerMatchReelProps(facts, {
+    agentName, agentPhone, brokerageName,
+    brand: { primaryColor: reelBrand.primaryColor, accentColor: reelBrand.accentColor, logoUrl: reelBrand.logoUrl },
+  })
   if (!inputProps) return { queued: false, reason: "no renderable matches" }
+
+  // ── REFUSE BEFORE THE QR IS MINTED ──────────────────────────────────────────
+  // `agentPhone` initialises to "" and stays "" when the buyer's agent has no
+  // phone on their users row, and AffordabilitySnapshotReel REQUIRES it — so
+  // render-composition's backstop cancelled the whole reel. That cancellation
+  // happened AFTER this producer had minted a tracked QR code and written a
+  // queue row, and the cooldown probe above then read that row and suppressed
+  // every retry for a week: the buyer silently never got a reel, and a qr_codes
+  // slug existed for a video that does not.
+  //
+  // So the same question the renderer will ask is asked HERE, before anything is
+  // created — the house pattern (video-director.ts step 6c,
+  // consultation-render.ts, lead-magnets.ts). Nothing is written on a refusal,
+  // so the cooldown is not re-armed and the next tick tries again the moment the
+  // missing fact exists.
+  const missing = missingContentProps(COMPOSITION_ID, inputProps)
+  if (missing.length > 0) {
+    const why = describeMissingContent(COMPOSITION_ID, missing)
+    console.warn(`[buyer-match-reel] contact ${contactId} refused: ${why}`)
+    return { queued: false, reason: why }
+  }
 
   // TRACKED QR on the outro (owner rule: QR on every non-selfie video) — the
   // buyer scans to book; idempotent per contact via the shared tracked-QR core.
@@ -126,11 +260,37 @@ export async function produceBuyerMatchReel(
     }
   } catch { /* QR is additive */ }
 
+  // ── NO COMPANION SHARE CARD IS STAGED HERE, AND THAT IS THE RULING ─────────
+  // AffordabilitySnapshotReel declares thumbnail_composition_id='VideoCoverThumb'
+  // (m168), so render-composition would render a still beside this reel and
+  // publish it as thumbnail_url. Since 2026-09-03 that pass asks the content
+  // contract first and SKIPS a card it cannot complete, so this reel ships with
+  // no share image rather than with the composition's Studio fixture.
+  //
+  // It stays skipped because VideoCoverThumb REQUIRES `seoHint` — the sentence
+  // an AI search engine quotes to describe a video it cannot watch — and this
+  // producer holds NO narration. buildBuyerMatchReelProps composes fixed product
+  // chrome ("Fresh homes matching your search") around three property rows;
+  // there is no script, and nothing here has been through evaluateOutbound. A
+  // hint written at this line would be a new sentence about a named buyer's
+  // saved search that no compliance gate ever saw, published to the one surface
+  // the hint exists to win. The other three required props ARE available
+  // (title/subtitle from examples[0], agentName from the contact's agent), so
+  // the day this lane gains a gated narration the card is four lines away.
+  //
+  // The LIVING identity — what this reel asserts, so the sweep can re-derive it.
+  const { computeFactsKey } = await import("@/lib/video/living-video")
+  const livingFacts = await buyerMatchFacts(supabase, brokerageId, contactId)
+
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId, compositionId: COMPOSITION_ID, agentUserId,
     entityType: "contact", entityId: contactId,
     inputProps, scopeType: "brokerage", scopeId: brokerageId, requestedVia: "cron",
+    livingKind: livingFacts ? "buyer_match_reel" : null,
+    factsKey: livingFacts ? computeFactsKey("buyer_match_reel", livingFacts) : null,
+    facts: livingFacts ?? null,
+    refreshedFromRenderId: opts.refreshedFromRenderId ?? null,
   })
   return r.ok ? { queued: true, renderId: r.renderId } : { queued: false, reason: r.error }
 }

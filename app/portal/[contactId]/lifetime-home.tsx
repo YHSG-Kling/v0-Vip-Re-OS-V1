@@ -24,7 +24,7 @@ import { EducationTutorCard } from "@/app/components/portal/education-tutor-card
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { maintenanceDeck } from "@/lib/portal/home-maintenance"
-import { normalizeLifetimeSegment, lifetimeCardPlan } from "@/lib/portal/lifetime-segment"
+import { normalizeLifetimeSegment, lifetimeCardPlan, isRelocatedSegment } from "@/lib/portal/lifetime-segment"
 import {
   Bell,
   BookOpen,
@@ -46,7 +46,7 @@ async function loadRecentUpdates(contactId: string) {
   const supabase = await createClient()
   const { data } = await supabase
     .from("transparency_updates")
-    .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+    .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id, metadata")
     .eq("contact_id", contactId)
     .eq("is_visible_to_client", true)
     .order("created_at", { ascending: false })
@@ -102,7 +102,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   // stay-in-touch lane instead. Fair housing: only the neutral segment is used.
   const segment = normalizeLifetimeSegment((contact as { lifetime_segment?: string | null }).lifetime_segment)
   const plan = lifetimeCardPlan(segment)
-  const isRelocated = segment === "relocated"
+  const isRelocated = isRelocatedSegment(segment)
   const firstName = contact.first_name || "Homeowner"
   // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
   // Previous code read (contact as any).agents?.name which doesn't exist on the
@@ -236,8 +236,10 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           />
         )}
 
-        {/* 3. Equity Estimate Card */}
+        {/* 3. Equity Estimate Card — id target for LifetimeMilestoneLine's
+               "See savings" CTA → #refinance (anchor-census 4a) */}
         {plan.showWealthStory && (
+        <div id="refinance">
         <EquityEstimateCard
           estimatedValueMid={homeValueEstimate?.estimated_value_mid}
           estimatedValueLow={homeValueEstimate?.estimated_value_low}
@@ -248,6 +250,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           closeDate={transaction?.close_date}
           valueSeries={homeValueSeries}
         />
+        </div>
         )}
 
         {/* 4. Neighborhood Activity */}
@@ -312,8 +315,9 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
                 team scoping + audience filtering. */}
         <ContactVendorToolkitCard contactId={contactId} portalView="lifetime" />
 
-        {/* 6. Preferred Vendors (compact) */}
-        <Card>
+        {/* 6. Preferred Vendors (compact) — id target for
+               LifetimeMilestoneLine's "Vendors" CTA → #vendors (anchor-census 4a) */}
+        <Card id="vendors">
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
               <Wrench className="h-5 w-5 text-orange-600" />

@@ -154,12 +154,27 @@ export async function bookSellerListingAppointment(
   // column (agent-coaching/no-show autopilot key on it, and the direct schedule
   // action passes users.id). params.agentId here is agents.id — resolve first.
   const agentUserId = await resolveAgentRecordToUserId(params.agentId)
+  // NOT `?? params.agentId` (m362). The comment above states the requirement —
+  // calendar_events.agent_user_id is USERS-class and params.agentId is
+  // agents.id — and the fallback then supplied exactly the agents id the
+  // resolve existed to convert. It fired only when the resolve failed, i.e.
+  // when there was no users id to be had, so it never rescued a working case:
+  // it put a wrong-class id on the appointment that agent-coaching and the
+  // no-show autopilot both key on.
+  if (!agentUserId) {
+    return {
+      success: false,
+      contactId,
+      alreadyConverted,
+      error: "Could not resolve the agent's user account — the appointment was not scheduled.",
+    }
+  }
   let calendarEventId: string
   try {
     calendarEventId = await scheduleISAAppointment({
       brokerageId: params.brokerageId,
       contactId,
-      agentId: agentUserId ?? params.agentId,
+      agentId: agentUserId,
       startAt: params.startAt,
       endAt: params.endAt,
       timezoneName: params.timezoneName,
@@ -191,7 +206,7 @@ export async function bookSellerListingAppointment(
       chainKey: "listing-appt-prep",
       brokerageId: params.brokerageId,
       contactId,
-      agentUserId: agentUserId ?? undefined,
+      agentUserId,
       triggerEvent: "listing.appointment_set",
       triggerEventId: calendarEventId, // stable per-appointment key → idempotent rerun
       metadata: {

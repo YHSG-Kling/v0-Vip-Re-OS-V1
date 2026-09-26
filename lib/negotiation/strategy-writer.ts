@@ -79,18 +79,20 @@ export async function writeNegotiationStrategy(
   if (error || !inserted) return { ok: false, error: error?.message ?? "Insert failed" }
 
   // Sprint 5 portal projector picks this up to surface the customer-mirror.
-  await svc.from("lifecycle_events").insert({
-    event_type:   KernelEvent.NEGOTIATION_STRATEGY_READY,
-    entity_type:  "offer",
-    entity_id:    ctx.offerId,
-    brokerage_id: ctx.brokerageId,
+  // Audit row + reactor (was a bare insert nobody downstream heard).
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  await emitKernelEvent({
+    event:       KernelEvent.NEGOTIATION_STRATEGY_READY,
+    entityType:  "offer",
+    entityId:    ctx.offerId,
+    brokerageId: ctx.brokerageId,
+    contactId:   ctx.contactId ?? undefined,
     metadata: {
       strategy_id:        inserted.id,
       side:               ctx.side,
       recommended_action: draft.recommendedAction,
       win_probability:    draft.winProbability,
     },
-    created_at: new Date().toISOString(),
   })
 
   return {

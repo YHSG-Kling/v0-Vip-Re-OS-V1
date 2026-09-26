@@ -8,22 +8,38 @@
 // alive so dead ones are skipped (no wasted failed-run cost). When no Apify actor
 // works, the caller falls back to ZenRows where the data type allows.
 
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { actorExists } from "@/lib/providers/apify/client"
 
-export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin"
+export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin" | "facebook_marketplace"
 
 /**
  * Ordered candidate actors per task — primary first. Multiple public actors
  * exist for each source; if one is removed we try the next. Keep primaries
  * cost-effective; fallbacks are alternates that accept compatible input.
+ *
+ * RE-VERIFIED 2026-09-15 (wave 65, Exa research — see
+ * docs/lead-acquisition-coverage-2026-09.md for citations + pricing). Reddit's own
+ * logged-out search.json API is reported hard-blocked (403) as of mid-2026, which is why a
+ * dedicated Reddit SEARCH actor (clearpath) now leads that list ahead of the older
+ * subreddit-listing-style trudax actor. The LinkedIn "no-cookies" slug below is the real,
+ * currently-live actor id — the old entry (missing the "-no-cookies" suffix) was never
+ * confirmed live and is kept only as an unverified last resort.
  */
 export const ACTOR_REGISTRY: Record<ApifyTask, string[]> = {
-  reddit:     ["trudax/reddit-scraper", "trudax/reddit-scraper-lite", "oxylabs/reddit-scraper"],
-  facebook:   ["apify/facebook-posts-scraper", "apify/facebook-pages-scraper", "easyapi/facebook-posts-search-scraper"],
-  instagram:  ["apify/instagram-scraper", "apify/instagram-hashtag-scraper", "apify/instagram-search-scraper"],
-  craigslist: ["epctex/craigslist-scraper", "ivanvs/craigslist-scraper", "lukaskrivka/craigslist-scraper"],
+  reddit:     ["clearpath/reddit-search-scraper", "harshmaur/reddit-search-scraper", "trudax/reddit-scraper", "trudax/reddit-scraper-lite", "oxylabs/reddit-scraper"],
+  facebook:   ["memo23/facebook-public-group-posts-scraper", "scrapier/facebook-groups-posts-scraper", "logical_scrapers/facebook-group-posts-scraper", "apify/facebook-posts-scraper", "apify/facebook-pages-scraper"],
+  instagram:  ["apify/instagram-hashtag-scraper", "apidojo/instagram-hashtag-scraper", "apify/instagram-scraper", "apify/instagram-search-scraper"],
+  craigslist: ["solidcode/craigslist-scraper", "epctex/craigslist-scraper", "ivanvs/craigslist-scraper", "lukaskrivka/craigslist-scraper"],
   google:     ["apify/google-search-scraper", "scraping-fish/google-search-results-scraper"],
-  linkedin:   ["apimaestro/linkedin-posts-search-scraper", "curious_coder/linkedin-post-search-scraper", "harvestapi/linkedin-post-search"],
+  linkedin:   ["apimaestro/linkedin-posts-search-scraper-no-cookies", "harvestapi/linkedin-post-search", "curious_coder/linkedin-post-search-scraper", "apimaestro/linkedin-posts-search-scraper"],
+  // Lane 82B (Exa, 2026-09-25): Marketplace PROPERTY-FOR-SALE listings — the FSBO seller lane the
+  // facebook_marketplace SourceKey defined since wave 55 with no collector. Primary is Apify's own
+  // actor (apify.com/apify/facebook-marketplace-scraper — pay-per-result $5/1k, "from $2.60/1k",
+  // location/category/search Marketplace URLs, no login); fallback is the property-specific
+  // vivid-softwares/facebook-property-scraper ($18/1k, `forSaleOnly`, seller + beds/baths parsed).
+  facebook_marketplace: ["apify/facebook-marketplace-scraper", "vivid-softwares/facebook-property-scraper"],
+  // TOMBSTONE — tiktok_search / tiktok_comments (lane 83A) retired by lane 84C. Owner, 2026-09-26:
+  // "don't need tiktok." No other task uses those actors; nothing to merge.
 }
 
 export type ActorRunner = (actorId: string, input: Record<string, any>) => Promise<{ data: any[]; cost: number }>
@@ -72,14 +88,10 @@ export async function runApifyTask(
   return { data: [], cost: 0, actorUsed: null, triedActors: tried }
 }
 
-/** Does an Apify actor still exist? Real GET against the Apify API. */
+/** Does an Apify actor still exist? Official SDK adapter
+ *  (lib/providers/apify/client.ts) — same GET /v2/acts/{id} endpoint. */
 export async function checkActorExists(actorId: string): Promise<boolean> {
   const token = process.env.APIFY_API_TOKEN
   if (!token) return false
-  const res = await callConnector({
-    connector: "apify", baseUrl: "https://api.apify.com",
-    path: `/v2/acts/${actorId.replace("/", "~")}`, method: "GET",
-    auth: { style: "bearer", token },
-  })
-  return res.ok
+  return actorExists(token, actorId)
 }

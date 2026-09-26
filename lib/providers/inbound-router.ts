@@ -31,6 +31,18 @@ export type InboundMessage = {
   /** The number the message was SENT TO (ours) — resolves the tenant for
    *  per-number Twilio webhooks with no brokerage_id query param. */
   toPhone: string | null
+  /** Blind-spot burn-down (lane 75D) — the raw "To"/envelope-recipient
+   *  address for an email provider (SendGrid Inbound Parse `to`; Postmark's
+   *  `OriginalRecipient`, falling back to `To`; Mailgun Routes' `recipient`).
+   *  This webhook URL is still configured ONE PER BROKERAGE (never per
+   *  agent), but several distinct recipient addresses can deliver to that
+   *  SAME URL — only this field tells them apart, so
+   *  resolveInboundMailboxOwner (lib/lead-pipeline/unknown-sender-
+   *  identification.ts) can match it against a per-agent/team mailbox
+   *  binding (platform_credentials.account_id) before falling back to the
+   *  brokerage-wide shared mailbox. Null for SMS/WhatsApp (toPhone carries
+   *  that identity instead). */
+  toEmail: string | null
   /** Messaging surface: Twilio delivers WhatsApp with a "whatsapp:" prefix on
    *  From/To — one webhook, multiple surfaces (the unified inbox). */
   channel: "sms" | "whatsapp" | "email" | null
@@ -159,6 +171,7 @@ function normalizeSendGrid(
     fromEmail: (event["from"] as string | null) ?? null,
     fromPhone: null,
     toPhone: null,
+    toEmail: (event["to"] as string | null) ?? null,
     channel: "email",
     subject: (event["subject"] as string | null) ?? null,
     text: (event["text"] as string | null) ?? null,
@@ -177,6 +190,10 @@ function normalizePostmark(
     fromEmail: (body["From"] as string | null) ?? null,
     fromPhone: null,
     toPhone: null,
+    // OriginalRecipient is the EXACT address the message was delivered to
+    // (Postmark's own doc: the one to use for routing when a catch-all
+    // domain admits several addresses) — falls back to the raw To header.
+    toEmail: (body["OriginalRecipient"] as string | null) ?? (body["To"] as string | null) ?? null,
     channel: "email",
     subject: (body["Subject"] as string | null) ?? null,
     text: (body["TextBody"] as string | null) ?? null,
@@ -196,6 +213,8 @@ function normalizeMailgun(
     fromEmail: (eventData["sender"] as string | null) ?? null,
     fromPhone: null,
     toPhone: null,
+    // Mailgun Routes' own envelope recipient field.
+    toEmail: (eventData["recipient"] as string | null) ?? null,
     channel: "email",
     subject: ((eventData["message"] as Record<string, unknown>)?.["headers"] as Record<string, unknown>)?.["subject"] as string | null ?? null,
     text: (eventData["stripped-text"] as string | null) ?? null,
@@ -220,6 +239,7 @@ function normalizeTwilio(
     fromEmail: null,
     fromPhone: strip(rawFrom),
     toPhone: strip(rawTo),
+    toEmail: null,
     channel: isWhatsApp ? "whatsapp" : "sms",
     subject: null,
     text: (body["Body"] as string | null) ?? null,
@@ -353,6 +373,7 @@ export async function normalizeInbound(req: Request, options?: NormalizeOptions)
       fromEmail: null,
       fromPhone: null,
       toPhone: null,
+      toEmail: null,
       channel: null,
       subject: null,
       text: null,

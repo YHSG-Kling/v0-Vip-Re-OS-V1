@@ -4,6 +4,7 @@ import { ChevronLeft, Brain } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { getBrokerageInsights } from "@/app/actions/brokerage-intelligence"
 import { IntelligenceMeshClient } from "./intelligence-mesh-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * /dashboard/admin/intelligence-mesh
@@ -19,8 +20,7 @@ export default async function IntelligenceMeshPage() {
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
 
-  const allowed = new Set(["superadmin","broker","broker_admin","admin","team_lead"])
-  if (!allowed.has(profile?.user_type ?? "")) redirect("/dashboard")
+if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) redirect("/dashboard")
 
   // Load all open + recently dismissed for triage
   const [openRes, dismissedRes] = await Promise.all([
@@ -46,9 +46,9 @@ export default async function IntelligenceMeshPage() {
     const { data: adoptionRows } = await supabase
       .from("pattern_adoptions")
       .select(`
-        id, applied_actions, baseline_metric, followup_metric, observed_lift_pct, status, created_at,
+        id, applied_actions, baseline_metric, followup_metric, observed_lift_pct, followup_at, status, created_at,
         insight:brokerage_intelligence_insights(headline, pattern_key),
-        agent:users!pattern_adoptions_agent_id_fkey(first_name, last_name),
+        agent:agents!pattern_adoptions_agent_id_fkey(users(first_name, last_name)),
         adopter:users!pattern_adoptions_adopted_by_fkey(first_name, last_name)
       `)
       .eq("brokerage_id", profile.brokerage_id)
@@ -83,6 +83,31 @@ export default async function IntelligenceMeshPage() {
           <p className="text-sm text-muted-foreground mt-1">
             Top-quartile agent behaviors vs. bottom-quartile, with the playbook required to close the gap. Adopt a pattern in one click — every selected agent inherits the winning configuration.
           </p>
+          {/* RUN PROVENANCE — brokerage_intelligence_insights.mining_run_id. The miner
+              stamps one uuid per run and supersedes per pattern_key, not per run, so an
+              open board can carry a pattern last mined weeks ago beside one written this
+              morning and look uniformly current. Saying how many runs are in view, and
+              how old the oldest is, is what makes a stale pattern visible. */}
+          {(() => {
+            const openInsights = openRes.insights ?? []
+            if (openInsights.length === 0) return null
+            const runs = new Set(openInsights.map((i) => i.miningRunId).filter((r): r is string => !!r))
+            const unstamped = openInsights.filter((i) => !i.miningRunId).length
+            const oldest = openInsights
+              .map((i) => i.computedAt)
+              .filter(Boolean)
+              .sort()[0]
+            return (
+              <p className="text-xs text-muted-foreground mt-1">
+                {runs.size === 0
+                  ? `${openInsights.length} open pattern${openInsights.length === 1 ? "" : "s"} — none records which mining run produced it.`
+                  : `${openInsights.length} open pattern${openInsights.length === 1 ? "" : "s"} from ${runs.size} mining run${runs.size === 1 ? "" : "s"}`}
+                {unstamped > 0 && runs.size > 0 ? ` (${unstamped} unstamped)` : ""}
+                {oldest ? ` · oldest computed ${new Date(oldest).toLocaleDateString()}` : ""}
+                {runs.size > 1 ? " — patterns from an earlier run have not been re-mined since." : ""}
+              </p>
+            )
+          })()}
         </div>
 
         <IntelligenceMeshClient
@@ -130,7 +155,8 @@ export default async function IntelligenceMeshPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-2.5">{fmtName(adoption.agent)}</td>
+                      {/* agent_id is agents-class; the name it displays lives one hop away on users. */}
+                      <td className="px-4 py-2.5">{fmtName(adoption.agent?.users ?? null)}</td>
                       <td className="px-4 py-2.5">{fmtName(adoption.adopter)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {adoption.baseline_metric != null ? Number(adoption.baseline_metric).toLocaleString() : "—"}
@@ -138,6 +164,10 @@ export default async function IntelligenceMeshPage() {
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {adoption.followup_metric != null ? Number(adoption.followup_metric).toLocaleString() : "—"}
                       </td>
+                      {/* Three honest states: measured (lift), measured-without-baseline
+                          (follow-up ran on a legacy adoption that predates baseline
+                          stamping — "n/a", never forever-"pending"), and pending (the
+                          +30d follow-up in the weekly mine cron has not run yet). */}
                       <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${
                         adoption.observed_lift_pct == null
                           ? "text-muted-foreground"
@@ -147,7 +177,9 @@ export default async function IntelligenceMeshPage() {
                       }`}>
                         {adoption.observed_lift_pct != null
                           ? `${Number(adoption.observed_lift_pct) >= 0 ? "+" : ""}${Number(adoption.observed_lift_pct).toFixed(1)}%`
-                          : "pending"}
+                          : adoption.followup_at != null
+                            ? "n/a"
+                            : "pending"}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs capitalize ${

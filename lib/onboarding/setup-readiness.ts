@@ -11,6 +11,7 @@
 // Pure spec + resolver here (unit-testable); loadSetupReadiness does the I/O.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { managingBrokerReadiness } from "@/lib/kernel/managing-broker"
 import type { Tier } from "@/lib/education/onboarding-curriculum"
 
 export type SetupRole =
@@ -28,7 +29,19 @@ const OPTIONAL_ONBOARDING_ROLES = new Set<SetupRole>(["tc", "isa", "compliance_o
 /** Roles that are NOT part of onboarding at all — no setup checklist (overview only). (Business rule.) */
 const NON_ONBOARDING_ROLES = new Set<SetupRole>(["vendor", "lender", "superadmin"])
 
-/** Map the app's many role/user_type strings (+ legacy aliases) onto the 10 canonical setup roles. */
+/**
+ * Map the app's many role/user_type strings (+ legacy aliases) onto the 10 canonical setup roles.
+ *
+ * `SetupRole` is an OVERVIEW BUCKET, not the users.user_type vocabulary — the two
+ * are deliberately different sets (this one has no 'contact', no 'system', no
+ * 'support'). "lender" survives here as a bucket even though 'lender' is no longer
+ * a storable user_type (owner ruling, 2026-09-04: lender is a vendor CATEGORY):
+ * a lender seats as user_type 'vendor' and lands on the "vendor" bucket, which is
+ * in NON_ONBOARDING_ROLES exactly like this one, so the behaviour is identical.
+ * The 'lender'/'title_agent' aliases below are kept for legacy inputs (the
+ * `user_role_assignments.role` grant still spells 'lender', and that column has no
+ * CHECK) — they are an alias table, not a claim about what the column stores.
+ */
 export function normalizeSetupRole(userType: string | null | undefined): SetupRole {
   switch ((userType ?? "").toLowerCase()) {
     case "broker": case "broker_owner": return "broker"
@@ -86,6 +99,7 @@ export interface SetupSnapshot {
   hasAccountingSync: boolean
   hasRecruitingPitch: boolean
   hasOfficeLocations: boolean   // multi-location: ≥1 office set up
+  hasManagingBroker: boolean    // wave 81A: EVERY office has its managing broker (broker of record) on file — lib/kernel/managing-broker.ts managingBrokerReadiness
   // team
   hasTeamConfig: boolean
   hasTeamBrand: boolean         // team logo/colors (teams.logo_url / primary_color)
@@ -100,7 +114,7 @@ const EMPTY_SNAPSHOT: SetupSnapshot = {
   hasFinance: false, hasAdManager: false, hasGoogleBusiness: false,
   hasBrokerageLicense: false, hasBrokerageContact: false, hasBranding: false, hasCommissionStructure: false,
   hasEmailProvider: false, hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false,
-  hasAccountingSync: false, hasRecruitingPitch: false, hasOfficeLocations: false,
+  hasAccountingSync: false, hasRecruitingPitch: false, hasOfficeLocations: false, hasManagingBroker: false,
   hasTeamConfig: false, hasTeamBrand: false,
 }
 
@@ -121,7 +135,24 @@ export interface SetupItem {
 
 const AGENTISH: SetupRole[] = ["agent", "team_lead"]
 const TEAMISH: SetupTier[] = ["team", "brokerage", "multi_location"]
-const ORG: SetupTier[] = ["brokerage", "multi_location"]
+/**
+ * "A tenancy with more than one seat to fill." TEAM IS ONE (owner ruling).
+ *
+ * This was `["brokerage", "multi_location"]` — the SECOND spelling of "org
+ * tier" in the codebase, and it disagreed with the first:
+ * `lib/onboarding/critical-setup.ts` ORG_TIERS has always been `["team",
+ * "brokerage", "multi_location"]`. So the same tenant was told by one
+ * onboarding surface that inviting staff was a required setup step and by the
+ * other that it did not apply to them. Two spellings of one idea is a defect,
+ * not a style choice (CLAUDE.md §6) — merged onto the wider one, which is also
+ * the correct one: a team subscription has FIVE seats, so "invite agents &
+ * staff" and "set your recruiting pitch" are real, fillable steps for it.
+ *
+ * Solo stays out, and that is not a tier denial: a solo tenant's 2 seats and
+ * its own `commission_contract` item cover it, and nothing here GATES anything
+ * — this catalogue only decides which checklist rows render.
+ */
+const ORG: SetupTier[] = ["team", "brokerage", "multi_location"]
 
 /**
  * THE CATALOG — every user-fillable setup item, mapped to role + tier + required/optional + the real
@@ -170,7 +201,7 @@ export const SETUP_ITEMS: SetupItem[] = [
     href: "/settings/brand-voice", detect: (s) => s.hasAdditionalBrand },
   { key: "personal_website", label: "Add your personal website", roles: AGENTISH, required: false, category: "growth",
     why: "Links from your marketing and QR codes back to your own site.",
-    href: "/settings/profile", detect: (s) => s.hasPersonalWebsite },
+    href: "/dashboard/profile", detect: (s) => s.hasPersonalWebsite },
   { key: "social_accounts", label: "Connect social accounts", roles: AGENTISH, required: false, category: "growth",
     why: "Lets the Campaign Orchestrator publish approved posts to your channels.",
     href: "/dashboard/profile", detect: (s) => s.hasSocialAccount },
@@ -235,12 +266,26 @@ export const SETUP_ITEMS: SetupItem[] = [
   { key: "office_locations", label: "Set up your office locations", roles: ["broker", "admin"], required: true, category: "brokerage", tiers: ["multi_location"],
     why: "Multi-location brokerages scope agents, teams, and roll-ups per office — set them up so per-office reporting works.",
     href: "/dashboard/admin/users", detect: (s) => s.hasOfficeLocations },
+  // Wave 81A (owner: "there can only be one managing broker per brokerage
+  // location" … "has to be producing"). A brokerage-tier tenant is a brokerage
+  // and must name its broker of record; a multi-office tenant names one per
+  // office. Solo and team tiers are not brokerages on this platform (the team
+  // plan "doesn't have a broker in the subscription"), so the item does not
+  // apply to them. Detected from locations.managing_broker_user_id (m661).
+  { key: "managing_broker", label: "Name the managing broker of each office", roles: ["broker", "admin"], required: true, category: "brokerage", tiers: ["brokerage", "multi_location"],
+    why: "State license law puts one broker of record in charge of each office. That broker manages the office's agents and always holds a producing seat; until one is named, the brokerage has nobody on file as responsible for its licensees.",
+    href: "/dashboard/admin/billing", detect: (s) => s.hasManagingBroker },
   { key: "isa_phone", label: "Provision an AI ISA phone number", roles: ["broker", "admin"], required: false, category: "ai",
     why: "A dedicated number lets the AI ISA call and qualify leads around the clock.",
     href: "/dashboard/settings/isa-calling", detect: (s) => s.hasIsaPhone },
   { key: "recruiting_pitch", label: "Set your recruiting pitch", roles: ["broker", "admin"], required: false, category: "growth", tiers: ORG,
     why: "Powers the Recruiting Manager's outreach to the agents you want to attract.",
-    href: "/dashboard/recruiting", detect: (s) => s.hasRecruitingPitch },
+    // /dashboard/recruiting never had a page.tsx, so this checklist item sent the
+    // broker to a 404 — and brokerages.recruiting_pitch had no writer anywhere, so
+    // the item could never be completed either. Both halves are fixed: the editor is
+    // app/dashboard/recruiting-roi/recruiting-pitch-panel.tsx (Pipeline tab), on the
+    // canonical recruiting surface that /admin/recruiting-hub was retired into.
+    href: "/dashboard/recruiting-roi", detect: (s) => s.hasRecruitingPitch },
   { key: "accounting", label: "Connect accounting (QuickBooks/Xero)", roles: ["broker", "admin"], required: false, category: "integrations",
     why: "Syncs commissions and expenses so your P&L is always current.",
     href: "/settings/accounting", detect: (s) => s.hasAccountingSync },
@@ -449,21 +494,66 @@ export async function loadSetupReadiness(params: {
     if (isStaff) {
       const { data } = await svc.from("agent_api_credentials").select("id").eq("brokerage_id", brokerageId ?? "").eq("is_active", true).limit(50)
       // agent_api_credentials is keyed by agent_id; for non-agent staff we accept a user-scoped platform cred instead.
-      const pc = await svc.from("platform_credentials").select("id").eq("agent_user_id", userId).eq("is_active", true).in("scope", ["email", "calendar"]).limit(1)
-      snap.hasEmailOrCalendar = ((data ?? []).length > 0 && !!agentId) || has(pc)
+      // platform_credentials.scope is the OWNERSHIP level (brokerage|team|agent), not a
+      // provider family — filtering it by "email"/"calendar"/"financial" matched nothing.
+      // CALENDAR half — still a user-scoped credential: a calendar belongs to
+      // the person whose day it is, so there is no team or brokerage fallback.
+      const pcCal = await svc.from("platform_credentials").select("id").eq("agent_user_id", userId).eq("is_active", true).in("platform", ["google_calendar"]).limit(1)
+
+      // EMAIL half — WALKS THE CASCADE (orphan burn-down, lane E).
+      //
+      // This probe used to ask one question: does a credential exist with
+      // agent_user_id = this user? That is USER scope only, and it is the wrong
+      // question for exactly the staff this branch covers. The provider model is
+      // documented at lib/inbound-mail/resolve-user-provider.ts:6 — agents and
+      // team_leads are independent contractors on their OWN Gmail/Outlook, while
+      // brokerage staff (TC, compliance_officer, broker_admin) work the
+      // BROKERAGE's domain through a transactional provider whose credential is
+      // held at brokerage scope with agent_user_id NULL.
+      //
+      // So a TC whose email was genuinely connected — by their broker, at
+      // brokerage scope, which is the only way it is ever connected for them —
+      // matched nothing here and was told to "Connect your email & calendar"
+      // (the staff_email item at :249) forever, with no action available that
+      // would have cleared it. The readiness surface was NARROWER than reality,
+      // which is the direction that nags a user about work already done.
+      //
+      // resolveInboundEmailProviderForUser is the resolver written for this and
+      // never called: it walks user → team → brokerage over the same
+      // platform_credentials table, restricted to the inbound-email platforms,
+      // and returns null only when NONE of the three levels has one.
+      // The middle rung of the cascade needs the user's team. users.team_id is a
+      // live column; a NULL simply means the team rung cannot match, which is
+      // the same outcome the resolver produces for a user with no team.
+      const { data: teamRow, error: teamErr } = await svc
+        .from("users").select("team_id").eq("id", userId).maybeSingle()
+      if (teamErr) {
+        // supabase-js RESOLVES a refused read. Reported rather than treated as
+        // "no team", which would silently skip a rung of the cascade.
+        console.warn("[setup-readiness] team lookup refused — team-scoped email credentials will not be seen:", teamErr.message)
+      }
+
+      const { resolveInboundEmailProviderForUser } = await import("@/lib/inbound-mail/resolve-user-provider")
+      const inboundEmail = await resolveInboundEmailProviderForUser({
+        userId,
+        teamId: (teamRow as { team_id?: string | null } | null)?.team_id ?? null,
+        brokerageId,
+      })
+
+      snap.hasEmailOrCalendar = ((data ?? []).length > 0 && !!agentId) || has(pcCal) || !!inboundEmail
     }
 
     // Brokerage foundations (broker/admin).
     if (isBrokerAdmin && brokerageId) {
-      const [brk, gs, comm, sms, vapi, acct, team, locs] = await Promise.all([
+      const [brk, gs, comm, sms, isaPhone, acct, team, locs] = await Promise.all([
         svc.from("brokerages").select("license_number, recruiting_pitch, logo_url, primary_color, phone, email, website").eq("id", brokerageId).maybeSingle(),
         svc.from("global_settings").select("app_logo_url, primary_color, from_email, smtp_host").eq("brokerage_id", brokerageId).maybeSingle(),
         svc.from("commission_structures").select("id").eq("brokerage_id", brokerageId).limit(1),
-        svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth", "vapi"]).limit(1),
-        svc.from("vapi_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
+        svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth"]).limit(1),
+        svc.from("tenant_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
         svc.from("brokerage_integrations").select("id").eq("brokerage_id", brokerageId).eq("provider_type", "accounting").limit(1),
         svc.from("users").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).not("user_type", "in", "(contact,vendor,system,admin)"),
-        svc.from("locations").select("id").eq("brokerage_id", brokerageId).limit(1),
+        svc.from("locations").select("id, managing_broker_user_id").eq("brokerage_id", brokerageId).limit(200),
       ])
       const b = (brk.data ?? {}) as any, g = (gs.data ?? {}) as any
       snap.hasBrokerageLicense = !!b.license_number
@@ -474,17 +564,27 @@ export async function loadSetupReadiness(params: {
       snap.hasEmailProvider = !!(g.from_email || g.smtp_host)
       snap.hasCommissionStructure = has(comm)
       snap.hasSmsProvider = has(sms)
-      snap.hasIsaPhone = has(vapi)
+      snap.hasIsaPhone = has(isaPhone)
       snap.hasAccountingSync = has(acct)
       snap.hasTeamMembers = (team.count ?? 0) > 0
       snap.hasOfficeLocations = has(locs)
+      // A refused offices read (or m661 not yet applied) reads as NOT ready —
+      // "nobody checked" must never render as "checked and fine" (§4).
+      snap.hasManagingBroker = !locs.error && managingBrokerReadiness(((locs.data ?? []) as Array<{ managing_broker_user_id?: string | null }>).map((l) => ({ managing_broker_user_id: l.managing_broker_user_id ?? null }))).ready
     }
 
     // Team-lead team config + brand.
     if (role === "team_lead") {
-      const { data } = await svc.from("teams").select("team_split_type, logo_url, primary_color").eq("team_lead_id", userId).limit(1).maybeSingle()
+      const { data } = await svc.from("teams").select("team_split_type, team_split_percent, team_split_value, logo_url, primary_color").eq("team_lead_id", userId).limit(1).maybeSingle()
       const t = (data ?? {}) as any
-      snap.hasTeamConfig = t.team_split_type !== null && t.team_split_type !== undefined
+      // Same correction as lib/onboarding/critical-setup.ts:splitsSet — the old
+      // test was `team_split_type IS NOT NULL` against a column that is
+      // DEFAULT 'percent', so it reported configured for every team that had
+      // ever existed while the value the commission waterfall reads was NULL.
+      // Test the value on the branch the type selects; 0 is a valid answer.
+      snap.hasTeamConfig = t.team_split_type === "flat"
+        ? t.team_split_value !== null && t.team_split_value !== undefined
+        : t.team_split_percent !== null && t.team_split_percent !== undefined
       snap.hasTeamBrand = !!(t.logo_url || t.primary_color)
     }
   } catch (err) {

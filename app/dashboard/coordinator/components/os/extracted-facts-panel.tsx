@@ -35,11 +35,12 @@ export function ExtractedFactsPanel() {
   const [busy, setBusy] = useState<string | null>(null)
   const [, startTransition] = useTransition()
 
-  useEffect(() => {
+  const load = () =>
     listRecentExtractionsAction({ limit: 25 })
       .then((r) => { if (r.ok && r.rows) setRows(r.rows) })
       .finally(() => setLoading(false))
-  }, [])
+
+  useEffect(() => { void load() }, [])
 
   const verify = (id: string, correctedValue?: string) => {
     setBusy(id)
@@ -53,6 +54,9 @@ export function ExtractedFactsPanel() {
               : row,
           ))
           setEditing(null)
+          // Re-read so the "verified by" line names the actual verifier from
+          // the ledger rather than a client-side guess at who is signed in.
+          void load()
         }
       } finally {
         setBusy(null)
@@ -63,6 +67,18 @@ export function ExtractedFactsPanel() {
   const unverified = rows.filter((r) => !r.verified).length
   const fmt = (v: unknown) =>
     typeof v === 'string' ? v : Array.isArray(v) ? v.join(', ') : v === null || v === undefined ? '—' : JSON.stringify(v)
+  // WHO verified — four states from the action, never collapsed into one badge.
+  const verifiedBy = (r: ExtractionRow): string | null => {
+    if (!r.verified) return null
+    const when = r.verifiedAt ? new Date(r.verifiedAt).toLocaleDateString() : null
+    const on = when ? ` · ${when}` : ''
+    switch (r.verifiedByState) {
+      case 'resolved':       return `by ${r.verifiedByName}${on}`
+      case 'unresolved':     return `by someone outside this brokerage${on}`
+      case 'lookup_refused': return `verifier lookup refused${on}`
+      case 'not_recorded':   return `verifier not recorded${on}`
+    }
+  }
 
   return (
     <Card className="border-l-4 border-l-teal-500">
@@ -97,6 +113,7 @@ export function ExtractedFactsPanel() {
                     {r.confidence}
                   </Badge>
                   {r.verified && <Badge className="text-[10px] bg-green-100 text-green-800">✓ verified</Badge>}
+                  {r.verified && <span className="text-[10px] text-muted-foreground">{verifiedBy(r)}</span>}
                   {r.classification && (
                     <span className="ml-auto text-[11px] text-muted-foreground capitalize">
                       {r.classification.replace(/_/g, ' ')}

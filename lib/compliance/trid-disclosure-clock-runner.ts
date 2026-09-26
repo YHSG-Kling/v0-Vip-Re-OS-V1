@@ -9,6 +9,7 @@
 // (never re-pings the same standing state). Complements — does not replace — the post-hoc
 // monitorTRIDComplianceService. Read-mostly; the only write is the status flag + alerts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeTridClock, mostUrgentDeadline, type TridClockResult } from "./trid-disclosure-clock"
@@ -32,7 +33,7 @@ export interface TridClockRunResult {
   escalated: number
 }
 
-export interface SingleClockResult { result: TridClockResult; escalated: boolean; transitioned: boolean }
+interface SingleClockResult { result: TridClockResult; escalated: boolean; transitioned: boolean }
 
 /** Map the forward clock verdict to the trid_timeline.compliance_status enum (it already
  *  carries 'at_risk' and 'violation'; we never downgrade a standing 'violation'/'closed'). */
@@ -42,7 +43,8 @@ function statusForVerdict(overall: TridClockResult["overall"], prior: string | n
   return null // ok/insufficient → leave whatever the post-hoc monitor set
 }
 
-export async function runTridClockForTimeline(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function runTridClockForTimeline(
   input: { brokerageId: string; timeline: any; today: string; copyGenerator?: CopyGenerator; escalate?: boolean },
   svc: Svc,
 ): Promise<SingleClockResult> {
@@ -90,12 +92,12 @@ export async function runTridClockForTimeline(
   try {
     const agentUserId = tl.transactions?.agent_id ?? null
     if (agentUserId) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: input.brokerageId, type: "trid_disclosure_clock",
         title: result.overall === "violation" ? "⛔ TRID disclosure deadline missed — closing at risk" : "⏳ TRID disclosure deadline approaching",
         body: draft.body, entity_type: "transaction", entity_id: tl.transaction_id,
         priority: result.overall === "violation" ? "critical" : "high",
-      }).then(() => {}, () => {})
+      }), { table: "notifications", flow: "trid_disclosure_clock_runner_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const sig = await publishManagerSignal({

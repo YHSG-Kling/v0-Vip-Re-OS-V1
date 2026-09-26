@@ -6,7 +6,6 @@ import Link from "next/link"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -28,11 +27,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -48,6 +42,10 @@ import {
   exportAuditTrail,
   monitorTRIDCompliance,
   checkComplianceStatus,
+  resolveComplianceAlert,
+  createTRIDTimeline,
+  updateTRIDMilestone,
+  type TridMilestone,
 } from "@/app/actions/compliance-monitoring"
 import { ActionConfirmSheet } from "@/app/components/action-framework"
 import {
@@ -63,7 +61,6 @@ import {
   AlertOctagon,
   FileDown,
   ScanSearch,
-  ChevronDown,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -99,10 +96,27 @@ interface TridResult {
   checkedAt: string
 }
 
+/** One unresolved row from compliance_alerts, as checkComplianceStatus returns it. */
+interface ComplianceAlert {
+  id: string
+  alert_type: string
+  severity: string | null
+  message: string | null
+  created_at: string | null
+}
+
 interface ComplianceSummary {
   score: number
   flaggedCount: number
   overallStatus: string
+  /**
+   * The alerts themselves, not just the COUNT. Until wave 14 this panel showed
+   * "3 alerts" and `overallStatus: at_risk` with no way to see or clear any of
+   * them — `compliance_alerts.resolved` was read as `false` and written by
+   * nobody, so at_risk was permanent and the badge was noise. Listing them is
+   * what makes the resolve action reachable.
+   */
+  alerts: ComplianceAlert[]
 }
 
 interface TransactionComplianceTabProps {
@@ -126,8 +140,20 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
   const [exportingId, setExportingId] = useState<string | null>(null)
   const [tridResults, setTridResults] = useState<Record<string, TridResult>>({})
   const [tridPendingId, setTridPendingId] = useState<string | null>(null)
+  // TRID timeline writers (lane E2 2026-08-28: createTRIDTimeline +
+  // updateTRIDMilestone WIRED). Until now trid_timeline had readers everywhere
+  // — the monitor above, the disclosure-clock cron, stage progression — and NO
+  // reachable writer: no deal could ever start TRID tracking or record a
+  // milestone date, so "Check TRID" always answered compliant-by-absence.
+  const [tridStartPendingId, setTridStartPendingId] = useState<string | null>(null)
+  const [milestoneTxnId, setMilestoneTxnId] = useState<string | null>(null)
+  const [milestoneName, setMilestoneName] = useState<TridMilestone>("loan_application_date")
+  const [milestoneDate, setMilestoneDate] = useState("")
+  const [milestonePending, setMilestonePending] = useState(false)
   const [summaries, setSummaries] = useState<Record<string, ComplianceSummary>>({})
   const [summaryPendingId, setSummaryPendingId] = useState<string | null>(null)
+  const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null)
+  const [alertMsg, setAlertMsg] = useState<string | null>(null)
 
   // Review dialog state (preserved from original)
   const [selectedLog, setSelectedLog] = useState<ComplianceLog | null>(null)
@@ -274,6 +300,46 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
     }))
   }
 
+  // ── Start TRID tracking for a transaction ──────────────────────────────────
+  async function handleStartTrid(transactionId: string) {
+    setTridStartPendingId(transactionId)
+    try {
+      await createTRIDTimeline(transactionId)
+      toast.success("TRID timeline started — record milestones as disclosures go out")
+      router.refresh()
+    } catch (e: any) {
+      // A second start raises the table's unique transaction FK — report it
+      // as the state it means, not as a failure of the button.
+      const msg: string = e?.message ?? "Could not start TRID tracking"
+      toast.error(msg.includes("duplicate") ? "This deal already has a TRID timeline" : msg)
+    } finally {
+      setTridStartPendingId(null)
+    }
+  }
+
+  // ── Record one TRID milestone date ─────────────────────────────────────────
+  async function handleRecordMilestone() {
+    if (!milestoneTxnId || !milestoneDate) return
+    setMilestonePending(true)
+    try {
+      await updateTRIDMilestone({
+        transactionId: milestoneTxnId,
+        milestone: milestoneName,
+        date: milestoneDate,
+      })
+      toast.success("Milestone recorded — TRID compliance re-checked")
+      setMilestoneTxnId(null)
+      setMilestoneDate("")
+      // The service re-runs monitorTRIDCompliance; refresh the inline result.
+      await handleTRID(milestoneTxnId)
+      router.refresh()
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not record the milestone")
+    } finally {
+      setMilestonePending(false)
+    }
+  }
+
   // ── Load compliance summary per transaction ────────────────────────────────
   async function handleLoadSummary(transactionId: string) {
     setSummaryPendingId(transactionId)
@@ -288,9 +354,52 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
           score: total > 0 ? Math.round((compliant / total) * 100) : 100,
           flaggedCount: result.alerts?.length ?? 0,
           overallStatus: result.overallStatus ?? "pending",
+          alerts: (result.alerts ?? []).map((a: any) => ({
+            id: String(a.id),
+            alert_type: String(a.alert_type ?? "alert"),
+            severity: (a.severity as string | null) ?? null,
+            message: (a.message as string | null) ?? null,
+            created_at: (a.created_at as string | null) ?? null,
+          })),
         },
       }))
     }
+  }
+
+  // ── Clear one compliance alert ─────────────────────────────────────────────
+  //
+  // The writer `compliance_alerts.resolved` never had. It stamps who and when
+  // server-side (identity from the session, never from here). A refusal is shown,
+  // not swallowed — an alert that vanishes from the panel while still standing in
+  // the record is the failure this whole path exists to prevent.
+  async function handleResolveAlert(transactionId: string, alertId: string) {
+    setResolvingAlertId(alertId)
+    setAlertMsg(null)
+    const res = await resolveComplianceAlert({ alertId })
+    setResolvingAlertId(null)
+    if (!res.success) {
+      setAlertMsg(res.error ?? "Could not clear that alert.")
+      return
+    }
+    setSummaries((prev) => {
+      const s = prev[transactionId]
+      if (!s) return prev
+      const alerts = s.alerts.filter((a) => a.id !== alertId)
+      return {
+        ...prev,
+        [transactionId]: {
+          ...s,
+          alerts,
+          flaggedCount: alerts.length,
+          // The status is RE-DERIVED from the same rule the service uses: any
+          // unresolved alert means at_risk. Clearing the last one is what finally
+          // lets this leave at_risk — which it previously never could.
+          overallStatus: alerts.length > 0 ? "at_risk" : s.score === 100 ? "compliant" : "pending",
+        },
+      }
+    })
+    toast.success("Alert cleared")
+    router.refresh()
   }
 
   // ── Batch approve selected ─────────────────────────────────────────────────
@@ -434,7 +543,54 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                           {summary.flaggedCount} alert{summary.flaggedCount !== 1 ? "s" : ""}
                         </Badge>
                       )}
+                      {summary && (
+                        <Badge
+                          variant="outline"
+                          className={`text-xs h-4 ${
+                            summary.overallStatus === "at_risk"
+                              ? "border-red-300 text-red-700"
+                              : summary.overallStatus === "compliant"
+                                ? "border-emerald-300 text-emerald-700"
+                                : "text-muted-foreground"
+                          }`}
+                        >
+                          {summary.overallStatus}
+                        </Badge>
+                      )}
                     </div>
+
+                    {/* The unresolved alerts themselves, each with the clear action
+                        that `compliance_alerts.resolved` never had a writer for. */}
+                    {summary && summary.alerts.length > 0 && (
+                      <div className="rounded border border-red-200 bg-red-50 p-2 space-y-1.5">
+                        {summary.alerts.map((a) => (
+                          <div key={a.id} className="flex items-start gap-2 text-xs">
+                            <AlertOctagon className="h-3 w-3 mt-0.5 text-red-600 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium text-red-800">
+                                {a.alert_type}
+                                {a.severity ? ` · ${a.severity}` : ""}
+                              </p>
+                              {a.message && <p className="text-red-700 leading-snug">{a.message}</p>}
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-xs shrink-0"
+                              disabled={resolvingAlertId === a.id}
+                              onClick={() => handleResolveAlert(txnId, a.id)}
+                            >
+                              {resolvingAlertId === a.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                "Resolve"
+                              )}
+                            </Button>
+                          </div>
+                        ))}
+                        {alertMsg && <p className="text-xs text-red-800">{alertMsg}</p>}
+                      </div>
+                    )}
 
                     {/* Per-transaction actions */}
                     <div className="flex gap-1.5 flex-wrap">
@@ -465,6 +621,30 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                           <ScanSearch className="h-3 w-3 mr-1" />
                         )}
                         Check TRID
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => handleStartTrid(txnId)}
+                        disabled={tridStartPendingId === txnId}
+                        title="Create the TRID timeline row for this deal"
+                      >
+                        {tridStartPendingId === txnId ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <Clock className="h-3 w-3 mr-1" />
+                        )}
+                        Start TRID
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => { setMilestoneTxnId(txnId); setMilestoneDate("") }}
+                        title="Record a TRID milestone date"
+                      >
+                        TRID Milestone
                       </Button>
                       {!summary && (
                         <Button
@@ -799,6 +979,53 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
         onConfirm={handleEscalate}
         destructive={false}
       />
+
+      {/* ── TRID Milestone Dialog ────────────────────────────────────────── */}
+      <Dialog open={!!milestoneTxnId} onOpenChange={(open) => { if (!open) setMilestoneTxnId(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Record TRID Milestone</DialogTitle>
+            <DialogDescription>
+              Dates drive the 3-business-day Loan Estimate and Closing Disclosure rules; compliance re-checks immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="trid-milestone">Milestone</Label>
+              <Select value={milestoneName} onValueChange={(v) => setMilestoneName(v as TridMilestone)}>
+                <SelectTrigger id="trid-milestone">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="loan_application_date">Loan application received</SelectItem>
+                  <SelectItem value="loan_estimate_delivered_date">Loan Estimate delivered</SelectItem>
+                  <SelectItem value="closing_disclosure_delivered_date">Closing Disclosure delivered</SelectItem>
+                  <SelectItem value="scheduled_close_date">Scheduled close date</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="trid-date">Date</Label>
+              <input
+                id="trid-date"
+                type="date"
+                value={milestoneDate}
+                onChange={(e) => setMilestoneDate(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMilestoneTxnId(null)} disabled={milestonePending}>
+              Cancel
+            </Button>
+            <Button onClick={handleRecordMilestone} disabled={milestonePending || !milestoneDate}>
+              {milestonePending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Record Milestone
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Review Dialog (preserved) ────────────────────────────────────── */}
       <Dialog open={showReviewDialog} onOpenChange={setShowReviewDialog}>

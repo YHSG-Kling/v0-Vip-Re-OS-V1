@@ -8,12 +8,8 @@ import {
   Activity,
   ArrowRight,
   Calendar,
-  DollarSign,
-  Users,
-  Home,
   TrendingUp,
   TrendingDown,
-  Clock,
 } from "lucide-react"
 
 interface OperationalInsight {

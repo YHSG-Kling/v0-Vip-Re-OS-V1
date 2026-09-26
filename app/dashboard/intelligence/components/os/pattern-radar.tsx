@@ -6,7 +6,6 @@ import { Progress } from "@/components/ui/progress"
 import {
   Brain,
   TrendingUp,
-  TrendingDown,
   AlertTriangle,
   CheckCircle2,
   Clock,

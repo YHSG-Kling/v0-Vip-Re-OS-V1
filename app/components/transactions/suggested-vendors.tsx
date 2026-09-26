@@ -16,7 +16,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Star, Phone, Mail, Calendar, Building2, Loader2, ChevronRight } from "lucide-react"
+import { Star, Phone, Building2, Loader2, ChevronRight } from "lucide-react"
 import { getSuggestedVendorsByStage, createVendorBooking } from "@/app/actions/vendor-marketplace"
 import Link from "next/link"
 

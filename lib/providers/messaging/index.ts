@@ -17,9 +17,52 @@
  */
 
 import { enforceTCPACompliance } from "@/lib/communication/tcpa-gate"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { resolveSMSProviderForActor } from "./resolve-sms-provider"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { SMS_ADAPTERS } from "./sms-adapters"
+import { isUsableSender, NO_SENDER_ERROR } from "@/lib/providers/outbound-sender"
+import { createServiceClient } from "@/lib/supabase/service"
+
+// ─── PROVIDER LOG (merged onto the survivor, duplicates round 5) ───────────────
+//
+// lib/services/communication.service.tsx's sendEmail/sendSMS wrappers were the
+// ONLY explicit writers of message_provider_logs.provider_response / sent_at
+// for the direct (non-sequence) send lanes. Deleting them without first merging
+// that half onto this survivor left provider-event-fanout.ts's sent_at window
+// and system-health's provider_response audit reading columns nobody wrote
+// (opposite-missing census 1b) — the exact §1 order-of-operations mistake
+// CLAUDE.md warns about. brokerage_id is NOT NULL on that table, so the row is
+// written only when the caller passes the tenant; a tenant-less internal send
+// (2FA, platform notices) leaves no row, exactly as the deleted wrapper behaved.
+async function recordProviderLog(row: {
+  brokerageId?: string | null
+  channel: "sms" | "email"
+  providerKey: string
+  providerMessageId?: string | null
+  success: boolean
+  error?: string | null
+  providerResponse: Record<string, unknown>
+}): Promise<void> {
+  if (!row.brokerageId) return
+  try {
+    const svc = createServiceClient()
+    const { error } = await svc.from("message_provider_logs").insert({
+      brokerage_id: row.brokerageId,
+      channel: row.channel,
+      direction: "outbound",
+      provider_key: row.providerKey,
+      provider_message_id: row.providerMessageId ?? null,
+      provider_status: row.success ? "sent" : "failed",
+      error_message: row.success ? null : (row.error ?? null),
+      sent_at: row.success ? new Date().toISOString() : null,
+      provider_response: row.providerResponse,
+    })
+    if (error) console.error(`[messaging] message_provider_logs (${row.channel}) audit row refused:`, error.message)
+  } catch (err: any) {
+    console.error(`[messaging] message_provider_logs (${row.channel}) audit row threw:`, err?.message ?? err)
+  }
+}
 
 // ─── TWILIO SMS ────────────────────────────────────────────────────────────────
 
@@ -88,6 +131,15 @@ export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
     resolved.credentials,
   )
 
+  await recordProviderLog({
+    brokerageId: params.brokerageId ?? null,
+    channel: "sms",
+    providerKey: resolved.providerName,
+    providerMessageId: result.messageId ?? null,
+    success: result.success,
+    error: result.error ?? null,
+    providerResponse: { recipient: params.to, message_excerpt: params.message.slice(0, 200), contact_id: params.contactId ?? null },
+  })
   if (!result.success) {
     throw new Error(result.error ?? `${result.provider} send failed`)
   }
@@ -244,12 +296,27 @@ export interface SendEmailParams {
   text?: string
   from?: string
   contactId?: string
+  /** Tenant for the message_provider_logs audit row (brokerage_id NOT NULL there); no tenant → no row. */
+  brokerageId?: string
   /**
    * When set, attempt to send through THIS agent's personal Gmail/Outlook
    * mailbox via their OAuth token. Falls back to SendGrid if no personal
    * account is connected (or refresh fails).
    */
   agentUserId?: string
+  /** Bypass the outbound EMAIL-VERIFICATION gate below — for system/transactional mail
+   *  with no contact relationship (platform notices, receipts). Default false: any send
+   *  naming a contactId is gated (wave 68 owner ruling verbatim: "we do want to make sure
+   *  that the phone/scrub and email before using it"). */
+  skipVerificationGate?: boolean
+  /** Attach an ICS calendar invite (lib/ai-isa/listing-appointment.ts's auto calendar
+   *  emails). Wired ONLY through the Tier-2 SendGrid path below — SendGrid's
+   *  /v3/mail/send accepts a base64 `attachments[]` entry directly. The Tier-1
+   *  personal-mailbox path (Gmail/Outlook send) would need a raw MIME multipart
+   *  body neither adapter builds today, so a send carrying an ICS SKIPS the
+   *  personal-mailbox tier and goes straight to SendGrid — never a silently
+   *  dropped attachment. */
+  icsAttachment?: { filename: string; content: string }
 }
 
 export interface SendEmailResult {
@@ -264,11 +331,65 @@ export interface SendEmailResult {
   providerMessageId?: string | null
 }
 
+const EMAIL_VERIFICATION_STALENESS_DAYS = 180
+
+/**
+ * FRESH EMAIL VERIFICATION GATE — the email-side twin of the DNC/TCPA fresh scrub in
+ * lib/communication/tcpa-gate.ts (wave 68). Reuses the EXISTING email verifier
+ * (lib/external/email-verifier.ts) rather than a second implementation: a stored
+ * `email_verified` verdict younger than the staleness window is trusted as-is; otherwise
+ * Tier 1+2 (syntax + MX, free — no vendor key needed, so there is no "unconfigured"
+ * failure mode here the way BatchData has) run live and the verdict is persisted.
+ */
+async function resolveFreshEmailVerification(contactId: string, email: string): Promise<{ ok: boolean; reason?: string }> {
+  const svc = createServiceClient()
+  const { data: contact, error } = await svc
+    .from("contacts")
+    .select("email_verified, email_verification_date")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (error) {
+    return { ok: false, reason: `Could not read this contact's email verification state (${error.message}) — nothing was sent.` }
+  }
+  const verifiedAt = (contact as { email_verification_date?: string | null } | null)?.email_verification_date ?? null
+  const fresh = (contact as { email_verified?: boolean | null } | null)?.email_verified === true
+    && verifiedAt != null
+    && (Date.now() - new Date(verifiedAt).getTime()) / (1000 * 60 * 60 * 24) <= EMAIL_VERIFICATION_STALENESS_DAYS
+  if (fresh) return { ok: true }
+
+  const { checkEmailMx } = await import("@/lib/external/email-verifier")
+  const result = await checkEmailMx(email)
+  if (!result.verified) {
+    return { ok: false, reason: `Email did not pass verification (${result.reason ?? "unverified"}) — nothing was sent.` }
+  }
+  await sentinelWrite(
+    svc,
+    svc.from("contacts").update({ email_verified: true, email_verification_date: new Date().toISOString() }).eq("id", contactId),
+    {
+      table: "contacts",
+      flow: "email_send_verification_stamp",
+      reason: "the address already passed a live verification for this send; the stamp only lets the next send inside the 180-day window skip the check, so a lost stamp costs one extra verification, never an unverified send",
+    },
+  )
+  return { ok: true }
+}
+
 export async function sendEmail(params: SendEmailParams): Promise<SendEmailResult> {
+  // ── EMAIL VERIFICATION GATE (mandatory for contact-facing sends) ────────────
+  // Gate applies to CONTACTS — agents/ISA only ever touch contacts (§ scope). A send with
+  // no contactId (system/transactional mail) is unaffected.
+  if (params.contactId && !params.skipVerificationGate) {
+    const verdict = await resolveFreshEmailVerification(params.contactId, params.to)
+    if (!verdict.ok) {
+      return { success: false, error: verdict.reason ?? "Email verification failed — nothing was sent." }
+    }
+  }
+
   // Tier 1: when agentUserId is provided, try the agent's personal mailbox.
   // This makes agent→contact email come from sarah@kw.com instead of platform
   // noreply, so contacts can reply naturally and threads stay in agent's inbox.
-  if (params.agentUserId) {
+  // SKIPPED when an ICS is attached — see icsAttachment's own doc comment.
+  if (params.agentUserId && !params.icsAttachment) {
     try {
       const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
       const result = await sendPersonalEmail({
@@ -279,7 +400,24 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         textBody: params.text,
       })
       if (result.success) {
-        return { success: true, status: "sent", provider: result.provider }
+        await recordProviderLog({
+          brokerageId: params.brokerageId ?? null,
+          channel: "email",
+          providerKey: result.provider ?? "personal_email",
+          providerMessageId: result.messageId ?? null,
+          success: true,
+          providerResponse: { recipient: params.to, subject: params.subject, contact_id: params.contactId ?? null },
+        })
+        // The provider's OWN reference travels back. It was being dropped here,
+        // so an agent-mailbox send was the one lane that produced no evidence at
+        // all — a caller could record "sent" and hold nothing it could take to
+        // Gmail/Outlook to check. The SendGrid tier below already returns one.
+        return {
+          success: true,
+          status: "sent",
+          provider: result.provider,
+          providerMessageId: result.messageId ?? null,
+        }
       }
       // Only fall through on no_personal_account — other failures should bubble up
       if (result.reason !== "no_personal_account") {
@@ -292,8 +430,27 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
   }
 
   // Tier 2: SendGrid (transactional / no personal account configured)
+  //
+  // THE FROM ADDRESS IS NEVER INVENTED. This line used to read
+  //   params.from || SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"
+  // which had two failures stacked on each other: it would send from a
+  // documentation placeholder, AND a caller passing its own placeholder as a
+  // fallback (four of the five call sites did) OVERRODE the tenant's real,
+  // verified, configured sender. SendGrid rejects an unverified sender
+  // identity, so the result was an opaque provider 403 on a brokerage that had
+  // actually configured everything correctly.
+  //
+  // Now a placeholder from EITHER source is treated as absent — a typo'd env
+  // var is exactly how one reaches production — and with no usable sender we
+  // refuse with a reason instead of spending the tenant's quota to fail.
   const apiKey = process.env.SENDGRID_API_KEY
-  const defaultFrom = process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"
+  const callerFrom = isUsableSender(params.from) ? (params.from as string) : null
+  const envFrom = isUsableSender(process.env.SENDGRID_FROM_EMAIL) ? (process.env.SENDGRID_FROM_EMAIL as string) : null
+  const resolvedFrom = callerFrom ?? envFrom
+
+  if (!resolvedFrom) {
+    return { success: false, error: NO_SENDER_ERROR }
+  }
 
   if (!apiKey) {
     return {
@@ -311,21 +468,42 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     auth: { style: "bearer", token: apiKey },
     body: {
       personalizations: [{ to: [{ email: params.to }] }],
-      from: { email: params.from || defaultFrom },
+      from: { email: resolvedFrom },
       subject: params.subject,
       content: [
         { type: "text/plain", value: params.text || params.html.replace(/<[^>]*>/g, "") },
         { type: "text/html", value: params.html },
       ],
+      attachments: params.icsAttachment
+        ? [{
+            content: Buffer.from(params.icsAttachment.content, "utf-8").toString("base64"),
+            filename: params.icsAttachment.filename,
+            type: "text/calendar; method=REQUEST",
+            disposition: "attachment",
+          }]
+        : undefined,
     },
   })
 
+  // The provider id enables EXACT delivered/read correlation in the event
+  // webhook (messages writers store it in metadata.sg_message_id).
+  const sgMessageId = response.ok ? ((response as any).headers?.["x-message-id"] ?? null) : null
+  await recordProviderLog({
+    brokerageId: params.brokerageId ?? null,
+    channel: "email",
+    providerKey: "sendgrid",
+    providerMessageId: sgMessageId,
+    success: response.ok,
+    error: response.ok ? null : (response.error || "SendGrid API error"),
+    providerResponse: { recipient: params.to, subject: params.subject, contact_id: params.contactId ?? null },
+  })
   if (!response.ok) {
     throw new Error(response.error || "SendGrid API error")
   }
-
-  // The provider id enables EXACT delivered/read correlation in the event
-  // webhook (messages writers store it in metadata.sg_message_id).
-  const sgMessageId = (response as any).headers?.["x-message-id"] ?? null
   return { success: true, status: "sent", provider: "sendgrid", providerMessageId: sgMessageId }
 }
+
+// TOMBSTONES (duplicates round 5, lane 59C — CLAUDE.md §1, ambiguous-name rule):
+//   lib/services/communication.service.tsx:sendEmail DELETED → survivor sendEmail in this file.
+//   lib/services/communication.service.tsx:sendSMS DELETED → survivor sendSMS in this file.
+//   Their message_provider_logs audit row was MERGED onto both survivors first (recordProviderLog above), per §1 order.

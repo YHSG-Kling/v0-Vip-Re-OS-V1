@@ -74,6 +74,7 @@ async function ensureCompliance(args: {
   brokerageId: string
   contactId?: string
   leadId?: string
+  toPhone: string
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   // The compliance gate uses messageType='phone' to enforce TCPA
   // consent + dnc_status + phone_opt_out. Voicedrop = a phone call
@@ -124,6 +125,28 @@ async function ensureCompliance(args: {
     } as unknown as Parameters<typeof evaluateOutbound>[0]["contact"],
   })
   if (!r.allowed) return { ok: false, reason: `gate:${r.violations.join("; ")}` }
+
+  // ── FRESH DNC/TCPA SCRUB (wave 69C carry a; §6 one gate) ──────────────────────────
+  // evaluateOutbound above still checks only the STORED contacts.dnc_status, with no
+  // freshness requirement — it predates the wave-68 freshness clock. The ONE place that
+  // clock lives is lib/communication/tcpa-gate.ts::enforceTCPACompliance
+  // (isDncTcpaVerdictFresh / evaluateFreshScrubVerdict); voicedrop is a phone call under
+  // FCC interpretation (see the file header), so it now calls that SAME gate rather than
+  // re-implementing a second scrub. Scoped to contactId sends — the gate's compliance
+  // read targets `contacts`, and a leadId-only voicedrop has no dnc_verified_at column to
+  // freshen (leads are already covered above via call_stop_flag through evaluateOutbound).
+  if (args.contactId) {
+    const { enforceTCPACompliance } = await import("@/lib/communication/tcpa-gate")
+    const scrub = await enforceTCPACompliance({
+      channel:     "call",
+      phone:       args.toPhone,
+      contactId:   args.contactId,
+      brokerageId: args.brokerageId,
+      transactional: false,
+    })
+    if (!scrub.allowed) return { ok: false, reason: `tcpa_gate:${scrub.blockReason ?? "blocked"}` }
+  }
+
   return { ok: true }
 }
 
@@ -159,26 +182,27 @@ async function synthVoicemail(args: {
   }
   if (!voiceId) return null
 
-  // Call ElevenLabs TTS → buffer → Vercel Blob → public URL.
-  try {
-    const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
-    const result = await synthesizeSpeech({
-      text:        args.script,
-      voiceId,
-      brokerageId: args.brokerageId,
-    })
-    if (!result.success || !result.audioBuffer) return null
-    const { put } = await import("@vercel/blob")
-    const uploaded = await put(
-      `voicedrops/${args.brokerageId}/${Date.now()}.mp3`,
-      result.audioBuffer,
-      { access: "public", contentType: "audio/mpeg" },
-    )
-    return uploaded.url
-  } catch (e) {
-    console.error("[voicedrop] synth failed:", (e as Error).message)
+  // ORPHAN DOCTRINE (§1 — DUPLICATE, MERGED). This used to call ElevenLabs
+  // directly with NO modelId (silently defaulting to synthesizeSpeech's
+  // oldest fallback, `eleven_monolingual_v1` — never touched by the wave
+  // 55/57 realism upgrades) and re-implement the "buffer → hostRenderedMedia"
+  // upload inline. SURVIVOR: lib/voice/render-voice-drop.ts#renderVoiceDrop —
+  // built for wave 58's AMD-voicemail <Play> path and merged onto here so the
+  // ringless-drop rail gets the SAME eleven_v3 model + natural-pause pacing,
+  // not a second hand-rolled synth+host implementation (§6: one vocabulary
+  // for "synthesize a voicemail and host it").
+  const { renderVoiceDrop } = await import("@/lib/voice/render-voice-drop")
+  const rendered = await renderVoiceDrop({
+    script: args.script,
+    voiceId,
+    brokerageId: args.brokerageId,
+    storageKeyHint: `preset-${Date.now()}`,
+  })
+  if (!rendered.ok) {
+    console.error("[voicedrop] synth failed:", rendered.error)
     return null
   }
+  return rendered.audioUrl
 }
 
 export async function orchestrateVoicedropSend(
@@ -200,6 +224,7 @@ export async function orchestrateVoicedropSend(
     brokerageId: args.brokerageId,
     contactId:   args.contactId,
     leadId:      args.leadId,
+    toPhone:     args.toPhone,
   })
   if (!gate.ok) return { success: false, error: gate.reason, presetName: preset.name }
 

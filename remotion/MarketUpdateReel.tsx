@@ -34,16 +34,16 @@
  * just renders.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { fitBodyVisualPlan, panelWindowsFromPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { SegmentBackdrop } from "./components/SegmentBackdrop"
+import { thirdsPanelSplit } from "../lib/video/pip-panel-split"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { AvatarPIP } from "./components/AvatarPIP"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export type StatDirection = "up_good" | "up_bad" | "down_good" | "down_bad" | "flat"
@@ -75,6 +75,13 @@ export interface MarketUpdateReelProps {
   /** D-ID narration video for the whole reel. */
   avatarVideoUrl: string | null
   agentPhotoUrl:  string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the WHOLE avatar clip
+   * the three STAT windows cut into (lib/video/avatar-render-orchestrator.ts,
+   * wave 56 realism ruling). Optional + additive — see
+   * remotion/components/AvatarPIP.tsx's freeze/fade guard.
+   */
+  avatarDurationSeconds?: number | null
   brand: {
     primaryColor:   string
     accentColor:    string
@@ -96,13 +103,24 @@ export interface MarketUpdateReelProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /**
+   * THE BODY VISUAL (wave 80C, lib/video/body-visual-model.ts): the three stat
+   * cards open on the plan's three beats (panelWindowsFromPlan), so each stat
+   * holds the screen for the words spoken about it. Absent → thirds.
+   */
+  bodyVisualPlan?: BodyVisualPlan | null
+  /** The avatar clip is a keyed (transparent webm) presenter — see remotion/components/AvatarPIP.tsx. */
+  avatarVideoTransparent?: boolean | null
 }
 
 const FPS    = 30
-const COVER  = 2 * FPS
-const STAT   = 4 * FPS
-const CTA    = 2 * FPS
-const TOTAL  = COVER + STAT * 3 + CTA  // 480 frames = 16s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `STAT = 4 * FPS` stood here. The bookends are read from the ONE registry;
+// the three stat windows come from the body-visual plan (wave 80C) or split
+// whatever body the render's durationInFrames leaves between them in thirds.
+const BOOKENDS = compositionBookends("MarketUpdateReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
 
 const DIR_TONE: Record<StatDirection, "good" | "bad" | "neutral"> = {
   up_good:    "good",
@@ -142,7 +160,7 @@ const StatCard: React.FC<{
         display: "inline-block", padding: "6px 16px", borderRadius: 4,
         backgroundColor: accentColor, color: "#0F172A",
         fontSize: 18, fontWeight: 700, letterSpacing: 4, marginBottom: 24,
-        opacity: interpolate(frame, [0, 12], [0, 1]),
+        opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }}>
         STAT {index}
       </div>
@@ -150,7 +168,7 @@ const StatCard: React.FC<{
       {/* Huge number */}
       <div style={{
         fontSize: 168, fontWeight: 900, lineHeight: 0.95, color: "#fff",
-        opacity: interpolate(frame, [6, 24], [0, 1]),
+        opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         marginBottom: 16,
       }}>
         {stat.value}
@@ -171,7 +189,7 @@ const StatCard: React.FC<{
           padding: "10px 20px", borderRadius: 8,
           backgroundColor: `${dirColor}33`,  // 20% alpha
           color: dirColor, fontSize: 28, fontWeight: 700,
-          opacity: interpolate(frame, [18, 36], [0, 1]),
+          opacity: interpolate(frame, [18, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}>
           <span style={{ fontSize: 32 }}>{DIR_ARROW[stat.direction]}</span>
           <span>{stat.delta}</span>
@@ -195,57 +213,26 @@ const AreaChip: React.FC<{ areaName: string; period: string; accentColor: string
   </div>
 )
 
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  startFrame:     number
-  endFrame:       number
-  accentColor:    string
-  primaryColor:   string
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", top: 32, right: 32,
-    width: 200, height: 200, borderRadius: 100,
-    boxShadow: `0 0 0 4px ${accentColor}, 0 18px 36px rgba(0,0,0,0.25)`,
-    overflow: "hidden", backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video src={avatarVideoUrl} startFrom={startFrame} endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring, backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 80, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// `AvatarPIP` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to remotion/components/AvatarPIP.tsx (imported below).
 
 export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   areaName, period, stats, ctaLabel, agentName, agentPhone,
   avatarVideoUrl, agentPhotoUrl, brand, captionsCues, captionScript,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, avatarDurationSeconds, bodyVisualPlan, avatarVideoTransparent,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brand.upColor   ?? "#22C55E"
   const downColor = brand.downColor ?? "#EF4444"
   const showEho   = brand.showEhoMark ?? true
   const finalCta  = ctaLabel ?? "Want my take on your block?"
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY  = timeline.body.durationInFrames
+  // THE THREE STAT WINDOWS — BODY-relative, which is also the avatar track's
+  // own timeline (see the AVATAR LEAD-IN FIX below): from the plan's beats, else thirds.
+  const plan = fitBodyVisualPlan(bodyVisualPlan, "MarketUpdateReel", durationInFrames)
+  const panels = panelWindowsFromPlan(plan, BODY, 3) ?? thirdsPanelSplit(BODY)
 
   return (
     <AbsoluteFill style={{
@@ -259,27 +246,27 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 64, objectFit: "contain", marginBottom: 36,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "10px 24px", borderRadius: 6,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 5, textTransform: "uppercase",
-            marginBottom: 28, opacity: interpolate(frame, [6, 22], [0, 1]),
+            marginBottom: 28, opacity: interpolate(frame, [6, 22], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             Market update
           </div>
           <div style={{
             fontSize: 80, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            opacity: interpolate(frame, [12, 30], [0, 1]),
+            opacity: interpolate(frame, [12, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {areaName}
           </div>
           <div style={{
-            fontSize: 32, color: "#fff", opacity: interpolate(frame, [18, 36], [0, 0.7]),
+            fontSize: 32, color: "#fff", opacity: interpolate(frame, [18, 36], [0, 0.7], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {period}
@@ -287,44 +274,43 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      {/* STAT 1 — 2-6s */}
-      <Sequence from={COVER} durationInFrames={STAT}>
-        <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
-          <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER, endFrame: COVER + STAT }} />
-          <StatCard stat={stats[0]} index={1} accentColor={brand.accentColor}
-            upColor={upColor} downColor={downColor} />
-        </AbsoluteFill>
-      </Sequence>
-
-      {/* STAT 2 — 6-10s */}
-      <Sequence from={COVER + STAT} durationInFrames={STAT}>
-        <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
-          <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER + STAT, endFrame: COVER + STAT * 2 }} />
-          <StatCard stat={stats[1]} index={2} accentColor={brand.accentColor}
-            upColor={upColor} downColor={downColor} />
-        </AbsoluteFill>
-      </Sequence>
-
-      {/* STAT 3 — 10-14s */}
-      <Sequence from={COVER + STAT * 2} durationInFrames={STAT}>
-        <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
-          <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
-          <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
-            accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER + STAT * 2, endFrame: COVER + STAT * 3 }} />
-          <StatCard stat={stats[2]} index={3} accentColor={brand.accentColor}
-            upColor={upColor} downColor={downColor} />
-        </AbsoluteFill>
-      </Sequence>
+      {/* STAT 1 — 2-6s.
+          AVATAR LEAD-IN FIX (wave 60 realism audit). The D-ID clip is ONE
+          continuous render for the whole reel; AvatarPIP is not mounted at
+          all during the COVER tile (0..COVER) and D-ID is never asked to pad
+          COVER seconds of silence at the head (DID_TALK_REALISM_CONFIG.pad_audio
+          is 0.3s of TRAILING silence only — lib/video/realism-profile.ts).
+          Passing the composition-ABSOLUTE frame (COVER) as `<Video trimBefore>`
+          (the pre-fix shape) skipped the clip's first COVER seconds of REAL
+          narration outright — for the single short compliance-gated hook line
+          this narration actually is, that can be most of what the avatar says.
+          The clip's own timeline must start at 0 the moment it first becomes
+          visible, so each window is fed frames RELATIVE to the avatar track's
+          own start (0, STAT, STAT*2) rather than absolute composition frames —
+          no real narration is discarded, and avatarPipWindowFade's
+          `localActualSeconds` math now measures against the correct
+          remaining length instead of over-penalizing every later window by
+          COVER seconds it never actually lost. */}
+      {panels.map((p, i) => (
+        <Sequence key={`stat-${i}`} from={COVER + p.from} durationInFrames={p.durationInFrames}>
+          <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
+            {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
+            <SegmentBackdrop plan={plan} primaryColor={brand.primaryColor} accentColor={brand.accentColor} frameOffset={COVER + p.from} />
+            <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
+            {/* `startFrame`/`endFrame` are relative to the avatar track's own
+                start, not the composition's — the panel's BODY-relative window. */}
+            <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
+              accentColor: brand.accentColor, primaryColor: brand.primaryColor,
+              avatarDurationSeconds, avatarVideoTransparent, fps: FPS,
+              startFrame: p.from, endFrame: p.from + p.durationInFrames }} />
+            <StatCard stat={stats[i]} index={(i + 1) as 1 | 2 | 3} accentColor={brand.accentColor}
+              upColor={upColor} downColor={downColor} />
+          </AbsoluteFill>
+        </Sequence>
+      ))}
 
       {/* CTA — 14-16s */}
-      <Sequence from={COVER + STAT * 3} durationInFrames={CTA}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -347,11 +333,16 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57): clip the track before the CTA
+          tile's EHO mark + QR code — see CaptionLayer.hiddenFromFrame.
+          NO CAPTION OVER SILENCE (wave 59): the avatar's own baked-in audio
+          does not start until the COVER tile ends — see visibleFromFrame. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + BODY} />
     </AbsoluteFill>
   )
 }

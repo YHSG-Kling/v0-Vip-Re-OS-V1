@@ -19,7 +19,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
-  Link as LinkIcon,
   Building2,
   Users,
   FileText,
@@ -54,6 +53,12 @@ function formatCurrency(value: number): string {
 interface AdminDashboardClientProps {
   brokerageId: string
   operationalSnapshot?: OperationalSnapshot
+  /**
+   * Resolved SERVER-side from requirePlatformCapability('sentinel').
+   * Domain Coherence is platform governance data, so a tenant admin/broker must
+   * not be shown an entry point they will only be refused at.
+   */
+  canReadDomainCoherence?: boolean
 }
 
 // ── Operational health card config ────────────────────────────────────────────
@@ -71,7 +76,7 @@ const STATUS_STYLES: Record<HealthStatus, { card: string; badge: string; dot: st
   red:   { card: 'border-red-200    bg-red-50/40',    badge: 'bg-red-100    text-red-800',     dot: 'bg-red-500'   },
 }
 
-export function AdminDashboardClient({ brokerageId, operationalSnapshot }: AdminDashboardClientProps) {
+export function AdminDashboardClient({ brokerageId, operationalSnapshot, canReadDomainCoherence = false }: AdminDashboardClientProps) {
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -179,7 +184,7 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
             {
               label:    'Failed Publishes',
               value:    snap.failedPublishes,
-              href:     '/dashboard/marketing/ops',
+              href:     '/dashboard/marketing/studio?tab=ops',
               icon:     Megaphone,
               status:   resolveStatus(snap.failedPublishes, { amber: 1, red: 5 }),
               hint:     snap.failedPublishes > 0 ? 'Social posts failed' : 'All posts published',
@@ -245,7 +250,7 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
             { label: 'Users & Roles',      hint: 'Invite, edit roles, deactivate',        href: '/dashboard/admin/users',           icon: Users },
             { label: 'Support Tickets',    hint: 'Triage & reply to your agents',         href: '/dashboard/admin/support-tickets', icon: LifeBuoy },
             { label: 'Financial Reports',  hint: 'Income reporting & report history',     href: '/dashboard/financials/reports',    icon: FileText },
-            { label: 'Brokerage P&L',      hint: 'Profit & loss statement',               href: '/dashboard/admin/brokerage-pnl',   icon: DollarSign },
+            { label: 'Brokerage P&L',      hint: 'Profit & loss statement',               href: '/dashboard/financials/brokerage',   icon: DollarSign },
             { label: 'Usage',              hint: 'Platform usage across the brokerage',   href: '/dashboard/admin/usage',           icon: BarChart3 },
             { label: 'Recruiting',         hint: 'Pipeline & recruiting ROI',             href: '/dashboard/recruiting-roi',        icon: Target },
           ].map(({ label, hint, href, icon: Icon }) => (
@@ -341,7 +346,9 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
           </Card>
         </Link>
 
-        {/* Domain Coherence CTA */}
+        {/* Domain Coherence CTA — platform staff only (the page and the server
+            actions behind it both gate on the 'sentinel' platform capability). */}
+        {canReadDomainCoherence && (
         <Link href="/dashboard/admin/domain-coherence">
           <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
             <CardContent className="py-4 flex items-center justify-between gap-4">
@@ -358,6 +365,7 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
             </CardContent>
           </Card>
         </Link>
+        )}
 
         {/* Existing Tabs - Preserved for backward compatibility */}
         <Tabs defaultValue="overview" className="space-y-4 mt-8">

@@ -10,22 +10,28 @@ import { Label } from "@/components/ui/label"
 const TCPA_CONSENT_TEXT = (brokerageName: string) =>
   `By checking this box, you agree to receive calls, texts, emails, and direct mail from ${brokerageName} and its agents regarding your real estate needs. Consent is not a condition of purchase. You may unsubscribe or opt out at any time.`
 
+/**
+ * The public payload, exactly as getOpenHouseEventPublic returns it.
+ *
+ * This is a PUBLIC page: everything in these props ships to the browser of
+ * whoever picks up the tablet. It deliberately carries no ids beyond the event
+ * being signed into — no brokerage_id, no listing_id, no agent id, no agent
+ * email — because the previous version of this component received all of them
+ * and rendered none of them.
+ */
+interface PublicOpenHouseEvent {
+  eventId: string
+  eventDate: string
+  startTime: string | null
+  endTime: string | null
+  listing: { address: string; city: string | null; state: string | null } | null
+  brokerageName: string | null
+  branding: { appName: string | null; logoUrl: string | null; primaryColor: string | null } | null
+  agent: { displayName: string | null; photoUrl: string | null } | null
+}
+
 interface Props {
-  event: {
-    id: string
-    eventDate: string
-    startTime: string | null
-    endTime: string | null
-    listing: {
-      address: string
-      city: string | null
-      state: string | null
-      zip: string | null
-      list_price: number | null
-    } | null
-  }
-  agent: { id: string; full_name: string | null; avatar_url: string | null; email: string | null } | null
-  branding: { app_name: string | null; app_logo_url: string | null; primary_color: string | null; from_name: string | null } | null
+  event: PublicOpenHouseEvent
 }
 
 const HEAR_ABOUT_OPTIONS = [
@@ -39,7 +45,8 @@ const HEAR_ABOUT_OPTIONS = [
 
 type Step = "form" | "success"
 
-export function SignInKiosk({ event, agent, branding }: Props) {
+export function SignInKiosk({ event }: Props) {
+  const { agent, branding } = event
   const [step, setStep] = useState<Step>("form")
   const [firstName, setFirstName] = useState("")
   const [lastName, setLastName] = useState("")
@@ -50,8 +57,14 @@ export function SignInKiosk({ event, agent, branding }: Props) {
   const [tcpaConsent, setTcpaConsent] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const primaryColor = branding?.primary_color ?? "#2563eb"
-  const agentName = agent?.full_name ?? branding?.from_name ?? "Your Agent"
+  const primaryColor = branding?.primaryColor ?? "#2563eb"
+  const agentName = agent?.displayName ?? "Your Agent"
+  /**
+   * The TCPA disclosure names the party the visitor is consenting to hear from,
+   * so it prefers brokerages.name — the actual entity — over the white-label
+   * app name, and only falls back to a generic phrase when neither is known.
+   */
+  const consentPartyName = event.brokerageName ?? branding?.appName ?? "our brokerage"
 
   const fmtDate = (d: string) =>
     new Date(d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
@@ -82,15 +95,14 @@ export function SignInKiosk({ event, agent, branding }: Props) {
     setError(null)
     setSubmitting(true)
 
-    const brokerageName = branding?.app_name ?? "our brokerage"
-    const consentText = TCPA_CONSENT_TEXT(brokerageName)
+    const consentText = TCPA_CONSENT_TEXT(consentPartyName)
 
     try {
       const res = await fetch("/api/open-house/attend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          eventId: event.id,
+          eventId: event.eventId,
           firstName: firstName.trim(),
           lastName: lastName.trim(),
           email: email.trim(),
@@ -125,8 +137,8 @@ export function SignInKiosk({ event, agent, branding }: Props) {
         className="flex flex-col items-center gap-2 px-6 py-6 text-white"
         style={{ backgroundColor: primaryColor }}
       >
-        {branding?.app_logo_url && (
-          <img src={branding.app_logo_url} alt={branding.app_name ?? "Brokerage"} className="h-10 object-contain" />
+        {branding?.logoUrl && (
+          <img src={branding.logoUrl} alt={branding.appName ?? "Brokerage"} className="h-10 object-contain" />
         )}
         {event.listing && (
           <div className="text-center">
@@ -145,8 +157,8 @@ export function SignInKiosk({ event, agent, branding }: Props) {
         )}
         {agent && (
           <div className="flex items-center gap-2 mt-2">
-            {agent.avatar_url ? (
-              <img src={agent.avatar_url} alt={agentName} className="h-8 w-8 rounded-full object-cover" />
+            {agent.photoUrl ? (
+              <img src={agent.photoUrl} alt={agentName} className="h-8 w-8 rounded-full object-cover" />
             ) : (
               <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center">
                 <User className="h-4 w-4 text-white" />
@@ -278,7 +290,7 @@ export function SignInKiosk({ event, agent, branding }: Props) {
                   aria-label="I agree to be contacted"
                 />
                 <span className="text-xs text-foreground leading-relaxed">
-                  {TCPA_CONSENT_TEXT(branding?.app_name ?? agentName)}
+                  {TCPA_CONSENT_TEXT(consentPartyName)}
                 </span>
               </label>
             </div>

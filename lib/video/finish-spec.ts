@@ -63,12 +63,37 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   TestimonialReel: { ...CHART_REEL, broll: "optional" },
   NeighborhoodSpotlightReel: { ...MARKETING, broll: "required" },
   // ── Chart/data reels ──
-  CMAReel: CHART_REEL,
+  // captions:false (wave 62 — decided with the code, not asserted in prose):
+  // CMAReel "holds charts, not narration: no script passes through here"
+  // (lib/video/cma-reel-orchestrator.ts's own comment, beside the identical
+  // share-card-skip ruling it mirrors) — a genuinely silent data reel, so the
+  // idle CaptionLayer mount + never-fed captionsCues/captionScript props were
+  // removed from remotion/CMAReel.tsx rather than left as a declared-but-
+  // unread promise (scripts/remotion-setup-guard.ts already refuses that
+  // shape). CHART_REEL's captions:true stays the default for every OTHER
+  // chart/data reel that does carry a real narration script.
+  CMAReel: { ...CHART_REEL, captions: false },
   // OWNER RULE: explainers/market updates present with the CIRCLE avatar —
   // the person rides as a floating presenter; the content stays the star.
   MarketUpdateReel: { ...AVATAR_LED, presenter: "circle_pip", broll: "optional" },
-  AffordabilitySnapshotReel: CHART_REEL,
-  EquityReportReel: { ...CHART_REEL, qr: true }, // anniversary QR
+  // captions:false (wave 62) — same reasoning as CMAReel above: the only live
+  // producer, lib/agents/buyer-match-reel-producer.ts, says so explicitly
+  // ("the reel speaks on-screen copy, not a generated script" — also
+  // scripts/remotion-setup-guard.ts's own NO_PRODUCER_NOTE for this
+  // composition). Idle CaptionLayer mount + props removed from
+  // remotion/AffordabilitySnapshotReel.tsx.
+  AffordabilitySnapshotReel: { ...CHART_REEL, captions: false },
+  // OWNER RULING (wave 61): the anniversary equity reel's AvatarPIP is a real,
+  // used capability — video-director.ts's anniversary case now PREFERS the
+  // avatar (needsAvatar:true) and requests one only when the agent's D-ID twin
+  // is consented/ready (resolveAvatarRequirement); with no twin the SAME
+  // composition renders honestly without one (remotion/EquityReportReel.tsx
+  // avatarVideoUrl null → photo/monogram fallback). "circle_pip" describes the
+  // composition's genuine capability (mirrors MarketUpdateReel), not a
+  // per-commission guarantee — requires_did_avatar stays false in the registry
+  // (m218: the avatar PIP is OPTIONAL) because a video without one is still a
+  // complete, honest deliverable.
+  EquityReportReel: { ...CHART_REEL, qr: true, presenter: "circle_pip" }, // anniversary QR + optional avatar PIP
   ExplainerAnimReel: { ...CHART_REEL, broll: "none" }, // the animation IS the visual
   // ── Avatar-led personal video. The talking head is for PERSONAL messages
   // (the agent speaking TO one person); explainers + narrated slide decks use
@@ -79,11 +104,30 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   // coordinator QR pass; music stays off so nothing fights the avatar's voice.
   TeammateExplainerReel: { ...AVATAR_LED, bookends: false, broll: "none", music: false, qr: false },
   AgentExplainerReel: { ...AVATAR_LED, presenter: "circle_pip" },
-  ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false }, // music fights the voice
+  // captions: false override (wave 61 caption-consolidation audit) — AVATAR_LED's
+  // captions:true is aspirational here: no producer stages a render naming
+  // compositionId="ListingPresentationSlide" today (grep app/+lib/ for the id
+  // finds only the content-contract schema, composition-geometry entry, and a
+  // comment naming it — never a caller). The composition is REUSED as a React
+  // component by the live ListingSectionReel producer (section-render.ts), which
+  // now carries its own CaptionLayer/captionScript directly (see
+  // remotion/ListingSectionReel.tsx). Never delete — CLAUDE.md §1 "unreferenced
+  // is not dead"; wave 60/104 carried this as "ListingPresentationSlide no cron
+  // (KEPT)" pending the presentation-video-composer (header comment, W40+).
+  ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false, captions: false }, // music fights the voice
   BuyerConsultationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false },
   ListingSectionReel: { ...CHART_REEL, broll: "none" },
   // ── Report shows (PartnersMeetingReel serves 4 uses; see REEL_USE_FINISH) ──
   PartnersMeetingReel: REPORT_INTERNAL,
+  // ── The memory video (lane 78D) — a KEEPSAKE, not marketing (memory-video-
+  // gate.ts: "the family keeps it"). Voiceover host, no avatar (nobody's face
+  // fronts somebody else's memory); no stock bookends and no QR (a family
+  // film does not open with a brokerage ad or end in a funnel); a soft music
+  // bed ducked under the narration; a share card so the agent can hand it
+  // over. captions:false, decided with the code: the seller's words are on
+  // screen VERBATIM for every clip (remotion/MemoryVideoReel.tsx ChapterScene),
+  // so a caption strip would cover the very text it repeats. ──
+  MemoryVideoReel: { presenter: "none", bookends: false, broll: "none", music: true, qr: false, thumbnail: true, captions: false },
   // ── Other ──
   NewsletterDigestVideo: { ...MARKETING, broll: "optional" },
   ProductPromoReel: { ...MARKETING, broll: "optional", qr: true },

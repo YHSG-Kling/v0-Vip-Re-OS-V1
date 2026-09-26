@@ -68,7 +68,7 @@ function fullFacts(tier: CriticalSetupFacts["tier"] = "brokerage"): CriticalSetu
     trialEndsAt: null,
     brokerageProfileComplete: true,
     listingsCount: 4,
-    agent: { licenseOnFile: true, voicePrefSet: true, calendarConnected: true, pwaInstalled: true, contactsCount: 25 },
+    agent: { licenseOnFile: true, voicePrefSet: true, twinConfigured: true, calendarConnected: true, pwaInstalled: true, contactsCount: 25 },
     teamLead: { teamConfigured: true, splitsSet: true, teamBooksConnected: true },
     vendor: { profileComplete: true, payoutConnected: true, booksConnected: true, w9OnFile: true },
   }

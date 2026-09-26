@@ -58,6 +58,9 @@ export function ISACampaignsClient({
   const [campaigns, setCampaigns]   = useState<ISACampaignRow[]>(initialCampaigns)
   const [stats, setStats]           = useState<ISACampaignStats>(initialStats)
   const [showCreate, setShowCreate] = useState(false)
+  // The row being edited — the drawer opens in edit mode while this is set
+  // (CampaignCard's Edit button / channel icons hand the row off here).
+  const [editing, setEditing]       = useState<ISACampaignRow | null>(null)
   const [cardFilter, setCardFilter] = useState<"all" | "active" | "paused" | "draft">("all")
 
   const refresh = useCallback(async () => {
@@ -139,18 +142,19 @@ export function ISACampaignsClient({
                   key={campaign.id}
                   campaign={campaign}
                   onStatusChange={refresh}
+                  onEdit={setEditing}
                 />
               ))}
             </div>
           )}
 
           <CreateCampaignDrawer
-            open={showCreate}
-            onClose={() => setShowCreate(false)}
+            open={showCreate || editing !== null}
+            onClose={() => { setShowCreate(false); setEditing(null) }}
             brokerageId={brokerageId}
-            videoEnabled={videoEnabled}
             directMailEnabled={directMailEnabled}
-            onCreated={refresh}
+            onSaved={refresh}
+            campaign={editing}
           />
         </>
       )}

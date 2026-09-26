@@ -1,8 +1,9 @@
 // app/api/cron/queue-drain/route.ts
 //
-// UNIFIED QUEUE DRAIN — closes four "queue with no drain" bugs from the
-// write-only-ledger burn-down. Four tables accumulated pending rows that no
-// loop ever serviced:
+// UNIFIED QUEUE DRAIN — closes five "queue with no drain" bugs. Four came from
+// the write-only-ledger burn-down; the fifth (embedding_queue) was found in the
+// orphan-export burn-down, where the drain turned out to have been WRITTEN and
+// never called. Five tables accumulated pending rows that no loop ever serviced:
 //
 //   1. email_queue            — queued by kernel reporting/financial, video
 //                               distribution, thank-you notes, source-analytics
@@ -40,6 +41,30 @@
 //                               completed with a link to the enrollment. When no
 //                               sequence resolves, the row is paused with the
 //                               reason — content is NEVER invented.
+//   5. embedding_queue        — written by app/actions/knowledge/search.ts as the
+//                               fallback when the inline embed THROWS. Drained
+//                               through lib/knowledge/embedding-service.ts
+//                               :processPendingEmbeddings, which owns the
+//                               three-attempt ladder. Until this was wired, a
+//                               help topic or knowledge article whose embedding
+//                               failed kept a NULL content_embedding forever and
+//                               was invisible to RAG — the AI answered without
+//                               it, with no sign anything was missing. See the
+//                               section header at drainEmbeddingQueue below.
+//   6. live_agent_sessions    — FOLDED IN (wave 62, docs/vercel-cron-usage-
+//                               2026-09.md): sweepStaleLiveAgentSessions
+//                               (lib/did/live-session-metering.ts) used to be
+//                               its own standalone */5 cron
+//                               (app/api/cron/live-agent-session-sweep/route.ts,
+//                               now DELETED — the survivor is this call site).
+//                               Both this route and the sweep it replaced are
+//                               owned by cron_manager and already ran every 5
+//                               minutes, so folding the sweep in as a called
+//                               function removes one whole Vercel Function
+//                               invocation per tick (~288/day) with zero change
+//                               to the sweep's own 10-minute staleness window —
+//                               it still runs exactly as often, just inside an
+//                               existing tick instead of a second one.
 //
 // Every 5 minutes via the dispatcher; per-row error isolation; per-queue counts
 // in the response. Owner: cron_manager (CRON_MANAGER in manager-registry).
@@ -51,6 +76,7 @@ import { dispatchEmail } from "@/lib/providers/dispatch"
 import { isWebPushConfigured, sendWebPush } from "@/lib/providers/web-push"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { enrollContact } from "@/lib/campaign-sequences/enrollment-engine"
+import { sweepStaleLiveAgentSessions } from "@/lib/did/live-session-metering"
 import { isValidUUID } from "@/lib/validations"
 import {
   createCronRunContextAction,
@@ -94,12 +120,13 @@ async function drainEmailQueue(supabase: Svc): Promise<QueueCounts> {
   // is worse than none. Expire stale pendings in bulk before draining, so a
   // drain outage can't end with a backlog blast when the drain returns.
   const staleCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: expired } = await supabase
+  const { data: expired, error: expireErr } = await supabase
     .from("email_queue")
     .update({ status: "failed", error_msg: "expired_in_queue (older than 7d at drain time — never sent)" })
     .eq("status", "pending")
     .lt("created_at", staleCutoff)
     .select("id")
+  if (expireErr) counts.errors.push(`stale-expiry sweep refused: ${expireErr.message}`)
   if (expired?.length) counts.errors.push(`expired ${expired.length} stale pending email(s) >7d old (never sent)`)
 
   const { data: rows, error } = await supabase
@@ -160,7 +187,11 @@ async function drainEmailQueue(supabase: Svc): Promise<QueueCounts> {
       // no second suppression implementation here.
       const result = await dispatchEmail({
         brokerageId: row.brokerage_id,
-        from: process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com",
+        // No invented sender — the queue drain refuses rather than sending
+        // from a domain nobody owns (see lib/providers/outbound-sender).
+        from: (await import("@/lib/providers/outbound-sender"))
+          .formatSenderOrUndefined(await (await import("@/lib/providers/outbound-sender"))
+            .resolveOutboundSender(supabase as any, row.brokerage_id)),
         to: toEmail,
         subject: row.subject ?? "(no subject)",
         html: looksHtml ? body : body.replace(/\n/g, "<br>"),
@@ -553,6 +584,74 @@ async function drainDripCampaigns(supabase: Svc): Promise<QueueCounts> {
   return counts
 }
 
+// ─── 5. embedding_queue ───────────────────────────────────────────────────────
+//
+// THE FIFTH "QUEUE WITH NO DRAIN", found in the orphan-export burn-down and
+// admitted in the source that writes it: app/actions/knowledge/search.ts:316
+// reads, verbatim, "Embed SYNCHRONOUSLY so the article is immediately
+// retrievable by the AI (the embedding_queue has no cron drain); queue as a
+// durable fallback."
+//
+// So the fallback was not durable. `queueForEmbedding` is reached exactly when
+// the inline embed THREW — the gateway was down, the key was rotated, the text
+// was rejected — and the row it wrote then sat at status 'pending' forever. The
+// consequence is quiet and specific: that help topic or knowledge article has a
+// NULL content_embedding, so match_help_topics / match_knowledge_articles cannot
+// return it, so ragSearch answers the agent WITHOUT it and sounds just as
+// confident as if it had. A knowledge base that silently drops the articles
+// whose embedding failed is worse than one that is empty.
+//
+// The drain already existed and had never been called:
+// lib/knowledge/embedding-service.ts:168 `processPendingEmbeddings(limit)`. It
+// marks each row 'processing' with attempts+1, re-embeds through the canonical
+// per-source updater (updateHelpTopicEmbedding / updateArticleEmbedding), and
+// completes it — or, on failure, returns it to 'pending' until the third attempt
+// and then marks it 'failed'. That retry ladder is why this belongs here rather
+// than being retried inline at the write site.
+//
+// Batch of 25 per 5-minute cycle: each row costs one embed call plus a write, and
+// the ladder means a genuinely broken row leaves the queue after three cycles
+// instead of being retried forever.
+const EMBEDDING_DRAIN_LIMIT = 25
+
+async function drainEmbeddingQueue(): Promise<QueueCounts> {
+  const counts = emptyCounts()
+  const { processPendingEmbeddings } = await import("@/lib/knowledge/embedding-service")
+  const result = await processPendingEmbeddings(EMBEDDING_DRAIN_LIMIT)
+  counts.processed = result.processed + result.failed
+  counts.sent = result.processed
+  counts.failed = result.failed
+  if (result.failed > 0) {
+    // Named out loud in the cron metadata rather than buried: a non-zero failure
+    // count here means articles the AI cannot retrieve.
+    counts.errors.push(
+      `embedding_queue: ${result.failed} item(s) failed to embed — those articles stay unretrievable by RAG until they succeed`,
+    )
+  }
+  return counts
+}
+
+// ─── 6. live_agent_sessions (folded sweep) ───────────────────────────────────
+// FOLDED (wave 62, §1.1 orphan-doctrine merge — survivor is this call site):
+// this used to be its own registered CRON_REGISTRY entry,
+// app/api/cron/live-agent-session-sweep/route.ts (now DELETED), also on a
+// */5 schedule and also owned by cron_manager. It closes any
+// `live_agent_sessions` row (m624, WRITTEN NOT APPLIED) whose heartbeat has
+// gone silent for >10min at the heartbeat-derived duration — see
+// lib/did/live-session-metering.ts::sweepStaleLiveAgentSessions for the full
+// rationale (crashed/killed tab that never reaches its own end beacon).
+// Folding it in here removes one whole Vercel Function invocation per tick
+// (docs/vercel-cron-usage-2026-09.md) with NO change to the sweep's own
+// cadence or staleness window.
+async function drainLiveAgentSessionSweep(): Promise<QueueCounts> {
+  const counts = emptyCounts()
+  const { swept, errors } = await sweepStaleLiveAgentSessions()
+  counts.processed = swept + errors
+  counts.sent = swept
+  counts.failed = errors
+  return counts
+}
+
 // ─── Route ───────────────────────────────────────────────────────────────────
 
 export async function GET(request: Request) {
@@ -587,6 +686,8 @@ export async function GET(request: Request) {
     const push = await safe("push_notification_queue", () => drainPushQueue(supabase))
     const tasks = await safe("orchestrator_tasks", () => drainOrchestratorTasks(supabase))
     const drips = await safe("drip_campaigns", () => drainDripCampaigns(supabase))
+    const embeddings = await safe("embedding_queue", () => drainEmbeddingQueue())
+    const liveAgentSweep = await safe("live_agent_sessions", () => drainLiveAgentSessionSweep())
 
     const queues = {
       email_queue: { ...email, sent: email.sent },
@@ -594,8 +695,12 @@ export async function GET(request: Request) {
       push_notification_queue: { ...push },
       orchestrator_tasks: { ...tasks, completed: tasks.sent },
       drip_campaigns: { ...drips, enrolled: drips.sent, paused_no_sequence: drips.failed },
+      embedding_queue: { ...embeddings, embedded: embeddings.sent },
+      live_agent_sessions: { ...liveAgentSweep, swept: liveAgentSweep.sent },
     }
-    const processed = email.processed + push.processed + tasks.processed + drips.processed
+    const processed =
+      email.processed + push.processed + tasks.processed + drips.processed + embeddings.processed +
+      liveAgentSweep.processed
 
     await recordCronSuccessAction({
       context_id: contextId,

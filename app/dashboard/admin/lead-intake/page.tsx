@@ -2,10 +2,14 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadLeadIntakeCockpit, REJECTION_REASON_LABEL } from "@/lib/kernel/lead-intake-cockpit"
 import { listRawLeadsForReview } from "@/app/actions/lead-promotion/promote-lead"
+import { resolveLeadVisibility } from "@/lib/auth/lead-visibility"
+import { loadRawPipelineStats } from "./pipeline-stats"
 import { RawLeadsReviewPanel } from "./raw-leads-review"
+import { PipelineStatsPanel } from "./pipeline-stats-panel"
 import { SocialScrapeTrigger } from "./social-scrape-trigger"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Lead Intake Cockpit | Kernel OS",
@@ -29,16 +33,32 @@ export default async function LeadIntakeCockpitPage() {
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
+  if (!user) redirect("/login")
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id, platform_role").eq("id", user.id).maybeSingle()
   const userType = u?.user_type ?? "agent"
   const brokerageId = u?.brokerage_id ?? undefined
   // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY — the cockpit's
   // funnel AGGREGATES are brokerage-level observability (broker/admin family).
-  if (!["admin", "broker", "broker_owner", "broker_admin", "superadmin"].includes(userType) || !brokerageId) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType }) || !brokerageId) redirect("/dashboard")
 
   const data = await loadLeadIntakeCockpit(brokerageId)
   const { funnel } = data
+
+  // PIPELINE STATS HEADER — the same numbers GET /api/leads/process-pipeline
+  // serves, by an in-process call to the one function behind that route
+  // (./pipeline-stats.ts). Same second gate as the route: a TRUE team scope is
+  // refused, because raw_scraped_leads has no agent linkage and brokerage-wide
+  // ingestion totals cannot be narrowed to a team (CLAUDE.md §4). Where the team
+  // IS the tenant the resolver has already collapsed the scope to 'brokerage'.
+  // The tenant is the SESSION's brokerage, never a parameter.
+  const vis = await resolveLeadVisibility(supabase, {
+    userId: user.id,
+    userType: userType,
+    platformRole: (u as { platform_role?: string | null } | null)?.platform_role ?? null,
+    brokerageId,
+  })
+  const statsRefusedForTeam = vis.allowed && vis.scope.kind === "team"
+  const pipelineStats = vis.allowed && vis.scope.kind !== "team" ? await loadRawPipelineStats(brokerageId) : null
 
   // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY. Raw record CONTENT
   // (the review bench) renders only for platform staff — tenant brokers see
@@ -85,6 +105,16 @@ export default async function LeadIntakeCockpitPage() {
               </Card>
             ))}
           </div>
+
+          {/* ── Pipeline stats — server-rendered first paint (in-process, per the
+              route's own header), THEN refreshable client-side against the
+              actual route (the in-tree caller GET /api/leads/process-pipeline
+              needed — lane 64D, route-no-caller 6b → 0). ── */}
+          <PipelineStatsPanel
+            initialStats={pipelineStats}
+            rejectionLabel={REJECTION_REASON_LABEL}
+            refusedForTeam={statsRefusedForTeam}
+          />
 
           {/* ── Per-source conversion table ─────────────────────────────────── */}
           <Card className="p-4">

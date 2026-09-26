@@ -33,6 +33,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { graphGet } from "@/lib/providers/meta/client"
 import {
   SOCIAL_OAUTH_CONFIGS,
   socialOAuthEnvStatus,
@@ -71,7 +72,8 @@ export const CHANNEL_LABELS: Record<PlatformSocialChannel, string> = {
 
 /** The platform_credentials.platform key for a company channel (see header — the
  *  keys are DISTINCT from tenant provider ids so the tenant cascade can't hit them). */
-export function credentialPlatformKey(channel: PlatformSocialChannel): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function credentialPlatformKey(channel: PlatformSocialChannel): string {
   return `platform_social_${channel}`
 }
 
@@ -226,7 +228,21 @@ export interface PlatformTokenPayload {
 }
 
 /** Owner-keyed update-or-insert on platform_credentials (m104 unique:
- *  owner_type, owner_id, platform). Returns the credential row id. */
+ *  owner_type, owner_id, platform). Returns the credential row id.
+ *
+ *  brokerage_id IS DELIBERATELY ABSENT AND MUST STAY ABSENT. These rows hold the
+ *  PLATFORM's own company social tokens — the OS marketing itself — and the
+ *  platform is not a tenant. m273 dropped NOT NULL from
+ *  platform_credentials.brokerage_id for exactly this row class ("platform-owned
+ *  rows have NO tenant"), and m102/m104 made (owner_type, owner_id, platform) the
+ *  real key, which is why this function writes owner_type='platform' /
+ *  owner_id='platform' instead. Nothing here is hidden by a tenant-narrowed
+ *  reader: the scope cascade (lib/connections/resolve-scoped.ts) reaches these
+ *  rows by owner_type, never by brokerage_id, and m273 gave the platform channels
+ *  DISTINCT platform keys ('platform_social_<channel>') precisely so a tenant's
+ *  cascade can never resolve them. Stamping a brokerage_id here would invent a
+ *  tenant for the company's own account and hand it a credential it does not own.
+ *  A tenant social connection is a different code path and does carry the stamp. */
 async function upsertPlatformCredential(
   svc: ServiceClient,
   channel: PlatformSocialChannel,
@@ -245,13 +261,24 @@ async function upsertPlatformCredential(
     .select("id")
     .eq("owner_type", "platform").eq("owner_id", "platform").eq("platform", credKey)
     .maybeSingle()
-  const credWrite = existingCred?.id
-    ? await svc.from("platform_credentials").update(credRow).eq("id", existingCred.id).select("id").single()
-    : await svc.from("platform_credentials").insert(credRow).select("id").single()
-  if (credWrite.error || !credWrite.data?.id) {
-    return { ok: false, error: credWrite.error?.message ?? "Failed to store the credential" }
+  // Split from a ternary so each branch's error capture sits beside its own
+  // write — in the ternary form the shared capture was too far from the INSERT
+  // branch to be read as covering it. Behaviour is unchanged.
+  let credId: string | null = null
+  let credWriteError: { message: string } | null = null
+  if (existingCred?.id) {
+    const { data, error } = await svc.from("platform_credentials").update(credRow).eq("id", existingCred.id).select("id").single()
+    credId = (data as { id?: string } | null)?.id ?? null
+    credWriteError = error
+  } else {
+    const { data, error } = await svc.from("platform_credentials").insert(credRow).select("id").single()
+    credId = (data as { id?: string } | null)?.id ?? null
+    credWriteError = error
   }
-  return { ok: true, id: String(credWrite.data.id) }
+  if (credWriteError || !credId) {
+    return { ok: false, error: credWriteError?.message ?? "Failed to store the credential" }
+  }
+  return { ok: true, id: String(credId) }
 }
 
 /** Update-or-insert the channel status row (unique(platform)). */
@@ -332,7 +359,11 @@ interface MetaPage {
 
 const META_PAGE_FIELDS = "id,name,access_token,instagram_business_account{id,username}"
 
-/** Best-effort long-lived user-token exchange (fb_exchange_token). */
+/** Best-effort long-lived user-token exchange (fb_exchange_token). KEPT ON REST
+ *  (wave 71A) — see lib/providers/meta/client.ts's header: the Business SDK
+ *  cannot express the call that MINTS a token (FacebookAdsApi always requires
+ *  an access token to construct), so the OAuth exchange stays on the
+ *  connector gateway. */
 async function exchangeMetaLongLivedToken(
   userToken: string,
 ): Promise<{ ok: true; token: string; expiresInSeconds: number | null } | { ok: false }> {
@@ -349,24 +380,20 @@ async function exchangeMetaLongLivedToken(
   return { ok: true, token: res.data.access_token, expiresInSeconds: res.data.expires_in ?? null }
 }
 
-/** The Pages this user token manages (each with its Page token + linked IG). */
+/** The Pages this user token manages (each with its Page token + linked IG).
+ *  Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+ *  adapter instead of the connector gateway. */
 async function listMetaPages(userToken: string): Promise<{ ok: true; pages: MetaPage[] } | { ok: false; error: string }> {
-  const res = await callConnector<{ data?: MetaPage[]; error?: { message?: string } }>({
-    connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/me/accounts", method: "GET",
-    query: { fields: META_PAGE_FIELDS, limit: "100" },
-    auth: { style: "query", name: "access_token", value: userToken },
-  })
+  const res = await graphGet<{ data?: MetaPage[]; error?: { message?: string } }>(userToken, ["me", "accounts"], { fields: META_PAGE_FIELDS, limit: 100 })
   if (!res.ok) return { ok: false, error: res.data?.error?.message || res.error || "Meta rejected the Pages request" }
   return { ok: true, pages: ((res.data?.data ?? []) as MetaPage[]).filter((p) => p?.id) }
 }
 
-/** One Page (fresh Page token + IG link) via the stored long-lived user token. */
+/** One Page (fresh Page token + IG link) via the stored long-lived user token.
+ *  Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+ *  adapter instead of the connector gateway. */
 async function fetchMetaPage(pageId: string, userToken: string): Promise<{ ok: true; page: MetaPage } | { ok: false; error: string }> {
-  const res = await callConnector<MetaPage & { error?: { message?: string } }>({
-    connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${pageId}`, method: "GET",
-    query: { fields: META_PAGE_FIELDS },
-    auth: { style: "query", name: "access_token", value: userToken },
-  })
+  const res = await graphGet<MetaPage & { error?: { message?: string } }>(userToken, [pageId], { fields: META_PAGE_FIELDS })
   if (!res.ok || !res.data?.id) return { ok: false, error: (res.data as any)?.error?.message || res.error || "Meta rejected the Page lookup" }
   return { ok: true, page: res.data }
 }
@@ -572,11 +599,9 @@ export async function fetchMetaPostPermalink(
   accessToken: string,
 ): Promise<string | null> {
   const field = kind === "facebook" ? "permalink_url" : "permalink"
-  const res = await callConnector<{ permalink_url?: string; permalink?: string }>({
-    connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${postId}`, method: "GET",
-    query: { fields: field },
-    auth: { style: "query", name: "access_token", value: accessToken },
-  })
+  // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+  // adapter instead of the connector gateway.
+  const res = await graphGet<{ permalink_url?: string; permalink?: string }>(accessToken, [postId], { fields: field })
   if (!res.ok) return null
   const link = kind === "facebook" ? res.data?.permalink_url : res.data?.permalink
   return typeof link === "string" && link.startsWith("http") ? link : null
@@ -632,9 +657,16 @@ export async function verifyPlatformChannel(svc: ServiceClient, channel: Platfor
   if (profile.name) patch.account_name = profile.name
   await svc.from("platform_social_accounts").update(patch).eq("id", account.id)
   if (profile.accountId) {
-    await svc.from("platform_credentials")
+    // test_status/'pass' + the resolved provider account id ARE the verification
+    // result. Written silently, a refusal meant Verify reported "connected"
+    // while the credential still carried the previous (or no) account id — and
+    // the publisher then posts with the stale one.
+    const { error: credVerifyError } = await svc.from("platform_credentials")
       .update({ account_id: profile.accountId, account_name: profile.name ?? undefined, last_tested_at: nowIso, test_status: "pass", updated_at: nowIso })
       .eq("id", cred.id)
+    if (credVerifyError) {
+      return markError(`Verified with ${channel}, but the credential could not be updated: ${credVerifyError.message}`)
+    }
   }
   return { ok: true, status: "connected", accountName: profile.name ?? null }
 }
@@ -649,9 +681,16 @@ export async function disconnectPlatformChannel(svc: ServiceClient, channel: Pla
     .maybeSingle()
   if (!account) return { ok: false, error: "Channel row not found" }
   if (account.credential_ref) {
-    await svc.from("platform_credentials")
+    // THE REVOCATION. Deactivating the credential is what actually withdraws
+    // the stored OAuth token; the account row below is only the label. Written
+    // silently, a refusal reported the channel disconnected while a live token
+    // stayed active and usable.
+    const { error: revokeError } = await svc.from("platform_credentials")
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("id", account.credential_ref)
+    if (revokeError) {
+      return { ok: false, error: `The stored credential could not be deactivated — the channel is NOT disconnected: ${revokeError.message}` }
+    }
   }
   const { error } = await svc.from("platform_social_accounts")
     .update({ status: "disconnected", credential_ref: null, updated_at: new Date().toISOString() })
@@ -706,19 +745,15 @@ export async function fetchChannelProfile(
   const provider = CHANNEL_OAUTH_PROVIDER[channel]
   try {
     if (provider === "meta") {
+      // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+      // adapter instead of the connector gateway.
       if (channel === "instagram") {
         if (!accountId) return { ok: false, error: "No Instagram business-account id on file — reconnect the channel" }
-        const res = await callConnector<{ id?: string; username?: string; name?: string }>({
-          connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${accountId}`, method: "GET",
-          query: { fields: "id,username,name" }, auth: { style: "query", name: "access_token", value: accessToken },
-        })
+        const res = await graphGet<{ id?: string; username?: string; name?: string }>(accessToken, [accountId], { fields: "id,username,name" })
         if (!res.ok || !res.data?.id) return { ok: false, error: res.error || "Meta rejected the Instagram token" }
         return { ok: true, accountId: res.data.id, name: res.data.username ? `@${res.data.username}` : res.data.name }
       }
-      const res = await callConnector<{ id?: string; name?: string }>({
-        connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/me", method: "GET",
-        query: { fields: "id,name" }, auth: { style: "query", name: "access_token", value: accessToken },
-      })
+      const res = await graphGet<{ id?: string; name?: string }>(accessToken, ["me"], { fields: "id,name" })
       if (!res.ok || !res.data?.id) return { ok: false, error: res.error || "Meta rejected the token" }
       return { ok: true, accountId: res.data.id, name: res.data.name }
     }

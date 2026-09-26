@@ -23,8 +23,11 @@ interface Props {
   initialCharges: AgentFeeCharge[]
 }
 
-function fmt(n: number) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n)
+// Charge rows carry their own `currency` (stamped from the fee type by
+// generatePeriodicCharges). Formatting hardcoded USD while the ledger stored a
+// currency nobody read — the charge's own value is authoritative.
+function fmt(n: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(n)
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -97,9 +100,20 @@ export function BrokerageFeesClient({ initialFeeTypes, initialCharges }: Props) 
   }
 
   async function handleWaive(chargeId: string) {
-    const r = await waiveCharge({ chargeId })
+    // The reason lands in agent_fee_charges.notes and shows to BOTH sides (this
+    // list and the agent's fees page). The old call sent nothing, so every waive
+    // stored the server default "Waived by broker" — a reason field with no reason.
+    const reason = window.prompt("Reason for waiving this charge (the agent will see it):")
+    if (reason === null) return // broker cancelled — do not waive
+    const r = await waiveCharge({ chargeId, reason: reason.trim() || undefined })
     if (r.success) {
-      setCharges((cs) => cs.map((c) => (c.id === chargeId ? { ...c, status: "waived" } : c)))
+      setCharges((cs) =>
+        cs.map((c) =>
+          c.id === chargeId
+            ? { ...c, status: "waived", notes: reason.trim() || "Waived by broker" }
+            : c
+        )
+      )
     }
   }
 
@@ -253,8 +267,11 @@ export function BrokerageFeesClient({ initialFeeTypes, initialCharges }: Props) 
                         {c.feeTypeName} · {new Date(c.periodStart).toLocaleDateString()}
                         {c.dueDate && ` · due ${new Date(c.dueDate).toLocaleDateString()}`}
                       </p>
+                      {c.status === "waived" && c.notes && (
+                        <p className="text-xs text-muted-foreground italic truncate">Waived: {c.notes}</p>
+                      )}
                     </div>
-                    <span className="font-semibold">{fmt(c.amount)}</span>
+                    <span className="font-semibold">{fmt(c.amount, c.currency)}</span>
                     <Badge className={`text-xs capitalize ${STATUS_COLOR[c.status] ?? ""}`}>{c.status}</Badge>
                     {c.status === "open" && (
                       <div className="flex gap-1">

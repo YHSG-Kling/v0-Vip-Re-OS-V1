@@ -5,23 +5,14 @@
 // Superadmin god-switch actions — read + flip the platform_settings singleton (emergency mode / AI engine /
 // global rate limit). Every mutation is superadmin-gated and written to superadmin_audit_log with IP + UA.
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { getPlatformControls, setPlatformControls, type PlatformControls } from "@/lib/platform/platform-controls"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 
-async function requireSuperadmin(): Promise<
-  | { ok: true; userId: string; email: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
-  if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
+// TOMBSTONE: local requireSuperadmin merged onto lib/auth/platform-guard.ts:91
+// requireSuperadmin (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 export async function getPlatformControlsAction(): Promise<{ ok: true; controls: PlatformControls } | { ok: false; error: string }> {
   const auth = await requireSuperadmin()

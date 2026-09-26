@@ -15,7 +15,6 @@
 import {
   getStateLicenseSource,
   resolveLookupUrl,
-  type StateLicenseSource,
 } from "@/lib/onboarding/state-license-registry"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────

@@ -1,0 +1,190 @@
+"use server"
+
+/**
+ * app/actions/admin/onboarding-steps.ts
+ *
+ * ONBOARDING CURRICULUM AUTHORING — the gap: the canonical onboarding system
+ * (agent_onboarding + onboarding_steps + agent_step_completions) is fully live and
+ * auto-starts on invite, but nothing in the app could AUTHOR steps — every agent
+ * inherited the one global (brokerage_id NULL) template seeded by SQL. These
+ * actions let a brokerage admin add/edit/remove BROKERAGE-scoped steps that the
+ * onboarding loader already reads (lib/kernel/onboarding.ts: brokerage_id.eq.<id>
+ * OR is null, filtered by target_role). No schema change — the table already has
+ * brokerage_id + target_role[].
+ *
+ * Admin-gated (broker / broker_admin / admin / superadmin). Platform-default steps
+ * (brokerage_id NULL) are READ-ONLY here — a tenant can only manage its own rows.
+ * recruiting_manager owns the onboarding journey.
+ */
+
+import { revalidatePath } from "next/cache"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity"
+// The category vocabulary and the two integer ranges are the DATABASE's, not
+// this file's. They were hand-written here AND in the editor, and four of the
+// seven categories offered (license / tech / brand / other) were refused live by
+// onboarding_steps_category_check — while the blank form's stepOrder default of 0
+// was refused by onboarding_steps_step_order_check, so the very first save of a
+// freshly-opened create form always failed. Sourced from the one module now.
+import {
+  ONBOARDING_STEP_CATEGORIES,
+  isStorableOnboardingStepCategory,
+  clampOnboardingStepDay,
+  clampOnboardingStepOrder,
+} from "@/lib/onboarding/step-categories"
+
+// TRUE ADMIN GATE (operational: onboarding — the owner ruling's team_lead-included
+// tier) — repointed to the ONE tenant roster. 'superadmin' was dead: 0 live rows
+// store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+
+async function requireAdmin(): Promise<
+  | { ok: true; brokerageId: string; userId: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
+}
+
+export interface CurriculumStep {
+  id: string
+  dayNumber: number
+  stepOrder: number
+  stepKey: string
+  stepName: string
+  category: string
+  required: boolean
+  estimatedMinutes: number | null
+  instructions: string | null
+  videoUrl: string | null
+  targetRole: string[] | null
+  /** true for platform defaults (brokerage_id NULL) — read-only to a tenant. */
+  isPlatformDefault: boolean
+}
+
+function rowToStep(r: Record<string, unknown>, callerBrokerageId: string): CurriculumStep {
+  return {
+    id: r.id as string,
+    dayNumber: (r.day_number as number) ?? 1,
+    stepOrder: (r.step_order as number) ?? 0,
+    stepKey: r.step_key as string,
+    stepName: r.step_name as string,
+    category: (r.category as string) ?? "other",
+    required: (r.required as boolean) ?? true,
+    estimatedMinutes: (r.estimated_minutes as number | null) ?? null,
+    instructions: (r.instructions as string | null) ?? null,
+    videoUrl: (r.video_url as string | null) ?? null,
+    targetRole: (r.target_role as string[] | null) ?? null,
+    isPlatformDefault: (r.brokerage_id as string | null) !== callerBrokerageId,
+  }
+}
+
+/** List the effective curriculum: the brokerage's own steps + the platform
+ *  defaults (read-only), ordered as the agent sees them. */
+export async function listOnboardingCurriculumAction(): Promise<
+  { ok: true; steps: CurriculumStep[] } | { ok: false; error: string }
+> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("onboarding_steps")
+    .select("id, brokerage_id, day_number, step_order, step_key, step_name, category, required, estimated_minutes, instructions, video_url, target_role")
+    .or(`brokerage_id.eq.${auth.brokerageId},brokerage_id.is.null`)
+    .order("day_number", { ascending: true })
+    .order("step_order", { ascending: true })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, steps: (data ?? []).map((r) => rowToStep(r as Record<string, unknown>, auth.brokerageId)) }
+}
+
+export interface SaveStepInput {
+  /** Present → update that brokerage step; absent → create. */
+  id?: string | null
+  dayNumber: number
+  stepOrder: number
+  stepKey: string
+  stepName: string
+  category: string
+  required?: boolean
+  estimatedMinutes?: number | null
+  instructions?: string | null
+  videoUrl?: string | null
+  targetRole?: string[] | null
+}
+
+export async function saveOnboardingStepAction(
+  input: SaveStepInput,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth
+
+  const stepName = (input.stepName ?? "").trim()
+  if (!stepName) return { ok: false, error: "Step name is required" }
+  const stepKey = (input.stepKey ?? "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "")
+  if (!stepKey) return { ok: false, error: "Step key is required" }
+  if (!isStorableOnboardingStepCategory(input.category)) {
+    return { ok: false, error: `Category must be one of: ${ONBOARDING_STEP_CATEGORIES.join(", ")}` }
+  }
+  // Clamp rather than pass through: day_number is CHECKed to 1..7 and step_order
+  // to >= 1, so an out-of-range value reached the database as a raw 23514 with a
+  // constraint name in it instead of anything an admin could act on.
+  const dayNumber = clampOnboardingStepDay(input.dayNumber)
+  const stepOrder = clampOnboardingStepOrder(input.stepOrder)
+  const targetRole = Array.isArray(input.targetRole) && input.targetRole.length > 0
+    ? input.targetRole.map((r) => String(r).toLowerCase())
+    : null
+
+  const svc = createServiceClient()
+
+  const payload = {
+    // brokerage_id is ALWAYS the caller's own tenant — a tenant can never author a
+    // platform-default (NULL) step or a step for another brokerage.
+    brokerage_id: auth.brokerageId,
+    day_number: dayNumber,
+    step_order: stepOrder,
+    step_key: stepKey,
+    step_name: stepName,
+    category: input.category,
+    required: input.required ?? true,
+    estimated_minutes: input.estimatedMinutes ?? null,
+    instructions: input.instructions?.trim() || null,
+    video_url: input.videoUrl?.trim() || null,
+    target_role: targetRole,
+  }
+
+  if (input.id) {
+    // Only the tenant's OWN step is editable (never a platform default).
+    const { data: existing } = await svc.from("onboarding_steps").select("brokerage_id").eq("id", input.id).maybeSingle()
+    if (!existing || (existing as { brokerage_id: string | null }).brokerage_id !== auth.brokerageId) {
+      return { ok: false, error: "Step not found for this brokerage" }
+    }
+    const { error } = await svc.from("onboarding_steps").update(payload).eq("id", input.id)
+    if (error) return { ok: false, error: error.message }
+    revalidatePath("/dashboard/admin/onboarding")
+    return { ok: true, id: input.id }
+  }
+
+  const { data, error } = await svc.from("onboarding_steps").insert(payload).select("id").single()
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/dashboard/admin/onboarding")
+  return { ok: true, id: (data as { id: string }).id }
+}
+
+export async function deleteOnboardingStepAction(
+  stepId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  // Refuse to delete anything but the tenant's own step (platform defaults are shared).
+  const { data: existing } = await svc.from("onboarding_steps").select("brokerage_id").eq("id", stepId).maybeSingle()
+  if (!existing || (existing as { brokerage_id: string | null }).brokerage_id !== auth.brokerageId) {
+    return { ok: false, error: "Step not found for this brokerage" }
+  }
+  const { error } = await svc.from("onboarding_steps").delete().eq("id", stepId)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/dashboard/admin/onboarding")
+  return { ok: true }
+}

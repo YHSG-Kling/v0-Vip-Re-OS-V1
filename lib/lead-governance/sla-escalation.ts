@@ -7,6 +7,8 @@
  * Escalation triggers system-level notifications, not UI.
  */
 
+import { conversionVerdictForRow } from "@/lib/contact-promotion/conversion-finality"
+
 export interface SLARule {
   stage: string
   maxDaysInStage: number
@@ -35,6 +37,22 @@ export function evaluateSLABreach(
   lead: any,
   rules: SLARule[] = DEFAULT_SLA_RULES
 ): SLABreachResult {
+  // CONVERSION FINALITY — the clock stops when the lead becomes a contact. This
+  // module had no conversion predicate at all, so a converted lead kept
+  // "breaching" its lead_stage SLA and kept naming an escalation target for a
+  // person who is already a client. Pure, and keyed on the one marker every
+  // converter writes (lib/contact-promotion/conversion-finality.ts).
+  const finality = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null })
+  if (!finality.allowed && finality.converted === true) {
+    return {
+      breached: false,
+      daysInStage: 0,
+      maxAllowed: 0,
+      escalationTarget: '',
+      reason: finality.reason,
+    }
+  }
+
   // Calculate days in current stage
   const stageEnteredAt = lead.stage_entered_at || lead.created_at
   const daysInStage = Math.floor(

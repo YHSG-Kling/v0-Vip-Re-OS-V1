@@ -47,7 +47,8 @@ export interface NetSheetGuardResult {
 /** Tolerant parser: pull net-sheet figures off a settlement-statement document's
  *  extracted_data JSON. Settlement statements vary wildly, so we read a generous set of
  *  common keys and never fabricate a line that isn't there. */
-export function parseSettlementFigures(extracted: Record<string, unknown> | null | undefined): NetSheetFigures {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function parseSettlementFigures(extracted: Record<string, unknown> | null | undefined): NetSheetFigures {
   if (!extracted || typeof extracted !== "object") return {}
   const e = extracted as Record<string, unknown>
   const pick = (...keys: string[]): number | undefined => {
@@ -181,12 +182,13 @@ export async function runNetSheetSurpriseGuard(input: NetSheetGuardInput, client
 
     try {
       if (agentUserId) {
-        const { data: notif } = await svc.from("notifications").insert({
+        const { data: notif, error: notifyError } = await svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: input.brokerageId, type: "net_sheet_surprise",
           title: recon.surpriseLevel === "severe" ? "⚠️ Net-sheet surprise — final net is materially short" : "Net-sheet variance — reconcile before closing",
           body: draft.body, entity_type: "transaction", entity_id: t.id,
           priority: recon.surpriseLevel === "severe" ? "critical" : "high",
         }).select("id").single()
+        if (notifyError) console.warn("[net-sheet-guard-runner] notifications insert refused — the surprise bell will not ring:", notifyError.message)
         notificationId = (notif as any)?.id
       }
       // The Deal Coordinator hands the seller conversation to the Listing Concierge.

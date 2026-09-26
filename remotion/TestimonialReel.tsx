@@ -25,17 +25,15 @@
  * composition trusts that consent.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface TestimonialReelProps {
   /** The testimonial quote — 12-40 words. The composition truncates
@@ -68,6 +66,14 @@ export interface TestimonialReelProps {
   mlsClean?:       boolean
   /** Optional context cues from the content bank. */
   contextCues?:    string[]
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. director-content.ts stages
+   *  captionScript from the SAME `quote` this composition already displays as the
+   *  pull-quote (§6 — one text, not two). See CaptionLayer. */
+  captionsCues?:   CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?:  string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -79,11 +85,13 @@ export interface TestimonialReelProps {
 }
 
 const FPS    = 30
-const COVER  = 2 * FPS
-const QUOTE  = 7 * FPS
-const REACT  = 3 * FPS
-const CTA    = 2 * FPS
-const TOTAL  = COVER + QUOTE + REACT + CTA  // 420 frames = 14s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `QUOTE = 7 * FPS / REACT = 3 * FPS` stood here. Bookends come from the ONE
+// registry; the quote and the reaction split the computed body 7:3.
+const BOOKENDS = compositionBookends("TestimonialReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, accentColor }) => {
   const frame = useCurrentFrame()
@@ -92,7 +100,7 @@ const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, acce
     <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
       {Array.from({ length: 5 }).map((_, i) => {
         const filled = i < safe
-        const fade   = interpolate(frame, [i * 4, i * 4 + 14], [0, 1], { extrapolateRight: "clamp" })
+        const fade   = interpolate(frame, [i * 4, i * 4 + 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
         return (
           <span key={i} style={{
             fontSize: 36, lineHeight: 1, opacity: fade,
@@ -107,20 +115,39 @@ const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, acce
 export const TestimonialReel: React.FC<TestimonialReelProps> = ({
   quote, clientName, clientRole, closingLabel, stars, ctaLabel,
   agentName, avatarVideoUrl, agentPhotoUrl, voiceoverUrl, contextCues, brand,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
   const finalCta = ctaLabel ?? "Read more reviews"
   const cues     = contextCues ?? []
   const showStars = (stars ?? 0) > 0
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY  = timeline.body.durationInFrames
+  const QUOTE = Math.round(BODY * 7 / 10)
+  const REACT = BODY - QUOTE
 
   return (
     <AbsoluteFill style={{
       backgroundColor: brand.primaryColor,
       fontFamily: "system-ui, -apple-system, sans-serif",
     }}>
-      {voiceoverUrl && <Audio src={voiceoverUrl} />}
+      {/* NARRATION STARTS WITH THE QUOTE, NOT UNDER THE COVER (lane 77D). The
+          CaptionLayer below declares the cover tile silent (visibleFromFrame=
+          COVER) and clips its cues to [COVER, COVER+QUOTE+REACT) — but this
+          <Audio> was mounted at the ROOT, so a supplied voiceover played from
+          frame 0 under the "silent" brand cover: two seconds of speech with no
+          caption, then captions that ended two seconds before the words did.
+          Delaying the track to COVER (audio.md "Delaying" — a <Sequence>
+          around <Audio>) makes the audio and its own declared window the same
+          fact; test:video-type-matrix proves the fitted words all land inside
+          it on both caption paths. */}
+      {voiceoverUrl && (
+        <Sequence from={COVER}>
+          <Audio src={voiceoverUrl} />
+        </Sequence>
+      )}
 
       {/* COVER — 0-2s. "REVIEW" eyebrow + client role chip. */}
       <Sequence from={0} durationInFrames={COVER}>
@@ -129,21 +156,21 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "10px 24px", borderRadius: 6,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 26, fontWeight: 900, letterSpacing: 6, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             5-Star Review
           </div>
           <div style={{
-            fontSize: 36, color: "#fff", opacity: interpolate(frame, [12, 32], [0, 0.85]),
+            fontSize: 36, color: "#fff", opacity: interpolate(frame, [12, 32], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             letterSpacing: 2, fontWeight: 600,
           }}>
             {clientRole}
@@ -160,7 +187,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           {showStars && <StarRow stars={stars ?? 5} accentColor={brand.accentColor} />}
           <div style={{
             fontSize: 48, lineHeight: 1.25, fontWeight: 700, fontStyle: "italic",
-            opacity: interpolate(frame, [12, 30], [0, 1]),
+            opacity: interpolate(frame, [12, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             maxWidth: 920,
             position: "relative",
           }}>
@@ -172,7 +199,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           </div>
           <div style={{
             marginTop: 36, fontSize: 24, color: brand.accentColor, fontWeight: 700, letterSpacing: 2,
-            opacity: interpolate(frame, [40, 60], [0, 1]),
+            opacity: interpolate(frame, [40, 60], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             — {clientName}
             {closingLabel && <span style={{ opacity: 0.7, marginLeft: 12 }}> · {closingLabel}</span>}
@@ -194,14 +221,26 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
               marginBottom: 28,
             }}>
               {avatarVideoUrl ? (
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER + QUOTE}> already offsets this child's
+                // clock — trimBefore={COVER + QUOTE} therefore skipped 9s of a
+                // reaction clip that is itself only ~3s. The avatar prop is a
+                // short reaction CLIP whose content starts at source frame 0
+                // (the D-ID convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0}); no producer authors a full-reel-spanning
+                // avatar for this composition (requires_did_avatar=false in the
+                // registry). MarketUpdateReel / ExplainerAnimReel differ on
+                // purpose — they slice one continuous narration track across
+                // consecutive sequences by absolute ranges.
                 <Video
+                  objectFit="cover"
                   src={avatarVideoUrl}
-                  startFrom={COVER + QUOTE}
-                  endAt={COVER + QUOTE + REACT}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  trimBefore={0}
+                  trimAfter={REACT}
+                  style={{ width: "100%", height: "100%" }}
                 />
               ) : (
-                <Img
+                <SafeImg
                   src={agentPhotoUrl as string}
                   style={{ width: "100%", height: "100%", objectFit: "cover" }}
                 />
@@ -219,7 +258,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
       </Sequence>
 
       {/* CTA — 12-14s. */}
-      <Sequence from={COVER + QUOTE + REACT} durationInFrames={CTA}>
+      <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
@@ -246,9 +285,20 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          the COVER tile is a silent 2s brand intro; clip before the CTA tile
+          at COVER + BODY. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        visibleFromFrame={COVER}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

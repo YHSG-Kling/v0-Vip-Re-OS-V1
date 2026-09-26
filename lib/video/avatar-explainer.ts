@@ -11,7 +11,7 @@
  *
  *   commissionAvatarExplainer (here)
  *     → ai_video_projects row  (video_type='avatar_explainer',
- *                               status='remotion_pending',
+ *                               status='queued',
  *                               approval_status='pending_review')
  *     → director-reel-render cron   (D-ID submit with the tenant's ElevenLabs
  *                                    voice — submitOnly; graceful park when the
@@ -32,7 +32,9 @@
  *     compliance redraft). There is NO canned script fallback — if authoring
  *     or the compliance gate fails, the commission is BLOCKED, not faked.
  *   · Provider acceptance is the only "rendering/done" truth. No D-ID key →
- *     the job lands at status='awaiting_provider' (never a fake success);
+ *     the job PARKS (never a fake success) at status='generating' with
+ *     video_metadata.awaiting_provider='did' as the parked marker — the retired
+ *     'awaiting_provider' status collapsed into 'generating';
  *     resumeAwaitingProviderExplainers() un-parks it once the key exists.
  *   · Voice: the agent's ElevenLabs clone when configured; else the brokerage
  *     assistant voice; else a STOCK ElevenLabs voice labeled as such; else
@@ -50,6 +52,22 @@ import {
   type AvatarExplainerPreset,
   type ExplainerVoiceSource,
 } from "@/lib/video/avatar-explainer-presets"
+// PURE — safe at top level (client-importable module). The narration budget is
+// DERIVED from the composition that will frame the avatar clip inside a FIXED
+// durationInFrames (TeammateExplainerReel 900f/30fps = 30s, AgentExplainerReel
+// 540f/30fps = 18s): an overrun there is CUT, so the words asked of the model
+// come from the geometry through the ONE contract (§6), never a typed range.
+import { narrationWindowBudget } from "@/lib/video/narration-window"
+import {
+  narrationLengthDirective,
+  fitNarrationToBudget,
+  spokenWords,
+} from "@/lib/video/script-structure"
+// PURE, like the two above (video-landing imports only video-status +
+// content-contract, both DB-free) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
+import { scanForAiTells, withSpokenScriptStandards } from "@/lib/video/realism-profile"
 
 export { AVATAR_EXPLAINER_PRESETS }
 export type { AvatarExplainerPreset, ExplainerVoiceSource }
@@ -61,12 +79,22 @@ export interface ExplainerContent {
   title: string
   bullets: [string, string, string]
   ctaLabel: string
-  /** The narration the avatar speaks (D-ID + ElevenLabs). ~55-75 words. */
+  /** The narration the avatar speaks (D-ID + ElevenLabs). Its word budget is
+   *  DERIVED from the target composition's geometry via narrationBudget —
+   *  never a typed range (the retired ask was "55-75 words", ~2× what the
+   *  18s AgentExplainerReel fallback can speak). */
   narration: string
 }
 
 export type AuthorExplainerResult =
-  | { ok: true; content: ExplainerContent }
+  | {
+      ok: true
+      content: ExplainerContent
+      /** The cascade's compact context (§1, wave 60E) — carried through so
+       *  commissionAvatarExplainer can stamp the REAL value onto the queued
+       *  row's `brand_voice_context` instead of `{}`. */
+      brandVoiceContext: import("@/lib/ai-isa/brand-voice-prompt").BrandVoiceVideoContext
+    }
   | { ok: false; reason: string; violations?: string[] }
 
 export interface AvatarExplainerReadiness {
@@ -76,6 +104,11 @@ export interface AvatarExplainerReadiness {
   elevenlabsConfigured: boolean
   /** The agent has a D-ID avatar source (actor id or photo/video). */
   presenterReady: boolean
+  /** True when a REAL talking-head AVATAR (D-ID actor id) is on file — the
+   *  explainer animates the avatar (/expressives). When false, only a still
+   *  photo exists and D-ID animates the photo (/talks); set up the Twin Studio
+   *  avatar for a true talking head. */
+  hasAvatar: boolean
   /** Where the narration voice will come from — labeled honestly. */
   voiceSource: ExplainerVoiceSource
   voiceId: string | null
@@ -87,7 +120,18 @@ export interface AvatarExplainerReadiness {
 
 export interface CommissionAvatarExplainerParams {
   brokerageId: string
-  /** users.id of the agent (ai_video_projects.agent_id FK → users.id). */
+  /**
+   * users.id of the agent — the class every browser caller holds
+   * (`resolveCaller()` returns the auth user).
+   *
+   * IT IS NOT `ai_video_projects.agent_id`. That column FKs `agents(id)` since
+   * m366 (scripts/schema-fk-map.ts: `"ai_video_projects": { "agent_id": "agents",
+   * … }`), and `agents.id` / `users.id` are DISJOINT id spaces — no agents row's
+   * id is also a users id. The commission below therefore RESOLVES this through
+   * `agents.user_id` before it writes. The prior doc-comment on this field
+   * asserted the FK pointed at `users`, which is what let the wrong id be written
+   * with a straight face.
+   */
   agentUserId: string
   /** Plain-language topic (from a preset seed or typed by the agent). */
   topic: string
@@ -159,6 +203,8 @@ export async function getAvatarExplainerReadiness(
     didConfigured,
     elevenlabsConfigured: elevenlabsKeyConfigured(),
     presenterReady: presenter.canRender,
+    // A real avatar (actor id) → talking head; only a photo → animated photo.
+    hasAvatar: !!presenter.actorId,
     voiceSource,
     voiceId,
     agentPhotoUrl: presenter.avatarImageUrl,
@@ -204,7 +250,34 @@ export async function authorExplainerContent(args: {
   topic: string
   audience: string
   eyebrowHint?: string | null
+  /**
+   * The composition whose FIXED durationInFrames will frame the avatar clip —
+   * the narration budget is derived from ITS geometry (§6), so the caller that
+   * knows where the video renders is the caller that names it. Both live
+   * callers do: commissionAvatarExplainer passes pickCompositionId()'s answer,
+   * and director-content passes the switch case it is resolving.
+   */
+  compositionId: string
 }): Promise<AuthorExplainerResult> {
+  // THE BUDGET, DERIVED. An unregistered id yields maxWords 0, which means
+  // "this composition cannot carry narration" — refuse, never "no limit".
+  // LANE 77D — the avatar WINDOW, not the whole composition: AgentExplainerReel
+  // mounts the D-ID track only across B1+B2+B3 (14 s of its 18 s) and
+  // TeammateExplainerReel only in BODY, so a budget sized to the full runtime
+  // overran the crop at the average pace. WAVE 78: narrationWindowBudget is now
+  // a thin adapter over lib/video/duration-model.ts purposeBudgetFor — the
+  // EXPLAINER purpose's window (30/60/90 s of body at the avatar pace, floor
+  // and ceiling in the one directive), and the composition's registered frames
+  // are the CAP the render may reach: calculateMetadata sizes the render to
+  // the fitted narration. An id with no purpose row still falls back to the
+  // whole-composition budget.
+  const budget = narrationWindowBudget(args.compositionId)
+  if (budget.maxWords <= 0) {
+    return {
+      ok: false,
+      reason: `composition ${args.compositionId} has no runtime to narrate (${budget.compositionSeconds}s) — no explainer can be authored for it`,
+    }
+  }
   try {
     const [{ resolveBrandContext }, { runWithComplianceRedraft }, { hasFairHousingViolation, sanitizeProperNoun }, { generateTextRouted }, { createServiceClient }] =
       await Promise.all([
@@ -221,28 +294,34 @@ export async function authorExplainerContent(args: {
     }).catch(() => null)
     const agentName = sanitizeProperNoun(brand?.agentName ?? brand?.displayName, 60) ?? "Your Agent"
 
-    // Brand voice guidelines — the same brand_voice_profile block the video
-    // script generator injects (loadBrandVoicePrompt idiom).
+    // TOMBSTONE (§1/§6, wave 60E — survivor lib/ai-isa/brand-voice-prompt.ts:73
+    // loadBrandVoicePrompt): a private brand_voice_profile read used to live
+    // here — its own tone/formality/prohibited-words prompt block, missing the
+    // agent/team override, ai_identity_profiles and chartered-AI-teammate
+    // layers every other AI-agent surface (live avatar, phone receptionist,
+    // widget, portal, in-app copilot) already runs. `resolveBrandContext`
+    // above is NOT this duplicate — it is the distinct VISUAL identity
+    // resolver (logo/colors/license/phone cascade for print pieces); it stays.
+    const { loadBrandVoicePrompt, brandVoiceContextForVideo } = await import("@/lib/ai-isa/brand-voice-prompt")
+    const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
     let brandVoiceBlock = ""
+    let brandVoiceContext: import("@/lib/ai-isa/brand-voice-prompt").BrandVoiceVideoContext
     try {
       const svc = createServiceClient()
-      const { data: bvp } = await svc
-        .from("brand_voice_profile")
-        .select("tone, formality_level, key_brand_messages, preferred_words, prohibited_words, tagline")
-        .eq("brokerage_id", args.brokerageId)
-        .eq("is_active", true)
-        .maybeSingle()
-      if (bvp) {
-        brandVoiceBlock = `
-Brand voice guidelines (follow strictly):
-- Tone: ${(bvp as any).tone ?? "professional"}
-- Formality: ${(bvp as any).formality_level ?? "moderate"}
-${(bvp as any).key_brand_messages?.length ? `- Key messages to reinforce: ${(bvp as any).key_brand_messages.join("; ")}` : ""}
-${(bvp as any).preferred_words?.length ? `- Preferred words/phrases: ${(bvp as any).preferred_words.join(", ")}` : ""}
-${(bvp as any).prohibited_words?.length ? `- NEVER use these words/phrases: ${(bvp as any).prohibited_words.join(", ")}` : ""}
-${(bvp as any).tagline ? `- Brand tagline (may reference): ${(bvp as any).tagline}` : ""}`
+      const brandAgentId = args.agentUserId
+        ? await resolveAgentIdInBrokerage(svc, args.agentUserId, args.brokerageId)
+        : null
+      const voice = await loadBrandVoicePrompt({ brokerageId: args.brokerageId, agentId: brandAgentId })
+      brandVoiceBlock = voice.systemBlock ? `\n${voice.systemBlock}` : ""
+      brandVoiceContext = brandVoiceContextForVideo(voice)
+    } catch {
+      // best-effort — brand context still applies; the row still gets an
+      // honestly-empty cascade shape rather than the old silent `{}`.
+      brandVoiceContext = {
+        tone: null, formalityLevel: null, prohibitedWords: [], preferredWords: [],
+        tagline: null, assistantName: "Your AI Assistant", source: "loadBrandVoicePrompt",
       }
-    } catch { /* best-effort — brand context still applies */ }
+    }
 
     const basePrompt = `You are ${agentName}, a real estate professional, creating a short explainer video for ${args.audience}.
 
@@ -256,8 +335,9 @@ Field rules:
 - title: 4-8 words — the "what you'll learn" hook.
 - bullets: EXACTLY three, each 6-14 words — the three concrete takeaways.
 - cta: 2-4 words (e.g. "Book a consult").
-- narration: 55-75 words the presenter speaks on camera — conversational,
+- narration: the words the presenter speaks on camera — conversational,
   first person, covers the three takeaways in order, ends by inviting the CTA.
+  ${narrationLengthDirective(budget)}
   No stage directions, no emojis, plain spoken sentences only.
 
 Non-negotiable rules:
@@ -269,9 +349,16 @@ Non-negotiable rules:
 - ZERO pushy phrasing: no "act now", "limited time", "don't miss out".
 - NEVER guarantee a price, appraisal, ROI, or sale outcome.
 - NEVER state a specific price, dollar amount, or rate — the agent adds
-  figures during review if needed.${brandVoiceBlock}
+  figures during review if needed.${brandVoiceBlock}`
 
-Return the JSON now.`
+    // THE SHARED STANDARDS (lane 76D). This narration is SPOKEN by a D-ID
+    // avatar, and this writer carried neither the SCRIPT_QUALITY_CHARTER nor
+    // the SPOKEN_REALISM_DIRECTIVE the other spoken-script writers splice —
+    // scanForAiTells (below) was grading for tells the prompt never asked the
+    // model to avoid. withSpokenScriptStandards is the ONE composer; the
+    // JSON-format instruction stays LAST so the output shape ask is the final
+    // thing the model reads.
+    const standardsPrompt = `${withSpokenScriptStandards(basePrompt)}\n\nReturn the JSON now.`
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations }) => {
@@ -281,7 +368,7 @@ Return the JSON now.`
         const { text } = await generateTextRouted({
           feature: "video_script_generation",
           brokerageId: args.brokerageId,
-          prompt: basePrompt + fb,
+          prompt: standardsPrompt + fb,
           temperature: violations.length ? 0.4 : 0.7,
           maxTokens: 700,
         } as Parameters<typeof generateTextRouted>[0])
@@ -296,6 +383,24 @@ Return the JSON now.`
           : text
         if (hasFairHousingViolation(flat)) v.push("protected-class / steering language")
         if (PRICE_FIGURE.test(flat)) v.push("stated a specific price/number — remove all figures")
+        // THE BUDGET IS A GATE, NOT A HOPE. A narration over the composition's
+        // derived word budget is fed back as a violation so the ONE redraft can
+        // fix it whole — cheaper than trimming away the CTA it was told to end on.
+        if (parsed) {
+          const n = spokenWords(parsed.narration).length
+          if (n > budget.maxWords) {
+            v.push(`narration is ${n} words — ${budget.compositionId} can speak at most ${budget.maxWords} (${budget.compositionSeconds}s composition)`)
+          }
+        }
+        // REALISM (lane 74D) — this narration reaches a D-ID avatar's spoken
+        // delivery with no other gate in the way (avatar-explainer.ts had NO
+        // scanForAiTells call anywhere before this). Same one-redraft-loop
+        // idiom intro-video-reactor.ts / listing-promo-reactor.ts already use:
+        // an AI-tell is exactly as disqualifying as a compliance finding for
+        // THIS purpose, so both ride the SAME retry (§6) rather than a second
+        // mechanism. scanForAiTells only judges the SPOKEN field — eyebrow/
+        // title/bullets/cta are on-screen text, not delivery.
+        if (parsed) v.push(...scanForAiTells(parsed.narration))
         return { allowed: v.length === 0, violations: v }
       },
     })
@@ -311,7 +416,14 @@ Return the JSON now.`
     if (!content) {
       return { ok: false, reason: "AI authoring returned an unusable draft — try again" }
     }
-    return { ok: true, content }
+    // BACKSTOP — deterministic, reported, never silent. The gate above should
+    // have caught an overrun, but a word ceiling anywhere upstream is a request;
+    // the trim at a sentence boundary is the guarantee (same policy as every
+    // other narration lane). What survives is a prefix of gated sentences, so
+    // no new copy is authored here.
+    const fit = fitNarrationToBudget(content.narration, budget)
+    if (fit.note) console.warn(`[avatar-explainer] ${args.compositionId} — ${fit.note}`)
+    return { ok: true, content: { ...content, narration: fit.script }, brandVoiceContext }
   } catch (e) {
     return { ok: false, reason: `AI authoring unavailable: ${(e as Error).message}` }
   }
@@ -321,7 +433,9 @@ Return the JSON now.`
 
 /** Preferred brand-kit frame composition; falls back to the registered
  *  AgentExplainerReel when the m274 registry row hasn't been applied yet. */
-export const TEAMMATE_EXPLAINER_COMPOSITION_ID = "TeammateExplainerReel"
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): only pickCompositionId below reads
+// it; the export claimed an entry point no file used.
+const TEAMMATE_EXPLAINER_COMPOSITION_ID = "TeammateExplainerReel"
 const FALLBACK_COMPOSITION_ID = "AgentExplainerReel"
 
 async function pickCompositionId(): Promise<string> {
@@ -351,6 +465,16 @@ export async function commissionAvatarExplainer(
     agentUserId: params.agentUserId,
   })
 
+  // 0. Resolve the composition FIRST — the narration budget derives from its
+  //    geometry, so the writer must know where the video renders before a word
+  //    is asked for. The fallback (AgentExplainerReel, 18s) is SHORTER than the
+  //    preferred TeammateExplainerReel (30s), so authoring against the wrong id
+  //    would produce a script the actual frames cut mid-sentence.
+  const compositionId = await pickCompositionId()
+  if (compositionId === FALLBACK_COMPOSITION_ID) {
+    warnings.push("TeammateExplainerReel is not registered yet (migration m274 pending) — using AgentExplainerReel frames")
+  }
+
   // 1. AI-author the content (brand voice + compliance gate). Blocking — no
   //    canned fallback ever ships.
   const preset = AVATAR_EXPLAINER_PRESETS.find((p) => p.id === params.presetId) ?? null
@@ -360,6 +484,7 @@ export async function commissionAvatarExplainer(
     topic,
     audience,
     eyebrowHint: preset?.eyebrow ?? null,
+    compositionId,
   })
   if (!authored.ok) {
     return { ok: false, status: "blocked", reason: authored.reason, violations: authored.violations }
@@ -370,7 +495,9 @@ export async function commissionAvatarExplainer(
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
-  const brand = await resolveReelBrand(svc, params.brokerageId)
+  // Agent-scoped: the cascade's team tier (an agent on a team gets the team's
+  // logo/colors their contacts recognise) — lane 76D, one brand cascade.
+  const brand = await resolveReelBrand(svc, params.brokerageId, { agentUserId: params.agentUserId })
 
   const { resolveBrandContext } = await import("@/lib/branding/resolve-brand-context")
   const brandCtx = await resolveBrandContext({
@@ -379,10 +506,8 @@ export async function commissionAvatarExplainer(
   }).catch(() => null)
   const agentName = brandCtx?.agentName ?? brandCtx?.displayName ?? "Your Agent"
 
-  const compositionId = await pickCompositionId()
-  if (compositionId === FALLBACK_COMPOSITION_ID) {
-    warnings.push("TeammateExplainerReel is not registered yet (migration m274 pending) — using AgentExplainerReel frames")
-  }
+  // (composition already picked at step 0 — the budget the writer used and the
+  // frames the render uses are the same fact by construction.)
 
   // 3. Input props — the union both compositions understand. avatarVideoUrl is
   //    wired in by the avatar-render-orchestrator when the D-ID clip completes.
@@ -406,8 +531,37 @@ export async function commissionAvatarExplainer(
     },
   }
 
+  // ── THE COMPANION SHARE CARD (§1.2) ────────────────────────────────────────
+  // Both explainer compositions declare thumbnail_composition_id='VideoCoverThumb'
+  // (m168 / m274), so render-composition renders a still beside the video and
+  // that PNG becomes thumbnail_url — the og:image and the player poster on
+  // /v/[slug]. This producer staged none, so the card came out as
+  // VideoCoverThumb's Studio fixture ("Just Listed — 123 Main Street", "$625K ·
+  // 3 bd · 2 ba · Brickell, FL") over an explainer about closing costs.
+  //
+  // Every value is the authored content this function already holds, and the
+  // hint is cut VERBATIM from `content.narration` — the copy that has been
+  // through authorExplainerContent's compliance redraft (the row below is
+  // inserted `compliance_status: 'passed'` on the strength of exactly that
+  // gate). `agentName` refuses the literal "Your Agent" — the resolver's own
+  // fallback above, and also VideoCoverThumb's sample value, so staging it
+  // would satisfy isSupplied while meaning what the contract refuses.
+  const cardAgentName = agentName === "Your Agent" ? brand.brokerageName : agentName
+  const explainerCard = companionCard(VIDEO_COVER_THUMB, {
+    kind: "explainer",
+    title:    content.title,
+    subtitle: content.eyebrow,
+    eyebrow:  "EXPLAINER",
+    agentName: cardAgentName,
+    agentPhotoUrl: readiness.agentPhotoUrl,
+    brand: inputProps.brand,
+    seoHint: seoHintFromNarration(content.narration),
+  })
+  if (explainerCard.card) inputProps.thumbnail_props = explainerCard.card
+  else console.warn(`[avatar-explainer] ${compositionId} ships without a share card — ${describeMissingContent(VIDEO_COVER_THUMB, explainerCard.missing)}`)
+
   // 4. Honest provider gate — no D-ID key means the job PARKS, visibly.
-  const status = readiness.didConfigured ? "remotion_pending" : "awaiting_provider"
+  const status = readiness.didConfigured ? "queued" : "generating"
   if (!readiness.didConfigured) {
     warnings.push("D-ID is not configured — the job is parked at 'awaiting provider' and will start once the platform D-ID key is set")
   }
@@ -420,10 +574,33 @@ export async function commissionAvatarExplainer(
     warnings.push("ElevenLabs is not configured — narration will use D-ID's default TTS voice")
   }
 
+  // ── THE ID CLASS. `ai_video_projects.agent_id` FKs `agents(id)` (m366; proved
+  //    by scripts/schema-fk-map.ts), and every caller of this function holds a
+  //    USERS id — app/actions/avatar-video.ts:createTeammateExplainerVideo passes
+  //    `resolveCaller().userId` straight through. Writing that users id into an
+  //    agents foreign key raised 23503 `insert or update on table
+  //    "ai_video_projects" violates foreign key constraint` on EVERY commission,
+  //    so the teammate-explainer lane had never produced a single row.
+  //
+  //    Resolved through `agents.user_id` with the ONE shared resolver
+  //    (lib/kernel/agent-identity), the same one app/actions/video/create-video-project
+  //    uses for this exact column — not a second lookup that can drift from it.
+  //    The column is NOT NULL, so "this user has no agent profile here" is a
+  //    REFUSAL with a sentence, never a null and never a substituted users id.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const agentRecordId = await resolveAgentIdInBrokerage(svc, params.agentUserId, params.brokerageId)
+  if (!agentRecordId) {
+    return {
+      ok: false,
+      status: "failed",
+      reason: "No agent profile for this user in this brokerage — a teammate explainer has no owner to file it under.",
+    }
+  }
+
   const now = new Date().toISOString()
   const row = {
     brokerage_id: params.brokerageId,
-    agent_id: params.agentUserId,
+    agent_id: agentRecordId,
     listing_id: params.listingId ?? null,
     contact_id: null,
     title: `Teammate explainer — ${content.title}`.slice(0, 200),
@@ -438,7 +615,10 @@ export async function commissionAvatarExplainer(
     compliance_status: "passed",       // the redraft gate above pre-cleared the copy
     compliance_violations: [],
     compliance_evaluated_at: now,
-    brand_voice_context: {},
+    // The cascade's compact context this narration was actually authored
+    // with (§1, wave 60E) — the render-queue reviewer reads it (see the
+    // tombstone at lib/ai-isa/brand-voice-prompt.ts:73).
+    brand_voice_context: authored.brandVoiceContext,
     video_metadata: {
       // director_key + needs_avatar are what the EXISTING director-reel-render
       // cron keys on — this row rides that rail, not a parallel one.
@@ -506,9 +686,11 @@ export async function commissionAvatarExplainer(
 // ─── Un-park awaiting-provider jobs once D-ID is configured ──────────────────
 
 /**
- * Flip this brokerage's parked teammate-explainer jobs
- * (status='awaiting_provider') back onto the Director rail once DID_API_KEY
- * exists. Called best-effort from the studio readiness action so simply
+ * Flip this brokerage's parked teammate-explainer jobs back onto the Director
+ * rail once DID_API_KEY exists. 'awaiting_provider' collapsed into 'generating',
+ * which on its own would also match jobs a provider genuinely HAS, so the parked
+ * set is identified by the video_metadata.awaiting_provider marker the commission
+ * writes alongside it. Called best-effort from the studio readiness action so simply
  * opening the create surface after configuring the provider resumes them.
  * Never throws.
  */
@@ -521,10 +703,10 @@ export async function resumeAwaitingProviderExplainers(
     const svc = createServiceClient()
     const { data } = await svc
       .from("ai_video_projects")
-      .update({ status: "remotion_pending", error_message: null, updated_at: new Date().toISOString() })
+      .update({ status: "queued", error_message: null, updated_at: new Date().toISOString() })
       .eq("brokerage_id", brokerageId)
-      .eq("status", "awaiting_provider")
-      .contains("video_metadata", { lane: "avatar_explainer" })
+      .eq("status", "generating")
+      .contains("video_metadata", { lane: "avatar_explainer", awaiting_provider: "did" })
       .select("id")
     return { resumed: (data ?? []).length }
   } catch {

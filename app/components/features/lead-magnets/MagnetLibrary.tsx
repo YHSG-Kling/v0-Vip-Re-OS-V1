@@ -5,13 +5,27 @@ import { listLeadMagnetsAction, updateMagnetSettingsAction } from "@/app/actions
 import type { ListLeadMagnetsOutput } from "@/lib/kernel/lead-magnets"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+// TOMBSTONE (orphan doctrine §1.3): `CardHeader` and `CardTitle` were imported here
+// and rendered NOWHERE — this library lays each magnet out as a bare
+// <Card><CardContent> (MagnetLibrary.tsx:103/:111/:115/:165), with the heading text
+// carried inline. The SURVIVORS of the header vocabulary are the CardHeader/CardTitle
+// exports of components/ui/card.tsx themselves, used by the surfaces that render a
+// titled card; nothing was moved out of this file and nothing was lost.
+import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { FileText, QrCode, BarChart2, Link2, Users } from "lucide-react"
 
 interface Props {
+  /** Kept for the reload key only — the ACTUAL scope is resolved server-side. */
   brokerageId: string
-  agentId?: string
+  /**
+   * "mine" forces the own-magnets list even for a broker/admin. Omit to let
+   * listLeadMagnetsAction decide from the session role (broker/admin/superadmin
+   * → brokerage-wide, everyone else → their own). Never pass an agent id from
+   * the client: agent_id is a FK to agents(id) and the client only has the auth
+   * user id, which is what silently emptied this list before.
+   */
+  scope?: "mine" | "brokerage"
   onSelectMagnet?: (magnetId: string) => void
   onCreateNew?: () => void
 }
@@ -28,7 +42,7 @@ const TYPE_LABELS: Record<string, string> = {
   generic_form: "Generic Form",
 }
 
-export function MagnetLibrary({ brokerageId, agentId, onSelectMagnet, onCreateNew }: Props) {
+export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew }: Props) {
   const [magnets, setMagnets] = useState<Magnet[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -36,12 +50,12 @@ export function MagnetLibrary({ brokerageId, agentId, onSelectMagnet, onCreateNe
 
   useEffect(() => {
     load()
-  }, [brokerageId, agentId])
+  }, [brokerageId, scope])
 
   async function load() {
     setLoading(true)
     setError(null)
-    const result = await listLeadMagnetsAction({ brokerageId, agentId })
+    const result = await listLeadMagnetsAction({ scope })
     if (result.success) {
       setMagnets(result.magnets ?? [])
     } else {

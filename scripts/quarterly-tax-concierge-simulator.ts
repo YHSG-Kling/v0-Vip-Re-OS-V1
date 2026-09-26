@@ -43,7 +43,14 @@ function sourceLayer() {
 
   const cron = src("lib/kernel/cron-dispatch.ts")
   check("the daily cron is registered", /quarterly-tax-concierge/.test(cron))
-  check("the cron route verifies cron auth + records the run", /verifyCronAuth/.test(src("app/api/cron/quarterly-tax-concierge/route.ts")))
+  const route = src("app/api/cron/quarterly-tax-concierge/route.ts")
+  check("the cron route verifies cron auth + records the run", /verifyCronAuth/.test(route))
+  // TENANT OPTION (m574): tax assistance is opt-in per brokerage — the cron only processes tenants
+  // that enabled it (the farm-mail `.eq(flag, true)` fail-closed direction), so a tenant that never
+  // opted in gets no reminders. POSITIVE CONTROL: an unfiltered select would still match the old
+  // regex-free scan, so assert the filter is ON the brokerages select itself.
+  check("TENANT OPTION — the cron selects ONLY brokerages with tax assistance enabled (fail-closed opt-in)",
+    /from\("brokerages"\)[\s\S]*?\.eq\("tax_assistance_enabled", true\)/.test(route))
 
   const reg = src("lib/kernel/manager-registry.ts")
   check("the burn domain is owned by the Finance Manager with a runnable proof", /quarterly_tax_concierge:\s*\{\s*manager:\s*"finance_manager",\s*proof:\s*"test:quarterly-tax-concierge"/.test(reg))

@@ -25,6 +25,11 @@ export interface AddressLookupResult {
   hasPool: boolean | null
   hasHoa: boolean | null
   taxAssessedValue: number | null
+  /** Lane 82A — the county's most recent ANNUAL property-tax bill in dollars (public record).
+   *  The payment calculators on public pages compute the tax line from THIS, not a flat rate. */
+  annualPropertyTax: number | null
+  /** Lane 82A — the monthly HOA fee/assessment in dollars, when published. */
+  hoaMonthlyFee: number | null
   lastSalePrice: number | null
   lastSaleDate: string | null       // ISO date
   neighborhoodSummary: string | null
@@ -36,7 +41,7 @@ const EMPTY_RESULT: AddressLookupResult = {
   beds: null, baths: null, sqft: null, yearBuilt: null,
   lotSizeAcres: null, propertyType: null, stories: null,
   garageSpaces: null, hasPool: null, hasHoa: null,
-  taxAssessedValue: null, lastSalePrice: null, lastSaleDate: null,
+  taxAssessedValue: null, annualPropertyTax: null, hoaMonthlyFee: null, lastSalePrice: null, lastSaleDate: null,
   neighborhoodSummary: null, dataConfidence: 'low', sources: [],
 }
 
@@ -53,6 +58,11 @@ export async function lookupPropertyByAddress(params: {
   city: string
   state: string
   zip?: string
+  /** Tenant + actor for the AI cost ledger. This is a PAID Perplexity Sonar
+   *  call (~$0.005–0.015 each, per the note above) and it booked nothing.
+   *  Both are resolved server-side by the callers — never from a body (§4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<AddressLookupResult> {
   const { address, city, state, zip } = params
   const fullAddress = [address, city, state, zip].filter(Boolean).join(", ")
@@ -76,6 +86,8 @@ and public real estate databases. Return ONLY a JSON object with these fields
   "hasPool": <true|false|null>,
   "hasHoa": <true|false|null>,
   "taxAssessedValue": <integer in dollars or null>,
+  "annualPropertyTax": <integer in dollars — the most recent annual property-tax bill from the county treasurer/assessor, or null>,
+  "hoaMonthlyFee": <integer in dollars per month, or null>,
   "lastSalePrice": <integer in dollars or null>,
   "lastSaleDate": <"YYYY-MM-DD" or null>,
   "neighborhoodSummary": <1–2 sentence factual summary of the neighborhood or null>,
@@ -88,6 +100,8 @@ Respond with ONLY the JSON object. No explanation, no markdown.
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: params.brokerageId ?? null,
+      userId: params.userId ?? null,
       feature: "home_value_estimate",
       prompt,
       maxTokens: 512,
@@ -111,6 +125,8 @@ Respond with ONLY the JSON object. No explanation, no markdown.
       hasPool: parsed.hasPool ?? null,
       hasHoa: parsed.hasHoa ?? null,
       taxAssessedValue: parsed.taxAssessedValue ?? null,
+      annualPropertyTax: parsed.annualPropertyTax ?? null,
+      hoaMonthlyFee: parsed.hoaMonthlyFee ?? null,
       lastSalePrice: parsed.lastSalePrice ?? null,
       lastSaleDate: parsed.lastSaleDate ?? null,
       neighborhoodSummary: parsed.neighborhoodSummary ?? null,

@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { rolloutBucket } from "@/lib/entitlements/resolve"
 import { normalizeOverrideType } from "@/lib/kernel/override-vocab"
 import { CohortDrill, type CohortTenantRow } from "./cohort-drill"
+import { SunsetControl } from "./sunset-control"
 
 export const dynamic = "force-dynamic"
 
@@ -191,6 +192,9 @@ export default async function SuperadminRolloutPage() {
                   <th className="p-2">Status</th>
                   <th className="p-2 text-right">Rollout %</th>
                   <th className="p-2 text-right">Overrides</th>
+                  {/* sunset_date writer — this board is where a flag's rollout
+                      posture is read, so it is where the deprecation date is set. */}
+                  <th className="p-2 text-right">Sunset</th>
                 </tr>
               </thead>
               <tbody>
@@ -221,6 +225,9 @@ export default async function SuperadminRolloutPage() {
                       </td>
                       <td className={"p-2 text-right tabular-nums " + (off ? "text-muted-foreground" : pct < 100 ? "font-semibold text-amber-700" : "")}>{pct}%</td>
                       <td className="p-2 text-right tabular-nums text-xs text-muted-foreground">{ovCount > 0 ? ovCount : "—"}</td>
+                      <td className="p-2">
+                        <SunsetControl featureKey={f.feature_key} sunsetDate={f.sunset_date} />
+                      </td>
                     </tr>
                   )
                 })}

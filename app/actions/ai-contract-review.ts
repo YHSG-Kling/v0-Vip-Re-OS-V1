@@ -1,6 +1,5 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -79,7 +78,9 @@ export async function reviewContract(params: {
     return { success: false, error: "Unauthorized" }
   }
   const brokerageId = ctx.brokerageId
-  const agentId = ctx.agentId ?? ctx.userId
+  // NOT `?? ctx.userId` (m360) — contract_reviews.agent_id is agents-class.
+  const agentId = ctx.agentId
+  if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
   const supabase = createServiceClient()
 
@@ -208,7 +209,7 @@ Be thorough but practical. Focus on actionable issues.`,
       const { data: agentRow } = ctx.agentId
         ? await supabase.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
         : { data: null }
-      await supabase.from("compliance_events").insert({
+      const { error: complianceLogError } = await supabase.from("compliance_events").insert({
         brokerage_id: brokerageId,
         actor_role: ctx.role,
         actor_user_id: agentRow?.user_id ?? ctx.userId,
@@ -224,6 +225,15 @@ Be thorough but practical. Focus on actionable issues.`,
           critical_count: criticalIssues.length,
         },
       })
+      if (complianceLogError) {
+        // The review itself is saved and returned; this is the ledger row a
+        // broker would produce as evidence that the issues were flagged. It is
+        // not allowed to disappear without a word.
+        console.error(
+          `[ai-contract-review] compliance_events insert REFUSED for transaction ${params.transactionId} — ${review.issues.length} contract issue(s) are UNRECORDED:`,
+          complianceLogError.message,
+        )
+      }
     }
 
     revalidatePath(`/transactions/${params.transactionId}`)
@@ -346,6 +356,9 @@ export async function compareContractVersions(params: {
     }
 
     const { text: comparison } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Compare these two versions of a real estate document and identify all changes:
 

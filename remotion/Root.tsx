@@ -6,9 +6,76 @@
  * this file as the entry. Compositions are versioned by id — when the
  * render endpoint calls renderMedia({ composition: 'JustListedReel' }) it
  * resolves to the entry below.
+ *
+ * ── `<Interactive.Div>`: SKIPPED ON PURPOSE, WITH THE REASON (2026-09-02) ──
+ *
+ * The vendored skill (.claude/skills/remotion-best-practices/remotion-markup/
+ * REFERENCE.md) makes `<Interactive.Div name="…">` its primary markup pattern,
+ * and remotion-interactivity/REFERENCE.md:7-14 says why. Quoted, so a future
+ * reader is not re-persuaded by the skill alone:
+ *
+ *   "By writing Remotion markup in a specific way, the Remotion Studio is able
+ *    to recognize the structure of the code and makes it interactive:
+ *    - Allowing items to be selected by clicking on them
+ *    - Allowing drag+drop, resizing and rotation
+ *    - Editing the CSS styles
+ *    - Making keyframes and easing values editable
+ *    If the markup is too complex for the Studio to make it interactive, then
+ *    the values become grayed out."
+ *
+ * The .tsx files under remotion/ (every composition registered below and the
+ * shared components/ they compose) use it ZERO times, and that is a decision,
+ * not a gap:
+ *
+ *  1. Every benefit the skill names is a Studio / <Player> affordance, and this
+ *     product has neither surface: `@remotion/player` and `@remotion/studio`
+ *     are imported 0 times (only package-lock.json names them), package.json
+ *     has no studio script, and every composition below renders HEADLESSLY
+ *     from live-row input_props (remotion_composition_renders) through
+ *     @remotion/renderer. No user can click, drag or keyframe anything, so the
+ *     wrapper would buy nothing anyone can reach.
+ *  2. Most of it would be grayed out anyway. The skill's own disqualifiers
+ *     (remotion-interactivity/REFERENCE.md:77-93 — "Non-inline styles are not
+ *     supported", "Spreading is not supported", "Referring to constants is not
+ *     supported", "Math is not supported") describe how these files are
+ *     written on purpose: styles spread shared helpers and read tenant brand
+ *     values (`brand.accentColor`) that arrive as props, because the brand is
+ *     the tenant's, not a constant.
+ *  3. It is not free. `Interactive.Div` compiles to a `<Sequence layout="none">`
+ *     with `showInTimeline: true` (node_modules/remotion/dist/cjs/Interactive.js,
+ *     the Sequence call in the wrapped render), so every wrapper is a timeline
+ *     track counted against the Studio's `maxTimelineTracks` budget — hundreds
+ *     of them across these compositions, for a timeline nobody opens.
+ *
+ * EXIT CONDITION: a Player- or Studio-backed editor in the product (an agent
+ * adjusting a reel before it renders). If that arrives and adoption is wanted
+ * narrowly, the three honest candidates are the slide compositions whose
+ * styles are closest to inline already: ListingPresentationSlide,
+ * BuyerConsultationSlide, CarouselSlide. Until then, do not add wrappers here
+ * to satisfy the skill; the skill is describing a surface this product does
+ * not have.
  */
 import React from "react"
-import { Composition } from "remotion"
+import { Composition as RemotionComposition } from "remotion"
+import { durationMetadata } from "../lib/video/duration-model"
+import { withCinemaFinish } from "./components/CinemaFinish"
+
+// ── THE CINEMA FINISH, INHERITED BY REGISTRATION (wave 82, lane 82C) ─────────
+// Every `<Composition>` below is this local wrapper, which registers the entry
+// with its component wrapped in the ONE finish layer
+// (remotion/components/CinemaFinish.tsx — grade, eased cut dips, brand-colour
+// head/tail; stills pass through by rule). A composition added here inherits the
+// finish by being registered; nothing per reel is hand-timed. The id, the
+// durations, calculateMetadata and the props are forwarded untouched, so every
+// proof that reads these registrations textually (test:remotion-setup,
+// test:video-duration-model, …) reads the same shape it always did.
+const RegisteredComposition = RemotionComposition as unknown as React.FC<Record<string, unknown>>
+const Composition = ((props: Record<string, unknown>) => (
+  <RegisteredComposition
+    {...props}
+    component={withCinemaFinish(props.component as React.ComponentType<Record<string, unknown>>, String(props.id))}
+  />
+)) as unknown as typeof RemotionComposition
 import { JustListedReel } from "./JustListedReel"
 import { JustListedReelSquare } from "./JustListedReelSquare"
 import { PhotoWalkthroughReel } from "./PhotoWalkthroughReel"
@@ -42,11 +109,19 @@ import { PostcardBack4x6 } from "./PostcardBack4x6"
 import { PostcardFront6x9 } from "./PostcardFront6x9"
 import { PostcardBack6x9 } from "./PostcardBack6x9"
 import { PartnersMeetingReel } from "./PartnersMeetingReel"
+import { MemoryVideoReel } from "./MemoryVideoReel"
 
-// 25 seconds @ 30 fps = 750 frames. 1080×1920 = vertical 9:16 — the
-// canonical social-reel format (TikTok / IG Reels / YouTube Shorts /
-// Pinterest Idea Pins). Horizontal 16:9 variants can be added as separate
-// compositions when an agent requests a YouTube long-form version.
+// 1080×1920 = vertical 9:16 — the canonical social-reel format (TikTok / IG
+// Reels / YouTube Shorts / Pinterest Idea Pins). Horizontal 16:9 variants can
+// be added as separate compositions when an agent requests a YouTube long-form
+// version.
+//
+// DURATIONS (wave 78): every `durationInFrames` literal on a narration-driven
+// composition below is its CAP — bookends + the longest purpose max it serves
+// (lib/video/duration-model.ts requiredCapFrames) — and `calculateMetadata`
+// computes the render's real duration from the staged narration. The literal
+// stays because test:remotion-setup §3 and the render cache key on it, and
+// because the still/moving fork reads it.
 export const RemotionRoot: React.FC = () => {
   return (
     <>
@@ -59,7 +134,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustListedReel"
         component={JustListedReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={750}
+        durationInFrames={1500}
+        calculateMetadata={durationMetadata("JustListedReel")}
         fps={30}
         width={1080}
         height={1920}
@@ -87,7 +163,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustListedReelSquare"
         component={JustListedReelSquare as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1470}
+        calculateMetadata={durationMetadata("JustListedReelSquare")}
         fps={30}
         width={1080}
         height={1080}
@@ -124,7 +201,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="PhotoWalkthroughReel"
         component={PhotoWalkthroughReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={600}
+        durationInFrames={2850}
+        calculateMetadata={durationMetadata("PhotoWalkthroughReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -153,7 +231,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustSoldReelSquare"
         component={JustSoldReelSquare as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1470}
+        calculateMetadata={durationMetadata("JustSoldReelSquare")}
         fps={30}
         width={1080}
         height={1080}
@@ -183,7 +262,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="AgentTalkingHeadReel"
         component={AgentTalkingHeadReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={420}
+        durationInFrames={2820}
+        calculateMetadata={durationMetadata("AgentTalkingHeadReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -209,7 +289,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="AgentExplainerReel"
         component={AgentExplainerReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={540}
+        durationInFrames={2880}
+        calculateMetadata={durationMetadata("AgentExplainerReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -242,7 +323,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="TeammateExplainerReel"
         component={TeammateExplainerReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={900}
+        durationInFrames={2865}
+        calculateMetadata={durationMetadata("TeammateExplainerReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -273,7 +355,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="ExplainerAnimReel"
         component={ExplainerAnimReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={540}
+        durationInFrames={2880}
+        calculateMetadata={durationMetadata("ExplainerAnimReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -317,7 +400,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="MarketUpdateReel"
         component={MarketUpdateReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={480}
+        durationInFrames={2370}
+        calculateMetadata={durationMetadata("MarketUpdateReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -331,7 +415,7 @@ export const RemotionRoot: React.FC = () => {
           ],
           ctaLabel:  "Want my take on your block?",
           agentName: "Your Agent",
-          agentPhone: "(555) 555-1212",
+          agentPhone: null,
           avatarVideoUrl: null,
           agentPhotoUrl:  null,
           brand: {
@@ -347,10 +431,79 @@ export const RemotionRoot: React.FC = () => {
           chains 5-12 of these with the avatar narrating each. PIP
           stays bottom-right on every slide so the homeowner watches
           the agent walk them through. 1920×1080 horizontal so a
-          tablet or TV viewing experience reads correctly. The slide
-          duration is set per-slide by the composer at chain time —
-          this Composition registers at a 6s default purely so the
-          studio preview renders without zero-frame errors. */}
+          tablet or TV viewing experience reads correctly.
+
+          DURATION IS FIXED AT THE REGISTERED 180 FRAMES; NOTHING SETS IT
+          PER SLIDE. Earlier prose here said the duration was "set
+          per-slide by the composer at chain time" — no such chain
+          exists. Both slide compositions render one slide per row at
+          exactly the geometry registered below, and the producers size
+          THEMSELVES to it rather than the other way round:
+          lib/buyer-consultation/consultation-render.ts reads
+          geometryFor("BuyerConsultationSlide").duration_frames (:44) and
+          pins the PIP window to it (:396), and ListingSectionReel — the
+          only thing that composes ListingPresentationSlide — takes its
+          window from useVideoConfig(). `calculateMetadata` is
+          DELIBERATELY not used on the two SLIDE compositions: they are
+          components a wrapper sizes, and the producers pin their PIP
+          windows to the registered frames. (Wave 78 — every NARRATION-
+          DRIVEN composition in this file now carries
+          `calculateMetadata={durationMetadata(id)}` from
+          lib/video/duration-model.ts: the registered literal is the CAP
+          the render cache keys on and test:remotion-setup §3 compares,
+          and the render's real duration is computed from the staged
+          narration inside it.)
+
+          ── ADJUDICATION (§1, 2026-09-01): KEPT. THE MANUAL/AGENT PATH
+             IS THE PRODUCER, AND IT IS THE ONLY ONE. ───────────────────
+
+          MEASURED: this is the ONE registered composition of the 33 that
+          NO producer stages input_props for. That is not a claim here —
+          scripts/remotion-setup-guard.ts §7 scans comment-stripped
+          lib/** + app/** for every composition id (literal or via its
+          named constant) beside a render-staging site and PRINTS the
+          compositions with an empty list; today that list is exactly
+          [ListingPresentationSlide], and the assertion is derived, so a
+          producer appearing later moves the number rather than aging
+          this comment into a lie.
+
+          NOT A DUPLICATE, so §1.1 does not apply and nothing merges:
+          remotion/ListingSectionReel.tsx:18 imports ListingPresentationSlide
+          as a React COMPONENT and renders it (:64). The section reel is the
+          WRAPPER — slide + <Audio> narration + QR outro — not a rival
+          implementation. Deleting the registration would leave the component
+          exactly where it is; deleting the component would break the reel.
+          The buyer-side twin (BuyerConsultationSlide) has the same shape and
+          DOES have a producer (lib/buyer-consultation/consultation-render.ts
+          via buildBuyerSlideAvatarRequest), which is the asymmetry that made
+          this look orphaned.
+
+          REACHABLE, so "unreferenced is not dead" applies and it is NOT
+          deleted. Three live paths accept ANY registered, active
+          composition id and stage a render for it:
+            · lib/agents/asset-manager-actions.ts `start_render` — the Asset
+              Manager's own action; getComposition(id) + the content contract
+              are the only gates, and this composition IS registered, active
+              and contract-classified (required: title, body, agentName).
+            · app/api/did/generate-video/route.ts — target_composition_id
+              straight off the request body.
+            · lib/video/avatar-render-orchestrator.ts — whatever
+              provider_metadata.target_composition_id names.
+          Finish-spec'd for that path too: lib/video/finish-spec.ts:82 gives
+          it AVATAR_LED + circle_pip + no b-roll + no music ("music fights
+          the voice"), which is the shape a hand-driven slide render wants.
+
+          UNRESOLVED, and recorded rather than guessed: whether the per-slide
+          CHAIN this comment describes ("the composer chains 5-12 of these")
+          was ever meant to exist ALONGSIDE the section wrapper, or whether
+          ListingSectionReel superseded it. The listing-presentation composer
+          that shipped (lib/listing-presentation/section-render.ts:254) queues
+          ListingSectionReel per section, not this slide per slide. Nothing in
+          the tree answers that, so nothing here pretends to. If the answer is
+          "superseded", the survivor is ListingSectionReel and this
+          registration retires with a tombstone naming it; if the answer is
+          "both", the missing half is a chain producer (§1.2). Until then the
+          manual path above is the producer of record. */}
       <Composition
         id="ListingPresentationSlide"
         component={ListingPresentationSlide as unknown as React.FC<Record<string, unknown>>}
@@ -390,7 +543,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="ComingSoonReel"
         component={ComingSoonReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1500}
+        calculateMetadata={durationMetadata("ComingSoonReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -419,7 +573,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="OpenHouseAnnounceReel"
         component={OpenHouseAnnounceReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={360}
+        durationInFrames={1500}
+        calculateMetadata={durationMetadata("OpenHouseAnnounceReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -432,7 +587,7 @@ export const RemotionRoot: React.FC = () => {
           bodyLine:   "Modern 3-bed with rooftop deck — RSVP not required.",
           ctaLabel:   "Save the date",
           agentName:  "Your Agent",
-          agentPhone: "(555) 555-1212",
+          agentPhone: null,
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
@@ -447,7 +602,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="TestimonialReel"
         component={TestimonialReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={420}
+        durationInFrames={1920}
+        calculateMetadata={durationMetadata("TestimonialReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -475,7 +631,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="NeighborhoodSpotlightReel"
         component={NeighborhoodSpotlightReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={480}
+        durationInFrames={1950}
+        calculateMetadata={durationMetadata("NeighborhoodSpotlightReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -489,7 +646,7 @@ export const RemotionRoot: React.FC = () => {
           brollClips:   [],
           ctaLabel:     "Want a private tour?",
           agentName:    "Your Agent",
-          agentPhone:   "(555) 555-1212",
+          agentPhone:   null,
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
@@ -505,7 +662,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="JustListedReelHorizontal"
         component={JustListedReelHorizontal as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={600}
+        durationInFrames={1530}
+        calculateMetadata={durationMetadata("JustListedReelHorizontal")}
         fps={30}
         width={1920}
         height={1080}
@@ -533,7 +691,13 @@ export const RemotionRoot: React.FC = () => {
           closing. The "search" kind is the killer — renders 3
           example listings with photo + price inside the narrated
           video so the lead sees what their budget buys live.
-          1920×1080 / per-slide duration set by composer. */}
+          1920×1080 at the FIXED registered duration — the producer
+          (lib/buyer-consultation/consultation-render.ts:44,396) reads
+          duration_frames from the geometry mirror and sizes the slide
+          to it; nothing sets a per-slide duration, and calculateMetadata
+          is deliberately unused on this slide (see the
+          ListingPresentationSlide note above for why — the narration-
+          driven reels DO use it). */}
       <Composition
         id="BuyerConsultationSlide"
         component={BuyerConsultationSlide as unknown as React.FC<Record<string, unknown>>}
@@ -593,7 +757,7 @@ export const RemotionRoot: React.FC = () => {
           ratesAssumption: "Estimated at 6.5% / 30yr / 20% down · actual rate varies",
           ctaLabel:   "Want a real list?",
           agentName:  "Your Agent",
-          agentPhone: "(555) 555-1212",
+          agentPhone: null,
           brand: {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
@@ -665,7 +829,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="EquityReportReel"
         component={EquityReportReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={540}
+        durationInFrames={2430}
+        calculateMetadata={durationMetadata("EquityReportReel")}
         fps={30}
         width={1080}
         height={1080}
@@ -693,11 +858,21 @@ export const RemotionRoot: React.FC = () => {
       {/* Wave 39 — one pre-listing presentation SECTION as a branded,
           narratable animated slide (intro / credibility / marketing / process /
           closing). The CMA/market section uses CMAReel; every other dripped
-          section uses this. Avatar PIP + ElevenLabs narration optional. */}
+          section uses this. Avatar PIP + ElevenLabs narration optional.
+
+          DURATION IS THE SCRIPT LENGTH — literally, since wave 78. The narration
+          is an <Audio> INSIDE this composition; the script is sized to the
+          listing_presentation_section PURPOSE (lib/video/duration-model.ts:
+          15/30/45 s at 150 wpm × 0.8 headroom) and calculateMetadata sizes the
+          render to the fitted narration. The literal below is the CAP (45 s of
+          body); m566's 900 was the whole fixed duration (30 s ⇒ 60 words). Change
+          this and remotion_compositions.duration_frames together —
+          test:remotion-setup §3 compares them field-for-field. */}
       <Composition
         id="ListingSectionReel"
         component={ListingSectionReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={300}
+        durationInFrames={1350}
+        calculateMetadata={durationMetadata("ListingSectionReel")}
         fps={30}
         width={1920}
         height={1080}
@@ -752,10 +927,17 @@ export const RemotionRoot: React.FC = () => {
           seoHint:        "Just-listed home in Brickell, FL — see photos and details inside.",
         }}
       />
-      {/* Wave 39 — 1200×630 Open-Graph lead-magnet card. Used by the
-          W40 ad creator for FB lead-form ads, LinkedIn Sponsored
-          Content, X/Twitter cards, and email-share fallback. Static
-          composition; renderStill() emits the PNG. */}
+      {/* Wave 39 — 1200×630 Open-Graph lead-magnet card. Static
+          composition; renderStill() emits the PNG.
+          PRODUCER (built 2026-09-01, closing the §1.2 gap the previous
+          tombstone recorded): lib/kernel/lead-magnets.ts
+          enqueueLeadMagnetCard — fired from publishLeadMagnet beside the QR
+          branch, staging headline/subhead from the form's own
+          lead_capture_forms.landing_content (missingContentProps refuses a
+          magnet with no landing copy, so these defaults never ship as a real
+          offer). READER: app/lm/[slug]/page.tsx generateMetadata sets
+          openGraph.images to the newest succeeded render, and
+          publishLeadMagnet threads the same PNG into urls.share. */}
       <Composition
         id="LeadMagnetCard"
         component={LeadMagnetCard as unknown as React.FC<Record<string, unknown>>}
@@ -777,10 +959,40 @@ export const RemotionRoot: React.FC = () => {
           },
         }}
       />
+      {/* Lane 78D — THE MEMORY VIDEO (seller-dictated family history,
+          lib/video/memory-video-gate.ts). Horizontal 1920×1080 for the
+          living-room TV. durationInFrames here is the CAP (20 min @ 30 fps =
+          36000, mirrored in lib/remotion/composition-geometry.ts and the m659
+          registry row); the film's REAL length is computed by
+          calculateMetadata from the chapters' narration — cover + every clip +
+          outro (lib/video/memory-video-composition.ts) — so a family's story
+          is exactly as long as it is, never cropped to a body window. */}
+      <Composition
+        id="MemoryVideoReel"
+        component={MemoryVideoReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={36000}
+        fps={30}
+        width={1920}
+        height={1080}
+        calculateMetadata={durationMetadata("MemoryVideoReel")}
+        defaultProps={{
+          title:      "The story of 14 Elm Street",
+          familyName: "The Alvarez family",
+          tenureLine: "Home since 1979 · 46 years",
+          chapters:   [],
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
       <Composition
         id="NewsletterDigestVideo"
         component={NewsletterDigestVideo as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={600}
+        durationInFrames={1950}
+        calculateMetadata={durationMetadata("NewsletterDigestVideo")}
         fps={30}
         width={1080}
         height={1920}
@@ -792,6 +1004,7 @@ export const RemotionRoot: React.FC = () => {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
             brokerageName: "Your Brokerage",
+            showEhoMark:   true,
           },
         }}
       />
@@ -837,7 +1050,7 @@ export const RemotionRoot: React.FC = () => {
           price: "$1,250,000", beds: "4", baths: "3.5", sqft: "3,240",
           propertyType: "Single Family", highlights: ["Chef's kitchen with quartz island", "Saltwater pool + lanai", "Half-acre corner lot", "3-car garage"],
           heroImageUrl: null, photoUrls: [], agentName: "Your Agent",
-          agentPhone: "(555) 010-2000", agentPhotoUrl: null,
+          agentPhone: null, agentPhotoUrl: null,
           qrCodeDataUrl: null, qrCaption: "Scan to tour",
           statusLine: "JUST LISTED",
           brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
@@ -881,7 +1094,7 @@ export const RemotionRoot: React.FC = () => {
           address: "128 Harborview Lane", cityState: "Naples, FL 34102",
           heroImageUrl: null,
           hook: "Curious what YOUR home is worth in today's market?",
-          agentName: "Your Agent", agentPhone: "(555) 010-2000", agentPhotoUrl: null,
+          agentName: "Your Agent", agentPhone: null, agentPhotoUrl: null,
           qrCodeDataUrl: null, qrCaption: "Scan for your home's value",
           brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
         }}
@@ -904,15 +1117,38 @@ export const RemotionRoot: React.FC = () => {
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
       />
       {/* Wave 36 — 4×6 postcard back. Left ~48% holds body+signature;
-          right ~52% kept empty for Lob's address indicia overlay. */}
+          right ~52% kept empty for Lob's address indicia overlay.
+
+          NO SAMPLE OPT-OUT. optOutLine and optOutQrDataUrl default to null,
+          and they are the one pair of props on this card where a plausible
+          default would be actively dangerous: a token identifies a PERSON, so
+          a sample token printed on every card in a run would hand whoever
+          scans it the power to suppress one arbitrary stranger — or nobody,
+          if it names no live row, which is the same card carrying an opt-out
+          that silently does not work. Null renders the row absent, and
+          lib/remotion/content-contract.ts declares optOutLine REQUIRED, so a
+          real send arriving here with no recipient token is a refusable
+          render rather than a mailed piece with no way to say stop. Filled in
+          per recipient by lib/direct-mail/mail-opt-out-affordance.ts.
+
+          (This note lives OUTSIDE defaultProps on purpose: the content-contract
+          guard parses that block as text, and a comment inside it hides the
+          prop that follows — an apostrophe in one even swallows the rest of
+          the block as a string literal.) */}
       <Composition
         id="PostcardBack4x6"
         component={PostcardBack4x6 as unknown as React.FC<Record<string, unknown>>}
@@ -925,14 +1161,22 @@ export const RemotionRoot: React.FC = () => {
           signoff:       "— Your agent",
           agentPhotoUrl: null,
           agentName:     "Your Agent",
+          optOutLine:      null,
+          optOutQrDataUrl: null,
           brand: {
             primaryColor:    "#0F172A",
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
@@ -961,9 +1205,15 @@ export const RemotionRoot: React.FC = () => {
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
@@ -988,9 +1238,15 @@ export const RemotionRoot: React.FC = () => {
             accentColor:     "#F59E0B",
             logoUrl:         null,
             brokerageName:   "Your Brokerage",
-            websiteWordmark: "yourbrokerage.com",
-            phone:           "(555) 555-1212",
-            licenseLine:     "CA License # 02345678",
+            // NO SAMPLE CONTACT DETAILS. A brand block is classified COSMETIC by
+            // lib/remotion/content-contract, so unlike the content props these
+            // defaults REMAIN reachable on a real render — and these three were a
+            // phone number, a website and a state licence number that would have
+            // been printed onto a mailed postcard. Null renders the block empty,
+            // which is honest; the tenant's real values arrive via resolveReelBrand.
+            websiteWordmark: null,
+            phone:           null,
+            licenseLine:     null,
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
           },
         }}
@@ -1003,7 +1259,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="PartnersMeetingReel"
         component={PartnersMeetingReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={900}
+        durationInFrames={3720}
+        calculateMetadata={durationMetadata("PartnersMeetingReel")}
         fps={30}
         width={1920}
         height={1080}
@@ -1017,7 +1274,9 @@ export const RemotionRoot: React.FC = () => {
             { value: "31", label: "OUTBOUND PRE-FLIGHTED", sub: "4 Fair-Housing/consent fixes caught · 1 released over objection", kind: "compliance" },
           ],
           oneAsk: "5 proposals waiting on you",
-          narration: null,
+          // `narration` is deliberately NOT a default here: it is the TTS
+          // carrier the producers put in input_props, not a prop the
+          // component reads — see the tombstone in PartnersMeetingReel.tsx.
           agentName: "Your Team",
           avatarVideoUrl: null,
           agentPhotoUrl: null,
@@ -1036,7 +1295,8 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="ProductPromoReel"
         component={ProductPromoReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={450}
+        durationInFrames={3720}
+        calculateMetadata={durationMetadata("ProductPromoReel")}
         fps={30}
         width={1080}
         height={1920}

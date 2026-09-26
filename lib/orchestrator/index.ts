@@ -1,5 +1,3 @@
-// ─── WORKFLOW ENGINE ──────────────────────────────────────────────────────────
-export { WorkflowOrchestrator, WORKFLOW_DEFINITIONS, triggerWorkflow } from "./workflow-engine"
 
 // ─── EVENT TYPES (re-exported from lib/events for backwards compatibility) ────
 // Prefer importing directly from "@/lib/events" for new code.

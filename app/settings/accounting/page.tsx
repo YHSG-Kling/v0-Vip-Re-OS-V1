@@ -10,9 +10,9 @@ import {
   getSyncErrors,
   getTaxCategories,
 } from "@/app/actions/accounting-sync"
-import { LinkIcon, RefreshCw, AlertCircle, CheckCircle2, Clock, Settings2 } from "lucide-react"
+import { LinkIcon, AlertCircle, Clock, Settings2, Send } from "lucide-react"
 import { ACCOUNTING_OFFERINGS, QUICKBOOKS_OAUTH_START } from "@/lib/connections/accounting-scopes"
-import { readScopedZoom } from "@/lib/connections/zoom"
+import { readScopedZoom, resolveZoomOwner } from "@/lib/connections/zoom"
 import { createServiceClient } from "@/lib/supabase/service"
 import { defaultQbReconciliationPeriod, loadBrokerageQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "./provider-connection-card"
@@ -21,6 +21,9 @@ import { SyncControlsCard } from "./sync-controls-card"
 import { SyncHistoryTable } from "./sync-history-table"
 import { ErrorLogTable } from "./error-log-table"
 import { TaxCategoryManager } from "./tax-category-manager"
+import { ManualEntryCard } from "./manual-entry-card"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -30,6 +33,13 @@ export default async function AccountingSettingsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user profile and verify role
   const { data: profile } = await supabase
     .from("users")
@@ -40,7 +50,7 @@ export default async function AccountingSettingsPage() {
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Role gate: broker + admin only
-  if (!["broker", "admin"].includes(profile.user_type ?? "")) {
+  if (!isBrokerageFinanceAdmin({ user_type: profile.user_type ?? "" })) {
     redirect("/dashboard")
   }
 
@@ -71,7 +81,19 @@ export default async function AccountingSettingsPage() {
   // BROKERAGE MEETINGS (round 39) — the brokerage's own Zoom (scope-aware, exact
   // owner match). Zoom appointments booked by brokerage members host here when
   // no more-specific (agent/team) Zoom is connected.
-  const brokerageZoom = await readScopedZoom(createServiceClient(), "brokerage", profile.brokerage_id).catch(() => null)
+  //
+  // OWNER RESOLUTION IS THE MODULE'S JOB (§6, wave 26). This passed the scope
+  // literal and a raw id straight through; `resolveZoomOwner`
+  // (lib/connections/zoom.ts:169) is the declared resolver for exactly that
+  // pair and had no caller. It returns an HONEST NULL when the anchor for a
+  // scope is missing rather than minting an owner — "NO cross-scope fallback —
+  // an unresolvable owner is an honest null, never someone else's id" — so a
+  // session with no brokerage now renders no card instead of a card read against
+  // an empty owner id.
+  const zoomOwner = resolveZoomOwner("brokerage", { brokerageId: profile.brokerage_id })
+  const brokerageZoom = zoomOwner
+    ? await readScopedZoom(createServiceClient(), zoomOwner.ownerType, zoomOwner.ownerId).catch(() => null)
+    : null
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -83,7 +105,7 @@ export default async function AccountingSettingsPage() {
       </div>
 
       <Tabs defaultValue="connections" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="connections" className="flex items-center gap-2">
             <LinkIcon className="h-4 w-4" />
             <span className="hidden sm:inline">Connections</span>
@@ -104,6 +126,10 @@ export default async function AccountingSettingsPage() {
           <TabsTrigger value="mapping" className="flex items-center gap-2">
             <Settings2 className="h-4 w-4" />
             <span className="hidden sm:inline">Tax Mapping</span>
+          </TabsTrigger>
+          <TabsTrigger value="manual" className="flex items-center gap-2">
+            <Send className="h-4 w-4" />
+            <span className="hidden sm:inline">Manual Entry</span>
           </TabsTrigger>
         </TabsList>
 
@@ -239,6 +265,14 @@ export default async function AccountingSettingsPage() {
               />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Section 6: Manual Entry — WIRED this lane (orphan doctrine §1.2):
+            app/actions/accounting-sync.ts:pushAccountingEntry had no caller
+            anywhere. Gated identically to this page (isBrokerageFinanceAdmin,
+            re-checked server-side inside the action itself). */}
+        <TabsContent value="manual" className="space-y-4">
+          <ManualEntryCard categories={taxCategories} />
         </TabsContent>
       </Tabs>
     </div>

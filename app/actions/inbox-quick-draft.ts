@@ -10,7 +10,7 @@
  * generator with it.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   generateAIReplyDraft,
@@ -34,8 +34,8 @@ function toDraftChannel(raw: string | null | undefined): DraftChannel | null {
 export async function quickDraftForConversation(
   params: QuickDraftParams,
 ): Promise<GenerateAIReplyDraftResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) {
     return { success: false, error: "Unauthorized" }
   }
 

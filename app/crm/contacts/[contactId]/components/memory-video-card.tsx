@@ -1,0 +1,293 @@
+"use client"
+
+/**
+ * app/crm/contacts/[contactId]/components/memory-video-card.tsx
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE OFFER SURFACE for the memory video, and the sheet the agent types the
+ * seller's answers onto.
+ *
+ * OWNER RULING: "memory video is for sellers that have been in their home more
+ * than 20 years which is a seller dictated video going over the history of the
+ * house so the family has it (this is a special service that can be offered)."
+ *
+ * Three product facts show up as three properties of this component:
+ *
+ *   · IT IS OFFERED, NOT SENT. The button files a GATED PROPOSAL for a human to
+ *     approve (lib/video/memory-video.ts → proposeClientMessage). Nothing on this
+ *     card reaches the seller by itself.
+ *   · ELIGIBILITY IS DECIDED SERVER-SIDE AND FAILS CLOSED. The card renders only
+ *     for a contact the tenure gate admitted; when tenure is unknown or under the
+ *     threshold the parent renders NOTHING. No "coming soon" tile, no greyed-out
+ *     teaser — an affordance for a service this family cannot be offered is worse
+ *     than no affordance. The action re-checks anyway, so a stale page cannot
+ *     smuggle an ineligible contact through.
+ *   · THE SELLER WRITES IT. Every box below is captioned with whose words belong
+ *     in it, and there is deliberately NO "generate" / "help me write this"
+ *     control anywhere on this card. A model that writes a family's history has
+ *     invented it, and the family — who keep this film — are the one party who
+ *     cannot tell. The rule is stated to the agent on the card, not just in a
+ *     comment: lib/video/memory-video-gate.ts MODEL_MAY_NOT.
+ */
+import { useState, useTransition } from "react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
+import { MEMORY_VIDEO_MODES, type MemoryVideoMode } from "@/lib/video/memory-video-composition"
+import { Badge } from "@/components/ui/badge"
+import { MEMORY_VIDEO_PROMPTS, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
+import { offerMemoryVideoAction, saveMemoryVideoDictationAction, renderMemoryVideoAction } from "@/app/actions/video/memory-video"
+// Wave 81C — the in-card file picker (lane 80C's open item) rides the ONE
+// signed-upload survivor: the tenant prefix comes from the SESSION at mint
+// time (lib/storage/signed-upload-url.ts UPLOAD_PURPOSES.memory_video_media),
+// never from anything this card sends.
+import { uploadViaSignedUrl } from "@/lib/storage/browser-upload"
+
+interface Props {
+  contactId: string
+  /** Years in the home, as the server established them. */
+  tenureYears: number
+  /** True once a memory-video offer is already standing for this contact. */
+  offerStanding: boolean
+  /** Chapters already dictated, keyed by prompt id. */
+  initialWords: Record<string, string>
+  /** ai_video_projects id when a capture already exists. */
+  projectId: string | null
+  /** WAVE 80C — the mode the capture was saved in, the seller's recording per chapter, the home's photos. */
+  initialMode?: MemoryVideoMode | null
+  initialMedia?: Record<string, { url: string; seconds: number | null }>
+  initialPhotoUrls?: string[]
+}
+
+export function MemoryVideoCard({
+  contactId, tenureYears, offerStanding, initialWords, projectId, initialMode, initialMedia, initialPhotoUrls,
+}: Props) {
+  const [words, setWords] = useState<Record<string, string>>(initialWords)
+  // WAVE 80C — the two ways the film is made (owner ruling in
+  // lib/video/memory-video-composition.ts). The seller's OWN recording per
+  // chapter is what narrates; the platform never voices their words for them.
+  const [mode, setMode] = useState<MemoryVideoMode>(initialMode ?? "seller_audio_photos")
+  const [media, setMedia] = useState<Record<string, { url: string; seconds: string }>>(
+    Object.fromEntries(Object.entries(initialMedia ?? {}).map(([k, v]) => [k, { url: v.url, seconds: v.seconds != null ? String(v.seconds) : "" }])),
+  )
+  const [photoText, setPhotoText] = useState<string>((initialPhotoUrls ?? []).join("\n"))
+  const [offered, setOffered] = useState(offerStanding)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [pending, startTransition] = useTransition()
+
+  const dictatedCount = MEMORY_VIDEO_PROMPTS.filter((p) => (words[p.id] ?? "").trim().length > 0).length
+  const [uploading, setUploading] = useState<Record<string, boolean>>({})
+
+  /** The recording's REAL length, read from the browser's own decoder
+   *  (loadedmetadata) — the plan weights each chapter by measured frames
+   *  (memoryChapterSegments), so a typed guess is the thing this replaces. */
+  function measureSeconds(file: File, kind: "audio" | "video"): Promise<number | null> {
+    return new Promise((resolve) => {
+      try {
+        const el = document.createElement(kind)
+        const url = URL.createObjectURL(file)
+        el.preload = "metadata"
+        el.onloadedmetadata = () => { const d = el.duration; URL.revokeObjectURL(url); resolve(Number.isFinite(d) && d > 0 ? Math.round(d * 10) / 10 : null) }
+        el.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+        el.src = url
+      } catch { resolve(null) }
+    })
+  }
+
+  /** Upload the seller's recording for one chapter and fill the URL + seconds. */
+  async function pickRecording(promptId: string, file: File | null) {
+    if (!file) return
+    setError(null)
+    const kind: "audio" | "video" = mode === "seller_walkthrough" ? "video" : "audio"
+    if (!file.type.startsWith(`${kind}/`)) { setError(`This chapter needs ${kind === "video" ? "the seller's video clip" : "the seller's audio recording"} (got ${file.type || "an unknown type"}).`); return }
+    setUploading((u) => ({ ...u, [promptId]: true }))
+    try {
+      const [seconds, up] = await Promise.all([measureSeconds(file, kind), uploadViaSignedUrl({ purpose: "memory_video_media", file })])
+      if (!up.ok) { setError(up.error); return }
+      setMedia((m) => ({ ...m, [promptId]: { url: up.url, seconds: seconds != null ? String(seconds) : (m[promptId]?.seconds ?? "") } }))
+      if (seconds == null) setMessage("Uploaded — the browser could not read the recording's length; type the seconds.")
+    } finally {
+      setUploading((u) => ({ ...u, [promptId]: false }))
+    }
+  }
+
+  /** Upload the home's photos (one or many) and append their URLs to the list. */
+  async function pickPhotos(files: FileList | null) {
+    if (!files || files.length === 0) return
+    setError(null)
+    setUploading((u) => ({ ...u, photos: true }))
+    try {
+      const urls: string[] = []
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) { setError(`${file.name} is not an image.`); continue }
+        const up = await uploadViaSignedUrl({ purpose: "memory_video_media", file })
+        if (!up.ok) { setError(up.error); continue }
+        urls.push(up.url)
+      }
+      if (urls.length) setPhotoText((t) => [t.trim(), ...urls].filter(Boolean).join("\n"))
+    } finally {
+      setUploading((u) => ({ ...u, photos: false }))
+    }
+  }
+
+  function offer() {
+    setError(null); setMessage(null)
+    startTransition(async () => {
+      const r = await offerMemoryVideoAction(contactId)
+      // The action RETURNS its refusal rather than throwing, so a failure that is
+      // shown to nobody is the defect this branch exists to prevent.
+      if (!r.ok) { setError(r.reason); return }
+      if (r.status === "not_eligible" || r.status === "suppressed") { setError(r.reason); return }
+      setOffered(true)
+      setMessage(r.reason)
+    })
+  }
+
+  function save() {
+    setError(null); setMessage(null)
+    const capturedAt = new Date().toISOString()
+    const segments: SellerDictatedSegment[] = MEMORY_VIDEO_PROMPTS
+      .filter((p) => (words[p.id] ?? "").trim().length > 0)
+      .map((p) => {
+        const m = media[p.id]
+        const url = (m?.url ?? "").trim()
+        const secs = Number(m?.seconds)
+        return {
+          promptId:    p.id,
+          sellerWords: words[p.id].trim(),
+          // The agent is TRANSCRIBING what the seller says. The provenance is
+          // recorded on every chapter so a later reader can see whose words these
+          // are without taking anyone's word for it. When the seller's own
+          // recording is attached the words are its transcript / captions.
+          capturedVia: url ? "voice_recording" : "agent_transcription",
+          capturedAt,
+          mediaUrl: url || null,
+          mediaKind: url ? (mode === "seller_walkthrough" ? "video" : "audio") : null,
+          mediaDurationSeconds: Number.isFinite(secs) && secs > 0 ? secs : null,
+        }
+      })
+    const photoUrls = photoText.split(/\n+/).map((u) => u.trim()).filter((u) => /^https?:\/\//.test(u))
+    startTransition(async () => {
+      const r = await saveMemoryVideoDictationAction(contactId, segments, { mode, photoUrls })
+      if (!r.ok) { setError(r.reason); return }
+      setMessage(r.reason)
+    })
+  }
+
+  // THE FILM (lane 78D). Queues the chaptered MemoryVideoReel render of what
+  // was saved — every clip is the seller's saved words narrated verbatim; the
+  // server re-runs the authorship gate and refuses anything not provably
+  // seller-dictated. Nothing here composes a sentence.
+  function render() {
+    setError(null); setMessage(null)
+    startTransition(async () => {
+      const r = await renderMemoryVideoAction(contactId)
+      if (!r.ok) { setError(r.reason); return }
+      setMessage(r.reason)
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          Memory video
+          <Badge variant="secondary">{Math.floor(tenureYears)} years in the home</Badge>
+          {offered ? <Badge variant="outline">offer standing</Badge> : null}
+          {projectId ? <Badge variant="outline">{dictatedCount}/{MEMORY_VIDEO_PROMPTS.length} chapters</Badge> : null}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          A special service for long-time owners: the story of the house, in the seller&apos;s own
+          words, for the family to keep. Offering it proposes a note for your approval — nothing is
+          sent until you approve it.
+        </p>
+        <p className="text-sm font-medium">
+          Type what they say, as they say it. Nothing on this page writes any part of this film —
+          a family&apos;s history is theirs to tell, not ours to compose.
+        </p>
+
+        <Button onClick={offer} disabled={pending || offered} size="sm">
+          {offered ? "Offer already proposed" : "Offer the memory video"}
+        </Button>
+
+        <div className="space-y-2 pt-2">
+          <div className="text-sm font-medium">How the film is made</div>
+          <div className="flex flex-wrap gap-4 text-sm">
+            {MEMORY_VIDEO_MODES.map((m) => (
+              <label key={m} className="flex items-center gap-2">
+                <input type="radio" name="mv-mode" value={m} checked={mode === m} onChange={() => setMode(m)} />
+                {m === "seller_walkthrough" ? "The seller on camera, walking the home (their own clip per chapter)" : "The seller's own audio per chapter, over photos of the home"}
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The narrator is always the seller&apos;s own recording — nothing is read aloud for them and no voice is cloned.
+          </p>
+        </div>
+
+        <div className="space-y-3 pt-2">
+          {MEMORY_VIDEO_PROMPTS.map((p) => (
+            <div key={p.id} className="space-y-1">
+              <label htmlFor={`mv-${p.id}`} className="text-sm font-medium">{p.ask}</label>
+              <Textarea
+                id={`mv-${p.id}`}
+                rows={3}
+                placeholder="Their answer, in their words"
+                value={words[p.id] ?? ""}
+                onChange={(e) => setWords((w) => ({ ...w, [p.id]: e.target.value }))}
+              />
+              <div className="flex gap-2">
+                <Input
+                  id={`mv-media-${p.id}`}
+                  placeholder={mode === "seller_walkthrough" ? "URL of the seller's clip for this chapter (uploaded to storage)" : "URL of the seller's audio for this chapter (uploaded to storage)"}
+                  value={media[p.id]?.url ?? ""}
+                  onChange={(e) => setMedia((m) => ({ ...m, [p.id]: { url: e.target.value, seconds: m[p.id]?.seconds ?? "" } }))}
+                />
+                <Input
+                  className="w-28"
+                  placeholder="seconds"
+                  inputMode="decimal"
+                  value={media[p.id]?.seconds ?? ""}
+                  onChange={(e) => setMedia((m) => ({ ...m, [p.id]: { url: m[p.id]?.url ?? "", seconds: e.target.value } }))}
+                />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>{uploading[p.id] ? "Uploading…" : `Or pick the seller's ${mode === "seller_walkthrough" ? "clip" : "recording"} file (length is measured on upload)`}</span>
+                <input
+                  type="file"
+                  accept={mode === "seller_walkthrough" ? "video/*" : "audio/*"}
+                  disabled={pending || !!uploading[p.id]}
+                  onChange={(e) => { void pickRecording(p.id, e.target.files?.[0] ?? null); e.target.value = "" }}
+                />
+              </label>
+            </div>
+          ))}
+        </div>
+
+        {mode === "seller_audio_photos" ? (
+          <div className="space-y-1">
+            <label htmlFor="mv-photos" className="text-sm font-medium">Photos of the home (one URL per line — these are the visuals)</label>
+            <Textarea id="mv-photos" rows={4} placeholder="https://…" value={photoText} onChange={(e) => setPhotoText(e.target.value)} />
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>{uploading.photos ? "Uploading…" : "Or pick photo files (they are uploaded and added above)"}</span>
+              <input type="file" accept="image/*" multiple disabled={pending || !!uploading.photos} onChange={(e) => { void pickPhotos(e.target.files); e.target.value = "" }} />
+            </label>
+          </div>
+        ) : null}
+
+        <Button onClick={save} disabled={pending || dictatedCount === 0} size="sm" variant="secondary">
+          Save what they dictated
+        </Button>
+        <Button onClick={render} disabled={pending || !projectId || dictatedCount < MEMORY_VIDEO_PROMPTS.length} size="sm" variant="outline">
+          Make the film from what was saved
+        </Button>
+
+        {message ? <p className="text-sm text-emerald-600">{message}</p> : null}
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
+  )
+}

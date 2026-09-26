@@ -236,6 +236,7 @@ const NAME_TO_CODE: Record<string, string> = Object.fromEntries(
   Object.values(CONVENTIONS).map((c) => [c.stateName.toLowerCase(), c.state]),
 )
 
+/** @proofSeam runtime resolves ONE state through normalizeStateCode/getRegionalConventions (membership in CONVENTIONS); the full code list exists so scripts/regional-closing-costs-simulator.ts and scripts/seller-closing-costs-simulator.ts can sweep all 51 conventions and prove every one yields buyer and seller shares that never double-claim a cost. */
 export const ALL_REGION_CODES = Object.keys(CONVENTIONS) // 50 states + DC
 
 /** "CA" | "ca" | "California" → "CA"; anything unknown → null (honest absence). */

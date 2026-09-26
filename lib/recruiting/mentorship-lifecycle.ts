@@ -9,14 +9,19 @@
 // untouched. Pure cadence/graduation logic is unit-tested; the runner does the I/O.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** Default cadence between mentor check-in nudges (days). */
 export const MENTORSHIP_CHECKIN_DAYS = 14
 
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
+// lib/format/dates.ts:daysBetween. Note the argument order here is `a - b`
+// (reversed from the survivor's `to - from`) — the swap below preserves this
+// function's exact external behavior for its existing call sites.
 function daysBetween(a: number, b: number): number {
-  return Math.floor((a - b) / 86_400_000)
+  return dateDaysBetween(b, a, { round: "floor" })
 }
 
 /**

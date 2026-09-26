@@ -60,7 +60,8 @@ export const CD_ACCURACY_FIELD_KEYS = [
   "recording_fees",
 ] as const
 
-export interface ActualCdFigures {
+// internal type — used only by extractActualCdFigures/mapAccuracyLines, both un-exported in-file helpers
+interface ActualCdFigures {
   loanAmount: number | null
   cashToClose: number | null
   totalClosingCosts: number | null
@@ -94,13 +95,15 @@ export function parseMoney(v: unknown): number | null {
 /** PROVENANCE GATE: a ledger row is usable when a human verified it (any
  *  confidence) or the scan confidence is high/medium. Low-confidence
  *  unverified rows are refused — an uncertain extraction is not an outcome. */
-export function isProvenanceUsable(row: LedgerFieldRow): boolean {
+// internal helper — called in-file by mapAccuracyLines/mapSellerAccuracyLines, both reachable from getClosingCostAccuracyReport
+function isProvenanceUsable(row: LedgerFieldRow): boolean {
   if (row.verified_at != null) return true
   return row.confidence === "high" || row.confidence === "medium"
 }
 
 /** Pure: fold provenance-usable ledger rows into the actual CD figures. */
-export function extractActualCdFigures(rows: LedgerFieldRow[]): {
+// internal helper — called in-file by recordClosingCostAccuracy
+function extractActualCdFigures(rows: LedgerFieldRow[]): {
   figures: ActualCdFigures
   usableFieldKeys: string[]
   anyVerified: boolean
@@ -192,7 +195,8 @@ const mkLine = (key: AccuracyLineKey, est: BuyerCostLine, actual: number): Accur
  *  cash_to_close and total_closing_costs are deliberately NOT mapped to the
  *  estimate total: cash-to-close includes the down payment, and the CD's
  *  section-J total nets lender credits — neither is the estimated quantity. */
-export function mapAccuracyLines(estimateLines: BuyerCostLine[], actual: ActualCdFigures): AccuracyLine[] {
+// internal helper — called in-file by recordClosingCostAccuracy
+function mapAccuracyLines(estimateLines: BuyerCostLine[], actual: ActualCdFigures): AccuracyLine[] {
   const out: AccuracyLine[] = []
   const find = (pred: (l: BuyerCostLine) => boolean) =>
     estimateLines.find((l) => pred(l) && !l.pending && l.high > 0)

@@ -26,15 +26,13 @@
  * reuse the same data payload across organic and paid renders.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -76,32 +74,40 @@ export interface JustListedReelSquareProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
+  mlsClean?: boolean
 }
 
 const FPS    = 30
-const TOTAL  = 12 * FPS                          // 360 frames
-const COVER  = 2  * FPS                          // 0-2s
-const PHOTOS = 8  * FPS                          // 2-10s
-const CTA    = 2  * FPS                          // 10-12s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `PHOTOS = 8 * FPS` stood here. Bookends come from the ONE registry; the
+// photo window is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("JustListedReelSquare")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 /** Ken-Burns zoom factor — slow 1.0 → 1.08 over the photo's visible
  *  window. Subtle enough that the photo still reads as a single
  *  image, lively enough that the feed scroll doesn't read it as a
  *  static frame and skip past. */
 function kenBurnsScale(localFrame: number, span: number): number {
-  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateRight: "clamp" })
+  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
 }
 
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
-  captionsCues, captionScript,
+  captionsCues, captionScript, mlsClean,
 }) => {
   const frame      = useCurrentFrame()
+  const { durationInFrames } = useVideoConfig()
+  const timeline   = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const PHOTOS     = timeline.body.durationInFrames
   const images     = imageUrls.slice(0, 4)
   const perPhoto   = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho    = brand.showEhoMark ?? true
-  const finalCta   = ctaLabel ?? "Tour this listing"
+  const finalCta   = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -115,18 +121,18 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
         }}>
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
-            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1]),
+            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 80, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1]),
+            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85]),
+            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {cityState}
@@ -135,7 +141,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             position: "absolute", top: 40, left: 40, color: "#fff", opacity: 0.85,
             fontSize: 22, fontWeight: 600, letterSpacing: 2,
           }}>
-            {brand.logoUrl ? <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
+            {!mlsClean && brand.logoUrl ? <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
           </div>
         </AbsoluteFill>
       </Sequence>
@@ -194,10 +200,10 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
           }}>
             {finalCta}
           </div>
-          {brand.agentName && (
+          {!mlsClean && brand.agentName && (
             <div style={{ fontSize: 40, color: brand.accentColor, fontWeight: 700 }}>{brand.agentName}</div>
           )}
-          {brand.agentPhone && (
+          {!mlsClean && brand.agentPhone && (
             <div style={{ fontSize: 32, color: "#fff", opacity: 0.85, marginTop: 12 }}>
               {brand.agentPhone}
             </div>
@@ -211,6 +217,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             </div>
           )}
           <QrOutroBadge
+            mlsClean={mlsClean}
             qrCodeDataUrl={qrCodeDataUrl}
             caption={qrCaption ?? "Scan to tour"}
             primaryColor={brand.primaryColor}
@@ -222,11 +229,13 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
       {/* Total duration sanity check — this guarantees the
           renderer always knows the length even if a Sequence is
           missing its photos. */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + PHOTOS} />
     </AbsoluteFill>
   )
 }
@@ -236,11 +245,11 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const scale = kenBurnsScale(frame, span)
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",
-          transform: `scale(${scale})`, transformOrigin: "center center",
+          scale, transformOrigin: "center center",
         }}
       />
     </AbsoluteFill>

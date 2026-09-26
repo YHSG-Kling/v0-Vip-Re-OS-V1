@@ -2,8 +2,10 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
-import { validateA2pProfile, nextA2pStep, a2pCampaignApproved, type A2pState } from "@/lib/voice/a2p-registration"
+import { deriveA2pProfile, nextA2pStep, a2pCampaignApproved, type A2pState } from "@/lib/voice/a2p-registration"
+import { readBusinessRegistration, pickRepresentative, REPRESENTATIVE_ORDER, type RepresentativeSeat } from "@/lib/branding/business-registration"
 import { assessA2pStall } from "@/lib/platform/provider-posture"
+import { agoOrNever } from "@/lib/format/dates"
 import { VoiceIntegrityCell } from "./voice-integrity-cell"
 
 export const dynamic = "force-dynamic"
@@ -12,19 +14,15 @@ export const dynamic = "force-dynamic"
 // table. PLATFORM-GLOBAL READ by design (providers-gated, service client): the
 // A2P step machine persists per-tenant state on platform_credentials
 // ('twilio_a2p', config jsonb — see lib/voice/a2p-registration), the business
-// profile lives in brokerage_settings.settings.a2p_business_profile, numbers in
-// vapi_phone_numbers, and every runner invocation logs to phone_number_events
+// profile is DERIVED (wave 84D) from the Business registration branding setting
+// (brokerage_settings.settings.business_registration) + the brokerages row + the
+// representative seat — the same deriveA2pProfile the filing uses — numbers in
+// tenant_phone_numbers, and every runner invocation logs to phone_number_events
 // (source 'a2p_registration'). Nothing here is fabricated: statuses are exactly
 // what the step machine last persisted from Twilio.
 
-function fmtAgo(iso: string | null) {
-  if (!iso) return "never"
-  const ms = Date.now() - new Date(iso).getTime()
-  if (ms < 60_000) return "just now"
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`
-  return `${Math.round(ms / 86_400_000)}d ago`
-}
+// `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoOrNever` (imported above).
 
 type StageBadge = { label: string; cls: string }
 
@@ -71,23 +69,37 @@ export default async function SuperadminA2pPage() {
 
   const svc = createServiceClient()
 
-  const [brk, creds, settings, numbers, events] = await Promise.all([
-    svc.from("brokerages").select("id, name, plan_tier").is("deleted_at", null).order("name"),
+  const [brk, creds, settings, numbers, events, reps] = await Promise.all([
+    svc.from("brokerages").select("id, name, plan_tier, dba, address, address_line2, city, state, zip, phone, email, website, slug").is("deleted_at", null).order("name"),
     svc.from("platform_credentials").select("brokerage_id, config, updated_at").eq("platform", "twilio_a2p").eq("is_active", true),
     svc.from("brokerage_settings").select("brokerage_id, settings"),
-    svc.from("vapi_phone_numbers").select("brokerage_id").eq("is_active", true),
+    svc.from("tenant_phone_numbers").select("brokerage_id").eq("is_active", true),
     svc.from("phone_number_events").select("brokerage_id, created_at").eq("source", "a2p_registration").order("created_at", { ascending: false }).limit(2000),
+    svc.from("users").select("brokerage_id, first_name, last_name, email, phone, user_type").in("user_type", [...REPRESENTATIVE_ORDER]).is("deleted_at", null).limit(5000),
   ])
-  const failed = [brk, creds, settings, numbers, events].find((r) => r.error)
+  const failed = [brk, creds, settings, numbers, events, reps].find((r) => r.error)
   if (failed?.error) return <div className="p-6 text-red-600">Failed to load A2P board: {failed.error.message}</div>
 
   const stateByBrokerage = new Map<string, { state: A2pState; updatedAt: string | null }>()
   for (const c of (creds.data ?? []) as any[]) {
     stateByBrokerage.set(c.brokerage_id, { state: (c.config ?? {}) as A2pState, updatedAt: c.updated_at ?? null })
   }
+  // Wave 84D: "profile OK" is the SAME derivation the filing runs — the
+  // registration branding setting + the brokerages row + the representative seat
+  // (the 83D board validated only the typed copy, so a derived-complete tenant
+  // read as incomplete here).
+  const registrationByBrokerage = new Map<string, ReturnType<typeof readBusinessRegistration>>()
+  for (const s of (settings.data ?? []) as any[]) registrationByBrokerage.set(s.brokerage_id, readBusinessRegistration(s.settings))
+  const seatsByBrokerage = new Map<string, RepresentativeSeat[]>()
+  for (const u of (reps.data ?? []) as any[]) seatsByBrokerage.set(u.brokerage_id, [...(seatsByBrokerage.get(u.brokerage_id) ?? []), u])
   const profileOkByBrokerage = new Map<string, boolean>()
-  for (const s of (settings.data ?? []) as any[]) {
-    profileOkByBrokerage.set(s.brokerage_id, validateA2pProfile(s.settings?.a2p_business_profile).ok)
+  for (const b of (brk.data ?? []) as any[]) {
+    profileOkByBrokerage.set(b.id, deriveA2pProfile({
+      registration: registrationByBrokerage.get(b.id) ?? null,
+      brokerage: b,
+      owner: pickRepresentative(seatsByBrokerage.get(b.id) ?? []),
+      appUrl: process.env.NEXT_PUBLIC_APP_URL ?? null,
+    }).validation.ok)
   }
   const numberCount = new Map<string, number>()
   for (const n of (numbers.data ?? []) as any[]) {
@@ -237,7 +249,7 @@ export default async function SuperadminA2pPage() {
                       {r.ready ? "—" : r.nextStep.replace(/_/g, " ")}
                       {r.lastError && <div className="text-red-600 max-w-[280px] truncate" title={r.lastError}>{r.lastError}</div>}
                     </td>
-                    <td className="p-2 text-xs text-muted-foreground" title={r.lastEvent ?? undefined}>{fmtAgo(r.lastEvent)}</td>
+                    <td className="p-2 text-xs text-muted-foreground" title={r.lastEvent ?? undefined}>{agoOrNever(r.lastEvent)}</td>
                     <td className="p-2 text-right"><Link href={`/dashboard/superadmin/brokerages/${r.id}`} className="text-xs font-medium text-indigo-600">Manage →</Link></td>
                   </tr>
                 ))}

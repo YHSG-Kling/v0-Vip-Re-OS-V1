@@ -232,12 +232,21 @@ export async function runLaunchWarRoom(
     // system can't know the agent's chosen date, so it stages a placeholder for the
     // agent to date + publish — never a fabricated event_date.
     if (agentRowId) {
-      const { data: existOH } = await supabase.from("open_houses").select("id").eq("listing_id", l.id).limit(1).maybeSingle()
+      // open_house_events is the survivor; `open_houses` was a second spelling of it
+      // and was retired by m543. Three things that migration had to settle for this
+      // very insert: `title`/`property_address`/`is_published`/`allow_walkins` were
+      // merged onto the survivor; the status vocabulary gained 'draft' (the survivor
+      // had no word for a staged-but-undated event); and event_date became nullable
+      // ONLY for a draft, so the "no fabricated date" rule above is now enforced by a
+      // CHECK rather than by convention. `require_rsvp` is NOT passed — the survivor
+      // already spells that `registration_required`, and naming an absent column
+      // would make PostgREST refuse the ENTIRE row (PGRST204), not just that field.
+      const { data: existOH } = await supabase.from("open_house_events").select("id").eq("listing_id", l.id).limit(1).maybeSingle()
       if (!existOH) {
-        const { error } = await supabase.from("open_houses").insert({
+        const { error } = await supabase.from("open_house_events").insert({
           brokerage_id: brokerageId, listing_id: l.id, agent_id: agentRowId,
           title: `Open House — ${l.address} (set a date)`, property_address: l.address,
-          status: "draft", is_published: false, require_rsvp: true, allow_walkins: true,
+          status: "draft", is_published: false, registration_required: true, allow_walkins: true,
         })
         if (!error) { result.openHousesProposed += 1; staged.openHouseProposed = true }
       }

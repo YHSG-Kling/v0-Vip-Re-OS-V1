@@ -41,8 +41,20 @@ export const AFFILIATE_CODE_RE = /^[A-Za-z0-9_-]{3,32}$/
 /** Mirrors the affiliate_commission_events.period format ('YYYY-MM'). */
 export const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/
 
+/** Mirrors the platform_affiliates.status CHECK. */
 export type AffiliateStatus = "active" | "paused" | "ended"
+/** Mirrors the affiliate_commission_events.status CHECK. NOT the agent-commission ladder in
+ *  app/actions/financials.ts — same word, different capability (affiliate payout accrual vs an
+ *  agent's deal commission); do not cross the two. */
 export type CommissionStatus = "accrued" | "paid" | "void"
+
+const AFFILIATE_STATUSES: readonly AffiliateStatus[] = ["active", "paused", "ended"]
+
+/** Boundary narrower for AffiliateStatus — the door untrusted input (the superadmin form's
+ *  request body) walks through before a status may be stored. */
+export function isAffiliateStatus(v: unknown): v is AffiliateStatus {
+  return typeof v === "string" && (AFFILIATE_STATUSES as readonly string[]).includes(v)
+}
 
 // ── Pure: normalization + validation ─────────────────────────────────────────
 
@@ -52,7 +64,14 @@ export function normalizeAffiliateCode(raw: string | null | undefined): string {
   return (raw ?? "").trim()
 }
 
-export interface AffiliateInput {
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: AffiliateInput.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+interface AffiliateInput {
   name: string
   email: string
   code: string
@@ -100,14 +119,14 @@ export function validateAffiliateInput(input: {
 
 /** PURE: commission in cents on one month of MRR. Rounds to the nearest cent;
  *  garbage in (negative / non-finite) → 0, never NaN into the ledger. */
-export function commissionFor(mrrCents: number, percent: number): number {
+function commissionFor(mrrCents: number, percent: number): number {
   if (!Number.isFinite(mrrCents) || mrrCents <= 0) return 0
   if (!Number.isFinite(percent) || percent <= 0) return 0
   return Math.round((mrrCents * Math.min(percent, 100)) / 100)
 }
 
 /** PURE: ISO timestamp + N calendar months (UTC; JS end-of-month overflow rules). */
-export function addMonthsIso(iso: string, months: number): string {
+function addMonthsIso(iso: string, months: number): string {
   const d = new Date(iso)
   d.setUTCMonth(d.getUTCMonth() + months)
   return d.toISOString()

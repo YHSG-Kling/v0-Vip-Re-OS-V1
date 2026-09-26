@@ -34,6 +34,12 @@ export type ParsedNote = z.infer<typeof ParsedNoteSchema>
 export async function parseVoiceNote(transcript: string, opts?: {
   contactName?: string
   contactType?: string | null
+  /** Tenant + actor for the AI cost ledger. The only caller
+   *  (app/api/contacts/[contactId]/voice-note) resolves both from requireAuth
+   *  and has already proved the contact belongs to that brokerage — session,
+   *  never a request body (CLAUDE.md §4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<ParsedNote> {
   const trimmed = transcript.trim()
   if (!trimmed) {
@@ -47,6 +53,8 @@ export async function parseVoiceNote(transcript: string, opts?: {
   if (process.env.AI_GATEWAY_API_KEY) {
     try {
       const { object } = await generateObjectRouted({
+        brokerageId: opts?.brokerageId ?? null,
+        userId: opts?.userId ?? null,
         feature: "lead_data_extraction",
         schema:  ParsedNoteSchema,
         system:

@@ -29,11 +29,19 @@ import { createServiceClient } from '@/lib/supabase/service'
 import {
   calculateLeadScore,
   evaluateRoutingEligibility,
-  selectAgentForLead,
   evaluateSLA,
   logEscalation,
   evaluatePromotionReadiness,
 } from '@/lib/lead-governance'
+// The agent PICK comes from the canonical assignment spine, not from a private
+// selector. lib/lead-governance/agent-selector.ts used to own it: it never
+// queried assignment_rules at all, so the broker's configured method — round
+// robin, priorities, ZIP farms, team scoping — was bypassed entirely on this
+// path. It sorted candidates by id.localeCompare, took the first, and then
+// wrote an activities row claiming selectionMethod 'load_balanced'. Its one real
+// idea, filtering by specialization, is now a rule_type the broker can choose.
+import { resolveAgentByRules } from '@/lib/lead-assignment/assignment-engine'
+import { selectAgentByCapacity, resolveBrokerageMaxLoad } from '@/lib/lead-assignment/capacity-pick'
 
 export interface GovernanceResult {
   success: boolean
@@ -113,7 +121,11 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
     // STEP 4: LOG SCORING EXPLANATION — Agent task (correct location, no changes) — activity_type: lead_scoring, agent_assignment, routing_decision, promotion_signal
     let agentAssigned: string | null = null
 
-    await supabase.from('activities').insert({
+    // Every activities row in this function is a GOVERNANCE DECISION — the
+    // explanation of a score, a routing choice, an assignment, a promotion
+    // signal. A silent loss makes a governed lead indistinguishable from an
+    // ungoverned one, which is the exact thing this function exists to prove.
+    const { error: scoringActivityError } = await supabase.from('activities').insert({
       activity_type: 'lead_scoring',
       title: `Lead Scored: ${scoringResult.finalScore}/100`,
       description: scoringResult.explanation,
@@ -125,6 +137,9 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       entity_type: 'lead',
       created_at: new Date().toISOString(),
     })
+    if (scoringActivityError) {
+      console.error(`[LeadGovernance] lead_scoring activity REJECTED for lead ${leadId} — the score has no explanation on the record:`, scoringActivityError.message)
+    }
 
     // STEP 5: EVALUATE ROUTING ELIGIBILITY
     const routingEligibility = await evaluateRoutingEligibility(
@@ -139,13 +154,56 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
 
     // STEP 6: ASSIGN AGENT IF ELIGIBLE
     if (routingEligibility.eligible) {
-      const agentSelection = await selectAgentForLead(lead, lead.brokerage_id)
-      
-      if (agentSelection.selectedAgentId) {
+      // The broker's own assignment rules decide, through the same resolver
+      // Engine 2 uses — priorities, team scoping, and the chosen method (round
+      // robin / load balance / geographic / expertise / manual).
+      const ruled = await resolveAgentByRules(supabase, lead.brokerage_id, lead)
+
+      // No rule matched: fall back to the capacity-aware balancer rather than
+      // stranding the lead. This is the SAME picker the Capacity Guardian uses,
+      // so a lead never lands on an agent already over their ceiling.
+      let selectedAgentId = ruled.agentId
+      let selectionReason = ruled.method
+        ? `Assigned by rule via ${ruled.method}.`
+        : ''
+      if (!ruled.held && !selectedAgentId) {
+        const { data: actives } = await supabase
+          .from('agents')
+          .select('id')
+          .eq('brokerage_id', lead.brokerage_id)
+          .eq('is_active', true)
+        const pool = (actives ?? []).map((a: { id: string }) => a.id)
+        if (pool.length > 0) {
+          const maxLoad = await resolveBrokerageMaxLoad(supabase, lead.brokerage_id)
+          selectedAgentId = await selectAgentByCapacity(supabase, lead.brokerage_id, pool, maxLoad)
+          selectionReason = `No rule matched — assigned to the agent with the most headroom (of ${pool.length} active).`
+        }
+      }
+
+      if (ruled.held) {
+        // A manual rule matched: the broker asked for this lead to wait for a
+        // person. Recording it is the point — a silent non-assignment is
+        // indistinguishable from a broken router.
+        const { error: heldActivityError } = await supabase.from('activities').insert({
+          activity_type: 'routing_decision',
+          title: 'Held for Manual Assignment',
+          description: ruled.reason ?? 'A manual assignment rule matched this lead.',
+          status: 'completed',
+          priority: 'normal',
+          agent_id: actorAgentId || lead.agent_id,
+          brokerage_id: lead.brokerage_id || brokerageId,
+          entity_type: 'lead',
+          created_at: new Date().toISOString(),
+        })
+        if (heldActivityError) {
+          console.error(`[LeadGovernance] routing_decision (held) activity REJECTED for lead ${leadId} — a silent non-assignment is exactly what this row exists to prevent:`, heldActivityError.message)
+        }
+        console.log(`[LeadGovernance] Lead ${leadId} held for manual assignment`)
+      } else if (selectedAgentId) {
         await supabase
           .from('leads')
           .update({
-            agent_id: agentSelection.selectedAgentId,
+            agent_id: selectedAgentId,
             lead_stage: 'assigned',
             stage_entered_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -153,13 +211,14 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
           .eq('id', leadId)
           .eq('brokerage_id', brokerageId)
 
-        agentAssigned = agentSelection.selectedAgentId
+        agentAssigned = selectedAgentId
 
-        // Log assignment decision
-        await supabase.from('activities').insert({
+        // The description records what ACTUALLY decided. The retired selector
+        // wrote "using load balancing" for a pick made by sorting on id.
+        const { error: assignmentActivityError } = await supabase.from('activities').insert({
           activity_type: 'agent_assignment',
           title: 'Agent Assigned via Governance',
-          description: agentSelection.reason,
+          description: selectionReason,
           status: 'completed',
           priority: 'normal',
           agent_id: agentAssigned || actorAgentId || lead.agent_id,
@@ -167,12 +226,15 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
           entity_type: 'lead',
           created_at: new Date().toISOString(),
         })
+        if (assignmentActivityError) {
+          console.error(`[LeadGovernance] agent_assignment activity REJECTED for lead ${leadId} — the lead moved to an agent with no record of why:`, assignmentActivityError.message)
+        }
 
         console.log(`[LeadGovernance] Agent ${agentAssigned} assigned to lead ${leadId}`)
       }
     } else {
       // Log reason for not assigning
-      await supabase.from('activities').insert({
+      const { error: nurturingActivityError } = await supabase.from('activities').insert({
         activity_type: 'routing_decision',
         title: 'Lead Held in AI Nurturing',
         description: routingEligibility.reason,
@@ -184,6 +246,9 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
         entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
+      if (nurturingActivityError) {
+        console.error(`[LeadGovernance] routing_decision (nurturing) activity REJECTED for lead ${leadId} — the reason for NOT assigning is unrecorded:`, nurturingActivityError.message)
+      }
     }
 
     // STEP 7: SLA MONITORING
@@ -198,7 +263,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
     const promotionReadiness = evaluatePromotionReadiness(lead)
     
     if (promotionReadiness.ready) {
-      await supabase.from('activities').insert({
+      const { error: promotionActivityError } = await supabase.from('activities').insert({
         activity_type: 'promotion_signal',
         title: 'Lead Ready for Contact Promotion',
         description: promotionReadiness.reason,
@@ -209,6 +274,9 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
         entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
+      if (promotionActivityError) {
+        console.error(`[LeadGovernance] promotion_signal activity REJECTED for lead ${leadId} — the promotion signal never reaches its reader:`, promotionActivityError.message)
+      }
 
       console.log(`[LeadGovernance] Lead ${leadId} signaled as ready for promotion`)
     }
@@ -220,7 +288,15 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       scoreExplanation: scoringResult.explanation,
       routingDecision,
       agentAssigned,
-      slaStatus: slaStatus.isBreached ? 'breached' : 'compliant',
+      // THE MERGED THREE-STATE POSTURE (lib/lead-governance/sla-monitor.ts
+      // SLAPosture), not the old two-state 'breached'/'compliant'. This field had
+      // NO reader anywhere in the tree — the only two callers of governLead
+      // (app/dashboard/admin/lead-lineage/lead-lineage-client.tsx:363,376 and
+      // lib/ai-isa/qualification-evaluator.ts:117) both read `message` and
+      // `agentAssigned` and neither touches `slaStatus` — so widening it breaks
+      // nothing and stops the result from hiding the one state that is actionable
+      // BEFORE the miss: approaching_sla.
+      slaStatus: slaStatus.posture,
       promotionReady: promotionReadiness.ready,
       message: 'Lead governance cycle completed successfully',
     }
@@ -228,8 +304,24 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
   } catch (error: any) {
     console.error(`[LeadGovernance] Error governing lead ${leadId}:`, error.message)
 
-    // Log to automation_errors
-    await supabase.from('automation_errors').insert({
+    // Log to automation_errors.
+    //
+    // TENANT — `brokerageId`, the caller's brokerage, resolved from the session
+    // ABOVE the try block, so the catch always holds it: an anchor resolved
+    // inside the try is not an anchor a catch can use. This row is the one the
+    // automations console reads, and that console does not merely filter by
+    // tenant — `app/actions/workflows.ts:531` uses
+    // `.eq("brokerage_id", brokerageId)` as an OWNERSHIP CHECK and returns
+    // "Forbidden" on a miss, so an unstamped governance failure is not just
+    // invisible, it is UNRESOLVABLE: the retry/acknowledge path refuses it
+    // forever. (`NULL = <uuid>` is NULL, never true.)
+    //
+    // `lead_id` is deliberately NOT stamped: the most common way to reach this
+    // catch is `Lead ${leadId} not found`, and `automation_errors.lead_id`
+    // REFERENCES leads(id) — filing the error would then fail on the very id
+    // that caused it.
+    const { error: governanceErrorLogError } = await supabase.from('automation_errors').insert({
+      brokerage_id: brokerageId,
       workflow_name: 'lead_governance',
       error_message: error.message,
       context_json: JSON.stringify({ leadId }),
@@ -237,6 +329,11 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       status: 'open',
       created_at: new Date().toISOString(),
     })
+    if (governanceErrorLogError) {
+      // Named, never swallowed: the ORIGINAL failure is already in `error` and is
+      // returned below, so a failure to FILE it cannot be allowed to replace it.
+      console.error('[LeadGovernance] automation_errors insert refused:', governanceErrorLogError.message)
+    }
 
     return {
       success: false,

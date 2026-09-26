@@ -1,29 +1,72 @@
 import { NextRequest, NextResponse } from "next/server"
-import { stripe } from "@/lib/stripe"
+import { getPlatformStripe } from "@/lib/stripe"
+import { verifyStripeWebhook } from "@/lib/billing/stripe-webhook-secrets"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
+import { deriveSubscriptionSeatState, itemFactsOf, normalizeStripeSubscription, type TierSeatLink } from "@/lib/billing/seat-packages"
+import { TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
 import Stripe from "stripe"
 
-/** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants. */
-function normalizeSub(s: Stripe.Subscription): NormalizedStripeSub {
-  const a = s as any
-  return {
-    stripeSubscriptionId: s.id,
-    stripeCustomerId: (s.customer as string) ?? null,
-    tierId: s.metadata?.tier_id ?? null,
-    status: s.status,
-    currentPeriodStart: a.current_period_start ?? null,
-    currentPeriodEnd: a.current_period_end ?? null,
-    trialEnd: s.trial_end ?? null,
-    cancelAt: s.cancel_at ?? null,
+/** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants,
+ *  READING THE ITEMS (wave 79A): the plan item names the tier the tenant is
+ *  billed for and the seat-package item's quantity is the seats they bought,
+ *  so tier + extra seats follow Stripe on every subscription event. Status
+ *  still goes through the ONE shared vocabulary (lib/billing/stripe-status.ts)
+ *  — Stripe's 'canceled' / 'unpaid' / 'incomplete' spellings are not values
+ *  subscriptions.status can hold, and a rejected write once left a cancelled
+ *  tenant on a stale 'active'.
+ *
+ *  TOMBSTONE: the private `normalizeSub` that lived here moved to
+ *  lib/billing/seat-packages.ts::normalizeStripeSubscription (the survivor the
+ *  daily reconcile shares). A refused catalogue read falls back to
+ *  metadata.tier_id for the tier and leaves the seat columns UNTOUCHED (the
+ *  patch omits them), never zeroing what a tenant bought. */
+async function normalizeSub(svc: ReturnType<typeof createServiceClient>, s: Stripe.Subscription): Promise<NormalizedStripeSub> {
+  const { data: tiers, error } = await svc
+    .from("subscription_tiers")
+    .select("id, tier_name, stripe_price_id, stripe_seat_price_id, seat_package_size")
+  if (error) {
+    console.error("[Billing Webhook] catalogue read refused — tier from metadata only, seat columns left alone:", error.message)
+    return normalizeStripeSubscription(s, null)
   }
+  const seat = deriveSubscriptionSeatState(itemFactsOf(s as any), (tiers ?? []) as TierSeatLink[])
+  if (seat.unmatchedPriceIds.length > 0) console.warn("[Billing Webhook] subscription items not in the catalogue:", s.id, seat.unmatchedPriceIds)
+  return normalizeStripeSubscription(s, seat)
 }
 
-// Stripe webhook handler
+// Stripe webhook handler — THE PLATFORM'S BILLING LEDGER.
 // Handles: checkout.session.completed, invoice.paid, invoice.payment_failed,
-//          customer.subscription.updated, customer.subscription.deleted, account.updated
+//          customer.subscription.created, customer.subscription.updated,
+//          customer.subscription.deleted, account.updated
+// — exactly TENANT_BILLING_WEBHOOK_EVENTS (lib/billing/stripe-account-scope.ts),
+// the ONE vocabulary the Stripe-SDK registration and the launch checklist
+// read; scripts/stripe-webhook-events-guard.ts holds this switch equal to it
+// (wave 80A). Add a case → add it there → the registration action enables it.
+//
+// ── WHOSE STRIPE ACCOUNT SIGNS THIS ENDPOINT ────────────────────────────────
+//
+// Every event handled below writes the PLATFORM's ledger of what tenants owe US:
+// `subscriptions`, `billing_invoices`, `brokerages.plan_tier`, and the Connect
+// onboarding flag that gates payouts. The merchant on that money is the platform
+// (lib/billing/stripe-account-scope.ts — the account belongs to the PAYEE), so
+// the only account whose deliveries may write here is the platform's.
+//
+// Verification no longer reads one hardcoded env secret. `verifyStripeWebhook`
+// walks the platform's signing secret and then every TENANT's, and reports WHICH
+// account signed — because with per-tenant Stripe accounts a tenant's own
+// deliveries WILL arrive here, and answering them "invalid signature" is
+// indistinguishable from an attack and so gets investigated as neither.
+//
+// A tenant-signed delivery is REFUSED for this ledger, by name. That refusal is
+// the tenancy gate CLAUDE.md §4 asks for, in the one form available to a request
+// with no session: the principal is the account that signed, and
+// `metadata.brokerage_id` is written by whoever owns that account. Accepting a
+// tenant-signed event here would let any tenant with a Stripe account move any
+// other tenant's subscription row by putting their id in metadata — the IDOR
+// shape, cryptographically closed instead of argued about.
 export async function POST(request: NextRequest) {
   const body = await request.text()
   const signature = request.headers.get("stripe-signature")
@@ -32,20 +75,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No signature" }, { status: 400 })
   }
 
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
-  if (!webhookSecret) {
-    console.error("[Billing Webhook] STRIPE_WEBHOOK_SECRET not configured")
-    return NextResponse.json({ error: "Webhook secret not configured" }, { status: 500 })
+  const verification = await verifyStripeWebhook({ endpoint: "tenant_billing", body, signature })
+
+  if (verification.status === "no_candidates") {
+    console.error("[Billing Webhook] REFUSED —", verification.message)
+    return NextResponse.json({ error: verification.message }, { status: 500 })
   }
-
-  let event: Stripe.Event
-
-  try {
-    event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
-  } catch (err) {
-    console.error("[Billing Webhook] Signature verification failed:", err)
+  if (verification.status === "unreadable") {
+    // Fail CLOSED and say so. A 503 asks Stripe to retry; a 400 would tell the
+    // sender their signature was bad when in fact WE could not check it.
+    console.error("[Billing Webhook] REFUSED —", verification.message)
+    return NextResponse.json({ error: verification.message }, { status: 503 })
+  }
+  if (verification.status === "unverified") {
+    console.error("[Billing Webhook] REFUSED —", verification.message)
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 })
   }
+
+  const event: Stripe.Event = verification.event
+
+  if (verification.ownerType !== "platform") {
+    // Signed by a TENANT's own Stripe account. Their money, their ledger — not
+    // the platform's subscription ledger, which is the only thing this route
+    // writes. 200 so Stripe stops retrying a delivery that will never be
+    // applicable; `applied:false` and a reason so it is never mistaken for done.
+    const reason =
+      `Delivery to /api/billing/webhook was signed by ${verification.ownerType} ${verification.ownerId}'s own Stripe account. ` +
+      `This endpoint writes the PLATFORM's billing ledger (what tenants owe the platform) and accepts platform-signed events only. ` +
+      `Refusing rather than attributing a tenant-account event to the platform's books.`
+    console.error("[Billing Webhook] REFUSED —", reason, "event:", event.type)
+    return NextResponse.json({ received: true, applied: false, reason }, { status: 200 })
+  }
+
+  // THE PLATFORM's Stripe client, resolved (platform-owned credential row first,
+  // STRIPE_SECRET_KEY as the platform's own floor) — never a tenant's.
+  const stripe = await getPlatformStripe()
 
   // Webhook is authenticated by Stripe signature verification above. There is
   // no user session in this request, so the RLS-enforced server client would
@@ -67,9 +131,22 @@ export async function POST(request: NextRequest) {
         // never insert a duplicate. This is the activation that flips the account live.
         if (session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription as string)
-          const patch = buildSubscriptionPatch(normalizeSub(sub))
+          const patch = buildSubscriptionPatch(await normalizeSub(supabase, sub))
           await upsertBrokerageSubscription(supabase, brokerageId, patch)
           await syncBrokeragePlanTier(brokerageId)
+          // THE TRIAL → CONVERTED MOMENT (wave 78A). The prospect row was
+          // stamped 'trial' when the tenant was created (a free trial or a paid
+          // activation awaiting this very event); money has now moved, so every
+          // prospect linked to this brokerage advances. COUNTED (§3) — a zero is
+          // the direct signer who was never a prospect, and is reported as zero.
+          {
+            const { data: advanced, error: advErr } = await supabase.from("platform_prospects")
+              .update({ status: "converted", updated_at: new Date().toISOString() })
+              .eq("converted_brokerage_id", brokerageId).eq("status", "trial")
+              .select("id")
+            if (advErr) console.error("[Billing Webhook] prospect trial→converted advance refused:", advErr.message)
+            else if ((advanced ?? []).length > 0) console.log(`[Billing Webhook] ${(advanced ?? []).length} prospect(s) advanced trial→converted for ${brokerageId}`)
+          }
           // Safety: ensure the paid account is fully provisioned (idempotent no-op
           // when signup already provisioned it).
           try {
@@ -160,23 +237,29 @@ export async function POST(request: NextRequest) {
           console.error("[Billing Webhook] Failed to update invoice:", error)
         }
 
-        // Emit payment failed alert notification
-        await supabase.from("notifications").insert({
+        // Emit payment failed alert notification. Blind-spot burn-down (lane
+        // 75D, notification fan-out census) — sentinelWrite (service-role client).
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           brokerage_id: brokerageId,
           type: "billing_alert",
           title: "Payment Failed",
           body: `Your subscription payment of $${(invoice.amount_due / 100).toFixed(2)} failed. Please update your payment method.`,
           priority: "high",
-        })
+        }), { table: "notifications", flow: "billing_payment_failed_alert", brokerageId, reason: "the invoice row itself already recorded the failure; this is only the in-app alert" })
 
         break
       }
 
-      // ─── SUBSCRIPTION UPDATED ────────────────────────────────────────────────
+      // ─── SUBSCRIPTION CREATED / UPDATED (items: tier + seat packages) ────────
+      // A tier change made in the Stripe dashboard, a seat-package quantity
+      // change, a downgrade, a reprice — every one arrives here and the row
+      // follows the ITEMS (wave 79A: "subscriptions will be setup in stripe so
+      // they sync"). `created` is handled by the same branch so a subscription
+      // staff mint directly in Stripe (custom multi_location pricing) lands too.
+      case "customer.subscription.created":
       case "customer.subscription.updated": {
         const subscription = event.data.object as Stripe.Subscription
         const brokerageId = subscription.metadata?.brokerage_id
-        const tierId = subscription.metadata?.tier_id
 
         if (!brokerageId) {
           console.error("[Billing Webhook] No brokerage_id in subscription metadata")
@@ -186,7 +269,7 @@ export async function POST(request: NextRequest) {
         // Link/update the brokerage's ONE subscription row (never a duplicate) —
         // the signup row has no stripe_subscription_id, so a raw upsert-by-that-id
         // used to insert a second row here.
-        const patch = buildSubscriptionPatch(normalizeSub(subscription))
+        const patch = buildSubscriptionPatch(await normalizeSub(supabase, subscription))
         await upsertBrokerageSubscription(supabase, brokerageId, patch)
 
         // Keep brokerages.plan_tier in sync with the active subscription so
@@ -226,13 +309,13 @@ export async function POST(request: NextRequest) {
         await syncBrokeragePlanTier(brokerageId)
 
         // Notify brokerage
-        await supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           brokerage_id: brokerageId,
           type: "billing_alert",
           title: "Subscription Cancelled",
           body: "Your subscription has been cancelled. Your access will be limited.",
           priority: "high",
-        })
+        }), { table: "notifications", flow: "billing_subscription_cancelled_alert", brokerageId, reason: "the tier downgrade itself already applied; this is only the in-app alert" })
 
         break
       }
@@ -240,14 +323,42 @@ export async function POST(request: NextRequest) {
       // ─── STRIPE CONNECT: ACCOUNT UPDATED (onboarding complete) ───────────────
       case "account.updated": {
         const account = event.data.object as Stripe.Account
-        if (account.details_submitted && account.charges_enabled) {
-          await setStripeOnboardingByAccount(supabase, account.id, true)
-        }
+        // PASS the computed boolean, do not GATE on it. This branch used to be
+        // `if (details_submitted && charges_enabled) set(..., true)` — it could
+        // only ever promote. When Stripe later RESTRICTS a connected account
+        // (expired verification documents, failed KYC, charges_enabled flipping
+        // back to false) that fires another account.updated with the flag false,
+        // and the old shape simply ignored it: `stripe_onboarding_complete`
+        // stayed true forever.
+        //
+        // That is a money defect, not a cosmetic one. `initiateVendorPayout`
+        // hard-gates on `connect.onboardingComplete` immediately before
+        // `stripe.transfers.create()`, so a stale-true flag kept the payout lane
+        // transferring to a destination that can no longer receive.
+        //
+        // Merged from app/actions/vendor-payments.ts:completeStripeConnectOnboarding,
+        // which computed the same boolean and passed it through — the only
+        // implementation in the tree that could DEMOTE. (Orphan burn-down w2s2:
+        // the orphan held the correct behaviour and the wired survivor held the
+        // hole — the same shape as the voice-clone ownership guard in wave 1.)
+        await setStripeOnboardingByAccount(
+          supabase,
+          account.id,
+          Boolean(account.details_submitted && account.charges_enabled),
+        )
         break
       }
 
       default:
-        console.log(`[Billing Webhook] Unhandled event type: ${event.type}`)
+        // A delivery of an event the registration vocabulary NAMES but this
+        // switch does not handle is drift between the two — the guard holds
+        // them equal at build time; at run time it is logged as an error, not
+        // as the routine "unhandled" line Stripe's extra events get.
+        if (TENANT_BILLING_WEBHOOK_EVENTS.includes(event.type)) {
+          console.error(`[Billing Webhook] DRIFT — ${event.type} is in TENANT_BILLING_WEBHOOK_EVENTS but has no case here`)
+        } else {
+          console.log(`[Billing Webhook] Unhandled event type: ${event.type}`)
+        }
     }
 
     return NextResponse.json({ received: true })

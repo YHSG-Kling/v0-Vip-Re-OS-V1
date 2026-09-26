@@ -2,9 +2,14 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { NextRequest, NextResponse } from "next/server"
+import { redactCredentials } from "@/lib/security/export-credential-scan"
 
-// Role validation for admin routes
-const ALLOWED_ROLES = ["broker", "admin", "superadmin", "compliance_officer"]
+// Role validation for admin routes.
+// SCOPE LADDER (kept inline — admits compliance_officer; platform staff pass
+// via the separate platform_role check below): 'superadmin' removed — dead as
+// users.user_type (0 live rows); broker_owner added — storable seat that owns
+// the brokerage.
+const ALLOWED_ROLES = ["broker", "broker_owner", "admin", "compliance_officer"]
 
 interface UnifiedAuditEvent {
   id: string
@@ -240,9 +245,17 @@ export async function GET(request: NextRequest) {
 
   // 4. commission_distributions (compliance sensitive)
   if (entityType === "all" || entityType === "commission" || complianceOnly) {
+    // `recipient_id` REMOVED from this select (2026-08-27): on
+    // commission_distributions NO writer has ever set that column — the wired
+    // identity spelling on this table is `agent_id` (lib/agents/
+    // referral-closer.ts, lib/application/transactions.ts both write it), and
+    // the polymorphic recipient_id lives on transaction_commissions (see
+    // lib/commission/ledger-sync.ts). This handler also never used the value
+    // it selected. The column itself is now writer-less AND reader-less —
+    // recorded for a future schema retirement pass, not dropped here.
     const { data: distributions } = await supabase
       .from("commission_distributions")
-      .select("id, transaction_id, recipient_id, distribution_type, calculated_amount, created_at")
+      .select("id, transaction_id, distribution_type, calculated_amount, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startDate.toISOString())
       .lte("created_at", endDate.toISOString())
@@ -267,38 +280,35 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // 5. vapi_voice_calls (compliance sensitive)
+  // 5. voice_calls (compliance sensitive) — the single voice ledger. The AI
+  // voice lane records every call here (vendor_call_id holds the vendor CallSid);
+  // the legacy vapi_voice_calls billing table was retired.
   if (entityType === "all" || entityType === "voice_call" || complianceOnly) {
-    const { data: vapiCalls } = await supabase
-      .from("vapi_voice_calls")
-      .select("id, voice_call_id, vapi_call_id, created_at")
+    const { data: voiceCalls } = await supabase
+      .from("voice_calls")
+      .select("id, vendor_call_id, agent_id, contact_id, direction, status, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startDate.toISOString())
       .lte("created_at", endDate.toISOString())
       .order("created_at", { ascending: false })
       .limit(500)
 
-    if (vapiCalls) {
-      for (const call of vapiCalls) {
-        // Get voice_call details
-        const { data: voiceCall } = call.voice_call_id 
-          ? await supabase.from("voice_calls").select("agent_id, contact_id, direction, status").eq("id", call.voice_call_id).single()
-          : { data: null }
-        
-        const actorName = voiceCall?.agent_id ? await getCachedAgentName(voiceCall.agent_id) : "System"
-        const contactName = voiceCall?.contact_id ? await getCachedContactName(voiceCall.contact_id) : ""
+    if (voiceCalls) {
+      for (const call of voiceCalls) {
+        const actorName = call.agent_id ? await getCachedAgentName(call.agent_id) : "System"
+        const contactName = call.contact_id ? await getCachedContactName(call.contact_id) : ""
 
         events.push({
           id: call.id,
           timestamp: call.created_at,
           entity_type: "voice_call",
-          entity_id: call.voice_call_id,
+          entity_id: call.id,
           event_type: "voice_call",
           actor_name: actorName,
           subject_name: contactName,
-          summary: `[${voiceCall?.direction || "unknown"}] call with ${contactName || "unknown contact"}`,
-          metadata_json: { vapi_call_id: call.vapi_call_id, status: voiceCall?.status },
-          source_table: "vapi_voice_calls",
+          summary: `[${call.direction || "unknown"}] call with ${contactName || "unknown contact"}`,
+          metadata_json: { vendor_call_id: call.vendor_call_id, status: call.status },
+          source_table: "voice_calls",
         })
       }
     }
@@ -464,6 +474,26 @@ export async function GET(request: NextRequest) {
     const maxExport = 10000
     const exportEvents = filteredEvents.slice(0, maxExport)
     
+    // NO CREDENTIAL LEAVES IN THIS FILE — owner ruling (finding #294), verbatim:
+    // "294 no credentials should be listed in csv."
+    //
+    // `metadata_json` is the one UNBOUNDED column in this export. Nine of the ten
+    // sources above build a small explicit object; the lifecycle_events source
+    // (:176) passes `event.metadata` through WHOLESALE, and its writer set is open
+    // — anything that ever calls emitEvent can put anything in it. One such writer
+    // exists today: lib/kernel/reporting.ts#exportReportPdf stores `blobUrl`, a
+    // PERMANENT, UNAUTHENTICATED Vercel Blob URL where the URL is the whole
+    // authorization, and that would ride out of here verbatim.
+    //
+    // MEASURED live 2026-08-22 (hrvaqgvukzxfskkcrwbt), both numbers together
+    // because a bare zero reads as "already safe": 284 lifecycle_events rows, 0
+    // carrying a signed-object path, query token, JWT, storage URL or blob URL. So
+    // this is a latent channel, not a live leak — and it is closed at the SINK
+    // rather than at each writer, because the writer set is the part that grows.
+    //
+    // WHAT A READER SHOULD USE INSTEAD: the marker names the hole. Open the event
+    // in the admin audit view, signed in, if the withheld value matters — and if a
+    // credential is genuinely turning up in the audit ledger, fix the writer.
     const csvRows = [
       ["timestamp", "entity_type", "summary", "actor", "source_table", "metadata_json"].join(","),
       ...exportEvents.map(e => [
@@ -472,7 +502,7 @@ export async function GET(request: NextRequest) {
         `"${e.summary.replace(/"/g, '""')}"`,
         `"${e.actor_name.replace(/"/g, '""')}"`,
         e.source_table,
-        `"${JSON.stringify(e.metadata_json).replace(/"/g, '""')}"`,
+        `"${redactCredentials(JSON.stringify(e.metadata_json)).replace(/"/g, '""')}"`,
       ].join(","))
     ]
 

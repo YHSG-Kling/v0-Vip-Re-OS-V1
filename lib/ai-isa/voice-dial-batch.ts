@@ -11,6 +11,7 @@
 // is the single source of truth, applied at BOTH propose and approve so a contact who
 // revokes consent in the interim is silently dropped before any dial.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -158,12 +159,12 @@ export async function proposeIsaDialBatch(
       const { data: a } = await supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
       const agentUserId = (a as { user_id: string | null } | null)?.user_id ?? null
       if (agentUserId) {
-        await supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id: agentUserId, brokerage_id: params.brokerageId, type: "dial_batch_approval",
           title: "AI ISA wants to call your contacts",
           body: `${targets.length} consented contact${targets.length === 1 ? "" : "s"} ready to dial — review & approve.`,
           entity_type: "ai_isa_call_batch", entity_id: batchId, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "voice_dial_batch_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
     } catch (e) {
       console.error("[proposeIsaDialBatch] real-time approval alert failed:", e)
@@ -185,7 +186,7 @@ export type DialExecutor = (target: DialTarget, ctx: { brokerageId: string; agen
 const realDialExecutor: DialExecutor = async (target, ctx) => {
   const { initiateVoiceCall } = await import("@/lib/voice-engine/call-executor")
   const res = await initiateVoiceCall(
-    { contactId: target.contact_id, initiatorRole: "ai", callType: "outbound", vendor: "vapi_isa", agentId: ctx.agentId ?? undefined },
+    { contactId: target.contact_id, initiatorRole: "ai", callType: "outbound", vendor: "twilio", agentId: ctx.agentId ?? undefined },
     target.phone,
   )
   // ai_isa_calls.voice_call_id FKs to voice_calls(id) — use callId (the row id), not the
@@ -298,7 +299,7 @@ export async function enqueueDialBatchNotifications(
   if (rows.length === 0) return { agentAlerts: 0, managerEscalations: 0 }
 
   const { data: mgrs } = await supabase.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(20)
   const managerIds = ((mgrs ?? []) as Array<{ id: string }>).map((m) => m.id)
 
   const already = async (userId: string, batchId: string, type: string) => {

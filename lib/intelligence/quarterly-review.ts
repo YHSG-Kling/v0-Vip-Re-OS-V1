@@ -14,6 +14,7 @@
  */
 
 import type { ExpansionSuggestion } from "@/lib/platform/expansion-advisor"
+import { usd } from "@/lib/format/money"
 
 export interface QuarterFacts {
   /** trailing-90d window label composed by the caller (e.g. "Apr 14 – Jul 13"). */
@@ -68,7 +69,7 @@ export interface QuarterlyReview {
   nextMoves: string[]
 }
 
-const usd = (n: number): string => `$${Math.round(n).toLocaleString("en-US")}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 export function composeQuarterlyReview(f: QuarterFacts): QuarterlyReview {
   const outcomes: string[] = [

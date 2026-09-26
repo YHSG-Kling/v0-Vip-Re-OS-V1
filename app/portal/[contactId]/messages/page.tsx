@@ -111,7 +111,7 @@ export default async function PortalMessagesPage({ params }: PageProps) {
     .from("transactions")
     .select("id, property_address, stage")
     .or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
-    .in("status", ["active", "pending", "under_contract"])
+    .in("status", ["active", "under_contract"])
     .limit(1)
 
   if (transactions?.[0]) {

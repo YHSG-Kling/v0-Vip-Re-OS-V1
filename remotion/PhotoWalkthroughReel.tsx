@@ -34,19 +34,18 @@
  * so it slots into the same render pipeline + bookends + music-mood.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Easing,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Easing, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { EqualHousingMark } from "./components/EqualHousingMark"
+import { EndCard } from "./components/EndCard"
+import { KenBurnsPhoto } from "./components/KenBurnsPhoto"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface PhotoWalkthroughReelProps {
@@ -90,22 +89,30 @@ export interface PhotoWalkthroughReelProps {
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 
-// Bookend windows (frames @ 30fps). Cover = 2s, outro = 3s. The PHOTO TOUR
-// fills everything in between; its length is computed from the composition's
-// durationInFrames so the same component works at any registered duration.
-const COVER_FRAMES = 60
-const OUTRO_FRAMES = 90
+// Bookend windows, from the ONE registry (lib/video/duration-model.ts, wave
+// 78 — cover 2s, outro 3s). The PHOTO TOUR fills everything in between; its
+// length is computed from the composition's durationInFrames so the same
+// component works at any duration calculateMetadata sizes it to.
+const BOOKENDS = compositionBookends("PhotoWalkthroughReel")
+const COVER_FRAMES = BOOKENDS.introFrames
+const OUTRO_FRAMES = BOOKENDS.outroFrames
 
 export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props) => {
   const { durationInFrames, fps } = useVideoConfig()
 
-  // The tour occupies the middle. Guard tiny durations so the body window is
-  // always positive even at minimal registered lengths.
-  const coverFrames = Math.min(COVER_FRAMES, Math.floor(durationInFrames * 0.15))
-  const outroFrames = Math.min(OUTRO_FRAMES, Math.floor(durationInFrames * 0.2))
-  const bodyStart = coverFrames
-  const bodyFrames = Math.max(1, durationInFrames - coverFrames - outroFrames)
-  const outroStart = bodyStart + bodyFrames
+  // The tour occupies the middle. lib/video/assembly-timeline.ts derives the
+  // split from the composition's OWN durationInFrames (never a literal) so
+  // the same component works at any registered length, and it guarantees
+  // intro + body + outro === durationInFrames exactly — no gap, no overrun —
+  // even at a pathologically short registration (scripts/video-assembly-
+  // simulator.ts §sums proves this against every registered geometry).
+  const timeline = computeAssemblyTimeline({
+    durationInFrames,
+    introFrames: COVER_FRAMES,
+    outroFrames: OUTRO_FRAMES,
+  })
+  const { from: bodyStart, durationInFrames: bodyFrames } = timeline.body
+  const { from: outroStart, durationInFrames: outroFrames } = timeline.outro
 
   // Plan the Ken Burns tour from the photo set. Empty photos → [] (honest).
   const clips = kenBurnsPlan(props.imageUrls, bodyFrames, {
@@ -117,7 +124,7 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
     <AbsoluteFill style={{ backgroundColor: "#0b0b0c" }}>
       {props.voiceoverUrl && <Audio src={props.voiceoverUrl} />}
 
-      <Sequence from={0} durationInFrames={coverFrames}>
+      <Sequence from={0} durationInFrames={timeline.intro.durationInFrames}>
         <CoverFrame {...props} />
       </Sequence>
 
@@ -140,12 +147,14 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
         />
       </Sequence>
 
-      {props.brand.showEhoMark && <EhoBadge />}
+      {props.brand.showEhoMark && <EqualHousingMark variant="badge" fontFamily={FONT} />}
 
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the outro/QR tile. */}
       <CaptionLayer
         cues={props.captionsCues}
         script={props.captionScript}
         accentColor={props.brand.accentColor}
+        hiddenFromFrame={outroStart}
       />
     </AbsoluteFill>
   )
@@ -153,7 +162,8 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
 
 // ─── Cover ───────────────────────────────────────────────────────────────────
 
-const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, cityState, brand }) => {
+// Wave 81C — on the MLS cut the cover paints no logo and the address instead of the hook.
+const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, cityState, brand, mlsClean }) => {
   const frame = useCurrentFrame()
   const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.92], {
     extrapolateLeft: "clamp",
@@ -172,14 +182,14 @@ const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, citySt
           flexDirection: "column",
           justifyContent: "center",
           height: "100%",
-          transform: `translateY(${rise}px)`,
+          translate: `0 ${rise}px`,
         }}
       >
-        {brand.logoUrl && (
-          <Img src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
+        {!mlsClean && brand.logoUrl && (
+          <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 92, margin: 0, fontWeight: 800, letterSpacing: -1, fontFamily: FONT }}>
-          {hook}
+          {mlsClean ? mlsNeutralTitle(address) : hook}
         </h1>
         {address && (
           <p style={{ color: "white", fontSize: 52, marginTop: 24, opacity: 0.92, fontFamily: FONT }}>{address}</p>
@@ -209,137 +219,36 @@ const PhotoTour: React.FC<{ clips: KenBurnsClip[]; brand: PhotoWalkthroughReelPr
   )
 }
 
-/**
- * One Ken Burns photo: scale + pan via interpolate over the clip's LOCAL frame
- * window (the wrapping Sequence resets useCurrentFrame to 0 at the clip start),
- * plus a lead-in/lead-out opacity cross-fade. Renders the synthesized room
- * caption pinned bottom-left.
- */
-const KenBurnsPhoto: React.FC<{ clip: KenBurnsClip; brand: PhotoWalkthroughReelProps["brand"] }> = ({
-  clip,
-  brand,
-}) => {
-  const frame = useCurrentFrame()
-  const dur = clip.durationFrames
-
-  // Ken Burns scale + pan. translate is expressed as a PERCENT of the frame
-  // (panFromXY/panToXY are %), so we drive translate via percent units.
-  const scale = interpolate(frame, [0, dur], [clip.startScale, clip.endScale], {
-    easing: Easing.bezier(0.45, 0, 0.55, 1),
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  })
-  const panX = interpolate(frame, [0, dur], [clip.panFromXY[0], clip.panToXY[0]], {
-    easing: Easing.bezier(0.45, 0, 0.55, 1),
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  })
-  const panY = interpolate(frame, [0, dur], [clip.panFromXY[1], clip.panToXY[1]], {
-    easing: Easing.bezier(0.45, 0, 0.55, 1),
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  })
-
-  // Cross-fade: fade IN over the leading edge, fade OUT over the trailing
-  // cross-fade window so the next clip (which has already mounted underneath)
-  // shows through. The final clip has crossfadeFrames === 0 → no trailing fade.
-  const fadeIn = Math.min(dur, clip.crossfadeFrames > 0 ? clip.crossfadeFrames : 10)
-  const fadeOutStart = dur - clip.crossfadeFrames
-  const opacity = interpolate(
-    frame,
-    [0, fadeIn, Math.max(fadeIn, fadeOutStart), dur],
-    [0, 1, 1, clip.crossfadeFrames > 0 ? 0 : 1],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
-  )
-
-  // Caption fades in just after the photo lands.
-  const captionOpacity = interpolate(frame, [Math.min(fadeIn, 8), Math.min(fadeIn, 8) + 12], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  })
-
-  return (
-    <AbsoluteFill style={{ opacity }}>
-      <Img
-        src={clip.url}
-        style={{
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          transform: `scale(${scale}) translate(${panX}%, ${panY}%)`,
-        }}
-      />
-      {/* Bottom gradient so the caption is legible over any photo. */}
-      <AbsoluteFill
-        style={{ background: "linear-gradient(to top, rgba(0,0,0,0.62), transparent 38%)" }}
-      />
-      {clip.roomLabel && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 56,
-            left: 56,
-            opacity: captionOpacity,
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-          }}
-        >
-          <div
-            style={{
-              width: 56,
-              height: 6,
-              borderRadius: 3,
-              backgroundColor: brand.accentColor,
-            }}
-          />
-          <div
-            style={{
-              color: "white",
-              fontSize: 46,
-              fontWeight: 800,
-              letterSpacing: -0.5,
-              fontFamily: FONT,
-              textShadow: "0 2px 12px rgba(0,0,0,0.4)",
-            }}
-          >
-            {clip.roomLabel}
-          </div>
-        </div>
-      )}
-    </AbsoluteFill>
-  )
-}
+// TOMBSTONE (wave 80C, CLAUDE.md §1.1): the private `KenBurnsPhoto` that
+// stood here (scale + pan over the clip's local window, cross-fade, room
+// caption) MOVED to remotion/components/KenBurnsPhoto.tsx — the survivor —
+// because MemoryVideoReel's seller_audio_photos mode renders the home's
+// photos with the same component. Imported above; behaviour byte-identical
+// here (showCaption defaults to true).
 
 // ─── Outro ───────────────────────────────────────────────────────────────────
 
-const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel }) => {
-  const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  })
-  return (
-    <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
-      {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
-      )}
-      <h1 style={{ color: "white", fontSize: 76, margin: 0, fontWeight: 800, fontFamily: FONT }}>
-        {ctaLabel || "DM me to tour."}
-      </h1>
-      {brand.agentName && (
-        <p style={{ color: brand.accentColor, fontSize: 44, marginTop: 32, fontWeight: 600, fontFamily: FONT }}>
-          {brand.agentName}
-        </p>
-      )}
-      {brand.agentPhone && (
-        <p style={{ color: "white", fontSize: 38, opacity: 0.9, marginTop: 8, fontFamily: FONT }}>
-          {brand.agentPhone}
-        </p>
-      )}
-    </AbsoluteFill>
-  )
-}
+// TOMBSTONE (lane 78D, §1.1): the private `OutroCTA` (CTA + agent name +
+// phone, no QR — the EHO badge on this reel rides the cover via
+// <EqualHousingMark>) was MERGED onto remotion/components/EndCard.tsx — the
+// ONE end card the four outros in this fleet now share. The outro window is
+// still whatever computeAssemblyTimeline derives.
+// Wave 81C — THE MLS CUT: the end card prints the address and the fair-housing
+// mark only (no CTA, no name, no phone, no logo — lib/video/render-cut.ts).
+const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel, address, cityState, mlsClean }) => (
+  <EndCard
+    brand={mlsClean ? { ...brand, logoUrl: undefined } : brand}
+    headline={mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel || "DM me to tour.")}
+    subline={mlsClean ? null : (brand.agentName ?? null)}
+    detail={mlsClean ? (brand.showEhoMark !== false ? "Equal Housing Opportunity" : null) : (brand.agentPhone ?? null)}
+    footer={null}
+    align="start"
+    logoHeight={56}
+    fontFamily={FONT}
+    showQr={false}
+    mlsClean={mlsClean}
+  />
+)
 
 // ─── Fallback (no photos) ─────────────────────────────────────────────────────
 
@@ -376,21 +285,6 @@ const FallbackCard: React.FC<PhotoWalkthroughReelProps> = ({ address, cityState,
   )
 }
 
-const EhoBadge: React.FC = () => (
-  <div
-    style={{
-      position: "absolute",
-      bottom: 24,
-      left: 24,
-      backgroundColor: "rgba(255,255,255,0.9)",
-      color: "#000",
-      padding: "6px 12px",
-      borderRadius: 6,
-      fontSize: 14,
-      fontWeight: 600,
-      fontFamily: FONT,
-    }}
-  >
-    Equal Housing Opportunity
-  </div>
-)
+// EhoBadge MERGED onto the survivor remotion/components/EqualHousingMark.tsx:58
+// (variant="badge" fontFamily={FONT} reproduces this exact positioning/style).
+// Tombstone — do not reintroduce a third local copy of the mark (§6).

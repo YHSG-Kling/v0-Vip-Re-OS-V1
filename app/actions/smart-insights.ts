@@ -2,6 +2,11 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
+import {
+  estimateMonthlyRentFromComps,
+  rentSourceCaption,
+  type ProviderRentEstimate,
+} from "@/lib/property/rent-estimate"
 
 // ==================== SMART INSIGHTS GENERATION ====================
 
@@ -54,8 +59,28 @@ export async function generateSmartInsights(
   // Generate school insights
   const schoolInsights = await generateSchoolInsights(propertyData, preferences?.schoolPreferences)
 
+  // The tenant this contact belongs to. Needed BEFORE the investment block: the
+  // rental-comp provider is platform-gated and metered per tenant, so with no
+  // brokerage there is no rent lookup — and the block says so rather than
+  // inventing one. Read from the contact rather than accepted from the caller:
+  // this is a "use server" endpoint, so every argument is attacker-controlled
+  // and a caller-supplied brokerage id would let anyone spend another tenant's
+  // RentCast budget.
+  const { data: contactRow, error: contactErr } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  if (contactErr) {
+    console.error("[v0] smart-insights: could not read contact brokerage:", contactErr.message)
+  }
+  const brokerageId = (contactRow as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+
   // Generate investment insights
-  const investmentInsights = await generateInvestmentInsights(propertyData, preferences?.investmentGoals)
+  const investmentInsights = await generateInvestmentInsights(propertyData, preferences?.investmentGoals, {
+    brokerageId,
+    contactId,
+  })
 
   // Generate neighborhood insights
   const neighborhoodInsights = await generateNeighborhoodInsights(propertyData)
@@ -70,6 +95,9 @@ export async function generateSmartInsights(
       {
         property_id: propertyId,
         contact_id: contactId,
+        // The column exists on contact_property_insights and was never written,
+        // so every insight row was tenant-less. It is resolved above anyway.
+        brokerage_id: brokerageId,
         commute_insights: commuteInsights,
         school_insights: schoolInsights,
         investment_insights: investmentInsights,
@@ -222,64 +250,160 @@ Return this exact JSON structure:
   }
 }
 
+/**
+ * THE INVESTMENT SNAPSHOT ON THE BUYER PORTAL — and the fabrication that used to
+ * be its foundation.
+ *
+ * WHAT THIS USED TO DO, and why every number below it was worthless:
+ *
+ *     const price = propertyData.price || propertyData.listPrice || 500000
+ *     const estimatedMonthlyRent = Math.round(price * 0.0085)
+ *
+ * Two inventions in two lines. A property record carrying no price fell back to
+ * a HARD-CODED $500,000 — not a marker, not a null, a plausible number — and the
+ * rent was then 0.85% of it. A home with no price on file therefore displayed
+ * "$4,250/mo" to a client, in a card headed "Investment Snapshot", derived from
+ * nothing whatsoever. And the fabrication did not stop at the rent tile: annual
+ * rent, operating expenses, NOI, CAP RATE, CASH-ON-CASH, monthly and annual cash
+ * flow, `meetsGoals` and the plain-English `recommendation` were ALL computed
+ * from it. Deleting only the rent line would have left every derived figure
+ * standing on the same guess with the evidence removed.
+ *
+ * WHAT IT DOES NOW:
+ *   · The rent comes from RentCast's long-term rental listings — the median
+ *     ASKING rent of comparable homes actually published nearby — through
+ *     lib/property/rent-estimate.ts, which gates on eligibility before spending
+ *     and meters the call to THIS lane. Nothing here estimates a rent.
+ *   · No price on the record → no snapshot. `price: null`, every derived block
+ *     null, and a sentence saying which input was missing.
+ *   · No rent from the provider → the rent-derived half is null (returns,
+ *     rentalAnalysis.estimatedMonthlyRent, meetsGoals, recommendation) and
+ *     `rentSource.unavailableNote` says why in plain words. The price-derived
+ *     half (price per sqft, appreciation) still stands, because it never
+ *     depended on the rent.
+ *   · MISSING READS AS MISSING. Null and a note — never 0, never a substituted
+ *     figure, never a silently dropped line.
+ *
+ * The 45% expense ratio, the 25%-down/7%/30-year financing and the 4.5%
+ * appreciation rate are ASSUMPTIONS, not measurements, and they are named as
+ * such on `assumptions` so a surface can show them beside anything derived from
+ * them. They were unlabelled before. See the report for the appreciation rate,
+ * which is still a hard-coded constant and is reported rather than fixed here.
+ */
 async function generateInvestmentInsights(
   propertyData: Record<string, any>,
-  goals?: ContactPreferences["investmentGoals"],
+  goals: ContactPreferences["investmentGoals"] | undefined,
+  tenant: { brokerageId: string | null; contactId: string | null },
 ): Promise<Record<string, any>> {
-  const price = propertyData.price || propertyData.listPrice || 500000
-  const sqft = propertyData.sqft || propertyData.squareFeet || 2000
+  const rawPrice = propertyData.price ?? propertyData.listPrice ?? null
+  const price = typeof rawPrice === "number" && Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice : null
+  const rawSqft = propertyData.sqft ?? propertyData.squareFeet ?? null
+  const sqft = typeof rawSqft === "number" && Number.isFinite(rawSqft) && rawSqft > 0 ? rawSqft : null
 
-  // Estimate rental value (typically 0.8-1.2% of home value monthly in most markets)
-  const estimatedMonthlyRent = Math.round(price * 0.0085)
+  // The one rent figure, from a data provider or not at all. Issued even when
+  // the price is missing: "what do comparable homes rent for here?" is a real,
+  // answerable question that does not depend on this property's list price.
+  const rentSource: ProviderRentEstimate = await estimateMonthlyRentFromComps({
+    brokerageId: tenant.brokerageId,
+    contactId: tenant.contactId,
+    city: propertyData.city ?? null,
+    state: propertyData.state ?? null,
+    zip: propertyData.zip ?? propertyData.zip_code ?? null,
+    bedrooms: propertyData.bedrooms ?? propertyData.beds ?? null,
+    bathroomsMin: null,
+    propertyType: propertyData.property_type ?? propertyData.propertyType ?? null,
+    // The lane that spent, named truthfully. This is a buyer-portal property
+    // page, not the buyer LISTING search that `buyer_search` means.
+    systemSource: "portal_investment_snapshot",
+  })
+
+  const estimatedMonthlyRent = rentSource.monthlyRent
+
+  const assumptions = {
+    operatingExpenseRatio: 0.45,
+    downPaymentPct: 0.25,
+    mortgageRatePct: 7,
+    mortgageTermYears: 30,
+    note:
+      "Cap rate, cash-on-cash and cash flow are computed from the provider-sourced median asking rent above using these standing assumptions — a 45% operating-expense ratio and 25% down at 7% over 30 years. They are assumptions, not quotes, and not this property's actual expenses or financing.",
+  }
+
+  // ── The price-derived half. Null when there is no price, never defaulted. ──
+  const appreciationRate = 4.5 // Standing assumption — see `assumptions`, and the lane report.
+  const downPayment = price != null ? price * 0.25 : null
+  const appreciation =
+    price != null
+      ? {
+          estimatedAnnualRate: appreciationRate,
+          fiveYearProjectedValue: Math.round(price * Math.pow(1 + appreciationRate / 100, 5)),
+          fiveYearEquityGain:
+            Math.round(price * Math.pow(1 + appreciationRate / 100, 5)) - price + (downPayment ?? 0),
+        }
+      : null
+
+  const rentalAnalysis = {
+    estimatedMonthlyRent,
+    rentSourceLabel: rentSource.label,
+    rentSourceCaption: rentSourceCaption(rentSource),
+    pricePerSqft: price != null && sqft != null ? Math.round(price / sqft) : null,
+    rentPerSqft:
+      estimatedMonthlyRent != null && sqft != null
+        ? Number((estimatedMonthlyRent / sqft).toFixed(2))
+        : null,
+  }
+
+  // ── The rent-derived half. Needs BOTH a provider rent and a price. ─────────
+  if (estimatedMonthlyRent == null || price == null) {
+    const missing: string[] = []
+    if (price == null) missing.push("this property record carries no list price")
+    if (estimatedMonthlyRent == null) missing.push(rentSource.unavailableNote ?? "no rental comparables were available")
+    return {
+      price,
+      rentalAnalysis,
+      rentSource,
+      assumptions,
+      // Every rent-derived figure is ABSENT, not zero and not omitted. A reader
+      // who sees a snapshot with no cap rate and this sentence knows exactly
+      // what is missing; a reader shown a cap rate computed from a guess does
+      // not know anything at all.
+      returns: null,
+      appreciation,
+      meetsGoals: null,
+      recommendation: null,
+      unavailableNote: `No return figures (cap rate, cash-on-cash, cash flow) are shown for this property: ${missing.join("; and ")}. Nothing was estimated in their place.`,
+    }
+  }
+
   const annualRent = estimatedMonthlyRent * 12
+  const netOperatingIncome = annualRent - Math.round(annualRent * assumptions.operatingExpenseRatio)
+  const capRate = (netOperatingIncome / price) * 100
 
-  // Estimate expenses (typically 40-50% of rent for SFH)
-  const estimatedExpenses = Math.round(annualRent * 0.45)
-  const netOperatingIncome = annualRent - estimatedExpenses
-
-  // Cap rate
-  const capRate = ((netOperatingIncome / price) * 100).toFixed(2)
-
-  // Cash on cash (assuming 25% down, 7% rate, 30yr)
-  const downPayment = price * 0.25
-  const loanAmount = price * 0.75
-  const monthlyMortgage = calculateMortgage(loanAmount, 7, 30)
-  const annualDebtService = monthlyMortgage * 12
-  const cashFlow = netOperatingIncome - annualDebtService
-  const cashOnCash = ((cashFlow / downPayment) * 100).toFixed(2)
-
-  // Appreciation estimate
-  const appreciationRate = 4.5 // Historical average
-  const fiveYearValue = Math.round(price * Math.pow(1 + appreciationRate / 100, 5))
-  const fiveYearEquity = fiveYearValue - price + downPayment
+  const loanAmount = price * (1 - assumptions.downPaymentPct)
+  const monthlyMortgage = calculateMortgage(loanAmount, assumptions.mortgageRatePct, assumptions.mortgageTermYears)
+  const cashFlow = netOperatingIncome - monthlyMortgage * 12
+  const cashOnCash = (cashFlow / (price * assumptions.downPaymentPct)) * 100
 
   return {
-    rentalAnalysis: {
-      estimatedMonthlyRent,
-      pricePerSqft: Math.round(price / sqft),
-      rentPerSqft: (estimatedMonthlyRent / sqft).toFixed(2),
-    },
+    price,
+    rentalAnalysis,
+    rentSource,
+    assumptions,
     returns: {
-      capRate: Number.parseFloat(capRate),
-      cashOnCash: Number.parseFloat(cashOnCash),
+      capRate: Number(capRate.toFixed(2)),
+      cashOnCash: Number(cashOnCash.toFixed(2)),
       monthlyNetCashFlow: Math.round(cashFlow / 12),
       annualCashFlow: Math.round(cashFlow),
     },
-    appreciation: {
-      estimatedAnnualRate: appreciationRate,
-      fiveYearProjectedValue: fiveYearValue,
-      fiveYearEquityGain: fiveYearEquity,
-    },
+    appreciation,
     meetsGoals:
-      goals?.strategy === "cashflow"
-        ? Number.parseFloat(cashOnCash) >= (goals?.targetCapRate || 6)
-        : Number.parseFloat(capRate) >= 5,
+      goals?.strategy === "cashflow" ? cashOnCash >= (goals?.targetCapRate || 6) : capRate >= 5,
     recommendation:
-      Number.parseFloat(capRate) >= 6
+      capRate >= 6
         ? "Strong investment potential"
-        : Number.parseFloat(capRate) >= 4
+        : capRate >= 4
           ? "Moderate investment potential"
           : "Better suited for owner occupancy",
+    unavailableNote: null,
   }
 }
 
@@ -514,14 +638,32 @@ export async function removeCommuteDestination(
   const cf = readMetadata(data?.metadata)
   const existing: CommuteDestination[] = Array.isArray(cf.commute_destinations) ? cf.commute_destinations : []
   const next = existing.filter((d) => d.name.toLowerCase() !== name.toLowerCase())
-  await supabase.from("contacts").update({ metadata: { ...cf, commute_destinations: next } }).eq("id", contactId)
+  // The error is READ. This returns `{ success: true, destinations: next }` and
+  // the UI redraws from `next`, so a refused write showed the destination gone
+  // while the row still held it — the list reappears on the next load with no
+  // trace of why. Not failed over (the caller's contract is unchanged and this is
+  // a display preference, not consent), but the loss is no longer invisible.
+  const { error: removeError } = await supabase.from("contacts").update({ metadata: { ...cf, commute_destinations: next } }).eq("id", contactId)
+  if (removeError) {
+    console.error(`[smart-insights] commute destination removal REFUSED for contact ${contactId}:`, removeError.message)
+  }
   let commute: Record<string, any> | null = null
   if (refresh) commute = await regeneratePropertyCommute(refresh.propertyId, contactId, refresh.propertyData, next).catch(() => null)
   return { success: true, destinations: next, commute }
 }
 
-/** Recompute ONLY the commute column for one property+contact (cheap, no full-insight invalidation). */
-export async function regeneratePropertyCommute(
+/**
+ * Recompute ONLY the commute column for one property+contact (cheap, no
+ * full-insight invalidation).
+ *
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT.
+ * This one is a recompute step, not a door: both call sites (:~627 and :~651)
+ * are in THIS file, inside the destination add/remove actions that own the
+ * gate, and it writes `contact_property_insights` for a caller-supplied
+ * contact+property pair. Lowered to module-private; the callers are unchanged.
+ */
+async function regeneratePropertyCommute(
   propertyId: string,
   contactId: string,
   propertyData: Record<string, any>,
@@ -732,18 +874,35 @@ export async function saveProperty(data: {
   })
 }
 
-export async function unsaveProperty(contactId: string, propertyId: string) {
+/**
+ * Remove a saved property.
+ *
+ * savedPropertyId is a `saved_properties.id` — NOT a `listings.id`. Both callers
+ * are the portal detail route, which resolves its row with `.eq("id", propertyId)`
+ * and then passed the very same value into a `listing_id` filter. listing_id FKs
+ * listings(id) (verified live) and is NULL for every IDX/RentCast save, so the
+ * delete matched nothing, `error` was null, and the caller was told "Removed from
+ * saved" while the property stayed put. Two ids of different classes, one
+ * variable name.
+ */
+export async function unsaveProperty(contactId: string, savedPropertyId: string) {
   const supabase = await createClient()
 
-  const { error } = await supabase
+  // .select() so the delete reports what it actually removed. Without it a
+  // no-match and a success are the same value.
+  const { data: removed, error } = await supabase
     .from("saved_properties")
     .delete()
     .eq("contact_id", contactId)
-    .eq("listing_id", propertyId)
+    .eq("id", savedPropertyId)
+    .select("id")
 
   if (error) {
-    console.error("[v0] Error unsaving property:", error)
+    console.error("[saved-properties] Error unsaving property:", error)
     return { success: false, error: error.message }
+  }
+  if (!removed?.length) {
+    return { success: false, error: "That property is not in your saved list" }
   }
 
   return { success: true }
@@ -766,14 +925,18 @@ export async function getSavedProperties(contactId: string) {
   return data || []
 }
 
-export async function isPropertySaved(contactId: string, propertyId: string) {
+/** Same class correction as unsaveProperty: the caller holds a saved_properties.id.
+ *  Filtering listing_id with it always returned false, so the heart rendered
+ *  UNSAVED on a property the client had opened from their own saved list — and
+ *  the toggle then took the save branch, which FK-threw. Dead in both directions. */
+export async function isPropertySaved(contactId: string, savedPropertyId: string) {
   const supabase = await createClient()
 
   const { data } = await supabase
     .from("saved_properties")
     .select("id")
     .eq("contact_id", contactId)
-    .eq("listing_id", propertyId)
+    .eq("id", savedPropertyId)
     .maybeSingle()
 
   return !!data

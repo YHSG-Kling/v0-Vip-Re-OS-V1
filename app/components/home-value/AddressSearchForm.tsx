@@ -18,6 +18,7 @@ import {
 import { ArrowRight, ArrowLeft, Loader2, Home, ClipboardList, User, Shield, CheckCircle2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Checkbox } from "@/components/ui/checkbox"
+import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
 interface ActiveQuestions {
   sellTimeline?: boolean
@@ -314,13 +315,15 @@ export function AddressSearchForm({
                 <SelectTrigger id="propertyType">
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
+                {/* Canonical options. This list previously offered "mobile_home" (no
+                    canonical equivalent — it now maps to "other"), omitted townhouse and
+                    commercial entirely, and folded townhomes into Condo. A seller with a
+                    townhouse had to mis-classify their own home, and the value they picked
+                    could not survive into a listing. */}
                 <SelectContent>
-                  <SelectItem value="single_family">Single Family</SelectItem>
-                  <SelectItem value="condo">Condo / Townhome</SelectItem>
-                  <SelectItem value="multi_family">Multi-Family</SelectItem>
-                  <SelectItem value="land">Land / Lot</SelectItem>
-                  <SelectItem value="mobile_home">Mobile / Manufactured</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
+                  {PROPERTY_TYPE_OPTIONS.map((pt) => (
+                    <SelectItem key={pt.value} value={pt.value}>{pt.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

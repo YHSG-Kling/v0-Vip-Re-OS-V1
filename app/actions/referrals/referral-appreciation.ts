@@ -20,7 +20,10 @@ import {
   type AppreciationSetting,
 } from "@/lib/kernel/referral-appreciation"
 
-const BROKERAGE_SCOPE_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// SCOPE LADDER (kept inline — team_lead deliberately gets only the team clause
+// below): 'superadmin' removed — dead as users.user_type (0 live rows);
+// broker_owner added — storable seat that owns the brokerage.
+const BROKERAGE_SCOPE_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 async function requireCaller() {
   const supabase = await createClient()

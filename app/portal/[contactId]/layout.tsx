@@ -11,6 +11,10 @@ import {
 } from "@/lib/kernel/portal"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { ensureContactPortalUser } from "@/lib/portal/portal-invite-core"
+// THE ONE resolver (§6) — same one app/api/forms/submit/route.ts and
+// app/api/open-house/attend/route.ts use.
+import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
+import { headers } from "next/headers"
 import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
 import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
@@ -60,7 +64,7 @@ export default async function PortalLayout({
   // Fetch contact (without broken embedded join)
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, contact_persona, email")
+    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, contact_persona, email, metadata")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -98,7 +102,9 @@ export default async function PortalLayout({
         .select("user_type, brokerage_id, platform_role")
         .eq("id", user.id)
         .maybeSingle()
-      const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
+      // SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
+      // (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
+      const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "broker_owner"]
       if (
         ur?.brokerage_id === contact.brokerage_id &&
         STAFF_TYPES.includes(ur?.user_type ?? "")
@@ -122,14 +128,30 @@ export default async function PortalLayout({
     // Rule 3 (legacy): kept for compatibility — same logic as 2b for non-agent staff
     // if it didn't match above (e.g. cross-brokerage admin). No-op when 2b passes.
 
-    // Rule 4: Accepted portal invite for this contact
+    // Rule 4: Accepted portal invite for this contact.
+    //
+    // `error` is destructured. supabase-js RESOLVES a refused query, so the
+    // previous `const { data: invite }` turned "this read was denied" into "there
+    // is no invite" and bounced a legitimate buyer to the login page with no way
+    // to tell an outage from a decision. The redirect still happens — failing
+    // CLOSED on an unreadable invite is right — but it is now logged as the
+    // refusal it is, so the buyer support ticket has something behind it.
+    //
+    // lib/portal/require-contact-access.ts applies the SAME rule (accepted AND
+    // unexpired) so an action can never refuse a buyer this page just admitted.
     if (!accessGranted) {
-      const { data: invite } = await supabase
+      const { data: invite, error: inviteError } = await supabase
         .from("portal_contact_invites")
         .select("status, expires_at")
         .eq("contact_id", contactId)
         .eq("email", user.email ?? "")
         .maybeSingle()
+      if (inviteError) {
+        console.error(
+          `[portal] invite check REFUSED for contact ${contactId} (${inviteError.message}) — ` +
+          "denying access, but this is an unreadable invite, not a missing one.",
+        )
+      }
       if (invite?.status === "accepted" && new Date(invite.expires_at) > new Date()) {
         accessGranted = true
       }
@@ -171,6 +193,27 @@ export default async function PortalLayout({
         .update({ status: "accepted", accepted_at: new Date().toISOString() })
         .eq("id", invite.id)
 
+      // TIER 3 OF resolveContactLanguage (owner ruling, wave 51/52 — task item
+      // 4: "only forms capture Accept-Language"): portal invite ACCEPTANCE is
+      // the client's own browser hitting this page for the first time, so its
+      // Accept-Language header is a real signal — captured here exactly once,
+      // fill-if-empty (never overwrites a language the contact or an agent
+      // already set explicitly, and never overwrites an earlier capture).
+      // Best-effort: never blocks portal access.
+      try {
+        const existingMetadata = (contact as { metadata?: Record<string, unknown> | null }).metadata ?? null
+        if (!(existingMetadata as any)?.captured_language) {
+          const h = await headers()
+          const capturedLanguage = resolveCapturedLanguage(null, h.get("accept-language"))
+          if (capturedLanguage) {
+            await supabase
+              .from("contacts")
+              .update({ metadata: { ...(existingMetadata ?? {}), captured_language: capturedLanguage } })
+              .eq("id", contactId)
+          }
+        }
+      } catch { /* best-effort — never blocks portal access */ }
+
       // Notify assigned agent (non-blocking, fire-and-forget)
       if (contact.agent_id) {
         supabase
@@ -199,26 +242,37 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode.
-  // Schema: agent_voice_profiles.agent_id (NOT user_id — old name from earlier
-  // migrations). Previously this select silently returned null and the DID
-  // chat widget never lit up.
-  // Prefer the trained did_avatar_id (presenter id from D-ID — reusable) when
-  // set; the photo/video URLs are the source assets used by talks/clips fallback.
+  // Whether the "Live: <agent>" button is offered — a REAL, setting-derived
+  // gate, not "any row exists" (CLAUDE.md §4 — no fabricated flag). Twin
+  // Studio twins (agent_avatar_assets) go through the brokerage's OWN
+  // approval workflow (brokerages.twins_require_approval → each twin's
+  // approval_status), the exact gate /api/did/agents/session already
+  // enforces at call time with a 409 — this used to just check "does ANY
+  // did_avatar_id/photo/video exist" on the LEGACY agent_voice_profiles
+  // table, so a portal client could see a live-looking button for a twin
+  // that was still training or awaiting brokerage sign-off, tap it, and get
+  // a 409 — an affordance describing a capability the session route was
+  // about to refuse. Prefer the default twin's real readiness; fall back to
+  // the legacy table's existence check ONLY for agents who have not migrated
+  // to Twin Studio at all (that table carries no separate approval column).
   let agentHasDIDAvatar = false
-  let agentDIDPhotoUrl: string | null = null
-  let agentDIDVideoUrl: string | null = null
-  let agentDIDAvatarId: string | null = null
   if (contact?.agent_id) {
-    const { data: voiceProfile } = await supabase
-      .from("agent_voice_profiles")
-      .select("did_photo_url, did_video_url, did_avatar_id")
+    const { data: defaultTwin } = await supabase
+      .from("agent_avatar_assets")
+      .select("status, approval_status")
       .eq("agent_id", contact.agent_id)
+      .eq("is_default", true)
       .maybeSingle()
-    agentDIDPhotoUrl = voiceProfile?.did_photo_url ?? null
-    agentDIDVideoUrl = voiceProfile?.did_video_url ?? null
-    agentDIDAvatarId = voiceProfile?.did_avatar_id ?? null
-    agentHasDIDAvatar = !!(agentDIDAvatarId || agentDIDPhotoUrl || agentDIDVideoUrl)
+    if (defaultTwin) {
+      agentHasDIDAvatar = defaultTwin.status === "ready" && defaultTwin.approval_status === "approved"
+    } else {
+      const { data: voiceProfile } = await supabase
+        .from("agent_voice_profiles")
+        .select("did_photo_url, did_video_url, did_avatar_id")
+        .eq("agent_id", contact.agent_id)
+        .maybeSingle()
+      agentHasDIDAvatar = !!(voiceProfile?.did_avatar_id || voiceProfile?.did_photo_url || voiceProfile?.did_video_url)
+    }
   }
 
   // Unread notification count for bell badge

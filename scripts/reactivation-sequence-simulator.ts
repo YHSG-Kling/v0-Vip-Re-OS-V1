@@ -14,8 +14,12 @@
  * Run: npx tsx scripts/reactivation-sequence-simulator.ts   (npm run test:reactivation-sequence)
  */
 import { followupSuppresses } from "../lib/lead-pipeline/reactivation-cadence"
+import { readFileSync } from "node:fs"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let passed = 0, failed = 0
+/** Set once Layer 2 actually connects, so the closing banner cannot claim a layer that never ran. */
+let liveRan = false
 const failures: string[] = []
 function check(name: string, cond: boolean, detail?: string) {
   if (cond) { passed++; console.log(`  ✓ ${name}`) }
@@ -25,12 +29,26 @@ function report() {
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Reactivation sequence verified — idempotent install, contact+lead enroll, future-intent skip, reply stops.")
+  console.log(liveRan
+    ? " ✅ Reactivation sequence verified — vocabulary, idempotent install, contact+lead enroll, future-intent skip, reply stops."
+    : " ✅ Reactivation vocabulary + cadence gate verified. Layer 2 (live install/enroll/stop) DID NOT RUN — no SUPABASE creds.")
   console.log(" REACTIVATION_SEQUENCE_PASS")
   process.exit(0)
 }
 
 const NOW = "2026-06-16T12:00:00.000Z"
+/**
+ * The installer imports server-only at module scope, so it cannot be imported
+ * from a plain tsx script. Read its two exported constants out of the source —
+ * Layer 0 stays pure and runs with no credentials, which is the point: it is the
+ * half of this simulator CI can actually execute.
+ */
+const INSTALLER_SRC = readFileSync("lib/lead-pipeline/reactivation-sequence-installer.ts", "utf8")
+const constant = (name: string) =>
+  new RegExp(`export const ${name} = "([^"]+)"`).exec(INSTALLER_SRC)?.[1] ?? ""
+const REACTIVATION_TRIGGER = constant("REACTIVATION_TRIGGER")
+const REACTIVATION_SEQUENCE_TYPE = constant("REACTIVATION_SEQUENCE_TYPE")
+
 const dormantSince = (d: number) => new Date(new Date(NOW).getTime() - d * 86_400_000).toISOString()
 
 async function main() {
@@ -38,14 +56,30 @@ async function main() {
   console.log(" Reactivation sequence consolidation simulator")
   console.log("══════════════════════════════════════════════════")
 
+  // The installer wrote trigger_event 'ai_isa_reactivation' and sequence_type
+  // 'reactivation'. Neither is in the column's live CHECK, so every insert was
+  // rejected and ensureReactivationSequence could NEVER install the sequence —
+  // campaign_sequences was empty in production. Layer 2 only runs with creds, so
+  // these two checks are what actually protects this in CI.
+  console.log("\n[Layer 0 · the installer writes values the columns admit]")
+  {
+    const triggers = CHECK_VOCABULARIES.campaign_sequences?.trigger_event ?? []
+    const types = CHECK_VOCABULARIES.campaign_sequences?.sequence_type ?? []
+    check(`trigger_event '${REACTIVATION_TRIGGER}' is in the CHECK`, triggers.includes(REACTIVATION_TRIGGER))
+    check(`sequence_type '${REACTIVATION_SEQUENCE_TYPE}' is in the CHECK`, types.includes(REACTIVATION_SEQUENCE_TYPE))
+    check("the two rejected literals are gone for good",
+      !triggers.includes("ai_isa_reactivation") && !types.includes("reactivation"))
+  }
+
   console.log("\n[Layer 1 · future-intent gate]")
   check("future follow-up date → suppresses enrollment", followupSuppresses("2026-12-01T00:00:00.000Z", NOW) === true)
   check("past/none → no suppression", followupSuppresses("2026-01-01T00:00:00.000Z", NOW) === false && followupSuppresses(null, NOW) === false)
 
   console.log("\n[Layer 2 · live: install + enroll + future-skip + reply-stop]")
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
-  if (!hasCreds) { console.log("  ⏭  Skipped — SUPABASE creds not set (Layer 1 ran)."); return report() }
+  if (!hasCreds) { console.log("  ⏭  Skipped — SUPABASE creds not set (Layers 0-1 ran)."); return report() }
 
+  liveRan = true
   const { createServiceClient } = await import("../lib/supabase/service")
   const { ensureReactivationSequence } = await import("../lib/lead-pipeline/reactivation-sequence-installer")
   const { runReactivationEnrollment } = await import("../lib/lead-pipeline/reactivation-enroller")
@@ -99,7 +133,7 @@ async function main() {
     }
     await svc.from("contacts").delete().in("id", [quietContact, futureContact]).then(() => {}, () => {})
     await svc.from("leads").delete().eq("id", quietLead).then(() => {}, () => {})
-    const { count } = await svc.from("campaign_sequences").select("id", { count: "exact", head: true }).eq("trigger_event", "ai_isa_reactivation").eq("brokerage_id", brokerageId)
+    const { count } = await svc.from("campaign_sequences").select("id", { count: "exact", head: true }).eq("trigger_event", REACTIVATION_TRIGGER).eq("brokerage_id", brokerageId)
     check("cleanup: test sequence removed", (count ?? 0) === 0)
   }
   report()

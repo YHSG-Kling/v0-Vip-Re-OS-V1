@@ -24,15 +24,13 @@
  * issue in some states.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -72,13 +70,18 @@ export interface JustSoldReelSquareProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
+  mlsClean?: boolean
 }
 
 const FPS    = 30
-const TOTAL  = 12 * FPS
-const COVER  = 2  * FPS
-const PHOTOS = 8  * FPS
-const CTA    = 2  * FPS
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `PHOTOS = 8 * FPS` stood here. Bookends come from the ONE registry; the
+// photo window is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("JustSoldReelSquare")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 /** Compute the "above asking" badge text when we have both prices.
  *  Returns null when prices aren't both present or numeric-parseable
@@ -99,13 +102,16 @@ function aboveAskingBadge(sold: string, list: string | null | undefined): string
 export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   address, cityState, soldPrice, listPrice, daysOnMarket, imageUrls,
   ctaLabel, brand, voiceoverUrl, qrCodeDataUrl, qrCaption,
-  captionsCues, captionScript,
+  captionsCues, captionScript, mlsClean,
 }) => {
   const frame    = useCurrentFrame()
+  const { durationInFrames } = useVideoConfig()
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const PHOTOS   = timeline.body.durationInFrames
   const images   = imageUrls.slice(0, 4)
   const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho  = brand.showEhoMark ?? true
-  const finalCta = ctaLabel ?? "List your home with me"
+  const finalCta = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "List your home with me")
   const badge    = aboveAskingBadge(soldPrice, listPrice ?? null)
 
   return (
@@ -125,26 +131,26 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             color: brand.primaryColor,
             fontSize: 64, fontWeight: 900, letterSpacing: 6,
             borderRadius: 8,
-            transform: `scale(${interpolate(frame, [0, 15], [0.8, 1])})`,
-            opacity: interpolate(frame, [0, 12], [0, 1]),
+            scale: interpolate(frame, [0, 15], [0.8, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" }),
+            opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             SOLD
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 32, opacity: interpolate(frame, [10, 30], [0, 1]),
+            marginTop: 32, opacity: interpolate(frame, [10, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 32, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85]),
+            fontSize: 32, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {cityState}
           </div>
-          {brand.logoUrl && (
+          {!mlsClean && brand.logoUrl && (
             <div style={{ position: "absolute", top: 40, left: 40 }}>
-              <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", opacity: 0.85 }} />
+              <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain", opacity: 0.85 }} />
             </div>
           )}
         </AbsoluteFill>
@@ -224,10 +230,10 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
           }}>
             {finalCta}
           </div>
-          {brand.agentName && (
+          {!mlsClean && brand.agentName && (
             <div style={{ fontSize: 40, color: brand.accentColor, fontWeight: 700 }}>{brand.agentName}</div>
           )}
-          {brand.agentPhone && (
+          {!mlsClean && brand.agentPhone && (
             <div style={{ fontSize: 32, color: "#fff", opacity: 0.85, marginTop: 12 }}>
               {brand.agentPhone}
             </div>
@@ -241,6 +247,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             </div>
           )}
           <QrOutroBadge
+            mlsClean={mlsClean}
             qrCodeDataUrl={qrCodeDataUrl}
             caption={qrCaption ?? "Scan to list with me"}
             primaryColor={brand.primaryColor}
@@ -249,25 +256,27 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + PHOTOS} />
     </AbsoluteFill>
   )
 }
 
 const SoldPhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const frame = useCurrentFrame()
-  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateRight: "clamp" })
+  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",
-          transform: `scale(${scale})`, transformOrigin: "center center",
+          scale, transformOrigin: "center center",
         }}
       />
     </AbsoluteFill>

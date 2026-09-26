@@ -3,9 +3,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 
 // Most actions in this file used to trust caller-supplied userId/userRole.
 // Now: every action derives identity from the session via getAgentContext.
@@ -20,20 +19,16 @@ async function requireCaller(): Promise<
   return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, userType: ctx.userType ?? "agent" }
 }
 
-function parseAIJsonResponse(text: string) {
-  // Strip markdown code blocks if present
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all content
-  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "superadmin", "super_admin", "compliance_officer"]
+  // SCOPE LADDER (kept inline — admits compliance tier; legacy uppercase
+  // spellings retained for old rows): 'superadmin'/'super_admin' removed — dead
+  // as users.user_type (0 live rows store either spelling).
+  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "compliance_officer"]
   return !adminRoles.includes(role)
 }
 
@@ -47,6 +42,8 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
   try {
     // Use AI to generate fresh content ideas
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate 5 fresh, engaging content ideas for a real estate agent targeting ${persona || "general audience"}. 
       Focus on educational, empathy-driven content that follows the "Them First" philosophy.
@@ -183,6 +180,8 @@ export async function getCompetitorContent(_userId?: string, _userRole?: string)
 
   try {
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Analyze the high-performing content strategy for these local real estate competitors: ${competitorList}.
 

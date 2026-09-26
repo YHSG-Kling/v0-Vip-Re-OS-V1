@@ -65,10 +65,6 @@ import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 import { createClient } from "@/lib/supabase/client"
 import { getOfferContext, type OfferContext } from "@/lib/contacts/ownership-model"
 import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/form-selector-step"
-import {
-  TransactionFormEsignFlow,
-  type FormTemplate,
-} from "@/app/dashboard/transactions/[id]/components/transaction-form-esign-flow"
 
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 
@@ -103,12 +99,16 @@ interface OfferInitiationFlowProps {
   initialAddress?:    string
   initialBuyerPhone?: string
   initialBuyerEmail?: string
+  /** offer_intents.id (m619) when this flow was opened via "Start Offer" from
+   *  the agent's Buyer offer requests queue — carried through to
+   *  OfferFormWizard so createOffer can bridge it. */
+  initialOfferIntentId?: string
 }
 
 export function OfferInitiationFlow({
   contactId, brokerageId, agentUserId,
   contactName, contactEmail, onSuccess, onCancel,
-  initialAddress, initialBuyerPhone, initialBuyerEmail,
+  initialAddress, initialBuyerPhone, initialBuyerEmail, initialOfferIntentId,
 }: OfferInitiationFlowProps) {
   // If address was pre-filled from CRM, skip directly to form_source step
   const [flowStep, setFlowStep]   = useState<FlowStep>(initialAddress ? "form_source" : "address")
@@ -962,6 +962,7 @@ export function OfferInitiationFlow({
         buyerRiskTolerance={contingencyForm.riskTolerance}
         inAppSelectedFormIds={offerSelectedFormIds.length > 0 ? offerSelectedFormIds : undefined}
         inAppFormFieldValues={Object.keys(offerFormFieldValues).length > 0 ? offerFormFieldValues : undefined}
+        offerIntentId={initialOfferIntentId}
         onBack={() => setFlowStep("contingencies")}
         onSuccess={(newOfferId?: string) => {
           awardPointsForAction(agentUserId, "offer_submitted").catch(() => {})

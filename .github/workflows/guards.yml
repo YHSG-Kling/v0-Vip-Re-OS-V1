@@ -29,19 +29,41 @@ concurrency:
 jobs:
   egress-guards:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 2026-09-11: 20 minutes was the cap while `npm run guard` ran ~16 min on
+    # this runner (run 34548154361 at 844546ce: 16m12s, green). Waves 55-56 added
+    # test:ai-callback-loop, test:dead-imports, test:anchor-census,
+    # test:children-census and test:import-export-parity plus the simulator
+    # sweep's growth, and runs 34562243590 / 34562249006 / 34622268553 /
+    # 34622276787 were all CANCELLED by this timeout at 19m30s-20m20s inside
+    # "Run egress integrity guards" — not a red proof (the same chain is green
+    # locally, GUARD_EXIT=0, at 26c2c9e4). 40 leaves headroom for the chain to
+    # keep growing without turning a slow runner into a false red.
+    timeout-minutes: 40
     env:
       # tsc + the simulators need more than Node's default ~4GB heap on this large
-      # codebase (CI OOM'd at the default cap; passes locally with a bigger heap).
-      NODE_OPTIONS: --max-old-space-size=8192
+      # codebase. 8192 was enough until the program outgrew it: `tsc --noEmit
+      # --extendedDiagnostics` now reports "Memory used: 8450371K" — 8.45 GB, just
+      # past the 8 GB cap — and the job died with exit 134, "Ineffective
+      # mark-compacts near heap limit". It passes locally only because a dev box
+      # has more headroom, which is exactly how this stays invisible until CI.
+      #
+      # Measured before choosing the number, not guessed: excluding all 643
+      # scripts/ files from the program saves only ~540 MB (8450 MB → 7911 MB),
+      # so the simulators are NOT the driver and splitting the program would add
+      # a second tsconfig for a 6% win while still sitting at the edge. The app
+      # graph itself is ~7.9 GB. 10240 is the value build.yml already runs on the
+      # same ubuntu-latest runner (16 GB), so it is proven rather than hopeful,
+      # and it leaves ~21% headroom over today's peak.
+      #
+      # This raises the ceiling; it does not shrink the graph. When the peak
+      # approaches 10 GB the answer is project references, not another bump.
+      NODE_OPTIONS: --max-old-space-size=12288
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
+      # Node + `npm ci` live in ONE composite action for all four workflows —
+      # see .github/actions/node-deps/action.yml for why the ffmpeg-static
+      # postinstall no longer sits on the critical path of every check.
+      - uses: ./.github/actions/node-deps
       - name: Run egress integrity guards
         run: npm run guard
       - name: Run compliance / consent guards

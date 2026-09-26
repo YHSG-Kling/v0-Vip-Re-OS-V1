@@ -148,7 +148,12 @@ export interface CoherenceFinding {
     | "stale_schema_column"
   message: string
   affected: string[]
-  recommendation: string
+  /**
+   * OPTIONAL because `generateDomainCoherenceReport` now HONOURS its
+   * `includeRecommendations` flag. Every producer in this file still sets it; the
+   * report strips it when the caller asked for the terse form.
+   */
+  recommendation?: string
 }
 
 export interface CoherenceReport {
@@ -189,7 +194,10 @@ export function enumerateDomainRoutes(input: EnumerateRoutesInput): EnumerateRou
     { id: "admin-billing", path: "/dashboard/admin/billing", title: "Billing & Tiering", domain: "billing", accessLevel: "superadmin", kernelOwner: "lib/kernel/billing.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-vendors", path: "/dashboard/admin/vendors", title: "Vendor Marketplace", domain: "vendors", accessLevel: "broker", kernelOwner: "lib/kernel/vendors.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-forms", path: "/dashboard/admin/forms", title: "Forms Management", domain: "forms", accessLevel: "broker", kernelOwner: "lib/kernel/forms.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
-    { id: "admin-lead-magnets", path: "/dashboard/admin/lead-magnets", title: "Lead Magnets", domain: "lead_magnets", accessLevel: "broker", kernelOwner: "lib/kernel/lead-magnets.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
+    // Moved off /dashboard/admin: agents, brokers and admins all reach this from the
+    // same "Marketing & Content" nav group, and the persona copies under
+    // /dashboard/agent and /dashboard/admin were consolidated into this one page.
+    { id: "lead-magnets", path: "/dashboard/marketing/lead-magnets", title: "Lead Magnets", domain: "lead_magnets", accessLevel: "agent", kernelOwner: "lib/kernel/lead-magnets.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-education", path: "/dashboard/education", title: "Education Library", domain: "education", accessLevel: "broker", kernelOwner: "lib/kernel/education.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-video", path: "/dashboard/video", title: "Video Studio", domain: "video", accessLevel: "broker", kernelOwner: "lib/kernel/video.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-compliance", path: "/dashboard/admin/compliance", title: "Compliance", domain: "compliance", accessLevel: "broker", kernelOwner: "lib/kernel/communication-compliance.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
@@ -561,8 +569,18 @@ export function generateDomainCoherenceReport(input: GenerateReportInput): Coher
     })
   }
 
-  const criticalCount = findings.filter(f => f.severity === "critical").length
-  const warningCount = findings.filter(f => f.severity === "warning").length
+  // `input` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24: `includeRecommendations`
+  // is the ONE field this command takes, the admin action passes it explicitly
+  // (app/actions/admin/domain-coherence.ts:162), and the report shipped the
+  // recommendation text either way — so the flag was a promise the function never
+  // kept in either direction. Honoured now: ask for the terse report and you get it.
+  const withRecommendations = input?.includeRecommendations === true
+  const shapedFindings: CoherenceFinding[] = withRecommendations
+    ? findings
+    : findings.map(({ recommendation: _dropped, ...rest }) => rest)
+
+  const criticalCount = shapedFindings.filter(f => f.severity === "critical").length
+  const warningCount = shapedFindings.filter(f => f.severity === "warning").length
 
   const overallStatus: CoherenceReport["overallStatus"] =
     criticalCount > 0 ? "critical" :
@@ -576,7 +594,7 @@ export function generateDomainCoherenceReport(input: GenerateReportInput): Coher
     redirectCount: classification.redirects.length,
     removeCount: classification.toRemove.length,
     duplicateSets,
-    findings,
+    findings: shapedFindings,
     overallStatus,
   }
 }

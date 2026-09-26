@@ -25,29 +25,22 @@ export interface PortalModulesInput {
   isPropertyOwner?: boolean
 }
 
-export interface PortalVisibilityInput {
-  /** Contact UUID */
-  contactId: string
-  /** Agent's brokerage_id (for authorization check) */
-  brokerageId: string
-  /** Contact's buyer_stage */
-  buyerStage: string
-  /** Contact's contact_type */
-  contactType: 'buyer' | 'seller' | 'both'
-  /** Whether contact has closed transaction and owns property */
-  isPropertyOwner?: boolean
-}
-
-export interface NavigationBuildInput {
-  /** Portal view type */
-  view: 'buyer' | 'seller' | 'lifetime'
-  /** Contact UUID */
-  contactId: string
-  /** Enabled modules from determinePortalModules */
-  enabledModules: Record<string, boolean>
-  /** Whether contact owns property (affects navigation labels) */
-  isPropertyOwner?: boolean
-}
+// TOMBSTONE (dead-import tranche): `PortalVisibilityInput` and
+// `NavigationBuildInput` are deleted. Neither ever had an implementation; the
+// only file that named them was lib/kernel/portal.ts, which imported both and
+// used neither, so removing that import left them referenced by nothing at all.
+// Both describe functions this kernel already has under other names, and those
+// are the survivors because they are the ones that are WIRED:
+//   · visibility  → `determinePortalModules` (lib/kernel/portal.ts:287), whose
+//     input is `PortalModulesInput` above and whose output carries exactly the
+//     visibility booleans; the `canAccessPortal` half is answered for both
+//     routes by `requireContactAccess` (lib/portal/require-contact-access.ts).
+//   · navigation  → `buildPortalNav` (lib/kernel/portal.ts:452), called by
+//     app/portal/[contactId]/layout.tsx:258 with (view, modules, contactId) —
+//     the same three fields NavigationBuildInput declared.
+// Nothing merged onto the survivors: every field these two carried that the
+// survivors lack (`isPropertyOwner` on the nav side) has no reader either, so
+// transplanting it would have created a new orphan rather than closed one.
 
 // ============================================================================
 // OUTPUT CONTRACTS (What kernel functions return)
@@ -83,44 +76,18 @@ export interface PortalModulesOutput {
   reason: string
 }
 
-export interface PortalVisibilityOutput {
-  /** Whether this contact can access the portal at all */
-  canAccessPortal: boolean
-  /** Whether buyer smart search is visible */
-  buyerSmartSearchVisible: boolean
-  /** Whether seller listing actions are visible */
-  sellerListingActionsVisible: boolean
-  /** Whether transaction data is visible to contact */
-  transactionVisible: boolean
-  /** Whether lifetime/homeowner mode is enabled */
-  lifetimeMode: boolean
-  /** Reason for visibility decision */
-  reason: string
-  /** Error if access denied */
-  error?: string
-}
-
-export interface NavigationItem {
-  id: string
-  label: string
-  href: string
-  icon?: string
-  /** Whether this nav item should be shown */
-  visible: boolean
-  /** Badge count (e.g., unread messages) */
-  badge?: number
-}
-
-export interface NavigationBuildOutput {
-  /** Main navigation items in order */
-  navItems: NavigationItem[]
-  /** Secondary/profile navigation */
-  profileNav: NavigationItem[]
-  /** Current active section */
-  activeSection?: string
-  /** Whether this is homeowner mode (affects nav labels like "My Home" vs "Properties") */
-  isHomeowner: boolean
-}
+// TOMBSTONE (dead-import tranche): `PortalVisibilityOutput`, `NavigationItem`
+// and `NavigationBuildOutput` are deleted, for the same reason and with the same
+// survivors as the two Input contracts above — `determinePortalModules` /
+// `requireContactAccess` for visibility, `buildPortalNav` (returning
+// `NavItem[]`, lib/kernel/portal.ts:31) for navigation. `NavigationItem` goes
+// with them because `NavigationBuildOutput` was its only reference in the tree.
+//
+// The four fields the deleted output shapes carried that `NavItem` does not —
+// `visible`, `badge`, `profileNav`, `activeSection`, `isHomeowner` — were NOT
+// merged onto the survivor, deliberately: `visible` is already expressed by
+// buildPortalNav filtering the item out, and the other four have no producer and
+// no surface. Adding them would move the orphan rather than close it.
 
 // ============================================================================
 // VALIDATION CONTRACTS (Validation rules)

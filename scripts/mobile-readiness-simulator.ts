@@ -110,7 +110,21 @@ async function main() {
   console.log("\n[4 · app shell renders the role-driven bottom nav]")
   const shell = read("app/components/layout/app-shell.tsx")
   check("shell imports MobileBottomNav", /import \{ MobileBottomNav \} from '\.\/mobile-bottom-nav'/.test(shell))
-  check("shell derives nav via getNavigationForRole", /getNavigationForRole\(primaryRole\)/.test(shell))
+  // The claim is that the shell DERIVES its navigation from the resolver rather
+  // than assembling one itself — not that the argument happens to be spelled
+  // `primaryRole`. This probe used to read /getNavigationForRole\(primaryRole\)/
+  // and so went red the day the shell started passing the user's WHOLE ROLE SET
+  // (the owner's second-seat ruling: one user wears several hats, so nav is the
+  // union). That is a strictly better call, and a probe pinned to a variable NAME
+  // could not tell an improvement from a regression.
+  check("shell derives nav via getNavigationForRole",
+    /const\s+navigation\s*=\s*getNavigationForRole\s*\(/.test(shell))
+  // …and does not reach around it. Bypassing the resolver for the raw table is
+  // the actual regression this section exists to catch, and the old spelling-pin
+  // would have stayed GREEN through it as long as the call sat somewhere in the
+  // file.
+  check("shell does not bypass the resolver by reading NAVIGATION_BY_ROLE directly",
+    !/NAVIGATION_BY_ROLE/.test(shell))
   check("shell passes navigation.mobileBottomNav to the component", /<MobileBottomNav items=\{navigation\.mobileBottomNav\}/.test(shell))
   check("bar is fixed to the bottom and hidden ≥ lg", /lg:hidden fixed bottom-0/.test(shell))
   check("main content padded so the bar never covers it", /pb-20 lg:pb-0/.test(shell))

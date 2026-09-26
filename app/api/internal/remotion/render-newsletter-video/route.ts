@@ -27,9 +27,17 @@
  */
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`, the
+// bucket the Remotion workers and public players already fetch renders from.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
-import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
+// TOMBSTONE (lane 76D): `synthesizeSpeech` from lib/voice/elevenlabs-tts was
+// imported here for a private synthesis path. Survivor: lib/video/
+// reel-voiceover.ts prepareReelVoiceover (v3 model via the ONE selector,
+// budget-gated, cached, alignment-returning).
+import { buildCaptionPlan } from "@/lib/video/caption-plan"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -39,6 +47,25 @@ import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import { runPersonaVariantPostPass } from "@/lib/video/persona-variant-post-pass"
 import { mintVideoQr } from "@/lib/video/video-qr"
+import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import { compositionDurationSpec, purposeBudgetFor, spokenSecondsProps } from "@/lib/video/duration-model"
+// PURE — the companion-card gate and the hint cutter (see the staging comment
+// below the render for why this route needs both).
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, NEWSLETTER_DIGEST_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
+// THE SHARED SPOKEN-SCRIPT STANDARDS (lane 76D) — see render-just-listed's
+// own import note: this draft prompt carried neither standard and its output
+// was never scanned for AI tells. ONE composer, ONE scanner.
+import { scanForAiTells, withSpokenScriptStandards } from "@/lib/video/realism-profile"
+import {
+  narrationBudget,
+  narrationLengthDirective,
+  narrationMaxTokens,
+  narrationOverrunRedraftDirective,
+  fitNarrationToBudget,
+  fitNarrationWithOneRedraft,
+  type NarrationBudgetOutcome,
+} from "@/lib/video/script-structure"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -48,6 +75,10 @@ export const maxDuration = 300
 export const runtime = "nodejs"
 
 interface ReqBody { newsletter_campaign_id: string }
+
+/** The composition this route renders. One spelling (§6) — it was written out
+ *  four times, and the narration cap has to name the SAME one the render does. */
+const NEWSLETTER_VIDEO_COMPOSITION = "NewsletterDigestVideo"
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get("authorization")?.replace("Bearer ", "")
@@ -67,8 +98,26 @@ export async function POST(req: NextRequest) {
     .eq("status", "queued")
     .select("id, brokerage_id, agent_id")
     .maybeSingle()
+  // A REFUSED CLAIM IS NOT AN EMPTY QUEUE (CLAUDE.md §3). supabase-js RESOLVES
+  // a refusal, so a PGRST204 / transient 5xx / multi-row maybeSingle arrives as
+  // data null + error set — the same shape as "no queued row for this campaign".
+  // Reported as `skipped` the render ledger stayed 'queued' and the newsletter
+  // video was silently never made. Not marked failed: the claim never landed.
+  if (claim.error) {
+    console.error(`[render-newsletter-video] claim REFUSED for campaign ${body.newsletter_campaign_id}: ${claim.error.message}`)
+    return NextResponse.json({
+      ok: false, newsletter_campaign_id: body.newsletter_campaign_id,
+      error: `claim_refused: ${claim.error.message}`,
+    }, { status: 500 })
+  }
   const ledger = claim.data as { id: string; brokerage_id: string; agent_id: string } | null
   if (!ledger) return NextResponse.json({ skipped: "no row in 'queued' status for this campaign" })
+
+  // ledger.agent_id is agents-class. The compliance actor, the QR mint, the
+  // render registry and the persona post-pass all want the OWNER'S USERS id, so
+  // it is resolved once here rather than at each of them. Null means the agents
+  // row is gone — those users-class hand-offs are then skipped, never faked.
+  const ledgerAgentUserId = await resolveUserIdForAgentRecord(svc, ledger.agent_id)
 
   try {
     // 2. Campaign + brand.
@@ -79,11 +128,12 @@ export async function POST(req: NextRequest) {
     const camp = campaign as { id: string; brokerage_id: string; agent_id: string | null; subject_line: string | null; campaign_name: string | null } | null
     if (!camp) throw new Error("newsletter_campaign not found")
 
-    const { data: brokerage } = await svc.from("brokerages")
-      .select("name, logo_url, brand_primary_color:primary_color")
-      .eq("id", camp.brokerage_id)
-      .maybeSingle()
-    const br = brokerage as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null
+    // THE ONE BRAND CASCADE (lane 76D, §1/§6) — was a private brokerages read
+    // that typed `brand_accent_color` without selecting it (accent always the
+    // default) and never saw the team tier or the onboarding-wizard
+    // global_settings fold. Survivor: lib/video/reel-brand.ts resolveReelBrand.
+    const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+    const reelBrand = await resolveReelBrand(svc, camp.brokerage_id, { agentUserId: ledgerAgentUserId })
 
     // Per-recipient section variants exist in newsletter_sections (m115); the
     // video's "section titles" use the section TYPES present on this campaign
@@ -163,11 +213,49 @@ export async function POST(req: NextRequest) {
       : "A quick recap of what moved in your local market this week"
 
     // 4. Draft narration — value-first, 25-35 spoken words.
+    //
+    // THE CAP IS DERIVED FROM THE COMPOSITION, not from the 25-35 above.
+    // NewsletterDigestVideo carries this narration as an <Audio> INSIDE the
+    // composition (remotion/NewsletterDigestVideo.tsx:66) against a fixed
+    // durationInFrames, and step 5 below deliberately does NOT put the mp3 in
+    // input_props.voiceover_url ("the narration is already the composition's
+    // audio track") — so the m313 tpad that rescues every OTHER narration is
+    // switched off here BY DESIGN and an overrun is simply cut. The 25-35 is an
+    // editorial target and it happens to sit under the budget; the budget is the
+    // enforceable ceiling, and it moves if the composition's geometry moves.
+    // WAVE 78 — the PURPOSE budget (newsletter: 20/35/60 s of body, lib/video/
+    // duration-model.ts), not the registered runtime: the registered frames
+    // are now the cap and calculateMetadata sizes the render to the fitted
+    // script (spokenSeconds is staged below). narrationBudget over the whole
+    // runtime remains the fallback for an id with no purpose row.
+    const narrationCap = compositionDurationSpec(NEWSLETTER_VIDEO_COMPOSITION)
+      ? purposeBudgetFor(NEWSLETTER_VIDEO_COMPOSITION)
+      : narrationBudget(
+        NEWSLETTER_VIDEO_COMPOSITION,
+        compositionSeconds(geometryFor(NEWSLETTER_VIDEO_COMPOSITION) ?? { duration_frames: 0, fps: 30 }),
+      )
+    /**
+     * THE AUTHORED NARRATION — what gets spoken when even a re-draft will not
+     * fit NewsletterDigestVideo. Two short sentences built from the campaign's
+     * own subject line and the lead topic's headline, so it fits any composition
+     * with real runtime and states nothing the email does not.
+     * §1: there was no deterministic newsletter narration anywhere; this is the
+     * missing half the overrun reader needs to fall back to.
+     */
+    const deterministicNewsletterNarration = (): string => {
+      const subject = (camp.subject_line ?? camp.campaign_name ?? "this week's market digest").trim()
+      const beat = marketBeat.replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "")
+      const head = (camp.subject_line ?? camp.campaign_name) ? `Open the email for the full breakdown on ${subject}.` : "Open the email for the full breakdown."
+      return `This week: ${beat}. ${head}`
+    }
+
+    const budgetNotes: string[] = []
+    let budgetOutcome: NarrationBudgetOutcome["outcome"] = "fit"
     const draft = async (violations: string[]): Promise<string> => {
       const fix = violations.length > 0
         ? `\n\nResolve these violations from prior draft:\n- ${violations.join("\n- ")}`
         : ""
-      const prompt = `Write a 25-35 word VOICEOVER narration for a real-estate weekly newsletter intro video.
+      const basePrompt = withSpokenScriptStandards(`Write a 25-35 word VOICEOVER narration for a real-estate weekly newsletter intro video.
 
 THE VIDEO IS NOT A LIST OF OUR SECTIONS. It opens with a hook from the
 audience's lens — what's the most timely VALUE insight the recipient
@@ -186,29 +274,68 @@ with "Open the email for the full breakdown." or equivalent.
 Banned: protected-class refs (race, religion, family status, etc.);
 phrases like "perfect for families"; rate / valuation / appreciation
 guarantees; exclamation marks.
-Return ONLY the spoken text.${fix}`
-      const { text } = await generateTextRouted({
-        feature:     "newsletter_video_narration",
-        prompt,
-        maxTokens:   150,
-        temperature: 0.55,
+${narrationLengthDirective(narrationCap)}
+Return ONLY the spoken text.`) + fix
+      // ── VERIFY, DON'T TRUST — AND NOW SOMETHING READS THE VERDICT (§1) ────
+      // A word ceiling in a prompt is a request; fitNarrationToBudget is the
+      // enforcement, and an overrun is trimmed at a sentence boundary. What
+      // NOTHING read was `stillOverBudget` — the case where the trim CANNOT get
+      // under budget because the first sentence alone is longer than the whole
+      // composition. This route puts the mp3 in input_props.voiceoverUrl (the
+      // camel key) and deliberately NOT in voiceover_url, so the m313 tpad that
+      // rescues every other narration is off by design here: that sentence is
+      // simply cut, mid-word, in a video embedded in every recipient's email.
+      // Re-draft ONCE, then speak the authored line. The policy is shared with
+      // the other two camel-key producers (fitNarrationWithOneRedraft) so the
+      // three cannot drift, and it nests INSIDE the compliance draft so a
+      // re-draft or the fallback is still gated by evaluateOutbound below.
+      const drafted = await fitNarrationWithOneRedraft({
+        budget: narrationCap,
+        label: "[render-newsletter-video]",
+        deterministic: deterministicNewsletterNarration,
+        draft: async ({ previous }) => {
+          const { text } = await generateTextRouted({
+            brokerageId: camp.brokerage_id,
+            userId: ledgerAgentUserId,
+            feature:     "newsletter_video_narration",
+            prompt:      previous ? `${basePrompt}\n${narrationOverrunRedraftDirective(previous, narrationCap)}` : basePrompt,
+            maxTokens:   narrationMaxTokens(narrationCap),
+            temperature: 0.55,
+          })
+          return fitNarrationToBudget(text.trim(), narrationCap)
+        },
       })
-      return text.trim()
+      for (const n of drafted.notes) console.warn(n)
+      budgetNotes.push(...drafted.notes)
+      budgetOutcome = drafted.outcome
+      // REFUSED = the composition has no runtime to narrate. Fail the render
+      // (the catch stamps newsletter_video_renders.error_message) rather than
+      // bake a track nothing can play.
+      if (drafted.outcome === "refused") {
+        throw new Error(drafted.notes[drafted.notes.length - 1] ?? `no narration fits ${narrationCap.compositionId}`)
+      }
+      return drafted.script
     }
     const complianceResult = await runWithComplianceRedraft({
       draft: ({ violations }) => draft(violations),
       gate:  async (s) => {
         const r = await evaluateOutbound({
-          actorContext: { brokerageId: camp.brokerage_id, userId: ledger.agent_id, role: "system" },
+          actorContext: { brokerageId: camp.brokerage_id, userId: ledgerAgentUserId ?? "", role: "system" },
           journeyType:  "buyer", persona: "other", messageType: "email", content: s,
         })
-        return { allowed: r.allowed, violations: r.violations }
+        // REALISM (lane 76D): AI tells ride the SAME one-redraft gate — the
+        // idiom every other narration writer uses (§6). The authored fallback
+        // (deterministicNewsletterNarration) is tell-free by construction.
+        const tells = scanForAiTells(s)
+        return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
       },
     })
     if (!complianceResult.ok) throw new Error(`compliance failed after redraft: ${complianceResult.violations.join("; ")}`)
     const script = complianceResult.script
 
     // 4. ElevenLabs voiceover.
+    // agent_voice_profiles.agent_id and the ledger's agent_id are now the same
+    // class, so the voice clone is asked for under the key it is filed by.
     const { data: profile } = await svc.from("agent_voice_profiles")
       .select("elevenlabs_voice_id")
       .eq("agent_id", ledger.agent_id)
@@ -216,20 +343,34 @@ Return ONLY the spoken text.${fix}`
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) throw new Error("agent has no elevenlabs_voice_id — Settings → Voice & Avatar")
 
-    const tts = await synthesizeSpeech({ text: script, voiceId })
-    if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
-    const voiceBlob = await put(
-      `newsletter-video/voiceover/${ledger.id}.mp3`,
-      tts.audioBuffer,
-      { access: "public", contentType: "audio/mpeg" },
-    )
+    // MERGED ONTO THE ONE NARRATION PRIMITIVE (lane 76D, orphan doctrine §1.1).
+    // This used to be `synthesizeSpeech({ text: script, voiceId })` + its own
+    // hostRenderedMedia at `newsletter-video/voiceover/${ledger.id}.mp3` — a
+    // second synthesis path that passed NO modelId (so the legacy
+    // `eleven_monolingual_v1` default spoke every newsletter video while every
+    // other lane resolves eleven_v3 through elevenLabsModelForLane), NO
+    // brokerageId (so the vendor budget gate inside the primitive never ran —
+    // an over-ceiling tenant still paid for synthesis), no narration cache,
+    // no alignment (captions could only ever estimate). Survivor:
+    // lib/video/reel-voiceover.ts prepareReelVoiceover. Its null-on-failure
+    // contract is turned back into this route's throw (the ledger stamps
+    // error_message) — a newsletter video never ships silent.
+    const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+    const voiceover = await prepareReelVoiceover({
+      brokerageId: camp.brokerage_id,
+      narration:   script,
+      voiceId,
+      renderKey:   `newsletter-video-${ledger.id}`,
+    })
+    if (!voiceover) throw new Error("Voiceover clip missing — prepareReelVoiceover returned no clip (budget gate, synthesis, or hosting)")
+    const voiceoverUrlStored = voiceover.url
 
     // 4c. Mint (or reuse) the tracked outro QR for this campaign. Newsletter
     //     → landing_page. Never throws; null mint = render without a QR.
-    const qr = ledger.agent_id
+    const qr = ledgerAgentUserId
       ? await mintVideoQr({
           brokerageId: camp.brokerage_id,
-          agentUserId: ledger.agent_id,
+          agentUserId: ledgerAgentUserId,
           kind:        "newsletter",
           campaignId:  camp.id,
         }, svc)
@@ -244,24 +385,45 @@ Return ONLY the spoken text.${fix}`
       marketBeat,
       sectionTitles:  sectionTitles.length > 0 ? sectionTitles : ["Market Update", "New Listings", "Local News"],
       brand: {
-        primaryColor:  br?.brand_primary_color ?? "#0F172A",
-        accentColor:   br?.brand_accent_color  ?? "#F59E0B",
-        logoUrl:       br?.logo_url            ?? undefined,
-        brokerageName: br?.name                ?? "Your Brokerage",
+        primaryColor:  reelBrand.primaryColor,
+        accentColor:   reelBrand.accentColor,
+        logoUrl:       reelBrand.logoUrl ?? undefined,
+        brokerageName: reelBrand.brokerageName,
+        showEhoMark:   reelBrand.showEhoMark,
       },
-      voiceoverUrl: voiceBlob.url,
+      voiceoverUrl: voiceoverUrlStored,
+      // THE VIDEO IS AS LONG AS THE DIGEST (wave 78): the measured narration
+      // length calculateMetadata sizes NewsletterDigestVideo to.
+      ...spokenSecondsProps({ measuredSeconds: voiceover.durationSeconds ?? null, narration: script, compositionId: NEWSLETTER_VIDEO_COMPOSITION }),
+      // SOUND-OFF CAPTIONS (wave 61 caption-consolidation audit) — the SAME
+      // compliance-gated `script` this route just synthesized into
+      // voiceoverUrlStored above (never a second text, §6). The honest
+      // fallback CaptionLayer estimates timing from; word-accurate cues are
+      // added below once the composition's real geometry is known (lane 76D —
+      // the survivor primitive returns the ElevenLabs alignment this route's
+      // private synthesizeSpeech call never had).
+      captionScript: script,
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption:     "Scan to read",
     }
-    const composition = await selectComposition({ serveUrl: bundleLoc, id: "NewsletterDigestVideo", inputProps })
+    const composition = await selectComposition({ serveUrl: bundleLoc, id: NEWSLETTER_VIDEO_COMPOSITION, inputProps })
 
-    let executablePath: string | undefined
-    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-      const chromium = (await import("@sparticuz/chromium-min")).default
-      executablePath = await chromium.executablePath(
-        process.env.CHROMIUM_PACK_URL || "https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.tar"
-      )
+    // SOUND-OFF CAPTIONS, word-accurate (lane 76D) — the same idiom
+    // render-just-listed uses: plan against the SELECTED composition's real
+    // duration/fps, prefer the REAL alignment, fall back to the script text
+    // (honest even-distribution). A caption failure never blocks the render.
+    try {
+      const plan = buildCaptionPlan(voiceover.alignment ?? script, composition.durationInFrames, composition.fps, { maxWordsPerCue: 4 })
+      if (plan.cues.length > 0) (inputProps as Record<string, unknown>).captionsCues = plan.cues
+    } catch (e) {
+      console.warn(`[render-newsletter-video] caption plan failed; rendering with the estimated captions:`, (e as Error).message)
     }
+
+    // TOMBSTONE (§1, lane 78B): the inline @sparticuz/chromium-min block that
+    // sat here moved to lib/remotion/chromium-executable.ts:1
+    // (resolveChromiumExecutable) — one pack URL, one serverless test.
+    const { resolveChromiumExecutable } = await import("@/lib/remotion/chromium-executable")
+    const executablePath: string | undefined = await resolveChromiumExecutable()
 
     const outPath = path.join(tmpdir(), `newsletter-video-${ledger.id}.mp4`)
     await renderMedia({
@@ -281,25 +443,60 @@ Return ONLY the spoken text.${fix}`
     // storage-hosted URL, marketing-asset capture, audit trail: identical to
     // every generic-rail video. Blob fallback keeps a finish failure from
     // losing a finished render.
+    // The card, gated on the SAME contract the render backstop enforces: an
+    // incomplete one is not staged at all, because Remotion merges `{}` over
+    // defaultProps and an incomplete card does not render blank — it renders the
+    // fixture.
+    const newsletterCard = companionCard(NEWSLETTER_DIGEST_THUMB, {
+      subject:     inputProps.subject,
+      personaHook: seoHintFromNarration(script, SEO_HINT_MAX_CHARS, 1),
+      // Same brokerage-of-record name the pre-fix `br?.name` carried — now
+      // from the cascade adapter (never null once resolveReelBrand ran).
+      agentName:   reelBrand.brokerageName,
+      brand:       inputProps.brand,
+      seoHint:     seoHintFromNarration(script),
+    })
+    if (!newsletterCard.card) {
+      console.warn(`[render-newsletter-video] campaign ${camp.id} ships without a share card — ${describeMissingContent(NEWSLETTER_DIGEST_THUMB, newsletterCard.missing)}`)
+    }
+
     let finishedUrl: string | null = null
     try {
       const { recordRenderQueued } = await import("@/lib/remotion/registry")
       const { buildRenderIntent } = await import("@/lib/remotion/render-decision")
       const { finalizeCoordinatedRender } = await import("@/lib/remotion/render-coordinator")
       const rq = await recordRenderQueued({
-        brokerageId: camp.brokerage_id, compositionId: "NewsletterDigestVideo",
-        agentUserId: ledger.agent_id ?? null,
+        brokerageId: camp.brokerage_id, compositionId: NEWSLETTER_VIDEO_COMPOSITION,
+        agentUserId: ledgerAgentUserId,
         entityType: "newsletter_video", entityId: ledger.id,
         usedVoiceover: true,
         // NOTE: no voiceover_url in input_props — the narration is already the
         // composition's audio track; setting it would double the voice.
-        inputProps: { kind: "newsletter_digest", music_mood: "calm" },
+        //
+        // ── THE COMPANION CARD (§1.2) ────────────────────────────────────────
+        // NewsletterDigestVideo is the ONE composition whose registry row points
+        // at NewsletterDigestThumb rather than VideoCoverThumb (m168). This
+        // producer staged no thumbnail_props at all, so anything that rendered
+        // the card would have completed it from that composition's Studio
+        // fixture, and app/v/[slug] had no per-render hint to publish as
+        // og:description — it fell back to the registry's one generic sentence,
+        // identical on every newsletter video ever made.
+        //
+        // `personaHook` (the inbox preview a recipient decides to open on) and
+        // the seoHint are cut VERBATIM from `script`, which has already passed
+        // evaluateOutbound through runWithComplianceRedraft above — the same
+        // sentences the video speaks, never a second draft. `agentName` is the
+        // brokerage's real name, never NewsletterDigestThumb's sample value.
+        inputProps: {
+          kind: "newsletter_digest", music_mood: "calm",
+          ...(newsletterCard.card ? { thumbnail_props: newsletterCard.card } : {}),
+        },
         scopeType: "brokerage", scopeId: camp.brokerage_id, requestedVia: "cron",
       })
       if (rq.ok && rq.renderId) {
         const intent = buildRenderIntent({
-          brokerage_id: camp.brokerage_id, composition_id: "NewsletterDigestVideo",
-          agent_user_id: ledger.agent_id ?? null, entity_type: "newsletter_video", entity_id: ledger.id,
+          brokerage_id: camp.brokerage_id, composition_id: NEWSLETTER_VIDEO_COMPOSITION,
+          agent_user_id: ledgerAgentUserId, entity_type: "newsletter_video", entity_id: ledger.id,
           scope_type: "brokerage", scope_id: camp.brokerage_id,
           input_props: { music_mood: "calm" },
         } as Parameters<typeof buildRenderIntent>[0], "brokerage")
@@ -309,9 +506,8 @@ Return ONLY the spoken text.${fix}`
     } catch (finishErr) {
       console.warn("[render-newsletter-video] coordinator finish failed; shipping raw cut:", (finishErr as Error).message)
     }
-    const blob = finishedUrl
-      ? { url: finishedUrl }
-      : await put(`newsletter-video/reels/${ledger.id}.mp4`, bytes, { access: "public", contentType: "video/mp4" })
+    const reelUrlStored = finishedUrl
+      ?? await hostRenderedMedia(svc, `newsletter-video/reels/${ledger.id}.mp4`, bytes, "video/mp4")
 
     // 6. ai_video_projects + ledger close.
     const { data: project } = await svc.from("ai_video_projects").insert({
@@ -324,21 +520,26 @@ Return ONLY the spoken text.${fix}`
       usage_intent:    "public_marketing",
       audience_type:   "customer_facing",
       duration_seconds: 20,
-      video_url:       blob.url,
+      video_url:       reelUrlStored,
       compliance_status: "passed",
       compliance_evaluated_at: new Date().toISOString(),
       video_metadata: {
         newsletter_campaign_id: camp.id,
         ledger_id:              ledger.id,
-        voiceover_url:          voiceBlob.url,
+        voiceover_url:          voiceoverUrlStored,
         kind:                   "newsletter_digest",
+        // THE OVERRUN, ON THE LEDGER (§1). "fit" | "trimmed" | "redrafted" |
+        // "deterministic" — a truncated narration used to be indistinguishable
+        // from a clean one once the console.warn scrolled away.
+        narration_budget_outcome: budgetOutcome,
+        narration_budget_notes:   budgetNotes,
       },
     }).select("id").single()
 
     await svc.from("newsletter_video_renders").update({
       status:          "completed",
-      voiceover_url:   voiceBlob.url,
-      video_url:       blob.url,
+      voiceover_url:   voiceoverUrlStored,
+      video_url:       reelUrlStored,
       video_project_id: project!.id,
       completed_at:    new Date().toISOString(),
     }).eq("id", ledger.id)
@@ -370,14 +571,14 @@ Return ONLY the spoken text.${fix}`
       assetType:    "newsletter_campaign",
       assetId:      camp.id,
       brokerageId:  camp.brokerage_id,
-      agentUserId:  ledger.agent_id,
+      agentUserId:  ledgerAgentUserId ?? "",
       brand: {
-        primaryColor:  br?.brand_primary_color ?? "#0F172A",
-        accentColor:   br?.brand_accent_color  ?? "#F59E0B",
-        logoUrl:       br?.logo_url            ?? undefined,
-        brokerageName: br?.name                ?? "Your Brokerage",
+        primaryColor:  reelBrand.primaryColor,
+        accentColor:   reelBrand.accentColor,
+        logoUrl:       reelBrand.logoUrl ?? undefined,
+        brokerageName: reelBrand.brokerageName,
       },
-      mainVideoUrl:     blob.url,
+      mainVideoUrl:     reelUrlStored,
       subject:          camp.subject_line ?? camp.campaign_name ?? "This week",
       bundleLoc,
       executablePath,
@@ -387,8 +588,8 @@ Return ONLY the spoken text.${fix}`
     return NextResponse.json({
       ok: true,
       ledger_id: ledger.id,
-      video_url: blob.url,
-      voiceover_url: voiceBlob.url,
+      video_url: reelUrlStored,
+      voiceover_url: voiceoverUrlStored,
       ai_video_project_id: project!.id,
     })
   } catch (err) {

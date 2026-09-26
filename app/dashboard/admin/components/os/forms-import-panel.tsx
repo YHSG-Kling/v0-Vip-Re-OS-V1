@@ -28,6 +28,15 @@ interface ImportStatus {
     total_rows: number
     created_count: number
     failed_count: number
+    /** Rows the import intentionally passed over (dupes etc.) — distinct from failures. */
+    skipped_count: number | null
+    /** Per-row failures written by processImportRows ({row, error}[]); null when clean. */
+    error_details: Array<{ row: number; error: string }> | null
+    /** CSV column → canonical field mapping captured at createImportRecord. */
+    field_map: Record<string, string> | null
+    /** Who ran the import. agent_id is agents-class (FKs agents, NOT users — the
+     *  two id spaces are disjoint); the display name lives one hop away on users. */
+    agent: { users: { first_name: string | null; last_name: string | null } | null } | null
     created_at: string
   }>
   totalForms: number
@@ -54,7 +63,12 @@ export function FormsImportPanel({ brokerageId }: FormsImportPanelProps) {
       ] = await Promise.all([
         supabase
           .from("lead_imports")
-          .select("id, file_name, status, total_rows, created_count, failed_count, created_at")
+          // skipped_count / error_details / field_map / agent_id were written by
+          // the import actions and read by nobody (orphan tranche X4 2026-09-01).
+          // The agent embed goes through agents → users because agent_id FKs
+          // agents(id) and names live on users (constraint-name hint keeps the
+          // join unambiguous, same shape as the intelligence-mesh page).
+          .select("id, file_name, status, total_rows, created_count, failed_count, skipped_count, error_details, field_map, created_at, agent:agents!lead_imports_agent_id_fkey(users(first_name, last_name))")
           .eq("brokerage_id", brokerageId)
           .order("created_at", { ascending: false })
           .limit(3),
@@ -70,7 +84,7 @@ export function FormsImportPanel({ brokerageId }: FormsImportPanelProps) {
       ])
 
       setData({
-        recentImports: imports || [],
+        recentImports: (imports || []) as unknown as ImportStatus["recentImports"],
         totalForms: totalForms || 0,
         activeForms: activeForms || 0,
       })
@@ -126,6 +140,15 @@ export function FormsImportPanel({ brokerageId }: FormsImportPanelProps) {
             {data.recentImports.map((imp) => {
               const isSuccess = imp.status === "completed" && imp.failed_count === 0
               const hasIssues = imp.failed_count > 0
+              const skipped = imp.skipped_count ?? 0
+              const errors = Array.isArray(imp.error_details) ? imp.error_details : []
+              const fieldMapEntries = imp.field_map && typeof imp.field_map === "object"
+                ? Object.entries(imp.field_map)
+                : []
+              const importerUser = imp.agent?.users ?? null
+              const importerName = importerUser
+                ? `${importerUser.first_name ?? ""} ${importerUser.last_name ?? ""}`.trim()
+                : ""
 
               return (
                 <div
@@ -143,8 +166,14 @@ export function FormsImportPanel({ brokerageId }: FormsImportPanelProps) {
                       )}
                       <span className="text-xs truncate max-w-[120px]">{imp.file_name}</span>
                     </div>
-                    <div className="flex items-center gap-1 text-xs">
+                    <div className="flex items-center gap-1 text-xs" title="created / skipped / failed">
                       <span className="text-emerald-600">{imp.created_count}</span>
+                      {skipped > 0 && (
+                        <>
+                          <span className="text-muted-foreground">/</span>
+                          <span className="text-amber-600">{skipped} skipped</span>
+                        </>
+                      )}
                       {imp.failed_count > 0 && (
                         <>
                           <span className="text-muted-foreground">/</span>
@@ -153,6 +182,36 @@ export function FormsImportPanel({ brokerageId }: FormsImportPanelProps) {
                       )}
                     </div>
                   </div>
+                  {importerName && (
+                    <p className="text-[10px] text-muted-foreground mt-0.5">imported by {importerName}</p>
+                  )}
+                  {(errors.length > 0 || fieldMapEntries.length > 0) && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-[10px] text-muted-foreground">
+                        {errors.length > 0
+                          ? `${errors.length} row error${errors.length === 1 ? "" : "s"}`
+                          : "details"}
+                        {fieldMapEntries.length > 0 ? ` · ${fieldMapEntries.length} columns mapped` : ""}
+                      </summary>
+                      {errors.length > 0 && (
+                        <ul className="mt-1 space-y-0.5 max-h-24 overflow-y-auto">
+                          {errors.slice(0, 10).map((e, i) => (
+                            <li key={i} className="text-[10px] text-red-700">
+                              row {e.row}: {e.error}
+                            </li>
+                          ))}
+                          {errors.length > 10 && (
+                            <li className="text-[10px] text-muted-foreground">…and {errors.length - 10} more</li>
+                          )}
+                        </ul>
+                      )}
+                      {fieldMapEntries.length > 0 && (
+                        <p className="mt-1 text-[10px] text-muted-foreground break-all">
+                          {fieldMapEntries.map(([from, to]) => `${from}→${to}`).join(", ")}
+                        </p>
+                      )}
+                    </details>
+                  )}
                 </div>
               )
             })}

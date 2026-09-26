@@ -1,8 +1,9 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { provisionTenantOwner } from "@/lib/kernel/users"
+import { auditStaffAction, gateStaffAction } from "@/lib/platform/staff-action-gate"
+import { createTenantCore } from "@/lib/kernel/tenant-creation"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { stripe } from "@/lib/stripe"
 
 export interface CreateSubscriberParams {
@@ -19,8 +20,30 @@ export interface CreateSubscriberParams {
   billingCycle: "monthly" | "annual"
   notes?: string
   stripeCustomerId?: string
+  /** Explicit config snapshot to provision from (staff-picked — the caller gates +
+   *  pre-validates the id). When OMITTED, the tier's live funnel snapshot applies
+   *  (snapshotForTier — the same server-side resolution the self-serve signup
+   *  uses), so EVERY provisioned tenant snapshots at creation (owner ruling:
+   *  "when the platform prospect is converted, the account should also create
+   *  the account with a snapshot"). Best-effort — never fails the provisioning. */
+  snapshotId?: string
 }
 
+/**
+ * Staff-provisioned subscriber (an ACTIVE subscription, not a trial).
+ *
+ * TOMBSTONE (lane 77B): the brokerages insert, provisionTenantOwner + rollback,
+ * subscription row, snapshot apply and prospect conversion stamp that stood
+ * here were the SECOND spelling of tenant creation (the first:
+ * app/actions/auth/signup-brokerage.ts). SURVIVOR:
+ * lib/kernel/tenant-creation.ts::createTenantCore. What stays here is this
+ * door's own: the platform-staff gate, the Stripe customer on the PLATFORM
+ * account (the platform is the merchant for a tenant's subscription —
+ * lib/billing/stripe-account-scope.ts) and the audited activity line.
+ * Delegating also gave this door what only the self-serve one had: the
+ * duplicate-owner guard, the tenant's AI-ISA actor, the starter assistant,
+ * the SUBSCRIPTION_CREATED lifecycle event and the onboarding library.
+ */
 export async function createSubscriber(params: CreateSubscriberParams): Promise<{
   success: boolean
   brokerageId?: string
@@ -29,81 +52,59 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   inviteSent?: boolean
   inviteError?: string
   error?: string
+  /** Config-snapshot outcome — honest per-part reporting (same shape as signupBrokerageAction). */
+  snapshotApplied?: string[]
+  snapshotName?: string
+  snapshotError?: string
 }> {
-  const supabase = await createClient()
-  const {
-    data: { user: callerUser },
-  } = await supabase.auth.getUser()
-  if (!callerUser) return { success: false, error: "Unauthenticated" }
-
-  const { data: callerProfile } = await supabase
-    .from("users")
-    .select("user_type, role, platform_role")
-    .eq("id", callerUser.id)
-    .single()
-
-  // Accept superadmin via any of the three role columns
-  const callerType =
-    callerProfile?.platform_role ?? callerProfile?.user_type ?? callerProfile?.role
-  if (callerType !== "superadmin") {
-    return { success: false, error: "Forbidden: superadmin only" }
-  }
+  // GATE PARITY (round 19). This used to demand a literal 'superadmin' read off
+  // `platform_role ?? user_type ?? role` — including the RETIRED users.role
+  // column. Its only caller, manualProvisionSubscriberAction, gates on the
+  // 'tenants' platform capability instead, so a platform admin / support staffer
+  // passed the outer door and was then refused by this inner one: the documented
+  // "platform admin staff provision subscribers too" policy did not actually
+  // work. Both doors now consult the SAME capability through the canonical gate.
+  const gate = await gateStaffAction("tenants")
+  if (!gate.ok) return { success: false, error: gate.error }
+  const callerUser = { id: gate.userId }
 
   const service = createServiceClient()
 
   try {
-    // Step 1: Create brokerage — set plan_tier so fair-use enforcement
-    // (lib/ai/fair-use.ts via brokerages.plan_tier → plan_limits) immediately
-    // applies the correct monthly AI token ceiling. Without this the new
-    // brokerage falls back to NULL → solo_agent default, which silently
-    // under-caps team / brokerage / multi_location tiers.
-    const { data: brokerage, error: bErr } = await service
-      .from("brokerages")
-      .insert({
-        name: params.brokerageName,
-        email: params.brokerageEmail,
-        phone: params.brokeragePhone || null,
-        city: params.brokerageCity || null,
-        state: params.brokerageState || null,
-        plan_tier: params.tierName,
-        signup_source: "superadmin",
-        onboarding_status: "pending",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (bErr || !brokerage) {
-      return { success: false, error: `Brokerage creation failed: ${bErr?.message}` }
-    }
-
-    const brokerageId = brokerage.id
-
-    // Step 2: Provision the tenant OWNER through the canonical identity path —
-    // creates the auth user FIRST (so public.users.id === auth.users.id, the
-    // invariant every read path + RLS policy depends on), pins/enriches the users
-    // row, creates the teams row for a team tenant, and — tier-aware — gives a
-    // solo/team owner their agents row (+ commission + onboarding + role
-    // assignment). Sends the magic-link invite. Replaces the old pre-insert that
-    // collided with the on_auth_user_created trigger and orphaned the profile.
-    const owner = await provisionTenantOwner({
-      email:         params.adminEmail,
-      firstName:     params.adminFirstName,
-      lastName:      params.adminLastName,
-      brokerageId,
+    // THE ONE CORE — brokerage (plan_tier set so fair-use applies on day one),
+    // owner (invite-first, id pinned, tier-aware, counted rollback), the ACTIVE
+    // subscription row for the chosen cycle, the staff-picked snapshot or the
+    // tier default, and the prospect link-back by admin + brokerage email and
+    // the brokerage phone (the reception's caller-ID key) with outcome
+    // 'converted' — an active subscription is a paying tenant.
+    const created = await createTenantCore(service, {
       brokerageName: params.brokerageName,
-      tier:          params.tierName,
-      redirectTo:    `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
-      callerUserId:  callerUser.id,
+      adminEmail: params.adminEmail,
+      adminFirstName: params.adminFirstName,
+      adminLastName: params.adminLastName,
+      tier: params.tierName,
+      tierId: params.tierId,
+      brokerageEmail: params.brokerageEmail,
+      brokeragePhone: params.brokeragePhone ?? null,
+      city: params.brokerageCity ?? null,
+      state: params.brokerageState ?? null,
+      signupSource: "superadmin",
+      billing: { mode: "active", billingCycle: params.billingCycle, stripeCustomerId: params.stripeCustomerId ?? null },
+      snapshotId: params.snapshotId ?? null,
+      callerUserId: callerUser.id,
     })
-    if (!owner.success || !owner.userId) {
-      await service.from("brokerages").delete().eq("id", brokerageId)
-      return { success: false, error: `Owner provisioning failed: ${owner.error}` }
+    if (!created.ok || !created.brokerageId || !created.userId) {
+      return { success: false, error: created.error ?? "Tenant creation failed" }
     }
-    const userId = owner.userId
+    const brokerageId = created.brokerageId
+    const userId = created.userId
+    const subscriptionId = created.subscriptionId ?? null
 
-    // Step 3: Create Stripe customer
+    // Stripe customer — the platform is the payee for a tenant's subscription
+    // (lib/billing/stripe-account-scope.ts roster: platform_payee). Created
+    // AFTER the tenant exists so its metadata carries the real brokerage_id,
+    // then written onto the subscription row (counted — a row that did not
+    // match is reported, never assumed).
     let stripeCustomerId = params.stripeCustomerId || null
     if (!stripeCustomerId) {
       try {
@@ -118,68 +119,75 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
           },
         })
         stripeCustomerId = customer.id
+        if (subscriptionId) {
+          const { data: linked, error: linkErr } = await service
+            .from("subscriptions")
+            .update({ stripe_customer_id: stripeCustomerId, updated_at: new Date().toISOString() })
+            .eq("id", subscriptionId)
+            .select("id")
+          if (linkErr) console.warn("[createSubscriber] stripe_customer_id write refused:", linkErr.message)
+          else if ((linked ?? []).length !== 1) console.warn("[createSubscriber] stripe_customer_id matched no subscription row:", subscriptionId)
+        }
       } catch (stripeErr: any) {
         console.warn("[createSubscriber] Stripe customer creation failed:", stripeErr.message)
       }
     }
 
-    // Step 4: Create subscription record — no billing_cycle column in schema
-    const periodEnd =
-      params.billingCycle === "annual"
-        ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
-        : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-
-    const { data: subscription, error: sErr } = await service
-      .from("subscriptions")
-      .insert({
-        brokerage_id: brokerageId,
-        tier_id: params.tierId,
-        status: "active",
-        stripe_customer_id: stripeCustomerId,
-        current_period_start: new Date().toISOString(),
-        current_period_end: periodEnd,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (sErr || !subscription) {
-      return { success: false, error: `Subscription creation failed: ${sErr?.message}` }
-    }
-
-    // Step 5: Audit log — activities has no metadata column; use notes as JSON string
+    // Audit log — activities has no metadata column; use notes as JSON string
+    //
+    // IDENTITY CLASS. activities.agent_id FKs agents(id); callerUser.id is a
+    // users id, so this insert was rejected by the foreign key — and the catch
+    // below discarded the rejection. The audit line for provisioning a new
+    // subscriber was never once written. The caller here is a superadmin, who
+    // legitimately may have no agents row at all, so the column (nullable) gets
+    // null in that case and the actor is recorded in the notes payload instead —
+    // an audit entry that names its actor beats one that does not exist.
+    const callerAgentId = await resolveAgentId(service as any, callerUser.id)
     try {
-      await service
+      const { error: auditErr } = await service
         .from("activities")
         .insert({
           activity_type: "superadmin.subscriber.created",
-          agent_id: callerUser.id,
+          agent_id: callerAgentId,
           brokerage_id: brokerageId,
           title: `New subscriber provisioned: ${params.brokerageName}`,
           notes: JSON.stringify({
+            actor_user_id: callerUser.id,
             admin_email: params.adminEmail,
             tier: params.tierName,
             billing_cycle: params.billingCycle,
-            subscription_id: subscription.id,
+            subscription_id: subscriptionId,
+            subscription_error: created.subscriptionError ?? null,
+            stripe_customer_id: stripeCustomerId,
             notes: params.notes || "",
+            // Config-snapshot-at-creation outcome — honest either way.
+            snapshot_id: params.snapshotId ?? null,
+            snapshot_name: created.snapshotName ?? null,
+            snapshot_applied: created.snapshotApplied ?? null,
+            snapshot_error: created.snapshotError ?? null,
+            prospect_linked: created.prospectStamp?.linked ?? 0,
+            extras_skipped: created.extrasSkipped,
             timestamp: new Date().toISOString(),
           }),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
+      if (auditErr) console.error("[create-subscriber] audit log insert failed:", auditErr.message)
     } catch {
       // Non-fatal: audit log failures don't block subscriber creation
     }
 
-    // (The magic-link invite was sent by provisionTenantOwner in Step 2.)
+    // (The magic-link invite was sent by provisionTenantOwner inside the core.)
     return {
       success: true,
       brokerageId,
       userId,
-      subscriptionId: subscription.id,
-      inviteSent: owner.inviteSent,
-      inviteError: owner.inviteError,
+      subscriptionId: subscriptionId ?? undefined,
+      inviteSent: created.inviteSent,
+      inviteError: created.inviteError,
+      snapshotApplied: created.snapshotApplied,
+      snapshotName: created.snapshotName ?? undefined,
+      snapshotError: created.snapshotError,
     }
   } catch (err: any) {
     console.error("[createSubscriber] Error:", err)
@@ -187,36 +195,71 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   }
 }
 
+/**
+ * RESEND the tenant-owner magic link for a subscriber whose original invite did
+ * not land (`createSubscriber` returns `inviteSent:false` + `inviteError` when
+ * that happens — provisionTenantOwner tolerates an "already registered" address
+ * and still finishes the tenant).
+ *
+ * This does NOT invent an owner. It re-sends to an address that ALREADY holds a
+ * users row on that brokerage — see the target check below. Without that check
+ * the endpoint was a superadmin-gated primitive for mailing an
+ * `user_type:'admin'` invite for ANY brokerage_id to ANY address, which is a
+ * tenant-takeover shape rather than a retry.
+ */
 export async function retrySubscriberInvite(params: {
   adminEmail: string
   brokerageId: string
 }): Promise<{ success: boolean; error?: string }> {
-  // Superadmin-only — previously this was wide open and let any client
-  // send Supabase invite emails to any address attached to any brokerage_id.
-  const supabase = await createClient()
-  const { data: { user: callerUser } } = await supabase.auth.getUser()
-  if (!callerUser) return { success: false, error: "Unauthenticated" }
+  // Platform-staff gate, same capability as the provisioning door it retries for
+  // ('tenants'). Previously this was wide open and let any client send Supabase
+  // invite emails to any address attached to any brokerage_id; then it was hard
+  // superadmin, which locked out the platform admins who provision tenants.
+  const gate = await gateStaffAction("tenants")
+  if (!gate.ok) return { success: false, error: gate.error }
 
-  const { data: callerProfile } = await supabase
-    .from("users")
-    .select("user_type, role, platform_role")
-    .eq("id", callerUser.id)
-    .single()
-
-  const callerType =
-    callerProfile?.platform_role ?? callerProfile?.user_type ?? callerProfile?.role
-  if (callerType !== "superadmin") {
-    return { success: false, error: "Forbidden: superadmin only" }
+  const email = params.adminEmail.trim().toLowerCase()
+  if (!email || !params.brokerageId) {
+    return { success: false, error: "adminEmail and brokerageId are both required" }
   }
 
   const service = createServiceClient()
+
+  // TARGET CHECK — the address must already be a user of THIS brokerage. That is
+  // exactly the state createSubscriber leaves behind (provisionTenantOwner step 3
+  // upserts the users row with user_type='admin' + brokerage_id before it ever
+  // reports inviteSent:false), so every legitimate retry passes, while
+  // "mail an admin invite for someone else's tenant" no longer does.
+  const { data: target, error: targetErr } = await service
+    .from("users")
+    .select("id, user_type, brokerage_id")
+    .eq("email", email)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+  if (targetErr) return { success: false, error: `Could not verify the invitee: ${targetErr.message}` }
+  if (!target) {
+    return {
+      success: false,
+      error: "No user with that email belongs to that brokerage — provision the subscriber first instead of resending an invite.",
+    }
+  }
+
+  // supabase-js RESOLVES a refused invite with { error } — it does not throw, so
+  // the old bare try/catch returned {success:true} for sends that never happened.
   try {
-    await service.auth.admin.inviteUserByEmail(params.adminEmail, {
+    const { error: sendErr } = await service.auth.admin.inviteUserByEmail(email, {
       data: {
         brokerage_id: params.brokerageId,
-        user_type: "admin",
+        user_type: (target.user_type as string | null) ?? "admin",
       },
       redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+    })
+    if (sendErr) return { success: false, error: sendErr.message }
+    // A staff member mailing a tenant-owner magic link is a cross-tenant act;
+    // it belongs in the same audit trail as the provisioning that preceded it.
+    await auditStaffAction(gate, "subscriber.invite.resent", params.brokerageId, {
+      admin_email: email,
+      user_type: (target.user_type as string | null) ?? "admin",
     })
     return { success: true }
   } catch (err: any) {

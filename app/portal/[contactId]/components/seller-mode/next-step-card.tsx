@@ -2,7 +2,7 @@
 
 import { Card, CardContent } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
-import { ArrowRight, Calendar, CheckCircle2, Clock } from "lucide-react"
+import { Calendar, CheckCircle2 } from "lucide-react"
 
 interface NextStepCardProps {
   listingStatus: string | null

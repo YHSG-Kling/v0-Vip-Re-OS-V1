@@ -1,0 +1,42 @@
+-- m526 — TOMBSTONE. SUPERSEDED BY, AND NOT TO BE APPLIED:
+--        supabase/migrations/m526a-m526s-negative-control-counted-the-population-instead-of-asking-the-predicate.sql
+--
+-- The executable body of this migration was DELETED, not lost. Every statement
+-- it ran lives in m526a, byte-identical: public.is_tenant_principal_team_lead(),
+-- and the two disjuncts added to public.is_brokerage_finance_admin() and
+-- public.can_read_brokerage_books(). m526a is STRICTLY STRONGER than this file
+-- — nothing was weakened to make it pass.
+--
+-- WHY THIS FILE IS A TOMBSTONE RATHER THAN A MIGRATION. m526 was applied
+-- verbatim on 2026-08-23 and refused:
+--
+--     ERROR: P0001: m526 postcheck: 1 brokerage-tier team lead(s) would gain
+--            tenant-wide money — m472 violated
+--
+-- and the whole transaction rolled back. The refusal was its own defect. Its
+-- `v_leaked` query counted brokerage-tier team leads and never called the
+-- predicate whose behaviour it claimed to be asserting, so it treated the
+-- EXISTENCE of such a person as the leak rather than that person being ADMITTED.
+-- Those are the same number only while nobody holds that shape — which was true
+-- when m526 was written, because both live tenants were then mis-tagged
+-- `solo_agent`, and stopped being true the moment m534 corrected the tags.
+--
+-- MEASURED ON THE LIVE DATABASE BEFORE THIS FILE WAS EMPTIED, with a positive
+-- control, so the claim above is not an argument:
+--
+--     m526's v_leaked, as written .................................. 1  (refuses)
+--     is_tenant_principal_team_lead() for that same identity ... false  (no leak)
+--     can_read_brokerage_books()     for that same identity .... false  (no leak)
+--     the same join with the tier condition REMOVED ............. true  (control:
+--         the join is live, so the two `false` results above come from the tier
+--         condition doing its job and not from an empty join)
+--
+-- The one identity involved is the team lead of the single live team on a
+-- tenant that m534 correctly re-tagged `brokerage`, where m472/m473 still hold.
+--
+-- LEAVING THIS FILE RUNNABLE WOULD BE THE TRAP. It is numbered before m526a, it
+-- looks like an un-applied migration, and applying it would fail and roll back
+-- while reading as "the guard caught something". A tombstone cannot do that.
+--
+-- Do not renumber m526a to reclaim this slot: m526a is referenced by
+-- scripts/tenant-principal-books-simulator.ts:67 and by its own header.

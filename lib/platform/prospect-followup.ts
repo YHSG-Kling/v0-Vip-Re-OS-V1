@@ -53,10 +53,21 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
 
   // ── RUNG 1: INTRO for aged 'new' prospects ─────────────────────────────────
   const introCutoff = new Date(Date.now() - INTRO_MIN_AGE_MS).toISOString()
+  // Lane 76B — the three AI-agent exits change what "cold" means: a
+  // 'demo_scheduled' row (m654) never matches either rung's status filter, and
+  // an OPEN human handoff (details.human_handoff, written by
+  // lib/platform/prospect-capture.ts::markProspectHandoff) is excluded in the
+  // QUERY so a person who asked for a person never gets the automated ladder
+  // while staff are working them.
   const { data: fresh } = await svc.from("platform_prospects")
     .select("id, name, email, company, role_interest")
     .eq("status", "new")
     .not("email", "is", null)
+    .is("details->human_handoff", null)
+    // Lane 79B — a prospect who asked to be called back when THEY are ready
+    // (details.callback, written by prospect-agent-tools.ts::schedule_prospect_
+    // callback) is scheduled, never chased: the ladder stands down for them.
+    .is("details->callback", null)
     .lt("created_at", introCutoff)
     .eq("followup_count", 0)
     .order("created_at", { ascending: true })
@@ -81,6 +92,8 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     .eq("status", "contacted")
     .eq("followup_count", 1)
     .not("email", "is", null)
+    .is("details->human_handoff", null)
+    .is("details->callback", null)
     .lt("last_followup_at", nudgeCutoff)
     .order("last_followup_at", { ascending: true })
     .limit(BATCH)

@@ -1,0 +1,72 @@
+-- m616 — tax_categories.provider_account_id: NO FK ADDED (wave 47 re-verification)
+--
+-- NO-OP BY DESIGN (2026-09-09): this file carries NO DDL — it records the ruled omission of a
+-- foreign key on tax_categories.provider_account_id (an external QuickBooks/Xero chart-of-accounts
+-- id with no internal parent). There is nothing to apply; the claim proof reads it as a declaration.
+-- applies them. This file makes no schema change — it is the wave-47
+-- orphaned-child-census (OC1) verdict for this one column, written down where
+-- the next lane that meets it will look first, so it is re-derived once and
+-- not re-litigated every wave.
+--
+-- ── THE FINDING, INDEPENDENTLY RE-DERIVED ────────────────────────────────────
+-- scripts/orphaned-child-baseline.json (generated 2026-09-08) still lists
+-- "tax_categories.provider_account_id" under OC1 (UNPROTECTED PARENT LINK —
+-- parent-shaped column, no FK). The column's name votes for
+-- `calendar_provider_accounts` as its parent, because that table's OWN
+-- provider_account_id column (see calendar_sync_logs / calendar_sync_mappings
+-- / calendar_sync_conflicts in scripts/schema-fk-map.ts) genuinely IS a live
+-- FK to it — the naming collision is what makes tax_categories' column look
+-- like an unwired sibling of that family.
+--
+-- It is not. Read against the live call sites:
+--   · lib/finance/accounting-egress.ts:63-77 (resolveExpenseAccountRef) reads
+--     `tax_categories.provider_account_id` and hands it straight to
+--     QuickBooksProvider.createPurchase(...) as `expenseAccountRef` /
+--     `paymentAccountRef` — a QuickBooks Chart-of-Accounts id, opaque to this
+--     schema, matched by `category_name` per brokerage, "NEVER a fabricated
+--     account id" (the file's own header comment, line 11).
+--   · app/actions/accounting-sync.ts:461,496 writes the same column straight
+--     from `data.providerAccountId`, the tenant's manual entry from
+--     Settings → Accounting → Tax Categories (app/settings/accounting/
+--     tax-category-manager.tsx, manual-entry-card.tsx) — a string the OPERATOR
+--     types in after looking it up in their own QuickBooks/Xero account list,
+--     not a row this app creates or owns.
+--   · There is no table in this schema that catalogs a tenant's QuickBooks
+--     chart of accounts (grep of scripts/schema-snapshot.ts for any
+--     `*account*` table turns up only accounting_sync_log — an audit log of
+--     sync attempts, not an account catalog — plus the unrelated
+--     calendar_provider_accounts/credit_accounts/social_media_accounts).
+--     The accounting connection itself (OAuth tokens, realm id) lives behind
+--     lib/connections/resolve-scoped.ts, keyed by (brokerage/team/agent) +
+--     provider, not by an individual account row `provider_account_id` could
+--     reference either.
+--
+-- So the parent this column's name suggests does not exist, and the parent
+-- OC1's naming heuristic votes for (calendar_provider_accounts) is simply
+-- wrong for this table — a real external-provider id shaped exactly like
+-- `stripe_customer_id` or `dotloop_loop_id`, colliding in spelling with an
+-- unrelated internal FK-bearing column elsewhere in the schema.
+--
+-- ── WHY THIS IS A REPEAT, NOT A NEW FINDING ──────────────────────────────────
+-- supabase/migrations/m608-eighty-orphaned-child-links-oc1-burn-down.sql
+-- (applied 2026-09-07, comment block starting "1 WRONG-PARENT FINDING")
+-- already reached this exact verdict for this exact column, with the same
+-- three call sites cited. Nothing in the codebase between m608 and this wave
+-- changed the shape — accounting-egress.ts, accounting-sync.ts and the tax
+-- category settings UI are unchanged in the relevant lines. This file exists
+-- only because the wave-47 task asked for a fresh, dated migration recording
+-- the omission; the reasoning is m608's, re-verified against current source
+-- rather than trusted from the comment alone.
+--
+-- ── WHAT WOULD MAKE THIS ACTIONABLE ──────────────────────────────────────────
+-- Adding `REFERENCES calendar_provider_accounts(id)` (or any other internal
+-- table) would be fabricating a parent to make a census number move — CLAUDE.md
+-- §1 forbids deleting to move a number, and wiring a wrong parent for the same
+-- reason is equally forbidden. The only fix that would ever be correct here is
+-- a NEW internal table cataloging each tenant's synced QuickBooks/Xero chart of
+-- accounts (id, external_account_id, name, type, brokerage_id) with
+-- tax_categories.provider_account_id retyped to reference ITS id — a real
+-- feature (local account catalog + picker instead of manual id entry), not a
+-- schema patch, and out of scope for an orphan-doctrine burn-down.
+--
+-- No ALTER statement follows. This is a documentation-only migration.

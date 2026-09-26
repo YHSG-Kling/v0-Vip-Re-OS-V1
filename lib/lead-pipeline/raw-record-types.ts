@@ -2,11 +2,13 @@
  * Canonical shape for every scraped record before it enters the pipeline.
  * Sources: Zillow, Realtor, Craigslist, BatchData, Nextdoor, Facebook, Reddit.
  *
- * isViableRecord  → allowed to exist as a raw_scraped_leads row
- * hasPromotionEligibleIdentity → required before promotion to a leads row
- *
- * This distinction matters: some raw records are useful for enrichment or
- * pattern analysis but only promotion-eligible records may become leads.
+ * isViableRecord  → allowed to exist as a raw_scraped_leads row (WIRED — the
+ *                   sourcers and the ingest cron filter on it)
+ * hasPromotionEligibleIdentity → MERGED ONTO isViableRecord (orphan doctrine
+ *                   §1.1, wave 65A) — see the tombstone where it used to be
+ *                   defined, below. It was the SAME PREDICATE, byte for byte;
+ *                   the real promotion gate lives in
+ *                   lib/lead-pipeline/canonical-lead-eligibility.ts.
  */
 export interface NormalizedScrapedRecord {
   /** Stable dedup key unique within the source (not a DB uuid). */
@@ -78,21 +80,22 @@ export function isViableRecord(r: NormalizedScrapedRecord): boolean {
   )
 }
 
-/**
- * Gate 2 — record may be promoted to a leads row.
- * Same criteria as isViableRecord but semantically distinct: only records that
- * pass this gate should drive lead creation or CRM contact upsert.
- */
-export function hasPromotionEligibleIdentity(r: NormalizedScrapedRecord): boolean {
-  return !!(
-    r.email ||
-    r.phone ||
-    r.username ||
-    (r.fullName && (r.city || r.state)) ||
-    (r.firstName && r.lastName && (r.city || r.state)) ||
-    r.propertyAddress
-  )
-}
+// ── MERGED ONTO SURVIVOR (orphan doctrine §1.1, wave 65A) ────────────────────
+// `hasPromotionEligibleIdentity` used to live here, BYTE-IDENTICAL to
+// `isViableRecord` (lib/lead-pipeline/raw-record-types.ts:72) — same six
+// clauses, same order. The real, stricter promotion gate it claimed to be was
+// (and remains) lib/lead-pipeline/canonical-lead-eligibility.ts — the "SINGLE
+// source of truth for the raw record → lead CONVERSION GATE" (first name AND
+// last name, plus one of email / phone / VERIFIED mailing address) — which
+// both live promotion paths (lib/lead-pipeline/pipeline-processor.ts and
+// lib/lead-promotion/eligibility-evaluator.ts) already delegate to. This
+// duplicate function added nothing a caller could not get from isViableRecord
+// directly, and its own header said so (wave "2026-09-03, lane L2"). Its only
+// two callers — scripts/scraper-simulator.ts:32,262,270 and
+// scripts/lead-flow-e2e.ts:28,262, both outside the scraping fence for THIS
+// lane's edit list — are repointed to isViableRecord (lib/lead-pipeline/raw-
+// record-types.ts:72) in this same pass. No capability is lost: isViableRecord
+// IS the predicate this function computed, unchanged.
 
 /**
  * Returns a stable string key for deduplication.

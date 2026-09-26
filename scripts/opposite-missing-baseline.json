@@ -1,0 +1,55 @@
+{
+  "generated": "2026-09-16",
+  "counts": {
+    "col-write-no-read": 0,
+    "col-read-no-write": 1,
+    "dead-import": 0,
+    "orphan-type-export": 0,
+    "inert-param": 0,
+    "broken-dynamic-import": 0,
+    "dynamic-import-missing-export": 0,
+    "fetch-no-route": 0,
+    "route-no-caller": 0,
+    "route-external-caller": 14,
+    "route-unresolved-door": 8
+  },
+  "keys": {
+    "col-write-no-read": [],
+    "col-read-no-write": [
+      "listing_marketing_services.estimated_cost"
+    ],
+    "dead-import": [],
+    "orphan-type-export": [],
+    "inert-param": [],
+    "broken-dynamic-import": [],
+    "dynamic-import-missing-export": [],
+    "fetch-no-route": [],
+    "route-no-caller": [],
+    "route-external-caller": [
+      "/api/admin/health-status",
+      "/api/agentic-os/actions",
+      "/api/agentic-os/actions/[capability]",
+      "/api/agentic-os/connectivity",
+      "/api/agentic-os/mcp",
+      "/api/errors/collect",
+      "/api/intelligence/classify",
+      "/api/intelligence/coordinate",
+      "/api/intelligence/kb/embed",
+      "/api/intelligence/memory/update",
+      "/api/showings/showingtime-webhook",
+      "/api/voice/relay/plan",
+      "/api/voice/twilio/intelligence",
+      "/api/workflow/trigger"
+    ],
+    "route-unresolved-door": [
+      "/api/lead-magnets/qr/[magnetId]",
+      "/api/lead-magnets/submissions",
+      "/api/video/projects",
+      "/api/video/projects/[projectId]/generate",
+      "/api/video/projects/[projectId]/preview",
+      "/api/video/projects/[projectId]/publish",
+      "/api/video/projects/[projectId]/script",
+      "/api/widget/capture"
+    ]
+  }
+}

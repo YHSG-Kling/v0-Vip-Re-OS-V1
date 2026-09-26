@@ -1,0 +1,22 @@
+[
+  "app/actions/lead-governance/govern-lead.ts",
+  "app/api/cron/earnings-rollup/route.ts",
+  "app/api/cron/engagement-scores/route.ts",
+  "app/api/cron/referral-asks/route.ts",
+  "app/api/cron/seller-updates/route.ts",
+  "app/api/cron/team-heatmap-snapshot/route.ts",
+  "lib/agents/asset-manager-actions.ts",
+  "lib/agents/marketing-agent-actions.ts",
+  "lib/ai-isa/direct-mail-trigger.ts",
+  "lib/ai-isa/ghost-reengagement.ts",
+  "lib/ai-isa/speed-to-lead.ts",
+  "lib/communication-spine/ingest-message-service.ts",
+  "lib/communication-spine/message-persister.ts",
+  "lib/contact-promotion/promote-lead-to-contact.ts",
+  "lib/kernel/lead-acquisition-handlers.ts",
+  "lib/lead-pipeline/enrichment-orchestrator.ts",
+  "lib/lead-pipeline/pipeline-processor.ts",
+  "lib/lead-promotion/initial-scorer.ts",
+  "lib/lead-readiness/readiness-logger.ts",
+  "lib/vendor-governance/usage-logger.ts"
+]

@@ -328,5 +328,23 @@ export async function approveContentItem(
     .select("id")
     .maybeSingle()
 
-  return { ok: !!updated, note: updated ? undefined : "Couldn't approve — it may have changed state." }
+  if (!updated) return { ok: false, note: "Couldn't approve — it may have changed state." }
+
+  // THE LANDING PAGE, AT THE APPROVAL MOMENT (wave 81D — owner: "automatic
+  // video landing pages for when a new video is created"). The 30-minute
+  // geo-reel-autopublish cron was the ONLY publisher, so an approved reel had
+  // no public page for up to half an hour. publishVideoProjectLanding keeps
+  // its own gate (finished + compliance passed + approved + artifact), so an
+  // approved-but-unfinished reel is simply left for the cron — the net.
+  // Best-effort: a refusal is reported in the note, never a reason to unapprove.
+  let landingNote: string | undefined
+  try {
+    const { publishVideoProjectLanding } = await import("@/lib/geo/publish-video-landing")
+    const pub = await publishVideoProjectLanding({ projectId: videoProjectId, brokerageId })
+    landingNote = pub.ok ? `Public page live at /v/${pub.slug}.` : `Public page not yet published (${pub.reason}) — the auto-publish sweep will pick it up when the reel finishes.`
+  } catch (err) {
+    landingNote = `Public page publish threw (${(err as Error)?.message ?? "unknown"}) — the auto-publish sweep is the net.`
+  }
+
+  return { ok: true, note: landingNote }
 }

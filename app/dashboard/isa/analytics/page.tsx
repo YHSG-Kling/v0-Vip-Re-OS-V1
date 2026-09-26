@@ -1,5 +1,4 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
 import { getAgentContext } from '@/lib/identity'
 import { getQualificationOutcomes } from '@/app/actions/ai-isa'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'

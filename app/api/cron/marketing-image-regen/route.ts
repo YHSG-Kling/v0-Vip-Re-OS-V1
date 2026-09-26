@@ -16,6 +16,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateImage, type ImagePurpose, type ImageSize } from "@/lib/ai/image-generation"
+import { enqueueStaleScreenshotStills, recaptureScreenshotAsset, seedMissingDemoStill, SCREENSHOT_ASSET_KIND, type ScreenshotAssetRow } from "@/lib/assets/screenshot-capture"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 120
@@ -42,6 +43,13 @@ export async function GET(req: NextRequest) {
 
   const svc = createServiceClient()
 
+  // Lane 78B — DEMO STILL REFRESH rides THIS loop (no new cron): screenshot
+  // rows (metadata.asset_kind='screenshot') older than STILL_MAX_AGE_DAYS are
+  // flagged 'requested' here and re-captured below when claimed, one per tick
+  // like every other regen. lib/assets/screenshot-capture.ts is the seam.
+  const stale = await enqueueStaleScreenshotStills(svc)
+  if (stale.error) console.warn("[marketing-image-regen] stale demo-still sweep refused:", stale.error)
+
   // Claim one requested row atomically (requested → processing).
   const { data: candidate } = await svc.from("marketing_assets")
     .select("id")
@@ -50,7 +58,16 @@ export async function GET(req: NextRequest) {
     .limit(1)
     .maybeSingle()
   const cand = candidate as { id: string } | null
-  if (!cand) return NextResponse.json({ ran_at: new Date().toISOString(), processed: 0 })
+  if (!cand) {
+    // An idle tick SEEDS one missing demo still (the registry fills itself
+    // over the ticks; a refusal is reported here, not swallowed).
+    const seeded = await seedMissingDemoStill(svc)
+    return NextResponse.json({
+      ran_at: new Date().toISOString(), processed: 0,
+      demo_still_seeded: seeded.surfaceId,
+      demo_still_result: seeded.result ? (seeded.result.ok ? { ok: true, url: seeded.result.url, cached: seeded.result.cached } : { ok: false, reason: seeded.result.reason }) : null,
+    })
+  }
 
   const claim = await svc.from("marketing_assets")
     .update({ regen_status: "processing", updated_at: new Date().toISOString() })
@@ -62,6 +79,26 @@ export async function GET(req: NextRequest) {
   if (!asset) return NextResponse.json({ ran_at: new Date().toISOString(), processed: 0, note: "lost claim race" })
 
   const meta = asset.metadata ?? {}
+
+  // A screenshot row is RE-CAPTURED (same id, new asset_url), never re-generated.
+  if (meta.asset_kind === SCREENSHOT_ASSET_KIND) {
+    const { data: full, error: fullErr } = await svc.from("marketing_assets")
+      // brokerage_id / created_by / tags: a TENANT-owned still (wave 80D)
+      // re-captures into the same tenant with its uses — recaptureScreenshotAsset
+      // reads the owner off the row.
+      .select("id, brokerage_id, created_by, tags, asset_name, asset_url, thumbnail_url, approval_status, updated_at, metadata").eq("id", asset.id).maybeSingle()
+    if (fullErr || !full) {
+      await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+      return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: `screenshot row read refused: ${fullErr?.message ?? "no row"}` }, { status: 200 })
+    }
+    const shot = await recaptureScreenshotAsset(svc, full as ScreenshotAssetRow)
+    if (!shot.ok) {
+      await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+      return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: shot.reason }, { status: 200 })
+    }
+    return NextResponse.json({ ran_at: new Date().toISOString(), processed: 1, asset_id: asset.id, ok: true, image_url: shot.url, kind: "screenshot" })
+  }
+
   const prompt = String(meta.original_prompt ?? "")
   if (!prompt) {
     await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)

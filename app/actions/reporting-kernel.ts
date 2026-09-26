@@ -7,6 +7,7 @@
 // All mutations are handled by the kernel layer.
 
 import { createClient } from "@/lib/supabase/server"
+import { pickUserOffice } from "@/lib/kernel/resolve-user-office"
 import {
   loadReportingWorkspace,
   generateSourcePerformanceReport,
@@ -20,19 +21,27 @@ import {
   exportReportPdf,
   emailReport,
 } from "@/lib/kernel/reporting"
+// TOMBSTONE: GenerateTeamPerformanceInput, GenerateFinancialSummaryInput,
+// ExportReportCsvInput, ExportReportPdfInput and EmailReportInput were imported
+// here and never used — the four actions below that could have used them take no
+// options at all, or declare their own inline shape. All five SURVIVE in
+// lib/kernel/reporting.ts, where each is the declared parameter type of the
+// exported command it names (e.g. exportReportCsv(input: ExportReportCsvInput)),
+// so they remain reachable to every consumer through that signature. Only this
+// file's unused bindings are removed — the five the census named and no more.
+// (A first pass also dropped GenerateCampaignROIInput,
+// GenerateTransactionPipelineInput and GenerateReputationInput; all three are
+// live here, at lines ~108/~116/~147, inside `Pick<…>` option types. Deleting an
+// import because it "looks like" its siblings is how a burn-down starts breaking
+// working code — the census listed exactly five, and exactly five went.)
 import type {
   ReportingActorContext,
   LoadReportingWorkspaceInput,
   GenerateSourcePerformanceInput,
   GenerateCampaignROIInput,
   GenerateTransactionPipelineInput,
-  GenerateTeamPerformanceInput,
   GenerateAgentPerformanceInput,
-  GenerateFinancialSummaryInput,
   GenerateReputationInput,
-  ExportReportCsvInput,
-  ExportReportPdfInput,
-  EmailReportInput,
 } from "@/lib/kernel/reporting"
 
 // ─── ACTOR CONTEXT RESOLVER ──────────────────────────────────────────────────
@@ -44,7 +53,7 @@ async function resolveActorContext(): Promise<ReportingActorContext | null> {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, user_type, team_id")
+    .select("id, brokerage_id, user_type, team_id, location_id")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -60,10 +69,25 @@ async function resolveActorContext(): Promise<ReportingActorContext | null> {
 
   return {
     userId:      user.id,
-    agentId:     agent?.id ?? user.id,
+    // NOT `?? user.id` (m349). This is the ctx EVERY reporting action reads
+    // through — the "middle". The pages know who the user is and the schema
+    // knows what each report is keyed on; this object was the only place that
+    // guessed. Every report keys agents-class columns, so the users id produced
+    // a complete, internally consistent set of zeros: a quiet month, rendered
+    // with full confidence. An empty id produces the same zeros without an
+    // ambiguous value leaking into a dozen downstream readers.
+    agentId:     agent?.id ?? "",
     brokerageId: profile.brokerage_id,
     userType:    profile.user_type ?? "agent",
-    locationId:  agent?.location_id ?? null,
+    // pickUserOffice, not `agent?.location_id` — the office set on the PERSON
+    // wins over the one on their agent record, and a pure-admin on a
+    // brokerage/multi_location tenant HAS no agent record (requiresAgentRow),
+    // so reading only the agents row silently un-narrowed every office admin
+    // on the one tier that has offices.
+    locationId:  pickUserOffice(
+                   (profile as { location_id?: string | null }).location_id ?? null,
+                   agent?.location_id ?? null,
+                 ).locationId,
     teamId:      agent?.team_id ?? (profile as { team_id?: string | null }).team_id ?? null,
   }
 }
@@ -116,13 +140,14 @@ export async function generateAgentPerformanceReportAction(
   return generateAgentPerformanceReport({ ctx, ...opts })
 }
 
-export async function generateFinancialSummaryReportAction(
-  opts?: Pick<GenerateFinancialSummaryInput, "dateFrom" | "dateTo">
-) {
-  const ctx = await resolveActorContext()
-  if (!ctx) return { success: false as const, error: "Not authenticated" }
-  return generateFinancialSummaryReport({ ctx, ...opts })
-}
+// NO generateFinancialSummaryReportAction.
+//
+// It existed as a client-callable wrapper with nowhere to be called from:
+// /dashboard/reports deliberately excludes commission/financials (they live in
+// Financials → Commission Tracker — see the note on that page), and the three
+// export/email actions below reach generateFinancialSummaryReport (the kernel
+// function) directly. A wrapper whose only possible caller is this file is a
+// second name for one capability, so the kernel function is the single path.
 
 export async function generateReputationReportAction(
   opts?: Pick<GenerateReputationInput, "agentId">
@@ -133,10 +158,15 @@ export async function generateReputationReportAction(
 }
 
 // Self-contained CSV export: fetches report data internally, formats rows, calls kernel CSV.
+// `agentId` / `brokerageId` are NOT parameters of this action, deliberately.
+// They were declared here, destructured away, and never read: every report below
+// is scoped by `ctx`, which resolveActorContext() reads from the SESSION. A
+// caller-supplied tenant on a server action is the IDOR shape this repo has been
+// bitten by (CLAUDE.md §4) — harmless while ignored, and one honest-looking edit
+// away from being honoured. An input that is advertised and discarded invites
+// exactly that edit, so the advertisement is removed with the discard.
 export async function exportReportCsvAction(opts: {
   reportType: string
-  agentId: string
-  brokerageId: string
   dateFrom?: string
 }): Promise<{ success: boolean; data?: string; error?: string }> {
   const ctx = await resolveActorContext()
@@ -177,10 +207,9 @@ export async function exportReportCsvAction(opts: {
 }
 
 // Self-contained PDF export: builds HTML from report data and uploads to Blob.
+// Tenant from the session, not from the caller — see exportReportCsvAction above.
 export async function exportReportPdfAction(opts: {
   reportType: string
-  agentId: string
-  brokerageId: string
   dateFrom?: string
 }): Promise<{ success: boolean; pdfUrl?: string; error?: string }> {
   const ctx = await resolveActorContext()
@@ -235,13 +264,12 @@ export async function exportReportPdfAction(opts: {
 }
 
 // Self-contained email action: accepts array of recipients, builds body from report data.
+// Tenant from the session, not from the caller — see exportReportCsvAction above.
 export async function emailReportAction(opts: {
   reportType: string
   recipients: string[]
   subject: string
   message?: string
-  agentId: string
-  brokerageId: string
   dateFrom?: string
 }): Promise<{ success: boolean; error?: string }> {
   const ctx = await resolveActorContext()

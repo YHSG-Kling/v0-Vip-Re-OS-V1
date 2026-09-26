@@ -1,210 +1,72 @@
 /**
- * lib/kernel/tenant-guard.ts — runtime tenant-isolation enforcement.
+ * lib/kernel/tenant-guard.ts — the tenant-safety FINDINGS writer.
  *
- * LAYER 0 — defense-in-depth for the 373 server-action call sites that
- * use createServiceClient(). The service-role bypasses RLS by design,
- * so the only thing standing between brokerage A and brokerage B's data
- * is whether the action's developer remembered to .eq("brokerage_id", x).
+ * ── TOMBSTONE (orphan burn-down, lane E) ────────────────────────────────────
  *
- * This module makes that remembering automatic.
+ * `assertSameBrokerage` and `withBrokerageGuard` were DELETED from this file.
+ * Both had zero callers, and this module's own header described them as
+ * "opt-in by design ... by the end of Sprint 1 every service-role action that
+ * touches tenant tables should be wrapped". That sprint never happened, and in
+ * the meantime the codebase enforced the SAME rule three other ways that
+ * together cover every call site. Naming each, with file:line, because a
+ * tenant-isolation primitive is not something to delete on a hunch:
  *
- * Three exports:
- *   - assertSameBrokerage(a, b)   — throws TenantViolationError if a !== b
- *   - withBrokerageGuard(brokerageId, fn) — wraps a service-client function
- *     so every read against tenant tables is auto-filtered, and every write
- *     asserts brokerage_id matches the guard
- *   - logTenantViolation(...)     — best-effort audit write to
- *     tenant_safety_findings when something looks wrong
+ *   1. CI, over the whole repo — scripts/tenant-scope-guard.ts:1
+ *      (`npm run test:tenant-scope`, in the guard chain). Every
+ *      `.from("<tenant table>")` chain must show scoping evidence — a
+ *      brokerage_id filter, a PK/unique-id lookup, or a validated parent id —
+ *      or the build FAILS with the file and line. Its baseline
+ *      (scripts/tenant-scope-baseline.json) holds exactly FIVE grandfathered
+ *      entries, all in app/api/migrate/verify/route.ts, and may only shrink.
+ *      That is strictly wider coverage than an opt-in wrapper ever reached:
+ *      the wrapper protected the actions someone remembered to wrap; the lint
+ *      protects the ones nobody did.
  *
- * The guard is opt-in by design — adding it to one action at a time lets
- * us migrate without breaking anything. By the end of Sprint 1 every
- * service-role action that touches tenant tables should be wrapped.
+ *   2. In the DATABASE — the RLS policies from m466 / m471 / m472 and the
+ *      helper functions public.is_brokerage_admin() /
+ *      public.is_brokerage_finance_admin(), verified by
+ *      `npm run test:cross-tenant-read` and `npm run test:child-tenant-scope`.
  *
- * Combine with the RLS policies installed by migration 1032: even if the
- * guard misses, RLS now catches any direct-auth-user reads, and the
- * tenant-safety-scan cron flags any rows with NULL brokerage_id.
+ *   3. At the ~28 real cross-tenant JOIN POINTS, each with a refusal shape its
+ *      caller can act on — which a throwing assertion could not have given
+ *      them. Live examples: lib/transactions/offer-bridge.ts:130,
+ *      lib/campaigns/enroll-in-sequence.ts:56, lib/marketing/qr-asset-linker.ts:90,
+ *      lib/audiences/audience-sync.ts:153, lib/providers/dispatch.ts:773.
+ *      Those return `{ success:false, error:"tenant_mismatch" }` or `notFound()`;
+ *      `assertSameBrokerage` threw, so adopting it would have meant a THIRD
+ *      vocabulary over one rule — the thing the owner ruling in
+ *      lib/auth/resolve-user-role.ts:107 explicitly forbids.
+ *
+ * Nothing was merged onto those survivors: the deleted pair carried no check
+ * they lack. `withBrokerageGuard`'s auto-stamping of brokerage_id on INSERT is
+ * the one behaviour with no exact twin, and it is unreachable in practice —
+ * its `GuardedQuery = unknown` return erased the PostgrestFilterBuilder type,
+ * so every adopting call site would have had to cast, which is why none did.
+ *
+ * WHAT REMAINS HERE is the half that IS wired: logTenantFinding, the best-effort
+ * writer for tenant_safety_findings, called by the tenant-safety-scan cron
+ * (app/api/cron/tenant-safety-scan/route.ts) and surfaced at
+ * /dashboard/admin/tenant-safety.
  */
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 
-// ─── Error class ─────────────────────────────────────────────────────────────
-
-export class TenantViolationError extends Error {
-  readonly code = "TENANT_VIOLATION" as const
-  readonly expected: string
-  readonly actual: string | null | undefined
-  readonly context: string
-
-  constructor(args: {
-    expected: string
-    actual: string | null | undefined
-    context: string
-    message?: string
-  }) {
-    super(
-      args.message ??
-        `Tenant violation in ${args.context}: expected brokerage_id=${args.expected}, got ${args.actual ?? "null"}`,
-    )
-    this.name = "TenantViolationError"
-    this.expected = args.expected
-    this.actual = args.actual
-    this.context = args.context
-  }
-}
-
-// ─── Primitive assertion ─────────────────────────────────────────────────────
-
-/**
- * Throws TenantViolationError unless both arguments resolve to the same
- * non-null brokerage id. Use at every join point where a server action
- * reads a row from table A and writes/reads a row from table B that should
- * belong to the same brokerage.
- *
- * Example:
- *   const offer = await svc.from("offers").select("brokerage_id, ...").single()
- *   assertSameBrokerage(offer.brokerage_id, actorContext.brokerageId, "negotiationCoPilot")
- */
-export function assertSameBrokerage(
-  a: string | null | undefined,
-  b: string | null | undefined,
-  context: string,
-): asserts a is string {
-  if (!a) {
-    throw new TenantViolationError({ expected: b ?? "any", actual: a, context, message: `${context}: brokerage_id is null` })
-  }
-  if (!b) {
-    throw new TenantViolationError({ expected: a, actual: b, context, message: `${context}: caller brokerage_id is null` })
-  }
-  if (a !== b) {
-    throw new TenantViolationError({ expected: b, actual: a, context })
-  }
-}
-
-// ─── Guarded service client ──────────────────────────────────────────────────
-//
-// withBrokerageGuard returns a thin wrapper around the service client that:
-//   • injects .eq("brokerage_id", brokerageId) into every SELECT/UPDATE/DELETE
-//   • auto-stamps brokerage_id on every INSERT (overwriting any contradictory
-//     value and throwing if the caller passed a different brokerage)
-//
-// Designed to be the safe default in any new action. Existing actions can
-// migrate one at a time. Tables without a brokerage_id column should NOT
-// use the guard — pass them through the raw client.
-//
-// Usage:
-//   const svc = withBrokerageGuard(actorContext.brokerageId, "syncDealHealth")
-//   await svc.from("deal_health_scores").select("*").eq("transaction_id", tid)
-//   await svc.from("deal_health_scores").insert({ transaction_id: tid, ... })
-//   // ↑ brokerage_id is automatically appended to the insert payload
-
-export interface GuardedClient {
-  /** the raw service client; use only for tables WITHOUT brokerage_id */
-  raw: ReturnType<typeof createServiceClient>
-  /** the brokerage id this client is scoped to */
-  brokerageId: string
-  /** call-site label, surfaces in violation errors and audit rows */
-  context: string
-  /** tenant-scoped from() */
-  from: (table: string) => GuardedFromBuilder
-}
-
-interface GuardedFromBuilder {
-  select: (cols?: string, opts?: { count?: "exact" | "planned" | "estimated"; head?: boolean }) => GuardedQuery
-  insert: (values: Record<string, unknown> | Record<string, unknown>[]) => GuardedQuery
-  update: (values: Record<string, unknown>) => GuardedQuery
-  delete: () => GuardedQuery
-  upsert: (
-    values: Record<string, unknown> | Record<string, unknown>[],
-    options?: Record<string, unknown>,
-  ) => GuardedQuery
-}
-
-// We use a recursive proxy on PostgrestFilterBuilder; the unknown return
-// preserves chainability across .eq/.in/.maybeSingle/.single/.order/.limit.
-type GuardedQuery = unknown
-
-export function withBrokerageGuard(
-  brokerageId: string | null | undefined,
-  context: string,
-): GuardedClient {
-  if (!brokerageId) {
-    throw new TenantViolationError({
-      expected: "non-null brokerage_id",
-      actual: brokerageId,
-      context,
-      message: `${context}: cannot construct guarded client without brokerage_id`,
-    })
-  }
-  const raw = createServiceClient()
-
-  return {
-    raw,
-    brokerageId,
-    context,
-    from: (table: string) => buildGuardedFrom(raw, table, brokerageId, context),
-  }
-}
-
-function buildGuardedFrom(
-  raw: ReturnType<typeof createServiceClient>,
-  table: string,
-  brokerageId: string,
-  context: string,
-): GuardedFromBuilder {
-  const base = raw.from(table)
-  return {
-    select(cols, opts) {
-      return (base.select(cols as string, opts) as unknown as { eq: (c: string, v: string) => unknown })
-        .eq("brokerage_id", brokerageId)
-    },
-    insert(values) {
-      const stamped = Array.isArray(values)
-        ? values.map((v) => stampOrThrow(v, brokerageId, context, table))
-        : stampOrThrow(values, brokerageId, context, table)
-      return (base.insert(stamped as Record<string, unknown> | Record<string, unknown>[]))
-    },
-    update(values) {
-      const stamped = stampOrThrow(values, brokerageId, context, table)
-      return (base.update(stamped as Record<string, unknown>) as unknown as { eq: (c: string, v: string) => unknown })
-        .eq("brokerage_id", brokerageId)
-    },
-    delete() {
-      return (base.delete() as unknown as { eq: (c: string, v: string) => unknown })
-        .eq("brokerage_id", brokerageId)
-    },
-    upsert(values, options) {
-      const stamped = Array.isArray(values)
-        ? values.map((v) => stampOrThrow(v, brokerageId, context, table))
-        : stampOrThrow(values, brokerageId, context, table)
-      return (base.upsert(stamped as Record<string, unknown> | Record<string, unknown>[], options as never))
-    },
-  }
-}
-
-function stampOrThrow(
-  values: Record<string, unknown>,
-  brokerageId: string,
-  context: string,
-  table: string,
-): Record<string, unknown> {
-  const existing = values.brokerage_id
-  if (existing != null && existing !== brokerageId) {
-    throw new TenantViolationError({
-      expected: brokerageId,
-      actual: typeof existing === "string" ? existing : null,
-      context,
-      message: `${context}: write to ${table} carried brokerage_id=${String(existing)} but guard is scoped to ${brokerageId}`,
-    })
-  }
-  return { ...values, brokerage_id: brokerageId }
-}
+// ─── Error class — DELETED ──────────────────────────────────────────────────
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): class `TenantViolationError` deleted.
+// Constructed by nothing and caught by nothing, ever — the header's old claim
+// that it "IS wired" described the intent, not a single call site. The live
+// cross-tenant refusal is RETURNED, not thrown: gates return
+// { success:false, error:"Forbidden: … not in your brokerage" } at the action
+// boundary (the §4 gate-first pattern, e.g. app/actions/dotloop-integration.ts),
+// and systemic findings are recorded through logTenantFinding below by the
+// tenant-safety-scan cron. A thrown error type nobody raises reads as a guard
+// and guards nothing — worse than its absence (§2).
 
 // ─── Best-effort audit-log write ─────────────────────────────────────────────
 
 /**
- * Records a finding in tenant_safety_findings. Called by the scan cron and
- * by catch handlers anywhere TenantViolationError surfaces in production.
+ * Records a finding in tenant_safety_findings. Called by the scan cron.
  * Idempotency-friendly: callers pass a stable scanRunId so re-runs don't
  * duplicate rows for the same problem on the same scan.
  */

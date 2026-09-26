@@ -34,12 +34,14 @@ export async function runWireFraudSentinel(input: WireFraudRunInput, client?: Sv
   try {
     // CRITICAL alert to the agent — this is the one notification you never want missed.
     if (input.agentUserId) {
-      const { data: notif } = await svc.from("notifications").insert({
+      const { data: notif, error: notifyError } = await svc.from("notifications").insert({
         user_id: input.agentUserId, brokerage_id: input.brokerageId, type: "wire_fraud_alert",
         title: verdict.riskLevel === "block" ? "⛔ Possible WIRE FRAUD — stop the wire" : "⚠️ Verify these wire instructions",
         body: `${verdict.flags.map((f) => f.evidence).join(" • ")} — ${verdict.protectiveAction}`,
         entity_type: "contact", entity_id: input.contactId, priority: "critical",
       }).select("id").single()
+      // "the one notification you never want missed" — so a refusal is at least LOUD.
+      if (notifyError) console.error("[wire-fraud-runner] CRITICAL notifications insert refused — the wire-fraud bell will not ring:", notifyError.message)
       notificationId = (notif as any)?.id
     }
     // Surface it on the inter-manager bus (Deal Coordinator stands guard).

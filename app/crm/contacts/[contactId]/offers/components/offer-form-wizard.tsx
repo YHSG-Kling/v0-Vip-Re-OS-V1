@@ -35,6 +35,11 @@ interface OfferFormWizardProps {
   // In-app form selections collected in the forms step
   inAppSelectedFormIds?:   string[]
   inAppFormFieldValues?:   Record<string, unknown>
+  /** offer_intents.id (m619) — set when this wizard opened via "Start Offer"
+   *  from the agent's Buyer offer requests queue. Carried on the created
+   *  offer's form payload so createOffer can bridge offer_intents.offer_id +
+   *  status='converted'. */
+  offerIntentId?:  string
   onBack:          () => void
   onSuccess:       (offerId?: string) => void
 }
@@ -142,6 +147,7 @@ export function OfferFormWizard({
   listingId, propertyAddressAiFilled,
   contingencies, buyerMaxBudget, buyerRiskTolerance,
   inAppSelectedFormIds, inAppFormFieldValues,
+  offerIntentId,
   onBack, onSuccess,
 }: OfferFormWizardProps) {
   const [step, setStep]           = useState<Step>("Price")
@@ -303,6 +309,8 @@ export function OfferFormWizard({
               in_app_form_field_values: inAppFormFieldValues ?? {},
             }
           : {}),
+        // THE BRIDGE (m619) — createOffer converts this intent on success.
+        ...(offerIntentId ? { offer_intent_id: offerIntentId } : {}),
       }
       const result = await createOffer(contactId, brokerageId, agentUserId, formWithInAppData)
       if (result.success && result.offerId) {

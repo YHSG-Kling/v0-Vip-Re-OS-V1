@@ -13,6 +13,7 @@ import {
 } from "./capacity-guardian"
 import { generatePersonaCopy, type CopyGenerator } from "./ai-copy"
 import { publishManagerSignal } from "./manager-signals"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -31,7 +32,7 @@ async function gatherSignals(svc: Svc, brokerageId: string, agentId: string, sta
   const staleContacts = await safeCount(svc.from("contacts").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId).eq("agent_id", agentId).is("deleted_at", null).lt("last_contacted_at", staleCutoffISO))
   const activeDeals = await safeCount(svc.from("transactions").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("agent_id", agentId).in("status", ["active", "under_contract", "closing"]))
+    .eq("brokerage_id", brokerageId).eq("agent_id", agentId).in("status", [...TRANSACTION_STATUSES_OPEN]))
   return { activeContacts, activeLeads, staleContacts, overdueTasks: 0, activeDeals }
 }
 

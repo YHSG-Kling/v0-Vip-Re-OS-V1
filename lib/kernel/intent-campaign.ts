@@ -17,6 +17,7 @@
 // Everything lands gated in its channel; nothing sends. NOT server-only.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { collectError } from "@/lib/errors/collect-error"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -171,6 +172,161 @@ export async function runIntentCampaign(
         channel: "portal",
       }, supabase)
       if (res.ok) result.summariesProposed += 1
+    }
+  }
+
+  return result
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// TERRITORY-CENTRIC INTELLIGENCE PHASE (wave 65A)
+//
+// BUILT (orphan doctrine §1.2): the five lead-intelligence scrapers in
+// app/actions/lead-intelligence.ts (scrapeSocialSignalsWithZenRows,
+// scrapeExternalBehavior, analyzeGoogleSearchIntent, trackExternalActivity,
+// enrichPropertyIntelligence) were orphan exports — reachable only from a
+// browser session that never called them. Owner ruling (2026-09-15): "this OS
+// runs autonomous loops; every capability should run autonomously… rather than
+// waiting for a button." This is that loop, folded into the EXISTING daily
+// intent-campaign tick per the wave-65 instruction ("no new cron") rather than
+// a sixth scraping cron. Owner: data_steward (the same manager that already
+// runs runIntentCampaign, above).
+//
+// TERRITORY-CENTRIC (wave 65 ruling): the ONLY areas ever touched are the
+// active-subscriber territories resolveActiveScrapeTerritories returns — no
+// active subscribers / no active territories → an honest no-op, never a
+// fallback to fixed geography.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Bounds spend per tick — mirrors runIntentCampaign's own maxMarkets default (2) above. */
+const MAX_TERRITORIES_PER_TICK = 3
+
+export interface TerritoryIntelligenceResult {
+  territoriesProcessed: number
+  nextdoorRawIngested: number
+  externalBehaviorRawIngested: number
+  googleSearchesSampled: number
+  propertiesEnriched: number
+  visitorActivitiesLinked: number
+  errors: number
+  noOpReason: string | null
+}
+
+/**
+ * One pass of the territory-centric intelligence phase: for each ACTIVE tenant
+ * territory, run the five lead-intelligence scrapers as the AUTONOMOUS CRON
+ * ACTOR (never a body-supplied brokerage — each call is scoped to the
+ * territory's own owning brokerage, proven by CRON_SECRET, CLAUDE.md §4).
+ * Every call goes through app/actions/lead-intelligence.ts's own territory +
+ * vendor-budget gates a second time (defense in depth — this phase does not
+ * bypass them by calling a private helper).
+ */
+export async function runTerritoryIntelligencePhase(
+  client?: Svc,
+): Promise<TerritoryIntelligenceResult> {
+  const supabase = client ?? createServiceClient()
+  const result: TerritoryIntelligenceResult = {
+    territoriesProcessed: 0, nextdoorRawIngested: 0, externalBehaviorRawIngested: 0,
+    googleSearchesSampled: 0, propertiesEnriched: 0, visitorActivitiesLinked: 0, errors: 0,
+    noOpReason: null,
+  }
+
+  // FAIL CLOSED (CLAUDE.md §4): without CRON_SECRET the cron actor cannot prove
+  // itself to app/actions/lead-intelligence.ts's requireCallerOrCron, and this
+  // phase must not silently do nothing while looking like it ran.
+  const cronSecret = process.env.CRON_SECRET
+  if (!cronSecret) {
+    result.noOpReason = "cron_secret_not_configured"
+    await collectError({
+      workflowName: "intent_campaign_territory_intelligence",
+      errorMessage: "CRON_SECRET is not configured — the territory-intelligence phase refused to run rather than call the scrapers unauthenticated.",
+      severity: "medium",
+    })
+    return result
+  }
+
+  const { resolveActiveScrapeTerritories } = await import("@/lib/lead-pipeline/scrape-territories")
+  const resolution = await resolveActiveScrapeTerritories(supabase)
+  if (resolution.noOp) {
+    result.noOpReason = resolution.reason
+    return result
+  }
+
+  const {
+    scrapeSocialSignalsWithZenRows, scrapeExternalBehavior, analyzeGoogleSearchIntent,
+    trackExternalActivity, enrichPropertyIntelligence,
+  } = await import("@/app/actions/lead-intelligence")
+
+  for (const territory of (resolution.territories as any[]).slice(0, MAX_TERRITORIES_PER_TICK)) {
+    if (!territory.brokerage_id || !territory.city) continue
+    result.territoriesProcessed += 1
+    const location = { city: territory.city as string, state: (territory.state as string) ?? "", zip: territory.zip_codes?.[0] as string | undefined }
+    const opts = { internalSecret: cronSecret, brokerageId: territory.brokerage_id as string }
+
+    try {
+      const nextdoor = await scrapeSocialSignalsWithZenRows(location, opts)
+      result.nextdoorRawIngested += (nextdoor as any)?.rawIngested ?? 0
+    } catch (e) {
+      result.errors += 1
+      await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined, severity: "low", brokerageId: territory.brokerage_id, context: { phase: "nextdoor", territoryId: territory.id } })
+    }
+
+    let discoveredAddresses: string[] = []
+    try {
+      const external = await scrapeExternalBehavior(location, opts)
+      result.externalBehaviorRawIngested += (external as any)?.rawIngested ?? 0
+      discoveredAddresses = ((external as any)?.discoveredAddresses ?? []) as string[]
+    } catch (e) {
+      result.errors += 1
+      await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined, severity: "low", brokerageId: territory.brokerage_id, context: { phase: "external_behavior", territoryId: territory.id } })
+    }
+
+    // Enrich ONE newly-discovered address per territory per tick (bounds spend;
+    // BatchData already ran once per address inside scrapeExternalBehavior —
+    // this adds the vision/street-view pass enrichPropertyIntelligence alone does).
+    const firstAddress = discoveredAddresses[0]
+    if (firstAddress) {
+      try {
+        const enrich = await enrichPropertyIntelligence(
+          { address: firstAddress, city: location.city, state: location.state, zip: location.zip ?? "" },
+          opts,
+        )
+        if ((enrich as any)?.success) result.propertiesEnriched += 1
+      } catch (e) {
+        result.errors += 1
+        await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined, severity: "low", brokerageId: territory.brokerage_id, context: { phase: "enrich_property", territoryId: territory.id, address: firstAddress } })
+      }
+
+      // Attach the newly-discovered off-site listing to visitors this brokerage
+      // ALREADY has a behavioral_signals row for, located in the SAME territory —
+      // connecting on-site browsing to off-site inventory without inventing a
+      // new identity (trackExternalActivity's own contract: an EXISTING visitor).
+      try {
+        const { data: signals } = await supabase
+          .from("behavioral_signals")
+          .select("visitor_id")
+          .eq("brokerage_id", territory.brokerage_id)
+          .ilike("city", location.city)
+          .limit(5)
+        for (const s of (signals ?? []) as Array<{ visitor_id: string }>) {
+          const track = await trackExternalActivity(
+            { visitorId: s.visitor_id, source: "zillow", behaviorType: "off_site_listing_match", propertyAddress: firstAddress, location: location.city, detectedViaZenrows: false },
+            opts,
+          )
+          if ((track as any)?.success) result.visitorActivitiesLinked += 1
+        }
+      } catch (e) {
+        result.errors += 1
+        await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined, severity: "low", brokerageId: territory.brokerage_id, context: { phase: "track_external_activity", territoryId: territory.id } })
+      }
+    }
+
+    try {
+      const google = await analyzeGoogleSearchIntent({ id: territory.id, city: location.city, state: location.state, zip: location.zip }, opts)
+      if ((google as any)?.success) result.googleSearchesSampled += 1
+    } catch (e) {
+      result.errors += 1
+      await collectError({ workflowName: "intent_campaign_territory_intelligence", errorMessage: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined, severity: "low", brokerageId: territory.brokerage_id, context: { phase: "google_intent", territoryId: territory.id } })
     }
   }
 

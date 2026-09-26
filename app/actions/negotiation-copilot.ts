@@ -306,6 +306,11 @@ export async function negotiationCoPilot(params: {
     listPrice,
     suggestedCounterPrice: strategy?.suggestedCounterPrice ?? null,
     existingConcession,
+    // §4 — off the listing row loaded above through the caller's own RLS-bound
+    // client (listings SELECT is brokerage-scoped, verified live), plus the
+    // authenticated user. Neither is a request-body value.
+    brokerageId: (listing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+    userId: user.id,
   })
 
   // ─── 3. Draft response message in agent voice ────────────────────────────
@@ -487,6 +492,11 @@ async function buildConcessionMatrix(input: {
   listPrice:              number
   suggestedCounterPrice:  number | null
   existingConcession:     number
+  /** Tenant + actor for the AI cost ledger. The brokerage comes off the
+   *  LISTING row the caller already loaded through the caller's own RLS-bound
+   *  client — never from `params` (§4). */
+  brokerageId:            string | null
+  userId:                 string | null
 }): Promise<ConcessionMatrix | undefined> {
   const basePrice = input.suggestedCounterPrice ?? input.offerPrice
   if (basePrice <= 0) return undefined
@@ -560,6 +570,8 @@ ${scenarios.map((s, i) => `${i + 1}. ${s.label} — seller Δnet ${formatUsd(s.n
 
 In 1-2 sentences, give the agent a direct framing: which scenario should they advocate for and how should they pitch it to their client (${input.side === "seller" ? "the seller" : "the buyer"})? No jargon.`
     const r = await generateObjectRouted({
+      brokerageId: input.brokerageId,
+      userId: input.userId,
       feature: "concession_trade_off",
       schema: z.object({ bottomLine: z.string() }),
       prompt,
