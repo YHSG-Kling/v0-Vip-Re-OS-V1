@@ -108,7 +108,8 @@ async function preflightPure(): Promise<void> {
     plan.adminEmail.includes(stamp) && plan.leadEmail.includes(stamp) && plan.brokerageName.includes(stamp)
   ;(tagged ? stepPass : stepFail)("drill plan is stamp-tagged for exact cleanup", ms)
 
-  // Wave-84 eligibility shape (owner, 2026-09-26): first+last name AND (phone and/or email).
+  // Wave-85 eligibility shape (owner, 2026-09-26: "email required so email and/or phone"): first+last
+  // name AND an email; the phone is optional and never enough alone (lane 85B).
   // A mailing address — even a VERIFIED one — no longer makes a lead (the wave-14 address arm is
   // retired), so the refusal to smoke-test is the one that moved: name + verified address only.
   const t0 = Date.now()
@@ -117,15 +118,15 @@ async function preflightPure(): Promise<void> {
     const ok = evaluateCanonicalLeadEligibility({
       first_name: "Smoke", last_name: "Lead", email: plan.leadEmail, phone: null,
     }).eligible
-    const phoneOk = evaluateCanonicalLeadEligibility({
+    const phoneOnlyRefused = !evaluateCanonicalLeadEligibility({
       first_name: "Smoke", last_name: "Lead", email: null, phone: "+18135550100",
     }).eligible
     const rejects = !evaluateCanonicalLeadEligibility({
       first_name: "Smoke", last_name: "Lead", email: null, phone: null,
       mailing_address: "1 Smoke Test Way", mailing_address_verified: true,
     } as any).eligible
-    ;(ok && phoneOk && rejects ? stepPass : stepFail)(
-      "canonical eligibility: name+email passes, name+phone passes, verified-address-only refuses (wave-84 shape)",
+    ;(ok && phoneOnlyRefused && rejects ? stepPass : stepFail)(
+      "canonical eligibility: name+email passes, name+phone-only refuses, verified-address-only refuses (wave-85 shape)",
       Date.now() - t0)
   } catch (e: any) {
     stepFail("canonical eligibility module loads", Date.now() - t0, e?.message)

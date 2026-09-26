@@ -93,8 +93,9 @@ function gatePure() {
     email.eligible === true && (email as any).via.join(",") === "email")
 
   const phone = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", phone: "3055550142" })
-  check("first + last + PHONE → approved via phone (the owner named phone; round 38 had excluded it)",
-    phone.eligible === true && (phone as any).via.join(",") === "phone")
+  // Lane 85B — owner wave 85: "email required so email and/or phone". The phone is optional, never enough alone.
+  check("REFUSAL · first + last + PHONE only → refused, failing 'contact_anchor' (wave 85: email required)",
+    phone.eligible === false && (phone as any).failing === "contact_anchor")
 
   const both = evaluateCanonicalLeadEligibility({
     first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142",
@@ -118,8 +119,8 @@ function gatePure() {
   const noChannel = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez" })
   check("REFUSAL · NO PHONE AND NO EMAIL → refused, failing 'contact_anchor'",
     noChannel.eligible === false && (noChannel as any).failing === "contact_anchor")
-  check("REFUSAL · the refusal reason states the owner's wave-84 rule",
-    /phone number and\/or an email address/.test((noChannel as any).reason))
+  check("REFUSAL · the refusal reason states the owner's wave-85 rule (email required; phone alone is not a lead)",
+    /Needs an email address/.test((noChannel as any).reason) && /phone alone does not make a lead/.test((noChannel as any).reason))
 
   const verified = evaluateCanonicalLeadEligibility({
     first_name: "Walter", last_name: "Sobchak",
@@ -313,8 +314,14 @@ function conversionInvariants() {
   check("conversion still carries the mailing verification state onto the contact",
     /mailing_address_verified:\s+data\.lead\.mailing_address_verified/.test(creator))
   const gate = src("lib/lead-pipeline/canonical-lead-eligibility.ts")
-  check("the gate module stays PURE (the plain-tsx simulators import it directly)",
-    !/^import /m.test(gate) && !/require\(/.test(gate))
+  // Lane 85B — the gate now imports ONE module, lib/external/email-verifier.ts, for the email vocabulary
+  // (pure checkEmailSyntax + AUTOMATED_LOCAL_PARTS). The rule is unchanged: no I/O, no server-only, no
+  // client — every import line must name that pure vocabulary module and nothing else.
+  const gateImports = gate.split("\n").filter((l) => /^import /.test(l))
+  check("the gate module stays I/O-free (the plain-tsx simulators import it directly): its only import is the pure email vocabulary",
+    gateImports.length > 0 && gateImports.every((l) => /from "@\/lib\/external\/email-verifier"/.test(l) && !/import \{[^}]*\b(checkEmailMx|verifyEmailDeep)\b/.test(l)) && !/require\(/.test(gate) && !/server-only|use server|createClient|createServiceClient/.test(stripComments(gate)))
+  check("POSITIVE CONTROL: the same import finder flags an I/O import",
+    !['import { createServiceClient } from "@/lib/supabase/service"'].every((l) => /from "@\/lib\/external\/email-verifier"/.test(l)))
 }
 
 async function main() {

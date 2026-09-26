@@ -80,6 +80,41 @@
 // applied and harmless — it cost nothing and other non-territory sources may
 // still use that column.
 //
+// ── WAVE 85 CORRECTION (lane 85B) — owner verbatim, 2026-09-26: ──────────────
+//   "an unknown sender needs to go through enrichment before lead gate."
+//   "change in what is needed to become a lead it should be email required so email
+//    and/or phone."
+// The wave-74 brokerage branch minted a LEAD DIRECTLY (createLeadDirectlyForBrokerage →
+// crm.ts::createLeadOnlyRecordForAcquisitionSource, exempt from the name half of the gate by
+// lane 84C's `origin: "person_initiated_inbound"`). That skipped enrichment and the gate. Now a
+// qualifying sender to a BROKERAGE mailbox lands RAW and takes the one raw path every other source
+// takes: landUnknownSenderRaw → lib/kernel/scraping.ts::ingestRawSourceBatch → lib/lead-pipeline/
+// pipeline-processor.ts::processRawRecord = pre-dedup → enrich (PeopleData by the sender's EMAIL,
+// which returns the person's name; the email-seek hook) → post-dedup → THE gate
+// (canonical-lead-eligibility.ts::isLeadEligibleIdentity). The sender's own address satisfies the
+// gate's email requirement (unless it is invalid / disposable / an automated mailbox); the NAME must
+// still be found — from the signature (the classifier's extractedName), the From display name, a
+// "first.last@" local part, or PeopleData. A sender whose name is not found stays raw
+// ('insufficient_identity_for_promotion') and the lead-scraping cron's stranded sweep re-runs it —
+// processRawRecord now resolves a market-less brokerage-origin row's owner from its own
+// brokerage_id, stamped here from the VERIFIED mailbox binding (§4).
+//   · The 74A reasons for going direct are answered, not ignored: no territory gate applies
+//     (market_id NULL, m648 — a person who wrote to us is not territory-bound) and no batch
+//     cadence (processRawRecord runs INLINE, in this webhook call; a sender whose name is already
+//     known becomes a lead in the same request and the route's Step 8b hands the ORIGINAL email to
+//     the ISA exactly as before).
+//   · LEAD INTELLIGENCE HISTORY — the conversation is preserved on the raw row (raw_data: subject,
+//     body, message id, the classification, the listing match, where the name came from) and the
+//     row carries source 'inbound_email_unknown' + cost_per_record = the classifier's own model
+//     cost (already booked to ai_tool_usage; stamped here as the per-record ACQUISITION cost, not a
+//     second booking). lib/lead-intelligence/person-timeline.ts reads it by lead_id once promoted.
+//   · The AGENT / TEAM-LEAD mailbox branch is UNCHANGED — it creates a CONTACT (owner 74A), and the
+//     lead gate governs leads, not contacts. Flagged for the integrator/owner.
+// TOMBSTONE (CLAUDE.md §1): createLeadDirectlyForBrokerage is DELETED — survivor
+// landUnknownSenderRaw (this file). The wave-74 "never raw_scraped_leads for this source" rule
+// below is SUPERSEDED for the brokerage branch. AUTOMATED_LOCAL_PARTS moved to
+// lib/external/email-verifier.ts (the gate reads it too — one vocabulary, §6).
+//
 // THE ISA HANDOFF IS NOT DUPLICATED HERE (unchanged from wave 73A). For the
 // brokerage/lead branch, app/api/providers/inbound/route.ts's existing Step 8b
 // already calls app/actions/ai-isa/handle-inbound-email.ts::processInboundEmail
@@ -100,7 +135,9 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { normalizeStreetAddress } from "@/lib/external/permit-signals"
 import { normalizeContactPersona } from "@/lib/campaigns/contact-sources"
-import { ROLE_LOCAL_PARTS } from "@/lib/external/email-verifier"
+import { AUTOMATED_LOCAL_PARTS, ROLE_LOCAL_PARTS } from "@/lib/external/email-verifier"
+import { calculateCost } from "@/lib/ai/cost-tracking"
+import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 import type { ResolvedInboundProvider } from "@/lib/inbound-mail/resolve-user-provider"
 
 type Svc = SupabaseClient<any, any, any>
@@ -220,17 +257,21 @@ export async function resolveInboundMailboxOwner(
 // 1. PRE-FILTER — pure, deterministic, no I/O, no model call
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Extends (never redefines) lib/external/email-verifier.ts's ROLE_LOCAL_PARTS with local
- *  parts that are ALWAYS machine-generated (a human never sends FROM one of these), never
- *  merely role-based ("info@", "sales@" stay verifier-only — those can be a real vendor
- *  human replying, not this list's business). */
-const AUTOMATED_LOCAL_PARTS = new Set<string>([
-  ...["noreply", "no-reply", "postmaster", "webmaster"].filter((p) => ROLE_LOCAL_PARTS.has(p)),
-  "mailer-daemon", "mailerdaemon", "bounce", "bounces", "bounced",
-  "autoreply", "auto-reply", "auto_reply", "donotreply", "do-not-reply", "do_not_reply",
-  "notifications", "notification", "digest", "newsletter", "alerts", "updates",
-  "unsubscribe", "opt-out", "optout",
-])
+// TOMBSTONE (lane 85B) — AUTOMATED_LOCAL_PARTS lived here as a file-local set; it MOVED to
+// lib/external/email-verifier.ts (imported above) so the lead identity gate reads the same
+// vocabulary (canonical-lead-eligibility.ts::leadEmailProblem). Unchanged members.
+
+/** PURE — splits a From header value ("Jane Doe <jane@x.com>", "<jane@x.com>", "jane@x.com") into the
+ *  bare address and the display name. Providers hand the header through in any of those shapes. */
+export function parseFromHeader(from: string | null | undefined): { address: string; displayName: string | null } {
+  const raw = (from ?? "").trim()
+  const angled = raw.match(/^(.*?)<\s*([^<>\s]+@[^<>\s]+)\s*>\s*$/)
+  if (angled) {
+    const name = angled[1].trim().replace(/^["']|["']$/g, "").trim()
+    return { address: angled[2].trim().toLowerCase(), displayName: name || null }
+  }
+  return { address: raw.toLowerCase(), displayName: null }
+}
 
 /** Starter list, expandable — common ESP / SaaS-notification / newsletter sending domains
  *  that are never a real-estate customer replying. Not exhaustive by design (a bogus domain
@@ -371,6 +412,9 @@ export interface ClassifierResult {
   classification: UnknownSenderClassification | null
   /** Why the classifier could not answer — set only when available=false. */
   unavailableReason?: "model_error" | "unparseable_response"
+  /** Lane 85B — the model cost of THIS call in USD (the same calculateCost figure logAIUsage books
+   *  to ai_tool_usage). Carried onto the raw row as its per-record acquisition cost. */
+  costUsd?: number
 }
 
 const CLASSIFIER_MODEL = "openai/gpt-4o-mini" as const // AI_TASK_ROUTING's own doc: "Cheapest option"
@@ -417,6 +461,7 @@ Respond with ONLY a compact JSON object, no prose, no markdown fences:
   const userContent = `From: ${params.fromEmail}\nSubject: ${params.subject ?? ""}\n\n${params.body}`.slice(0, 6000)
 
   let raw: string
+  let costUsd = 0
   try {
     const result = await guardedGenerateText({
       model: resolveModel(CLASSIFIER_MODEL),
@@ -439,6 +484,7 @@ Respond with ONLY a compact JSON object, no prose, no markdown fences:
       })
     }
     raw = result.text
+    costUsd = calculateCost(CLASSIFIER_BILLING_MODEL, result.usage?.inputTokens ?? 0, result.usage?.outputTokens ?? 0) / 100
   } catch (err) {
     console.error("[unknown-sender-identification] model unavailable:", err instanceof Error ? err.message : err)
     return { available: false, classification: null, unavailableReason: "model_error" }
@@ -448,10 +494,10 @@ Respond with ONLY a compact JSON object, no prose, no markdown fences:
     const jsonMatch = raw.match(/\{[\s\S]*\}/)
     const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw)
     const classification = UnknownSenderClassificationSchema.parse(parsed)
-    return { available: true, classification }
+    return { available: true, classification, costUsd }
   } catch (err) {
     console.warn("[unknown-sender-identification] model returned an unparseable response — held, not guessed:", err instanceof Error ? err.message : err)
-    return { available: false, classification: null, unavailableReason: "unparseable_response" }
+    return { available: false, classification: null, unavailableReason: "unparseable_response", costUsd }
   }
 }
 
@@ -533,6 +579,47 @@ function splitExtractedName(name: string | null): { firstName: string | null; la
   return { firstName: parts[0] ?? null, lastName: parts.length > 1 ? parts.slice(1).join(" ") : null }
 }
 
+/** Where the sender's name was found (recorded on the raw row — lead intelligence provenance). */
+export type SenderNameSource = "signature" | "display_name" | "email_local_part" | null
+
+/**
+ * deriveSenderName — PURE (lane 85B). The owner's "name from email/signature/PDL": the cheap, free
+ * sources are tried here in order of reliability, and a SINGLE-word find is never promoted to a full
+ * name (no last name is fabricated). PeopleData (by the sender's email) runs later inside
+ * processRawRecord and fills whatever this leaves empty. THE gate still judges the result.
+ *   1. signature — the classifier's extractedName ("never invent one" is in its prompt);
+ *   2. display name — the From header's "Jane Doe <…>" part;
+ *   3. email local part — ONLY the unambiguous "first.last@" / "first_last@" / "first-last@" shape,
+ *      two alphabetic tokens of ≥2 letters, never a role or automated mailbox ("info.sales@" is not
+ *      a person). "jsmith@" / "jane123@" yield nothing.
+ * The first source that yields BOTH parts wins; otherwise the best single first name is kept.
+ */
+export function deriveSenderName(input: {
+  extractedName: string | null
+  displayName: string | null
+  fromEmail: string
+}): { firstName: string | null; lastName: string | null; nameSource: SenderNameSource } {
+  const candidates: Array<{ src: Exclude<SenderNameSource, null>; name: string | null }> = [
+    { src: "signature", name: input.extractedName },
+    { src: "display_name", name: input.displayName && !input.displayName.includes("@") ? input.displayName : null },
+  ]
+  const local = (input.fromEmail.split("@")[0] ?? "").toLowerCase()
+  const tokens = local.split(/[._-]/)
+  if (
+    tokens.length === 2 && tokens.every((t) => /^[a-z]{2,}$/.test(t)) &&
+    !AUTOMATED_LOCAL_PARTS.has(local) && !tokens.some((t) => AUTOMATED_LOCAL_PARTS.has(t) || ROLE_LOCAL_PARTS.has(t))
+  ) {
+    candidates.push({ src: "email_local_part", name: tokens.map((t) => t[0].toUpperCase() + t.slice(1)).join(" ") })
+  }
+  let firstOnly: { firstName: string; nameSource: Exclude<SenderNameSource, null> } | null = null
+  for (const c of candidates) {
+    const { firstName, lastName } = splitExtractedName(c.name)
+    if (firstName && lastName) return { firstName, lastName, nameSource: c.src }
+    if (firstName && !firstOnly) firstOnly = { firstName, nameSource: c.src }
+  }
+  return firstOnly ? { firstName: firstOnly.firstName, lastName: null, nameSource: firstOnly.nameSource } : { firstName: null, lastName: null, nameSource: null }
+}
+
 /** COUNTED drop — lifecycle_events, entity_type 'system' (the same pattern
  *  lib/kernel/scraping.ts's SCRAPE_SOURCE_RUN_STARTED already uses for a run with no single
  *  entity owner). Never a swallowed console.log — a run of these must be visible (CLAUDE.md
@@ -591,39 +678,88 @@ async function findExistingLeadOrContact(
   return null
 }
 
-/** BROKERAGE mailbox → LEAD, DIRECTLY. Never raw_scraped_leads/ingestRawSourceBatch for
- *  this source any more (see file header tombstone) — this is the SAME governed direct
- *  `leads` insert every other direct-acquisition/scraped-promotion door in the tree uses. */
-async function createLeadDirectlyForBrokerage(
+interface RawLanding {
+  /** A lead id ONLY when processRawRecord CREATED one in this call (name + usable email found). */
+  leadId: string | null
+  /** The raw_scraped_leads row the sender now lives on (null when ingest inserted nothing). */
+  rawId: string | null
+  /** processRawRecord's own stage/reason (or the ingest skip reason). */
+  pipelineReason: string
+}
+
+/**
+ * BROKERAGE mailbox → RAW, then the ONE raw path (lane 85B; see the wave-85 header section).
+ * ingestRawSourceBatch writes the row (brokerage-origin, market NULL, cost_per_record = the
+ * classifier's model cost); processRawRecord runs INLINE: pre-dedup → PeopleData by email (+ the
+ * email-seek hook) → post-dedup → THE gate. Returns a leadId only when a lead was CREATED — a dedup
+ * merge or a gate refusal leaves the sender raw, where the stranded sweep keeps working it.
+ */
+async function landUnknownSenderRaw(
   brokerageId: string,
-  fromEmail: string,
+  sender: { fromEmail: string; displayName: string | null; subject: string | null; body: string; messageId: string | null },
   c: UnknownSenderClassification,
   listingMatch: OwnListingMatch | null,
-): Promise<string | null> {
-  const { createLeadOnlyRecordForAcquisitionSource } = await import("@/lib/kernel/crm")
-  const { firstName, lastName } = splitExtractedName(c.extractedName)
-  const leadType = mapIntentTypeToLeadSide(c.intentType)
-
-  const result = await createLeadOnlyRecordForAcquisitionSource({
-    first_name: firstName ?? undefined,
-    last_name: lastName ?? undefined,
-    email: fromEmail,
-    phone: c.extractedPhone ?? undefined,
-    lead_type: leadType === "unknown" ? undefined : leadType,
-    source: "inbound_email_unknown",
-    source_family: "inbound_intake",
-    source_channel: "inbound_email_unknown",
-    motivation_type: listingMatch
-      ? `transactional_${c.transactionalType}`
-      : (c.intentType !== "unknown" ? c.intentType : undefined),
-    brokerage_id: brokerageId,
-    // no agent_id — a brokerage-owned lead has none until assignment (CLAUDE.md §5).
-    // Lane 84C — the sender WROTE to the brokerage; not a scraped row, so the wave-84 name rule does
-    // not apply (owner 74A: "comes in as a lead not a raw lead"). The email anchor always exists here.
-    origin: "person_initiated_inbound",
+  costUsd: number,
+): Promise<RawLanding> {
+  const { firstName, lastName, nameSource } = deriveSenderName({
+    extractedName: c.extractedName, displayName: sender.displayName, fromEmail: sender.fromEmail,
   })
+  const record: NormalizedScrapedRecord = {
+    sourceRecordId: sender.messageId ?? `inbound_email_unknown-${sender.fromEmail}-${Date.now()}`,
+    source: "inbound_email_unknown",
+    behaviorType: "inbound_email_unknown",
+    intentType: mapIntentTypeToLeadSide(c.intentType),
+    intentSignals: [listingMatch ? `transactional_${c.transactionalType}` : c.intentType],
+    firstName,
+    lastName,
+    email: sender.fromEmail,
+    phone: c.extractedPhone,
+    propertyAddress: listingMatch?.matchedAddress ?? c.extractedAddress,
+    sourceUrl: null,
+    motivationScore: null,
+    // LEAD INTELLIGENCE HISTORY — the conversation itself, where the name came from, and what it cost.
+    rawPayload: {
+      channel: "inbound_email",
+      subject: sender.subject,
+      body: sender.body.slice(0, 10000),
+      message_id: sender.messageId,
+      from_display_name: sender.displayName,
+      name_source: nameSource,
+      classification: c,
+      listing_match: listingMatch,
+      motivation_type: listingMatch ? `transactional_${c.transactionalType}` : (c.intentType !== "unknown" ? c.intentType : null),
+      classifier_cost_usd: costUsd,
+    },
+  }
 
-  return result.success ? ((result.data as { leadId?: string } | undefined)?.leadId ?? null) : null
+  const { ingestRawSourceBatch } = await import("@/lib/kernel/scraping")
+  const ingest = await ingestRawSourceBatch({
+    brokerageId, // the VERIFIED mailbox binding's tenant (resolveInboundMailboxOwner) — never a body (§4)
+    marketId: null, // m648 — first-party, not territory-bound
+    source: "inbound_email_unknown",
+    sourceFamily: "inbound_intake", // scrape_category (m647)
+    sourceChannel: "inbound_email_unknown",
+    records: [record],
+    executionId: null,
+    marketGeo: null,
+    batchCostUsd: costUsd > 0 ? costUsd : null,
+  })
+  if (ingest.inserted !== 1 || ingest.rawIds.length !== 1) {
+    return {
+      leadId: null, rawId: null,
+      pipelineReason: ingest.skipped_not_viable > 0 ? "not_viable"
+        : ingest.skipped_duplicate > 0 ? "duplicate_at_ingest"
+        : "not_inserted",
+    }
+  }
+  const rawId = ingest.rawIds[0]
+  const { processRawRecord } = await import("@/lib/lead-pipeline/pipeline-processor")
+  const result = await processRawRecord(rawId, brokerageId)
+  return {
+    leadId: result.success && result.action === "created" && result.leadId ? result.leadId : null,
+    rawId,
+    pipelineReason: `${result.stage}: ${result.reason}`,
+  }
 }
 
 /** AGENT / TEAM-LEAD mailbox → CONTACT for that person, DIRECTLY, via the ONE contact-intake
@@ -698,8 +834,11 @@ async function createContactForAgentMailbox(
 }
 
 export interface UnknownSenderIdentificationResult {
-  outcome: "lead_created" | "contact_created" | "dropped" | "held"
+  /** "raw_held" (lane 85B) — a brokerage-mailbox sender landed RAW and did not (yet) pass THE gate
+   *  (no name found, or a dedup verdict); the stranded sweep keeps working it. Not a lead. */
+  outcome: "lead_created" | "raw_held" | "contact_created" | "dropped" | "held"
   leadId?: string
+  rawId?: string
   contactId?: string
   reason: string
 }
@@ -736,7 +875,7 @@ export type UnknownSenderClassifierFn = (params: {
  * every environment without one (most CI/sandbox runs) silently skipped the
  * lead/contact BRANCH-SELECTION logic entirely. Production callers pass
  * none of these three (defaults: real createServiceClient() +
- * createLeadDirectlyForBrokerage + createContactForAgentMailbox, unchanged).
+ * landUnknownSenderRaw + createContactForAgentMailbox; `landRaw` replaced `createLead` in lane 85B).
  * A fixture run supplies a minimal in-memory `svc` (covers the read/dedup/
  * transactional-match/drop-audit calls THIS function makes directly) plus
  * fake createLead/createContact functions that stand in for the deep,
@@ -758,12 +897,17 @@ export async function identifyAndRouteUnknownSender(
   opts?: {
     classifier?: UnknownSenderClassifierFn
     svc?: Svc
-    createLead?: typeof createLeadDirectlyForBrokerage
+    /** Lane 85B — replaces the retired `createLead` seam: stands in for landUnknownSenderRaw. */
+    landRaw?: typeof landUnknownSenderRaw
     createContact?: typeof createContactForAgentMailbox
   },
 ): Promise<UnknownSenderIdentificationResult> {
   const svc = opts?.svc ?? createServiceClient()
   const brokerageId = params.mailboxOwner.brokerageId
+  // Lane 85B — providers hand the From header through as "Jane Doe <jane@x.com>" as often as a bare
+  // address; the display name is a free name source and the bare address is what every read keys on.
+  const from = parseFromHeader(params.fromEmail)
+  params = { ...params, fromEmail: from.address }
 
   // ── Step 1: cheap deterministic pre-filter — NO model call ────────────────
   const pre = preFilterAutomatedSender({ fromEmail: params.fromEmail, raw: params.raw })
@@ -818,15 +962,28 @@ export async function identifyAndRouteUnknownSender(
 
   const routeReason = isTransactional ? `transactional:${c.transactionalType}` : `intent:${c.intentType}`
 
-  // ── Step 5: ROUTE BY MAILBOX OWNER (owner ruling, wave 74) ─────────────────
+  // ── Step 5: ROUTE BY MAILBOX OWNER (owner ruling, wave 74; brokerage branch corrected wave 85) ─
   if (params.mailboxOwner.ownerKind === "brokerage") {
-    const leadId = existing?.kind === "lead"
-      ? existing.id
-      : await (opts?.createLead ?? createLeadDirectlyForBrokerage)(brokerageId, params.fromEmail, c, listingMatch)
-
+    // WAVE 85 — "an unknown sender needs to go through enrichment before lead gate": RAW first,
+    // then dedup → enrich → dedup → THE gate (landUnknownSenderRaw). An email already on an
+    // existing lead is that lead (dedup above), never a second raw row.
+    let leadId: string | null = existing?.kind === "lead" ? existing.id : null
     if (!leadId) {
-      await recordDrop(svc, brokerageId, "lead_create_failed", null, params.fromEmail, params.messageId)
-      return { outcome: "dropped", reason: "lead_create_failed" }
+      const landing = await (opts?.landRaw ?? landUnknownSenderRaw)(
+        brokerageId,
+        { fromEmail: params.fromEmail, displayName: from.displayName, subject: params.subject, body: params.body, messageId: params.messageId },
+        c, listingMatch, verdict.costUsd ?? 0,
+      )
+      if (!landing.rawId && !landing.leadId) {
+        await recordDrop(svc, brokerageId, "raw_landing_failed", landing.pipelineReason, params.fromEmail, params.messageId)
+        return { outcome: "dropped", reason: `raw_landing_failed:${landing.pipelineReason}` }
+      }
+      if (!landing.leadId) {
+        // Landed RAW and did not pass THE gate (yet) — not a drop, not a lead. Counted by the raw
+        // row itself (RAW_RECORD_CREATED + its processing_status); the sweep keeps working it.
+        return { outcome: "raw_held", rawId: landing.rawId ?? undefined, reason: `${routeReason} → raw (${landing.pipelineReason})` }
+      }
+      leadId = landing.leadId
     }
 
     await sentinelWrite(

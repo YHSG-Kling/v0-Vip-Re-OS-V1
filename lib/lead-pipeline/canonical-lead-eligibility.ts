@@ -1,31 +1,49 @@
 /**
  * SINGLE source of truth for the "raw record → lead" CONVERSION GATE.
  *
- * ── THE RULE IN FORCE (owner, wave 84, 2026-09-26), verbatim ──────────────────
- *   "if the record/row from scrapping comes in and doesnt have phone and/or email
- *    with first and last name, it can't come in as a lead - it goes in as a raw
- *    lead to dedup/enrich/dedup, etc."
+ * ── THE RULE IN FORCE (owner, wave 85, 2026-09-26), verbatim ──────────────────
+ *   "change in what is needed to become a lead it should be email required so email
+ *    and/or phone."
  *
- * Read precisely, that is TWO tests, both of which must pass:
+ * READING (lane 85B — flagged for the integrator to confirm with the owner): the wave-84 rule
+ * ("doesnt have phone and/or email with first and last name, it can't come in as a lead") is
+ * tightened so the EMAIL is the required anchor and the phone is optional:
  *
- *   1. IDENTITY — a real FIRST NAME **and** a real LAST NAME. Both.
- *   2. REACHABILITY — a PHONE NUMBER and/or an EMAIL ADDRESS.
+ *   1. IDENTITY — a real FIRST NAME **and** a real LAST NAME. Both. (unchanged)
+ *   2. EMAIL    — a usable EMAIL ADDRESS. Required.
+ *      PHONE    — optional. Email alone qualifies; email + phone qualifies;
+ *                 PHONE ALONE DOES NOT (it stays raw).
  *
- * Anything short of that stays a RAW lead (raw_scraped_leads,
- * processing_status 'insufficient_identity_for_promotion') and keeps cycling
- * dedup → enrich → dedup → this gate: the daily re-enrich sweep in
- * app/api/cron/lead-scraping/route.ts resets stranded rows to 'pending' (capped by
- * promotion-gate-health.ts::MAX_PROMOTION_ATTEMPTS) and processRawRecord re-runs the
- * whole flow, so a record that gains a name or a phone from PeopleData later is
- * promoted then.
+ * Anything short of that stays a RAW lead (raw_scraped_leads, processing_status
+ * 'insufficient_identity_for_promotion') and keeps cycling dedup → enrich → dedup → this
+ * gate: the daily re-enrich sweep in app/api/cron/lead-scraping/route.ts resets stranded rows
+ * to 'pending' (capped by promotion-gate-health.ts::MAX_PROMOTION_ATTEMPTS) and processRawRecord
+ * re-runs the whole flow. A phone-only row's enrichment SEEKS AN EMAIL: PeopleData (asked on
+ * every pass for demographics, so its email is free at the margin) → the BatchData reverse skip
+ * trace by phone ($0.07/matched person, lib/lead-pipeline/email-seek.ts) → the Perplexity gap-fill
+ * for a full-name row — and the found email is re-gated here.
+ *
+ * ── WHAT COUNTS AS AN EMAIL (decided by lane 85B, test-pinned) ────────────────
+ * leadEmailProblem() — the vocabulary is lib/external/email-verifier.ts's, never a second copy:
+ *   · invalid syntax                → NOT an anchor (a typo cannot be reached);
+ *   · disposable domain (Mailinator, 10minutemail, …) → NOT an anchor (it expires in hours; the
+ *     ISA's later touches would bounce);
+ *   · automated mailbox (noreply@, mailer-daemon@, donotreply@, notifications@ …,
+ *     AUTOMATED_LOCAL_PARTS) → NOT an anchor (no human reads it);
+ *   · ROLE address (info@, sales@, office@, contact@, hello@, team@ …) → COUNTS. A shared inbox is
+ *     frequently a real person's only address (the owner-operator's info@theirname.com); refusing it
+ *     would refuse real people. Role-ness is a deliverability FLAG downstream, not an identity test.
+ * A refused email never deletes anything: the record stays raw and enrichment can still find a
+ * durable address.
  *
  * ── FAILURE IS REPORTED PER DIMENSION ────────────────────────────────────────
  *   `failing: 'name'`            — first and/or last missing, a placeholder, an
  *                                  initial or an entity. RETRYABLE: PeopleData
  *                                  backfills first_name / last_name before the
  *                                  post-enrich pass.
- *   `failing: 'contact_anchor'`  — a person's name but no phone and no email.
- *                                  Also retryable: enrichment can append either.
+ *   `failing: 'contact_anchor'`  — a person's name but no USABLE EMAIL (none, or one that is
+ *                                  invalid / disposable / an automated mailbox). A phone does
+ *                                  not clear it (wave 85). Retryable: enrichment seeks an email.
  *
  * `isLeadEligibleIdentity` is THE predicate. Every raw→lead promotion door calls it
  * (directly, or through `evaluateCanonicalLeadEligibility`, which is the same rule
@@ -36,7 +54,9 @@
  *   · lib/lead-promotion/lead-promoter.ts       (promoteRawRecordToLead — the insert
  *     refuses on its own, so a caller that skipped the evaluator still cannot mint)
  *   · lib/kernel/crm.ts                         (createLeadOnlyRecordForAcquisitionSource —
- *     gated unless the caller declares a PERSON-INITIATED inbound, see there)
+ *     ALWAYS gated; lane 85B retired its person-initiated-inbound exemption, because the
+ *     unknown inbound-email sender now lands RAW — owner wave 85: "an unknown sender needs to
+ *     go through enrichment before lead gate")
  * scripts/lead-identity-gate-guard.ts proves the doors call it, with positive controls.
  *
  * ── WHAT CHANGED FROM WAVE 14, AND WHY ───────────────────────────────────────
@@ -81,8 +101,11 @@
  * false admission mints a lead the ISA cannot address — the list errs toward refusal
  * only where the token is not a plausible surname.
  *
- * This module is PURE — no imports, no I/O — so the plain-`tsx` proofs call it directly.
+ * This module does no I/O — its one import is email-verifier.ts's pure vocabulary — so the
+ * plain-`tsx` proofs call it directly.
  */
+import { checkEmailSyntax, AUTOMATED_LOCAL_PARTS } from "@/lib/external/email-verifier"
+
 export interface LeadCandidate {
   first_name?: string | null
   last_name?:  string | null
@@ -90,8 +113,29 @@ export interface LeadCandidate {
   phone?:      string | null
 }
 
-/** The two channels the owner's ruling admits as "reachable". */
+/** The channels a passing record carries. "email" is always present on a pass (required, wave 85);
+ *  "phone" is listed when one is also on file (optional). */
 export type ReachableChannel = "email" | "phone"
+
+export type LeadEmailProblem = "missing" | "invalid_syntax" | "disposable_domain" | "automated_mailbox"
+
+/** PURE — why an email cannot be the lead's required anchor, or null when it can. Role addresses
+ *  (info@, sales@ …) deliberately return null — see the header. */
+export function leadEmailProblem(email: string | null | undefined): LeadEmailProblem | null {
+  const e = (email ?? "").trim().toLowerCase()
+  if (!e) return "missing"
+  const verdict = checkEmailSyntax(e)
+  if (!verdict.verified) return verdict.isDisposable ? "disposable_domain" : "invalid_syntax"
+  if (AUTOMATED_LOCAL_PARTS.has(e.split("@")[0])) return "automated_mailbox"
+  return null
+}
+
+const EMAIL_PROBLEM_TEXT: Record<LeadEmailProblem, string> = {
+  missing:           "no email address",
+  invalid_syntax:    "the email address is not a valid address",
+  disposable_domain: "the email address is a disposable (self-expiring) mailbox",
+  automated_mailbox: "the email address is an automated mailbox no person reads (noreply@ …)",
+}
 
 export type EligibilityResult =
   | { eligible: true; via: ReachableChannel[] }
@@ -162,20 +206,22 @@ export function evaluateCanonicalLeadEligibility(c: LeadCandidate): EligibilityR
     }
   }
 
-  const via: ReachableChannel[] = []
-  if ((c.email ?? "").trim()) via.push("email")
-  if ((c.phone ?? "").trim()) via.push("phone")
-  if (via.length > 0) return { eligible: true, via }
-
-  return {
-    eligible: false,
-    failing:  "contact_anchor",
-    reason:   "Needs a phone number and/or an email address (a mailing address alone does not make a lead — owner 2026-09-26)",
+  const emailProblem = leadEmailProblem(c.email)
+  if (emailProblem) {
+    return {
+      eligible: false,
+      failing:  "contact_anchor",
+      reason:   `Needs an email address — ${EMAIL_PROBLEM_TEXT[emailProblem]}; a phone alone does not make a lead (owner 2026-09-26: "email required so email and/or phone") — enrichment seeks one before the next pass`,
+    }
   }
+
+  const via: ReachableChannel[] = ["email"]
+  if ((c.phone ?? "").trim()) via.push("phone")
+  return { eligible: true, via }
 }
 
 /**
- * THE predicate (owner wave 84): first name AND last name AND (phone OR email).
+ * THE predicate (owner wave 85): first name AND last name AND a usable EMAIL; phone optional.
  * A record that fails it stays a raw lead and keeps cycling dedup → enrich → dedup.
  */
 export function isLeadEligibleIdentity(c: LeadCandidate): boolean {

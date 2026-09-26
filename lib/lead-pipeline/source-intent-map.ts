@@ -627,6 +627,11 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // brokerage mailbox (lib/kernel/crm.ts::createLeadOnlyRecordForAcquisitionSource) or a
   // contact for an agent/team-lead mailbox (lib/contact-pipeline/contact-capture.ts::
   // captureContact) — see that module's header for the full tombstone.
+  // WAVE 85 CORRECTION (lane 85B, owner: "an unknown sender needs to go through enrichment before
+  // lead gate") — the BROKERAGE-mailbox branch is routed through the raw pipeline AGAIN
+  // (unknown-sender-identification.ts::landUnknownSenderRaw → ingestRawSourceBatch →
+  // processRawRecord), so this entry once more scores the raw row it was written for. The
+  // agent/team-lead branch still creates a contact.
   inbound_email_unknown: {
     intentType:                'unknown',
     leadType:                  'unknown',

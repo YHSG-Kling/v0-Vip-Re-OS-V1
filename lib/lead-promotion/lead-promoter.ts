@@ -53,7 +53,7 @@ export async function promoteRawRecordToLead(
     // reads permanently undefined.
     const { data: rawRecord } = await supabase
       .from('raw_scraped_leads')
-      .select('source_origin, normalized_preview, email_verified, mailing_address, mailing_address_verified, first_name, last_name')
+      .select('source_origin, normalized_preview, email_verified, mailing_address, mailing_address_verified, first_name, last_name, email, phone')
       .eq('id', rawRecordId)
       .single()
 
@@ -65,8 +65,12 @@ export async function promoteRawRecordToLead(
     // lead carries the exact first/last name that passed the round-39 name requirement)
     const firstName = (rawRecord as any)?.first_name ?? rawData.first_name
     const lastName = (rawRecord as any)?.last_name ?? rawData.last_name
-    const email = rawData.email || null
-    const phone = rawData.phone || null
+    // Lane 85B — email/phone resolve first-class column → raw_data jsonb, the SAME chain eligibility-core.ts
+    // gates on: the gate now REQUIRES the email (wave 85), and this insert used to read raw_data only, so a
+    // row whose email lived on the first-class column (where ingest and enrichment write it) was refused
+    // here after the evaluator had passed it.
+    const email = (rawRecord as any)?.email || rawData.email || null
+    const phone = (rawRecord as any)?.phone || rawData.phone || null
     const phoneSecondary = rawData.phone_secondary || null
     const source = rawData.source || 'unknown'
     const motivationType = rawData.motivation_type || null
@@ -86,9 +90,9 @@ export async function promoteRawRecordToLead(
     const mailingCity  = rawData.mailing_city ?? null
     const mailingState = rawData.mailing_state ?? null
 
-    // ── THE GATE, AT THE INSERT (lane 84C) ────────────────────────────────────
-    // Owner, wave 84: "if the record/row from scrapping comes in and doesnt have phone and/or
-    // email with first and last name, it can't come in as a lead". This insert used to trust its
+    // ── THE GATE, AT THE INSERT (lane 84C; rule tightened wave 85) ───────────
+    // Owner, wave 85: "change in what is needed to become a lead it should be email required so
+    // email and/or phone" — first + last name AND an email (phone optional). This insert used to trust its
     // caller to have run the evaluator; now it refuses on its own, through THE one predicate, so no
     // caller can mint a lead the gate would refuse. FAIL CLOSED: the raw row is left untouched.
     const { evaluateCanonicalLeadEligibility } = await import('@/lib/lead-pipeline/canonical-lead-eligibility')
@@ -138,7 +142,7 @@ export async function promoteRawRecordToLead(
         lead_score: 0,
         lifecycle_state: 'unconsented',
         ai_isa_owner: true,
-        minimum_viable_for_isa: !!(rawData.email),
+        minimum_viable_for_isa: !!email,
         // HONEST flag (round 39): eligibility can pass on email alone, so carry what the
         // raw record actually determined — never a blanket true (parity with pipeline-processor).
         mailing_address_verified: !!((rawRecord as any)?.mailing_address_verified ?? rawData.mailing_address_verified),

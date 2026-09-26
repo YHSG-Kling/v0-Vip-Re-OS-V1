@@ -129,14 +129,16 @@ check("an exact email match IS a confident auto-merge", isConfidentMatch(emailMa
 // LAYER 3 — THE GATE. Eligibility + address verification before the insert,
 // fail-closed on every refusal path.
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n[Layer 3 · the conversion gate — owner wave 84: first+last name AND phone and/or email, fail-closed]")
+console.log("\n[Layer 3 · the conversion gate — owner wave 85: first+last name AND an email (phone optional), fail-closed]")
 
 check("gate refuses without BOTH first and last name, even with email+phone",
   !evaluateCanonicalLeadEligibility({ first_name: null, last_name: "Doe", email: "a@b.com", phone: "5551234567" }).eligible)
 check("gate refuses a full name with NO reachable channel",
   !evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee" }).eligible)
-check("gate promotes on name + PHONE alone (owner: 'phone and/or email')",
-  evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", phone: "5551234567" }).eligible === true)
+check("gate REFUSES name + PHONE alone (owner wave 85: 'email required so email and/or phone') — the row stays raw",
+  evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", phone: "5551234567" }).eligible === false)
+check("gate promotes on name + EMAIL + PHONE",
+  evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", email: "a@b.com", phone: "5551234567" }).eligible === true)
 check("gate promotes on name + EMAIL alone",
   evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", email: "a@b.com" }).eligible === true)
 check("a BARE unverified mailing-address string does NOT satisfy the gate",

@@ -1,6 +1,15 @@
-'use server'
+import "server-only"
+// ── Was 'use server' until wave 85 (integrator): every export of a "use server"
+// file is a PUBLIC HTTP endpoint (CLAUDE.md §4), so processRawRecord(rawRecordId,
+// brokerageId) was callable by anyone with a caller-chosen brokerage. It is a
+// server library: its callers (lead-scraping cron, unknown-sender webhook,
+// listing radar, deal-room demo, the gated scrape-social-media action) resolve
+// the tenant themselves. It also read raw_scraped_leads on the cookie client,
+// whose RLS admits only a logged-in platform admin / AI-ISA seat — the cron and
+// webhooks run with no session, so every read came back "Raw record not found".
+// Raw rows are platform-owned until promotion, so it reads on the service client.
 
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { isTerminalRawProcessingStatus, type RawProcessingStatus, type DedupeStatus } from "./processing-status"
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
 import { extractPropertySpecs, leadSpecPatch, contactSpecPatch } from '@/lib/data-steward/property-spec-extractor'
@@ -105,7 +114,7 @@ export interface PipelineResult {
 
 // Helper — update processing_status on raw_scraped_leads
 async function setStatus(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   rawRecordId: string,
   status: ProcessingStatus,
   errorMessage?: string,
@@ -135,7 +144,7 @@ async function setStatus(
 }
 
 export async function processRawRecord(rawRecordId: string, brokerageId?: string | null): Promise<PipelineResult> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // ── STEP 3: Read from raw_scraped_leads (not batchdata_motivated_sellers_raw) ──
   await setStatus(supabase, rawRecordId, 'processing')
@@ -215,7 +224,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   // back to the brokerage that owns the scraped market (scheduled platform
   // scraping leaves raw_scraped_leads.brokerage_id NULL). Without either, the
   // record cannot be promoted to a tenant-scoped lead.
-  const effectiveBrokerageId = brokerageId ?? marketBrokerageId
+  //
+  // Lane 85B — a BROKERAGE-origin raw row with no market (a first-party, non-territory source: the
+  // unknown inbound-email sender, owner wave 85 "an unknown sender needs to go through enrichment
+  // before lead gate") carries its owner on its own brokerage_id, stamped server-side at ingest from
+  // the route's VERIFIED mailbox binding (never a body, §4). The stranded sweep calls
+  // processRawRecord(id) with no brokerageId, so without this fallback such a row could never be
+  // re-gated — it would fall to unassigned_no_market on its first retry. Platform-origin rows are
+  // unaffected (their brokerage_id is NULL until Engine 1 distributes them).
+  const rowBrokerageId = (rec.source_origin ?? 'brokerage') === 'brokerage' ? (rec.brokerage_id ?? null) : null
+  const effectiveBrokerageId = brokerageId ?? marketBrokerageId ?? rowBrokerageId
   if (!effectiveBrokerageId) {
     await setStatus(supabase, rawRecordId, 'unassigned_no_market')
     return {
@@ -325,6 +343,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // social profile when name/email/phone are all absent; never used for
     // anything else.
     username, source: rec.source,
+    // Lane 85B — the email-seek hook's correlation ref + its no-rebill stamp from an earlier pass.
+    rawRecordId, priorEmailSeek: (rec.normalized_preview as any)?.email_seek ?? null,
   })
 
   // ── Raw-lead HOUSEHOLD FINANCIALS (lane 85C) — a BatchData-sourced raw row arrives carrying the
@@ -349,6 +369,21 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       enriched_at: new Date().toISOString(),
     }).eq('id', rawRecordId)
     if (rawDemoError) console.warn('[pipeline-processor] raw demographics write refused:', rawDemoError.message)
+  }
+
+  // ── Email-seek stamp (lane 85B) — a BILLED reverse-trace attempt is recorded on the raw row so the
+  // stranded sweep never re-bills the same phone (lib/lead-pipeline/email-seek.ts). The preview is
+  // rebuilt with the demographics above so neither write clobbers the other, and the in-memory row
+  // is updated so every later normalized_preview spread in this pass (BatchRank) carries both.
+  if (enriched.emailSeek?.stamp) {
+    const nextPreview = {
+      ...(rec.normalized_preview ?? {}),
+      ...(enriched.peopleDataProfile ? { demographics: demographicsFromProfile(enriched.peopleDataProfile) } : {}),
+      email_seek: enriched.emailSeek.stamp,
+    }
+    const { error: seekStampError } = await supabase.from('raw_scraped_leads').update({ normalized_preview: nextPreview }).eq('id', rawRecordId)
+    if (seekStampError) console.warn('[pipeline-processor] raw email-seek stamp refused:', seekStampError.message)
+    else rec.normalized_preview = nextPreview as RawRecord['normalized_preview']
   }
 
   // ── Post-enrichment deduplication — same THREE tables as the pre-enrich pass
@@ -488,12 +523,13 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   }
 
   // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with every promotion door) ─
-  // Owner (wave 84, 2026-09-26): "if the record/row from scrapping comes in and doesnt have phone
-  // and/or email with first and last name, it can't come in as a lead - it goes in as a raw lead to
-  // dedup/enrich/dedup, etc." → first + last NAME (a person's, not a placeholder or an entity) AND a
-  // PHONE and/or an EMAIL. Names are fed post-enrichment (enriched.first_name ?? firstName) so
-  // enrichWithPeopleData can SUPPLY a missing name or contact point before this pass. THE predicate
-  // lives in canonical-lead-eligibility.ts (isLeadEligibleIdentity / evaluateCanonicalLeadEligibility).
+  // Owner (wave 85, 2026-09-26): "change in what is needed to become a lead it should be email
+  // required so email and/or phone." → first + last NAME (a person's, not a placeholder or an entity)
+  // AND a usable EMAIL; the phone is optional (wave 84 admitted phone-only — no longer). Names and the
+  // email are fed post-enrichment (enriched.* ?? raw) so enrichWithPeopleData — PeopleData, then the
+  // email-seek hook (reverse skip trace by phone), then the Perplexity gap-fill — can SUPPLY them
+  // before this pass. THE predicate lives in canonical-lead-eligibility.ts
+  // (isLeadEligibleIdentity / evaluateCanonicalLeadEligibility).
   //
   // TOMBSTONE — the wave-14 VERIFIED-MAILING-ADDRESS arm and its gate-side Lob call
   // (promotion-address-verification.ts::verifyMailingAddressForPromotion) are removed: the wave-84
@@ -799,6 +835,9 @@ async function enrichWithPeopleData(fields: {
    *  name/email/phone identifier when one is present. */
   username?: string | null
   source?:   string | null
+  /** Lane 85B — email-seek hook inputs (see lib/lead-pipeline/email-seek.ts). */
+  rawRecordId?: string | null
+  priorEmailSeek?: import('./email-seek').EmailSeekStamp | null
 }): Promise<any> {
   const hasNamePhoneEmail = !!(fields.first_name || fields.last_name || fields.phone || fields.email)
   // lane 72B — the record carries NOTHING PeopleData's name/phone/email params
@@ -863,6 +902,7 @@ async function enrichWithPeopleData(fields: {
     phone_secondary?: string | null
     peopleDataResult?: unknown
     peopleDataProfile?: Record<string, any>
+    emailSeek?: import('./email-seek').EmailSeekResult
     email_verified?: boolean
     mailing_address?: string | null
     mailing_address_verified?: boolean
@@ -892,6 +932,33 @@ async function enrichWithPeopleData(fields: {
         phone:      fields.phone,
         enrichmentConfidence: 0.3,
       }
+
+  // ── EMAIL-SEEK HOOK (lane 85B, owner wave 85: "email required so email and/or phone") ──────────
+  // The gate now needs an EMAIL, so a row PeopleData left without a usable one but WITH a phone is
+  // reverse-traced by phone — BatchData $0.07/matched person, the cheapest phone-keyed provider
+  // already wired (lib/enrichment/reverse-skip-trace.ts; PDL is not asked twice). Only EMPTY fields are
+  // filled: an email, and a first/last name the row lacked (the wrapper already refuses a person whose
+  // last name disagrees). The found email is re-gated by processRawRecord after the post-enrich dedup.
+  if (fields.rawRecordId) {
+    const { seekEmailForRawRecord } = await import('./email-seek')
+    const seek = await seekEmailForRawRecord({
+      brokerageId: fields.brokerageId ?? null, ref: fields.rawRecordId,
+      firstName: base.first_name ?? null, lastName: base.last_name ?? null,
+      phone: base.phone ?? null, email: base.email ?? null,
+      city: fields.city ?? null, state: fields.state ?? null,
+      prior: fields.priorEmailSeek ?? null,
+    })
+    base = { ...base, emailSeek: seek }
+    if (seek.status === 'found' && seek.email) {
+      base = {
+        ...base,
+        email:      seek.email,
+        first_name: base.first_name || seek.firstName,
+        last_name:  base.last_name  || seek.lastName,
+        enrichmentConfidence: Math.max(base.enrichmentConfidence ?? 0, 0.6),
+      }
+    }
+  }
 
   // Cost-gated Perplexity gap-fill: only when skip-trace left a full-name lead
   // without an email (high-value, identity-promising). No spend otherwise.
@@ -928,7 +995,7 @@ async function findBestMatch(
   record: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null },
   _stage: string,
   brokerageId: string,
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   scope?: DedupScope,
 ): Promise<{ id: string; type: 'lead' | 'contact' | 'raw'; score: number; details: any; enrichment_confidence: number | null; email?: string; phone?: string } | null> {
 
@@ -1018,7 +1085,7 @@ async function findBestMatch(
 
 // ─── Audit logging ────────────────────────────────────────────────────────────
 
-async function logDeduplication(log: any, supabase: Awaited<ReturnType<typeof createClient>>) {
+async function logDeduplication(log: any, supabase: ReturnType<typeof createServiceClient>) {
   try {
     await supabase.from('lead_deduplication_log').insert(log)
   } catch (err: unknown) {

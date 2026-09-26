@@ -224,8 +224,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           entityType = "contact"
           entityId = identified.contactId
         }
+        // "raw_held" (lane 85B, owner wave 85: "an unknown sender needs to go through enrichment
+        // before lead gate") — the sender landed RAW and has not passed THE lead gate yet (no name
+        // found); the raw row carries the conversation and the lead-scraping cron's stranded sweep
+        // keeps working it, so there is no lead for Step 8b to hand the email to yet.
         // "dropped" (spam/vendor/automated) and "held" (classifier unavailable, fail-closed)
-        // both fall through unchanged — entityType stays null and the route responds
+        // all fall through unchanged — entityType stays null and the route responds
         // { linked: false } below, exactly as an unmatched sender always has. The module
         // itself is what counts the drop (lifecycle_events) — never a silent no-op.
       } catch (err) {

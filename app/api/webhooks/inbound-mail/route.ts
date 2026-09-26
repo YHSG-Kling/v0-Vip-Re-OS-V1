@@ -346,7 +346,8 @@ export async function POST(request: NextRequest) {
         if (identified.outcome === "contact_created" && identified.contactId) {
           contactId = identified.contactId
         }
-        // "lead_created" (brokerage mailbox), "dropped" (spam/vendor/automated/
+        // "lead_created" / "raw_held" (brokerage mailbox — lane 85B: the sender lands RAW and
+        // goes dedup → enrich → dedup → THE lead gate first), "dropped" (spam/vendor/automated/
         // no-intent) and "held" (classifier unavailable, fail-closed) all leave
         // contactId null — a fresh LEAD has no contact to file an attachment
         // under yet, so this email's own attachments (if any) are not filed

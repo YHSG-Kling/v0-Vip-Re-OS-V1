@@ -80,7 +80,9 @@ export interface IngestRawSourceBatchParams {
    *  lib/lead-pipeline/unknown-sender-identification.ts's header tombstone — it now creates a
    *  lead/contact DIRECTLY); the nullable column stays available to any other non-territory,
    *  first-party source that reaches this path. Every territory-scraped source still passes a
-   *  real market id. */
+   *  real market id. Lane 85B (wave 85): inbound_email_unknown's BROKERAGE branch calls this
+   *  function again with marketId null (owner: "an unknown sender needs to go through enrichment
+   *  before lead gate") — processRawRecord resolves such a row's owner from its brokerage_id. */
   marketId: string | null
   source: string
   // SCRAPE CATEGORY (e.g. 'property_search' | 'motivated_seller' | 'social_intent') — lands on

@@ -29,6 +29,22 @@ export const ROLE_LOCAL_PARTS = new Set<string>([
   "info", "support", "sales", "admin", "contact", "hello", "marketing",
   "office", "team", "billing", "no-reply", "noreply", "postmaster", "webmaster",
 ])
+/**
+ * Local parts that are ALWAYS machine-generated — a human never sends FROM, or reads, one of these.
+ * A strict subset of "role": `info@` / `sales@` stay ROLE (deliverable, often a real small-business
+ * owner), these never are. MOVED HERE by lane 85B (wave 85) from
+ * lib/lead-pipeline/unknown-sender-identification.ts, where it was a file-local set, so the lead
+ * identity gate (lib/lead-pipeline/canonical-lead-eligibility.ts::leadEmailProblem) and the
+ * unknown-sender prefilter read ONE vocabulary (CLAUDE.md §6). It extends ROLE_LOCAL_PARTS'
+ * no-reply/postmaster/webmaster members, never redefines them.
+ */
+export const AUTOMATED_LOCAL_PARTS: ReadonlySet<string> = new Set<string>([
+  ...["noreply", "no-reply", "postmaster", "webmaster"].filter((p) => ROLE_LOCAL_PARTS.has(p)),
+  "mailer-daemon", "mailerdaemon", "bounce", "bounces", "bounced",
+  "autoreply", "auto-reply", "auto_reply", "donotreply", "do-not-reply", "do_not_reply",
+  "notifications", "notification", "digest", "newsletter", "alerts", "updates",
+  "unsubscribe", "opt-out", "optout",
+])
 // RFC 5322 — pragmatic regex: local-part chars + @ + dot-separated domain labels.
 const SYNTAX_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/
 

@@ -106,8 +106,8 @@ export async function evaluatePromotionEligibilityCore(
   }
 
   // 4. Canonical eligibility gate — THE predicate every promotion door shares
-  //    (lib/lead-pipeline/canonical-lead-eligibility.ts). Owner rule in force (wave 84,
-  //    2026-09-26): a real first name AND last name AND a phone and/or an email — a mailing
+  //    (lib/lead-pipeline/canonical-lead-eligibility.ts). Owner rule in force (wave 85,
+  //    2026-09-26): a real first name AND last name AND an email, phone optional — a mailing
   //    address, verified or not, no longer makes a lead. Names resolve first-class column →
   //    raw_data jsonb, the same chain the pipeline processor uses, so enrichment-backfilled
   //    names count. THIS EVALUATOR SPENDS NOTHING (`'use server'` sits in front of it).

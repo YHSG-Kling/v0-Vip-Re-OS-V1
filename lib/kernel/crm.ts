@@ -459,6 +459,10 @@ export async function createContactManually(
  * named in scripts/enrichment-suppression-simulator.ts's list of the tree's three
  * `leads` insert sites) — lib/lead-pipeline/unknown-sender-identification.ts is
  * its first live caller, for exactly the brokerage-owned case this fixes.
+ * Lane 85B (wave 85): that caller now lands the sender RAW (owner: "an unknown sender needs to go
+ * through enrichment before lead gate"), so this door again has no in-tree production caller. It is
+ * KEPT, fully gated, as the governed direct-insert door (re-exported by lib/kernel/index.ts) — the
+ * integrator decides retirement; nothing here is unreferenced-by-design (no cron/webhook reaches it).
  */
 export async function createLeadOnlyRecordForAcquisitionSource(params: {
   first_name?: string
@@ -474,33 +478,20 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
   agent_id?: string | null
   brokerage_id: string
   raw_record_id?: string
-  /**
-   * Lane 84C — who started the contact. DEFAULT "scraped": the owner's wave-84 rule applies in
-   * full ("if the record/row from scrapping comes in and doesnt have phone and/or email with first
-   * and last name, it can't come in as a lead") through THE predicate,
-   * lib/lead-pipeline/canonical-lead-eligibility.ts — a refused record belongs in raw_scraped_leads
-   * (ingestRawSourceBatch → processRawRecord), never here.
-   * "person_initiated_inbound": the PERSON wrote to the brokerage (the unknown-sender door,
-   * lib/lead-pipeline/unknown-sender-identification.ts — owner wave 74A: a brokerage mailbox's
-   * qualifying sender "comes in as a lead not a raw lead"). Not a scraped row, so the name half is
-   * not required; the reachability half (phone and/or email) still is.
-   */
-  origin?: "scraped" | "person_initiated_inbound"
+  // TOMBSTONE (lane 85B, wave 85) — the `origin?: "scraped" | "person_initiated_inbound"` parameter
+  // (lane 84C) is REMOVED. Its only declarer was the unknown inbound-email sender, which the owner
+  // now routes through the raw pipeline ("an unknown sender needs to go through enrichment before lead
+  // gate") — lib/lead-pipeline/unknown-sender-identification.ts::landUnknownSenderRaw →
+  // ingestRawSourceBatch → processRawRecord. With no exempt caller left, this door gates EVERY
+  // insert through THE predicate, lib/lead-pipeline/canonical-lead-eligibility.ts.
 }): Promise<CRMResult> {
   const { evaluateCanonicalLeadEligibility } = await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const gate = evaluateCanonicalLeadEligibility({
     first_name: params.first_name, last_name: params.last_name, email: params.email, phone: params.phone,
   })
-  const reachable = !!(params.email ?? "").trim() || !!(params.phone ?? "").trim()
-  const scraped = (params.origin ?? "scraped") === "scraped"
-  if (scraped ? !gate.eligible : !reachable) {
-    // FAIL CLOSED — no row. A scraped record that fails belongs in the raw pipeline.
-    return {
-      success: false,
-      error: scraped && !gate.eligible
-        ? `${gate.reason} — not a lead; route it through the raw pipeline`
-        : "Needs a phone number and/or an email address",
-    }
+  if (!gate.eligible) {
+    // FAIL CLOSED — no row. A record that fails belongs in the raw pipeline (dedup → enrich → dedup → gate).
+    return { success: false, error: `${gate.reason} — not a lead; route it through the raw pipeline` }
   }
 
   const supabase = createServiceClient()

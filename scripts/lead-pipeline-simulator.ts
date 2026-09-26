@@ -113,11 +113,15 @@ function testEligibilityGate() {
   check("REFUSAL · last name alone does not satisfy it either, however reachable they are",
     lastNameMissing.eligible === false && (lastNameMissing as any).failing === "name")
   const phoneOnly = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", phone: "3055550142" })
-  check("name + PHONE only → eligible via phone (the owner named phone as an anchor)",
-    phoneOnly.eligible === true && (phoneOnly as any).via.join(",") === "phone")
+  // Lane 85B — owner wave 85: "email required so email and/or phone". Phone alone no longer makes a lead.
+  check("REFUSAL · name + PHONE only → stays raw (owner wave 85: the email is required, the phone optional)",
+    phoneOnly.eligible === false && (phoneOnly as any).failing === "contact_anchor")
+  const emailOnly = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com" })
+  check("name + EMAIL only → eligible via email (phone optional)",
+    emailOnly.eligible === true && (emailOnly as any).via.join(",") === "email")
   const nothing = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez" })
-  check("REFUSAL · name but no phone and no email → blocked with the honest owner-rule reason",
-    nothing.eligible === false && /phone number and\/or an email address/i.test((nothing as any).reason))
+  check("REFUSAL · name but no email → blocked with the honest owner-rule reason (names the email)",
+    nothing.eligible === false && /needs an email address/i.test((nothing as any).reason))
   check("whitespace-only email/phone do not fabricate an anchor",
     evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "   ", phone: " " }).eligible === false)
   check("whitespace-only names do not fabricate a name",

@@ -163,19 +163,15 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
 
   // ── 1. SCRAPE SOURCE — raw_scraped_leads (per lead id) ────────────────────
   if (allLeadIds.length > 0) {
-    // NOT SELECTED: raw_scraped_leads.cost_per_record. The column exists
-    // (scripts/schema-snapshot.ts) but its only writer — the scraper insert in
-    // lib/kernel/scraping.ts (SCRAPING IS FROZEN this wave, not editable here)
-    // — never stamps it; reading it here would create a NEW one-sided
-    // read-with-no-writer pair (opposite-missing 1b, confirmed live against
-    // this build: `grep cost_per_record lib/kernel/scraping.ts` finds no
-    // writer). CLAUDE.md §1 forbids inventing a reader to paper over a gap in
-    // frozen code — reported, not silenced. `leads.cost_per_record` (used
-    // below and by lib/contact-promotion/acquisition-cost.ts) IS written, by
-    // the pipeline-processor promotion step, so lead-level cost is still
-    // faithfully represented on the conversion event.
+    // raw_scraped_leads.cost_per_record IS selected now (lane 85B): the earlier NOT-SELECTED note
+    // (no writer) went stale when lib/kernel/scraping.ts::ingestRawSourceBatch began stamping it from
+    // the batch's metered cost (wave 66, `costPerRecord`). It is the per-record acquisition cost
+    // ("where they came from for lead cost tracking"). For an unknown inbound-email sender
+    // (source inbound_email_unknown — lane 85B lands it RAW before the lead gate) the CONVERSATION that
+    // started the record is on raw_data; its subject and a short excerpt are read by JSON path so the
+    // timeline keeps it as lead intelligence history without pulling whole scraped payloads.
     const { data, error } = await svc.from("raw_scraped_leads")
-      .select("id, lead_id, source, source_channel, scrape_category, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status")
+      .select("id, lead_id, source, source_channel, scrape_category, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status, cost_per_record, inbound_subject:raw_data->>subject, inbound_body:raw_data->>body, inbound_name_source:raw_data->>name_source")
       .in("lead_id", allLeadIds)
     if (error) warnings.push(`raw_scraped_leads read refused: ${error.message}`)
     else {
@@ -184,7 +180,9 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
           id: `raw:${r.id}`,
           type: "scrape_source",
           occurredAt: r.created_at ?? null,
-          summary: `Sourced via ${r.source ?? "an unknown source"}${r.source_channel ? ` (${r.source_channel})` : ""}`,
+          summary: r.source === "inbound_email_unknown"
+            ? `Emailed the brokerage${r.inbound_subject ? `: "${r.inbound_subject}"` : ""} (unknown sender, landed raw)`
+            : `Sourced via ${r.source ?? "an unknown source"}${r.source_channel ? ` (${r.source_channel})` : ""}`,
           sensitivity: "lead_desk_only",
           detail: {
             // m647: the per-row scrape classification lives on scrape_category now —
@@ -193,6 +191,14 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
             source: r.source, sourceFamily: r.scrape_category, sourceChannel: r.source_channel,
             sourceSubtype: r.source_subtype, sourceOrigin: r.source_origin,
             scraperExecutionId: r.scraper_execution_id, dedupeStatus: r.dedupe_status,
+            costPerRecord: r.cost_per_record ?? null,
+            ...(r.source === "inbound_email_unknown" ? {
+              inboundEmail: {
+                subject: r.inbound_subject ?? null,
+                excerpt: typeof r.inbound_body === "string" ? r.inbound_body.slice(0, 280) : null,
+                nameSource: r.inbound_name_source ?? null,
+              },
+            } : {}),
           },
         })
       }
