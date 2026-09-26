@@ -464,8 +464,11 @@ export async function listComparisonEvidence(svc: any, brokerageId: string, addr
 /**
  * DB: a human confirms the figure an APPROVED capture shows. Tenant-predicated
  * read + counted update (CLAUDE.md §3 — an unmatched id is a refusal, never a
- * silent success). The figure is the portal's, recorded for the comparison
- * piece only (estimateStillUseVerdict) — never a value the OS states.
+ * silent success). The figure is the portal's, recorded for campaign copy —
+ * the comparison piece (estimateStillUseVerdict) and, for the Zillow still,
+ * the Zestimate Challenge (wave 84B: creative-playbooks.ts
+ * zestimateFigureBrief, quoted as Zillow's figure) — never a value the OS
+ * states as its own, never read by a value surface or the AI ISA.
  */
 export async function confirmComparisonFigure(
   svc: any, args: { brokerageId: string; userId: string | null; assetId: string; figure: unknown; now?: Date },

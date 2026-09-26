@@ -13,22 +13,28 @@
 // a human approves or rejects here through the EXISTING marketing_assets rail
 // (app/actions/marketing-studio.ts approveAsset / rejectAsset). An approved
 // still is what the next Zestimate Challenge install consumes — for that
-// campaign's postcard and that campaign's own video. WAVE 83C (owner verbatim:
-// "zestimate is marketing campaigns strictly"): the "also usable in videos"
-// tick and the product_video use are gone; the only use a still may carry is
-// ZESTIMATE_STILL_USES (the ONE rule's list, read, never restated).
+// campaign's postcard and that campaign's own video. WAVE 84B (owner verbatim:
+// "only the zillow zestimate screenshot can be used for marketing campaigns
+// including video"): a still's uses are ZESTIMATE_SCREENSHOT_USES —
+// marketing_campaign + campaign_video — read from THE ONE RULE
+// (lib/assets/screenshot-uses.ts), never restated; product_video / demo /
+// training / the image library are never offered. And ("for the zestimate
+// challenge it is oky to have a real number"): on an APPROVED still a person
+// confirms the Zestimate it shows (the existing confirmComparisonFigureAction
+// door), so the Zestimate Challenge's copy may quote Zillow's figure.
 import { useEffect, useState, useTransition } from "react"
 import { approveAsset, rejectAsset } from "@/app/actions/marketing-studio"
 import {
-  captureEstimateStillAction, listEstimateSourcesAction, listTenantScreenshotStillsAction, setTenantScreenshotUsesAction,
+  captureEstimateStillAction, confirmComparisonFigureAction, listEstimateSourcesAction, listTenantScreenshotStillsAction, setTenantScreenshotUsesAction,
 } from "@/app/actions/marketing/tenant-screenshots"
-import { ESTIMATE_SOURCES, ESTIMATE_STILL_DISCLAIMER, DEFAULT_ESTIMATE_SOURCE, ZESTIMATE_STILL_USES } from "@/lib/marketing/estimate-sources"
+import { ESTIMATE_SOURCES, ESTIMATE_STILL_DISCLAIMER, DEFAULT_ESTIMATE_SOURCE } from "@/lib/marketing/estimate-sources"
+import { ZESTIMATE_SCREENSHOT_USES, type ScreenshotUse } from "@/lib/assets/screenshot-uses"
 
-// The ONE rule's use list (lib/marketing/estimate-sources.ts) — a pure module a
-// client component may import; the action refuses any other value.
-const USES = ZESTIMATE_STILL_USES
-type Use = (typeof USES)[number]
-type Still = { id: string; url: string; label: string; uses: string[]; approvalStatus: string | null; estimateSource?: string | null; address?: string | null; capturedAt: string | null }
+// THE ONE RULE's Zestimate list (lib/assets/screenshot-uses.ts) — a pure module
+// a client component may import; the action refuses any other value.
+const USES = ZESTIMATE_SCREENSHOT_USES
+type Use = ScreenshotUse
+type Still = { id: string; url: string; label: string; uses: string[]; approvalStatus: string | null; estimateSource?: string | null; address?: string | null; capturedAt: string | null; confirmedFigureUsd?: number | null }
 
 export function EstimateStillsCard() {
   // ONE source — the Zillow property page (wave 81D). No picker: the vocabulary
@@ -37,6 +43,7 @@ export function EstimateStillsCard() {
   const sourceDef = ESTIMATE_SOURCES.find((s) => s.key === source) ?? ESTIMATE_SOURCES[0]
   const [tosNotes, setTosNotes] = useState<Record<string, string>>(Object.fromEntries(ESTIMATE_SOURCES.map((s) => [s.key, s.tosNote])))
   const [address, setAddress] = useState("")
+  const [figures, setFigures] = useState<Record<string, string>>({})
   const [stills, setStills] = useState<Still[]>([])
   const [result, setResult] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -77,12 +84,23 @@ export function EstimateStillsCard() {
     })
   }
 
+  function confirmFigure(still: Still) {
+    const typed = (figures[still.id] ?? "").trim()
+    if (!typed) return
+    setErr(null)
+    start(async () => {
+      const r = await confirmComparisonFigureAction({ assetId: still.id, figure: typed })
+      if (r.ok) { setResult(`Zestimate confirmed: $${r.figureUsd.toLocaleString("en-US")} — the next Zestimate Challenge install may quote it as Zillow's figure.`); load() }
+      else setErr(r.error)
+    })
+  }
+
   return (
     <section className="border border-purple-200 bg-white rounded-lg p-4 space-y-3">
       <div>
         <h3 className="text-sm font-semibold text-gray-900">Zestimate stills — the Zestimate Challenge&apos;s own material</h3>
         <p className="text-xs text-gray-600 mt-1">
-          Enter an address. The OS captures the Zillow property page — the property photo and the Zestimate together, refused if either is not on screen — (robots.txt honoured, rate-limited, source and capture date recorded) into your marketing assets, pending your approval. An approved still is used by the next Zestimate Challenge install — its postcard and its own video — and nowhere else: a Zestimate still is marketing-campaign material only. {ESTIMATE_STILL_DISCLAIMER}
+          Enter an address. The OS captures the Zillow property page — the property photo and the Zestimate together, refused if either is not on screen — (robots.txt honoured, rate-limited, source and capture date recorded) into your marketing assets, pending your approval. An approved still is used by the next Zestimate Challenge install — its postcard and its own video — and nowhere else: a Zestimate still is marketing-campaign material (the campaign&apos;s video included) only. Confirm the Zestimate an approved still shows and the campaign copy may quote it — always as Zillow&apos;s estimate, never as your value. {ESTIMATE_STILL_DISCLAIMER}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -104,9 +122,15 @@ export function EstimateStillsCard() {
             {USES.map((u) => (
               <label key={u} className="flex items-center gap-1">
                 <input type="checkbox" checked={s.uses.includes(u)} disabled={pending} onChange={() => toggleUse(s, u)} />
-                {u.replace("_", " ")} (only use allowed)
+                {u.replace("_", " ")}
               </label>
             ))}
+            {s.approvalStatus === "approved" && (
+              <span className="flex items-center gap-1">
+                <input className="w-28 rounded border bg-background px-1 py-0.5" placeholder={s.confirmedFigureUsd != null ? `$${s.confirmedFigureUsd.toLocaleString("en-US")}` : "Zestimate shown"} value={figures[s.id] ?? ""} onChange={(e) => setFigures({ ...figures, [s.id]: e.target.value })} disabled={pending} />
+                <button type="button" className="rounded border px-2 py-0.5" onClick={() => confirmFigure(s)} disabled={pending || !(figures[s.id] ?? "").trim()}>{s.confirmedFigureUsd != null ? "Correct figure" : "Confirm figure"}</button>
+              </span>
+            )}
           </div>
         ))}
       </div>

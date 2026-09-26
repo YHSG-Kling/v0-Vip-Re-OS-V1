@@ -96,7 +96,7 @@ import {
 import { computeAssemblyTimeline, evenShotSlots, weightedShotSlots } from "../lib/video/assembly-timeline"
 import { COMPOSITION_GEOMETRY } from "../lib/remotion/composition-geometry"
 import {
-  SCREENSHOT_USES, screenshotUseTag, tagsWithUses, usesOfRow, screenshotAssetRow, planScreenshotCapture,
+  SCREENSHOT_USES, screenshotUseTag, tagsWithUses, usesOfRow, screenshotAssetRow, planScreenshotCapture, ZESTIMATE_SCREENSHOT_USES, screenshotUseAllowed,
   listScreenshotStillsForUse, setScreenshotUses, SCREENSHOT_ASSET_KIND,
 } from "../lib/assets/screenshot-capture"
 
@@ -459,18 +459,21 @@ console.log("\n── §panels · the PiP reels' panels and the memory reel's ph
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n── §screenshots · one still, many uses; a public-page capture is material, never a customer-facing value ──")
 {
-  check("SCREENSHOT_USES is the closed set marketing_campaign / product_video / demo / training", SCREENSHOT_USES.join() === "marketing_campaign,product_video,demo,training")
+  // 84B — asserted as a RULE, not a literal list: no historical use was dropped, every owner family
+  // ("marketing/assets/videos/guides/education") is a use, and a general still may serve every one.
+  check("SCREENSHOT_USES keeps every pre-84B use and carries the owner's families (campaign video, image library); a general still serves them all",
+    ["marketing_campaign", "product_video", "demo", "training", "campaign_video", "image_library"].every((u) => (SCREENSHOT_USES as readonly string[]).includes(u)) && SCREENSHOT_USES.every((u) => screenshotUseAllowed("general", u)))
   const tags = tagsWithUses(["library", "screenshot", "use:demo", "use:bogus"], ["product_video", "training"])
   check("tagsWithUses replaces the use:* tags and keeps the rest", tags.join() === "library,screenshot,use:product_video,use:training")
   check("usesOfRow reads the tags, falls back to metadata.uses, and a legacy row counts for every use",
-    usesOfRow({ tags }).join() === "product_video,training" && usesOfRow({ tags: ["library"], metadata: { uses: ["demo"] } }).join() === "demo" && usesOfRow({ tags: ["library"], metadata: {} }).length === 4)
+    usesOfRow({ tags }).join() === "product_video,training" && usesOfRow({ tags: ["library"], metadata: { uses: ["demo"] } }).join() === "demo" && usesOfRow({ tags: ["library"], metadata: {} }).length === SCREENSHOT_USES.length)
   const plan = planScreenshotCapture({ kind: "public_page", url: "https://www.zillow.com/homedetails/1-Main-St/123_zpid/" }, { siteOrigin: "https://app.example.com", now: new Date("2026-09-23T12:00:00Z") })
   check("a public-page capture plans (fixture)", plan.ok, plan.ok ? undefined : plan.reason)
   if (plan.ok) {
     const row = screenshotAssetRow(plan, "https://cdn/x.png", "2026-09-23T12:00:00Z", "puppeteer") as { tags: string[]; approval_status: string; metadata: Record<string, unknown> }
     // RE-ANCHORED wave 83C (owner: "zestimate is marketing campaigns strictly"): a public-page (Zillow /
     // Zestimate) capture carries marketing_campaign ONLY; an OS-surface capture keeps every use (control).
-    check("a public-page capture row carries use:marketing_campaign ONLY AND stays approval_status=pending (never a tenant picker)", row.tags.filter((t) => t.startsWith("use:")).join() === screenshotUseTag("marketing_campaign") && row.approval_status === "pending" && Array.isArray(row.metadata.uses))
+    check("a public-page (Zestimate) capture row carries exactly the Zestimate's use tags (campaign + campaign video, 84B) AND stays approval_status=pending (never a tenant picker)", row.tags.filter((t) => t.startsWith("use:")).join() === ZESTIMATE_SCREENSHOT_USES.map(screenshotUseTag).join() && row.approval_status === "pending" && Array.isArray(row.metadata.uses))
     const osPlan = planScreenshotCapture({ kind: "os_surface", surfaceId: "command_center" }, { siteOrigin: "https://app.example.com", now: new Date("2026-09-23T12:00:00Z") })
     if (osPlan.ok) {
       const osRow = screenshotAssetRow(osPlan, "https://cdn/os.png", "2026-09-23T12:00:00Z", "puppeteer") as { tags: string[] }

@@ -44,6 +44,7 @@ import {
   planScreenshotCapture, assertDemoTenantOnly, isRobotsAllowed, redactionCss, screenshotCacheKey, screenshotAssetRow,
   captureScreenshot, capturePublicPropertyPage, demoSessionCookies, stillUrlsForDemoTopic, stillUrlsForVideoAngle,
   figuresForEducationTopic, renderFigures, stillsAsBrollClips, resolveScreenshotProvider, seedMissingDemoStill,
+  SCREENSHOT_USES, ZESTIMATE_SCREENSHOT_USES, screenshotUsesFor,
   type ScreenshotProvider, type ProviderCaptureInput, type ScreenshotAssetRow,
 } from "../lib/assets/screenshot-capture"
 import { findPlaywrightChromium, isServerlessChromiumHost, resolveChromiumExecutable, DEFAULT_CHROMIUM_PACK_URL } from "../lib/remotion/chromium-executable"
@@ -207,7 +208,8 @@ check("robots: wildcard + $ anchor honoured", !isRobotsAllowed("User-agent: *\nD
   const r = await captureScreenshot({ kind: "public_page", url: "https://www.zillow.com/homedetails/1-Main-Austin-TX/1_zpid/" }, { svc, provider, fetchRobots: async () => "User-agent: *\nAllow: /", now: new Date("2026-09-22T10:00:00Z") })
   const row = svc.inserted[0] as any
   check("stubbed run: an allowed public page is captured once with the identified UA and no cookies", r.ok && provider.calls.length === 1 && provider.calls[0].userAgent.includes("VipReOS-DemoStillBot") && !provider.calls[0].cookies)
-  check("the third-party row is PENDING (never a tenant-picker asset), tagged third_party_page, with source_url + captured_at + day + provider, and (83C) marketing_campaign ONLY — never demo/training/video stock", !!row && row.approval_status === "pending" && row.tags.includes("third_party_page") && row.metadata.source_url === "https://www.zillow.com/homedetails/1-Main-Austin-TX/1_zpid/" && row.metadata.captured_at === "2026-09-22T10:00:00.000Z" && row.metadata.day === "2026-09-22" && row.metadata.provider === "puppeteer" && row.metadata.usage === "marketing_campaign_material_never_customer_value" && row.metadata.uses?.join() === "marketing_campaign")
+  check("the third-party row is PENDING (never a tenant-picker asset), tagged third_party_page, with source_url + captured_at + day + provider, and (84B) exactly the Zestimate's uses from THE ONE RULE (campaign + campaign video) — never demo/training/product-video/library stock", !!row && row.approval_status === "pending" && row.tags.includes("third_party_page") && row.metadata.source_url === "https://www.zillow.com/homedetails/1-Main-Austin-TX/1_zpid/" && row.metadata.captured_at === "2026-09-22T10:00:00.000Z" && row.metadata.day === "2026-09-22" && row.metadata.provider === "puppeteer" && row.metadata.usage === "marketing_campaign_material_never_customer_value" && row.metadata.uses?.join() === ZESTIMATE_SCREENSHOT_USES.join() && !row.metadata.uses.includes("demo"))
+  check("the rule's allowance per capture kind: an OS surface serves every use, a public page exactly the Zestimate's (84B)", screenshotUsesFor("os_surface").join() === SCREENSHOT_USES.join() && screenshotUsesFor("public_page").join() === ZESTIMATE_SCREENSHOT_USES.join())
   check("the third-party row's source is NOT a redistributable library source (canShareToTenants would say no)", row && !["ai_image", "upload", "owned", "licensed_redistribution"].includes(row.metadata.source))
 }
 {

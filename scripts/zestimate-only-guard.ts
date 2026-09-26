@@ -18,17 +18,26 @@
  *      other portal; in the vocabulary and the seam another portal appears ONLY
  *      inside a marked COMPARISON-ONLY block (the 82D estimate comparison piece,
  *      proven by scripts/estimate-comparison-guard.ts). Positive controls.
- *   2b. MARKETING CAMPAIGNS STRICTLY (82D owner: "the zillow zestimate
- *      screenshot should only be used for campaigns and not other estimate of
- *      value"; 83C owner: "zestimate is marketing campaigns strictly") —
- *      estimateStillUseVerdict admits EXACTLY marketing_campaign + the
- *      comparison piece across every known use; the 82D shape (demo /
- *      training / product_video / image library admitted) is the positive
- *      control the finder must fail.
- *   2c. THE SEAM ENFORCES IT — PUBLIC_PAGE_STILL_USES == ZESTIMATE_STILL_USES;
- *      usesOfRow clamps legacy rows; a capture asking for more is written
- *      campaign-only; setScreenshotUses refuses widening; no generic video path
- *      stages a tenant still; the campaign's own video still gets it.
+ *   2b. THE ONE USE RULE (84B owner: "screenshots can be used for all
+ *      marketing/assets/videos/guides/education, etc. only the zillow zestimate
+ *      screenshot can be used for marketing campaigns including video.") —
+ *      lib/assets/screenshot-uses.ts screenshotUseAllowed, over EVERY subject ×
+ *      EVERY known use: a general still serves every screenshot use, the
+ *      Zestimate EXACTLY marketing_campaign + campaign_video, another portal's
+ *      page nothing, a value use nothing. Positive controls: the 83C shape
+ *      (Zestimate out of its campaign video; general stills refused demo /
+ *      training / product_video / library) and the 82D shape (Zestimate as
+ *      demo / training stock) both FAIL the finder. estimateStillUseVerdict
+ *      defers to the rule (never restates it); the rule file is pure.
+ *   2c. THE SEAM ENFORCES IT — usesOfRow = recorded ∩ rule (legacy lift for
+ *      pre-84B rows); captures are written to the rule; setScreenshotUses
+ *      refuses widening; the demo / training / product-video mounts and the
+ *      image library each ask the rule; a video path may stage a tenant
+ *      still ONLY for campaign_video; the campaign's own video gets it.
+ *   6. THE ZESTIMATE CHALLENGE MAY QUOTE THE REAL NUMBER (84B owner: "for the
+ *      zestimate challenge it is oky to have a real number as we aren't using
+ *      it as our true value") — that play alone, only a human-confirmed
+ *      figure, always attributed to Zillow; never reaches the AI ISA / voice.
  *   3. READINESS — a public_page plan on zillow.com carries the host's rules
  *      (photo + Zestimate); an OS-surface plan carries none; the seam REFUSES a
  *      capture whose provider confirmed nothing (nothing hosted, nothing
@@ -36,7 +45,8 @@
  *      Zestimate), and keeps one that confirmed both (metadata.shows = both).
  *      combinedReadySelector folds the rules into ONE body:has() selector for
  *      the hosted adapter; the puppeteer adapter waits per rule, visible.
- *   4. USES STAY MANY — SCREENSHOT_USES is unchanged (≥4, campaign + video).
+ *   4. USES STAY MANY — every owner family (marketing, assets, videos,
+ *      guides/education) has a use; the tenant plan + card read the rule.
  *   5. SURFACES — the tenant card has no source picker and names Zillow; the
  *      door's refusal is derived from the vocabulary, not restated.
  *
@@ -46,17 +56,21 @@
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { stripComments } from "./strip-comments"
+import { readdirSync, statSync } from "node:fs"
+import { stripComments, blankStrings } from "./strip-comments"
 import {
   ESTIMATE_SOURCES, ESTIMATE_SOURCE_KEYS, DEFAULT_ESTIMATE_SOURCE, ZESTIMATE_STILL_MUST_SHOW, ESTIMATE_OF_VALUE_USES, estimateStillUseVerdict,
-  ZESTIMATE_STILL_USES, IMAGE_LIBRARY_USE, ESTIMATE_COMPARISON_USE,
+  ESTIMATE_COMPARISON_USE,
 } from "../lib/marketing/estimate-sources"
 import {
   PUBLIC_PAGE_HOSTS, PUBLIC_PAGE_READY_RULES, readyRulesForHost, combinedReadySelector, unsatisfiedReadyLabels,
-  planScreenshotCapture, captureScreenshot, SCREENSHOT_USES, PUBLIC_PAGE_STILL_USES, defaultScreenshotUses, usesOfRow, setScreenshotUses,
-  type ScreenshotProvider, type ProviderCaptureInput,
+  planScreenshotCapture, captureScreenshot, SCREENSHOT_USES, SCREENSHOT_SUBJECTS, ZESTIMATE_SCREENSHOT_USES, SCREENSHOT_USES_RULE_VERSION,
+  screenshotUseAllowed, screenshotUseVerdict, screenshotSubjectOfRow, screenshotRowUseAllowed, usesOfRow, setScreenshotUses, listDemoStills,
+  type ScreenshotProvider, type ProviderCaptureInput, type ScreenshotSubject,
 } from "../lib/assets/screenshot-capture"
 import { planTenantStill } from "../lib/marketing/tenant-screenshot-door"
+import { ZESTIMATE_FIGURE_PLAY_KEYS, playMayQuoteZestimate, zestimateFigureBrief, getPlaybook, CREATIVE_PLAYBOOKS } from "../lib/marketing/creative-playbooks"
+import { ESTIMATE_COMPARISON_ASSET_KIND } from "../lib/marketing/estimate-comparison"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 let passed = 0, failed = 0
@@ -152,54 +166,128 @@ async function main() {
     return hits.join() === "5"
   })())
 
-  console.log("\n[2b · a Zestimate still is MARKETING-CAMPAIGN material, strictly — never an estimate of value]")
-  // WAVE 83C (owner verbatim: "zestimate is marketing campaigns strictly"): the 82D rule admitted every
-  // SCREENSHOT_USES entry (demo / training / product_video too) plus the image library. The RULE now:
-  // the Zestimate is admitted for marketing_campaign and the comparison piece (itself a campaign) and
-  // NOTHING else. Asserted over every use the OS knows, derived — never a hand list.
-  const EVERY_USE = Array.from(new Set<string>([...SCREENSHOT_USES, IMAGE_LIBRARY_USE, ESTIMATE_COMPARISON_USE, ...ESTIMATE_OF_VALUE_USES, "seller_portal_value"]))
-  const CAMPAIGN_ONLY = new Set<string>([...ZESTIMATE_STILL_USES, ESTIMATE_COMPARISON_USE])
-  const admitsExactlyCampaign = (verdict: (src: string, use: string) => { ok: boolean }) => EVERY_USE.every((u) => verdict("zillow_zestimate", u).ok === CAMPAIGN_ONLY.has(u))
-  check(`the Zestimate is admitted for EXACTLY ${[...CAMPAIGN_ONLY].join(" + ")} across all ${EVERY_USE.length} known uses (demo, training, product_video, image_library, every value use refused)`, admitsExactlyCampaign(estimateStillUseVerdict))
-  check("ZESTIMATE_STILL_USES is marketing_campaign alone and names a real seam use", ZESTIMATE_STILL_USES.join() === "marketing_campaign" && ZESTIMATE_STILL_USES.every((u) => (SCREENSHOT_USES as readonly string[]).includes(u)))
-  check("every estimate-of-value use is refused with the value reason", ESTIMATE_OF_VALUE_USES.every((u) => { const v = estimateStillUseVerdict("zillow_zestimate", u); return !v.ok && /never an estimate of value/.test(v.reason) }))
-  check("POSITIVE CONTROL: the finder FAILS the 82D rule shape (a verdict admitting every seam use + the library)", !admitsExactlyCampaign((src, u) => ({ ok: src === "zillow_zestimate" && ((SCREENSHOT_USES as readonly string[]).includes(u) || u === IMAGE_LIBRARY_USE || u === ESTIMATE_COMPARISON_USE) })))
-  check("CONTROL: an unknown non-campaign use is refused for the Zestimate (fail closed)", !estimateStillUseVerdict("zillow_zestimate", "seller_portal_value").ok)
+  console.log("\n[2b · THE ONE USE RULE — general everywhere, the Zestimate for campaigns incl. video, other portals nowhere]")
+  // WAVE 84B (owner verbatim: "screenshots can be used for all marketing/assets/videos/guides/education, etc.
+  // only the zillow zestimate screenshot can be used for marketing campaigns including video."). The SPEC below
+  // is the owner's sentence, not a copy of the code's list: a general still serves every screenshot use; the
+  // Zestimate serves a marketing campaign and that campaign's video; another portal's page serves nothing; a
+  // value use (CMA, valuation…) or an unknown use is refused for every subject. Asserted over every subject x
+  // every use the OS knows (derived — SCREENSHOT_USES + the comparison piece + every value use + a stranger).
+  const EVERY_USE = Array.from(new Set<string>([...SCREENSHOT_USES, ESTIMATE_COMPARISON_USE, ...ESTIMATE_OF_VALUE_USES, "seller_portal_value"]))
+  const OWNER_CAMPAIGN_FAMILY = (u: string) => u === "marketing_campaign" || u === "campaign_video"
+  const spec = (subject: ScreenshotSubject, u: string): boolean =>
+    !(SCREENSHOT_USES as readonly string[]).includes(u) ? false
+    : subject === "general" ? true
+    : subject === "zillow_zestimate" ? OWNER_CAMPAIGN_FAMILY(u)
+    : false
+  const matchesOwner = (pred: (subject: ScreenshotSubject, use: string) => boolean) =>
+    SCREENSHOT_SUBJECTS.every((sub) => EVERY_USE.every((u) => pred(sub, u) === spec(sub, u)))
+  console.log(`    denominator: ${SCREENSHOT_SUBJECTS.length} subjects x ${EVERY_USE.length} uses = ${SCREENSHOT_SUBJECTS.length * EVERY_USE.length} verdicts`)
+  check("screenshotUseAllowed matches the owner's rule on EVERY subject x use (general: all; Zestimate: campaign + campaign video; other portals: none; value uses: none)", matchesOwner(screenshotUseAllowed))
+  check("the owner's campaign family exists in the vocabulary (marketing_campaign + campaign_video) and ZESTIMATE_SCREENSHOT_USES is exactly it", SCREENSHOT_USES.filter(OWNER_CAMPAIGN_FAMILY).length === 2 && [...ZESTIMATE_SCREENSHOT_USES].sort().join() === SCREENSHOT_USES.filter(OWNER_CAMPAIGN_FAMILY).sort().join())
+  check("POSITIVE CONTROL: the finder FAILS the 83C shape (Zestimate campaign-only, no campaign video — the owner's correction)", !matchesOwner((sub, u) => sub === "zillow_zestimate" ? u === "marketing_campaign" : spec(sub, u)))
+  check("POSITIVE CONTROL: the finder FAILS a shape that refuses general stills demo/training/product_video/library (83C's over-restriction)", !matchesOwner((sub, u) => sub === "general" ? OWNER_CAMPAIGN_FAMILY(u) : spec(sub, u)))
+  check("POSITIVE CONTROL: the finder FAILS the 82D shape (the Zestimate as demo / training / product-video stock)", !matchesOwner((sub, u) => sub === "zillow_zestimate" ? (SCREENSHOT_USES as readonly string[]).includes(u) : spec(sub, u)))
+  check("POSITIVE CONTROL: the finder FAILS a shape that lets another portal's page be a campaign still", !matchesOwner((sub, u) => sub === "other_portal_estimate" ? u === "marketing_campaign" : spec(sub, u)))
+  check("a refusal names why (Zestimate → campaign + video only; other portal → web-searched text; value → never a value)",
+    /campaigns including their video only/.test((screenshotUseVerdict("zillow_zestimate", "demo") as { reason: string }).reason ?? "")
+    && /web-searched text/.test((screenshotUseVerdict("other_portal_estimate", "marketing_campaign") as { reason: string }).reason ?? "")
+    && /never a value/.test((screenshotUseVerdict("general", "cma") as { reason: string }).reason ?? ""))
+  // estimateStillUseVerdict is the EVIDENCE rule (value uses, the comparison piece); for a screenshot use it
+  // must say what the ONE rule says — never a second list.
+  check("estimateStillUseVerdict(zillow) = the ONE rule for every screenshot use + the comparison piece, and refuses every value use",
+    EVERY_USE.every((u) => estimateStillUseVerdict("zillow_zestimate", u).ok === (u === ESTIMATE_COMPARISON_USE || screenshotUseAllowed("zillow_zestimate", u)))
+    && ESTIMATE_OF_VALUE_USES.every((u) => { const v = estimateStillUseVerdict("zillow_zestimate", u); return !v.ok && /never an estimate of value/.test(v.reason) }))
+  const RESTATED_LIST_RE = /["']campaign_video["']|["']product_video["']|ZESTIMATE_STILL_USES\s*=|IMAGE_LIBRARY_USE\s*=/
+  check("the vocabulary does not restate the use list — it imports the rule (stripped source)", !RESTATED_LIST_RE.test(stripped(VOCAB)) && /from "@\/lib\/assets\/screenshot-uses"/.test(src(VOCAB)))
+  check("CONTROL: the restatement finder catches the 83C constant and a literal use", RESTATED_LIST_RE.test(stripComments(`export const ZESTIMATE_STILL_USES = ["marketing_campaign"]`)) && RESTATED_LIST_RE.test(stripComments(`if (use === "campaign_video") return true`)))
+  const RULE = "lib/assets/screenshot-uses.ts"
+  const IMPORT_RE = /^\s*import\s|\brequire\(|\bimport\(/m
+  check("the rule file is PURE (no imports — the client cards and the pure vocabulary read it in the browser)", !IMPORT_RE.test(blankStrings(stripComments(src(RULE)))))
+  check("CONTROL: the purity finder catches a static and a dynamic import", IMPORT_RE.test(`import { x } from "y"`) && IMPORT_RE.test(`const m = await import("z")`))
+  const DEMO_CARD = "app/dashboard/superadmin/demo-room/demo-stills-card.tsx"
+  const HAND_MIRROR_RE = /\[\s*["']marketing_campaign["']\s*,\s*["'](product_video|campaign_video)["']/
+  check("no client card hand-mirrors the use list any more — the demo-room card imports SCREENSHOT_USES from the rule", !HAND_MIRROR_RE.test(stripped(DEMO_CARD)) && /SCREENSHOT_USES/.test(stripped(DEMO_CARD)) && /@\/lib\/assets\/screenshot-uses/.test(src(DEMO_CARD)))
+  check("CONTROL: the mirror finder catches the pre-84B literal", HAND_MIRROR_RE.test(`const USES = ["marketing_campaign", "product_video", "demo", "training"] as const`))
 
   console.log("\n[2c · the seam enforces it where every picker reads]")
-  check("the seam's PUBLIC_PAGE_STILL_USES equals the vocabulary's ZESTIMATE_STILL_USES (one rule, two readers)", [...PUBLIC_PAGE_STILL_USES].sort().join() === [...ZESTIMATE_STILL_USES].sort().join())
-  check("defaultScreenshotUses: a public_page still is born marketing_campaign only; an OS-surface still keeps every use", defaultScreenshotUses("public_page").join() === "marketing_campaign" && defaultScreenshotUses("os_surface").length === SCREENSHOT_USES.length)
-  const legacyZ = { tags: ["use:marketing_campaign", "use:product_video", "use:demo", "use:training"], metadata: { screenshot_kind: "public_page", estimate_source: "zillow_zestimate" } }
-  const untagged = { tags: [], metadata: { screenshot_kind: "public_page" } }
-  check("usesOfRow CLAMPS a legacy Zestimate row tagged product_video/demo/training to marketing_campaign (so no video/demo/training picker lists it)", usesOfRow(legacyZ).join() === "marketing_campaign" && usesOfRow(untagged).join() === "marketing_campaign")
-  check("POSITIVE CONTROL: an OS-surface row with the same tags keeps all four (the clamp is public_page only)", usesOfRow({ tags: legacyZ.tags, metadata: { screenshot_kind: "os_surface" } }).length === 4)
+  const zRow = (tags: string[], extra: Record<string, unknown> = {}) => ({ tags, metadata: { screenshot_kind: "public_page", estimate_source: "zillow_zestimate", ...extra } })
+  const oldFour = ["use:marketing_campaign", "use:product_video", "use:demo", "use:training"]
+  check("usesOfRow: a legacy Zestimate row tagged with the old four uses serves campaign + campaign video ONLY (the rule clamps demo/training/product_video)", usesOfRow(zRow(oldFour)).join() === "marketing_campaign,campaign_video")
+  check("usesOfRow: an 83C-clamped Zestimate row (use:marketing_campaign) regains its campaign video (legacy lift, pre-84B rows only)", usesOfRow(zRow(["use:marketing_campaign"])).join() === "marketing_campaign,campaign_video")
+  check("usesOfRow: an 84B-stamped Zestimate row a person narrowed to marketing_campaign stays narrowed (no lift)", usesOfRow(zRow(["use:marketing_campaign"], { uses_rule: SCREENSHOT_USES_RULE_VERSION })).join() === "marketing_campaign")
+  check("usesOfRow: a legacy OS-surface row tagged with the whole old vocabulary serves EVERY current use (it meant 'everywhere')", usesOfRow({ tags: oldFour, metadata: { screenshot_kind: "os_surface" } }).length === SCREENSHOT_USES.length)
+  check("usesOfRow: an untagged Zillow page row (source_url on zillow.com) = the Zestimate's uses; another portal's page / a retired comparison row = none",
+    usesOfRow({ tags: [], metadata: { screenshot_kind: "public_page", source_url: ZILLOW } }).join() === "marketing_campaign,campaign_video"
+    && usesOfRow({ tags: [], metadata: { screenshot_kind: "public_page", source_url: "https://www.redfin.com/x" } }).length === 0
+    && usesOfRow({ tags: ["use:marketing_campaign"], metadata: { screenshot_kind: "public_page", comparison_only: true, estimate_source: "redfin_estimate" } }).length === 0)
+  check("the comparison COMPOSITE (embeds the Zillow still) is judged as the Zestimate; its asset kind matches estimate-comparison.ts", screenshotSubjectOfRow({ metadata: { asset_kind: ESTIMATE_COMPARISON_ASSET_KIND } }) === "zillow_zestimate" && !screenshotRowUseAllowed({ tags: ["use:marketing_campaign"], metadata: { asset_kind: ESTIMATE_COMPARISON_ASSET_KIND } }, "image_library"))
   {
     const provider = providerConfirming((i) => i.readyWhen.map((r) => r.label)); const svc = makeSvc({ insertId: "still-uses" })
-    await captureScreenshot({ kind: "public_page", url: ZILLOW_APEX, dayIso: "2026-09-26", owner: { brokerageId: TENANT, createdBy: null, uses: ["marketing_campaign", "product_video", "demo", "training"] } }, { svc, provider, fetchRobots: robotsAllow, now: new Date("2026-09-26T00:00:00Z") })
+    await captureScreenshot({ kind: "public_page", url: ZILLOW_APEX, dayIso: "2026-09-26", owner: { brokerageId: TENANT, createdBy: null, uses: [...SCREENSHOT_USES] } }, { svc, provider, fetchRobots: robotsAllow, now: new Date("2026-09-26T00:00:00Z") })
     const row = svc.inserted[0] as any
-    check("a tenant capture that ASKS for product_video/demo/training is written marketing_campaign only (tags + metadata.uses)", !!row && (row.tags as string[]).filter((t) => t.startsWith("use:")).join() === "use:marketing_campaign" && row.metadata?.uses?.join() === "marketing_campaign")
+    check("a tenant capture that ASKS for every use is written campaign + campaign video only (tags + metadata.uses), stamped with the rule version", !!row && (row.tags as string[]).filter((t) => t.startsWith("use:")).join() === "use:marketing_campaign,use:campaign_video" && row.metadata?.uses?.join() === "marketing_campaign,campaign_video" && row.metadata?.uses_rule === SCREENSHOT_USES_RULE_VERSION)
     const svcP = makeSvc({ insertId: "plat" }); const providerP = providerConfirming((i) => i.readyWhen.map((r) => r.label))
     await captureScreenshot({ kind: "public_page", url: ZILLOW_APEX, dayIso: "2026-09-27" }, { svc: svcP, provider: providerP, fetchRobots: robotsAllow, now: new Date("2026-09-27T00:00:00Z") })
     const prow = svcP.inserted[0] as any
-    check("a PLATFORM Zillow capture is marketing_campaign only too (no demo/training/video stock)", !!prow && prow.metadata?.uses?.join() === "marketing_campaign" && prow.metadata?.usage === "marketing_campaign_material_never_customer_value")
+    check("a PLATFORM Zillow capture is campaign + campaign video too (no demo/training/product-video/library stock)", !!prow && prow.metadata?.uses?.join() === "marketing_campaign,campaign_video" && prow.metadata?.usage === "marketing_campaign_material_never_customer_value")
   }
   {
     const svcW = makeSvc({ readRow: { id: "z1", tags: ["use:marketing_campaign"], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", estimate_source: "zillow_zestimate" } } })
     const w = await setScreenshotUses(svcW, "z1", ["marketing_campaign", "product_video"], { brokerageId: TENANT })
-    check("setScreenshotUses REFUSES widening a Zestimate still to product_video — no update issued", !w.ok && /marketing campaigns strictly/.test(w.reason) && svcW.updates.length === 0)
-    const svcP = makeSvc({ readRow: { id: "p1", tags: [], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page" } } })
+    check("setScreenshotUses REFUSES widening a Zestimate still to product_video — no update issued", !w.ok && /campaigns including their video only/.test(w.reason) && svcW.updates.length === 0)
+    const svcP = makeSvc({ readRow: { id: "p1", tags: [], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", source_url: ZILLOW } } })
     const p = await setScreenshotUses(svcP, "p1", ["demo"])
-    check("a PLATFORM public_page still with no recorded source is judged as the Zillow page — widening to demo refused", !p.ok && svcP.updates.length === 0)
+    check("a PLATFORM Zillow page still with no recorded source is judged as the Zestimate — widening to demo refused", !p.ok && svcP.updates.length === 0)
     const svcOk = makeSvc({ readRow: { id: "z2", tags: [], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", estimate_source: "zillow_zestimate" } } })
-    await setScreenshotUses(svcOk, "z2", ["marketing_campaign"], { brokerageId: TENANT })
-    check("POSITIVE CONTROL: marketing_campaign alone proceeds to the counted update", svcOk.updates.length === 1)
+    await setScreenshotUses(svcOk, "z2", ["marketing_campaign", "campaign_video"], { brokerageId: TENANT })
+    check("POSITIVE CONTROL: campaign + campaign video proceeds to the counted update, stamped with the rule version", svcOk.updates.length === 1 && (svcOk.updates[0] as any).metadata?.uses_rule === SCREENSHOT_USES_RULE_VERSION)
+    const svcG = makeSvc({ readRow: { id: "g1", tags: [], metadata: { asset_kind: "screenshot", screenshot_kind: "os_surface" } } })
+    await setScreenshotUses(svcG, "g1", [...SCREENSHOT_USES])
+    check("POSITIVE CONTROL: a GENERAL still may be widened to every use (84B — 83C's over-restriction is gone)", svcG.updates.length === 1)
   }
-  check("the image library refuses every estimate still (verdict for image_library is NO for the Zestimate)", !estimateStillUseVerdict("zillow_zestimate", IMAGE_LIBRARY_USE).ok && /estimateStillUseVerdict\(src, IMAGE_LIBRARY_USE\)/.test(stripped("app/actions/marketing/image-library.ts")))
-  const DIRECTOR = "lib/video/video-director.ts"
-  const STILL_INTO_VIDEO_RE = /tenant-screenshot-door|tenantScreenshotUrlsForVideo|screenshotUrlsForUse\([^)]*product_video/
-  check("no generic video path stages a tenant still any more (video-director reads no still door — stripped source)", !STILL_INTO_VIDEO_RE.test(stripped(DIRECTOR)) && !/export async function tenantScreenshotUrlsForVideo/.test(stripped(DOOR)))
-  check("POSITIVE CONTROL: the finder catches the 80D director shape", STILL_INTO_VIDEO_RE.test(stripComments(`const { tenantScreenshotUrlsForVideo } = await import("@/lib/marketing/tenant-screenshot-door")`)))
-  check("the Zestimate Challenge's OWN campaign video still gets the approved still (install rail → createPlaybookVideo screenshotUrls)", /screenshotUrls: approvedStillUrl \? \[approvedStillUrl\] : \[\]/.test(stripped("app/actions/creative-playbooks.ts")))
+  {
+    const narrowed = { id: "os1", asset_url: "https://cdn.example.test/os1.png", tags: ["use:demo"], metadata: { asset_kind: "screenshot", screenshot_kind: "os_surface", surface_id: "command_center", uses_rule: SCREENSHOT_USES_RULE_VERSION } }
+    const forTraining = await listDemoStills(makeSvc({ readRow: narrowed }), { use: "training" })
+    const forDemo = await listDemoStills(makeSvc({ readRow: narrowed }), { use: "demo" })
+    check("the demo/training mounts obey a person's narrowing: a still narrowed to demo is a demo still, never a training figure", forTraining.size === 0 && forDemo.size === 1)
+  }
+  const seamCode = stripped(SEAM)
+  check("the demo, product-video and training mounts each ask THE RULE for their use (stripped source)",
+    /listDemoStills\(svc,\s*\{\s*use:\s*"demo"\s*\}\)/.test(seamCode) && /listDemoStills\(svc,\s*\{\s*use:\s*"product_video"\s*\}\)/.test(seamCode) && /listDemoStills\(svc,\s*\{\s*use:\s*"training"\s*\}\)/.test(stripped("lib/education/onboarding-authoring.ts")))
+  const LIB = stripped("app/actions/marketing/image-library.ts")
+  check("the image library admits a screenshot only through the rule (screenshotRowUseAllowed(r, \"image_library\")); a Zestimate is refused, a general still admitted",
+    /screenshotRowUseAllowed\(r,\s*"image_library"\)/.test(LIB) && !/estimateStillUseVerdict/.test(LIB)
+    && !screenshotRowUseAllowed(zRow(["use:marketing_campaign"]), "image_library") && screenshotRowUseAllowed({ tags: [], metadata: { screenshot_kind: "os_surface" } }, "image_library"))
+  // A VIDEO path may stage a tenant still only as CAMPAIGN VIDEO material (84B — lane 84A's director
+  // consumes approvedTenantStill(…, "campaign_video")). Every still-door call in lib/video must name
+  // campaign_video; the 80D "any screenshot video" function never returns. Balanced-paren argument scan
+  // over STRIPPED source (a tombstone naming the old function is not a call site).
+  const STILL_DOOR_FNS = ["approvedTenantStill", "listTenantScreenshotStills", "tenantScreenshotUrlsForVideo", "listScreenshotStillsForUse", "screenshotUrlsForUse"]
+  const callArgs = (code: string, fn: string): string[] => {
+    const out: string[] = []; let from = 0
+    for (;;) {
+      const i = code.indexOf(`${fn}(`, from); if (i < 0) break
+      if (/[\w$.]/.test(code[i - 1] ?? "") && code.slice(i - 1, i) !== ".") { from = i + 1; continue }
+      let depth = 0, j = i + fn.length
+      for (; j < code.length; j++) { if (code[j] === "(") depth++; else if (code[j] === ")") { depth--; if (depth === 0) break } }
+      out.push(code.slice(i + fn.length + 1, j)); from = j
+    }
+    return out
+  }
+  const videoOffenders = (code: string): string[] => STILL_DOOR_FNS.flatMap((fn) => callArgs(code, fn).filter((a) => fn === "tenantScreenshotUrlsForVideo" || !/["']campaign_video["']/.test(a) && (fn !== "screenshotUrlsForUse" && fn !== "listScreenshotStillsForUse" || /includePublicPage:\s*true|brokerageId/.test(a))).map((a) => `${fn}(${a.slice(0, 50)})`))
+  const walk = (dir: string): string[] => readdirSync(join(root, dir)).flatMap((n) => { const rel = `${dir}/${n}`; return statSync(join(root, rel)).isDirectory() ? walk(rel) : /\.tsx?$/.test(n) ? [rel] : [] })
+  const videoFiles = walk("lib/video")
+  const vOff = videoFiles.flatMap((f) => videoOffenders(stripComments(src(f))).map((o) => `${f}: ${o}`))
+  console.log(`    video files swept: ${videoFiles.length} (lib/video/**)`)
+  check("no video path stages a tenant/Zestimate still except as campaign_video (stripped lib/video/**)", vOff.length === 0, vOff.join("; "))
+  check("POSITIVE CONTROL: the sweep flags the 80D director shape and a campaign-less door call; it passes the 84A shape",
+    videoOffenders(`const urls = await tenantScreenshotUrlsForVideo(svc, b)`).length === 1
+    && videoOffenders(`const s = await approvedTenantStill(svc, b, { address: norm(a) })`).length === 1
+    && videoOffenders(`const s = await approvedTenantStill(svc, b, { address: norm(a) }, "campaign_video")`).length === 0
+    && videoOffenders(`const u = await screenshotUrlsForUse(svc, "product_video", { limit: 8 })`).length === 0)
+  const PB = stripped("app/actions/creative-playbooks.ts")
+  check("the Zestimate Challenge's OWN campaign video gets the approved still only when the rule + the row admit campaign_video", /screenshotUrls: campaignVideoStillUrl \? \[campaignVideoStillUrl\] : \[\]/.test(PB) && /still\.uses\.includes\("campaign_video"\) && screenshotUseAllowed\("zillow_zestimate", "campaign_video"\)/.test(PB))
 
   console.log("\n[3 · readiness — the still must show the photo AND the Zestimate]")
   const rules = readyRulesForHost("www.zillow.com")
@@ -231,17 +319,40 @@ async function main() {
   check("puppeteer adapter waits per rule, VISIBLE, and reports satisfied; hosted adapter sends wait_for_selector", /waitForSelector\(rule\.selector,\s*\{\s*visible:\s*true/.test(seam) && /satisfied\.push\(rule\.label\)/.test(seam) && /wait_for_selector/.test(seam))
   check("the seam still reads nothing off the page (no evaluate/$eval/innerText/textContent/content())", !/page\.evaluate\(|\$eval\(|innerText|textContent|page\.content\(/.test(seam))
 
-  console.log("\n[4 · the seam's uses stay many — a Zestimate still carries one]")
-  check("SCREENSHOT_USES unchanged — ≥4 uses (OS-surface stills still serve demos, training, product videos)", SCREENSHOT_USES.length >= 4 && SCREENSHOT_USES.includes("marketing_campaign") && SCREENSHOT_USES.includes("product_video"))
+  console.log("\n[4 · the seam's uses stay many — every owner family has one]")
+  // The owner's families: marketing (campaign + its video), assets (the library), videos (product),
+  // guides/education (training modules), demos. Each must be a use a general still can serve.
+  const FAMILIES: Record<string, string[]> = { marketing: ["marketing_campaign", "campaign_video"], assets: ["image_library"], videos: ["campaign_video", "product_video"], "guides/education": ["training"], demos: ["demo"] }
+  check("every owner family (marketing / assets / videos / guides-education / demos) is a use a general still serves", Object.values(FAMILIES).every((us) => us.every((u) => (SCREENSHOT_USES as readonly string[]).includes(u) && screenshotUseAllowed("general", u))))
   const plan = planTenantStill({ brokerageId: TENANT, userId: "u", source: "zillow_zestimate", address: "123 Main St, Austin TX" })
-  check("a tenant plan tags marketing_campaign ONLY (83C — the 80D product_video opt-in is retired) and carries mustShow", plan.ok && plan.uses.join() === "marketing_campaign" && plan.mustShow.join("+") === "property_photo+zestimate")
-  check("the tenant card offers no video opt-in and derives its use list from ZESTIMATE_STILL_USES", !/alsoForVideo|usable in videos|product_video/.test(stripped(CARD)) && /ZESTIMATE_STILL_USES/.test(stripped(CARD)))
+  check("a tenant plan tags the Zestimate's uses (campaign + campaign video — never product_video) and carries mustShow", plan.ok && [...plan.uses].sort().join() === [...ZESTIMATE_SCREENSHOT_USES].sort().join() && !plan.uses.includes("product_video" as never) && plan.mustShow.join("+") === "property_photo+zestimate")
+  check("the tenant card offers no product-video opt-in and derives its use list from ZESTIMATE_SCREENSHOT_USES", !/alsoForVideo|product_video/.test(stripped(CARD)) && /ZESTIMATE_SCREENSHOT_USES/.test(stripped(CARD)))
 
   console.log("\n[5 · surfaces]")
   const card = stripped(CARD)
   check("the tenant card has NO source picker (<select>) and shows the one source as a fixed line", !/<select/.test(card) && /DEFAULT_ESTIMATE_SOURCE/.test(card) && /sourceDef\.label/.test(card))
   const bad = planTenantStill({ brokerageId: TENANT, userId: "u", source: "redfin_estimate", address: "123 Main St, Austin TX" })
   check("the door refuses a retired key and its message is DERIVED from the vocabulary (names zillow_zestimate only)", !bad.ok && /\(zillow_zestimate\)/.test(bad.reason) && /ESTIMATE_SOURCE_KEYS\.join/.test(stripped(DOOR)))
+
+
+  console.log("\n[6 · the Zestimate Challenge may quote the REAL Zestimate — as Zillow's, never ours]")
+  // Owner (84B): "for the zestimate challenge it is oky to have a real number as we aren't using it as our true value".
+  check("ZESTIMATE_FIGURE_PLAY_KEYS is the Zestimate Challenge alone, and it resolves to a real play", ZESTIMATE_FIGURE_PLAY_KEYS.length === 1 && ZESTIMATE_FIGURE_PLAY_KEYS.every((k) => !!getPlaybook(k)) && playMayQuoteZestimate("zestimate_challenge"))
+  check("every OTHER play (the Estimate Comparison included) may not quote it", CREATIVE_PLAYBOOKS.filter((pb) => pb.key !== "zestimate_challenge").every((pb) => !playMayQuoteZestimate(pb.key)) && !playMayQuoteZestimate("estimate_comparison"))
+  const attributed = (t: string, fig: string) => t.includes(fig) && /Zillow's Zestimate/.test(t) && /not an appraisal/.test(t) && /Never present it as the agent's value/.test(t) && /no other dollar value/.test(t)
+  const line = zestimateFigureBrief("$512,300", "2026-09-26")
+  check("the brief addendum carries the real figure, attributed to Zillow, dated, 'not an appraisal', never the agent's value", attributed(line, "$512,300") && /2026-09-26/.test(line))
+  check("CONTROL: a bare figure line fails the attribution check", !attributed("Your home is worth $512,300.", "$512,300"))
+  check("the install hands the figure ONLY for that play, ONLY a human-confirmed figure (validated), riding every brief of that install",
+    /playMayQuoteZestimate\(playbook\.key\) && still\.figureUsd != null/.test(PB) && /validateConfirmedFigure\(still\.figureUsd\)/.test(PB) && /zestimateFigureLine \? `\$\{brief\}\\n\\n\$\{zestimateFigureLine\}` : brief/.test(PB))
+  check("CONTROL: the gate finder rejects an ungated shape", !/playMayQuoteZestimate\(playbook\.key\) && still\.figureUsd != null/.test(stripComments(`if (still.figureUsd != null) zestimateFigureLine = zestimateFigureBrief(x, y)`)))
+  // The AI ISA's home-value review CALLBACK still speaks no number: nothing the ISA / voice runs reads the figure.
+  const FIGURE_READER_RE = /zestimateFigureBrief|ZESTIMATE_FIGURE_PLAY_KEYS|playMayQuoteZestimate|confirmed_figure_usd|confirmedFigureUsd/
+  const isaFiles = [...walk("lib/ai-isa"), ...walk("lib/voice")]
+  const isaReaders = isaFiles.filter((f) => FIGURE_READER_RE.test(stripComments(src(f))))
+  console.log(`    ISA/voice files swept: ${isaFiles.length}`)
+  check("no AI-ISA or voice module reads the Zestimate figure (the value-review callback speaks no number)", isaFiles.length > 0 && isaReaders.length === 0, isaReaders.join(", "))
+  check("CONTROL: the reader finder catches a specimen ISA line reading the figure", FIGURE_READER_RE.test(stripComments(`const n = still.confirmedFigureUsd`)))
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

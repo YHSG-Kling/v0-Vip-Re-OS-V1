@@ -17,12 +17,15 @@ import {
   listScreenshotStillsForUseAction,
   setScreenshotUsesAction,
 } from "@/app/actions/superadmin/screenshot-capture"
+import { SCREENSHOT_USES, type ScreenshotUse } from "@/lib/assets/screenshot-uses"
 
 type Surface = { id: string; label: string; route: string }
-// Mirrors SCREENSHOT_USES in lib/assets/screenshot-capture.ts (a server-only
-// module a client component cannot import); the action refuses any other value.
-const USES = ["marketing_campaign", "product_video", "demo", "training"] as const
-type Use = (typeof USES)[number]
+// WAVE 84B: THE ONE RULE's vocabulary, imported from its pure, client-safe home
+// (lib/assets/screenshot-uses.ts) — the hand mirror this card carried is
+// retired (§6: one spelling). The action still refuses a use the rule does not
+// admit for the still's subject (a Zestimate: campaign + campaign video only).
+const USES = SCREENSHOT_USES
+type Use = ScreenshotUse
 type Still = { id: string; url: string; label: string; uses: Use[]; approvalStatus: string | null }
 
 export function DemoStillsCard() {

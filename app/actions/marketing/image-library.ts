@@ -155,7 +155,7 @@ export async function listImageLibraryAction(): Promise<
   const brokerageId = ctx?.isAuthenticated ? ctx.brokerageId : null
 
   let q = svc.from("marketing_assets")
-    .select("id, asset_name, asset_url, thumbnail_url, visibility_scope, metadata, brokerage_id")
+    .select("id, asset_name, asset_url, thumbnail_url, visibility_scope, metadata, brokerage_id, tags")
     .eq("asset_type", "image").eq("approval_status", "approved")
     .order("created_at", { ascending: false }).limit(200)
   q = brokerageId
@@ -164,21 +164,21 @@ export async function listImageLibraryAction(): Promise<
   const { data, error } = await q
   if (error) return { ok: false, error: error.message }
 
-  // WAVE 82D/83C — an estimate still enters the library only when the ONE rule
-  // admits it (lib/marketing/estimate-sources.ts estimateStillUseVerdict). Since
-  // 83C ("zestimate is marketing campaigns strictly") it admits none: the
-  // library feeds every creative picker (video create, the growth studio), not
-  // only campaigns, so a Zestimate still stays inside its own campaign. A
-  // public_page row with no recorded source is a Zillow page (the only public
-  // host) and is judged as one; retired comparison-only evidence never enters.
-  const { estimateStillUseVerdict, IMAGE_LIBRARY_USE, DEFAULT_ESTIMATE_SOURCE } = await import("@/lib/marketing/estimate-sources")
-  const admitted = ((data ?? []) as any[]).filter((r) => {
-    if (r.metadata?.comparison_only === true) return false
-    const src = typeof r.metadata?.estimate_source === "string"
-      ? r.metadata.estimate_source
-      : r.metadata?.screenshot_kind === "public_page" ? DEFAULT_ESTIMATE_SOURCE : null
-    return src ? estimateStillUseVerdict(src, IMAGE_LIBRARY_USE).ok : true
-  })
+  // WAVE 84B — a SCREENSHOT enters the library only when THE ONE USE RULE
+  // admits it for "image_library" (lib/assets/screenshot-uses.ts
+  // screenshotRowUseAllowed: the row's subject AND its recorded uses). Owner:
+  // "screenshots can be used for all marketing/assets/videos/guides/education
+  // … only the zillow zestimate screenshot can be used for marketing campaigns
+  // including video" — so a general still (an OS surface, product UI) is
+  // library stock unless a person narrowed it out, while a Zestimate still
+  // (campaign + campaign video only) and another portal's page never are: the
+  // library feeds every creative picker, not only campaigns. The estimate
+  // comparison COMPOSITE embeds the Zillow still, so it is judged as the
+  // Zestimate and stays inside its campaign too (82D-83C let it in).
+  // Non-screenshot images pass untouched.
+  const { screenshotRowUseAllowed, isScreenshotRuleRow } = await import("@/lib/assets/screenshot-uses")
+  const admitted = ((data ?? []) as any[]).filter((r) =>
+    isScreenshotRuleRow(r) ? screenshotRowUseAllowed(r, "image_library") : true)
 
   return {
     ok: true,

@@ -40,10 +40,10 @@
 // under tsx for the proof; nothing here makes a model call.
 
 import {
-  capturePublicPropertyPage, listScreenshotStillsForUse, SCREENSHOT_USES,
+  capturePublicPropertyPage, listScreenshotStillsForUse, ZESTIMATE_SCREENSHOT_USES, screenshotUseAllowed,
   type CaptureDeps, type CaptureResult, type ScreenshotRefusal, type ScreenshotStillPick, type ScreenshotUse,
 } from "@/lib/assets/screenshot-capture"
-import { estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_SOURCE_KEYS, ESTIMATE_STILL_DISCLAIMER, ZESTIMATE_STILL_USES, type EstimateSourceKey, type EstimateStillMustShow } from "@/lib/marketing/estimate-sources"
+import { estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_SOURCE_KEYS, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey, type EstimateStillMustShow } from "@/lib/marketing/estimate-sources"
 
 export interface TenantStillRequest {
   /** From the SESSION gate — never a request body. */
@@ -52,12 +52,13 @@ export interface TenantStillRequest {
   source: EstimateSourceKey | string
   address: string
   listingId?: string | null
-  // TOMBSTONE (wave 83C — owner verbatim: "zestimate is marketing campaigns
-  // strictly"): `alsoForVideo` (80D — tag the still product_video too) is
-  // RETIRED. A Zestimate still carries marketing_campaign alone
-  // (lib/marketing/estimate-sources.ts ZESTIMATE_STILL_USES); the campaign's own
-  // video still gets it, handed over by app/actions/creative-playbooks.ts
-  // installCreativePlaybook → createPlaybookVideo({ screenshotUrls }).
+  // TOMBSTONE (wave 83C, re-read 84B): `alsoForVideo` (80D — tag the still
+  // product_video too) stays RETIRED — a Zestimate is never product-video
+  // stock. Wave 84B (owner: "only the zillow zestimate screenshot can be used
+  // for marketing campaigns including video") gives EVERY tenant Zestimate
+  // still marketing_campaign + campaign_video by default
+  // (lib/assets/screenshot-uses.ts ZESTIMATE_SCREENSHOT_USES), so no opt-in is
+  // needed for the campaign's own video.
 }
 
 export interface TenantStillResult {
@@ -84,8 +85,8 @@ export function planTenantStill(req: TenantStillRequest): { ok: true; source: No
   if (!src) return { ok: false, reason: `estimate source "${String(req.source)}" is not one of the sources a tenant may pick (${ESTIMATE_SOURCE_KEYS.join(" | ")})` }
   const address = (req.address ?? "").trim().replace(/\s+/g, " ")
   if (address.length < 6) return { ok: false, reason: "an estimate still needs a street address (6+ characters)" }
-  // Marketing campaigns STRICTLY (83C) — the ONE rule's use list, never restated.
-  const uses: ScreenshotUse[] = SCREENSHOT_USES.filter((u) => (ZESTIMATE_STILL_USES as readonly string[]).includes(u))
+  // Marketing campaigns including their video (84B) — the ONE rule's list, never restated.
+  const uses: ScreenshotUse[] = [...ZESTIMATE_SCREENSHOT_USES]
   return { ok: true, source: src, address, uses, query: `${address} ${src.searchHint}`.trim(), label: `${src.estimateName} — ${address}`.slice(0, 160), mustShow: src.mustShow }
 }
 
@@ -137,14 +138,19 @@ export function pickApprovedStill(stills: readonly ScreenshotStillPick[], want: 
 /**
  * DB: the approved still a zestimate_challenge install may use for the
  * tenant — null when none is approved yet (never a pending one, never a
- * fabricated URL).
+ * fabricated URL). WAVE 84B: `use` picks the campaign surface — the default
+ * "marketing_campaign" (postcard / social art) or "campaign_video" (the
+ * campaign's own video: lane 84A's video director stages it from here). A use
+ * THE ONE RULE refuses for the Zestimate (product_video, demo, training,
+ * image_library) returns null without a read.
  */
-export async function approvedTenantStill(svc: any, brokerageId: string, want: { source?: string | null; address?: string | null } = {}): Promise<ScreenshotStillPick | null> {
-  return pickApprovedStill(await listTenantScreenshotStills(svc, brokerageId, "marketing_campaign", { approvedOnly: true, limit: 50 }), want)
+export async function approvedTenantStill(svc: any, brokerageId: string, want: { source?: string | null; address?: string | null } = {}, use: ScreenshotUse = "marketing_campaign"): Promise<ScreenshotStillPick | null> {
+  if (!screenshotUseAllowed("zillow_zestimate", use)) return null
+  return pickApprovedStill(await listTenantScreenshotStills(svc, brokerageId, use, { approvedOnly: true, limit: 50 }), want)
 }
 
 // TOMBSTONE (§1.3, wave 83C — owner verbatim: "zestimate is marketing campaigns
-// strictly"): `tenantScreenshotUrlsForVideo` (80D) staged a tenant's approved
+// strictly"; wave 84B note below): `tenantScreenshotUrlsForVideo` (80D) staged a tenant's approved
 // `use:product_video` stills into ANY video the director commissioned with a
 // `screenshot`-treatment composition. Every tenant still is a Zillow/Zestimate
 // page (the seam admits no other tenant capture), and a Zestimate still no
@@ -154,6 +160,10 @@ export async function approvedTenantStill(svc: any, brokerageId: string, want: {
 // capability that remains lives at app/actions/creative-playbooks.ts
 // installCreativePlaybook → createPlaybookVideo({ screenshotUrls }): the
 // Zestimate Challenge's OWN campaign video gets its approved still there.
+// WAVE 84B: the owner re-ruled ("…marketing campaigns including video"), so a
+// CAMPAIGN video may carry the Zestimate — but still never an arbitrary
+// screenshot-treatment video. The door for it is approvedTenantStill(…, want,
+// "campaign_video") above; the video director's staging is lane 84A's.
 
 export interface EnsureStillOutcome {
   /** "approved" — an approved still exists (url set); "pending" — one exists
@@ -163,6 +173,14 @@ export interface EnsureStillOutcome {
   state: "approved" | "pending" | "captured" | "refused" | "no_address"
   assetId: string | null
   url: string | null
+  /** 84B — the approved still's uses (∩ THE ONE RULE); [] unless approved. The
+   *  campaign's video takes the still only when this includes campaign_video. */
+  uses: ScreenshotUse[]
+  /** 84B — the Zestimate a human confirmed off the approved still (whole USD),
+   *  with its capture time; null when unconfirmed. Zestimate Challenge copy
+   *  may quote it as ZILLOW's figure (creative-playbooks.ts zestimateFigureBrief). */
+  figureUsd: number | null
+  capturedAt: string | null
   reason: string | null
   source: EstimateSourceKey
 }
@@ -180,16 +198,16 @@ export async function ensureZestimateChallengeStill(
 ): Promise<EnsureStillOutcome> {
   const src = estimateSource(args.source) ?? estimateSource(DEFAULT_ESTIMATE_SOURCE)!
   const address = (args.address ?? "").trim()
-  if (address.length < 6) return { state: "no_address", assetId: null, url: null, reason: "no listing address to capture an estimate still for", source: src.key }
+  if (address.length < 6) return { state: "no_address", assetId: null, url: null, uses: [], figureUsd: null, capturedAt: null, reason: "no listing address to capture an estimate still for", source: src.key }
   const have = await listTenantScreenshotStills(args.svc, args.brokerageId, "marketing_campaign", { limit: 50 })
   const approved = pickApprovedStill(have, { source: src.key, address })
-  if (approved) return { state: "approved", assetId: approved.id, url: approved.url, reason: null, source: src.key }
+  if (approved) return { state: "approved", assetId: approved.id, url: approved.url, uses: approved.uses, figureUsd: approved.confirmedFigureUsd ?? null, capturedAt: approved.capturedAt, reason: null, source: src.key }
   const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ")
   const pending = have.find((s) => s.approvalStatus === "pending" && s.estimateSource === src.key && norm(s.address) === norm(address))
-  if (pending) return { state: "pending", assetId: pending.id, url: null, reason: "a still is already awaiting approval", source: src.key }
+  if (pending) return { state: "pending", assetId: pending.id, url: null, uses: [], figureUsd: null, capturedAt: null, reason: "a still is already awaiting approval", source: src.key }
   const r = await captureTenantEstimateStill({ brokerageId: args.brokerageId, userId: args.userId, source: src.key, address, listingId: args.listingId ?? null }, { ...deps, svc: args.svc })
-  if (!r.ok) return { state: "refused", assetId: null, url: null, reason: r.reason, source: src.key }
-  return { state: "captured", assetId: r.assetId, url: null, reason: null, source: src.key }
+  if (!r.ok) return { state: "refused", assetId: null, url: null, uses: [], figureUsd: null, capturedAt: null, reason: r.reason, source: src.key }
+  return { state: "captured", assetId: r.assetId, url: null, uses: [], figureUsd: null, capturedAt: null, reason: null, source: src.key }
 }
 
 export type { CaptureResult, CaptureDeps }

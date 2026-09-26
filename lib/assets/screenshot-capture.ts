@@ -50,10 +50,12 @@
 //                 host since 81D) found through the search tool. ToS-aware:
 //                 robots.txt honoured, host allowlist, per-host rate limit,
 //                 cached by URL+day, source + captured_at recorded. Rows land
-//                 approval_status='pending'; since 83C ("zestimate is
-//                 marketing campaigns strictly") they carry marketing_campaign
-//                 ONLY (PUBLIC_PAGE_STILL_USES), never demo / training / video
-//                 material, and never
+//                 approval_status='pending'; since 84B (owner: "only the
+//                 zillow zestimate screenshot can be used for marketing
+//                 campaigns including video") they carry marketing_campaign +
+//                 campaign_video (ZESTIMATE_SCREENSHOT_USES — the ONE rule,
+//                 lib/assets/screenshot-uses.ts), never demo / training /
+//                 product-video / library material, and never
 //                 an AI-agent statement of a home's value to a customer —
 //                 scripts/screenshot-capture-guard.ts asserts no customer-
 //                 facing tool imports this module.
@@ -70,11 +72,27 @@
 import { createHash } from "node:crypto"
 import type { PickedBrollClip } from "@/lib/video/broll-picker"
 import type { ProductDemoTopic } from "@/lib/platform/product-demo"
+import {
+  SCREENSHOT_KINDS, SCREENSHOT_USES, SCREENSHOT_USES_RULE_VERSION,
+  screenshotUseVerdict, screenshotUsesFor, screenshotSubjectOfRow, screenshotRowUseAllowed, tagsWithUses, usesOfRow,
+  type ScreenshotKind, type ScreenshotUse,
+} from "@/lib/assets/screenshot-uses"
+
+// ── THE ONE USE RULE (wave 84B) — re-exported unchanged from its pure home ──
+// lib/assets/screenshot-uses.ts (client-safe: the tenant card, the demo-room
+// card and lib/marketing/estimate-sources.ts read it in the browser, which
+// this module cannot reach). Server code imports it from HERE, as before.
+// screenshotUseAllowed(kind, use) is the predicate; lane 84A consumes it.
+export {
+  SCREENSHOT_KINDS, SCREENSHOT_USES, SCREENSHOT_SUBJECTS, ZESTIMATE_SCREENSHOT_USES, SCREENSHOT_USES_RULE_VERSION,
+  screenshotSubjectOfRow, screenshotUsesFor, screenshotUseAllowed, screenshotUseVerdict, screenshotUseTag,
+  tagsWithUses, usesOfRow, screenshotRowUseAllowed,
+} from "@/lib/assets/screenshot-uses"
+export type { ScreenshotKind, ScreenshotUse, ScreenshotSubject } from "@/lib/assets/screenshot-uses"
 
 // ── Kinds + surfaces ─────────────────────────────────────────────────────────
-
-export const SCREENSHOT_KINDS = ["os_surface", "public_page"] as const
-export type ScreenshotKind = (typeof SCREENSHOT_KINDS)[number]
+// SCREENSHOT_KINDS / ScreenshotKind moved (wave 84B) to lib/assets/screenshot-uses.ts
+// (the rule is keyed by them) and are re-exported above.
 
 export interface Viewport { width: number; height: number; deviceScaleFactor?: number }
 export const DEFAULT_VIEWPORT: Viewport = { width: 1440, height: 900, deviceScaleFactor: 1 }
@@ -565,61 +583,31 @@ export const SCREENSHOT_ASSET_KIND = "screenshot"
 // A public_page capture keeps approval_status='pending' whatever its uses:
 // the uses say WHO MAY SELECT IT AS MATERIAL; the approval says it never
 // enters a tenant picker, and nothing here ever reads a value off the page.
-export const SCREENSHOT_USES = ["marketing_campaign", "product_video", "demo", "training"] as const
-export type ScreenshotUse = (typeof SCREENSHOT_USES)[number]
-
-export function screenshotUseTag(use: ScreenshotUse): string { return `use:${use}` }
-
-/** The uses a PUBLIC-PAGE still (the Zillow page with its Zestimate — the only
- *  public host) may ever carry. WAVE 83C (owner verbatim: "zestimate is
- *  marketing campaigns strictly"): marketing_campaign alone — never demo,
- *  training or product_video. Mirrors lib/marketing/estimate-sources.ts
- *  ZESTIMATE_STILL_USES (the ONE rule, estimateStillUseVerdict); the
- *  zestimate-only proof holds the two equal. */
-export const PUBLIC_PAGE_STILL_USES: readonly ScreenshotUse[] = ["marketing_campaign"]
-
-/** An OS-surface still (the demo tenant's own screens) is usable everywhere by
- *  default and a human narrows it (setScreenshotUses). A public-page still is
- *  born — and stays — marketing_campaign only (83C). */
-export function defaultScreenshotUses(kind: ScreenshotKind): ScreenshotUse[] {
-  return kind === "public_page" ? [...PUBLIC_PAGE_STILL_USES] : [...SCREENSHOT_USES]
-}
-
-/** PURE: the tags array with exactly this use set (other tags kept). */
-export function tagsWithUses(tags: readonly string[] | null | undefined, uses: readonly ScreenshotUse[]): string[] {
-  const kept = (tags ?? []).filter((t) => !t.startsWith("use:"))
-  const valid = SCREENSHOT_USES.filter((u) => uses.includes(u))
-  return [...kept, ...valid.map(screenshotUseTag)]
-}
-
-/** PURE: the uses a row carries — the tag set, else metadata.uses, else (a row
- *  captured before uses existed) every use. WAVE 83C: a public_page row is
- *  CLAMPED to PUBLIC_PAGE_STILL_USES whatever its tags say, so a Zestimate
- *  still tagged product_video / demo / training by an older capture (80D-82D
- *  tagged them) is never listed for those uses again — the rule is enforced
- *  where every picker reads, not only where rows are written. A
- *  metadata.comparison_only row (82D evidence, retired) carries none. */
-export function usesOfRow(row: { tags?: readonly string[] | null; metadata?: Record<string, unknown> | null }): ScreenshotUse[] {
-  const fromTags = (row.tags ?? []).filter((t) => t.startsWith("use:")).map((t) => t.slice(4)).filter((u): u is ScreenshotUse => (SCREENSHOT_USES as readonly string[]).includes(u))
-  const meta = row.metadata?.uses
-  const raw: ScreenshotUse[] = fromTags.length
-    ? fromTags
-    : Array.isArray(meta) ? meta.filter((u): u is ScreenshotUse => (SCREENSHOT_USES as readonly string[]).includes(String(u))) : [...SCREENSHOT_USES]
-  if (row.metadata?.comparison_only === true) return []
-  return row.metadata?.screenshot_kind === "public_page" ? raw.filter((u) => PUBLIC_PAGE_STILL_USES.includes(u)) : raw
-}
+//
+// WAVE 84B — the vocabulary, the rule and the row readers (SCREENSHOT_USES,
+// screenshotUseAllowed, usesOfRow, tagsWithUses…) live in
+// lib/assets/screenshot-uses.ts and are re-exported at the top of this file.
+//
+// TOMBSTONE (§1.3, wave 84B — owner verbatim: "screenshots can be used for all
+// marketing/assets/videos/guides/education, etc. only the zillow zestimate
+// screenshot can be used for marketing campaigns including video."):
+// `PUBLIC_PAGE_STILL_USES` (83C: marketing_campaign alone) and
+// `defaultScreenshotUses(kind)` are RETIRED. 83C over-restricted — it took
+// the Zestimate out of its campaign's video. The survivors are
+// lib/assets/screenshot-uses.ts ZESTIMATE_SCREENSHOT_USES (marketing_campaign +
+// campaign_video) and screenshotUsesFor(kind) (a kind's full allowance).
 
 /** PURE: the marketing_assets row for a finished capture — the image-library
  *  row shape, plus provenance. */
 export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, capturedAtIso: string, providerName: string, owner?: ScreenshotOwner | null): Record<string, unknown> {
   const isOs = plan.kind === "os_surface"
-  // A public-page still (tenant-owned or platform) is marketing_campaign
-  // material ONLY (wave 83C: "zestimate is marketing campaigns strictly") —
-  // whatever uses an owner asks for are clamped to PUBLIC_PAGE_STILL_USES. An
-  // OS-surface still (platform only) is usable everywhere until narrowed.
-  const uses: ScreenshotUse[] = plan.kind === "public_page"
-    ? SCREENSHOT_USES.filter((u) => PUBLIC_PAGE_STILL_USES.includes(u))
-    : defaultScreenshotUses(plan.kind)
+  // THE RULE (84B) decides the uses: an OS-surface still is general material
+  // (every use until a human narrows it); a public-page still is the Zillow
+  // Zestimate page — marketing campaigns including their video, nothing else.
+  // An owner asking for a subset gets that subset; asking for more is clamped.
+  const subject = screenshotSubjectOfRow({ metadata: { screenshot_kind: plan.kind, source_url: plan.targetUrl, estimate_source: owner?.provenance?.estimate_source } })
+  const allowed = screenshotUsesFor(subject)
+  const uses: ScreenshotUse[] = owner?.uses?.length ? allowed.filter((u) => owner.uses!.includes(u)) : allowed
   if (owner) {
     return {
       brokerage_id: owner.brokerageId,
@@ -651,6 +639,7 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
         provider: providerName,
         usage: "marketing_campaign_material_never_customer_value",
         uses,
+        uses_rule: SCREENSHOT_USES_RULE_VERSION,
         /** The labels the provider confirmed on screen before the shot. */
         shows: plan.readyWhen.map((r) => r.label),
         customer_facing_value: false,
@@ -672,9 +661,10 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
     tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, ...(isOs ? [] : ["third_party_page"])], uses),
     // OS stills are platform-OWNED renders (canShareToTenants "owned") and join
     // the tenant pickers; a third-party page capture is NOT redistributable
-    // library stock, so it stays 'pending' — and since 83C it is reachable ONLY
-    // by the platform's own marketing-campaign picker (usesOfRow clamps it to
-    // PUBLIC_PAGE_STILL_USES; never a demo, a training figure or a video).
+    // library stock, so it stays 'pending' — and it is reachable ONLY by the
+    // platform's own marketing-campaign pickers, the campaign's video included
+    // (84B: usesOfRow clamps it to ZESTIMATE_SCREENSHOT_USES; never a demo, a
+    // training figure, a product video or library stock).
     approval_status: isOs ? "approved" : "pending",
     metadata: {
       asset_kind: SCREENSHOT_ASSET_KIND,
@@ -689,10 +679,11 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
       viewport: plan.viewport,
       redact: plan.redactSelectors,
       provider: providerName,
-      usage: isOs ? "demo_training_video_only" : "marketing_campaign_material_never_customer_value",
+      usage: isOs ? "general_material_every_use" : "marketing_campaign_material_never_customer_value",
       uses,
+      uses_rule: SCREENSHOT_USES_RULE_VERSION,
       shows: plan.readyWhen.map((r) => r.label),
-      license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)." : `Third-party page (${plan.host}) captured as the platform's own marketing-campaign material only; source and capture time recorded; not redistributable as stock; never a demo, training or video still.`,
+      license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)." : `Third-party page (${plan.host}) captured as the platform's own marketing-campaign material only (the campaign and its own video); source and capture time recorded; not redistributable as stock; never a demo, training, product-video or library still.`,
     },
   }
 }
@@ -817,7 +808,8 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
 /**
  * Find a property's public page (Zestimate & co.) through the ONE search tool
  * (lib/external/exa-client.ts), restricted to PUBLIC_PAGE_HOSTS, then capture
- * it. MARKETING-CAMPAIGN material only (83C) — the value on the page is never
+ * it. Marketing-campaign material, the campaign's own video included (84B,
+ * ZESTIMATE_SCREENSHOT_USES) — the value on the page is never
  * read, parsed or spoken here; only pixels are kept, with source + captured_at.
  */
 export async function capturePublicPropertyPage(
@@ -927,17 +919,21 @@ export async function recaptureScreenshotAsset(svc: any, row: ScreenshotAssetRow
 
 // ── Planner mounts (read-only lookups; capture is the loop's job) ────────────
 
-/** The newest still per surface id (os_surface rows only). */
-export async function listDemoStills(svc: any): Promise<Map<string, ScreenshotAssetRow>> {
+/** The newest still per surface id (os_surface rows only). WAVE 84B: with
+ *  `use`, only stills THE RULE and the row's own (human-narrowable) uses admit
+ *  for that use — the demo, training and product-video mounts each ask for
+ *  theirs, so a person who narrows a still out of "training" is obeyed. */
+export async function listDemoStills(svc: any, opts: { use?: ScreenshotUse } = {}): Promise<Map<string, ScreenshotAssetRow>> {
   const { data, error } = await svc.from("marketing_assets")
-    .select("id, asset_name, asset_url, thumbnail_url, approval_status, updated_at, metadata")
+    .select("id, asset_name, asset_url, thumbnail_url, approval_status, updated_at, metadata, tags")
     .eq("asset_type", "image").eq("visibility_scope", "platform")
     .eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND).eq("metadata->>screenshot_kind", "os_surface")
     .order("updated_at", { ascending: false }).limit(200)
   if (error) { console.error("[screenshot-capture] demo stills read refused:", error.message); return new Map() }
   const out = new Map<string, ScreenshotAssetRow>()
-  for (const r of (data ?? []) as ScreenshotAssetRow[]) {
+  for (const r of (data ?? []) as Array<ScreenshotAssetRow & { tags?: string[] | null }>) {
     const id = typeof r.metadata?.surface_id === "string" ? r.metadata.surface_id : null
+    if (opts.use && !screenshotRowUseAllowed(r, opts.use)) continue
     if (id && !out.has(id)) out.set(id, r)
   }
   return out
@@ -959,12 +955,12 @@ export function stillUrlsForVideoAngle(angle: string, stills: ReadonlyMap<string
 /** DB: imageUrls for composeProductVideoSpec — empty when no still exists yet
  *  (the composition keeps its text-motion fallback; never a fabricated URL). */
 export async function demoStillImageUrls(svc: any, angle: string): Promise<string[]> {
-  return stillUrlsForVideoAngle(angle, await listDemoStills(svc))
+  return stillUrlsForVideoAngle(angle, await listDemoStills(svc, { use: "product_video" }))
 }
 
 /** DB: the one still to show for a product-demo topic, or null. */
 export async function demoStillForTopic(svc: any, topic: ProductDemoTopic): Promise<string | null> {
-  return stillUrlsForDemoTopic(topic, await listDemoStills(svc))[0] ?? null
+  return stillUrlsForDemoTopic(topic, await listDemoStills(svc, { use: "demo" }))[0] ?? null
 }
 
 // ── Multi-use selection (the asset-library category the consumers query) ───
@@ -982,6 +978,11 @@ export interface ScreenshotStillPick {
    *  the tenant typed; null on platform stills. */
   estimateSource?: string | null
   address?: string | null
+  /** Wave 84B — the figure a human confirmed off an APPROVED Zillow still
+   *  (metadata.confirmed_figure_usd, written by lib/marketing/estimate-comparison.ts
+   *  confirmComparisonFigure); null when none. Campaign copy only — the
+   *  Zestimate Challenge may quote it as Zillow's figure. */
+  confirmedFigureUsd?: number | null
   /** ALWAYS false: a still is material for a campaign, a video, a demo or a
    *  lesson — never an AI-agent statement of a home's value to a customer. */
   customerFacingValue: false
@@ -992,10 +993,13 @@ export interface ScreenshotStillPick {
  * campaign picker, the product-video `screenshot` treatment
  * (screenshotUrlsForUse → input_props.screenshotUrls), the demo token and the
  * training figures. os_surface rows are approved platform renders;
- * public_page rows (Zestimate & co.) are `pending` by design and come back
+ * public_page rows (the Zestimate) are `pending` by design and come back
  * ONLY when the caller says `includePublicPage` — a platform-marketing caller
- * building a campaign or a product video, never a tenant picker. Rows
- * captured before uses existed carry no use tag and count for every use.
+ * building a campaign or its video, never a tenant picker. Every row passes
+ * THE ONE RULE (usesOfRow = recorded uses ∩ screenshotUseAllowed for the
+ * row's subject), so a Zestimate never lists for product_video / demo /
+ * training / image_library whatever its tags. Rows captured before uses
+ * existed carry no use tag and count for every use their subject allows.
  */
 export async function listScreenshotStillsForUse(
   svc: any, use: ScreenshotUse,
@@ -1034,6 +1038,7 @@ export async function listScreenshotStillsForUse(
       capturedAt: typeof meta.captured_at === "string" ? meta.captured_at : null,
       estimateSource: typeof meta.estimate_source === "string" ? meta.estimate_source : null,
       address: typeof meta.address === "string" ? meta.address : null,
+      confirmedFigureUsd: typeof meta.confirmed_figure_usd === "number" ? meta.confirmed_figure_usd : null,
       customerFacingValue: false,
     })
   }
@@ -1067,27 +1072,21 @@ export async function setScreenshotUses(
   if (readErr) return { ok: false, reason: `screenshot row ${assetId} read refused: ${readErr.message}` }
   const row = ((rows ?? []) as Array<{ id: string; tags: string[] | null; metadata: Record<string, unknown> | null }>)[0]
   if (!row) return { ok: false, reason: `screenshot row ${assetId} not found (or not a screenshot${scope.brokerageId ? " of this brokerage" : ""})` }
-  // WAVE 82D/83C — an estimate still's uses obey the ONE rule
-  // (estimate-sources.ts estimateStillUseVerdict): a Zestimate still is
-  // marketing_campaign ONLY (83C — widening it to product_video / demo /
-  // training refuses), a retired comparison-only portal still can never be
-  // widened, and no use may present a still as an estimate of value. A
-  // public_page row with no recorded source is a Zillow page (the ONLY public
-  // host) and is judged as one. Fail closed on the first refused use.
-  const isPublicPage = row.metadata?.screenshot_kind === "public_page"
-  const estimateSourceKey = typeof row.metadata?.estimate_source === "string"
-    ? row.metadata.estimate_source
-    : isPublicPage && row.metadata?.comparison_only !== true ? "zillow_zestimate" : null
-  if (estimateSourceKey || row.metadata?.comparison_only === true) {
-    const { estimateStillUseVerdict } = await import("@/lib/marketing/estimate-sources")
-    for (const u of valid) {
-      const v = estimateStillUseVerdict(row.metadata?.comparison_only === true && !estimateSourceKey ? "comparison_only" : estimateSourceKey, u)
-      if (!v.ok) return { ok: false, reason: v.reason }
-    }
+  // WAVE 84B — every requested use is judged by THE ONE RULE
+  // (lib/assets/screenshot-uses.ts screenshotUseVerdict) for the row's
+  // SUBJECT: a general still may serve any use; the Zillow Zestimate still
+  // marketing_campaign + campaign_video only (widening it to product_video /
+  // demo / training / image_library refuses); another portal's estimate page
+  // (a retired 82D comparison-only row) nothing at all. Fail closed on the
+  // first refused use — nothing is written.
+  const subject = screenshotSubjectOfRow(row)
+  for (const u of valid) {
+    const v = screenshotUseVerdict(subject, u)
+    if (!v.ok) return { ok: false, reason: v.reason }
   }
   let updQ = svc.from("marketing_assets").update({
     tags: tagsWithUses(row.tags, valid),
-    metadata: { ...(row.metadata ?? {}), uses: valid },
+    metadata: { ...(row.metadata ?? {}), uses: valid, uses_rule: SCREENSHOT_USES_RULE_VERSION },
     updated_at: new Date().toISOString(),
   }).eq("id", assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)
   updQ = scope.brokerageId ? updQ.eq("brokerage_id", scope.brokerageId) : updQ.eq("visibility_scope", "platform")

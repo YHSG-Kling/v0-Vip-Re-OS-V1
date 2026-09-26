@@ -130,6 +130,12 @@ export async function installCreativePlaybook(
   //      the postcard art and the video's screenshot slot consume below.
   let approvedStillUrl: string | null = null
   let approvedStillId: string | null = null
+  // Wave 84B — the campaign's OWN video takes the still only when THE ONE USE
+  // RULE (lib/assets/screenshot-uses.ts) and the row's uses admit
+  // campaign_video; and the Zestimate Challenge's copy may quote Zillow's
+  // figure once a human confirmed it off the approved still.
+  let campaignVideoStillUrl: string | null = null
+  let zestimateFigureLine: string | null = null
   // Address: the named listing, else the tenant's most recent listing (own
   // DB — the cheapest rail; no provider is asked for an address). Shared by
   // the Zestimate Challenge and the Estimate Comparison (wave 82D).
@@ -157,6 +163,9 @@ export async function installCreativePlaybook(
       const square = await approvedComparisonCreative(svc, ctx.brokerageId, address, "social_square")
       if (postcard) { approvedStillUrl = postcard.url; approvedStillId = postcard.id; notes.push("Comparison: using your approved estimate comparison as the postcard art.") }
       if (square && !approvedStillUrl) { approvedStillUrl = square.url; approvedStillId = square.id }
+      // The approved comparison COMPOSITE is this campaign's own creative
+      // (Zillow still + text figures) — its campaign video shows it.
+      campaignVideoStillUrl = approvedStillUrl
       if (!postcard && !square) {
         const have = await listComparisonEvidence(svc, ctx.brokerageId, address)
         if (have.length === 0) {
@@ -171,7 +180,26 @@ export async function installCreativePlaybook(
     const { ensureZestimateChallengeStill } = await import("@/lib/marketing/tenant-screenshot-door")
     const address = await resolvePlayAddress()
     const still = await ensureZestimateChallengeStill({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null, source: opts.estimateSource ?? null })
-    if (still.state === "approved") { approvedStillUrl = still.url; approvedStillId = still.assetId; notes.push(`Still: using your approved ${still.source.replace(/_/g, " ")} still as the postcard art and the video's screenshot slot.`) }
+    if (still.state === "approved") {
+      approvedStillUrl = still.url; approvedStillId = still.assetId
+      const { screenshotUseAllowed } = await import("@/lib/assets/screenshot-capture")
+      if (still.uses.includes("campaign_video") && screenshotUseAllowed("zillow_zestimate", "campaign_video")) campaignVideoStillUrl = still.url
+      notes.push(`Still: using your approved ${still.source.replace(/_/g, " ")} still as the postcard art${campaignVideoStillUrl ? " and the campaign video's screenshot slot" : " (it is not marked for the campaign video)"}.`)
+      // The REAL Zestimate (owner, 84B: "it is oky to have a real number as
+      // we aren't using it as our true value") — this play only, only a
+      // figure a human confirmed off the approved still, always as Zillow's.
+      const { playMayQuoteZestimate, zestimateFigureBrief } = await import("@/lib/marketing/creative-playbooks")
+      if (playMayQuoteZestimate(playbook.key) && still.figureUsd != null) {
+        const { formatUsd, validateConfirmedFigure } = await import("@/lib/marketing/estimate-comparison")
+        const fig = validateConfirmedFigure(still.figureUsd)
+        if (fig.ok) {
+          zestimateFigureLine = zestimateFigureBrief(formatUsd(fig.figureUsd), still.capturedAt ? still.capturedAt.slice(0, 10) : null)
+          notes.push(`Still: the copy may quote Zillow's Zestimate (${formatUsd(fig.figureUsd)}), always attributed to Zillow — never as your value.`)
+        }
+      } else if (playMayQuoteZestimate(playbook.key)) {
+        notes.push("Still: confirm the Zestimate shown on your approved still to let the copy quote Zillow's figure.")
+      }
+    }
     else if (still.state === "captured") notes.push(`Still: captured a ${still.source.replace(/_/g, " ")} still for ${address} — awaiting your approval under Zestimate & co. stills (the QR stays the postcard art until then).`)
     else if (still.state === "pending") notes.push(`Still: a ${still.source.replace(/_/g, " ")} still for ${address} is awaiting your approval under Zestimate & co. stills.`)
     else if (still.state === "refused") notes.push(`Still: not captured — ${still.reason}`)
@@ -186,8 +214,10 @@ export async function installCreativePlaybook(
     brandLine = [brand.displayName, (brand as any).tagline].filter(Boolean).join(" — ") || brandLine
   } catch { /* brand grounding is best-effort; the charter still governs */ }
 
+  // 84B: the confirmed Zestimate rides every brief of the Zestimate Challenge
+  // (null for every other play — zestimateFigureLine is set only above).
   const author = (kind: string, brief: string, shape: Record<string, string>) =>
-    authorPlaybookCopy({ brokerageId: ctx.brokerageId!, kind, brief, playbookTitle: playbook.title, brandLine, shape })
+    authorPlaybookCopy({ brokerageId: ctx.brokerageId!, kind, brief: zestimateFigureLine ? `${brief}\n\n${zestimateFigureLine}` : brief, playbookTitle: playbook.title, brandLine, shape })
 
   // ── 1. Lead magnet (AI-authored name/description + landing copy) ──────────
   const magnetStep = playbook.steps.find((s) => s.kind === "lead_magnet")
@@ -240,7 +270,7 @@ export async function installCreativePlaybook(
       videoProjectId = await createPlaybookVideo({
         svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
         playbook, videoStep, brandLine, magnetId, notes, author,
-        screenshotUrls: approvedStillUrl ? [approvedStillUrl] : [],
+        screenshotUrls: campaignVideoStillUrl ? [campaignVideoStillUrl] : [],
       })
     }
   }

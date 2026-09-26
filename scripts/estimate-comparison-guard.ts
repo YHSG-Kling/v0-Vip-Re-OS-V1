@@ -19,8 +19,10 @@
  *      readiness rule; Zillow alone may appear as a picture (the others are
  *      figure_only — their terms bar reproducing their pages); the campaign
  *      vocabulary stays Zillow alone.
- *   2. THE ONE USE RULE — estimateStillUseVerdict: comparison-only sources
- *      admit ONLY estimate_comparison; the Zestimate admits campaign uses;
+ *   2. THE EVIDENCE RULE — estimateStillUseVerdict: comparison-only sources
+ *      admit ONLY estimate_comparison; the Zestimate admits the comparison +
+ *      whatever THE ONE SCREENSHOT USE RULE admits (84B: campaign + campaign
+ *      video — lib/assets/screenshot-uses.ts, swept in test:zestimate-only 2b);
  *      every estimate-of-value use is refused for every source.
  *   3. SEAM SCOPE — a comparison host is refused without
  *      hostScope:"estimate_comparison", admitted with it, owner required,
@@ -64,12 +66,12 @@ import { fileURLToPath } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import {
-  ESTIMATE_SOURCES, COMPARISON_ESTIMATE_SOURCES, COMPARISON_ESTIMATE_SOURCE_KEYS, ESTIMATE_OF_VALUE_USES, ESTIMATE_COMPARISON_USE, IMAGE_LIBRARY_USE,
+  ESTIMATE_SOURCES, COMPARISON_ESTIMATE_SOURCES, COMPARISON_ESTIMATE_SOURCE_KEYS, ESTIMATE_OF_VALUE_USES, ESTIMATE_COMPARISON_USE,
   estimateStillUseVerdict,
 } from "../lib/marketing/estimate-sources"
 import {
   PUBLIC_PAGE_HOSTS, readyRulesForHost, planScreenshotCapture, captureScreenshot, capturePublicPropertyPage,
-  usesOfRow, setScreenshotUses, SCREENSHOT_USES, type ScreenshotProvider, type ProviderCaptureInput,
+  usesOfRow, setScreenshotUses, SCREENSHOT_USES, screenshotUseAllowed, type ScreenshotProvider, type ProviderCaptureInput,
 } from "../lib/assets/screenshot-capture"
 import {
   composeEstimateComparison, planComparisonCards, comparisonCopy, validateConfirmedFigure, COMPARISON_HOOKS, COMPARISON_SUBHEAD, COMPARISON_CTAS,
@@ -156,12 +158,13 @@ async function main() {
 
   console.log("\n[2 · the ONE use rule — campaigns yes, estimate of value never]")
   const others = COMPARISON_ESTIMATE_SOURCES.filter((s) => s.key !== "zillow_zestimate").map((s) => s.key)
-  check("a comparison-only source admits estimate_comparison and NOTHING else (every seam use, the image library, every value use refused)",
+  check("a comparison-only source admits estimate_comparison and NOTHING else (every screenshot use — the image library included — and every value use refused)",
     others.every((k) => estimateStillUseVerdict(k, ESTIMATE_COMPARISON_USE).ok
-      && [...SCREENSHOT_USES, IMAGE_LIBRARY_USE, ...ESTIMATE_OF_VALUE_USES].every((u) => !estimateStillUseVerdict(k, u).ok)))
-  check("the Zestimate admits marketing_campaign + the comparison ONLY (83C) and refuses every estimate-of-value use (the full sweep + control is test:zestimate-only 2b)",
-    estimateStillUseVerdict("zillow_zestimate", "marketing_campaign").ok && estimateStillUseVerdict("zillow_zestimate", ESTIMATE_COMPARISON_USE).ok
-    && ["product_video", "demo", "training", IMAGE_LIBRARY_USE].every((u) => !estimateStillUseVerdict("zillow_zestimate", u).ok)
+      && [...SCREENSHOT_USES, ...ESTIMATE_OF_VALUE_USES].every((u) => !estimateStillUseVerdict(k, u).ok)))
+  check("the Zestimate admits the comparison + exactly what THE ONE SCREENSHOT RULE admits (84B: campaign + campaign video) and refuses every estimate-of-value use (full sweep + controls: test:zestimate-only 2b)",
+    estimateStillUseVerdict("zillow_zestimate", ESTIMATE_COMPARISON_USE).ok
+    && SCREENSHOT_USES.every((u) => estimateStillUseVerdict("zillow_zestimate", u).ok === screenshotUseAllowed("zillow_zestimate", u))
+    && estimateStillUseVerdict("zillow_zestimate", "campaign_video").ok && !estimateStillUseVerdict("zillow_zestimate", "image_library").ok
     && ESTIMATE_OF_VALUE_USES.every((u) => !estimateStillUseVerdict("zillow_zestimate", u).ok))
   check("CONTROL: an unknown source is refused for every use; the value-use list names CMA and valuation", !estimateStillUseVerdict("trulia_estimate", ESTIMATE_COMPARISON_USE).ok && !estimateStillUseVerdict(null, "marketing_campaign").ok && (ESTIMATE_OF_VALUE_USES as readonly string[]).includes("cma") && (ESTIMATE_OF_VALUE_USES as readonly string[]).includes("valuation"))
 
@@ -183,7 +186,7 @@ async function main() {
   {
     const svc = makeSvc({ readRow: { id: "a1", tags: ["estimate_comparison"], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", estimate_source: "redfin_estimate", comparison_only: true } } })
     const r = await setScreenshotUses(svc, "a1", ["marketing_campaign"], { brokerageId: TENANT })
-    check("a LEGACY 82D comparison still can never be widened into a campaign use — no update issued; usesOfRow lists it for nothing", !r.ok && /only for the estimate comparison piece/.test(r.reason) && svc.updates.length === 0 && usesOfRow({ tags: ["use:marketing_campaign"], metadata: { screenshot_kind: "public_page", comparison_only: true } }).length === 0)
+    check("a LEGACY 82D comparison still can never be widened into a campaign use — no update issued; usesOfRow lists it for nothing", !r.ok && /never used as a screenshot/.test(r.reason) && svc.updates.length === 0 && usesOfRow({ tags: ["use:marketing_campaign"], metadata: { screenshot_kind: "public_page", comparison_only: true } }).length === 0)
     const svcZ = makeSvc({ readRow: { id: "z1", tags: [], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", estimate_source: "zillow_zestimate" } } })
     await setScreenshotUses(svcZ, "z1", ["marketing_campaign"], { brokerageId: TENANT })
     check("CONTROL: a Zestimate still set to marketing_campaign proceeds to the counted update", svcZ.updates.length === 1)
@@ -255,7 +258,10 @@ async function main() {
   check("no value surface (CMA, valuation, home-value, appraisal, net sheet, price advisor, AVM) reads a still or the comparison evidence", valueFiles.length > 0 && readers.length === 0, readers.map(rel).join(", "))
   check("CONTROL: the sweep flags a specimen CMA file importing the still door or the web-search stager", VALUE_PATH_RE.test("lib/cma/cma-builder.ts") && /["']@\/lib\/marketing\/(tenant-screenshot-door|estimate-comparison|estimate-web-search)["']/.test(stripComments(`import { approvedTenantStill } from "@/lib/marketing/tenant-screenshot-door"`)) && STILL_READER_RE.test(blankStrings(stripComments(`const { stageWebEstimateFigures } = await import(x)`))))
   const lib = stripped("app/actions/marketing/image-library.ts")
-  check("the image library admits an estimate still only through estimateStillUseVerdict(…, IMAGE_LIBRARY_USE) and drops comparison_only rows", /estimateStillUseVerdict\(src, IMAGE_LIBRARY_USE/.test(lib) && /comparison_only === true\) return false/.test(lib) && /assets: admitted\.map/.test(lib))
+  // 84B: the library asks THE ONE RULE for "image_library" on every screenshot / portal-estimate row (a
+  // comparison_only row is other_portal_estimate → nothing; the composite is the Zestimate → not library).
+  check("the image library admits a screenshot / estimate row only through the rule (isScreenshotRuleRow → screenshotRowUseAllowed(r, \"image_library\"))", /isScreenshotRuleRow\(r\) \? screenshotRowUseAllowed\(r, "image_library"\) : true/.test(lib) && /assets: admitted\.map/.test(lib)
+    && usesOfRow({ tags: ["use:marketing_campaign"], metadata: { screenshot_kind: "public_page", comparison_only: true } }).length === 0)
   const webMod = stripped("lib/marketing/estimate-web-search.ts")
   check("the web-search stager never screenshots (no seam capture entry) and stamps every staged row customer_facing_value:false, comparison-only", !/captureScreenshot\(|capturePublicPropertyPage\(|captureTenantEstimateStill\(/.test(webMod) && /customer_facing_value: false/.test(webMod) && /comparison_only: true/.test(webMod) && /approval_status: "pending"/.test(webMod))
 

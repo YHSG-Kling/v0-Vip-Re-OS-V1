@@ -302,6 +302,43 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
  */
 export const ESTIMATE_PLAY_KEYS = ["zestimate_challenge", "estimate_comparison"] as const
 
+/**
+ * THE PLAYS WHOSE COPY MAY QUOTE THE REAL ZESTIMATE (wave 84, lane 84B — owner
+ * verbatim: "for the zestimate challenge it is oky to have a real number as we
+ * aren't using it as our true value.").
+ *
+ * The Zestimate Challenge ALONE: its whole premise is "Zillow says $X — is
+ * that right?" (the industry's own shape: "sold $243,000 over the Zestimate",
+ * nowbam.com 2025-05-21; "screenshot the Zestimate… 'what's your take on this
+ * valuation?'", CrossCountry Mortgage 2023-10-09). The figure is ZILLOW's,
+ * quoted AS Zillow's — attributed, dated, "not an appraisal" (Zillow's own
+ * terms) and never the agent's opinion of value, a price the home will sell
+ * for, or an appraisal. It reaches the copy only when a human has CONFIRMED
+ * it off the APPROVED still (estimate-comparison.ts confirmComparisonFigure →
+ * metadata.confirmed_figure_usd); no figure → the brief is unchanged.
+ * NOT relaxed: the Estimate Comparison keeps "never promise a number" for its
+ * own voice, and the AI ISA's home-value review CALLBACK still speaks no
+ * number (lib/ai-isa/qualification-playbook.ts schedule_home_value_review) —
+ * nothing in lib/ai-isa or lib/voice reads this (the zestimate-only proof).
+ */
+export const ZESTIMATE_FIGURE_PLAY_KEYS = ["zestimate_challenge"] as const
+
+export function playMayQuoteZestimate(key: string): boolean {
+  return (ZESTIMATE_FIGURE_PLAY_KEYS as readonly string[]).includes(key)
+}
+
+/** PURE: the brief addendum that hands the author Zillow's figure, attributed.
+ *  `figureText` is already formatted (estimate-comparison.ts formatUsd);
+ *  `asOf` is the still's capture date (YYYY-MM-DD) or null. */
+export function zestimateFigureBrief(figureText: string, asOf: string | null): string {
+  const when = asOf ? ` as shown on Zillow on ${asOf}` : " as shown on Zillow"
+  return [
+    `ZILLOW'S OWN FIGURE: Zillow's Zestimate for this home${when} is ${figureText}.`,
+    `You MAY quote ${figureText} — always attributed to Zillow as its Zestimate (for example "Zillow's Zestimate says ${figureText}"), an automated estimate that is not an appraisal.`,
+    `Never present it as the agent's value, the brokerage's opinion of value, an appraisal, or the price the home will sell for, and state no other dollar value for the home.`,
+  ].join(" ")
+}
+
 export function getPlaybook(key: string): CreativePlaybook | null {
   return CREATIVE_PLAYBOOKS.find((p) => p.key === key) ?? null
 }

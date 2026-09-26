@@ -8,8 +8,9 @@
 // showing and will be used in some marketing campaigns. there can be many uses
 // for the screenshots.").
 //
-// PURE — no imports — so the tenant UI (a client component) and the server
-// door (lib/marketing/tenant-screenshot-door.ts) read ONE list (CLAUDE.md §6).
+// PURE — its one import is the pure use rule (lib/assets/screenshot-uses.ts,
+// wave 84B) — so the tenant UI (a client component) and the server door
+// (lib/marketing/tenant-screenshot-door.ts) read ONE list (CLAUDE.md §6).
 // The `host` MUST be on lib/assets/screenshot-capture.ts::PUBLIC_PAGE_HOSTS
 // (the seam's ToS allowlist) and the seam's PUBLIC_PAGE_READY_RULES for that
 // host must cover every `mustShow` label here; scripts/zestimate-only-guard.ts
@@ -47,6 +48,8 @@
 // AO-18: a licensee never presents a number as an opinion of VALUE — the still
 // is the portal's own number, shown as what it is, and the agent's number is
 // spoken at the appointment, never by the OS.
+
+import { screenshotUseAllowed, ZESTIMATE_SCREENSHOT_USES } from "@/lib/assets/screenshot-uses"
 
 export const ESTIMATE_SOURCE_KEYS = ["zillow_zestimate"] as const
 export type EstimateSourceKey = (typeof ESTIMATE_SOURCE_KEYS)[number]
@@ -98,24 +101,26 @@ export const ESTIMATE_STILL_DISCLAIMER =
   "Online estimate shown as published by its source on the capture date. It is an automated figure, not an appraisal and not this brokerage's opinion of value."
 
 // ═════════════════════════════════════════════════════════════════════════════
-// (b) THE ZESTIMATE STILL IS MARKETING-CAMPAIGN MATERIAL, STRICTLY
+// (b) THE ZESTIMATE STILL IS MARKETING-CAMPAIGN MATERIAL, ITS VIDEO INCLUDED
 // (wave 82, lane 82D, owner verbatim: "the zillow zestimate screenshot should
-// only be used for campaigns and not other estimate of value."; NARROWED wave
-// 83, lane 83C, owner verbatim: "zestimate is marketing campaigns strictly.").
+// only be used for campaigns and not other estimate of value."; wave 83C
+// narrowed it to "marketing campaigns strictly"; wave 84, lane 84B, owner
+// verbatim: "screenshots can be used for all marketing/assets/videos/guides/
+// education, etc. only the zillow zestimate screenshot can be used for
+// marketing campaigns including video.").
 //
 // A still is the PORTAL's figure shown whole, as marketing material. It is
 // never a CMA input, a valuation, a home-value report, a price opinion, a
-// listing price, an appraisal or any value a customer is told is "the" value —
-// and (83C) never demo, training, product-video or image-library stock either:
-// the ONLY seam use it carries is `marketing_campaign`, plus the estimate
-// comparison piece, which is itself a marketing campaign (the
-// `estimate_comparison` play in lib/marketing/creative-playbooks.ts). A
-// campaign's OWN video still shows it — installCreativePlaybook hands the
-// APPROVED still straight to that campaign's video (app/actions/
-// creative-playbooks.ts createPlaybookVideo screenshotUrls) — but no other
-// video picks it up. estimateStillUseVerdict is the ONE rule: the seam
-// (lib/assets/screenshot-capture.ts usesOfRow / setScreenshotUses), the image
-// library (app/actions/marketing/image-library.ts) and the tenant door read it;
+// listing price, an appraisal or any value a customer is told is "the" value,
+// and never demo, training, product-video or image-library stock: its seam
+// uses are ZESTIMATE_SCREENSHOT_USES (marketing_campaign + campaign_video),
+// plus the estimate comparison piece, which is itself a marketing campaign
+// (the `estimate_comparison` play in lib/marketing/creative-playbooks.ts).
+// THE ONE RULE for which use a screenshot may serve is
+// lib/assets/screenshot-uses.ts screenshotUseAllowed (re-exported by the seam);
+// estimateStillUseVerdict below is the EVIDENCE rule for a source's figure
+// (value uses refused, the comparison piece admitted) and defers to that rule
+// for every screenshot use — it never restates the use list.
 // scripts/zestimate-only-guard.ts proves it with positive controls and
 // scripts/estimate-comparison-guard.ts proves no value surface reads a still.
 // ═════════════════════════════════════════════════════════════════════════════
@@ -128,23 +133,21 @@ export const ESTIMATE_OF_VALUE_USES = [
 /** The ONE use the multi-site comparison piece carries (wave 82D (a)). */
 export const ESTIMATE_COMPARISON_USE = "estimate_comparison" as const
 
-/** The generic creative pickers (the approved image library every tenant
- *  creative surface reads — video create, the growth studio). NOT a campaign
- *  by itself, so since 83C no estimate still is admitted to it. */
-export const IMAGE_LIBRARY_USE = "image_library" as const
-
-/** The ONLY seam use (lib/assets/screenshot-capture.ts SCREENSHOT_USES) a
- *  Zestimate still may carry — wave 83C: "zestimate is marketing campaigns
- *  strictly". demo / training / product_video are refused. */
-export const ZESTIMATE_STILL_USES = ["marketing_campaign"] as const
+// TOMBSTONE (§1.3, wave 84B — owner ruling above): `IMAGE_LIBRARY_USE` and
+// `ZESTIMATE_STILL_USES` (83C: marketing_campaign alone) are RETIRED — two
+// spellings of the use vocabulary outside the rule (§6). Survivors:
+// lib/assets/screenshot-uses.ts SCREENSHOT_USES ("image_library" is a use
+// there) and ZESTIMATE_SCREENSHOT_USES (marketing_campaign + campaign_video).
 
 export type EstimateStillUseVerdict = { ok: true } | { ok: false; reason: string }
 
 /**
  * PURE, FAIL-CLOSED: may evidence from `sourceKey` be used for `use`?
  *   · any ESTIMATE_OF_VALUE_USES → refused (a portal figure is never a value);
- *   · zillow_zestimate → `marketing_campaign` and the comparison piece ONLY
- *     (83C — demo, training, product_video and the image library refused);
+ *   · zillow_zestimate → the comparison piece, and every screenshot use THE
+ *     ONE RULE admits for the Zestimate (screenshotUseAllowed —
+ *     marketing_campaign + campaign_video since 84B); demo, training,
+ *     product_video and the image library refused;
  *   · a COMPARISON-ONLY source (realtor / redfin / homes) → the comparison
  *     piece ONLY (since 83C its figure arrives by AI web search, never a
  *     still — lib/marketing/estimate-web-search.ts);
@@ -155,8 +158,8 @@ export function estimateStillUseVerdict(sourceKey: string | null | undefined, us
     return { ok: false, reason: `REFUSED: an online-estimate still is campaign material, never an estimate of value — "${use}" would present the portal's figure as a value` }
   }
   if (sourceKey === DEFAULT_ESTIMATE_SOURCE) {
-    if (use === ESTIMATE_COMPARISON_USE || (ZESTIMATE_STILL_USES as readonly string[]).includes(use)) return { ok: true }
-    return { ok: false, reason: `REFUSED: a Zestimate still is for marketing campaigns strictly — "${use}" is not one (${[...ZESTIMATE_STILL_USES, ESTIMATE_COMPARISON_USE].join(" | ")})` }
+    if (use === ESTIMATE_COMPARISON_USE || screenshotUseAllowed("zillow_zestimate", use)) return { ok: true }
+    return { ok: false, reason: `REFUSED: a Zestimate still serves marketing campaigns including their video only — "${use}" is not one (${[...ZESTIMATE_SCREENSHOT_USES, ESTIMATE_COMPARISON_USE].join(" | ")})` }
   }
   if (comparisonEstimateSource(sourceKey)) {
     return use === ESTIMATE_COMPARISON_USE

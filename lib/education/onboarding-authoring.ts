@@ -41,7 +41,8 @@ export async function authorModuleFor(topic: OnboardingTopic, tier: Tier): Promi
  *  yet → no section (never a broken image). */
 export async function persistOnboardingModule(svc: Svc, brokerageId: string, tag: string, topic: OnboardingTopic, curriculum: Curriculum): Promise<boolean> {
   const { listDemoStills, figuresForEducationTopic, renderFigures } = await import("@/lib/assets/screenshot-capture")
-  const figures = renderFigures(figuresForEducationTopic(topic.key, await listDemoStills(svc)))
+  // Wave 84B: only stills the ONE use rule admits for training (screenshot-uses.ts).
+  const figures = renderFigures(figuresForEducationTopic(topic.key, await listDemoStills(svc, { use: "training" })))
   const { error } = await svc.from("learning_modules").insert({
     brokerage_id: brokerageId,
     title: curriculum.title,
