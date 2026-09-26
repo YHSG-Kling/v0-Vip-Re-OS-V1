@@ -13,10 +13,18 @@ import { Button } from "@/components/ui/button"
 // titled card; nothing was moved out of this file and nothing was lost.
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
-import { FileText, QrCode, BarChart2, Link2, Users } from "lucide-react"
+import { FileText, QrCode, BarChart2, Link2, Users, Code2 } from "lucide-react"
+// THE EMBED (lane 85E, census 6d — the missing half of POST
+// /api/lead-magnets/submissions): a tenant can put this magnet's form on their
+// OWN website; the snippet posts into the same kernel command the hosted
+// /lm/[slug] page uses (consent + provenance + the lead pipeline).
+import { buildLeadMagnetEmbedSnippet } from "@/lib/lead-magnets/embed-snippet"
 
 interface Props {
-  /** Kept for the reload key only — the ACTUAL scope is resolved server-side. */
+  /** The reload key, and the brokerage the embed snippet names (the session
+   *  tenant from the page's getAgentContext — the kernel re-verifies the
+   *  form/brokerage pair on every submission). The LIST scope is resolved
+   *  server-side. */
   brokerageId: string
   /**
    * "mine" forces the own-magnets list even for a broker/admin. Omit to let
@@ -47,6 +55,23 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  async function copyEmbed(magnet: Magnet) {
+    const snippet = buildLeadMagnetEmbedSnippet({
+      origin: window.location.origin,
+      formId: magnet.formId,
+      brokerageId,
+      magnetName: magnet.name,
+      magnetType: magnet.magnetType,
+    })
+    try {
+      await navigator.clipboard.writeText(snippet)
+      setCopiedId(magnet.id)
+    } catch {
+      setError("Could not copy the embed code — your browser blocked clipboard access.")
+    }
+  }
 
   useEffect(() => {
     load()
@@ -153,6 +178,16 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Copy an embed code to put this form on your own website"
+                    aria-label={`Copy embed code for ${magnet.name}`}
+                    onClick={(e) => { e.stopPropagation(); void copyEmbed(magnet) }}
+                  >
+                    <Code2 className="h-4 w-4" />
+                    {copiedId === magnet.id && <span className="ml-1 text-xs">Copied</span>}
+                  </Button>
                   <Switch
                     checked={magnet.isActive}
                     onCheckedChange={() => handleToggleActive(magnet)}

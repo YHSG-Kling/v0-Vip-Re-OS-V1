@@ -55,7 +55,7 @@ import {
   hostWordsPerMinute, wordsForSeconds, spokenSecondsForWords, providerMaxSpokenSeconds,
   compositionBookends, compositionPurposes, requiredCapFrames, movingCompositionIds, capBodySeconds,
   purposeWordWindow, purposeBudgetFor, bodySecondsForNarration, planCompositionDuration,
-  planDurationForProps, narrationLengthFromProps, renderedCompositionSeconds, durationMetadata,
+  planDurationForProps, narrationLengthFromProps, renderedCompositionSeconds, durationMetadata, narrationStartFrame,
   narrationWindowFrames, spokenSecondsProps,
   type VideoPurpose, type HostKind, type CompositionDurationSpec,
 } from "../lib/video/duration-model"
@@ -236,6 +236,10 @@ function bodySection() {
     const geo = geometryFor(id)!
     const b = purposeBudgetFor(id)
     const rule = PURPOSE_DURATION_RULES[b.purpose]
+    // Lane 85E: a from-frame-0 narration (narrationFrom "cover") is already
+    // playing under the cover, so the body carries the span MINUS the cover.
+    // Derived from the ONE accessor, never a per-composition literal.
+    const lead = spec.introFrames - narrationStartFrame(id)
 
     // OVER THE MAX — trimmed at a sentence boundary, body ≤ purpose max.
     const long = fixtureScript(b.maxWords * 2)
@@ -254,27 +258,32 @@ function bodySection() {
     const planIdeal = planCompositionDuration({ compositionId: id, wordCount: fitIdeal.wordCount })
     const expectSeconds = bodySecondsForNarration(spokenSecondsForWords(fitIdeal.wordCount, spec.host), "estimated")
     check(`${id}: an ideal ${fitIdeal.wordCount}-word script → narration ${planIdeal.spokenSeconds}s → body ${planIdeal.bodySeconds}s (= ${expectSeconds}s, the 80 % claim) → ${planIdeal.durationInFrames}f = ${spec.introFrames}+${planIdeal.bodyFrames}+${spec.outroFrames}`,
-      !fitIdeal.overran && Math.abs(planIdeal.bodyFrames - Math.round(expectSeconds * geo.fps)) <= 0
+      !fitIdeal.overran && Math.abs(planIdeal.bodyFrames - (Math.round(expectSeconds * geo.fps) - lead)) <= 1
       && planIdeal.durationInFrames === spec.introFrames + planIdeal.bodyFrames + spec.outroFrames
-      && planIdeal.narrationWindow.from === spec.introFrames && planIdeal.narrationWindow.to === spec.introFrames + planIdeal.bodyFrames
+      && planIdeal.narrationWindow.from === narrationStartFrame(id) && planIdeal.narrationWindow.to === spec.introFrames + planIdeal.bodyFrames
       && !planIdeal.belowPurposeMin && !planIdeal.abovePurposeMax)
-    check(`${id}: a script at budget read at the ${spec.host} pace ends INSIDE the derived window (${planIdeal.spokenSeconds}s < ${planIdeal.bodySeconds}s)`,
-      (planIdeal.spokenSeconds ?? 0) < planIdeal.bodySeconds)
+    check(`${id}: a script at budget read at the ${spec.host} pace ends INSIDE the derived window (${planIdeal.spokenSeconds}s < ${(planIdeal.narrationWindow.to - planIdeal.narrationWindow.from) / geo.fps}s)`,
+      (planIdeal.spokenSeconds ?? 0) < (planIdeal.narrationWindow.to - planIdeal.narrationWindow.from) / geo.fps)
 
     // UNDER THE MIN — reported, asked of the writer, NOT padded with silence.
     const shortWords = Math.max(3, Math.floor(b.minWords / 2))
     const planShort = planCompositionDuration({ compositionId: id, wordCount: shortWords })
     const shortNarration = spokenSecondsForWords(shortWords, spec.host)
     check(`${id}: a ${shortWords}-word script (under the ${b.minWords}-word floor) plans a ${planShort.bodySeconds}s body that TRACKS the narration (${shortNarration}s / 0.8), flagged belowPurposeMin — no silence added to reach the ${rule.minSeconds}s minimum`,
-      planShort.belowPurposeMin && planShort.bodyFrames === Math.round(bodySecondsForNarration(shortNarration, "estimated") * geo.fps) && planShort.bodySeconds < rule.minSeconds
+      planShort.belowPurposeMin && Math.abs(planShort.bodyFrames - Math.max(1, Math.round(bodySecondsForNarration(shortNarration, "estimated") * geo.fps) - lead)) <= 1 && planShort.bodySeconds < rule.minSeconds
       && planShort.notes.some((n) => /never padded with silence/.test(n)))
     check(`${id}: …and the writer's directive already asks for AT LEAST ${b.minWords} words — the floor is closed by the script, not the composition`,
       narrationLengthDirective(b).includes(`AT LEAST ${b.minWords} words`))
 
     // MEASURED — exact, plus the settle only.
     const measured = planCompositionDuration({ compositionId: id, spokenSeconds: 12.3, spokenSecondsSource: "measured" })
-    check(`${id}: a MEASURED 12.3s narration plans a ${measured.bodySeconds}s body (12.3 + ${NARRATION_SETTLE_SECONDS} settle), no headroom multiplier`,
-      Math.abs(measured.bodySeconds - (12.3 + NARRATION_SETTLE_SECONDS)) < 1 / geo.fps + 1e-9)
+    check(`${id}: a MEASURED 12.3s narration plans a ${measured.bodySeconds}s body (12.3 + ${NARRATION_SETTLE_SECONDS} settle${lead > 0 ? ` − the ${lead / geo.fps}s cover it already plays under` : ""}), no headroom multiplier`,
+      Math.abs(measured.bodySeconds - (12.3 + NARRATION_SETTLE_SECONDS - lead / geo.fps)) < 1 / geo.fps + 1e-9)
+    // …and the voice therefore ends one settle before the outro tile — never
+    // a cover's worth of dead air (lane 85E: the model's own mismatch).
+    const measuredEnd = narrationStartFrame(id) / geo.fps + 12.3
+    check(`${id}: that measured voice ends ${NARRATION_SETTLE_SECONDS}s before the outro tile (${measuredEnd.toFixed(2)}s vs body end ${((spec.introFrames + measured.bodyFrames) / geo.fps).toFixed(2)}s) — no dead air`,
+      Math.abs((spec.introFrames + measured.bodyFrames) / geo.fps - measuredEnd - NARRATION_SETTLE_SECONDS) < 1 / geo.fps + 1e-9)
 
     // NOTHING STAGED — the purpose ideal, never the cap.
     const none = planCompositionDuration({ compositionId: id })
@@ -302,6 +311,27 @@ function bodySection() {
   const id = "MarketUpdateReel"
   check("staged spokenSeconds (measured) beats everything", narrationLengthFromProps(id, { spokenSeconds: 20, spokenSecondsSource: "measured", avatarDurationSeconds: 5, captionScript: "x y z" })?.from === "staged")
   check("avatarDurationSeconds (D-ID's measurement) is read when nothing is staged", narrationLengthFromProps(id, { avatarDurationSeconds: 9.5, captionScript: "x y z" })?.source === "measured")
+  // Lane 85E — MEASURED BEATS ESTIMATED. The avatar orchestrator merges D-ID's
+  // measurement onto a row a producer staged with an ESTIMATE; the estimate
+  // used to win because it was read first.
+  const mergedRow = { spokenSeconds: 20, spokenSecondsSource: "estimated", avatarDurationSeconds: 31.4 }
+  check("an ESTIMATED staged length loses to D-ID's MEASURED avatarDurationSeconds (the clip that will actually play)",
+    narrationLengthFromProps(id, mergedRow)?.from === "avatar" && narrationLengthFromProps(id, mergedRow)?.spokenSeconds === 31.4)
+  check("two MEASUREMENTS (voiceover + avatar clip) take the LONGER, so neither track is cut",
+    narrationLengthFromProps(id, { spokenSeconds: 20, spokenSecondsSource: "measured", avatarDurationSeconds: 24 })?.spokenSeconds === 24
+    && narrationLengthFromProps(id, { spokenSeconds: 20, spokenSecondsSource: "measured", avatarDurationSeconds: 5 })?.spokenSeconds === 20)
+  // POSITIVE CONTROL — the pre-85E order (staged first, whatever its source)
+  // is recognised as the defect: on the merged row it returns the 20 s guess.
+  const preFixOrder = (p: Record<string, unknown>) => typeof p.spokenSeconds === "number" ? p.spokenSeconds : (p.avatarDurationSeconds as number)
+  check("CONTROL: the pre-85E order returns the 20 s ESTIMATE for the merged row — the D-ID clip's last 11.4 s would have been cut at the outro",
+    preFixOrder(mergedRow) === 20 && planCompositionDuration({ compositionId: id, spokenSeconds: 20, spokenSecondsSource: "estimated" }).bodySeconds
+      < planDurationForProps(id, mergedRow).bodySeconds)
+  // A from-frame-0 composition's cues are planned from frame 0 — the reader
+  // subtracts the NARRATION START (0), not the cover (which under-measured by
+  // the whole cover before 85E).
+  const coverCues = [{ text: "a", fromFrame: 0, durationFrames: 60 }, { text: "b", fromFrame: 60, durationFrames: 120 }]
+  check("captionsCues on a from-frame-0 composition (JustListedReel): the whole cue span is the narration (6 s), never span − cover (4 s)",
+    narrationLengthFromProps("JustListedReel", { captionsCues: coverCues })?.spokenSeconds === 6)
   const cues = [{ text: "a", fromFrame: 60, durationFrames: 30 }, { text: "b", fromFrame: 90, durationFrames: 60 }]
   check("captionsCues: the last cue's end minus the intro is the narration's length (measured)", narrationLengthFromProps(id, { captionsCues: cues })?.spokenSeconds === 3)
   check("a staged narrationScript is a fitted script (estimated, 'staged')", narrationLengthFromProps(id, { narrationScript: fixtureScript(30) })?.from === "staged")

@@ -1343,6 +1343,21 @@ export function insideSafeArea(width: number, height: number, box: { top?: numbe
   return top >= s.top && left >= s.left && top + box.height <= height - s.bottom && left + box.width <= width - s.right
 }
 
+/**
+ * THE FULL-FRAME PRESENTER BOX (lane 85E, the timing/safe-area audit). The
+ * talking-head reel typed `{ top: 90, left: 90, width: 900, height: 900 }` —
+ * on its own 1080×1080 frame that sits 7 px INTO the top and bottom unsafe bands
+ * (safeInsets: 97 px), so a platform's UI chrome clips the presenter's head and
+ * chin. The typed box is kept whenever insideSafeArea admits it (a larger
+ * frame); otherwise the largest square inside the safe area, centred. PURE.
+ */
+export function fullPresenterBox(width: number, height: number, preferred = { top: 90, left: 90, width: 900, height: 900 }): { top: number; left: number; width: number; height: number } {
+  if (insideSafeArea(width, height, preferred)) return preferred
+  const s = safeInsets(width, height)
+  const size = Math.max(1, Math.min(preferred.width, width - s.left - s.right, height - s.top - s.bottom))
+  return { top: s.top + Math.floor((height - s.top - s.bottom - size) / 2), left: Math.round((width - size) / 2), width: size, height: size }
+}
+
 /** Does the plan put the presenter in a corner anywhere (the D-ID request should be a keyed/transparent clip)? PURE. */
 export function planWantsKeyedPresenter(plan: BodyVisualPlan | null | undefined): boolean {
   return !!plan && plan.segments.some((s) => s.treatment === "avatar_pip")

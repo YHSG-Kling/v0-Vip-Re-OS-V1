@@ -340,6 +340,27 @@ export interface CompositionDurationSpec {
    *  purpose/word-budget plan. durationMetadata() defers to it, so Root.tsx
    *  still mounts the ONE calculateMetadata for every narration composition. */
   durationFromProps?: (props: Record<string, unknown>, fps: number) => number
+  /**
+   * WHERE THE NARRATION AUDIO STARTS (wave 85, lane 85E — the video timing
+   * audit). Absent: the narration plays in the body window [intro, intro+body)
+   * — the avatar hosts (the D-ID clip mounts after the cover) and any
+   * composition that delays its `<Audio>` to the cover's end (TestimonialReel).
+   * `"cover"`: the voiceover plays from FRAME 0, under the title card — the
+   * listing/newsletter family mounts `<Audio src={voiceoverUrl}>` at the root
+   * and plans its captions from frame 0, and PartnersMeetingReel's snake-key
+   * finish mux lands at the main cut's first frame.
+   *
+   * WHY IT IS DECLARED. planCompositionDuration used to place EVERY narration
+   * after the intro. For a from-frame-0 composition that meant the video ran
+   * intro-seconds past the last word — a measured 15 s voiceover on
+   * JustListedReel (2 s cover) planned a 17.5 s body window whose final 2.5 s
+   * were silent before the CTA tile: dead air computed by the model itself.
+   * The declaration is not trusted on its own word — scripts/video-timing-audit
+   * derives each composition's real narration start from its source (a root
+   * `<Audio>` vs one nested in `<Sequence from=…>`, else the CaptionLayer's
+   * visibleFromFrame) and fails when the two disagree.
+   */
+  narrationFrom?: "cover"
   note?: string
 }
 
@@ -357,17 +378,17 @@ export const COMPOSITION_DURATION_RULES: Record<string, CompositionDurationSpec>
   // body-visual plan's intro/body/outro split and memoryVideoChapterLayout
   // agree by construction (30 fps is the registered geometry).
   MemoryVideoReel:           { purpose: "memory", host: "voiceover", introFrames: MEMORY_VIDEO_COVER_SECONDS * 30, outroFrames: MEMORY_VIDEO_OUTRO_SECONDS * 30, bodyMode: "narration", multiClip: true, durationFromProps: (props, fps) => memoryVideoDurationFrames(props as unknown as MemoryVideoTimelineProps, fps) },
-  JustListedReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration" },
-  JustListedReelSquare:      { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration" },
-  JustListedReelHorizontal:  { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 90, bodyMode: "narration" },
-  JustSoldReelSquare:        { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration" },
-  ComingSoonReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration" },
-  OpenHouseAnnounceReel:     { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration" },
-  PhotoWalkthroughReel:      { purpose: "photo_walkthrough", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration" },
-  NeighborhoodSpotlightReel: { purpose: "neighborhood_spotlight", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration" },
+  JustListedReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover" },
+  JustListedReelSquare:      { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
+  JustListedReelHorizontal:  { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover" },
+  JustSoldReelSquare:        { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
+  ComingSoonReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
+  OpenHouseAnnounceReel:     { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
+  PhotoWalkthroughReel:      { purpose: "photo_walkthrough", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover" },
+  NeighborhoodSpotlightReel: { purpose: "neighborhood_spotlight", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
   TestimonialReel:           { purpose: "testimonial", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration" },
-  NewsletterDigestVideo:     { purpose: "newsletter", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration" },
-  PartnersMeetingReel:       { purpose: "partners_meeting", host: "voiceover", introFrames: 75, outroFrames: 45, bodyMode: "narration" },
+  NewsletterDigestVideo:     { purpose: "newsletter", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover" },
+  PartnersMeetingReel:       { purpose: "partners_meeting", host: "voiceover", introFrames: 75, outroFrames: 45, bodyMode: "narration", narrationFrom: "cover" },
   ProductPromoReel:          { purpose: "product_demo", host: "voiceover", introFrames: 0, outroFrames: 120, bodyMode: "narration", note: "the hook shot is narrated, so it is part of the body; only the CTA tile is chrome" },
   ListingSectionReel:        { purpose: "listing_presentation_section", host: "voiceover", introFrames: 0, outroFrames: 0, bodyMode: "narration", note: "a single continuous slide — no chrome tiles of its own" },
   // ── Fixed — nothing to derive a body from (published exclusions) ──
@@ -390,6 +411,18 @@ export function compositionDurationSpec(compositionId: string): CompositionDurat
 export function compositionBookends(compositionId: string): { introFrames: number; outroFrames: number } {
   const spec = COMPOSITION_DURATION_RULES[compositionId]
   return spec ? { introFrames: spec.introFrames, outroFrames: spec.outroFrames } : { introFrames: 0, outroFrames: 0 }
+}
+
+/**
+ * The composition-absolute frame the NARRATION AUDIO starts at: 0 for a
+ * `narrationFrom: "cover"` composition (the voiceover plays under the title
+ * card), the intro's end otherwise. ONE answer for the planner, the caption
+ * cue reader below and the render coordinator's snake-key narration mux.
+ */
+export function narrationStartFrame(compositionId: string): number {
+  const spec = COMPOSITION_DURATION_RULES[compositionId]
+  if (!spec) return 0
+  return spec.narrationFrom === "cover" ? 0 : spec.introFrames
 }
 
 /** Every purpose a composition is registered to serve, default first. */
@@ -570,6 +603,9 @@ export interface DurationPlan {
   clampedToCap: boolean
   belowPurposeMin: boolean
   abovePurposeMax: boolean
+  /** The registered cap is under requiredCapFrames — the longest purpose
+   *  this composition serves cannot fit (lane 85E; said, never silent). */
+  capBelowPurpose: boolean
   notes: string[]
 }
 
@@ -622,7 +658,7 @@ export function planCompositionDuration(args: PlanArgs): DurationPlan {
       compositionId: args.compositionId, purpose: "explainer", host: "voiceover", bodyMode: "narration", fps,
       introFrames: 0, bodyFrames: 1, outroFrames: 0, durationInFrames: 1, narrationWindow: { from: 0, to: 1 },
       spokenSeconds: null, spokenSecondsSource: null, requestedBodySeconds: 0, bodySeconds: 1 / fps,
-      capFrames: 1, clampedToCap: false, belowPurposeMin: false, abovePurposeMax: false, notes,
+      capFrames: 1, clampedToCap: false, belowPurposeMin: false, abovePurposeMax: false, capBelowPurpose: false, notes,
     }
   }
   const purpose = args.purpose ?? spec.purpose
@@ -638,7 +674,7 @@ export function planCompositionDuration(args: PlanArgs): DurationPlan {
       durationInFrames: t.totalFrames, narrationWindow: { from: t.body.from, to: t.body.from + t.body.durationInFrames },
       spokenSeconds: null, spokenSecondsSource: null,
       requestedBodySeconds: t.body.durationInFrames / fps, bodySeconds: t.body.durationInFrames / fps,
-      capFrames, clampedToCap: false, belowPurposeMin: false, abovePurposeMax: false, notes,
+      capFrames, clampedToCap: false, belowPurposeMin: false, abovePurposeMax: false, capBelowPurpose: false, notes,
     }
   }
 
@@ -653,9 +689,19 @@ export function planCompositionDuration(args: PlanArgs): DurationPlan {
     source = "estimated"
   }
 
+  // A from-frame-0 narration (narrationFrom "cover") is already speaking while
+  // the title card is up: the intro CARRIES the first intro-seconds of it, so
+  // only the remainder needs body frames. Without this the plan appended the
+  // whole narration AFTER a cover it had already played under — intro-seconds
+  // of silence before the outro, computed by the model itself (lane 85E).
+  const leadFrames = spec.narrationFrom === "cover" ? spec.introFrames : 0
   let requestedBodySeconds: number
   if (spokenSeconds !== null && source !== null) {
-    requestedBodySeconds = bodySecondsForNarration(spokenSeconds, source)
+    const spanSeconds = bodySecondsForNarration(spokenSeconds, source)
+    requestedBodySeconds = Math.max(1 / fps, Number((spanSeconds - leadFrames / fps).toFixed(3)))
+    if (leadFrames > 0) {
+      notes.push(`${args.compositionId}: the narration starts at frame 0 under the ${leadFrames}-frame cover (narrationFrom "cover") — the body carries the remaining ${requestedBodySeconds}s of its ${spanSeconds}s span, never the whole span again after the cover.`)
+    }
     if (args.floorToPurposeMin && requestedBodySeconds < rule.minSeconds) {
       notes.push(`${args.compositionId}: the on-screen copy reads in ${requestedBodySeconds}s; the ${purpose} minimum of ${rule.minSeconds}s holds the body so the visuals get their dwell (floorToPurposeMin).`)
       requestedBodySeconds = rule.minSeconds
@@ -677,18 +723,30 @@ export function planCompositionDuration(args: PlanArgs): DurationPlan {
     introFrames: spec.introFrames, outroFrames: spec.outroFrames,
   })
   const bodySeconds = t.body.durationInFrames / fps
-  const belowPurposeMin = spokenSeconds !== null && bodySeconds < rule.minSeconds
-  const abovePurposeMax = bodySeconds > rule.maxSeconds
-  if (belowPurposeMin) notes.push(`${args.compositionId}: the narration fills ${bodySeconds}s of body, under the ${purpose} minimum of ${rule.minSeconds}s — the writer's floor (purposeFloorDirective) is what closes this; the body is never padded with silence.`)
-  if (abovePurposeMax) notes.push(`${args.compositionId}: ${bodySeconds}s of body is past the ${purpose} maximum of ${rule.maxSeconds}s — fitNarrationToBudget should have trimmed the script at a sentence boundary.`)
+  // The purpose range measures the NARRATED stretch: the body, plus the cover
+  // when the narration already plays under it.
+  const narratedSeconds = bodySeconds + (spokenSeconds !== null ? leadFrames / fps : 0)
+  const belowPurposeMin = spokenSeconds !== null && narratedSeconds < rule.minSeconds
+  const abovePurposeMax = narratedSeconds > rule.maxSeconds
+  if (belowPurposeMin) notes.push(`${args.compositionId}: the narration fills ${narratedSeconds}s, under the ${purpose} minimum of ${rule.minSeconds}s — the writer's floor (purposeFloorDirective) is what closes this; the body is never padded with silence.`)
+  if (abovePurposeMax) notes.push(`${args.compositionId}: ${narratedSeconds}s of narrated body is past the ${purpose} maximum of ${rule.maxSeconds}s — fitNarrationToBudget should have trimmed the script at a sentence boundary.`)
+  // THE CAP ITSELF IS CHECKED against the purpose (requiredCapFrames): a live
+  // remotion_compositions row whose duration_frames is under bookends + the
+  // purpose max can never carry that purpose's longest script, and the clamp
+  // above would cut it silently. Said once, where the plan is made.
+  const requiredCap = requiredCapFrames(args.compositionId, fps)
+  const capBelowPurpose = requiredCap !== null && capFrames < requiredCap
+  if (capBelowPurpose) {
+    notes.push(`${args.compositionId}: the registered cap ${capFrames}f is under the ${requiredCap}f its purposes need (bookends + the longest purpose max) — raise remotion_compositions.duration_frames or the ${purpose} maximum is unreachable.`)
+  }
 
   return {
     compositionId: args.compositionId, purpose, host: spec.host, bodyMode: "narration", fps,
     introFrames: t.intro.durationInFrames, bodyFrames: t.body.durationInFrames, outroFrames: t.outro.durationInFrames,
     durationInFrames: t.totalFrames,
-    narrationWindow: { from: t.body.from, to: t.body.from + t.body.durationInFrames },
+    narrationWindow: { from: spec.narrationFrom === "cover" ? 0 : t.body.from, to: t.body.from + t.body.durationInFrames },
     spokenSeconds, spokenSecondsSource: source, requestedBodySeconds, bodySeconds,
-    capFrames, clampedToCap, belowPurposeMin, abovePurposeMax, notes,
+    capFrames, clampedToCap, belowPurposeMin, abovePurposeMax, capBelowPurpose, notes,
   }
 }
 
@@ -740,13 +798,33 @@ export function narrationLengthFromProps(
   if (!props) return null
   const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null)
   const staged = num(props.spokenSeconds)
-  if (staged !== null) return { spokenSeconds: staged, source: props.spokenSecondsSource === "measured" ? "measured" : "estimated", from: "staged" }
+  const stagedMeasured = staged !== null && props.spokenSecondsSource === "measured"
   const avatar = num(props.avatarDurationSeconds)
+  // MEASURED BEATS ESTIMATED (lane 85E). The avatar orchestrator MERGES
+  // avatarDurationSeconds onto a row a producer already staged — and a
+  // producer with no synthesized voiceover stages an ESTIMATE (words at the
+  // host pace). The old order read the staged key first whatever its source,
+  // so D-ID's own measurement of the clip that will actually play lost to a
+  // guess: a clip longer than the guess was cut at the outro, a shorter one
+  // left the presenter's frozen last frame on screen. Two measurements (a
+  // measured voiceover AND a measured avatar clip on the same row) take the
+  // LONGER, so neither audio track is cut.
+  if (stagedMeasured && avatar !== null) {
+    return avatar > (staged as number)
+      ? { spokenSeconds: avatar, source: "measured", from: "avatar" }
+      : { spokenSeconds: staged as number, source: "measured", from: "staged" }
+  }
+  if (stagedMeasured) return { spokenSeconds: staged as number, source: "measured", from: "staged" }
   if (avatar !== null) return { spokenSeconds: avatar, source: "measured", from: "avatar" }
+  if (staged !== null) return { spokenSeconds: staged, source: "estimated", from: "staged" }
   const cues = props.captionsCues
   if (Array.isArray(cues) && cues.length > 0) {
     const fps = Math.max(1, geometryFor(compositionId)?.fps ?? 30)
-    const from = compositionBookends(compositionId).introFrames
+    // Where the narration starts — 0 under a from-frame-0 cover (the cues of
+    // those compositions are planned from frame 0), the intro's end otherwise.
+    // Subtracting the intro from a frame-0 cue list under-measured the
+    // narration by the whole cover (lane 85E).
+    const from = narrationStartFrame(compositionId)
     let end = 0
     for (const c of cues as Array<{ fromFrame?: unknown; durationFrames?: unknown }>) {
       const f = num(c?.fromFrame) ?? 0, d = num(c?.durationFrames) ?? 0
@@ -853,5 +931,8 @@ export function durationMetadata(compositionId: string) {
 export function narrationWindowFrames(compositionId: string, durationInFrames: number): { from: number; to: number } {
   const { introFrames, outroFrames } = compositionBookends(compositionId)
   const t = computeAssemblyTimeline({ durationInFrames, introFrames, outroFrames })
-  return { from: t.body.from, to: t.body.from + t.body.durationInFrames }
+  // A from-frame-0 composition narrates under its cover (narrationStartFrame);
+  // the window still ends where the outro tile begins.
+  const from = COMPOSITION_DURATION_RULES[compositionId]?.narrationFrom === "cover" ? 0 : t.body.from
+  return { from, to: t.body.from + t.body.durationInFrames }
 }

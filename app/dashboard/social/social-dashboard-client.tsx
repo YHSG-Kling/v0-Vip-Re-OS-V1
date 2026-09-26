@@ -74,6 +74,12 @@ import { BarChart3, Sparkles } from "lucide-react"
 import { SocialAiComposer } from "@/app/components/ai-copilot/social-ai-composer"
 import { SocialCalendarAiPlanner } from "@/app/components/ai-copilot/social-calendar-ai-planner"
 import { PostComposerDialog } from "./components/post-composer-dialog"
+// MERGED FROM app/social-planner/social-planner-content.tsx (lane 85E, §1.1):
+// the blocked-content compliance log and the per-post "make a video from this
+// post" buttons were the two capabilities the legacy body had that this
+// survivor did not.
+import { SocialComplianceLog } from "./components/social-compliance-log"
+import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 import { getPublishedPostUrl } from "@/lib/social/get-published-post-url"
 import { toast } from "sonner"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -550,7 +556,15 @@ export function SocialDashboardClient({
           <TabsTrigger value="publishing">Publishing ({counts.publishing})</TabsTrigger>
           <TabsTrigger value="published">Published ({counts.published})</TabsTrigger>
           <TabsTrigger value="failed">Failed ({counts.failed})</TabsTrigger>
+          <TabsTrigger value="compliance" className="gap-1">
+            <AlertCircle className="h-4 w-4" />Compliance
+          </TabsTrigger>
         </TabsList>
+
+        {/* Compliance log — merged from the legacy Social Planner (lane 85E). */}
+        <TabsContent value="compliance">
+          <SocialComplianceLog />
+        </TabsContent>
 
         {/* AI Composer */}
         <TabsContent value="ai-composer">
@@ -753,6 +767,10 @@ export function SocialDashboardClient({
 
                           {/* Content */}
                           <p className="text-sm text-foreground line-clamp-3 mb-2">{post.content}</p>
+                          {/* Turn the post into a video — merged from the legacy Social Planner (lane 85E). */}
+                          {post.content && (
+                            <VideoGenerationButtons script={post.content} title={`Social Post - ${post.platform}`} size="sm" className="mb-2" />
+                          )}
 
                           {/* Hashtags */}
                           {post.hashtags && post.hashtags.length > 0 && (

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { generateQRCodeAction } from "@/app/actions/lead-magnets-actions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -40,6 +40,27 @@ export function QRCodeGenerator({
       : null
   )
   const [label, setLabel] = useState(`Lead Magnet: ${magnetSlug}`)
+  // THE EXISTING CODE'S RECORD (lane 85E, census 6d — the missing reader of
+  // GET /api/lead-magnets/qr/[magnetId]'s session-gated record arm). A magnet
+  // that already had a code opened this card knowing only its id: no tracked
+  // link, no scan count, no active flag — though the route had served exactly
+  // that row (label lead_magnet:<magnetId>) to a member of the owning brokerage
+  // since wave 16. A refused or foreign read shows nothing, never a guess.
+  const [record, setRecord] = useState<{ slug: string; scan_count: number | null; is_active: boolean | null } | null>(null)
+  const [recordNote, setRecordNote] = useState<string | null>(null)
+  useEffect(() => {
+    if (!existingQrCodeId) return
+    let live = true
+    fetch(`/api/lead-magnets/qr/${encodeURIComponent(magnetId)}?brokerageId=${encodeURIComponent(brokerageId)}`)
+      .then(async (r) => {
+        const j = await r.json().catch(() => null)
+        if (!live) return
+        if (r.ok && j?.success && j.qr) setRecord({ slug: j.qr.slug, scan_count: j.qr.scan_count ?? null, is_active: j.qr.is_active ?? null })
+        else setRecordNote(j?.note ?? j?.error ?? "The QR record could not be read.")
+      })
+      .catch(() => { if (live) setRecordNote("The QR record could not be read.") })
+    return () => { live = false }
+  }, [existingQrCodeId, magnetId, brokerageId])
   const [copied, setCopied] = useState(false)
 
   // Build the landing page URL from current origin
@@ -126,6 +147,12 @@ export function QRCodeGenerator({
               Tracked QR Code
             </Badge>
           )}
+          {record && (
+            <p className="text-xs text-muted-foreground text-center">
+              {record.is_active === false ? "Inactive · " : ""}Scanned {record.scan_count ?? 0} time{record.scan_count === 1 ? "" : "s"} · tracked link /qr/{record.slug}
+            </p>
+          )}
+          {!record && recordNote && <p className="text-xs text-muted-foreground text-center">{recordNote}</p>}
         </div>
 
         {/* Landing URL */}

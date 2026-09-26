@@ -77,12 +77,29 @@ interface ContentStudioClientProps {
   userRole?: string
   /** Pre-resolved by the server page — avoids a client-side roundtrip */
   brokerageId?: string
+  /**
+   * MOUNTED ON THE SURVIVOR (lane 85E, CLAUDE.md §1). This body was imported
+   * by NOTHING once /content-studio became a redirect to the Marketing Studio,
+   * which made six server actions (generateContentIdeas, getContentIdeas,
+   * researchKeywords, getPublishingStats, getSavedIdeas, saveContentIdea) and
+   * the LinkToVideoGenerator unreachable from any page. The Marketing Studio
+   * (app/dashboard/marketing/studio/marketing-studio-client.tsx) now mounts it
+   * as its "Content Lab" tab with the sections it does NOT already own; the
+   * survivor's own tabs keep newsletters ("newsletters"), direct mail ("mail")
+   * and /dashboard/marketing/competitors keeps the competitor radar.
+   * Absent → every section (the historical full body).
+   */
+  sections?: ReadonlyArray<ContentStudioSection>
 }
 
-export default function ContentStudioClient({ userId, userRole, brokerageId: brokerageIdProp }: ContentStudioClientProps) {
-  const router = useRouter()
+export type ContentStudioSection =
+  | "link-to-video" | "video" | "repurpose" | "ideas" | "keywords" | "competitors" | "newsletter" | "mail"
 
-  const [activeTab, setActiveTab] = useState("link-to-video")
+export default function ContentStudioClient({ userId, userRole, brokerageId: brokerageIdProp, sections }: ContentStudioClientProps) {
+  const router = useRouter()
+  const shows = (s: ContentStudioSection) => !sections || sections.includes(s)
+
+  const [activeTab, setActiveTab] = useState<string>(sections?.[0] ?? "link-to-video")
   const [isInitializing, setIsInitializing] = useState(true)
   const [contentIdeas, setContentIdeas] = useState<any[]>([])
   const [savedIdeas, setSavedIdeas] = useState<any[]>([])
@@ -734,27 +751,27 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
               <SearchCode className="h-5 w-5" />
               <span className="text-xs font-semibold">Keywords</span>
             </TabsTrigger>
-            <TabsTrigger
+            {shows("competitors") && <TabsTrigger
               value="competitors"
               className="flex-col gap-2 h-auto py-4 data-[state=active]:bg-purple-600 data-[state=active]:text-white text-slate-700 hover:bg-slate-200 rounded-xl transition-colors"
             >
               <Eye className="h-5 w-5" />
               <span className="text-xs font-semibold">Competitor Radar</span>
-            </TabsTrigger>
-            <TabsTrigger
+            </TabsTrigger>}
+            {shows("newsletter") && <TabsTrigger
               value="newsletter"
               className="flex-col gap-2 h-auto py-4 data-[state=active]:bg-orange-600 data-[state=active]:text-white text-slate-700 hover:bg-slate-200 rounded-xl transition-colors"
             >
               <Mail className="h-5 w-5" />
               <span className="text-xs font-semibold">Newsletter</span>
-            </TabsTrigger>
-            <TabsTrigger
+            </TabsTrigger>}
+            {shows("mail") && <TabsTrigger
               value="mail"
               className="flex-col gap-2 h-auto py-4 data-[state=active]:bg-rose-600 data-[state=active]:text-white text-slate-700 hover:bg-slate-200 rounded-xl transition-colors"
             >
               <Ticket className="h-5 w-5" />
               <span className="text-xs font-semibold">Direct Mail</span>
-            </TabsTrigger>
+            </TabsTrigger>}
           </TabsList>
 
           {/* Link-to-Video Tab */}

@@ -21,6 +21,10 @@ import {
   type CompositionTier,
 } from "@/lib/remotion/registry"
 import { resolvePlanTier } from "@/lib/billing/plan-tier"
+import {
+  COMPOSITION_DURATION_RULES, PURPOSE_DURATION_RULES, movingCompositionIds, requiredCapFrames,
+} from "@/lib/video/duration-model"
+import { mlsCutCompositions } from "@/lib/video/render-cut"
 
 export interface CompositionLibraryRow extends RemotionCompositionRow {
   /** Lifetime render count for THIS brokerage. NULL when no renders. */
@@ -31,6 +35,23 @@ export interface CompositionLibraryRow extends RemotionCompositionRow {
   cost_per_render_usd:     number
   /** Is the composition reachable to this brokerage's tier? */
   reachable_for_tier:      boolean
+  /**
+   * THE LENGTH RULE, beside the LIVE cap (lane 85E, the video timing audit).
+   * `duration_frames` on the live row is the CAP the purpose-driven duration
+   * model plans inside (lib/video/duration-model.ts); `required_cap_frames` is
+   * bookends + the longest purpose max it serves. A live cap under it means that
+   * purpose's longest script is clamped at render — the broker sees it here
+   * instead of discovering a cut-off narration. Null for stills and unregistered
+   * rows (no body to size).
+   */
+  duration_plan: {
+    purpose: string
+    body_seconds: { min: number; ideal: number; max: number }
+    required_cap_frames: number
+    cap_covers_purpose: boolean
+  } | null
+  /** Renders a second, unbranded MLS cut beside the ads cut (lib/video/render-cut.ts). */
+  has_mls_cut: boolean
 }
 
 export interface CompositionLibrarySnapshot {
@@ -84,6 +105,9 @@ export async function getCompositionLibrarySnapshot(): Promise<{
     rendersByComp.set(r.composition_id, agg)
   }
 
+  // Derived once per snapshot from the ONE registries (never a per-row table).
+  const moving = new Set(movingCompositionIds())
+  const withMlsCut = new Set(mlsCutCompositions())
   const rows: CompositionLibraryRow[] = allCompositions.map((c) => {
     const agg = rendersByComp.get(c.composition_id) ?? { count: 0, lastSucceeded: null }
     // The tier ladder used to be re-implemented here ("mirror
@@ -98,6 +122,8 @@ export async function getCompositionLibrarySnapshot(): Promise<{
       brokerage_last_rendered: agg.lastSucceeded,
       cost_per_render_usd:     estimateCompositionCost(c).totalUsd,
       reachable_for_tier:      reachable,
+      duration_plan:           durationPlanFor(c.composition_id, c.duration_frames, c.fps, moving),
+      has_mls_cut:             withMlsCut.has(c.composition_id),
     }
   })
 
@@ -111,6 +137,24 @@ export async function getCompositionLibrarySnapshot(): Promise<{
       stockOutroCount: stock.filter((r) => r.category === "logo_outro").length,
       stockBrollCount: stock.filter((r) => r.category === "neighborhood" || r.category === "b_roll").length,
     },
+  }
+}
+
+/** The live cap against the purpose rule — module-private (a "use server" file
+ *  exports only async actions). */
+function durationPlanFor(
+  compositionId: string, liveCapFrames: number, fps: number, moving: Set<string>,
+): CompositionLibraryRow["duration_plan"] {
+  const spec = COMPOSITION_DURATION_RULES[compositionId]
+  if (!spec || !moving.has(compositionId)) return null
+  const required = requiredCapFrames(compositionId, fps > 0 ? fps : 30)
+  if (required === null) return null
+  const rule = PURPOSE_DURATION_RULES[spec.purpose]
+  return {
+    purpose: spec.purpose,
+    body_seconds: { min: rule.minSeconds, ideal: rule.idealSeconds, max: rule.maxSeconds },
+    required_cap_frames: required,
+    cap_covers_purpose: liveCapFrames >= required,
   }
 }
 

@@ -1061,7 +1061,9 @@ function advancedRealismSection() {
   check("MAX_BRAND_BOOKEND_SECONDS is the ONE cap (§6), defined in the realism home",
     /export const MAX_BRAND_BOOKEND_SECONDS = 2\.5/.test(readStripped("lib/video/realism-profile.ts")))
   check("concatIntroOutro imports the cap rather than a stray literal",
-    /import \{ MAX_BRAND_BOOKEND_SECONDS \} from "@\/lib\/video\/realism-profile"/.test(attribution))
+    // Lane 85E: it also imports appliedBookendSeconds (the trimmed length it
+    // reports back) — the rule is that the cap comes from the realism home.
+    /import \{[^}]*\bMAX_BRAND_BOOKEND_SECONDS\b[^}]*\} from "@\/lib\/video\/realism-profile"/.test(attribution))
   check("only bookend inputs (intro/outro) are trimmed — the mainIdx is excluded from bookendIdx",
     /bookendIdx = new Set\(inputs\.map\(\(_, i\) => i\)\.filter\(\(i\) => i !== mainIdx\)\)/.test(attribution))
   check("both the video AND audio filter chains apply the trim for a bookend segment (a video-only trim would desync audio on concat)",

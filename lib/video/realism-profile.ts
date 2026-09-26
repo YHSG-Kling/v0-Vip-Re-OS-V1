@@ -701,6 +701,23 @@ export const PLAIN_ALIGNMENT_FIXTURE: PauseableAlignment = (() => {
 // main video segment is NEVER trimmed by it.
 export const MAX_BRAND_BOOKEND_SECONDS = 2.5
 
+/**
+ * The seconds a stock bookend ACTUALLY adds once concatIntroOutro has trimmed
+ * it (lane 85E, the video timing audit). The render coordinator used to add
+ * each clip's recorded `video_assets.duration_seconds` straight onto the video
+ * length — a 10 s brokerage sting counted as 10 s although the concat keeps
+ * 2.5 — so the music fade-out was timed 7.5 s PAST the end of the file (the bed
+ * never faded; the video stopped at full level) and the narration pad measured
+ * against a video that did not exist. A probed length (the concat measures each
+ * input) beats the recorded one; an unknown length counts as the cap, the
+ * longest the trim can leave. Never negative. PURE.
+ */
+export function appliedBookendSeconds(probedSeconds: number | null | undefined, recordedSeconds?: number | null): number {
+  const known = [probedSeconds, recordedSeconds].find((v) => typeof v === "number" && Number.isFinite(v) && v >= 0)
+  const s = typeof known === "number" ? known : MAX_BRAND_BOOKEND_SECONDS
+  return Number(Math.min(MAX_BRAND_BOOKEND_SECONDS, Math.max(0, s)).toFixed(3))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // § SPOKEN-DELIVERY SCRIPT REALISM DIRECTIVE
 // ─────────────────────────────────────────────────────────────────────────────

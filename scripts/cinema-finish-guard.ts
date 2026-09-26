@@ -155,7 +155,10 @@ console.log("\n── §edges · brand colour, never black; timeline untouched �
   check("POSITIVE CONTROL: a black veil specimen is caught", blackVeil(`<AbsoluteFill style={{ backgroundColor: "#000" }} />`))
   check("head fades FROM the veil (1 → 0) and tail fades TO it (0 → 1), both clamped with CINEMA_EASING beziers",
     /interpolate\(frame,\s*\[0,\s*edges\.head\],\s*\[1,\s*0\][\s\S]{0,160}Easing\.bezier\(\.\.\.CINEMA_EASING\.enter\)/.test(cf) &&
-    /interpolate\(frame,\s*\[durationInFrames - edges\.tail,[^\]]*\],\s*\[0,\s*1\][\s\S]{0,160}Easing\.bezier\(\.\.\.CINEMA_EASING\.exit\)/.test(cf))
+    // Lane 85E: the tail's start may be clamped (Math.min(… − edges.tail, … − 2))
+    // so the range stays strictly increasing on a very short render — assert the
+    // rule (a tail ramp from edges.tail before the end), not the spelling.
+    /interpolate\(frame,\s*\[(?:Math\.min\(\s*)?durationInFrames - edges\.tail,[^\]]*\],\s*\[0,\s*1\][\s\S]{0,160}Easing\.bezier\(\.\.\.CINEMA_EASING\.exit\)/.test(cf))
   const cssMotion = (s: string) => /\b(transition|animation)\s*:/.test(s)
   check("no CSS transition/animation in CinemaFinish or SceneFade (remotion renders frame by frame)", !cssMotion(cfCode) && !cssMotion(blankStrings(readStripped("remotion/components/SceneFade.tsx"))))
   check("POSITIVE CONTROL: a CSS transition specimen is caught", cssMotion(`style={{ transition: "opacity 1s" }}`))
@@ -191,7 +194,9 @@ console.log("\n── §audio · master, fades derived, both paths ──")
   check("music-mixer exports masterAudioLoudness (the voice-without-music master) built from the SAME stage", /export async function masterAudioLoudness/.test(mixer) && /buildMasterLoudnessStage\("\[0:a\]", "\[aout\]"\)/.test(mixer))
   const coord = readStripped("lib/remotion/render-coordinator.ts")
   check("render-coordinator passes the DERIVED fades + master:true into the music pass", /\.\.\.cinemaMusicFades\(composition\.composition_id,/.test(coord) && /master:\s*true/.test(coord))
-  check("render-coordinator masters a voiced render that got no music pass", /if \(!musicAssetId && usedVoiceover\)[\s\S]{0,200}masterAudioLoudness/.test(coord))
+  // Lane 85E: "voiced" now means SPEECH on [0:a] — a voiceover OR a presenter
+  // clip (stagesSpeech); a presenter-only render is levelled too.
+  check("render-coordinator masters a voiced render that got no music pass", /if \(!musicAssetId && \(usedVoiceover \|\| carriesSpeech\)\)[\s\S]{0,200}masterAudioLoudness/.test(coord))
   const moving = ids.filter((id) => cinemaFinishFor(id).enabled)
   const wrong = moving.filter((id) => {
     const { introFrames, outroFrames } = compositionBookends(id)

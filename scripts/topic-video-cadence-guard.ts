@@ -38,7 +38,7 @@ import { stripComments, blankStrings } from "./strip-comments"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import {
   TOPIC_VIDEO_CADENCE_DEFAULT, TOPIC_VIDEO_CADENCE_KEY, TOPIC_VIDEO_CADENCE_MAX, TOPIC_VIDEO_CADENCE_MIN, TOPIC_VIDEO_PERSONAS,
-  isTopicVideoDay, personaForSlot, personaRotation, resolveTopicVideoCadence, topicScriptWords, topicVideoSlotToday,
+  personaForSlot, personaRotation, resolveTopicVideoCadence, topicScriptWords, topicVideoSlotToday,
   topicVideoWeekdays, topicVideosPerWeek,
 } from "../lib/video/topic-video"
 import { PURPOSE_DURATION_RULES } from "../lib/video/duration-model"
@@ -83,7 +83,7 @@ console.log("\n── §bounds · whatever is stored resolves into the bounds �
   check("seasonalLift:false → the same count all year", topicVideosPerWeek(r({ perWeek: 3, seasonalLift: false }), PEAK) === 3)
   const off = r({ enabled: false })
   check("switched OFF → zero a week and no day is a topic-video day", topicVideosPerWeek(off, PEAK) === 0 && topicVideoWeekdays("t", PEAK, off).length === 0
-    && Array.from({ length: 7 }, (_, i) => isTopicVideoDay("t", new Date(Date.UTC(2026, 4, 3 + i)), off)).every((x) => !x))
+    && Array.from({ length: 7 }, (_, i) => topicVideoSlotToday("t", new Date(Date.UTC(2026, 4, 3 + i)), off) >= 0).every((x) => !x))
 }
 
 console.log("\n── §spread · distinct days, evenly spread, tenants spread ──")
@@ -108,7 +108,7 @@ console.log("\n── §spread · distinct days, evenly spread, tenants spread �
   for (let i = 0; i < 200; i++) firstDays.add(topicVideoWeekdays(`tenant-${i}`, OFF_PEAK)[0])
   check(`200 tenants spread over all 7 starting weekdays (${firstDays.size})`, firstDays.size === 7)
   const tenant = "22222222-2222-4222-8222-222222222222"
-  const count = (month: number, day0: number) => Array.from({ length: 7 }, (_, d) => isTopicVideoDay(tenant, new Date(Date.UTC(2026, month, day0 + d)))).filter(Boolean).length
+  const count = (month: number, day0: number) => Array.from({ length: 7 }, (_, d) => topicVideoSlotToday(tenant, new Date(Date.UTC(2026, month, day0 + d))) >= 0).filter(Boolean).length
   check(`a real May week holds ${count(4, 3)} topic-video days and a November week ${count(10, 1)} (default cadence, derived)`,
     count(4, 3) === topicVideosPerWeek(TOPIC_VIDEO_CADENCE_DEFAULT, PEAK) && count(10, 1) === topicVideosPerWeek(TOPIC_VIDEO_CADENCE_DEFAULT, OFF_PEAK))
   const idx = Array.from({ length: 7 }, (_, d) => topicVideoSlotToday(tenant, new Date(Date.UTC(2026, 4, 3 + d)))).filter((i) => i >= 0).sort()

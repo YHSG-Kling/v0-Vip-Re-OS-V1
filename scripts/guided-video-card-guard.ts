@@ -37,7 +37,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
-  GUIDE_FIELDS, GUIDE_FIELD_SPECS, SUGGEST_DEBOUNCE_MS, allChecklists, cleanSuggestion, needsChecklist, readyToSuggest, sanitizeSuggestions,
+  GUIDE_FIELDS, GUIDE_FIELD_SPECS, SUGGEST_DEBOUNCE_MS, cleanSuggestion, needsChecklist, readyToSuggest, sanitizeSuggestions,
 } from "../lib/video/video-guide"
 import {
   CUSTOM_ARCHETYPE_REGISTRY, CUSTOM_VIDEO_ARCHETYPES, archetypeHosts, compositionsForPurposeAndHost, pickCompositionForChannel, planCustomVideo,
@@ -58,7 +58,7 @@ const check = (name: string, cond: boolean, detail?: string) => {
 
 console.log("\n── §needs · derived, plain-spoken ──")
 {
-  const all = allChecklists()
+  const all = CUSTOM_VIDEO_ARCHETYPES.map(needsChecklist)
   check(`a checklist for every archetype (${all.length}/${CUSTOM_VIDEO_ARCHETYPES.length})`, all.length === CUSTOM_VIDEO_ARCHETYPES.length)
   const jargon = (s: string) => /\b(archetype|composition|purpose|host kind|body[- ]visual|registry)\b/i.test(s)
   check("POSITIVE CONTROL: the jargon detector sees 'archetype'", jargon("pick an archetype"))
@@ -72,7 +72,7 @@ console.log("\n── §needs · derived, plain-spoken ──")
     const plain = ![c.headline, ...c.bring, c.length, ...c.onCamera, c.nextStep].some(jargon)
     check(`${a}: band ${band.minSeconds}-${band.maxSeconds}s (ideal ${band.idealSeconds}), ${needKeys} bring-line(s), ${archetypeHosts(a).length} host line(s) — derived and plain`, derived && plain)
   }
-  check("the not-salesy closing steps carry no urgency words", !allChecklists().some((c) => /\b(now|hurry|today only|act fast|don't miss|limited)\b/i.test(c.nextStep)))
+  check("the not-salesy closing steps carry no urgency words", !all.some((c) => /\b(now|hurry|today only|act fast|don't miss|limited)\b/i.test(c.nextStep)))
 }
 
 console.log("\n── §suggest · cleaned, capped, scanned ──")

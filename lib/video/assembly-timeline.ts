@@ -172,3 +172,28 @@ export function weightedShotSlots(bodyFrames: number, weights: number[]): Assemb
   }
   return slots
 }
+
+/**
+ * The fade-in / hold / fade-out input range for ONE slot of a computed window
+ * — `[0, r, slot − r, slot]` with r = min(fadeFrames, ⌊(slot − 1) / 2⌋), so it
+ * is STRICTLY increasing at any slot length Remotion's `interpolate` can be
+ * handed; null when the slot is too short (< 3 frames) for any envelope (the
+ * slide then simply holds at full opacity). PURE.
+ *
+ * WHY (lane 85E, found by a REAL render). JustListedReel and
+ * NewsletterDigestVideo faded every slide with a literal
+ * `[0, 8, slideFrames − 8, slideFrames]` / `[0, 10, slideFrames − 10, …]` —
+ * written when their windows were a fixed 16 s. Since wave 78 the window is
+ * whatever the narration leaves, divided across however many photos / section
+ * titles arrived (evenShotSlots), so a short measured voiceover or a full set of
+ * eight photos yields slots under 17 frames and `interpolate` THROWS
+ * ("inputRange must be strictly monotonically increasing but got
+ * [0,8,7,15]") — the whole render fails, not just the slide. SceneFade already
+ * shrinks its ramps this way; this is that rule for a 4-point envelope.
+ */
+export function slideFadeRange(slotFrames: number, fadeFrames: number): [number, number, number, number] | null {
+  const d = Math.floor(Number.isFinite(slotFrames) ? slotFrames : 0)
+  const r = Math.min(Math.floor(Number.isFinite(fadeFrames) ? fadeFrames : 0), Math.floor((d - 1) / 2))
+  if (!(r >= 1)) return null
+  return [0, r, d - r, d]
+}

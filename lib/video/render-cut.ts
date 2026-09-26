@@ -69,7 +69,14 @@
 import type { VideoFinish } from "./finish-spec"
 import { finishForVideo } from "./finish-spec"
 import { compositionPurposes, type VideoPurpose } from "./duration-model"
-import { CONTENT_CONTRACT } from "@/lib/remotion/content-contract"
+// RELATIVE, never "@/" (lane 85E): five listing compositions import
+// mlsNeutralTitle from this module, so it rides the Remotion webpack bundle,
+// which resolves NO tsconfig alias (lib/remotion/bundle-cache.ts calls
+// bundle({ entryPoint }) with no webpackOverride). The "@/" spelling made
+// bundle(remotion/index.ts) fail with "Can't resolve '@/lib/remotion/
+// content-contract'" — every production render, whatever its composition.
+// scripts/video-timing-audit.ts walks the whole bundle graph for any "@/".
+import { CONTENT_CONTRACT } from "../remotion/content-contract"
 
 export const RENDER_CUTS = ["ads", "mls"] as const
 export type RenderCut = (typeof RENDER_CUTS)[number]

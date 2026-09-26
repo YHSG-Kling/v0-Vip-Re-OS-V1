@@ -251,9 +251,13 @@ export function topicVideoSlotToday(brokerageId: string, d: Date, cadence: Topic
   return topicVideoWeekdays(brokerageId, d.getUTCMonth(), cadence).indexOf(d.getUTCDay())
 }
 
-export function isTopicVideoDay(brokerageId: string, d: Date, cadence: TopicVideoCadence = TOPIC_VIDEO_CADENCE_DEFAULT): boolean {
-  return topicVideoSlotToday(brokerageId, d, cadence) >= 0
-}
+// TOMBSTONE (lane 85E, CLAUDE.md §1.3): `isTopicVideoDay(brokerageId, d,
+// cadence)` was `topicVideoSlotToday(brokerageId, d, cadence) >= 0` under a
+// second name, and only a proof called it (orphan-export category A). The
+// runner already asks the survivor directly — lib/video/topic-video-runner.ts
+// (`const slot = topicVideoSlotToday(t.id, now, cadence)`, then `slot < 0` →
+// skip) — and scripts/topic-video-cadence-guard.ts now asks it too. Survivor:
+// topicVideoSlotToday above; nothing was lost.
 
 // ── SHAPE: category → archetype chain → first whose needs are met ───────────
 

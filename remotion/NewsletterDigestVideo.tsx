@@ -27,7 +27,7 @@ import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } 
 import { SafeImg } from "./components/SafeImg"
 import { EndCard } from "./components/EndCard"
 import { CaptionLayer } from "./components/CaptionLayer"
-import { computeAssemblyTimeline, evenShotSlots } from "../lib/video/assembly-timeline"
+import { computeAssemblyTimeline, evenShotSlots, slideFadeRange } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -181,7 +181,11 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
   const activeSlot = slots[idx] ?? { from: 0, durationInFrames: windowFrames }
   const slideFrames = activeSlot.durationInFrames
   const localFrame = frame - activeSlot.from
-  const opacity = interpolate(localFrame, [0, 10, slideFrames - 10, slideFrames], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  // Proportional fades for a short slot (slideFadeRange, lane 85E): the literal
+  // [0, 10, slideFrames − 10, slideFrames] threw inside interpolate for any
+  // section slot under 21 frames and failed the whole render.
+  const fade = slideFadeRange(slideFrames, 10)
+  const opacity = fade ? interpolate(localFrame, fade, [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) : 1
   const t = titles[idx] ?? ""
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center" }}>

@@ -207,11 +207,12 @@ export function CompositionLibraryClient({ snapshot }: { snapshot: CompositionLi
                 <th className="px-3 py-2">Last (mine)</th>
                 <th className="px-3 py-2">Bookends</th>
                 <th className="px-3 py-2">D-ID / Voice</th>
+                <th className="px-3 py-2">Length</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-500 italic">
+                <tr><td colSpan={10} className="px-3 py-6 text-center text-gray-500 italic">
                   No compositions match this filter.
                 </td></tr>
               ) : filtered.map((r) => (
@@ -248,11 +249,26 @@ export function CompositionLibraryClient({ snapshot }: { snapshot: CompositionLi
                   <td className="px-3 py-2 text-gray-700 text-xs">
                     {r.requires_did_avatar && <span className="mr-1 px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">D-ID</span>}
                     {r.requires_voiceover && <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Voice</span>}
+                    {r.has_mls_cut && <span className="ml-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700" title="Also renders an unbranded MLS cut">MLS cut</span>}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    {/* Lane 85E: the purpose rule beside the LIVE cap. The length
+                        is computed from each render's narration; the cap only
+                        bounds it — a cap under the purpose max is flagged. */}
+                    {r.duration_plan ? (
+                      <span className={r.duration_plan.cap_covers_purpose ? "text-gray-700" : "text-red-700 font-semibold"}
+                        title={r.duration_plan.cap_covers_purpose
+                          ? `Sized from the narration: ${r.duration_plan.body_seconds.min}–${r.duration_plan.body_seconds.max}s body for ${r.duration_plan.purpose}`
+                          : `The registered cap (${r.duration_frames}f) is under the ${r.duration_plan.required_cap_frames}f this purpose needs — its longest script would be clamped`}>
+                        {r.duration_plan.body_seconds.ideal}s ideal · {r.duration_plan.body_seconds.min}–{r.duration_plan.body_seconds.max}s
+                        {!r.duration_plan.cap_covers_purpose && " · cap short"}
+                      </span>
+                    ) : <span className="text-gray-400">—</span>}
                   </td>
                 </tr>
                 {openHistory === r.composition_id && (
                   <tr className="border-b border-gray-100 bg-gray-50">
-                    <td colSpan={9} className="px-3 py-3">
+                    <td colSpan={10} className="px-3 py-3">
                       <RenderHistory state={history[r.composition_id]} />
                     </td>
                   </tr>

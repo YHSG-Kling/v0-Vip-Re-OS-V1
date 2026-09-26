@@ -22,6 +22,7 @@ import {
   type LivingFacts,
 } from "../lib/video/living-video"
 import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
+import { appliedBookendSeconds, MAX_BRAND_BOOKEND_SECONDS } from "../lib/video/realism-profile"
 import { compositionSeconds } from "../lib/remotion/composition-geometry"
 import { isUnavailableStatus, normalizeVendorStatus } from "../lib/property/resolve-property-facts"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
@@ -324,9 +325,24 @@ console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
     /const videoSeconds\s*=\s*mainCutSeconds\s*\+\s*bookendSeconds/.test(coord))
   ok("...and that addend is counted only when the concat APPLIED — a bookend whose\n    ffmpeg stitch failed did not lengthen the video",
     /if\s*\(concat\.overlayApplied[\s\S]{0,600}?bookendSeconds\s*=/.test(coord))
-  ok("...and a stock clip with NO recorded duration contributes 0, which is exactly\n    the number this used to assume — the fix cannot regress an unmeasured library",
-    /introRow\?\.duration_seconds\s*\?\?\s*0/.test(coord)
-    && /outroRow\?\.duration_seconds\s*\?\?\s*0/.test(coord))
+  // LANE 85E — the addend is what the concat APPLIED, not what the library
+  // recorded. concatIntroOutro trims every bookend to MAX_BRAND_BOOKEND_SECONDS
+  // and now measures each clip it stitched; the recorded duration is only the
+  // fallback, and an UNKNOWN length counts as the cap (the most the trim can
+  // leave) — the pre-85E "unknown contributes 0" timed the music fade-out to
+  // finish up to 5 s before a video that still had two bookends to play, and a
+  // 10 s recorded sting counted 10 s against a 2.5 s trimmed clip, which put
+  // the fade-out past the end of the file (the bed never faded).
+  ok("...and the addend is the TRIMMED length the concat measured (concat.introSeconds /\n    outroSeconds), the recorded duration only its fallback, through appliedBookendSeconds",
+    /concat\.introSeconds\s*\?\?\s*appliedBookendSeconds\(null,\s*introRow\.duration_seconds\)/.test(coord)
+    && /concat\.outroSeconds\s*\?\?\s*appliedBookendSeconds\(null,\s*outroRow\.duration_seconds\)/.test(coord))
+  ok("...and appliedBookendSeconds caps at the trim, prefers the probe, and counts an unknown as the cap (run, not matched)",
+    appliedBookendSeconds(null, 10) === MAX_BRAND_BOOKEND_SECONDS && appliedBookendSeconds(1.2, 10) === 1.2
+    && appliedBookendSeconds(null, null) === MAX_BRAND_BOOKEND_SECONDS && appliedBookendSeconds(null, 1.5) === 1.5
+    && appliedBookendSeconds(-3, null) === MAX_BRAND_BOOKEND_SECONDS && appliedBookendSeconds(0, 9) === 0)
+  const preFixSum = (recorded: number | null) => recorded ?? 0 // the pre-85E addend, run as the control
+  ok("CONTROL: the pre-85E sum (recorded ?? 0) is recognised as wrong both ways — a 10 s sting over-counts 7.5 s, an unmeasured one under-counts 2.5 s",
+    preFixSum(10) - appliedBookendSeconds(null, 10) === 7.5 && appliedBookendSeconds(null, null) - preFixSum(null) === 2.5)
   ok("...and the picker actually SELECTS that column, else the addend is always 0",
     /duration_seconds/.test(code("lib/remotion/stock-pick.ts")))
   // CONTROL: the padding predicate must still recognise the defect — with the

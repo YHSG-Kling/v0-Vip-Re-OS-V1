@@ -215,7 +215,9 @@ import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
     && coord.indexOf("mixNarrationVoiceover") < coord.indexOf("mixBackgroundMusic("))
   check("the mixer degrades honestly: amix when the video has audio, direct-map when silent",
     src("lib/remotion/voiceover-mixer.ts").includes("amix=inputs=2")
-    && src("lib/remotion/voiceover-mixer.ts").includes('"-map", "1:a"'))
+    // Lane 85E: the silent path maps the narration itself — `1:a`, or its
+    // delayed label when the voice starts after the cover/stock intro.
+    && /"-map", (?:delay \? "\[vod\]" : )?"1:a"/.test(src("lib/remotion/voiceover-mixer.ts")))
   check("ALL reel producers synthesize narration at queue time (assistant voice on reports, agent clone on client-facing)",
     ["lib/intelligence/partners-meeting.ts", "lib/kernel/board-packet-reel.ts", "lib/video/listing-pitch-reel.ts", "lib/kernel/deal-room-reel.ts"]
       .every((f) => src(f).includes("prepareReelVoiceover")))

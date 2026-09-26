@@ -65,7 +65,9 @@ export const CinemaFinish: React.FC<CinemaFinishProps> = ({ compositionId, input
   const head = interpolate(frame, [0, edges.head], [1, 0], {
     extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(...CINEMA_EASING.enter),
   })
-  const tail = interpolate(frame, [durationInFrames - edges.tail, durationInFrames - 1], [0, 1], {
+  // Strictly increasing even when the cap leaves a 1-frame tail on a very short
+  // render ([d − 1, d − 1] threw inside interpolate — lane 85E).
+  const tail = interpolate(frame, [Math.min(durationInFrames - edges.tail, durationInFrames - 2), durationInFrames - 1], [0, 1], {
     extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(...CINEMA_EASING.exit),
   })
   const filter = gradeFilter(spec.look)

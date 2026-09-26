@@ -68,6 +68,7 @@ import { readFileSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
+import { stagesSpeech, stagesVoiceover } from "../lib/remotion/content-contract"
 import { COMPOSITION_GEOMETRY, compositionSeconds, type RegisteredGeometry } from "../lib/remotion/composition-geometry"
 import { VIDEO_FINISH_SPEC } from "../lib/video/finish-spec"
 import { computeAssemblyTimeline, evenShotSlots } from "../lib/video/assembly-timeline"
@@ -617,8 +618,21 @@ function musicSection() {
     mixerSrc.includes("if (input.duckToNarration)") && /buildMusicDuckFilterGraph\(\{/.test(mixerSrc))
   check("music-mixer falls back to the constant-level graph when the sidechain attempt is not requested OR fails at ffmpeg",
     /if \(!ducked\)/.test(mixerSrc) && /runMix\(constantFilter\)/.test(mixerSrc))
-  check("render-coordinator threads usedVoiceover (whether [0:a] carries narration THIS render) into duckToNarration — not a guess, the actual mux fact",
-    /duckToNarration:\s*usedVoiceover/.test(coordinatorSrc))
+  // LANE 85E — the duck asks whether [0:a] carries SPEECH, not whether a
+  // voiceover was ledgered: a D-ID presenter clip speaks on [0:a] with no
+  // voiceover staged, and `duckToNarration: usedVoiceover` mixed the bed flat
+  // through every avatar render's voice. stagesSpeech (content-contract) is
+  // the in-frame voiceover OR a staged presenter clip; the mux fact still ORs in.
+  check("render-coordinator threads SPEECH on [0:a] (stagesSpeech: voiceover OR presenter clip, plus the mux fact) into duckToNarration",
+    /duckToNarration:\s*carriesSpeech\s*\|\|\s*usedVoiceover/.test(coordinatorSrc)
+    && /const carriesSpeech\s*=\s*stagesSpeech\(composition\.composition_id,\s*stagedProps\)/.test(coordinatorSrc))
+  check("stagesSpeech: an AVATAR render with no voiceover carries speech; a silent render does not; an in-frame voiceover does (run, not matched)",
+    stagesSpeech("MarketUpdateReel", { avatarVideoUrl: "https://x/a.mp4" }) && !stagesSpeech("MarketUpdateReel", { avatarVideoUrl: null })
+    && stagesSpeech("JustListedReel", { voiceoverUrl: "https://x/v.mp3" }) && !stagesSpeech("CMAReel", {}))
+  check("CONTROL: the pre-85E key (stagesVoiceover) says NO speech for the same avatar render — the bed would not have ducked",
+    !stagesVoiceover("MarketUpdateReel", { avatarVideoUrl: "https://x/a.mp4" }))
+  check("the loudness master also runs for a speech-carrying render with no music bed (a presenter-only render is levelled too)",
+    /if \(!musicAssetId && \(usedVoiceover \|\| carriesSpeech\)\)/.test(coordinatorSrc))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

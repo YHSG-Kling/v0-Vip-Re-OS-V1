@@ -30,7 +30,7 @@
 // PURE. No I/O, no model.
 
 import {
-  CUSTOM_ARCHETYPE_REGISTRY, CUSTOM_VIDEO_ARCHETYPES, archetypeHosts, type CustomVideoArchetype,
+  CUSTOM_ARCHETYPE_REGISTRY, archetypeHosts, type CustomVideoArchetype,
 } from "./custom-video-archetypes"
 import { PURPOSE_DURATION_RULES, type HostKind } from "./duration-model"
 
@@ -126,10 +126,12 @@ export function needsChecklist(archetype: CustomVideoArchetype): NeedsChecklist 
   }
 }
 
-/** Every archetype has a checklist (the proof iterates this). */
-export function allChecklists(): NeedsChecklist[] {
-  return CUSTOM_VIDEO_ARCHETYPES.map(needsChecklist)
-}
+// TOMBSTONE (lane 85E, CLAUDE.md §1.3): `allChecklists()` was
+// `CUSTOM_VIDEO_ARCHETYPES.map(needsChecklist)` under a second name and only a
+// proof called it (orphan-export category A). The product asks the survivor per
+// archetype — app/actions/custom-video.ts (`needsChecklist(input.archetype)`) —
+// and scripts/guided-video-card-guard.ts now maps the registry itself. Survivor:
+// needsChecklist above; nothing was lost.
 
 /** The system prompt for the guide — warm, plain, compliance-first, bounded. */
 export const GUIDE_SYSTEM = [

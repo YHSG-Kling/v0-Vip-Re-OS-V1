@@ -35,7 +35,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { renderedCompositionSeconds } from "@/lib/video/duration-model"
+import { narrationWindowFrames, planDurationForProps, renderedCompositionSeconds } from "@/lib/video/duration-model"
 import {
   getComposition,
   recordRenderCompleted,
@@ -45,9 +45,9 @@ import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { mixBackgroundMusic } from "./music-mixer"
 import { pickStockAsset } from "./stock-pick"
 import { computeArtifactKey, type FinishInputs } from "./composition-cache"
-import { stagesVoiceover } from "./content-contract"
+import { stagesSpeech, stagesVoiceover } from "./content-contract"
 import { shouldApplyBookends, outputExtension, outputContentType } from "./render-decision"
-import { MUSIC_DUCK_VOLUME_PCT } from "@/lib/video/realism-profile"
+import { MUSIC_DUCK_VOLUME_PCT, appliedBookendSeconds } from "@/lib/video/realism-profile"
 import { cinemaMusicFades } from "@/lib/video/cinema-finish"
 
 export interface RenderIntent {
@@ -172,7 +172,17 @@ export async function finalizeCoordinatedRender(
   } catch (e) {
     console.warn("[render-coordinator] could not read staged input_props; timing against the registered cap:", (e as Error).message)
   }
+  // THE PLAN, not just its seconds (lane 85E): the same pure plan
+  // renderedCompositionSeconds wraps, kept whole so the narration mux below
+  // can place the voice at the composition's own narration start, and so a
+  // clamp or an under-sized live cap is SAID in the render log instead of a
+  // narration being cut silently.
+  const mainPlan = planDurationForProps(composition.composition_id, stagedProps, { geometry: composition })
   const mainCutSeconds = renderedCompositionSeconds(composition, stagedProps)
+  if (mainPlan.clampedToCap || mainPlan.capBelowPurpose) {
+    console.warn(`[render-coordinator] ${composition.composition_id} duration plan: ${mainPlan.notes.join(" | ")}`)
+  }
+  let introClipSeconds = 0
 
   // ─── Bookends ───
   // shouldApplyBookends is the registry flag AND the still rule (a <=1-frame
@@ -205,8 +215,17 @@ export async function finalizeCoordinatedRender(
           // Only an APPLIED concat lengthens the video. A bookend whose ffmpeg
           // stitch failed did not change `working`, so it must not change this
           // number either — same reason the identity fields sit inside this block.
-          bookendSeconds =
-            (introRow?.duration_seconds ?? 0) + (outroRow?.duration_seconds ?? 0)
+          //
+          // THE TRIMMED LENGTH, NOT THE RECORDED ONE (lane 85E): the concat
+          // cuts each bookend to MAX_BRAND_BOOKEND_SECONDS, and it measures
+          // what it applied. Summing the clips' recorded duration_seconds
+          // timed the music fade-out past the end of a video whose 10 s sting
+          // had become 2.5 s — the bed never faded out.
+          introClipSeconds = introRow
+            ? (concat.introSeconds ?? appliedBookendSeconds(null, introRow.duration_seconds))
+            : 0
+          bookendSeconds = introClipSeconds
+            + (outroRow ? (concat.outroSeconds ?? appliedBookendSeconds(null, outroRow.duration_seconds)) : 0)
         }
       } catch (e) {
         console.warn("[render-coordinator] bookend stitch failed; continuing:", (e as Error).message)
@@ -256,8 +275,14 @@ export async function finalizeCoordinatedRender(
       const videoSeconds = mainCutSeconds + bookendSeconds
 
       const { mixNarrationVoiceover } = await import("./voiceover-mixer")
+      // THE VOICE STARTS WHERE THE COMPOSITION'S NARRATION DOES (lane 85E):
+      // after any applied stock intro clip, at the composition's own
+      // narration start (0 under a from-frame-0 cover, the intro's end
+      // otherwise) — the window its burned-in captions are timed to.
+      const startSeconds = introClipSeconds
+        + narrationWindowFrames(composition.composition_id, mainPlan.durationInFrames).from / Math.max(1, mainPlan.fps)
       const narrated = await mixNarrationVoiceover({
-        videoBuffer: working, voiceoverUrl: voUrl, narrationSeconds, videoSeconds,
+        videoBuffer: working, voiceoverUrl: voUrl, narrationSeconds, videoSeconds, startSeconds,
       })
       if (narrated.ok && narrated.outputBuffer.length > 0) {
         working = narrated.outputBuffer
@@ -273,6 +298,10 @@ export async function finalizeCoordinatedRender(
   } catch (e) {
     console.warn("[render-coordinator] voiceover mux failed; continuing:", (e as Error).message)
   }
+
+  // Does the video in hand carry speech (voiceover OR a presenter clip)? The
+  // music duck and the loudness master ask THIS, not the voiceover ledger.
+  const carriesSpeech = stagesSpeech(composition.composition_id, stagedProps)
 
   // ─── Music ───
   // The Director's "none" mood suppresses music entirely (informational cuts);
@@ -308,7 +337,12 @@ export async function finalizeCoordinatedRender(
           // it). A silent render has nothing to sidechain against, so the
           // constant MUSIC_DUCK_VOLUME_PCT level stays the fallback there —
           // see lib/remotion/music-mixer.ts's duckToNarration doc.
-          duckToNarration:    usedVoiceover,
+          //
+          // Lane 85E: the question is SPEECH, not voiceover — a D-ID presenter
+          // clip speaks on [0:a] with no voiceover staged, and the old
+          // `usedVoiceover` key mixed the bed flat through every avatar
+          // render's voice (stagesSpeech, lib/remotion/content-contract.ts).
+          duckToNarration:    carriesSpeech || usedVoiceover,
           // Wave 82C (the cinema finish): the bed's fades are DERIVED from the
           // composition's own intro/outro — it swells under the cover card and
           // resolves across the outro (lib/video/cinema-finish.ts
@@ -339,7 +373,7 @@ export async function finalizeCoordinatedRender(
   // "none" mood, or no bed in the library) is levelled here to the SAME master
   // target the music pass ends in (MASTER_LOUDNESS, -14 LUFS / -1 dBTP), so every
   // finished file leaves at one loudness. A failure keeps the unmastered buffer.
-  if (!musicAssetId && usedVoiceover) {
+  if (!musicAssetId && (usedVoiceover || carriesSpeech)) {
     try {
       const { masterAudioLoudness } = await import("./music-mixer")
       const mastered = await masterAudioLoudness({ videoBuffer: working })

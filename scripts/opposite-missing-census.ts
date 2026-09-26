@@ -3443,9 +3443,19 @@ const EXTERNALLY_ADDRESSED = /\/(cron|webhooks?|callback|oauth|auth|health|og|rs
 const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   // ── Ops poller door (lane W8, integrator 2026-09-01) ──
   ["/api/admin/health-status", "external ops poller: a token CAN now get in — x-internal-api-secret (INTERNAL_API_SECRET) is checked AHEAD of the session fallback (route.ts:63-66, mirroring /api/errors/collect's shape); the secret path reads the platform catalogue only (brokerage_id IS NULL) and rolls up through the ONE shared rollup (lib/platform/service-catalogue-scope.ts:rollupServiceStatuses), so no tenant row reaches an infrastructure monitor"],
-  // ── Lead-magnet public doors (qualified by lane N3b's evidence, integrator 2026-09-01) ──
-  ["/api/lead-magnets/qr/[magnetId]",  "external QR-scan door: the anonymous-scan arm is deliberately ungated (a scan comes from a stranger's phone — route.ts:104's split gates the RECORD behind a session whose users.brokerage_id must equal the brokerage asked about, fail-closed on a refused users read) and an out-of-tree scan reporter cannot be disproved from this repo — §1 unresolved means leave it"],
-  ["/api/lead-magnets/submissions",    "public form-submission intake (Auth: NOT required — the submitter is the lead): enforces TCPA consent on valuation forms (:23-29) and stamps real IP/UA from request headers (:32-36) before the ONE kernel command captureFormSubmission; the in-repo twin app/actions/lead-magnet-capture.ts:22 calls the same kernel command for /lm/[slug], so this door exists for embeds OUTSIDE the app"],
+  // ── Lead-magnet public doors — BUILT OUT OF 6d (lane 85E, CLAUDE.md §1.2) ──
+  // The two entries that stood here left the wire list by gaining their
+  // missing halves, not by a ruling:
+  //   /api/lead-magnets/submissions ← lib/lead-magnets/embed-snippet.ts (the
+  //     "Embed on your site" snippet the lead-magnet library copies, posting to
+  //     LEAD_MAGNET_EMBED_ENDPOINT) + the route's CORS preflight, without which
+  //     no embed on another origin could read its own result;
+  //   /api/lead-magnets/qr/[magnetId] ← app/components/features/lead-magnets/
+  //     QRCodeGenerator.tsx reads the session-gated RECORD arm (tracked slug,
+  //     scan count, active flag) for a magnet that already has a code. The
+  //     anonymous ?track=1 SCAN arm keeps its in-tree twins (/api/qr/scan and
+  //     app/qr/[slug]/page.tsx) — an out-of-tree scan reporter stays unresolved,
+  //     recorded in the route header.
   ["/api/video/projects",                       "second HTTP door onto app/actions/video/create-video-project.ts; app/actions/video.ts:68 + scripts/video-project-consolidation-simulator.ts"],
   ["/api/video/projects/[projectId]/script",    "second HTTP door onto app/actions/video.ts:generateVideoScriptAction; app/actions/video.ts:51-69 + scripts/video-generation-lane-simulator.ts"],
   ["/api/video/projects/[projectId]/generate",  "second HTTP door onto app/actions/video.ts:submitVideoGenerationJobAction/loadVideoGenerationStateAction; same ruling"],

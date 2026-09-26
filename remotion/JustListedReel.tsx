@@ -29,7 +29,7 @@ import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { EqualHousingMark } from "./components/EqualHousingMark"
-import { computeAssemblyTimeline, evenShotSlots } from "../lib/video/assembly-timeline"
+import { computeAssemblyTimeline, evenShotSlots, slideFadeRange } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -177,10 +177,14 @@ const PropertyImages: React.FC<{ images: string[]; windowFrames: number }> = ({ 
   const localFrame = frame - activeSlot.from
   // Ken-burns: subtle scale + drift over each slide
   const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
-  const opacity = interpolate(localFrame, [0, 8, slideFrames - 8, slideFrames], [0, 1, 1, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  })
+  // A slot shorter than two 8-frame fades gets proportionally shorter ones
+  // (slideFadeRange) — the literal [0, 8, slideFrames − 8, slideFrames] threw
+  // inside interpolate for any slot under 17 frames and failed the whole
+  // render (lane 85E, found by a real render of a 6 s measured voiceover).
+  const fade = slideFadeRange(slideFrames, 8)
+  const opacity = fade
+    ? interpolate(localFrame, fade, [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    : 1
   const url = images[idx]
   // HONEST EMPTY (found in the wave-48 assembly audit). Zero images used to
   // fall through this `!url` guard into a bare-null render — no message, no

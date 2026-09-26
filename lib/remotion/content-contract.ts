@@ -520,3 +520,26 @@ export function stagesVoiceover(
 ): boolean {
   return consumesVoiceover(compositionId) && isSupplied(props?.voiceoverUrl)
 }
+
+/**
+ * Will THIS render's frames carry SPEECH on their own audio track? — an
+ * in-frame voiceover (stagesVoiceover), OR a presenter clip: a D-ID avatar mp4
+ * is a talking head whose own lip-synced voice plays through Remotion's
+ * `<Video>` (no composition mutes it on the avatar path; AgentTalkingHeadReel
+ * mutes it only when a separate voiceover replaces that voice, which the first
+ * arm already counts). PURE.
+ *
+ * WHY THIS IS NOT stagesVoiceover (lane 85E). The music pass sidechain-ducks
+ * the bed only when it knows [0:a] carries speech, and it asked the VOICEOVER
+ * question — so every avatar-presented render (the welcome, the market update,
+ * the explainers, the equity report) mixed its bed at one constant level
+ * straight through the presenter's voice, and a presenter render with no music
+ * skipped the loudness master. `used_voiceover` keeps its own meaning (an
+ * ElevenLabs narration played); this answers the audio question the mixer asks.
+ */
+export function stagesSpeech(
+  compositionId: string | null | undefined,
+  props: Record<string, unknown> | null | undefined,
+): boolean {
+  return stagesVoiceover(compositionId, props) || isSupplied(props?.avatarVideoUrl)
+}

@@ -58,6 +58,27 @@ export interface MixVoiceoverInput {
    */
   narrationSeconds?: number | null
   videoSeconds?: number | null
+  /**
+   * WHERE THE NARRATION STARTS in the video being handed over, in seconds
+   * (lane 85E, the video timing audit). The mux used to lay the mp3 at t=0 of
+   * `working` — but by then the coordinator may have PREPENDED a stock intro
+   * clip, and the composition itself may open on a silent cover before its
+   * narration window. The voice then ran ahead of the burned-in captions (which
+   * are timed to the composition's own narration window) by the whole intro.
+   * The coordinator passes applied-intro-clip seconds + the composition's own
+   * narration start (lib/video/duration-model.ts narrationWindowFrames).
+   * Absent / 0 keeps the historical t=0 placement.
+   */
+  startSeconds?: number | null
+}
+
+/**
+ * The ffmpeg stage that places the narration at `startSeconds` — `adelay` in
+ * milliseconds on every channel — or "" when it starts at 0. PURE.
+ */
+export function narrationDelayStage(startSeconds: number | null | undefined): string {
+  if (typeof startSeconds !== "number" || !Number.isFinite(startSeconds) || startSeconds <= 0) return ""
+  return `adelay=${Math.round(startSeconds * 1000)}:all=1,`
 }
 
 export interface MixVoiceoverResult {
@@ -119,7 +140,15 @@ export async function mixNarrationVoiceover(input: MixVoiceoverInput): Promise<M
 
     // How much video to append so the last sentence lands. 0 = the video is
     // already long enough (or we do not know, and will not guess).
-    const pad = paddingSecondsFor(input.narrationSeconds, input.videoSeconds)
+    // The voice ENDS at start + its own length — that, not its length alone, is
+    // what must fit inside the video (a delayed narration can overrun a video
+    // its bare length fits).
+    const start = typeof input.startSeconds === "number" && Number.isFinite(input.startSeconds) && input.startSeconds > 0 ? input.startSeconds : 0
+    const delay = narrationDelayStage(start)
+    const pad = paddingSecondsFor(
+      typeof input.narrationSeconds === "number" ? input.narrationSeconds + start : input.narrationSeconds,
+      input.videoSeconds,
+    )
     // tpad clones the final frame; re-encoding the video is required because we
     // are changing its length, so -c:v copy is dropped ONLY on the padded path.
     const padFilter = pad > 0 ? `[0:v]tpad=stop_mode=clone:stop_duration=${pad}[vpad];` : ""
@@ -134,16 +163,21 @@ export async function mixNarrationVoiceover(input: MixVoiceoverInput): Promise<M
       await runFfmpeg([
         "-y", "-i", videoPath, "-i", voPath,
         "-filter_complex",
-        `${padFilter}[1:a]volume=1.0[vo];[0:a][vo]amix=inputs=2:duration=${mixDuration}:dropout_transition=0[aout]`,
+        `${padFilter}[1:a]${delay}volume=1.0[vo];[0:a][vo]amix=inputs=2:duration=${mixDuration}:dropout_transition=0[aout]`,
         "-map", videoMap, "-map", "[aout]", ...videoCodec, "-c:a", "aac",
         ...(pad > 0 ? [] : ["-shortest"]), outPath,
       ])
     } catch {
-      // Attempt B — silent video (no audio stream): narration IS the track.
+      // Attempt B — silent video (no audio stream): narration IS the track
+      // (delayed to its start, like attempt A).
+      const graphB = [
+        pad > 0 ? `[0:v]tpad=stop_mode=clone:stop_duration=${pad}[vpad]` : "",
+        delay ? `[1:a]${delay.replace(/,$/, "")}[vod]` : "",
+      ].filter(Boolean).join(";")
       await runFfmpeg([
         "-y", "-i", videoPath, "-i", voPath,
-        ...(pad > 0 ? ["-filter_complex", `[0:v]tpad=stop_mode=clone:stop_duration=${pad}[vpad]`] : []),
-        "-map", videoMap, "-map", "1:a", ...videoCodec, "-c:a", "aac",
+        ...(graphB ? ["-filter_complex", graphB] : []),
+        "-map", videoMap, "-map", delay ? "[vod]" : "1:a", ...videoCodec, "-c:a", "aac",
         ...(pad > 0 ? [] : ["-shortest"]), outPath,
       ])
     }

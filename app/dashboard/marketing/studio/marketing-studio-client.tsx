@@ -125,6 +125,14 @@ const QR_DESTINATION_OPTIONS: Array<{ value: QrDestinationType; label: string }>
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
+// THE CONTENT LAB (lane 85E, CLAUDE.md §1 — mount, don't delete): the legacy
+// /content-studio body carried link-to-video, the video assistant hand-off,
+// long→short repurpose, content ideas and keyword research, which this studio
+// had no tab for; its route redirects here, so without this mount those
+// capabilities had no page. Loaded on demand — it is a large client body.
+import dynamic from "next/dynamic"
+const ContentLab = dynamic(() => import("@/app/content-studio/content-studio-client"), { ssr: false })
+const CONTENT_LAB_SECTIONS = ["link-to-video", "ideas", "keywords", "repurpose", "video"] as const
 import {
   CampaignLauncherPanel,
   CompetitorWatchPanel,
@@ -2016,7 +2024,21 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
               <Activity className="h-4 w-4" />
               <span className="text-xs">Ops</span>
             </TabsTrigger>
+            <TabsTrigger
+              value="lab"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Sparkles className="h-4 w-4" />
+              <span className="text-xs">Content Lab</span>
+            </TabsTrigger>
           </TabsList>
+
+          {/* Content Lab — the legacy content-studio body, mounted (lane 85E). */}
+          <TabsContent value="lab" className="space-y-6">
+            {activeTab === "lab" && (
+              <ContentLab userId={userIdProp} userRole={userRole} brokerageId={brokerageIdProp || brokerageId || undefined} sections={CONTENT_LAB_SECTIONS} />
+            )}
+          </TabsContent>
 
           {/* Ad OS Tab */}
           <TabsContent value="ad-os" className="space-y-6">

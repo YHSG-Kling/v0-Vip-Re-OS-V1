@@ -52,7 +52,7 @@ import { SceneFade } from "./components/SceneFade"
 import { avatarFadeOutFrame } from "../lib/video/script-structure"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
-import { fitBodyVisualPlan, safeInsets, segmentAtFrame, type BodyTreatment, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { fitBodyVisualPlan, fullPresenterBox, safeInsets, segmentAtFrame, type BodyTreatment, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentTalkingHeadReelProps {
@@ -195,7 +195,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   // carries the beat.
   const avatarBox: React.CSSProperties = treatment !== "full_avatar"
     ? { position: "absolute", bottom: safe.bottom + LOWER_THIRD_BAND, left: safe.left, width: 560, height: 560, opacity: treatment === "broll" ? 0 : 1 }
-    : { position: "absolute", top: 90, left: 90, width: 900, height: 900 }
+    : { position: "absolute", ...fullPresenterBox(width, height) }
   // The keyed presenter (wave 80C) — no frame, no ring, no fill: the alpha is
   // the crop and the footage / brand background shows through around the person.
   const keyed = avatarVideoTransparent === true && !!avatarVideoUrl
@@ -218,7 +218,21 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           avatar's own lip-synced audio is never doubled — exactly as the prop
           doc says. Same shape as the 13 sibling compositions that already do
           this (TestimonialReel, ComingSoonReel, NeighborhoodSpotlightReel, …). */}
-      {voiceoverUrl && <Audio src={voiceoverUrl} />}
+      {/* THE SEPARATE NARRATION STARTS WITH THE PRESENTER (lane 85E, the video
+          timing audit). It was mounted at the ROOT, so it spoke from frame 0
+          under the silent cover while the avatar clip — lip-synced to the
+          same words — only mounts at COVER, and the CaptionLayer below is
+          declared visibleFromFrame={COVER}: the voice ran a whole cover ahead
+          of the lips and the captions. Delayed to COVER (audio.md
+          "Delaying" — a <Sequence> around <Audio>), exactly as
+          TestimonialReel does, and the avatar <Video> is MUTED whenever this
+          track plays, so the presenter's own baked-in voice is never doubled
+          under it. */}
+      {voiceoverUrl && (
+        <Sequence from={COVER} layout="none">
+          <Audio src={voiceoverUrl} />
+        </Sequence>
+      )}
       {/* COVER — 0-2s. Brand badge + hook + agent name. */}
       <Sequence from={0} durationInFrames={COVER}>
         {/* SceneFade (lane 77D): a dissolve at every cut, timeline untouched —
@@ -281,6 +295,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
               src={avatarVideoUrl}
               trimBefore={0}
               trimAfter={BODY}
+              muted={!!voiceoverUrl}
               style={{
                 ...avatarBox,
                 ...avatarChrome,

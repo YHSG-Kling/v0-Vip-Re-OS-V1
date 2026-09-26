@@ -1,5 +1,23 @@
 import { NextRequest, NextResponse } from "next/server"
 import { captureFormSubmission, trackMagnetEvent, type CaptureFormSubmissionInput } from "@/lib/kernel/lead-magnets"
+import { LEAD_MAGNET_EMBED_CORS_HEADERS } from "@/lib/lead-magnets/embed-snippet"
+
+// THE EMBED IS THE OTHER HALF (lane 85E, census 6d): the lead-magnet library's
+// "Embed on your site" control (app/components/features/lead-magnets/
+// MagnetLibrary.tsx → lib/lead-magnets/embed-snippet.ts) hands a tenant the
+// form that POSTs here from THEIR website. A JSON POST from another origin is
+// preflighted, and this door answered no OPTIONS — so even a hand-written embed
+// could never read its result. The preflight is answered, and every response
+// carries the same headers (no credentials are admitted: the door has no
+// session to protect; the kernel verifies the form/brokerage pair).
+export function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: LEAD_MAGNET_EMBED_CORS_HEADERS })
+}
+
+function withCors(res: NextResponse): NextResponse {
+  for (const [k, v] of Object.entries(LEAD_MAGNET_EMBED_CORS_HEADERS)) res.headers.set(k, v)
+  return res
+}
 
 // POST /api/lead-magnets/submissions
 // DOOR (census 6d, PUBLIC BY DESIGN): anonymous form-submission intake for
@@ -14,6 +32,10 @@ import { captureFormSubmission, trackMagnetEvent, type CaptureFormSubmissionInpu
 // provenance (IP + UA), so a submission means the same thing whichever door it
 // came through.
 export async function POST(req: NextRequest) {
+  return withCors(await handleSubmission(req))
+}
+
+async function handleSubmission(req: NextRequest): Promise<NextResponse> {
   try {
     const body: CaptureFormSubmissionInput = await req.json()
 

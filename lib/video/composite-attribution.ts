@@ -35,7 +35,7 @@ import path from "node:path"
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { MAX_BRAND_BOOKEND_SECONDS } from "@/lib/video/realism-profile"
+import { MAX_BRAND_BOOKEND_SECONDS, appliedBookendSeconds } from "@/lib/video/realism-profile"
 
 export interface VideoAttributionBrand {
   brokerageName?: string | null
@@ -332,7 +332,20 @@ export interface ConcatIntroOutroInput {
   outroVideoUrl?: string | null
 }
 
-export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<CompositeVideoAttributionResult> {
+/**
+ * concatIntroOutro's result also says how long each bookend it APPLIED is
+ * after the MAX_BRAND_BOOKEND_SECONDS trim (lane 85E) — the render coordinator
+ * times the narration offset, the narration pad and the music fade-out against
+ * the video in hand, and a stock clip's recorded duration is not that (a 10 s
+ * sting is 2.5 s once trimmed). Probed from the downloaded file, then passed
+ * through appliedBookendSeconds; null when that side was not stitched.
+ */
+export interface ConcatIntroOutroResult extends CompositeVideoAttributionResult {
+  introSeconds?: number | null
+  outroSeconds?: number | null
+}
+
+export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<ConcatIntroOutroResult> {
   if (!FFMPEG_BIN) {
     return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: "ffmpeg-static binary unavailable" }
   }
@@ -429,7 +442,17 @@ export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<Com
     ]
     await runFfmpeg(args)
     const outputBuffer = await readFile(outputPath)
-    return { outputBuffer, overlayApplied: true }
+    // The applied lengths — the trim only ever shortens, so a probe the cap
+    // bounds is the real contribution; an unprobeable clip counts as the cap.
+    const [introProbe, outroProbe] = await Promise.all([
+      introPath ? probeDuration(introPath) : Promise.resolve(null),
+      outroPath ? probeDuration(outroPath) : Promise.resolve(null),
+    ])
+    return {
+      outputBuffer, overlayApplied: true,
+      introSeconds: introPath ? appliedBookendSeconds(introProbe) : null,
+      outroSeconds: outroPath ? appliedBookendSeconds(outroProbe) : null,
+    }
   } catch (err: any) {
     // Bookends are best-effort. Always return the main video so the agent
     // still gets a working file when an intro/outro URL is broken.
