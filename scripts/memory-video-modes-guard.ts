@@ -213,8 +213,15 @@ console.log("\n── §schema · jsonb, no column, no migration ──")
   check("ai_video_projects carries video_metadata (jsonb) and NO seller_media / memory_mode column — the mode rides the jsonb", /"video_metadata"/.test(cols) && !/"seller_media"|"memory_mode"/.test(cols))
   const vocab = read("scripts/check-vocabularies.ts")
   check("no CHECK constrains video_metadata (check-vocabularies has no memory mode vocabulary) — nothing to migrate", !/seller_walkthrough|seller_audio_photos/.test(vocab))
-  const migrations = readdirSync(join(root, "supabase/migrations")).filter((f) => /^m663-/.test(f))
-  check("m663 is unused (no file) — stated plainly rather than a migration for a jsonb key", migrations.length === 0 && !existsSync(join(root, "supabase/migrations/m663.sql")))
+  // The RULE, not a waypoint (§2): wave 80C reserved m663 and left it unused, and this check pinned
+  // "m663 has no file" — true until wave 83F spent the number on an unrelated CHECK. What must stay
+  // true is that NO migration carries the memory-mode vocabulary (the modes ride video_metadata jsonb).
+  const migDir = join(root, "supabase/migrations")
+  const memoryModeMigrations = readdirSync(migDir).filter((f) => f.endsWith(".sql") && /seller_walkthrough|seller_audio_photos/.test(stripComments(read(`supabase/migrations/${f}`))))
+  check("no migration carries the memory-video mode vocabulary (seller_walkthrough / seller_audio_photos ride video_metadata jsonb) — nothing to migrate",
+    memoryModeMigrations.length === 0, memoryModeMigrations.join(", "))
+  check("POSITIVE CONTROL: the migration finder sees the vocabulary in a specimen",
+    /seller_walkthrough|seller_audio_photos/.test(stripComments("alter table x add constraint c check (mode in ('seller_walkthrough','seller_audio_photos'));")))
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
