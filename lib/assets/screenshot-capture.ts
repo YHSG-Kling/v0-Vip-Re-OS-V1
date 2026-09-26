@@ -59,6 +59,21 @@
 //                 an AI-agent statement of a home's value to a customer —
 //                 scripts/screenshot-capture-guard.ts asserts no customer-
 //                 facing tool imports this module.
+//                 WAVE 85A (owner verbatim: "a public page screenshhot can be
+//                 more than just zillow zestimate page."): a public_page may
+//                 also be a GENERAL page — a listing page, the tenant's own
+//                 site, a market / community / news / HOA / school / city /
+//                 review page — on any public host, judged by THE ONE
+//                 classifier (lib/marketing/estimate-sources.ts
+//                 classifyPublicPage) before anything runs: another portal's
+//                 estimate page is refused outright (its figure stays
+//                 web-searched text), a Zillow page is the Zestimate and keeps
+//                 its readiness rule, and a general page is captured under the
+//                 same robots / rate / cache gates plus a public-network guard
+//                 (no private, loopback, link-local or internal destination —
+//                 checked on the URL, on DNS, and on every browser request),
+//                 lands PENDING, is stamped metadata.page_subject="general",
+//                 and serves every use once a human approves it.
 //
 // PROVIDER ADAPTER: one `ScreenshotProvider` shape; the default drives
 // puppeteer-core on the resolved chromium (local / self-hosted / Vercel via the
@@ -70,13 +85,15 @@
 // planners load under tsx for the proof.
 
 import { createHash } from "node:crypto"
+import { isIP } from "node:net"
 import type { PickedBrollClip } from "@/lib/video/broll-picker"
 import type { ProductDemoTopic } from "@/lib/platform/product-demo"
 import {
   SCREENSHOT_KINDS, SCREENSHOT_USES, SCREENSHOT_USES_RULE_VERSION,
   screenshotUseVerdict, screenshotUsesFor, screenshotSubjectOfRow, screenshotRowUseAllowed, tagsWithUses, usesOfRow,
-  type ScreenshotKind, type ScreenshotUse,
+  type ScreenshotKind, type ScreenshotSubject, type ScreenshotUse,
 } from "@/lib/assets/screenshot-uses"
+import { classifyPublicPage } from "@/lib/marketing/estimate-sources"
 
 // ── THE ONE USE RULE (wave 84B) — re-exported unchanged from its pure home ──
 // lib/assets/screenshot-uses.ts (client-safe: the tenant card, the demo-room
@@ -287,6 +304,10 @@ export interface ScreenshotPlan {
   /** What the provider must confirm on screen before the still is kept
    *  (PUBLIC_PAGE_READY_RULES for the host; empty for an OS surface). */
   readyWhen: readonly PublicPageReadyRule[]
+  /** WAVE 85A — public_page only: THE ONE classifier's verdict for the page
+   *  (zillow_zestimate | general; another portal's estimate never plans). Null
+   *  for an OS surface. Stamped on the row as metadata.page_subject. */
+  pageSubject: ScreenshotSubject | null
 }
 export interface ScreenshotRefusal { ok: false; reason: string }
 
@@ -297,6 +318,79 @@ export function screenshotCacheKey(url: string, dayIso: string): string {
 export function isPublicPageHost(hostname: string): boolean {
   const h = hostname.toLowerCase()
   return PUBLIC_PAGE_HOSTS.some((d) => h === d || h.endsWith(`.${d}`))
+}
+
+// ── PUBLIC-NETWORK GUARD (wave 85A) — a general public page is ANY host a
+// tenant names, so the server-side browser must never be steered at a private
+// destination (SSRF). Three layers, per the practice researched (Exa,
+// 2026-09-26: blot PR #1624 "validate every navigation, redirect and
+// subresource"; koltesecurity 2026-05-23 "SSRF in PDF and HTML rendering
+// pipelines" — the entry-URL check alone is bypassed by redirects): (1) the
+// URL itself (pure, below); (2) every address the host resolves to (DNS, in
+// captureScreenshot); (3) every request the browser makes (the puppeteer
+// adapter aborts any request whose URL fails requestHostRefusal). DNS
+// rebinding between (2) and the browser's own lookup is the residual gap —
+// network egress policy is the control for it (published blind spot).
+
+/** Names that never resolve to the public internet. */
+const NON_PUBLIC_NAME_SUFFIXES = ["localhost", "local", "internal", "intranet", "lan", "home", "corp", "localdomain", "home.arpa", "arpa", "test", "invalid", "example"] as const
+
+/** PURE: is this IP literal a PUBLIC unicast address? Loopback, private
+ *  (RFC 1918 / ULA), link-local (cloud metadata 169.254.169.254), CGNAT,
+ *  unspecified, multicast, reserved, documentation and benchmark ranges are
+ *  not; an IPv4-mapped IPv6 address is judged as its IPv4. */
+export function isPublicIpAddress(ip: string): boolean {
+  const v = isIP(ip)
+  if (v === 4) {
+    const [a, b, c] = ip.split(".").map(Number)
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false
+    if (a === 100 && b >= 64 && b <= 127) return false
+    if (a === 169 && b === 254) return false
+    if (a === 172 && b >= 16 && b <= 31) return false
+    if (a === 192 && b === 168) return false
+    if (a === 192 && b === 0 && (c === 0 || c === 2)) return false
+    if (a === 198 && (b === 18 || b === 19)) return false
+    if (a === 198 && b === 51 && c === 100) return false
+    if (a === 203 && b === 0 && c === 113) return false
+    return true
+  }
+  if (v === 6) {
+    const s = ip.toLowerCase().replace(/^\[|\]$/g, "")
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(s)
+    if (mapped) return isPublicIpAddress(mapped[1])
+    if (s === "::" || s === "::1") return false
+    const first = parseInt(s.split(":")[0] || "0", 16)
+    if ((first & 0xfe00) === 0xfc00) return false // fc00::/7 unique-local
+    if ((first & 0xffc0) === 0xfe80) return false // fe80::/10 link-local
+    if ((first & 0xff00) === 0xff00) return false // ff00::/8 multicast
+    if (s.startsWith("2001:db8:") || s.startsWith("64:ff9b:") || s.startsWith("100::")) return false
+    return true
+  }
+  return false
+}
+
+/** PURE: why a browser REQUEST to this URL must be refused, or null when it may
+ *  proceed. data:/blob:/about: stay in the page; any other non-web scheme, a
+ *  non-public IP literal or a non-public name is refused. */
+export function requestHostRefusal(url: string): string | null {
+  let u: URL
+  try { u = new URL(url) } catch { return "not a URL" }
+  if (u.protocol === "data:" || u.protocol === "blob:" || u.protocol === "about:") return null
+  if (u.protocol !== "https:" && u.protocol !== "http:") return `the ${u.protocol} scheme is not a public web address`
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "")
+  if (isIP(h)) return isPublicIpAddress(h) ? null : `${h} is not a public address`
+  if (!h.includes(".") || NON_PUBLIC_NAME_SUFFIXES.some((s) => h === s || h.endsWith(`.${s}`))) return `${h} is not a public host name`
+  return null
+}
+
+/** PURE: why a GENERAL public page URL may not be captured, or null. Stricter
+ *  than a request: a DNS name only (never an IP literal), no credentials, the
+ *  default port only. */
+function publicPageUrlRefusal(u: URL): string | null {
+  if (u.username || u.password) return "a public page address never carries credentials"
+  if (u.port && !((u.protocol === "https:" && u.port === "443") || (u.protocol === "http:" && u.port === "80"))) return `port ${u.port} — a public page is captured on its default port only`
+  if (isIP(u.hostname.replace(/^\[|\]$/g, ""))) return "a public page is captured by its host name, never an IP address"
+  return requestHostRefusal(u.toString())
 }
 
 /**
@@ -329,7 +423,7 @@ export function planScreenshotCapture(
       redactSelectors: Array.from(new Set([...DEFAULT_REDACT_SELECTORS, ...(req.redact ?? [])])),
       viewport, cacheKey, storagePath: `screenshots/os_surface/${slug}/${dayIso}-${cacheKey}.png`,
       label: req.label ?? surface?.label ?? `OS surface ${route}`, host, dayIso,
-      readyWhen: [],
+      readyWhen: [], pageSubject: null,
     }
   }
 
@@ -338,9 +432,18 @@ export function planScreenshotCapture(
   let u: URL
   try { u = new URL(raw) } catch { return { ok: false, reason: "public_page capture needs an absolute http(s) url" } }
   if (u.protocol !== "https:" && u.protocol !== "http:") return { ok: false, reason: "public_page capture url must be http(s)" }
-  // Zillow alone (wave 81D). The 82D comparison scope is retired (83C — the
-  // other portals' figures come from lib/marketing/estimate-web-search.ts).
-  if (!isPublicPageHost(u.hostname)) return { ok: false, reason: `public_page host "${u.hostname}" is not on PUBLIC_PAGE_HOSTS (${PUBLIC_PAGE_HOSTS.join(", ")})` }
+  // WAVE 85A — THE ONE classifier decides what the page IS before anything
+  // runs. Another portal's estimate page is never captured (83C: its figure
+  // comes from lib/marketing/estimate-web-search.ts); the Zestimate page stays
+  // on PUBLIC_PAGE_HOSTS (Zillow alone, wave 81D) with its readiness rule; a
+  // general public page may be on any PUBLIC host (the public-network guard).
+  const page = classifyPublicPage(u.toString())
+  if (page.subject === "other_portal_estimate") return { ok: false, reason: `REFUSED: ${page.why} — another portal's estimate page is never captured as a screenshot` }
+  if (page.subject === "zillow_zestimate" && !isPublicPageHost(u.hostname)) return { ok: false, reason: `public_page host "${u.hostname}" is not on PUBLIC_PAGE_HOSTS (${PUBLIC_PAGE_HOSTS.join(", ")})` }
+  if (page.subject === "general") {
+    const refusal = publicPageUrlRefusal(u)
+    if (refusal) return { ok: false, reason: `REFUSED: ${refusal} — a general public page must be a public web address` }
+  }
   u.hash = ""
   const targetUrl = u.toString()
   const cacheKey = screenshotCacheKey(targetUrl, dayIso)
@@ -351,6 +454,7 @@ export function planScreenshotCapture(
     storagePath: `screenshots/public_page/${slug}/${dayIso}-${cacheKey}.png`,
     label: req.label ?? `${u.hostname} ${u.pathname}`.slice(0, 160), host: u.hostname, dayIso,
     readyWhen: req.readyWhen ?? readyRulesForHost(u.hostname),
+    pageSubject: page.subject,
   }
 }
 
@@ -426,6 +530,12 @@ export interface ProviderCaptureInput {
   readyWhen: readonly PublicPageReadyRule[]
   userAgent: string
   timeoutMs: number
+  /** WAVE 85A — a general public page: a provider whose browser runs on OUR
+   *  network (puppeteer) refuses every request (navigation, redirect hop,
+   *  subresource) that requestHostRefusal refuses. The hosted adapter's
+   *  browser runs on the vendor's network, never ours, so the entry-URL and
+   *  DNS checks the seam already ran are the whole of what it needs. */
+  publicNetworkOnly?: boolean
 }
 
 export interface ScreenshotProvider {
@@ -459,7 +569,21 @@ export const puppeteerScreenshotProvider: ScreenshotProvider = {
       await page.setUserAgent(input.userAgent)
       await page.setViewport({ width: input.viewport.width, height: input.viewport.height, deviceScaleFactor: input.viewport.deviceScaleFactor ?? 1 })
       if (input.cookies?.length) await browser.setCookie(...input.cookies.map((c) => ({ ...c, expires: -1 })))
-      await page.goto(input.url, { waitUntil: "networkidle2", timeout: input.timeoutMs })
+      // Public-network guard (85A): every request — the navigation, each
+      // redirect hop, every subresource — is checked before it leaves.
+      let blocked: string | null = null
+      if (input.publicNetworkOnly) {
+        await page.setRequestInterception(true)
+        page.on("request", (req) => {
+          const refusal = requestHostRefusal(req.url())
+          if (refusal) {
+            if (req.isNavigationRequest() && req.frame() === page.mainFrame()) blocked = blocked ?? refusal
+            req.abort("accessdenied").catch(() => {})
+          } else req.continue().catch(() => {})
+        })
+      }
+      await page.goto(input.url, { waitUntil: "networkidle2", timeout: input.timeoutMs }).catch((e) => { if (!blocked) throw e })
+      if (blocked) throw new Error(`navigation refused by the public-network guard: ${blocked}`)
       // Readiness: each rule must be VISIBLE before the shot. A rule that never
       // appears is reported unsatisfied (the seam refuses) — never guessed.
       const satisfied: string[] = []
@@ -602,10 +726,14 @@ export const SCREENSHOT_ASSET_KIND = "screenshot"
 export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, capturedAtIso: string, providerName: string, owner?: ScreenshotOwner | null): Record<string, unknown> {
   const isOs = plan.kind === "os_surface"
   // THE RULE (84B) decides the uses: an OS-surface still is general material
-  // (every use until a human narrows it); a public-page still is the Zillow
-  // Zestimate page — marketing campaigns including their video, nothing else.
+  // (every use until a human narrows it); a Zillow public-page still is the
+  // Zestimate — marketing campaigns including their video, nothing else; and
+  // (85A) a public page THE ONE classifier judged general (plan.pageSubject,
+  // stamped as metadata.page_subject) is general material too.
   // An owner asking for a subset gets that subset; asking for more is clamped.
-  const subject = screenshotSubjectOfRow({ metadata: { screenshot_kind: plan.kind, source_url: plan.targetUrl, estimate_source: owner?.provenance?.estimate_source } })
+  const pageSubject = plan.kind === "public_page" ? plan.pageSubject : null
+  const subject = screenshotSubjectOfRow({ metadata: { screenshot_kind: plan.kind, source_url: plan.targetUrl, estimate_source: owner?.provenance?.estimate_source, page_subject: pageSubject } })
+  const isGeneralPage = plan.kind === "public_page" && subject === "general"
   const allowed = screenshotUsesFor(subject)
   const uses: ScreenshotUse[] = owner?.uses?.length ? allowed.filter((u) => owner.uses!.includes(u)) : allowed
   if (owner) {
@@ -617,9 +745,9 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
       asset_name: plan.label.slice(0, 160),
       asset_url: assetUrl,
       thumbnail_url: assetUrl,
-      preview_text: `Online estimate page capture of ${plan.host} — marketing material, pending approval`.slice(0, 280),
+      preview_text: (isGeneralPage ? `Public page capture of ${plan.host} — general marketing material, pending approval` : `Online estimate page capture of ${plan.host} — marketing material, pending approval`).slice(0, 280),
       source_table: "image_library",
-      tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, "third_party_page", "estimate_still"], uses),
+      tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, "third_party_page", isGeneralPage ? "public_page_still" : "estimate_still"], uses),
       // ALWAYS pending: a third-party page capture enters a tenant's campaign
       // only once a human approves it on the tenant's own marketing_assets
       // approval rail (app/actions/marketing-studio.ts approveAsset/rejectAsset).
@@ -637,14 +765,19 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
         viewport: plan.viewport,
         redact: plan.redactSelectors,
         provider: providerName,
-        usage: "marketing_campaign_material_never_customer_value",
+        usage: isGeneralPage ? "general_material_every_use" : "marketing_campaign_material_never_customer_value",
         uses,
         uses_rule: SCREENSHOT_USES_RULE_VERSION,
         /** The labels the provider confirmed on screen before the shot. */
         shows: plan.readyWhen.map((r) => r.label),
         customer_facing_value: false,
-        license_note: `Third-party page (${plan.host}) captured as this brokerage's own marketing material; source and capture time recorded; shown whole as the portal's own figure; never redistributed as stock and never spoken as a value.`,
+        license_note: isGeneralPage
+          ? `Third-party public page (${plan.host}) captured as this brokerage's own marketing material; source and capture time recorded; the page's content stays its owner's — shown as captured with its source, never passed off as the brokerage's own work, and a human approves it before any use.`
+          : `Third-party page (${plan.host}) captured as this brokerage's own marketing material; source and capture time recorded; shown whole as the portal's own figure; never redistributed as stock and never spoken as a value.`,
         ...(owner.provenance ?? {}),
+        // The seam's own verdict — written AFTER the caller's provenance so no
+        // caller can relabel a page (85A: THE ONE classifier decides).
+        page_subject: pageSubject,
       },
     }
   }
@@ -658,7 +791,7 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
     thumbnail_url: assetUrl,
     preview_text: (isOs ? `Demo still of ${plan.route}` : `Public page capture of ${plan.host}`).slice(0, 280),
     source_table: "image_library",
-    tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, ...(isOs ? [] : ["third_party_page"])], uses),
+    tags: tagsWithUses(["library", SCREENSHOT_ASSET_KIND, plan.kind, ...(isOs ? [] : ["third_party_page", ...(isGeneralPage ? ["public_page_still"] : [])])], uses),
     // OS stills are platform-OWNED renders (canShareToTenants "owned") and join
     // the tenant pickers; a third-party page capture is NOT redistributable
     // library stock, so it stays 'pending' — and it is reachable ONLY by the
@@ -679,11 +812,14 @@ export function screenshotAssetRow(plan: ScreenshotPlan, assetUrl: string, captu
       viewport: plan.viewport,
       redact: plan.redactSelectors,
       provider: providerName,
-      usage: isOs ? "general_material_every_use" : "marketing_campaign_material_never_customer_value",
+      usage: isOs || isGeneralPage ? "general_material_every_use" : "marketing_campaign_material_never_customer_value",
       uses,
       uses_rule: SCREENSHOT_USES_RULE_VERSION,
       shows: plan.readyWhen.map((r) => r.label),
-      license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)." : `Third-party page (${plan.host}) captured as the platform's own marketing-campaign material only (the campaign and its own video); source and capture time recorded; not redistributable as stock; never a demo, training, product-video or library still.`,
+      page_subject: pageSubject,
+      license_note: isOs ? "Platform-owned render of the demo tenant (fictional data)."
+        : isGeneralPage ? `Third-party public page (${plan.host}) captured as the platform's own marketing material; source and capture time recorded; pending a human's approval; the page's content stays its owner's.`
+        : `Third-party page (${plan.host}) captured as the platform's own marketing-campaign material only (the campaign and its own video); source and capture time recorded; not redistributable as stock; never a demo, training, product-video or library still.`,
     },
   }
 }
@@ -699,8 +835,16 @@ export interface CaptureDeps {
   findDemo?: (svc: any) => Promise<{ id: string } | null>
   /** Test seam: the demo owner session mint (default: admin magic link → verifyOtp). */
   mintSession?: (svc: any) => ReturnType<typeof mintDemoOwnerSession>
+  /** Test seam (85A): every address a general public page's host resolves to
+   *  (default: node:dns lookup, all A/AAAA answers). */
+  lookupHost?: (hostname: string) => Promise<string[]>
   now?: Date
   timeoutMs?: number
+}
+
+async function defaultLookupHost(hostname: string): Promise<string[]> {
+  const { lookup } = await import("node:dns/promises")
+  return (await lookup(hostname, { all: true, verbatim: true })).map((a) => a.address)
 }
 
 export interface CaptureResult {
@@ -762,6 +906,15 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
   } else {
     // ToS: robots first, then the per-host rate ceiling.
     const target = new URL(plan.targetUrl)
+    // Public-network guard, layer 2 (85A): a general page's host must resolve
+    // ONLY to public addresses — checked BEFORE robots.txt is fetched, so not
+    // even that request is steered inward. Unresolvable = refused (fail closed).
+    if (plan.pageSubject === "general") {
+      let addrs: string[] = []
+      try { addrs = await (deps.lookupHost ?? defaultLookupHost)(target.hostname) } catch (e) { return { ok: false, reason: `REFUSED: ${target.hostname} did not resolve (${(e as Error).message}) — not captured` } }
+      const inward = addrs.filter((a) => !isPublicIpAddress(a))
+      if (!addrs.length || inward.length) return { ok: false, reason: `REFUSED: ${target.hostname} resolves to ${inward.length ? `a non-public address (${inward.join(", ")})` : "nothing"} — a general public page must be on the public internet (not captured)` }
+    }
     const robots = await (deps.fetchRobots ?? defaultFetchRobots)(target.origin)
     if (!isRobotsAllowed(robots, target.pathname + target.search, SCREENSHOT_USER_AGENT)) {
       return { ok: false, reason: `robots.txt on ${target.hostname} disallows ${target.pathname} for this capture agent — not captured` }
@@ -780,6 +933,7 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
       url: plan.targetUrl, viewport: plan.viewport, cookies, redactSelectors: plan.redactSelectors,
       readyWhen: plan.readyWhen,
       userAgent: SCREENSHOT_USER_AGENT, timeoutMs: deps.timeoutMs ?? 45_000,
+      ...(plan.pageSubject === "general" ? { publicNetworkOnly: true } : {}),
     }))
   } catch (e) {
     return { ok: false, reason: `screenshot provider ${provider.name} failed: ${(e as Error).message}` }
@@ -970,6 +1124,9 @@ export interface ScreenshotStillPick {
   url: string
   label: string
   kind: ScreenshotKind
+  /** WAVE 85A — what the still shows, by THE ONE RULE's row reader
+   *  (screenshotSubjectOfRow): general | zillow_zestimate | other_portal_estimate. */
+  subject: ScreenshotSubject
   uses: ScreenshotUse[]
   approvalStatus: string | null
   sourceUrl: string | null
@@ -1002,9 +1159,15 @@ export interface ScreenshotStillPick {
  * existed carry no use tag and count for every use their subject allows.
  */
 export async function listScreenshotStillsForUse(
-  svc: any, use: ScreenshotUse,
+  /** `use: null` (85A) — no use filter: every still of the scope, whatever its
+   *  (human-narrowable) uses, so a card can show and re-widen a narrowed one. */
+  svc: any, use: ScreenshotUse | null,
   opts: {
     includePublicPage?: boolean; kind?: ScreenshotKind; limit?: number
+    /** WAVE 85A — only stills of this subject (THE ONE RULE's row reader):
+     *  "general" for general public-page / OS stills, "zillow_zestimate" for
+     *  the Zestimate card and the campaign doors. */
+    subject?: ScreenshotSubject
     /** TENANT SCOPE (wave 80D): list THAT brokerage's own stills instead of the
      *  platform library. The id comes from the session gate, never a body.
      *  Tenant stills are public_page captures by construction, so
@@ -1014,7 +1177,7 @@ export async function listScreenshotStillsForUse(
     approvedOnly?: boolean
   } = {},
 ): Promise<ScreenshotStillPick[]> {
-  if (!(SCREENSHOT_USES as readonly string[]).includes(use)) return []
+  if (use !== null && !(SCREENSHOT_USES as readonly string[]).includes(use)) return []
   let q = svc.from("marketing_assets")
     .select("id, asset_name, asset_url, approval_status, tags, updated_at, metadata")
     .eq("asset_type", "image")
@@ -1030,9 +1193,11 @@ export async function listScreenshotStillsForUse(
     const kind = meta.screenshot_kind === "public_page" ? "public_page" : "os_surface"
     if (kind === "public_page" && !opts.includePublicPage && !opts.brokerageId) continue
     const uses = usesOfRow(r)
-    if (!uses.includes(use)) continue
+    if (use !== null && !uses.includes(use)) continue
+    const subject = screenshotSubjectOfRow(r)
+    if (opts.subject && subject !== opts.subject) continue
     out.push({
-      id: r.id, url: r.asset_url, label: r.asset_name ?? "", kind, uses,
+      id: r.id, url: r.asset_url, label: r.asset_name ?? "", kind, subject, uses,
       approvalStatus: r.approval_status ?? null,
       sourceUrl: typeof meta.source_url === "string" ? meta.source_url : null,
       capturedAt: typeof meta.captured_at === "string" ? meta.captured_at : null,

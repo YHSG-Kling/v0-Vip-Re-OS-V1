@@ -34,6 +34,18 @@
  *      refuses widening; the demo / training / product-video mounts and the
  *      image library each ask the rule; a video path may stage a tenant
  *      still ONLY for campaign_video; the campaign's own video gets it.
+ *   2d. GENERAL PUBLIC PAGES (85A owner: "a public page screenshhot can be more
+ *      than just zillow zestimate page.") — THE ONE classifier
+ *      (estimate-sources.ts classifyPublicPage) over a table of general pages
+ *      (listing / own site / city / school / news / HOA) and estimate pages
+ *      (every other comparison portal, derived; Trulia; an estimator path);
+ *      the seam plans the general page and refuses the estimate pages; the
+ *      tenant's general capture lands pending with EVERY use (a general page
+ *      now SERVES) while an other-portal estimate page is still REFUSED;
+ *      the public-network guard (URL, DNS, every request) with specimens on
+ *      both sides; a caller cannot relabel a page; the social auto-post
+ *      picker asks the rule for image_library (E2E: the Zestimate, newest in
+ *      the library, is passed over for the general still). Positive controls.
  *   6. THE ZESTIMATE CHALLENGE MAY QUOTE THE REAL NUMBER (84B owner: "for the
  *      zestimate challenge it is oky to have a real number as we aren't using
  *      it as our true value") — that play alone, only a human-confirmed
@@ -60,15 +72,18 @@ import { readdirSync, statSync } from "node:fs"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
   ESTIMATE_SOURCES, ESTIMATE_SOURCE_KEYS, DEFAULT_ESTIMATE_SOURCE, ZESTIMATE_STILL_MUST_SHOW, ESTIMATE_OF_VALUE_USES, estimateStillUseVerdict,
-  ESTIMATE_COMPARISON_USE,
+  ESTIMATE_COMPARISON_USE, COMPARISON_ESTIMATE_SOURCES, ESTIMATE_PAGE_PATH_MARKERS, classifyPublicPage,
 } from "../lib/marketing/estimate-sources"
 import {
   PUBLIC_PAGE_HOSTS, PUBLIC_PAGE_READY_RULES, readyRulesForHost, combinedReadySelector, unsatisfiedReadyLabels,
   planScreenshotCapture, captureScreenshot, SCREENSHOT_USES, SCREENSHOT_SUBJECTS, ZESTIMATE_SCREENSHOT_USES, SCREENSHOT_USES_RULE_VERSION,
   screenshotUseAllowed, screenshotUseVerdict, screenshotSubjectOfRow, screenshotRowUseAllowed, usesOfRow, setScreenshotUses, listDemoStills,
+  screenshotUsesFor, isPublicIpAddress, requestHostRefusal,
   type ScreenshotProvider, type ProviderCaptureInput, type ScreenshotSubject,
 } from "../lib/assets/screenshot-capture"
-import { planTenantStill } from "../lib/marketing/tenant-screenshot-door"
+import { isScreenshotRuleRow } from "../lib/assets/screenshot-uses"
+import { planTenantStill, planTenantPublicPageStill, captureTenantPublicPageStill } from "../lib/marketing/tenant-screenshot-door"
+import { resolveSocialMedia } from "../lib/marketing/social-media-pairing"
 import { ZESTIMATE_FIGURE_PLAY_KEYS, playMayQuoteZestimate, zestimateFigureBrief, getPlaybook, CREATIVE_PLAYBOOKS } from "../lib/marketing/creative-playbooks"
 import { ESTIMATE_COMPARISON_ASSET_KIND } from "../lib/marketing/estimate-comparison"
 
@@ -275,7 +290,12 @@ async function main() {
     }
     return out
   }
-  const videoOffenders = (code: string): string[] => STILL_DOOR_FNS.flatMap((fn) => callArgs(code, fn).filter((a) => fn === "tenantScreenshotUrlsForVideo" || !/["']campaign_video["']/.test(a) && (fn !== "screenshotUrlsForUse" && fn !== "listScreenshotStillsForUse" || /includePublicPage:\s*true|brokerageId/.test(a))).map((a) => `${fn}(${a.slice(0, 50)})`))
+  // WAVE 85A — a tenant listing restricted to the GENERAL subject (`subject: "general"` — approved general
+  // public-page stills, owner: "a public page screenshhot can be more than just zillow zestimate page.") may
+  // serve any video: a general still serves every use by THE ONE RULE. Only the seam's own listings can carry
+  // that filter; the Zestimate doors (approvedTenantStill / listTenantScreenshotStills) still need campaign_video.
+  const GENERAL_ONLY_RE = /\bsubject:\s*["']general["']/
+  const videoOffenders = (code: string): string[] => STILL_DOOR_FNS.flatMap((fn) => callArgs(code, fn).filter((a) => fn === "tenantScreenshotUrlsForVideo" || !/["']campaign_video["']/.test(a) && (fn !== "screenshotUrlsForUse" && fn !== "listScreenshotStillsForUse" || /includePublicPage:\s*true|brokerageId/.test(a) && !GENERAL_ONLY_RE.test(a))).map((a) => `${fn}(${a.slice(0, 50)})`))
   const walk = (dir: string): string[] => readdirSync(join(root, dir)).flatMap((n) => { const rel = `${dir}/${n}`; return statSync(join(root, rel)).isDirectory() ? walk(rel) : /\.tsx?$/.test(n) ? [rel] : [] })
   const videoFiles = walk("lib/video")
   const vOff = videoFiles.flatMap((f) => videoOffenders(stripComments(src(f))).map((o) => `${f}: ${o}`))
@@ -285,9 +305,104 @@ async function main() {
     videoOffenders(`const urls = await tenantScreenshotUrlsForVideo(svc, b)`).length === 1
     && videoOffenders(`const s = await approvedTenantStill(svc, b, { address: norm(a) })`).length === 1
     && videoOffenders(`const s = await approvedTenantStill(svc, b, { address: norm(a) }, "campaign_video")`).length === 0
-    && videoOffenders(`const u = await screenshotUrlsForUse(svc, "product_video", { limit: 8 })`).length === 0)
+    && videoOffenders(`const u = await screenshotUrlsForUse(svc, "product_video", { limit: 8 })`).length === 0
+    // 85A: a tenant listing narrowed to the general subject passes; the same listing WITHOUT it is caught.
+    && videoOffenders(`const p = await listScreenshotStillsForUse(svc, a.use, { brokerageId: b, approvedOnly: true, subject: "general" })`).length === 0
+    && videoOffenders(`const p = await listScreenshotStillsForUse(svc, a.use, { brokerageId: b, approvedOnly: true })`).length === 1
+    && videoOffenders(`const s = await approvedTenantStill(svc, b, { address, subject: "general" })`).length === 1)
   const PB = stripped("app/actions/creative-playbooks.ts")
   check("the Zestimate Challenge's OWN campaign video gets the approved still only when the rule + the row admit campaign_video", /screenshotUrls: campaignVideoStillUrl \? \[campaignVideoStillUrl\] : \[\]/.test(PB) && /still\.uses\.includes\("campaign_video"\) && screenshotUseAllowed\("zillow_zestimate", "campaign_video"\)/.test(PB))
+
+  console.log("\n[2d · GENERAL PUBLIC PAGES (85A) — more than the Zestimate page; other portals' estimates still nowhere]")
+  // Owner verbatim (2026-09-26): "a public page screenshhot can be more than just zillow zestimate page."
+  // THE ONE classifier (lib/marketing/estimate-sources.ts classifyPublicPage) decides; the seam stamps it;
+  // the rule reads the stamp. Asserted as a table the owner's sentence implies, with positive controls.
+  const GENERAL_PAGES = [
+    "https://www.kling-group-homes.com/listings/123-main-st-austin-tx",   // a listing page on the tenant's own site
+    "https://www.kling-group-homes.com/",                                  // the tenant's own landing page
+    "https://www.austintexas.gov/department/planning",                     // a city page
+    "https://www.greatschools.org/texas/austin/",                          // a school page
+    "https://www.statesman.com/business/real-estate/",                     // a news / market page
+    "https://www.mueller-hoa.org/amenities",                               // an HOA / community page
+  ]
+  const portalHosts = COMPARISON_ESTIMATE_SOURCES.map((s) => ({ key: s.key, url: `https://www.${s.host}/x/123-main-st` }))
+  const ESTIMATE_PAGES = [
+    ...portalHosts.filter((p) => p.key !== "zillow_zestimate").map((p) => p.url),     // every other comparison portal (derived)
+    "https://www.trulia.com/home/123-main-st-austin-tx-78701-1",                        // Zillow Group's other portal (Trulia Estimate)
+    "https://www.somebank.com/tools/home-value-estimator",                              // an estimator on any host (path names an estimate)
+    "https://www.kling-group-homes.com/?tool=zestimate",                                // a query naming the Zestimate
+    "ftp://files.example.org/x", "not a url",
+  ]
+  const classify = (u: string) => classifyPublicPage(u).subject
+  const tableHolds = (f: (u: string) => ScreenshotSubject) =>
+    GENERAL_PAGES.every((u) => f(u) === "general") && ESTIMATE_PAGES.every((u) => f(u) === "other_portal_estimate") && f(ZILLOW) === "zillow_zestimate"
+  console.log(`    denominator: ${GENERAL_PAGES.length} general pages, ${ESTIMATE_PAGES.length} estimate / unclassifiable pages, 1 Zillow page`)
+  check("classifyPublicPage: listing / own site / city / school / news / HOA pages are GENERAL; every other portal (derived from COMPARISON_ESTIMATE_SOURCES), Trulia, an estimator path and a non-URL are other_portal_estimate; Zillow is the Zestimate", tableHolds(classify),
+    [...GENERAL_PAGES, ...ESTIMATE_PAGES, ZILLOW].map((u) => `${u} → ${classify(u)}`).join("; "))
+  check("POSITIVE CONTROL: the table FAILS an 'everything public is general' classifier and the 84B 'every non-Zillow page serves nothing' classifier", !tableHolds(() => "general") && !tableHolds((u) => (/zillow\.com/.test(u) ? "zillow_zestimate" : "other_portal_estimate")))
+  check("the path markers are DERIVED from the sources' own figure names (every marker carries the estimate stem and occurs in a source name or hint)",
+    ESTIMATE_PAGE_PATH_MARKERS.length > 0 && ESTIMATE_PAGE_PATH_MARKERS.every((m) => m.includes("estimat") && COMPARISON_ESTIMATE_SOURCES.some((s) => [...s.estimateNames, s.searchHint].some((n) => n.toLowerCase().includes(m)))))
+  const genRow = (extra: Record<string, unknown> = {}) => ({ tags: [] as string[], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", source_url: GENERAL_PAGES[0], page_subject: "general", ...extra } })
+  check("the rule: a public page the seam stamped general serves EVERY use; the same row without the stamp serves NONE (fail closed); a Zillow page with a forged 'general' stamp is still the Zestimate",
+    usesOfRow(genRow()).join() === SCREENSHOT_USES.join() && usesOfRow(genRow({ page_subject: undefined })).length === 0
+    && usesOfRow(genRow({ source_url: ZILLOW })).join() === ZESTIMATE_SCREENSHOT_USES.join())
+  check("a bare capture kind 'public_page' no longer implies the Zestimate — it serves nothing (ask by subject or by row)", screenshotUsesFor("public_page").length === 0 && screenshotUsesFor("os_surface").join() === SCREENSHOT_USES.join())
+  {
+    const plan = planScreenshotCapture({ kind: "public_page", url: GENERAL_PAGES[2] }, { siteOrigin: "" })
+    check("the seam PLANS a general page (pageSubject general, no Zestimate readiness rule)", plan.ok && plan.pageSubject === "general" && plan.readyWhen.length === 0)
+    const refusedEstimates = ESTIMATE_PAGES.slice(0, -2).map((u) => planScreenshotCapture({ kind: "public_page", url: u }, { siteOrigin: "" }))
+    check("the seam REFUSES every other-portal / estimator page before anything runs (never captured)", refusedEstimates.every((r) => !r.ok && /never captured/.test(r.reason)))
+    const SSRF = ["http://127.0.0.1/x", "http://169.254.169.254/latest/meta-data/", "http://localhost:3000/", "https://intranet.corp/x", "https://user:pw@www.statesman.com/", "https://www.statesman.com:8443/", "https://8.8.8.8/", "http://[::1]/"]
+    const ssrfPlans = SSRF.map((u) => planScreenshotCapture({ kind: "public_page", url: u }, { siteOrigin: "" }))
+    check(`the public-network guard refuses private / loopback / metadata / internal names, credentials, odd ports and IP literals (${SSRF.length} specimens)`, ssrfPlans.every((r) => !r.ok), SSRF.filter((_, i) => ssrfPlans[i].ok).join(", "))
+    check("isPublicIpAddress: RFC1918 / loopback / link-local (metadata) / CGNAT / ULA / mapped-loopback are not public; 8.8.8.8 and a global v6 are (both sides controlled)",
+      ["10.0.0.1", "172.16.5.4", "192.168.1.1", "127.0.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1"].every((ip) => !isPublicIpAddress(ip))
+      && ["8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"].every((ip) => isPublicIpAddress(ip)))
+    check("requestHostRefusal (every browser request): data:/blob: pass; file:, a private literal and an internal name are refused; a public CDN passes",
+      requestHostRefusal("data:image/png;base64,AA") === null && requestHostRefusal("file:///etc/passwd") !== null && requestHostRefusal("http://10.1.2.3/x") !== null && requestHostRefusal("https://svc.internal/x") !== null && requestHostRefusal("https://cdn.jsdelivr.net/x.js") === null)
+    check("puppeteer enforces it per request (interception on, requestHostRefusal on every request, navigation refusal surfaced)", /setRequestInterception\(true\)/.test(seamCode) && /requestHostRefusal\(req\.url\(\)\)/.test(seamCode) && /publicNetworkOnly: true/.test(seamCode))
+  }
+  {
+    const provider = providerConfirming(() => []); const svc = makeSvc({ insertId: "gen-1" })
+    const r = await captureTenantPublicPageStill({ brokerageId: TENANT, userId: "u-1", url: GENERAL_PAGES[4], label: "Market news" }, { svc, provider, fetchRobots: robotsAllow, lookupHost: async () => ["93.184.216.34"], now: new Date("2026-09-26T00:00:00Z") })
+    const row = svc.inserted[0] as any
+    check("a tenant GENERAL capture lands PENDING in the tenant's assets with EVERY use, stamped page_subject=general, general usage, no estimate tag",
+      r.ok && !!row && row.brokerage_id === TENANT && row.approval_status === "pending" && row.metadata?.page_subject === "general" && row.metadata?.usage === "general_material_every_use"
+      && (row.tags as string[]).filter((t) => t.startsWith("use:")).length === SCREENSHOT_USES.length && !(row.tags as string[]).includes("estimate_still") && (row.tags as string[]).includes("public_page_still"))
+    check("…and the row the seam wrote is general to THE RULE (image library admitted) — a general public page now SERVES", !!row && screenshotRowUseAllowed(row, "image_library") && screenshotRowUseAllowed(row, "training") && screenshotRowUseAllowed(row, "product_video"))
+    check("the provider was asked to guard every request (publicNetworkOnly) and given no Zestimate readiness rule", provider.calls.length === 1 && provider.calls[0].publicNetworkOnly === true && provider.calls[0].readyWhen.length === 0)
+    const pInward = providerConfirming(() => []); const svcIn = makeSvc()
+    const inward = await captureTenantPublicPageStill({ brokerageId: TENANT, userId: null, url: GENERAL_PAGES[5] }, { svc: svcIn, provider: pInward, fetchRobots: robotsAllow, lookupHost: async () => ["93.184.216.34", "10.0.0.7"] })
+    check("DNS guard: a host resolving to ANY private address is refused before robots, the browser and the insert", !inward.ok && /non-public address/.test(inward.reason) && pInward.calls.length === 0 && svcIn.inserted.length === 0)
+    const pNo = providerConfirming(() => []); const svcNo = makeSvc()
+    const nores = await captureTenantPublicPageStill({ brokerageId: TENANT, userId: null, url: GENERAL_PAGES[3] }, { svc: svcNo, provider: pNo, fetchRobots: robotsAllow, lookupHost: async () => { throw new Error("ENOTFOUND") } })
+    check("DNS guard fails CLOSED: an unresolvable host is refused", !nores.ok && /did not resolve/.test(nores.reason) && pNo.calls.length === 0)
+    const pRb = providerConfirming(() => []); const svcRb = makeSvc()
+    const rb = await captureTenantPublicPageStill({ brokerageId: TENANT, userId: null, url: GENERAL_PAGES[1] }, { svc: svcRb, provider: pRb, fetchRobots: async () => "User-agent: *\nDisallow: /", lookupHost: async () => ["93.184.216.34"] })
+    check("robots.txt is honoured for a general page exactly as for the Zestimate (the seam's existing gate)", !rb.ok && /robots\.txt/.test(rb.reason) && pRb.calls.length === 0)
+    const pD = providerConfirming(() => []); const svcD = makeSvc()
+    const viaDoor = await Promise.all([ZILLOW, ESTIMATE_PAGES[0], ESTIMATE_PAGES[ESTIMATE_PAGES.length - 5]].map((u) => captureTenantPublicPageStill({ brokerageId: TENANT, userId: null, url: u }, { svc: svcD, provider: pD, fetchRobots: robotsAllow, lookupHost: async () => ["93.184.216.34"] })))
+    check("POSITIVE CONTROL: through the general door a Zillow page is sent to the Zestimate card and another portal / Trulia estimate page is REFUSED — nothing captured", viaDoor.every((x) => !x.ok) && /Zestimate card/.test((viaDoor[0] as { reason: string }).reason) && pD.calls.length === 0 && svcD.inserted.length === 0)
+    const tenantPlan = planTenantPublicPageStill({ brokerageId: "", userId: null, url: GENERAL_PAGES[0] })
+    check("the general door fails closed without the session tenant", !tenantPlan.ok)
+    const pF = providerConfirming((i) => i.readyWhen.map((x) => x.label)); const svcF = makeSvc({ insertId: "forge" })
+    // ZILLOW_APEX: section 3 keeps the www. host's per-host rate budget (PUBLIC_PAGE_RATE) for itself.
+    await captureScreenshot({ kind: "public_page", url: ZILLOW_APEX, dayIso: "2026-09-28", owner: { brokerageId: TENANT, createdBy: null, provenance: { page_subject: "general" } } }, { svc: svcF, provider: pF, fetchRobots: robotsAllow, now: new Date("2026-09-28T00:00:00Z") })
+    const forged = svcF.inserted[0] as any
+    check("a caller cannot relabel a page: provenance page_subject='general' on a Zillow capture is overwritten by the seam's verdict (zillow_zestimate)", !!forged && forged.metadata?.page_subject === "zillow_zestimate" && usesOfRow(forged).join() === ZESTIMATE_SCREENSHOT_USES.join())
+  }
+  {
+    // TASK 3 (84A open item): the organic social auto-post picker asks THE ONE RULE — an organic post belongs to
+    // no marketing campaign, so it selects screenshots as image-library material; the Zestimate never qualifies.
+    const pairing = stripped("lib/marketing/social-media-pairing.ts")
+    check("the social auto-post picker asks the rule for image_library (isScreenshotRuleRow → screenshotRowUseAllowed) and selects metadata", /ORGANIC_SOCIAL_STILL_USE: ScreenshotUse = "image_library"/.test(pairing) && /!isScreenshotRuleRow\(r\) \|\| screenshotRowUseAllowed\(r, ORGANIC_SOCIAL_STILL_USE\)/.test(pairing) && /select\("id, asset_url, agent_user_id, tags, asset_name, metadata"\)/.test(pairing))
+    const zStill = { id: "z-still", asset_url: "https://cdn.test/zestimate.png", agent_user_id: null, tags: ["screenshot", "use:marketing_campaign", "use:campaign_video"], asset_name: "Zestimate — 1 Main", metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", estimate_source: "zillow_zestimate", uses_rule: SCREENSHOT_USES_RULE_VERSION } }
+    const gStill = { id: "g-still", asset_url: "https://cdn.test/market.png", agent_user_id: null, tags: ["screenshot", ...SCREENSHOT_USES.map((u) => `use:${u}`)], asset_name: "Market page", metadata: genRow().metadata }
+    const socialSvc = (rows: unknown[]) => ({ from: (t: string) => { const eqs: Record<string, unknown> = {}; const q: any = {}; for (const m of ["select", "not", "order", "limit", "gte", "in"]) q[m] = () => q; q.eq = (k: string, v: unknown) => { eqs[k] = v; return q }; q.maybeSingle = async () => ({ data: null, error: null }); q.then = (res: any, rej: any) => Promise.resolve({ data: t === "marketing_assets" && eqs.asset_type === "image" ? rows : [], error: null }).then(res, rej); return q } })
+    const picked = await resolveSocialMedia(socialSvc([zStill, gStill]), { brokerageId: TENANT, platform: "linkedin", topicTitle: null })
+    check("E2E: with the Zestimate still NEWEST in the library, the organic post pairs the GENERAL public-page still instead", picked?.assetId === "g-still" && picked?.source === "library")
+    check("POSITIVE CONTROL: the unfiltered pick would have been the Zestimate (it is rows[0]); the rule refuses it for image_library", isScreenshotRuleRow(zStill) && !screenshotRowUseAllowed(zStill, "image_library") && screenshotRowUseAllowed(gStill, "image_library"))
+  }
 
   console.log("\n[3 · readiness — the still must show the photo AND the Zestimate]")
   const rules = readyRulesForHost("www.zillow.com")

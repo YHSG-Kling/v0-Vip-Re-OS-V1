@@ -21,7 +21,13 @@
  * the gap to the human).
  */
 
+import { isScreenshotRuleRow, screenshotRowUseAllowed, type ScreenshotUse } from "@/lib/assets/screenshot-uses"
+
 export type MediaType = "image" | "video"
+
+/** The screenshot use an ORGANIC social post selects under (wave 85A): the
+ *  shared image library — an organic post belongs to no marketing campaign. */
+const ORGANIC_SOCIAL_STILL_USE: ScreenshotUse = "image_library"
 
 /**
  * CHANNEL NORMS — the competitor-validated floor (owner rule: every delivery
@@ -150,15 +156,27 @@ export async function resolveSocialMedia(
       ? ["video", "image"]
       : norm.videoAllowed ? ["image", "video"] : ["image"]
     for (const assetType of typeOrder) {
-      const { data: assets } = await svc.from("marketing_assets")
-        .select("id, asset_url, agent_user_id, tags, asset_name")
+      const { data: assets, error: assetsErr } = await svc.from("marketing_assets")
+        .select("id, asset_url, agent_user_id, tags, asset_name, metadata")
         .eq("brokerage_id", params.brokerageId)
         .eq("asset_type", assetType)
         .eq("approval_status", "approved")
         .not("asset_url", "is", null)
         .order("created_at", { ascending: false })
         .limit(30)
-      const rows = (assets ?? []) as Array<{ id: string; asset_url: string; agent_user_id: string | null; tags: string[] | null; asset_name: string | null }>
+      if (assetsErr) console.warn(`[social-media-pairing] library read refused (${assetType}): ${assetsErr.message}`)
+      // THE ONE SCREENSHOT USE RULE (wave 85A; closes lane 84A's open item).
+      // An organic cadence post is NOT a marketing campaign — this stager has
+      // no campaign (listing_id null, no campaign id) — so a screenshot row is
+      // picked here only as IMAGE-LIBRARY material: screenshotRowUseAllowed(r,
+      // "image_library"). General stills (OS surfaces, approved general
+      // public pages) pass; the Zillow Zestimate still (marketing_campaign +
+      // campaign_video only) and the estimate-comparison composite never do.
+      // A campaign's own social art is placed by its install rail
+      // (app/actions/creative-playbooks.ts), never by this picker. A plain
+      // image (no screenshot subject) is not the rule's to judge.
+      const rows = ((assets ?? []) as Array<{ id: string; asset_url: string; agent_user_id: string | null; tags: string[] | null; asset_name: string | null; metadata: Record<string, unknown> | null }>)
+        .filter((r) => !isScreenshotRuleRow(r) || screenshotRowUseAllowed(r, ORGANIC_SOCIAL_STILL_USE))
       if (rows.length === 0) continue
       const topicWords = (params.topicTitle ?? "").toLowerCase().split(/\W+/).filter((w) => w.length > 4)
       const matchesTopic = (r: { tags: string[] | null; asset_name: string | null }) => {

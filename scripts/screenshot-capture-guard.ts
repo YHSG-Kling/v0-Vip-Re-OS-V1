@@ -44,7 +44,7 @@ import {
   planScreenshotCapture, assertDemoTenantOnly, isRobotsAllowed, redactionCss, screenshotCacheKey, screenshotAssetRow,
   captureScreenshot, capturePublicPropertyPage, demoSessionCookies, stillUrlsForDemoTopic, stillUrlsForVideoAngle,
   figuresForEducationTopic, renderFigures, stillsAsBrollClips, resolveScreenshotProvider, seedMissingDemoStill,
-  SCREENSHOT_USES, ZESTIMATE_SCREENSHOT_USES, screenshotUsesFor,
+  SCREENSHOT_USES, ZESTIMATE_SCREENSHOT_USES, screenshotUsesFor, usesOfRow,
   type ScreenshotProvider, type ProviderCaptureInput, type ScreenshotAssetRow,
 } from "../lib/assets/screenshot-capture"
 import { findPlaywrightChromium, isServerlessChromiumHost, resolveChromiumExecutable, DEFAULT_CHROMIUM_PACK_URL } from "../lib/remotion/chromium-executable"
@@ -167,7 +167,14 @@ check("no site origin → no os_surface capture (never an invented domain)", !pl
 check("a protocol-relative route refuses (no off-site redirect through the demo session)", !planScreenshotCapture({ kind: "os_surface", route: "//evil.test/x" }, { siteOrigin: "https://x.test" }).ok)
 const pub = planScreenshotCapture({ kind: "public_page", url: "https://www.zillow.com/homedetails/123-Main-St/1_zpid/#frag" }, { siteOrigin: "", now: new Date("2026-09-22T10:00:00Z") })
 check("a public_page plan on an allowlisted host needs no session, blurs nothing, drops the fragment", pub.ok && !pub.needsDemoSession && pub.redactSelectors.length === 0 && pub.targetUrl === "https://www.zillow.com/homedetails/123-Main-St/1_zpid/")
-check("a host off PUBLIC_PAGE_HOSTS refuses; a non-http scheme refuses", !planScreenshotCapture({ kind: "public_page", url: "https://example.com/x" }, { siteOrigin: "" }).ok && !planScreenshotCapture({ kind: "public_page", url: "ftp://zillow.com/x" }, { siteOrigin: "" }).ok)
+// RE-ANCHORED (wave 85A — owner: "a public page screenshhot can be more than just zillow zestimate page."): the
+// rule is no longer "Zillow or nothing" but "THE ONE classifier decides" — another portal's estimate page and a
+// non-http scheme refuse; a general public host plans (no Zestimate readiness rule); a private address refuses.
+{
+  const general = planScreenshotCapture({ kind: "public_page", url: "https://www.austintexas.gov/news/x" }, { siteOrigin: "" })
+  check("another portal's estimate page refuses; a non-http scheme refuses; a private address refuses", !planScreenshotCapture({ kind: "public_page", url: "https://www.redfin.com/TX/Austin/1-Main/home/1" }, { siteOrigin: "" }).ok && !planScreenshotCapture({ kind: "public_page", url: "ftp://zillow.com/x" }, { siteOrigin: "" }).ok && !planScreenshotCapture({ kind: "public_page", url: "http://192.168.0.10/admin" }, { siteOrigin: "" }).ok)
+  check("POSITIVE CONTROL (85A): a GENERAL public page on any public host now plans — pageSubject general, no Zestimate readiness rule, not on PUBLIC_PAGE_HOSTS", general.ok && general.pageSubject === "general" && general.readyWhen.length === 0 && !(PUBLIC_PAGE_HOSTS as readonly string[]).includes("austintexas.gov"))
+}
 check("the cache key is URL + day: same day → same key, next day → new key", screenshotCacheKey("https://a.test/x", "2026-09-22") === screenshotCacheKey("https://a.test/x", "2026-09-22") && screenshotCacheKey("https://a.test/x", "2026-09-22") !== screenshotCacheKey("https://a.test/x", "2026-09-23"))
 check("an unknown kind refuses naming the vocabulary", (() => { const r = planScreenshotCapture({ kind: "pdf" as any }, { siteOrigin: "" }); return !r.ok && r.reason.includes(SCREENSHOT_KINDS.join("|")) })())
 
@@ -209,7 +216,15 @@ check("robots: wildcard + $ anchor honoured", !isRobotsAllowed("User-agent: *\nD
   const row = svc.inserted[0] as any
   check("stubbed run: an allowed public page is captured once with the identified UA and no cookies", r.ok && provider.calls.length === 1 && provider.calls[0].userAgent.includes("VipReOS-DemoStillBot") && !provider.calls[0].cookies)
   check("the third-party row is PENDING (never a tenant-picker asset), tagged third_party_page, with source_url + captured_at + day + provider, and (84B) exactly the Zestimate's uses from THE ONE RULE (campaign + campaign video) — never demo/training/product-video/library stock", !!row && row.approval_status === "pending" && row.tags.includes("third_party_page") && row.metadata.source_url === "https://www.zillow.com/homedetails/1-Main-Austin-TX/1_zpid/" && row.metadata.captured_at === "2026-09-22T10:00:00.000Z" && row.metadata.day === "2026-09-22" && row.metadata.provider === "puppeteer" && row.metadata.usage === "marketing_campaign_material_never_customer_value" && row.metadata.uses?.join() === ZESTIMATE_SCREENSHOT_USES.join() && !row.metadata.uses.includes("demo"))
-  check("the rule's allowance per capture kind: an OS surface serves every use, a public page exactly the Zestimate's (84B)", screenshotUsesFor("os_surface").join() === SCREENSHOT_USES.join() && screenshotUsesFor("public_page").join() === ZESTIMATE_SCREENSHOT_USES.join())
+  // RE-ANCHORED (85A): a bare `public_page` kind no longer says which page it is, so it serves nothing (fail
+  // closed); the ROW decides — the Zillow row above is the Zestimate, a general-stamped row serves every use.
+  check("the rule's allowance: an OS surface serves every use; a bare public_page kind nothing (ask the row); this Zillow row exactly the Zestimate's (84B)", screenshotUsesFor("os_surface").join() === SCREENSHOT_USES.join() && screenshotUsesFor("public_page").length === 0 && !!row && usesOfRow(row).join() === ZESTIMATE_SCREENSHOT_USES.join())
+  {
+    const svcG = makeSvc({ insertId: "pub-g" }); const providerG = countingProvider()
+    const rg = await captureScreenshot({ kind: "public_page", url: "https://www.greatschools.org/texas/austin/" }, { svc: svcG, provider: providerG, fetchRobots: async () => "User-agent: *\nAllow: /", lookupHost: async () => ["93.184.216.34"], now: new Date("2026-09-22T10:00:00Z") })
+    const g = svcG.inserted[0] as any
+    check("85A: a PLATFORM capture of a general public page is PENDING, stamped page_subject=general, general usage, and serves every use by the rule", rg.ok && !!g && g.approval_status === "pending" && g.metadata.page_subject === "general" && g.metadata.usage === "general_material_every_use" && usesOfRow(g).join() === SCREENSHOT_USES.join() && providerG.calls[0]?.publicNetworkOnly === true)
+  }
   check("the third-party row's source is NOT a redistributable library source (canShareToTenants would say no)", row && !["ai_image", "upload", "owned", "licensed_redistribution"].includes(row.metadata.source))
 }
 {

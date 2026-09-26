@@ -50,7 +50,7 @@ export function EstimateStillsCard() {
   const [pending, start] = useTransition()
 
   function load() {
-    listTenantScreenshotStillsAction({ use: "marketing_campaign" })
+    listTenantScreenshotStillsAction({ use: "marketing_campaign", subject: "zillow_zestimate" })
       .then((r) => { if (r.ok) setStills(r.stills as Still[]); else setErr(r.error) })
       .catch((e) => setErr(e instanceof Error ? e.message : "Could not list your stills"))
   }

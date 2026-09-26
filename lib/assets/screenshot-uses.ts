@@ -17,9 +17,16 @@
 // SCREENSHOT_USES; it now imports this list).
 //
 // THE RULE, by SUBJECT (what the still shows), never by who captured it:
-//   · general — an OS surface, product UI, a listing or tenant page: EVERY use
-//     (marketing campaigns and their videos, product videos, demos, training /
-//     guides / education, the shared image library).
+//   · general — an OS surface, product UI, or (wave 85A, owner verbatim: "a
+//     public page screenshhot can be more than just zillow zestimate page.") a
+//     public page that is NOT an estimate page — a listing page, the tenant's
+//     own site / landing page, a market / community / news / HOA / school /
+//     city / review page: EVERY use (marketing campaigns and their videos,
+//     product videos, demos, training / guides / education, the shared image
+//     library). Which public page is which is decided by THE ONE classifier,
+//     lib/marketing/estimate-sources.ts classifyPublicPage, at capture time;
+//     the seam stamps its answer on the row (metadata.page_subject) and
+//     screenshotSubjectOfRow below reads the stamp — this file stays pure.
 //   · zillow_zestimate — the Zillow property page with its Zestimate: marketing
 //     campaigns INCLUDING the campaign's video (`marketing_campaign`,
 //     `campaign_video`) and nothing else (not a product video, a demo, a
@@ -71,13 +78,14 @@ export const ZESTIMATE_SCREENSHOT_USES: readonly ScreenshotUse[] = SCREENSHOT_US
 const ZESTIMATE_HOST = "zillow.com"
 
 /** PURE: normalise a capture kind or a subject to the subject. An os_surface
- *  still is general; a public_page still is the Zillow Zestimate page (the
- *  ONLY public host the seam captures since 81D). Anything else is treated as
- *  another portal's estimate — fail closed. */
+ *  still is general. WAVE 85A: a bare `public_page` no longer says WHICH page
+ *  (a Zestimate, a general public page, another portal's estimate) — so, like
+ *  anything unrecognised, it is treated as another portal's estimate and
+ *  serves nothing (fail closed). Ask by subject, or by the row
+ *  (screenshotSubjectOfRow), never by the capture kind of a public page. */
 function screenshotSubject(kind: ScreenshotSubject | ScreenshotKind | string | null | undefined): ScreenshotSubject {
   if ((SCREENSHOT_SUBJECTS as readonly string[]).includes(String(kind))) return kind as ScreenshotSubject
   if (kind === "os_surface") return "general"
-  if (kind === "public_page") return "zillow_zestimate"
   return "other_portal_estimate"
 }
 
@@ -98,7 +106,12 @@ const ESTIMATE_COMPOSITE_KIND = "estimate_comparison"
  *     other_portal_estimate for any other portal;
  *   · the comparison composite (it embeds the Zillow still) → zillow_zestimate;
  *   · a public_page row with no recorded source → by its source_url host
- *     (zillow.com → zillow_zestimate, anything else → other_portal_estimate);
+ *     (zillow.com → zillow_zestimate, whatever any stamp says);
+ *   · WAVE 85A — a public_page row the seam stamped `page_subject: "general"`
+ *     (THE ONE classifier, lib/marketing/estimate-sources.ts classifyPublicPage,
+ *     judged it no estimate page at capture) → general; any other public_page
+ *     row (no stamp — every pre-85A non-Zillow row — or another stamp) →
+ *     other_portal_estimate;
  *   · everything else (an OS surface, product UI…) → general. */
 export function screenshotSubjectOfRow(row: { metadata?: Record<string, unknown> | null }): ScreenshotSubject {
   const m = row.metadata ?? {}
@@ -106,7 +119,8 @@ export function screenshotSubjectOfRow(row: { metadata?: Record<string, unknown>
   if (typeof m.estimate_source === "string") return m.estimate_source === "zillow_zestimate" ? "zillow_zestimate" : "other_portal_estimate"
   if (m.asset_kind === ESTIMATE_COMPOSITE_KIND) return "zillow_zestimate"
   if (m.screenshot_kind !== "public_page") return "general"
-  return hostIsZillow(m.source_url) ? "zillow_zestimate" : "other_portal_estimate"
+  if (hostIsZillow(m.source_url)) return "zillow_zestimate"
+  return m.page_subject === "general" ? "general" : "other_portal_estimate"
 }
 
 /** PURE: does this row carry a screenshot the rule governs — a screenshot row,

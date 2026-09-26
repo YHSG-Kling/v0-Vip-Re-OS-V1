@@ -49,7 +49,7 @@
 // is the portal's own number, shown as what it is, and the agent's number is
 // spoken at the appointment, never by the OS.
 
-import { screenshotUseAllowed, ZESTIMATE_SCREENSHOT_USES } from "@/lib/assets/screenshot-uses"
+import { screenshotUseAllowed, ZESTIMATE_SCREENSHOT_USES, type ScreenshotSubject } from "@/lib/assets/screenshot-uses"
 
 export const ESTIMATE_SOURCE_KEYS = ["zillow_zestimate"] as const
 export type EstimateSourceKey = (typeof ESTIMATE_SOURCE_KEYS)[number]
@@ -254,8 +254,87 @@ export const COMPARISON_ESTIMATE_SOURCES: readonly ComparisonEstimateSource[] = 
   },
 ] as const
 
+// ── ESTIMATE-PAGE DETECTION (wave 85, lane 85A) ──────────────────────────────
+// Owner verbatim (2026-09-26): "a public page screenshhot can be more than just
+// zillow zestimate page." A public page that is NOT an estimate page (a listing
+// page, the tenant's own site or landing page, a market / community / news /
+// HOA / school / city page, a review page…) is a GENERAL still and serves every
+// use; the Zillow Zestimate stays the ONLY portal-estimate still; another
+// portal's estimate page serves nothing (its figure stays web-searched text,
+// lib/marketing/estimate-web-search.ts). classifyPublicPage below is THE ONE
+// classifier — the seam (lib/assets/screenshot-capture.ts) asks it before any
+// capture and stamps its answer on the row (metadata.page_subject), and the use
+// rule (lib/assets/screenshot-uses.ts screenshotSubjectOfRow) reads that stamp.
+// It reads the hosts and the figure names of COMPARISON_ESTIMATE_SOURCES above —
+// never a second list of portals. The one host added here is not a comparison
+// source but IS an estimate page: Trulia is Zillow Group's other portal, and
+// "our Trulia Estimate is now derived from the Zestimate" (Trulia support,
+// 2026-02-11 — Exa); its home pages publish that estimate ("See Est. Value").
+
+/** Estimate pages that are not comparison sources (named above). */
+const ESTIMATE_PAGE_ONLY_HOSTS = ["trulia.com"] as const
+
 // ── END COMPARISON-ONLY BLOCK ────────────────────────────────────────────────
 
 export function comparisonEstimateSource(key: string | null | undefined): ComparisonEstimateSource | null {
   return COMPARISON_ESTIMATE_SOURCES.find((s) => s.key === key) ?? null
+}
+
+/** The words in an address that name an estimate page — DERIVED from the
+ *  sources' own names for their figures and their search hints (Zestimate,
+ *  RealEstimate, "estimated value", Redfin Estimate…): every word carrying the
+ *  estimate stem, cut back to that stem so "estimator" / "estimates" match too
+ *  (zestimat, realestimat, estimat). A page whose address names an estimate is
+ *  judged an estimate page (fail closed). */
+export const ESTIMATE_PAGE_PATH_MARKERS: readonly string[] = Array.from(new Set(
+  COMPARISON_ESTIMATE_SOURCES.flatMap((s) => [...s.estimateNames, s.searchHint])
+    .flatMap((n) => n.toLowerCase().split(/[^a-z]+/))
+    .filter((w) => w.includes("estimat"))
+    .map((w) => w.replace(/e[ds]?$/, "")),
+)).sort((a, b) => a.length - b.length)
+
+interface PublicPageClassification {
+  /** The screenshot use rule's subject for a still of this page. */
+  subject: ScreenshotSubject
+  /** The comparison source whose host it is, when it is one. */
+  source: ComparisonEstimateSourceKey | null
+  why: string
+}
+
+function hostOn(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`)
+}
+
+/**
+ * PURE, FAIL-CLOSED — THE ONE public-page classifier (wave 85A). Is a still of
+ * this URL the Zillow Zestimate, another portal's estimate page, or a general
+ * public page?
+ *   · not an absolute http(s) URL → other_portal_estimate (serves nothing);
+ *   · a comparison source's host → zillow_zestimate for Zillow, else
+ *     other_portal_estimate (every page on a portal host: a portal's listing
+ *     page carries its estimate too);
+ *   · an estimate-page host that is no comparison source (Trulia) →
+ *     other_portal_estimate;
+ *   · any other host whose path or query names an estimate
+ *     (ESTIMATE_PAGE_PATH_MARKERS) → other_portal_estimate;
+ *   · everything else → general.
+ */
+export function classifyPublicPage(url: string | null | undefined): PublicPageClassification {
+  let u: URL
+  try { u = new URL(String(url ?? "")) } catch { return { subject: "other_portal_estimate", source: null, why: "not an absolute URL — a page that cannot be classified serves nothing" } }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return { subject: "other_portal_estimate", source: null, why: `a ${u.protocol} address is not a public web page` }
+  const host = u.hostname.toLowerCase()
+  const portal = COMPARISON_ESTIMATE_SOURCES.find((s) => hostOn(host, s.host))
+  if (portal) {
+    return portal.key === DEFAULT_ESTIMATE_SOURCE
+      ? { subject: "zillow_zestimate", source: portal.key, why: `${portal.host} is the Zillow Zestimate page` }
+      : { subject: "other_portal_estimate", source: portal.key, why: `${portal.host} publishes the ${portal.cardLabel} — its figure is web-searched text, never a screenshot` }
+  }
+  const estimateOnly = ESTIMATE_PAGE_ONLY_HOSTS.find((d) => hostOn(host, d))
+  if (estimateOnly) return { subject: "other_portal_estimate", source: null, why: `${estimateOnly} publishes a portal home-value estimate — never a screenshot` }
+  let where = `${u.pathname}${u.search}`.toLowerCase()
+  try { where = decodeURIComponent(where) } catch { /* keep the raw form */ }
+  const marker = ESTIMATE_PAGE_PATH_MARKERS.find((m) => where.includes(m))
+  if (marker) return { subject: "other_portal_estimate", source: null, why: `the address names an estimate ("${marker}") — an estimate page is never a general still` }
+  return { subject: "general", source: null, why: "no estimate-source host and no estimate named in the address — a general public page" }
 }

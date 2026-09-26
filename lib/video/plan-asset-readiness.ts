@@ -39,7 +39,14 @@
 //                        re-exported by the seam — lane 84B owns it; consumed
 //                        here with the literal "campaign_video", never
 //                        restated) through the door approvedTenantStill(…,
-//                        "campaign_video") → the platform OS-surface stills
+//                        "campaign_video") → (wave 85A) the tenant's APPROVED
+//                        GENERAL public-page stills (a listing / market /
+//                        community page the tenant captured — owner: "a public
+//                        page screenshhot can be more than just zillow
+//                        zestimate page."), selected under the video's own use
+//                        (videoStillUse — campaign_video for a verified
+//                        campaign, product_video otherwise) and admitted by the
+//                        SAME predicate → the platform OS-surface stills
 //                        (listScreenshotStillsForUse "product_video")
 //        broll        → the staged props → pickBrollClips (video_assets
 //                        agent → team → brokerage cascade, agents.id)
@@ -80,7 +87,7 @@ import {
 } from "./body-visual-model"
 import { finishForVideo, type VideoFinish } from "./finish-spec"
 import { finishForCut, type RenderCut } from "./render-cut"
-import { screenshotUseAllowed } from "@/lib/assets/screenshot-capture"
+import { screenshotUseAllowed, type ScreenshotSubject, type ScreenshotUse } from "@/lib/assets/screenshot-capture"
 import type { VideoPurpose } from "./duration-model"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +106,7 @@ export interface CreatePolicy { create: CreateScope; how: string | null; why: st
 /** Where creating an asset is honest — and where it never is. The proof holds every kind to a row. */
 export const ASSET_CREATE_POLICY: Record<ReadinessAssetKind, CreatePolicy> = {
   photos: { create: "non_listing_only", how: "lib/ai/image-generation.ts generateImage (editorial, no people, no identifiable home), booked on ai_tool_usage, captured into marketing_assets", why: "an editorial image may illustrate a topic; an AI image standing in for a LISTING's photos misrepresents the property (NAR Code Art. 12 true picture; the MLS cut is the listing's own media only)" },
-  screenshots: { create: "platform_os_surface", how: "lib/assets/screenshot-capture.ts seedMissingDemoStill (the demo tenant's OS surfaces, platform-owned)", why: "an OS surface is our own product and may be re-captured at will; a public-page (Zestimate) still is only ever captured through the tenant door and approved by a person — never auto-captured into a video" },
+  screenshots: { create: "platform_os_surface", how: "lib/assets/screenshot-capture.ts seedMissingDemoStill (the demo tenant's OS surfaces, platform-owned)", why: "an OS surface is our own product and may be re-captured at will; a public-page still (the Zestimate, or since 85A a general listing / market / community page) is only ever captured through the tenant door and approved by a person — never auto-captured into a video" },
   stat_cards: { create: "never", how: null, why: "a stat card is a FACT (price, median, equity) — a number no fact supports would be fabricated" },
   chart_data: { create: "never", how: null, why: "chart data is comps / trend facts — never invented" },
   broll: { create: "never", how: null, why: "b-roll is licensed stock or the tenant's own footage (video_assets); generated footage of a place is not what the verdicts admit" },
@@ -116,6 +123,15 @@ export const MAX_CREATED_IMAGES_PER_VIDEO = 3
  *  "marketing campaigns including video"). Consumed through the ONE rule
  *  (screenshotUseAllowed), never re-decided here. */
 export const CAMPAIGN_VIDEO_STILL_USE = "campaign_video" as const
+
+/** WAVE 85A — the seam use a video selects a GENERAL still under: a verified
+ *  campaign's own video is `campaign_video`; any other video (topic, brand,
+ *  explainer) is `product_video` (lane 84B's vocabulary — "product / brand /
+ *  explainer videos"). A general still serves both by THE ONE RULE; the use
+ *  matters because a person may narrow a still, and the listing obeys it. */
+function videoStillUse(campaignVerified: boolean): ScreenshotUse {
+  return campaignVerified ? CAMPAIGN_VIDEO_STILL_USE : "product_video"
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § PURE — the wished plan, its requirements, the degradations
@@ -201,7 +217,7 @@ export interface ProvenanceEntry {
   kind: ReadinessAssetKind
   status: ProvenanceStatus
   /** Where it came from: staged_props | listing_media | marketing_assets | zestimate_campaign_still |
-   *  os_surface_still | video_assets | brand_cascade | generated:image | captured:os_surface | none */
+   *  public_page_still | os_surface_still | video_assets | brand_cascade | generated:image | captured:os_surface | none */
   source: string
   count: number
   urls: string[]
@@ -323,7 +339,9 @@ export interface ReadinessDeps {
   captureLibraryImage?: (svc: Svc, a: { ctx: ReadinessContext; imageUrl: string; subject: string }) => Promise<{ id: string | null; reason: string | null }>
   verifyCampaign?: (svc: Svc, a: { brokerageId: string; campaignId: string }) => Promise<{ ok: boolean; reason: string | null }>
   campaignStill?: (svc: Svc, a: { brokerageId: string; address: string | null }) => Promise<{ id: string; url: string } | null>
-  stillUseAllowed?: (kind: "zillow_zestimate", use: string) => boolean
+  stillUseAllowed?: (kind: ScreenshotSubject, use: string) => boolean
+  /** WAVE 85A — the tenant's APPROVED general public-page stills for a use. */
+  tenantPublicStills?: (svc: Svc, a: { brokerageId: string; use: ScreenshotUse }) => Promise<Array<{ id: string; url: string }>>
   osStills?: (svc: Svc) => Promise<Array<{ id: string; url: string }>>
   seedOsStill?: (svc: Svc) => Promise<{ id: string | null; url: string | null; reason: string | null }>
   pickBroll?: (svc: Svc, a: { brokerageId: string; agentId: string }) => Promise<Array<{ url: string; durationSeconds?: number; caption?: string }>>
@@ -397,6 +415,13 @@ const DEFAULT_DEPS: DefaultDeps = {
     return pick ? { id: pick.id, url: pick.url } : null
   },
   stillUseAllowed: (kind, use) => screenshotUseAllowed(kind, use),
+  async tenantPublicStills(svc, a) {
+    // THE ONE listing (the seam): tenant-scoped, approved only, the general
+    // subject only, the row's own (human-narrowable) uses ∩ the rule for `use`.
+    const { listScreenshotStillsForUse } = await import("@/lib/assets/screenshot-capture")
+    const picks = await listScreenshotStillsForUse(svc, a.use, { brokerageId: a.brokerageId, approvedOnly: true, kind: "public_page", subject: "general", limit: 8 })
+    return picks.map((p) => ({ id: p.id, url: p.url }))
+  },
   async osStills(svc) {
     const { listScreenshotStillsForUse } = await import("@/lib/assets/screenshot-capture")
     const picks = await listScreenshotStillsForUse(svc, "product_video", { kind: "os_surface", limit: 12 })
@@ -507,11 +532,13 @@ export async function resolvePlanAssets(
         const have = urlsAt(props, key)
         if (have.length >= req.count) { ledger.push({ kind: "screenshots", status: "reused", source: "staged_props", count: have.length, urls: have, assetIds: [] }); break }
         const reasons: string[] = []
+        let campaignVerified = false
         // 1. CAMPAIGN VIDEO ONLY — the tenant's approved Zestimate still, through the ONE use rule.
         if (ctx.campaignId) {
           const v = await safe(() => d.verifyCampaign(svc, { brokerageId: ctx.brokerageId, campaignId: ctx.campaignId as string }), { ok: false, reason: "campaign check threw" }, (e) => reasons.push(e.message))
           if (!v.ok) reasons.push(v.reason ?? "not a campaign video")
           else {
+            campaignVerified = true
             // THE ONE screenshot use rule (lane 84B owns it) — consumed, never restated.
             if (!d.stillUseAllowed("zillow_zestimate", CAMPAIGN_VIDEO_STILL_USE)) {
               reasons.push(`the screenshot use rule refuses the Zestimate still for ${CAMPAIGN_VIDEO_STILL_USE}`)
@@ -524,6 +551,24 @@ export async function resolvePlanAssets(
               }
               reasons.push(`no approved ${CAMPAIGN_VIDEO_STILL_USE} Zestimate still${ctx.address ? ` for ${ctx.address}` : ""}`)
             }
+          }
+        }
+        // 1b. WAVE 85A — the tenant's own APPROVED general public-page stills
+        //     (listing / market / community pages it captured), under this
+        //     video's use, admitted by THE ONE predicate (consumed, never
+        //     re-decided). An estimate page is never among them: the classifier
+        //     refused it at capture and the subject filter excludes it here.
+        {
+          const use = videoStillUse(campaignVerified)
+          if (!d.stillUseAllowed("general", use)) reasons.push(`the screenshot use rule refuses a general public-page still for ${use}`)
+          else {
+            const pub = await safe(() => d.tenantPublicStills(svc, { brokerageId: ctx.brokerageId, use }), [], (e) => reasons.push(e.message))
+            if (pub.length > 0) {
+              patch[key] = [...have, ...pub.map((s) => s.url)]
+              ledger.push({ kind: "screenshots", status: "reused", source: "public_page_still", count: pub.length, urls: pub.map((s) => s.url), assetIds: pub.map((s) => s.id) })
+              break
+            }
+            reasons.push(`no approved general public-page still for ${use}`)
           }
         }
         // 2. The platform OS-surface stills (approved renders of the demo tenant).

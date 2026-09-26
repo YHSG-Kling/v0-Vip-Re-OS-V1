@@ -27,6 +27,15 @@
  *              re-exported by the seam) admits "campaign_video"; the still comes
  *              through 84B's door approvedTenantStill(…, "campaign_video"); a
  *              non-campaign video never even reads the tenant's stills.
+ *   §public    (wave 85A — owner: "a public page screenshhot can be more than just
+ *              zillow zestimate page.") the tenant's APPROVED GENERAL public-page
+ *              stills serve any video that wants a screenshot (use product_video,
+ *              or campaign_video on a verified campaign), after the campaign's own
+ *              Zestimate and before the OS stills, through THE ONE predicate
+ *              (screenshotUseAllowed("general", use) — consumed, positive control
+ *              when it refuses); end to end through the real seam listing, an
+ *              other-portal estimate page / a forged stamp / the Zestimate are never
+ *              staged while the general page is.
  *   §degrade   end to end: a segment whose asset is neither found nor created
  *              falls to an allowed treatment, the fall is RECORDED with why, and the
  *              final plan passes the ONE gate — never silently empty.
@@ -76,7 +85,7 @@ const ctxBase: ReadinessContext = { brokerageId: "b-1", agentId: "agent-row-1", 
 
 /** Counting stubs — every bucket and every creation door records its calls. */
 function stubs(over: Partial<ReadinessDeps> & { library?: Array<{ id: string; url: string; tags: string[] | null; metadata: Record<string, unknown> | null }>; libraryError?: string | null; listing?: string[]; bookOk?: boolean } = {}) {
-  const calls = { listing: 0, library: 0, generate: 0, book: 0, capture: 0, verify: 0, campaignStill: 0, os: 0, seed: 0, broll: 0, stock: 0 }
+  const calls = { listing: 0, library: 0, generate: 0, book: 0, capture: 0, verify: 0, campaignStill: 0, pub: 0, pubUses: [] as string[], os: 0, seed: 0, broll: 0, stock: 0 }
   const deps: ReadinessDeps = {
     readListingPhotos: async () => { calls.listing++; return { urls: over.listing ?? [], error: null } },
     readLibraryImages: async () => { calls.library++; return { rows: over.library ?? [], error: over.libraryError ?? null } },
@@ -85,6 +94,7 @@ function stubs(over: Partial<ReadinessDeps> & { library?: Array<{ id: string; ur
     captureLibraryImage: async () => { calls.capture++; return { id: `lib-${calls.capture}`, reason: null } },
     verifyCampaign: async () => { calls.verify++; return { ok: true, reason: null } },
     campaignStill: async () => { calls.campaignStill++; return { id: "still-1", url: "https://cdn.test/zestimate.png" } },
+    tenantPublicStills: async (_svc, a) => { calls.pub++; calls.pubUses.push(a.use); return [] },
     osStills: async () => { calls.os++; return [] },
     seedOsStill: async () => { calls.seed++; return { id: null, url: null, reason: "sandbox: no demo tenant" } },
     pickBroll: async () => { calls.broll++; return [] },
@@ -228,7 +238,7 @@ async function main() {
     check("RULE: a verified campaign video stages the approved Zestimate still EXACTLY when the ONE use rule admits it (derived from the live rule, not pinned)", staged === ruleAdmits && s.calls.verify === 1 && s.calls.campaignStill === (ruleAdmits ? 1 : 0))
     const s2 = stubs()
     await resolvePlanAssets(svc, "ProductPromoReel", {}, shotReq, { ...ctxBase, campaignId: null }, s2.deps)
-    check("a NON-campaign video never even reads the tenant's stills (verify 0, still door 0) — it falls to the OS stills / capture", s2.calls.verify === 0 && s2.calls.campaignStill === 0 && s2.calls.os === 1)
+    check("a NON-campaign video never even reads the tenant's Zestimate stills (verify 0, still door 0) — it falls to its general stills, then the OS stills / capture", s2.calls.verify === 0 && s2.calls.campaignStill === 0 && s2.calls.pub === 1 && s2.calls.os === 1)
     const s3 = stubs({ stillUseAllowed: () => false })
     const r3 = await resolvePlanAssets(svc, "ProductPromoReel", {}, shotReq, { ...ctxBase, campaignId: "camp-1" }, s3.deps)
     check("POSITIVE CONTROL: when the rule refuses, the still is NOT staged even on a campaign video (the predicate is consumed, not bypassed)", !((r3.propsPatch.imageUrls as string[] | undefined) ?? []).includes("https://cdn.test/zestimate.png") && r3.ledger.some((e) => /use rule refuses the Zestimate/.test(e.reason ?? "") && s3.calls.campaignStill === 0))
@@ -245,6 +255,49 @@ async function main() {
     check("the campaign playbook's still provenance: approved → reused; pending/captured → missing (never staged before approval)",
       campaignStillProvenance({ state: "approved", url: "u", assetId: "a" }).status === "reused" && campaignStillProvenance({ state: "captured", url: null, assetId: "a" }).status === "missing" && campaignStillProvenance({ state: "pending", url: null, assetId: null }).status === "missing"
       && campaignStillProvenance({ state: "approved", url: "u", assetId: "a" }, { forCampaignVideo: false }).status === "missing")
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // WAVE 85A (owner verbatim: "a public page screenshhot can be more than just zillow zestimate page.") —
+  // an APPROVED general public-page still of the tenant (a listing / market / community page) serves a video
+  // that wants a screenshot, through THE ONE predicate; an estimate page never does.
+  console.log("\n── §public · approved GENERAL public-page stills serve any video; an estimate page never does ──")
+  {
+    const pubHit = [{ id: "pub-1", url: "https://cdn.test/market-page.png" }]
+    const s = stubs({ tenantPublicStills: async (_svc, a) => { s.calls.pub++; s.calls.pubUses.push(a.use); return pubHit } })
+    const r = await resolvePlanAssets(svc, "ProductPromoReel", {}, shotReq, ctxBase, s.deps)
+    check("a NON-campaign video reuses the tenant's approved general public-page still (use product_video), BEFORE the OS stills or any capture",
+      ((r.propsPatch.imageUrls as string[] | undefined) ?? []).includes("https://cdn.test/market-page.png") && s.calls.pubUses.join() === "product_video" && s.calls.os === 0 && s.calls.seed === 0
+      && r.ledger.some((e) => e.status === "reused" && e.source === "public_page_still"))
+    const sc = stubs({ campaignStill: async () => { sc.calls.campaignStill++; return null }, tenantPublicStills: async (_svc, a) => { sc.calls.pub++; sc.calls.pubUses.push(a.use); return pubHit } })
+    const rc = await resolvePlanAssets(svc, "ProductPromoReel", {}, shotReq, { ...ctxBase, campaignId: "camp-1" }, sc.deps)
+    check("a verified CAMPAIGN video with no Zestimate still asks for general stills under campaign_video and stages one", sc.calls.pubUses.join() === "campaign_video" && ((rc.propsPatch.imageUrls as string[] | undefined) ?? []).includes("https://cdn.test/market-page.png"))
+    const sz = stubs({ tenantPublicStills: async (_svc, a) => { sz.calls.pub++; sz.calls.pubUses.push(a.use); return pubHit } })
+    await resolvePlanAssets(svc, "ProductPromoReel", {}, shotReq, { ...ctxBase, campaignId: "camp-1" }, sz.deps)
+    check("the campaign's own Zestimate still keeps precedence on its campaign video (general stills are not read when it is staged)", sz.calls.campaignStill === 1 && sz.calls.pub === 0)
+    const sr = stubs({ stillUseAllowed: (k, u) => k !== "general" && screenshotUseAllowed(k, u), tenantPublicStills: async (_svc, a) => { sr.calls.pub++; sr.calls.pubUses.push(a.use); return pubHit } })
+    const rr = await resolvePlanAssets(svc, "ProductPromoReel", {}, shotReq, ctxBase, sr.deps)
+    check("POSITIVE CONTROL: when the predicate refuses a general still, none is read or staged (the predicate is consumed, not bypassed)", sr.calls.pub === 0 && !((rr.propsPatch.imageUrls as string[] | undefined) ?? []).includes("https://cdn.test/market-page.png") && rr.ledger.some((e) => /refuses a general public-page still/.test(e.reason ?? "")))
+    check("the live rule admits a general still for both video uses (derived, not pinned)", screenshotUseAllowed("general", "product_video") && screenshotUseAllowed("general", CAMPAIGN_VIDEO_STILL_USE))
+
+    // END TO END through the REAL default listing (the seam's listScreenshotStillsForUse) on a stub table:
+    // an approved general page, an approved other-portal estimate page, an approved Zillow Zestimate, a pending general page.
+    const rows = [
+      { id: "g-ok", asset_name: "Market page", asset_url: "https://cdn.test/g-ok.png", approval_status: "approved", tags: [], updated_at: null, metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", source_url: "https://www.austintexas.gov/news/market", page_subject: "general" } },
+      { id: "rf", asset_name: "Portal estimate", asset_url: "https://cdn.test/rf.png", approval_status: "approved", tags: [], updated_at: null, metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", source_url: "https://www.redfin.com/TX/Austin/1-Main-St/home/1" } },
+      { id: "rf-forged", asset_name: "Portal estimate, forged stamp", asset_url: "https://cdn.test/rf2.png", approval_status: "approved", tags: [], updated_at: null, metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", source_url: "https://www.zillow.com/homedetails/1/1_zpid/", page_subject: "general" } },
+      { id: "z", asset_name: "Zestimate", asset_url: "https://cdn.test/z.png", approval_status: "approved", tags: [], updated_at: null, metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", estimate_source: "zillow_zestimate" } },
+    ]
+    const preds: string[] = []
+    const table = (): any => { const q: any = {}; for (const m of ["select", "order", "limit"]) q[m] = () => q; q.eq = (k: string, v: unknown) => { preds.push(`${k}=${String(v)}`); return q }; q.then = (res: any, rej: any) => Promise.resolve({ data: rows.filter((row) => preds.includes("approval_status=approved") ? row.approval_status === "approved" : true), error: null }).then(res, rej); return q }
+    const realSvc = { from: () => table() }
+    const sd = stubs(); delete (sd.deps as Record<string, unknown>).tenantPublicStills
+    const rd = await resolvePlanAssets(realSvc, "ProductPromoReel", {}, shotReq, ctxBase, sd.deps)
+    const stagedE2E = (rd.propsPatch.imageUrls as string[] | undefined) ?? []
+    check("E2E (real listing): the approved GENERAL public page is staged; the listing is tenant-scoped, approved-only, public_page only",
+      stagedE2E.join() === "https://cdn.test/g-ok.png" && preds.includes("brokerage_id=b-1") && preds.includes("approval_status=approved") && preds.includes("metadata->>screenshot_kind=public_page"))
+    check("E2E NEGATIVE: another portal's estimate page, a forged 'general' stamp on a Zillow page, and the Zestimate (for product_video) are NEVER staged",
+      !stagedE2E.includes("https://cdn.test/rf.png") && !stagedE2E.includes("https://cdn.test/rf2.png") && !stagedE2E.includes("https://cdn.test/z.png"))
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -287,7 +340,7 @@ async function main() {
     const playbooks = code("app/actions/creative-playbooks.ts")
     check("the campaign playbook video stamps its still's provenance (campaignStillProvenance → asset_readiness)", /campaignStillProvenance\(still, \{ forCampaignVideo: !!campaignVideoStillUrl \}\)/.test(playbooks) && /asset_readiness:/.test(playbooks) && /stillLedger,/.test(playbooks))
     const mod = code("lib/video/plan-asset-readiness.ts")
-    check("the module CONSUMES 84B's rule (screenshotUseAllowed from the seam) and door (approvedTenantStill(…, \"campaign_video\")), restating no use list", /import \{ screenshotUseAllowed \} from "@\/lib\/assets\/screenshot-capture"/.test(mod) && /approvedTenantStill\(svc, a\.brokerageId, \{ address: a\.address \}, "campaign_video"\)/.test(mod) && !/ZESTIMATE_SCREENSHOT_USES|ZESTIMATE_STILL_USES|PUBLIC_PAGE_STILL_USES|SCREENSHOT_USE_RULE/.test(mod))
+    check("the module CONSUMES 84B's rule (screenshotUseAllowed from the seam) and door (approvedTenantStill(…, \"campaign_video\")), restating no use list", /import \{ screenshotUseAllowed\b[^}]*\} from "@\/lib\/assets\/screenshot-capture"/.test(mod) && /d\.stillUseAllowed\("general", use\)/.test(mod) && /subject: "general"/.test(mod) && /approvedTenantStill\(svc, a\.brokerageId, \{ address: a\.address \}, "campaign_video"\)/.test(mod) && !/ZESTIMATE_SCREENSHOT_USES|ZESTIMATE_STILL_USES|PUBLIC_PAGE_STILL_USES|SCREENSHOT_USE_RULE/.test(mod))
     check("creation books on the cost ledger (ai_tool_usage insert, counted) and captures into the library", /\.from\("ai_tool_usage"\)\.insert\(/.test(mod) && /\.select\("id"\)/.test(mod) && /\.from\("marketing_assets"\)\.insert\(/.test(mod))
     check("the readiness module reuses the survivors (pickBrollClips, pickStockAsset, listScreenshotStillsForUse, seedMissingDemoStill, generateImage, approvedTenantStill)",
       ["pickBrollClips", "pickStockAsset", "listScreenshotStillsForUse", "seedMissingDemoStill", "generateImage", "approvedTenantStill"].every((f) => new RegExp(`\\b${f}\\b`).test(mod)))

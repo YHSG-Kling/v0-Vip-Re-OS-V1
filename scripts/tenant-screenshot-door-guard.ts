@@ -39,6 +39,12 @@
  *      `screenshot` (derived from COMPOSITION_TREATMENTS).
  *   6. THE APPROVAL RAIL is the existing one — the UI imports approveAsset /
  *      rejectAsset from marketing-studio, whose update is tenant-predicated.
+ *   6b. THE GENERAL PUBLIC-PAGE DOOR (85A — owner: "a public page screenshhot
+ *      can be more than just zillow zestimate page.") — two gated actions, a
+ *      tenant-owned PENDING row with every use and page_subject=general, the
+ *      tenant cache predicate, an other-portal page refused (positive
+ *      control), the subject narrowing both cards' lists, the Zestimate door
+ *      never handing out a general still, the card mounted on the rail.
  *   7. REGISTRATION — package.json after test:scrapers (ordering), the
  *      registry entry with coOwners, the row shape on live columns/CHECKs.
  *
@@ -58,6 +64,7 @@ import {
 } from "../lib/assets/screenshot-capture"
 import {
   planTenantStill, captureTenantEstimateStill, pickApprovedStill, ensureZestimateChallengeStill, approvedTenantStill,
+  captureTenantPublicPageStill, listTenantScreenshotStills,
 } from "../lib/marketing/tenant-screenshot-door"
 import { COMPOSITION_TREATMENTS } from "../lib/video/body-visual-model"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
@@ -237,13 +244,17 @@ console.log("\n[4 · never a customer-facing value]")
   const READ_OFF_PAGE_RE = /page\.evaluate\(|\$eval\(|innerText|textContent|page\.content\(/
   check("neither the door nor the seam reads text off a captured page (pixels only — no evaluate/$eval/innerText/content)", !READ_OFF_PAGE_RE.test(stripped(DOOR)) && !READ_OFF_PAGE_RE.test(stripped(SEAM)))
   check("CONTROL: the read-off-page finder recognises a specimen", READ_OFF_PAGE_RE.test(`const v = await page.$eval(".zestimate", (e) => e.textContent)`))
+  // WAVE 85A: picks carry the rule's subject; a GENERAL public-page still (newest here, same address) must never
+  // be taken for the Zestimate.
   const stills = [
-    { id: "p", url: "https://c/p.png", label: "", kind: "public_page" as const, uses: ["marketing_campaign" as const], approvalStatus: "pending", sourceUrl: null, capturedAt: null, estimateSource: "zillow_zestimate", address: "123 Main St", customerFacingValue: false as const },
-    { id: "a", url: "https://c/a.png", label: "", kind: "public_page" as const, uses: ["marketing_campaign" as const], approvalStatus: "approved", sourceUrl: null, capturedAt: null, estimateSource: "zillow_zestimate", address: "123 main st", customerFacingValue: false as const },
-    { id: "r", url: "https://c/r.png", label: "", kind: "public_page" as const, uses: ["marketing_campaign" as const], approvalStatus: "approved", sourceUrl: null, capturedAt: null, estimateSource: "redfin_estimate", address: "9 Elm", customerFacingValue: false as const },
+    { id: "g", url: "https://c/g.png", label: "", kind: "public_page" as const, subject: "general" as const, uses: ["marketing_campaign" as const], approvalStatus: "approved", sourceUrl: null, capturedAt: null, estimateSource: null, address: "123 main st", customerFacingValue: false as const },
+    { id: "p", url: "https://c/p.png", label: "", kind: "public_page" as const, subject: "zillow_zestimate" as const, uses: ["marketing_campaign" as const], approvalStatus: "pending", sourceUrl: null, capturedAt: null, estimateSource: "zillow_zestimate", address: "123 Main St", customerFacingValue: false as const },
+    { id: "a", url: "https://c/a.png", label: "", kind: "public_page" as const, subject: "zillow_zestimate" as const, uses: ["marketing_campaign" as const], approvalStatus: "approved", sourceUrl: null, capturedAt: null, estimateSource: "zillow_zestimate", address: "123 main st", customerFacingValue: false as const },
+    { id: "r", url: "https://c/r.png", label: "", kind: "public_page" as const, subject: "other_portal_estimate" as const, uses: ["marketing_campaign" as const], approvalStatus: "approved", sourceUrl: null, capturedAt: null, estimateSource: "redfin_estimate", address: "9 Elm", customerFacingValue: false as const },
   ]
-  check("pickApprovedStill never returns a pending row; matches source + address case/space-insensitively", pickApprovedStill(stills, { source: "zillow_zestimate", address: " 123  MAIN st" })?.id === "a" && pickApprovedStill([stills[0]], { source: "zillow_zestimate" }) === null && pickApprovedStill(stills, { source: "homes_estimate" }) === null)
-  check("CONTROL: the picker does return an approved row when the filter is open", pickApprovedStill(stills)?.id === "a")
+  check("pickApprovedStill never returns a pending row; matches source + address case/space-insensitively", pickApprovedStill(stills, { source: "zillow_zestimate", address: " 123  MAIN st" })?.id === "a" && pickApprovedStill([stills[1]], { source: "zillow_zestimate" }) === null && pickApprovedStill(stills, { source: "homes_estimate" }) === null)
+  check("CONTROL: the picker does return an approved Zestimate row when the filter is open — and never the newer GENERAL still (85A)", pickApprovedStill(stills)?.id === "a" && pickApprovedStill(stills, { address: "123 Main St" })?.id === "a" && pickApprovedStill([stills[0]]) === null)
+  check("POSITIVE CONTROL: a subject-blind picker WOULD have taken the general still (it is the newest approved row)", stills.find((s) => s.approvalStatus === "approved" && s.kind === "public_page")?.id === "g")
 }
 
 console.log("\n[5 · the autonomous ensure + the playbook consumes the still]")
@@ -347,6 +358,36 @@ console.log("\n[6 · the approval rail is the EXISTING one]")
   check("an APPROVED brokerage image row already joins the tenant's image-library picker (approved + brokerage_id.eq) — no second picker", /\.eq\("approval_status", "approved"\)/.test(strippedKeepStrings("app/actions/marketing/image-library.ts")) && /brokerage_id\.eq\.\$\{brokerageId\}/.test(strippedKeepStrings("app/actions/marketing/image-library.ts")))
   const regen = strippedKeepStrings("app/api/cron/marketing-image-regen/route.ts")
   check("the regen cron selects brokerage_id/created_by/tags so a tenant still re-captures INTO its tenant (owner off the row)", /select\("id, brokerage_id, created_by, tags,/.test(regen) && /row\.brokerage_id/.test(strippedKeepStrings(SEAM)))
+}
+
+console.log("\n[6b · the GENERAL public-page door (85A — owner: \"a public page screenshhot can be more than just zillow zestimate page.\")]")
+{
+  const action = strippedKeepStrings(ACTION)
+  const exportsOf = action.split(/(?=export async function )/).filter((c) => c.startsWith("export async function "))
+  const genExports = exportsOf.filter((c) => /^export async function (captureTenantPublicPageStillAction|listTenantPublicPageStillsAction)\(/.test(c))
+  check("the two general-page actions exist and each gates requireTenantAdminOrSoloOwner BEFORE the service client (tenant = auth.brokerageId, never the input)",
+    genExports.length === 2 && genExports.every((c) => { const g = c.indexOf("await requireTenantAdminOrSoloOwner()"); const s = c.indexOf("createServiceClient()"); return g !== -1 && s > g && /auth\.brokerageId/.test(c) && !/input\.brokerageId/.test(c) }))
+  const provider = countingProvider(); const svc = makeSvc([], { insertId: "gen-1" })
+  const r = await captureTenantPublicPageStill({ brokerageId: TENANT, userId: "user-1", url: "https://www.austintexas.gov/department/planning", label: "City planning" }, { svc, provider, fetchRobots: robotsAllow, lookupHost: async () => ["93.184.216.34"] })
+  const row = svc.inserted[0] as any
+  check("a general page lands in the TENANT's assets, PENDING, created_by from the gate, with EVERY use and page_subject=general",
+    r.ok && r.approvalStatus === "pending" && !!row && row.brokerage_id === TENANT && row.visibility_scope === "brokerage" && row.created_by === "user-1" && row.approval_status === "pending" && row.metadata?.page_subject === "general" && row.metadata?.uses?.join() === SCREENSHOT_USES.join())
+  const cacheRead = svc.predicates.find((p) => p.some(([k]) => k === "metadata->>cache_key"))
+  check("its URL+day cache read carries the TENANT predicate (one tenant's page is never another's)", !!cacheRead && cacheRead.some(([k, v]) => k === "brokerage_id" && v === TENANT))
+  const p2 = countingProvider(); const svc2 = makeSvc()
+  const refused = await captureTenantPublicPageStill({ brokerageId: TENANT, userId: null, url: redfinHit }, { svc: svc2, provider: p2, fetchRobots: robotsAllow, lookupHost: async () => ["93.184.216.34"] })
+  check("POSITIVE CONTROL: another portal's estimate page is REFUSED at the door — no browser, no row", !refused.ok && p2.calls.length === 0 && svc2.inserted.length === 0)
+  const general: Row = { id: "gen-a", brokerage_id: TENANT, visibility_scope: "brokerage", approval_status: "approved", asset_url: "https://c/gen.png", asset_name: "City page", tags: ["screenshot", ...SCREENSHOT_USES.map((u) => `use:${u}`)], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", source_url: "https://www.austintexas.gov/x", page_subject: "general", uses_rule: "84B" }, updated_at: null }
+  const zest: Row = { id: "zest-a", brokerage_id: TENANT, visibility_scope: "brokerage", approval_status: "approved", asset_url: "https://c/z.png", asset_name: "Zestimate", tags: ["screenshot", "use:marketing_campaign", "use:campaign_video"], metadata: { asset_kind: "screenshot", screenshot_kind: "public_page", estimate_source: "zillow_zestimate", address: "123 Main St, Austin TX" }, updated_at: null }
+  const listedGeneral = await listTenantScreenshotStills(makeSvc([general, zest]), TENANT, null, { subject: "general" })
+  const listedZ = await listTenantScreenshotStills(makeSvc([general, zest]), TENANT, "marketing_campaign", { subject: "zillow_zestimate" })
+  check("the general card's list holds the general still only; the Zestimate card's list holds the Zestimate only (subject narrows both ways)", listedGeneral.map((s) => s.id).join() === "gen-a" && listedZ.map((s) => s.id).join() === "zest-a")
+  const zDoor = await approvedTenantStill(makeSvc([general]), TENANT, {}, "campaign_video")
+  check("the Zestimate door never returns an approved GENERAL still as the campaign's Zestimate", zDoor === null)
+  const card = strippedKeepStrings("app/settings/campaign-bundles/public-page-stills-card.tsx")
+  check("the general card is mounted beside the Zestimate card and decides through marketing-studio's approveAsset / rejectAsset (no new approval writer)",
+    /<PublicPageStillsCard \/>/.test(src("app/settings/campaign-bundles/client.tsx")) && /import \{ approveAsset, rejectAsset \} from "@\/app\/actions\/marketing-studio"/.test(card) && card.includes("captureTenantPublicPageStillAction(") && !/approval_status/.test(card))
+  check("the Zestimate card now lists the Zestimate subject only", /listTenantScreenshotStillsAction\(\{ use: "marketing_campaign", subject: "zillow_zestimate" \}\)/.test(strippedKeepStrings(CARD)))
 }
 
 console.log("\n[7 · registration]")

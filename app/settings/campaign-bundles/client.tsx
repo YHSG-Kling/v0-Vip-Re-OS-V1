@@ -33,6 +33,7 @@ import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
 import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
 import { EstimateStillsCard } from "./estimate-stills-card"
 import { EstimateComparisonCard } from "./estimate-comparison-card"
+import { PublicPageStillsCard } from "./public-page-stills-card"
 import { LearnedVisualRulesCard } from "./learned-visual-rules-card"
 import { TopicVideoCadenceCard } from "./topic-video-cadence-card"
 
@@ -316,6 +317,8 @@ export function CampaignBundlesClient({
           {/* Wave 80D — the Zestimate Challenge's still: tenant-picked source + address, pending approval. */}
           <EstimateStillsCard />
           <EstimateComparisonCard />
+          {/* Wave 85A — general public-page stills (listing / own site / market / community pages): every use once approved. */}
+          <PublicPageStillsCard />
           <LearnedVisualRulesCard />
           {/* Wave 83B — the autonomous topic-video cadence (default 3/week). */}
           <TopicVideoCadenceCard />

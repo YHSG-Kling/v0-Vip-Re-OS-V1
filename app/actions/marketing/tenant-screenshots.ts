@@ -18,8 +18,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireTenantAdminOrSoloOwner } from "@/lib/auth/require-caller"
-import { SCREENSHOT_USES, setScreenshotUses, type ScreenshotStillPick, type ScreenshotUse } from "@/lib/assets/screenshot-capture"
-import { captureTenantEstimateStill, listTenantScreenshotStills } from "@/lib/marketing/tenant-screenshot-door"
+import { SCREENSHOT_SUBJECTS, SCREENSHOT_USES, setScreenshotUses, type ScreenshotStillPick, type ScreenshotSubject, type ScreenshotUse } from "@/lib/assets/screenshot-capture"
+import { captureTenantEstimateStill, captureTenantPublicPageStill, listTenantScreenshotStills } from "@/lib/marketing/tenant-screenshot-door"
 import { ESTIMATE_SOURCES, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey } from "@/lib/marketing/estimate-sources"
 
 type CaptureActionResult =
@@ -48,12 +48,47 @@ export async function captureEstimateStillAction(input: { source: string; addres
     : { ok: false, error: r.reason }
 }
 
-/** The caller's brokerage's own stills for a use, every approval state. */
-export async function listTenantScreenshotStillsAction(input: { use: ScreenshotUse }): Promise<{ ok: true; stills: ScreenshotStillPick[] } | { ok: false; error: string }> {
+/** The caller's brokerage's own stills for a use, every approval state.
+ *  `subject` (85A) narrows to one kind of still — the Zestimate card asks for
+ *  "zillow_zestimate" so a general public-page still never lists there. */
+export async function listTenantScreenshotStillsAction(input: { use: ScreenshotUse; subject?: ScreenshotSubject }): Promise<{ ok: true; stills: ScreenshotStillPick[] } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
   if (!(SCREENSHOT_USES as readonly string[]).includes(input.use)) return { ok: false, error: `screenshot use "${String(input.use)}" is not one of ${SCREENSHOT_USES.join("/")}` }
-  return { ok: true, stills: await listTenantScreenshotStills(createServiceClient(), auth.brokerageId, input.use) }
+  if (input.subject !== undefined && !(SCREENSHOT_SUBJECTS as readonly string[]).includes(input.subject)) return { ok: false, error: `screenshot subject "${String(input.subject)}" is not one of ${SCREENSHOT_SUBJECTS.join("/")}` }
+  return { ok: true, stills: await listTenantScreenshotStills(createServiceClient(), auth.brokerageId, input.use, { subject: input.subject }) }
+}
+
+// ── GENERAL PUBLIC-PAGE STILLS (wave 85A — owner: "a public page screenshhot
+// can be more than just zillow zestimate page.") ─────────────────────────────
+// Same gate, same session tenant, same approval rail (approveAsset /
+// rejectAsset), same uses door (setTenantScreenshotUsesAction below). The
+// ONE classifier refuses a Zillow page (the Zestimate card's) and any other
+// portal's estimate page before the seam runs.
+
+/** Capture (or return today's cached) still of a general public page — a
+ *  listing page, the brokerage's own site, a market / community / news / HOA /
+ *  school / city / review page — into the caller's brokerage. Lands pending. */
+export async function captureTenantPublicPageStillAction(input: { url: string; label?: string | null }): Promise<{ ok: true; assetId: string; url: string; cached: boolean; approvalStatus: "pending"; uses: ScreenshotUse[] } | { ok: false; error: string }> {
+  const auth = await requireTenantAdminOrSoloOwner()
+  if (!auth.ok) return { ok: false, error: auth.error }
+  if (typeof input?.url !== "string" || !input.url.trim()) return { ok: false, error: "a public page address is required" }
+  const r = await captureTenantPublicPageStill(
+    { brokerageId: auth.brokerageId, userId: auth.userId, url: input.url, label: typeof input.label === "string" ? input.label : null },
+    { svc: createServiceClient() },
+  )
+  return r.ok
+    ? { ok: true, assetId: r.assetId, url: r.url, cached: r.cached, approvalStatus: r.approvalStatus, uses: r.uses }
+    : { ok: false, error: r.reason }
+}
+
+/** The caller's brokerage's general public-page stills, every approval state
+ *  and every use (a narrowed still still lists, so a person can re-widen it). */
+export async function listTenantPublicPageStillsAction(): Promise<{ ok: true; stills: ScreenshotStillPick[] } | { ok: false; error: string }> {
+  const auth = await requireTenantAdminOrSoloOwner()
+  if (!auth.ok) return { ok: false, error: auth.error }
+  const stills = await listTenantScreenshotStills(createServiceClient(), auth.brokerageId, null, { subject: "general" })
+  return { ok: true, stills: stills.filter((s) => s.kind === "public_page") }
 }
 
 // ── THE ESTIMATE COMPARISON PIECE (wave 82D; 83C web search) ─────────────────

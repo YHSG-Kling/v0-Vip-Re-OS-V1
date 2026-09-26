@@ -40,10 +40,10 @@
 // under tsx for the proof; nothing here makes a model call.
 
 import {
-  capturePublicPropertyPage, listScreenshotStillsForUse, ZESTIMATE_SCREENSHOT_USES, screenshotUseAllowed,
-  type CaptureDeps, type CaptureResult, type ScreenshotRefusal, type ScreenshotStillPick, type ScreenshotUse,
+  capturePublicPropertyPage, captureScreenshot, listScreenshotStillsForUse, ZESTIMATE_SCREENSHOT_USES, screenshotUseAllowed, screenshotUsesFor,
+  type CaptureDeps, type CaptureResult, type ScreenshotRefusal, type ScreenshotStillPick, type ScreenshotSubject, type ScreenshotUse,
 } from "@/lib/assets/screenshot-capture"
-import { estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_SOURCE_KEYS, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey, type EstimateStillMustShow } from "@/lib/marketing/estimate-sources"
+import { classifyPublicPage, estimateSource, DEFAULT_ESTIMATE_SOURCE, ESTIMATE_SOURCE_KEYS, ESTIMATE_STILL_DISCLAIMER, type EstimateSourceKey, type EstimateStillMustShow } from "@/lib/marketing/estimate-sources"
 
 export interface TenantStillRequest {
   /** From the SESSION gate — never a request body. */
@@ -118,18 +118,83 @@ export async function captureTenantEstimateStill(req: TenantStillRequest, deps: 
 }
 
 /** The tenant's own stills for a use (every approval state — the picker's
- *  view, so a human can see what is pending). */
-export async function listTenantScreenshotStills(svc: any, brokerageId: string, use: ScreenshotUse, opts: { approvedOnly?: boolean; limit?: number } = {}): Promise<ScreenshotStillPick[]> {
+ *  view, so a human can see what is pending). `subject` (85A) narrows to one
+ *  kind of still — the Zestimate card asks for "zillow_zestimate", the
+ *  public-page card for "general". */
+export async function listTenantScreenshotStills(svc: any, brokerageId: string, use: ScreenshotUse | null, opts: { approvedOnly?: boolean; limit?: number; subject?: ScreenshotSubject } = {}): Promise<ScreenshotStillPick[]> {
   if (!brokerageId) return []
-  return listScreenshotStillsForUse(svc, use, { brokerageId, approvedOnly: opts.approvedOnly === true, limit: opts.limit })
+  return listScreenshotStillsForUse(svc, use, { brokerageId, approvedOnly: opts.approvedOnly === true, limit: opts.limit, subject: opts.subject })
 }
 
-/** PURE: the still a campaign may consume — APPROVED only, matching the
- *  source (and the address when one is given), newest first. */
+// ── GENERAL PUBLIC-PAGE STILLS (wave 85, lane 85A) ───────────────────────────
+// Owner verbatim (2026-09-26): "a public page screenshhot can be more than
+// just zillow zestimate page." A tenant may capture ANY public page that is
+// not an estimate page — a listing page, its own site or landing page, a
+// market / community / news / HOA / school / city / review page — into its
+// own marketing assets, PENDING, as general material that serves every use
+// once a human approves it on the existing rail. THE ONE classifier
+// (lib/marketing/estimate-sources.ts classifyPublicPage) decides first: a
+// Zillow page belongs to the Zestimate card above (its readiness rule, its
+// address), and another portal's estimate page is refused (its figure stays
+// web-searched text). Everything else rides the ONE seam unchanged — robots,
+// the per-host rate ceiling, the tenant-scoped URL+day cache, the counted
+// insert — plus its public-network guard.
+
+interface TenantPublicPageRequest {
+  /** From the SESSION gate — never a request body. */
+  brokerageId: string
+  userId: string | null
+  url: string
+  /** What the tenant calls it in its library (optional). */
+  label?: string | null
+}
+
+/** PURE: validate a tenant's general public-page request before anything runs. */
+export function planTenantPublicPageStill(req: TenantPublicPageRequest): { ok: true; url: string; label: string; uses: ScreenshotUse[]; why: string } | ScreenshotRefusal {
+  if (!req.brokerageId) return { ok: false, reason: "REFUSED: a public-page capture needs the session's brokerage id" }
+  const raw = (req.url ?? "").trim()
+  let u: URL
+  try { u = new URL(raw) } catch { return { ok: false, reason: "a public page capture needs a full web address (https://…)" } }
+  const page = classifyPublicPage(u.toString())
+  if (page.subject === "zillow_zestimate") return { ok: false, reason: "that is a Zillow page — capture it on the Zestimate card (the property photo and the Zestimate must both show), not as a general public page" }
+  if (page.subject !== "general") return { ok: false, reason: `REFUSED: ${page.why}` }
+  const uses = screenshotUsesFor("general")
+  const label = ((req.label ?? "").trim() || `Public page — ${u.hostname}${u.pathname === "/" ? "" : u.pathname}`).slice(0, 160)
+  return { ok: true, url: u.toString(), label, uses, why: page.why }
+}
+
+interface TenantPublicPageResult {
+  ok: true
+  assetId: string
+  url: string
+  cached: boolean
+  sourceUrl: string
+  capturedAt: string
+  /** ALWAYS "pending" on a fresh capture — a human approves on the rail. */
+  approvalStatus: "pending"
+  uses: ScreenshotUse[]
+}
+
+/** Capture (or return today's cached) general public-page still for the
+ *  tenant through the ONE seam. Lands pending in the tenant's own assets. */
+export async function captureTenantPublicPageStill(req: TenantPublicPageRequest, deps: CaptureDeps = {}): Promise<TenantPublicPageResult | ScreenshotRefusal> {
+  const plan = planTenantPublicPageStill(req)
+  if (!plan.ok) return plan
+  const r = await captureScreenshot({
+    kind: "public_page", url: plan.url, label: plan.label,
+    owner: { brokerageId: req.brokerageId, createdBy: req.userId ?? null, uses: plan.uses },
+  }, deps)
+  if (!r.ok) return r
+  return { ok: true, assetId: r.assetId, url: r.url, cached: r.cached, sourceUrl: r.sourceUrl, capturedAt: r.capturedAt, approvalStatus: "pending", uses: plan.uses }
+}
+
+/** PURE: the still a campaign may consume — APPROVED only, the ZESTIMATE only
+ *  (85A: a general public-page still is never taken for the Zestimate),
+ *  matching the source (and the address when one is given), newest first. */
 export function pickApprovedStill(stills: readonly ScreenshotStillPick[], want: { source?: string | null; address?: string | null } = {}): ScreenshotStillPick | null {
   const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ")
   return stills.find((s) =>
-    s.approvalStatus === "approved" && s.kind === "public_page"
+    s.approvalStatus === "approved" && s.kind === "public_page" && s.subject === "zillow_zestimate"
     && (!want.source || s.estimateSource === want.source)
     && (!want.address || norm(s.address) === norm(want.address)),
   ) ?? null
@@ -146,7 +211,7 @@ export function pickApprovedStill(stills: readonly ScreenshotStillPick[], want: 
  */
 export async function approvedTenantStill(svc: any, brokerageId: string, want: { source?: string | null; address?: string | null } = {}, use: ScreenshotUse = "marketing_campaign"): Promise<ScreenshotStillPick | null> {
   if (!screenshotUseAllowed("zillow_zestimate", use)) return null
-  return pickApprovedStill(await listTenantScreenshotStills(svc, brokerageId, use, { approvedOnly: true, limit: 50 }), want)
+  return pickApprovedStill(await listTenantScreenshotStills(svc, brokerageId, use, { approvedOnly: true, limit: 50, subject: "zillow_zestimate" }), want)
 }
 
 // TOMBSTONE (§1.3, wave 83C — owner verbatim: "zestimate is marketing campaigns
@@ -199,7 +264,7 @@ export async function ensureZestimateChallengeStill(
   const src = estimateSource(args.source) ?? estimateSource(DEFAULT_ESTIMATE_SOURCE)!
   const address = (args.address ?? "").trim()
   if (address.length < 6) return { state: "no_address", assetId: null, url: null, uses: [], figureUsd: null, capturedAt: null, reason: "no listing address to capture an estimate still for", source: src.key }
-  const have = await listTenantScreenshotStills(args.svc, args.brokerageId, "marketing_campaign", { limit: 50 })
+  const have = await listTenantScreenshotStills(args.svc, args.brokerageId, "marketing_campaign", { limit: 50, subject: "zillow_zestimate" })
   const approved = pickApprovedStill(have, { source: src.key, address })
   if (approved) return { state: "approved", assetId: approved.id, url: approved.url, uses: approved.uses, figureUsd: approved.confirmedFigureUsd ?? null, capturedAt: approved.capturedAt, reason: null, source: src.key }
   const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ")
